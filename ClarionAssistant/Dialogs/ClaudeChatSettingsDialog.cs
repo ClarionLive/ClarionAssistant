@@ -17,6 +17,8 @@ namespace ClarionAssistant.Dialogs
         private CheckBox _multiTerminalCheck;
         private Label _multiTerminalStatus;
         private TextBox _agentNameInput;
+        private Button _buildLibButton;
+        private Label _libStatus;
         private Button _okButton;
         private Button _cancelButton;
 
@@ -38,7 +40,7 @@ namespace ClarionAssistant.Dialogs
             MaximizeBox = false;
             MinimizeBox = false;
             StartPosition = FormStartPosition.CenterParent;
-            Size = new Size(450, 360);
+            Size = new Size(450, 420);
             BackColor = Color.FromArgb(45, 45, 45);
             ForeColor = Color.White;
             Font = new Font("Segoe UI", 9f);
@@ -173,6 +175,40 @@ namespace ClarionAssistant.Dialogs
                 BorderStyle = BorderStyle.FixedSingle
             };
 
+            y += rowH + 10;
+
+            // === Library CodeGraph Section ===
+            var libSeparator = new Label
+            {
+                Text = "Library CodeGraph",
+                Location = new Point(labelX, y),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(100, 180, 255),
+                Font = new Font("Segoe UI", 9f, FontStyle.Bold)
+            };
+            y += 22;
+
+            _buildLibButton = new Button
+            {
+                Text = "Build",
+                Location = new Point(labelX, y),
+                Width = 80,
+                Height = 26,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(70, 70, 70),
+                ForeColor = Color.White
+            };
+            _buildLibButton.Click += OnBuildLibrary;
+
+            _libStatus = new Label
+            {
+                Text = LibraryIndexer.GetStatus(),
+                Location = new Point(labelX + 90, y + 4),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(180, 180, 180),
+                Font = new Font("Segoe UI", 8f)
+            };
+
             y += rowH + 15;
 
             // OK / Cancel
@@ -212,6 +248,7 @@ namespace ClarionAssistant.Dialogs
                 separator,
                 _multiTerminalCheck, _multiTerminalStatus,
                 agentLabel, _agentNameInput,
+                libSeparator, _buildLibButton, _libStatus,
                 _okButton, _cancelButton
             });
         }
@@ -263,6 +300,39 @@ namespace ClarionAssistant.Dialogs
             _settings.Set("Claude.WorkingDirectory", _workingDirInput.Text);
             _settings.Set("MultiTerminal.Enabled", _multiTerminalCheck.Checked.ToString().ToLower());
             _settings.Set("MultiTerminal.AgentName", _agentNameInput.Text);
+        }
+
+        private void OnBuildLibrary(object sender, EventArgs e)
+        {
+            var info = ClarionVersionService.Detect();
+            var config = info?.GetCurrentConfig();
+            string clarionRoot = config?.RootPath;
+
+            if (string.IsNullOrEmpty(clarionRoot))
+            {
+                MessageBox.Show("Could not detect Clarion installation path.",
+                    "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            _buildLibButton.Enabled = false;
+            _libStatus.Text = "Building...";
+            _libStatus.ForeColor = Color.FromArgb(255, 200, 100);
+            _libStatus.Refresh();
+
+            var result = LibraryIndexer.Build(clarionRoot);
+
+            _buildLibButton.Enabled = true;
+            if (result.Success)
+            {
+                _libStatus.Text = result.SymbolCount + " symbols indexed";
+                _libStatus.ForeColor = Color.FromArgb(120, 200, 120);
+            }
+            else
+            {
+                _libStatus.Text = "Error: " + result.Error;
+                _libStatus.ForeColor = Color.FromArgb(255, 120, 120);
+            }
         }
 
         public float FontSize { get { return (float)_fontSizeInput.Value; } }

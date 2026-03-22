@@ -9,6 +9,7 @@
     <AssemblyName>ClarionAssistant</AssemblyName>
     <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <PlatformTarget>x86</PlatformTarget>
@@ -51,6 +52,9 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="AgentPanelPad.cs" />
+    <Compile Include="AgentPanelControl.cs" />
+    <Compile Include="ShowAgentPanelCommand.cs" />
     <Compile Include="ClassHelperPad.cs" />
     <Compile Include="ShowClassHelperCommand.cs" />
     <Compile Include="ClaudeChatPad.cs" />
@@ -70,6 +74,7 @@
     <Compile Include="Services\McpToolRegistry.cs" />
     <Compile Include="Services\ClarionVersionService.cs" />
     <Compile Include="Services\LspClient.cs" />
+    <Compile Include="Services\LibraryIndexer.cs" />
     <Compile Include="Services\AppTreeService.cs" />
     <Compile Include="Services\IdeReflectionService.cs" />
     <Compile Include="Dialogs\ClaudeChatSettingsDialog.cs" />
@@ -77,6 +82,9 @@
     <Compile Include="Terminal\ConPtyTerminal.cs" />
     <Compile Include="Terminal\WebViewTerminalRenderer.cs" />
     <Compile Include="Terminal\WebView2EnvironmentCache.cs" />
+    <Compile Include="Models\MultiTerminalModels.cs" />
+    <Compile Include="Services\MultiTerminalApiClient.cs" />
+    <Compile Include="TaskLifecycleBoard\TaskLifecycleBoardForm.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -87,6 +95,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Terminal\clarion-assistant-prompt.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="TaskLifecycleBoard\lifecycle-board.html">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

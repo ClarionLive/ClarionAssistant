@@ -5,15 +5,11 @@
   "changeLog": "",
   "currentVersion": "0.1.0",
   "createdAt": "2026-03-19T08:14:48.9803010-07:00",
-  "lastOpenedAt": "2026-03-19T08:14:48.9803010-07:00",
+  "lastOpenedAt": "2026-03-22T15:26:57.9199260-07:00",
   "isPinned": false,
-  "prompts": [],
+  "prompts": [
+  ],
   "team": {
-    "agents": [
-      {
-        "name": "Diana",
-        "role": "agent"
-      }
-    ]
+    "agents": []
   }
 }

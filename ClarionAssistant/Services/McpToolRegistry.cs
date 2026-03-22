@@ -528,6 +528,22 @@ Use this tool to discover IDE APIs and understand what's available for automatio
 
             Register(new McpTool
             {
+                Name = "select_procedure",
+                Description = "Select a procedure in the ClaList without opening the embeditor. For testing procedure selection.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string> { { "procedure_name", "Name of the procedure to select" } },
+                    new[] { "procedure_name" }),
+                RequiresUiThread = true,
+                Handler = args =>
+                {
+                    string name = McpJsonRpc.GetString(args, "procedure_name");
+                    if (string.IsNullOrEmpty(name)) return "Error: procedure_name required";
+                    return _appTree.SelectProcedure(name);
+                }
+            });
+
+            Register(new McpTool
+            {
                 Name = "get_embed_info",
                 Description = "Get info about the currently active embeditor - app name, file, embed position.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
@@ -537,6 +553,62 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                     var info = _appTree.GetEmbedInfo();
                     return info != null ? (object)info : "No embeditor active";
                 }
+            });
+
+            Register(new McpTool
+            {
+                Name = "save_and_close_embeditor",
+                Description = "Save changes and close the currently open embeditor. Use this when done editing embed code.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                RequiresUiThread = true,
+                Handler = args => _appTree.SaveAndCloseEmbeditor()
+            });
+
+            Register(new McpTool
+            {
+                Name = "cancel_embeditor",
+                Description = "Discard changes and close the currently open embeditor. Use this to abandon edits without saving.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                RequiresUiThread = true,
+                Handler = args => _appTree.CancelEmbeditor()
+            });
+
+            // === Embed Navigation Tools ===
+
+            Register(new McpTool
+            {
+                Name = "next_embed",
+                Description = "Navigate to the next embed point in the embeditor.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                RequiresUiThread = true,
+                Handler = args => _appTree.NavigateEmbed("next", false)
+            });
+
+            Register(new McpTool
+            {
+                Name = "prev_embed",
+                Description = "Navigate to the previous embed point in the embeditor.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                RequiresUiThread = true,
+                Handler = args => _appTree.NavigateEmbed("prev", false)
+            });
+
+            Register(new McpTool
+            {
+                Name = "next_filled_embed",
+                Description = "Navigate to the next filled embed point (one that contains user code) in the embeditor.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                RequiresUiThread = true,
+                Handler = args => _appTree.NavigateEmbed("next", true)
+            });
+
+            Register(new McpTool
+            {
+                Name = "prev_filled_embed",
+                Description = "Navigate to the previous filled embed point (one that contains user code) in the embeditor.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                RequiresUiThread = true,
+                Handler = args => _appTree.NavigateEmbed("prev", true)
             });
 
             // === File System Tools ===
@@ -938,6 +1010,10 @@ COMMON QUERIES:
                             catch { }
                         }
                     }
+                    string libDb = LibraryIndexer.GetDefaultDbPath();
+                    if (File.Exists(libDb) && !results.Contains(libDb))
+                        results.Insert(0, libDb);
+
                     if (results.Count == 0)
                         return "No CodeGraph databases found. Run the CodeGraph indexer on a Clarion solution first.";
                     return string.Join("\n", results);

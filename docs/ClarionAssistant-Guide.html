@@ -1,0 +1,1703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clarion.Assistant User Guide</title>
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-dark: #1d4ed8;
+      --primary-light: #dbeafe;
+      --accent: #059669;
+      --accent-light: #d1fae5;
+      --warning: #d97706;
+      --warning-light: #fef3c7;
+      --text: #1e293b;
+      --text-light: #64748b;
+      --bg: #ffffff;
+      --bg-alt: #f8fafc;
+      --border: #e2e8f0;
+      --shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+      --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1);
+      --radius: 8px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      line-height: 1.7;
+      font-size: 16px;
+    }
+
+    /* ── Top Header ── */
+    .site-header {
+      background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
+      color: #fff;
+      padding: 3rem 2rem 2.5rem;
+      text-align: center;
+    }
+    .site-header h1 {
+      font-size: 2.4rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+      letter-spacing: -0.02em;
+    }
+    .site-header .subtitle {
+      font-size: 1.15rem;
+      opacity: 0.9;
+      font-weight: 400;
+    }
+    .site-header .version-badge {
+      display: inline-block;
+      margin-top: 1rem;
+      background: rgba(255,255,255,0.15);
+      padding: 0.25rem 0.75rem;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      backdrop-filter: blur(4px);
+    }
+
+    /* ── Layout ── */
+    .page-wrapper {
+      display: flex;
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+
+    /* ── Sidebar Nav ── */
+    .sidebar {
+      width: 260px;
+      min-width: 260px;
+      padding: 1.5rem 1rem;
+      border-right: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      background: var(--bg-alt);
+    }
+    .sidebar h3 {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-light);
+      margin: 1.5rem 0 0.5rem;
+    }
+    .sidebar h3:first-child { margin-top: 0; }
+    .sidebar a {
+      display: block;
+      padding: 0.35rem 0.75rem;
+      color: var(--text);
+      text-decoration: none;
+      font-size: 0.9rem;
+      border-radius: 6px;
+      transition: background 0.15s, color 0.15s;
+    }
+    .sidebar a:hover {
+      background: var(--primary-light);
+      color: var(--primary-dark);
+    }
+    .sidebar a.sub {
+      padding-left: 1.5rem;
+      font-size: 0.82rem;
+      color: var(--text-light);
+    }
+    .sidebar a.sub:hover { color: var(--primary-dark); }
+
+    /* ── Main Content ── */
+    .main-content {
+      flex: 1;
+      min-width: 0;
+      padding: 2.5rem 3rem 4rem;
+    }
+
+    /* ── Section Styles ── */
+    .doc-section {
+      margin-bottom: 4rem;
+      padding-bottom: 3rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .doc-section:last-child { border-bottom: none; }
+
+    .doc-section h2 {
+      font-size: 1.85rem;
+      font-weight: 700;
+      color: var(--primary-dark);
+      margin-bottom: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 3px solid var(--primary);
+    }
+    .doc-section h3 {
+      font-size: 1.3rem;
+      font-weight: 600;
+      color: var(--text);
+      margin: 2rem 0 0.75rem;
+    }
+    .doc-section h4 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--text);
+      margin: 1.25rem 0 0.5rem;
+    }
+    .doc-section h5 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin: 1rem 0 0.35rem;
+    }
+    .doc-section p {
+      margin-bottom: 0.75rem;
+    }
+    .doc-section ul, .doc-section ol {
+      margin: 0.5rem 0 1rem 1.5rem;
+    }
+    .doc-section li {
+      margin-bottom: 0.4rem;
+    }
+
+    /* ── Code ── */
+    code {
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      background: #f1f5f9;
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+      font-size: 0.88em;
+      color: #be185d;
+    }
+    pre.code-block {
+      background: #1e293b;
+      color: #e2e8f0;
+      padding: 1rem 1.25rem;
+      border-radius: var(--radius);
+      overflow-x: auto;
+      margin: 0.75rem 0 1rem;
+      font-size: 0.88rem;
+      line-height: 1.6;
+    }
+    pre.code-block code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+    }
+
+    /* ── Keyboard shortcuts ── */
+    kbd {
+      display: inline-block;
+      padding: 0.15em 0.5em;
+      font-family: inherit;
+      font-size: 0.85em;
+      color: var(--text);
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      box-shadow: 0 1px 0 #cbd5e1;
+    }
+
+    /* ── Tables ── */
+    .feature-table, .tools-table, .requirements-table, .doc-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 0.75rem 0 1.25rem;
+      font-size: 0.92rem;
+    }
+    .feature-table th, .tools-table th, .requirements-table th, .doc-table th {
+      background: var(--bg-alt);
+      font-weight: 600;
+      text-align: left;
+      padding: 0.65rem 1rem;
+      border-bottom: 2px solid var(--primary);
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: var(--text-light);
+    }
+    .feature-table td, .tools-table td, .requirements-table td, .doc-table td {
+      padding: 0.6rem 1rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    .feature-table tr:hover, .tools-table tr:hover, .requirements-table tr:hover, .doc-table tr:hover {
+      background: #f8fafc;
+    }
+
+    /* ── Info / Tip / Warning boxes ── */
+    .info-box, .tip-box {
+      padding: 1rem 1.25rem;
+      border-radius: var(--radius);
+      margin: 1rem 0;
+      font-size: 0.93rem;
+    }
+    .info-box {
+      background: var(--primary-light);
+      border-left: 4px solid var(--primary);
+    }
+    .info-box--tip, .tip-box {
+      background: var(--accent-light);
+      border-left: 4px solid var(--accent);
+    }
+    .info-box--warning {
+      background: var(--warning-light);
+      border-left: 4px solid var(--warning);
+    }
+    .info-box p, .tip-box p { margin-bottom: 0.4rem; }
+    .info-box p:last-child, .tip-box p:last-child { margin-bottom: 0; }
+    .info-box ul { margin: 0.5rem 0 0 1.25rem; }
+
+    /* ── Feature cards ── */
+    .feature-card {
+      background: var(--bg-alt);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.5rem;
+      margin: 1rem 0;
+    }
+    .feature-card h4 {
+      margin-top: 0;
+      color: var(--primary-dark);
+    }
+    .feature-card ul { margin-left: 1.25rem; }
+
+    /* ── Feature grid (Getting Started overview) ── */
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1rem;
+      margin: 1.25rem 0;
+    }
+    .feature-grid .feature-card {
+      margin: 0;
+    }
+    .feature-grid .feature-card h4 {
+      font-size: 1rem;
+      margin-bottom: 0.4rem;
+    }
+
+    /* ── Panel cards (Getting Started) ── */
+    .panels-overview {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1rem;
+      margin: 1.25rem 0;
+    }
+    .panel-card {
+      background: var(--bg-alt);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.5rem;
+    }
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.5rem;
+    }
+    .panel-header h4 { margin: 0; color: var(--primary-dark); }
+    .panel-header .shortcut { white-space: nowrap; }
+
+    /* ── Steps / Workflow ── */
+    .step, .workflow-step {
+      display: flex;
+      gap: 1rem;
+      margin: 1.25rem 0;
+      align-items: flex-start;
+    }
+    .step-number {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      min-width: 32px;
+      background: var(--primary);
+      color: #fff;
+      border-radius: 50%;
+      font-weight: 700;
+      font-size: 0.9rem;
+    }
+    .step-content, .workflow-step > div {
+      flex: 1;
+    }
+    .step-content h4, .workflow-step h4 {
+      margin-top: 0;
+    }
+
+    /* ── Examples list (Getting Started) ── */
+    .example {
+      margin: 1rem 0;
+      padding: 1rem 1.25rem;
+      background: var(--bg-alt);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+    }
+    .example-prompt {
+      margin-bottom: 0.4rem;
+    }
+    .prompt-label {
+      font-weight: 600;
+      font-size: 0.85rem;
+      color: var(--text-light);
+      margin-right: 0.5rem;
+    }
+    .prompt-text {
+      font-style: italic;
+      color: var(--primary-dark);
+    }
+    .example-desc {
+      font-size: 0.92rem;
+      margin: 0;
+    }
+
+    /* ── Kanban diagram ── */
+    .kanban-diagram {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin: 0.75rem 0 1rem;
+      flex-wrap: wrap;
+    }
+    .kanban-col {
+      display: inline-block;
+      padding: 0.4rem 1rem;
+      background: var(--primary-light);
+      color: var(--primary-dark);
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+    .kanban-arrow {
+      color: var(--text-light);
+      font-size: 1.2rem;
+    }
+
+    /* ── Section intro ── */
+    .section-intro {
+      font-size: 1.05rem;
+      color: var(--text);
+      margin-bottom: 1.5rem;
+    }
+
+    /* ── Requirements list ── */
+    .requirement-list { margin: 1rem 0; }
+
+    /* ── Footer ── */
+    .site-footer {
+      text-align: center;
+      padding: 2rem;
+      background: var(--bg-alt);
+      border-top: 1px solid var(--border);
+      font-size: 0.85rem;
+      color: var(--text-light);
+    }
+
+    /* ── Print styles ── */
+    @media print {
+      .sidebar { display: none; }
+      .main-content { padding: 1rem; }
+      .site-header { padding: 1.5rem; }
+      .doc-section { page-break-inside: avoid; }
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 900px) {
+      .page-wrapper { flex-direction: column; }
+      .sidebar {
+        width: 100%;
+        min-width: 100%;
+        height: auto;
+        position: static;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+        padding: 1rem;
+      }
+      .main-content { padding: 1.5rem 1rem; }
+      .feature-grid, .panels-overview {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════════ -->
+<!--  HEADER                                             -->
+<!-- ════════════════════════════════════════════════════ -->
+<header class="site-header">
+  <h1>Clarion.Assistant</h1>
+  <div class="subtitle">AI-Powered Development for the Clarion IDE</div>
+  <div class="version-badge">User Guide &middot; v1.0</div>
+</header>
+
+<!-- ════════════════════════════════════════════════════ -->
+<!--  PAGE WRAPPER                                       -->
+<!-- ════════════════════════════════════════════════════ -->
+<div class="page-wrapper">
+
+  <!-- ── Sidebar Navigation ── -->
+  <nav class="sidebar">
+    <h3>Getting Started</h3>
+    <a href="#getting-started">Overview</a>
+    <a href="#getting-started-requirements" class="sub">System Requirements</a>
+    <a href="#getting-started-installation" class="sub">Installation</a>
+    <a href="#getting-started-first-launch" class="sub">First Launch</a>
+    <a href="#getting-started-first-conversation" class="sub">Your First Conversation</a>
+
+    <h3>Claude Chat Terminal</h3>
+    <a href="#claude-chat">Overview</a>
+    <a href="#claude-chat" class="sub">Solution Bar</a>
+    <a href="#claude-chat" class="sub">Terminal Toolbar</a>
+    <a href="#claude-chat" class="sub">What Claude Can Do</a>
+    <a href="#claude-chat" class="sub">Example Conversations</a>
+    <a href="#claude-chat" class="sub">Settings</a>
+
+    <h3>Class Helper</h3>
+    <a href="#class-helper">Overview</a>
+    <a href="#class-helper" class="sub">Toolbar Reference</a>
+    <a href="#class-helper" class="sub">Tree Navigation</a>
+    <a href="#class-helper" class="sub">Typical Workflows</a>
+
+    <h3>Agent Panel &amp; Task Board</h3>
+    <a href="#agent-panel">Overview</a>
+    <a href="#agent-panel-overview" class="sub">Agent Panel</a>
+    <a href="#task-lifecycle-board" class="sub">Task Lifecycle Board</a>
+    <a href="#typical-team-workflow" class="sub">Team Workflow</a>
+
+    <h3>LSP Integration</h3>
+    <a href="#lsp-integration">Overview</a>
+    <a href="#lsp-integration" class="sub">Capabilities</a>
+    <a href="#lsp-integration" class="sub">How It Works</a>
+
+    <h3>Reference</h3>
+    <a href="#mcp-tools">MCP Tools Reference</a>
+    <a href="#tools-ide-context" class="sub">IDE Context</a>
+    <a href="#tools-editor-operations" class="sub">Editor Operations</a>
+    <a href="#tools-app-tree" class="sub">Application Tree</a>
+    <a href="#tools-file-system" class="sub">File System</a>
+    <a href="#tools-class-intelligence" class="sub">Class Intelligence</a>
+    <a href="#tools-codegraph" class="sub">CodeGraph</a>
+    <a href="#tools-lsp" class="sub">Language Server</a>
+
+    <h3>Acknowledgments</h3>
+    <a href="#acknowledgments">Credits &amp; Thanks</a>
+  </nav>
+
+  <!-- ── Main Content ── -->
+  <main class="main-content">
+
+<!-- ════════════════════════════════════════════════════ -->
+<!--  SECTION 1: GETTING STARTED                         -->
+<!-- ════════════════════════════════════════════════════ -->
+<section id="getting-started" class="doc-section">
+  <h2>Getting Started</h2>
+
+  <div class="section-intro">
+    <p>
+      Clarion.Assistant is an AI-powered addin that embeds Claude Code directly into your Clarion IDE,
+      giving you an intelligent coding assistant that understands your entire codebase. This guide walks
+      you through requirements, installation, and your first launch.
+    </p>
+  </div>
+
+  <h3 id="getting-started-overview">Overview</h3>
+
+  <p>
+    Clarion.Assistant bridges the gap between AI-assisted development and the Clarion IDE. Rather than
+    switching between your editor and an external AI tool, the assistant lives inside your IDE with
+    full awareness of your open files, solution structure, and class hierarchies.
+  </p>
+
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h4>Embedded AI Terminal</h4>
+      <p>
+        A Claude Code terminal panel docked directly in the IDE. It sees your active file, cursor
+        position, and selected text &mdash; no copy-pasting context back and forth.
+      </p>
+    </div>
+
+    <div class="feature-card">
+      <h4>Real-Time Code Intelligence</h4>
+      <p>
+        Cross-file go-to-definition, find-all-references, and hover information powered by the
+        Clarion Language Server. Ask the AI about any symbol and it can navigate you there instantly.
+      </p>
+    </div>
+
+    <div class="feature-card">
+      <h4>Class Helper</h4>
+      <p>
+        Analyze Clarion CLASS declarations in <code>.inc</code> files, compare them against
+        <code>.clw</code> implementations, and generate missing method stubs automatically.
+      </p>
+    </div>
+
+    <div class="feature-card">
+      <h4>CodeGraph Indexing</h4>
+      <p>
+        Your entire solution is indexed into a SQL-queryable database. Ask questions like
+        &ldquo;who calls this procedure?&rdquo; or &ldquo;show me dead code&rdquo; and get
+        immediate, accurate answers.
+      </p>
+    </div>
+
+    <div class="feature-card">
+      <h4>Agent Monitoring</h4>
+      <p>
+        Monitor AI agent activity, review task progress, and coordinate work across multiple
+        terminals through the MultiTerminal integration.
+      </p>
+    </div>
+
+    <div class="feature-card">
+      <h4>Task Lifecycle Board</h4>
+      <p>
+        A visual Kanban board for managing development tasks from creation through completion,
+        integrated directly into the IDE workflow.
+      </p>
+    </div>
+  </div>
+
+  <h3 id="getting-started-requirements">System Requirements</h3>
+
+  <div class="requirement-list">
+    <table class="requirements-table">
+      <thead>
+        <tr>
+          <th>Component</th>
+          <th>Requirement</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Clarion IDE</td>
+          <td>Version 11 or later</td>
+          <td>Auto-detected during installation</td>
+        </tr>
+        <tr>
+          <td>Operating System</td>
+          <td>Windows 10 or Windows 11</td>
+          <td>&mdash;</td>
+        </tr>
+        <tr>
+          <td>WebView2 Runtime</td>
+          <td>Required</td>
+          <td>Bundled with Windows 11; download separately for Windows 10</td>
+        </tr>
+        <tr>
+          <td>PowerShell</td>
+          <td>PowerShell 7 preferred</td>
+          <td>Falls back to <code>powershell.exe</code> if <code>pwsh.exe</code> is not found</td>
+        </tr>
+        <tr>
+          <td>Claude Code CLI</td>
+          <td>Required, must be in PATH</td>
+          <td>Install via <code>npm install -g @anthropic-ai/claude</code></td>
+        </tr>
+        <tr>
+          <td>MultiTerminal</td>
+          <td>Optional</td>
+          <td>Required only for team collaboration and agent monitoring features</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="info-box info-box--tip">
+    <strong>Tip:</strong> To verify that Claude Code is installed and accessible, open a terminal and
+    run <code>claude --version</code>. You should see a version number in the output. If not,
+    ensure Node.js is installed first, then run the npm install command above.
+  </div>
+
+  <h3 id="getting-started-installation">Installation</h3>
+
+  <p>
+    Clarion.Assistant is deployed as a single file &mdash; <code>ClarionAssistant.dll</code> &mdash;
+    placed into the Clarion IDE's AddIns directory. No separate installer or configuration wizard
+    is required.
+  </p>
+
+  <div class="step">
+    <span class="step-number">1</span>
+    <div class="step-content">
+      <h4>Deploy the DLL</h4>
+      <p>
+        Copy <code>ClarionAssistant.dll</code> to your Clarion IDE's AddIns folder. The typical
+        path is:
+      </p>
+      <pre class="code-block"><code>C:\Program Files\SoftVelocity\ClarionXX\Bin\AddIns\ClarionAssistant.dll</code></pre>
+      <p>
+        Replace <code>XX</code> with your Clarion version number (e.g., <code>Clarion11</code>).
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <span class="step-number">2</span>
+    <div class="step-content">
+      <h4>Launch the Clarion IDE</h4>
+      <p>
+        Start (or restart) the Clarion IDE. The addin is loaded automatically when the IDE
+        initializes. You will see new menu entries under the <strong>Tools</strong> menu.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <span class="step-number">3</span>
+    <div class="step-content">
+      <h4>Automatic First-Run Configuration</h4>
+      <p>On first launch, Clarion.Assistant performs the following setup automatically:</p>
+      <ul>
+        <li>
+          <strong>Clarion version detection</strong> &mdash; Scans for installed Clarion versions
+          and selects the appropriate environment.
+        </li>
+        <li>
+          <strong>MCP configuration</strong> &mdash; Generates the Model Context Protocol
+          configuration file at:
+          <pre class="code-block"><code>%APPDATA%\ClarionAssistant\mcp-config.json</code></pre>
+          This file tells Claude Code how to communicate with the IDE tools.
+        </li>
+        <li>
+          <strong>Prompt file deployment</strong> &mdash; Creates a <code>.claude/</code> folder
+          in your working directory with a prompt file that configures Claude's behavior for
+          Clarion development.
+        </li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="info-box">
+    <strong>Note:</strong> The auto-generated configuration files are safe to inspect and customize.
+    If you move your Clarion installation or upgrade to a new version, delete the MCP configuration
+    file and restart the IDE to trigger re-detection.
+  </div>
+
+  <h3 id="getting-started-first-launch">First Launch</h3>
+
+  <p>
+    After installation, Clarion.Assistant adds three main panels to the IDE. Each can be opened from
+    the <strong>Tools</strong> menu or with a keyboard shortcut.
+  </p>
+
+  <div class="panels-overview">
+    <div class="panel-card">
+      <div class="panel-header">
+        <h4>Claude Chat</h4>
+        <span class="shortcut"><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>C</kbd></span>
+      </div>
+      <p>
+        The primary AI assistant panel. An embedded Claude Code terminal with full awareness
+        of your IDE state. It can read your active file, navigate to specific lines, make edits,
+        analyze classes, and query your entire codebase.
+      </p>
+    </div>
+
+    <div class="panel-card">
+      <div class="panel-header">
+        <h4>Agent Panel</h4>
+        <span class="shortcut"><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>A</kbd></span>
+      </div>
+      <p>
+        Monitors AI agent activity across your development environment. View active tasks, track
+        progress, and coordinate with other terminals when using MultiTerminal.
+      </p>
+    </div>
+
+    <div class="panel-card">
+      <div class="panel-header">
+        <h4>Class Helper</h4>
+        <span class="shortcut"><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>M</kbd></span>
+      </div>
+      <p>
+        A dedicated tool for working with Clarion CLASS structures. Analyze declarations in
+        <code>.inc</code> files, compare against implementations in <code>.clw</code> files,
+        and generate missing method stubs with a single click.
+      </p>
+    </div>
+  </div>
+
+  <h3 id="getting-started-first-conversation">Your First Conversation</h3>
+
+  <p>
+    Once you have the Claude Chat panel open, try these common tasks to get familiar:
+  </p>
+
+  <div class="example">
+    <div class="example-prompt">
+      <span class="prompt-label">You type:</span>
+      <code class="prompt-text">"What file do I have open?"</code>
+    </div>
+    <p class="example-desc">
+      The assistant reads your active editor tab and reports the file name, path, and a summary
+      of its contents. This confirms that IDE integration is working.
+    </p>
+  </div>
+
+  <div class="example">
+    <div class="example-prompt">
+      <span class="prompt-label">You type:</span>
+      <code class="prompt-text">"Analyze the class in MyClass.inc"</code>
+    </div>
+    <p class="example-desc">
+      The assistant parses the CLASS declaration, lists all methods and data members, and can
+      check whether each method has a corresponding implementation in the <code>.clw</code> file.
+    </p>
+  </div>
+
+  <div class="example">
+    <div class="example-prompt">
+      <span class="prompt-label">You type:</span>
+      <code class="prompt-text">"Who calls the UpdateRecord procedure?"</code>
+    </div>
+    <p class="example-desc">
+      Using CodeGraph, the assistant queries the indexed database and returns every call site
+      across your entire solution, with file paths and line numbers.
+    </p>
+  </div>
+
+  <div class="example">
+    <div class="example-prompt">
+      <span class="prompt-label">You type:</span>
+      <code class="prompt-text">"Open Main.clw and go to line 150"</code>
+    </div>
+    <p class="example-desc">
+      The assistant opens the file directly in your Clarion editor and positions the cursor at
+      line 150.
+    </p>
+  </div>
+
+  <div class="info-box info-box--tip">
+    <strong>Tip:</strong> The assistant is context-aware. If you select a block of code in the
+    editor before asking a question, the assistant automatically sees your selection. Try selecting
+    a procedure and asking <code>"Explain this code"</code> or <code>"Find any bugs here"</code>.
+  </div>
+
+  <div class="info-box info-box--warning">
+    <strong>Important:</strong> Clarion.Assistant requires an active Anthropic API key configured
+    in your Claude Code CLI. If you see authentication errors in the chat panel, run
+    <code>claude auth</code> in an external terminal to configure your credentials.
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════ -->
+<!--  SECTION 2: CLAUDE CHAT TERMINAL                    -->
+<!-- ════════════════════════════════════════════════════ -->
+<section id="claude-chat" class="doc-section">
+  <h2>Claude Chat Terminal</h2>
+  <p>
+    The Claude Chat Terminal is the centerpiece of Clarion.Assistant. It embeds a fully functional
+    Claude Code session directly inside the Clarion IDE, connected to over 30 MCP tools that give
+    Claude real-time awareness of your editor, your solution, and your codebase. You can ask Claude
+    to read your open file, navigate to a line, analyze a class hierarchy, or refactor code &mdash; all
+    without leaving the IDE.
+  </p>
+
+  <h3>Solution Bar</h3>
+  <p>
+    The Solution Bar runs across the top of the Claude Chat panel. It controls which Clarion
+    environment and solution Claude operates against.
+  </p>
+
+  <table class="feature-table">
+    <thead>
+      <tr>
+        <th>Control</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Version Selector</strong></td>
+        <td>
+          Dropdown listing installed Clarion versions (11, 12, etc.). Clarion.Assistant
+          auto-detects which versions are present on your system.
+        </td>
+      </tr>
+      <tr>
+        <td><strong>Solution Picker</strong></td>
+        <td>
+          A dropdown showing up to 10 recently opened solutions, plus a browse button to
+          locate a <code>.sln</code> file manually. The currently open solution in the IDE
+          is auto-detected and pre-selected.
+        </td>
+      </tr>
+      <tr>
+        <td><strong>Refresh</strong></td>
+        <td>
+          Forces re-detection of the IDE's currently open solution. Use this if you opened
+          or switched solutions and the picker has not updated.
+        </td>
+      </tr>
+      <tr>
+        <td><strong>Full Index</strong></td>
+        <td>
+          Triggers a complete CodeGraph indexing pass over the entire solution. This parses
+          every source file and builds a <code>.codegraph.db</code> SQLite database containing
+          all symbols, relationships, and call chains.
+        </td>
+      </tr>
+      <tr>
+        <td><strong>Update</strong></td>
+        <td>
+          Runs an incremental index refresh. Only files changed since the last full index
+          are re-processed. Significantly faster for day-to-day use.
+        </td>
+      </tr>
+      <tr>
+        <td><strong>Index Status</strong></td>
+        <td>
+          Displays the date and time of the last successful index. If the solution has never
+          been indexed, this area prompts you to run a full index.
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="info-box info-box--tip">
+    <strong>Tip:</strong> Run a <strong>Full Index</strong> once when you first open a solution,
+    then use <strong>Update</strong> periodically as you make changes. Claude's CodeGraph queries
+    are only as current as the last index.
+  </div>
+
+  <h3>Terminal Toolbar</h3>
+
+  <table class="feature-table">
+    <thead>
+      <tr>
+        <th>Button</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>New Chat</strong></td>
+        <td>
+          Stops the current Claude Code session and starts a fresh one. Use this when you
+          want to change topics or clear the conversation context.
+        </td>
+      </tr>
+      <tr>
+        <td><strong>Settings</strong></td>
+        <td>
+          Opens the configuration dialog where you can adjust font size, set the working
+          directory, and configure MultiTerminal integration.
+        </td>
+      </tr>
+      <tr>
+        <td><strong>Task Board</strong></td>
+        <td>
+          Opens the Task Lifecycle Board for the currently active task. Only functional when
+          MultiTerminal integration is enabled and a task is active.
+        </td>
+      </tr>
+      <tr>
+        <td><strong>Status Indicator</strong></td>
+        <td>
+          Shows the health of the MCP server connection and the Claude Code process. Green
+          indicates everything is connected. Yellow or red signals a connection issue.
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>The Terminal</h3>
+  <p>
+    The terminal area is a full terminal emulator powered by xterm.js. It renders inside a WebView2
+    control and connects to a real Windows ConPTY process running the Claude Code CLI.
+  </p>
+
+  <div class="feature-card">
+    <h4>Full Terminal Emulation</h4>
+    <p>
+      This is not a simplified chat window. It is a complete terminal that supports ANSI
+      colors, cursor positioning, scrollback history, text selection, and copy/paste. Claude
+      Code renders with full formatting &mdash; markdown, code blocks, and progress indicators.
+    </p>
+  </div>
+
+  <div class="feature-card">
+    <h4>IDE-Aware MCP Tools</h4>
+    <p>
+      Claude has direct access to the Clarion IDE through over 30 MCP tools. These tools let
+      Claude interact with the editor, the file system, the application tree, the CodeGraph
+      database, and the Language Server.
+    </p>
+  </div>
+
+  <h3>What Claude Can Do</h3>
+
+  <div class="feature-card">
+    <h4>Editor Operations</h4>
+    <ul>
+      <li>Read your currently open file, including unsaved changes</li>
+      <li>Get the selected text or the word under your cursor</li>
+      <li>Open any file and navigate to a specific line</li>
+      <li>Insert, replace, or delete text at precise locations</li>
+      <li>Toggle Clarion line comments on selected ranges</li>
+      <li>Save, close, undo, and redo editor actions</li>
+    </ul>
+  </div>
+
+  <div class="feature-card">
+    <h4>Clarion Class Intelligence</h4>
+    <ul>
+      <li>Parse <code>.inc</code> files to extract CLASS definitions, methods, and data members</li>
+      <li>Compare <code>.inc</code> declarations against <code>.clw</code> implementations</li>
+      <li>Generate method stubs or complete <code>.clw</code> implementation files</li>
+    </ul>
+  </div>
+
+  <div class="feature-card">
+    <h4>CodeGraph Queries</h4>
+    <ul>
+      <li>Find all callers or callees of any procedure</li>
+      <li>Trace class inheritance and interface implementation chains</li>
+      <li>Identify dead code (symbols with no incoming references)</li>
+      <li>Perform impact analysis (&ldquo;if I change X, what breaks?&rdquo;)</li>
+    </ul>
+  </div>
+
+  <div class="feature-card">
+    <h4>Language Server Integration</h4>
+    <ul>
+      <li>Go to definition for any symbol, across files and projects</li>
+      <li>Find all references to a symbol across the entire workspace</li>
+      <li>Get type information, signatures, and documentation via hover</li>
+    </ul>
+  </div>
+
+  <h3>Example Conversations</h3>
+
+  <table class="feature-table">
+    <thead>
+      <tr>
+        <th>You Say</th>
+        <th>What Claude Does</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>"What file do I have open?"</td>
+        <td>Reads the active editor file and reports the path and content summary.</td>
+      </tr>
+      <tr>
+        <td>"Open CustomerManager.inc and show me the class"</td>
+        <td>Locates the file, opens it in the IDE editor, and analyzes the CLASS definition.</td>
+      </tr>
+      <tr>
+        <td>"Are there any missing method implementations?"</td>
+        <td>Runs a sync check comparing <code>.inc</code> declarations against the <code>.clw</code> file.</td>
+      </tr>
+      <tr>
+        <td>"Who calls the SaveRecord procedure?"</td>
+        <td>Queries the CodeGraph database and lists every caller with file and line number.</td>
+      </tr>
+      <tr>
+        <td>"Go to line 142"</td>
+        <td>Navigates the editor cursor to line 142 of the active file.</td>
+      </tr>
+      <tr>
+        <td>"Comment out lines 50 through 65"</td>
+        <td>Toggles Clarion line comments (<code>!</code>) on lines 50&ndash;65.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="info-box info-box--tip">
+    <strong>Tip:</strong> You do not need to memorize tool names. Just ask Claude what you want
+    in plain language and Claude will select the right tools automatically.
+  </div>
+
+  <h3>Settings Dialog</h3>
+
+  <table class="feature-table">
+    <thead>
+      <tr>
+        <th>Setting</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Font Size</strong></td>
+        <td>Adjusts the terminal font size. Default is appropriate for most displays.</td>
+      </tr>
+      <tr>
+        <td><strong>Working Directory</strong></td>
+        <td>Sets the initial working directory for the Claude Code process.</td>
+      </tr>
+      <tr>
+        <td><strong>MultiTerminal</strong></td>
+        <td>Enable or disable MultiTerminal integration for task management and team messaging.</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ════════════════════════════════════════════════════ -->
+<!--  SECTION 3: CLASS HELPER                            -->
+<!-- ════════════════════════════════════════════════════ -->
+<section id="class-helper" class="doc-section">
+  <h2>Class Helper</h2>
+  <p>
+    The Class Helper panel provides Clarion CLASS file analysis and code generation,
+    bridging the gap between <code>.inc</code> declaration files and <code>.clw</code>
+    implementation files. Access it via <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd> or
+    from the <strong>Tools</strong> menu.
+  </p>
+
+  <h3>Understanding Clarion Class Files</h3>
+  <p>Clarion uses a paired-file convention for object-oriented code:</p>
+  <ul>
+    <li>
+      <code>.inc</code> files contain CLASS declarations &mdash; method prototypes and data
+      member definitions that describe the class interface.
+    </li>
+    <li>
+      <code>.clw</code> files contain the actual method implementations, structured with
+      <code>MEMBER</code>, <code>INCLUDE</code>, and <code>MAP</code> directives.
+    </li>
+  </ul>
+  <p>
+    Class Helper understands both file types and automates the tedious work of keeping
+    them in sync.
+  </p>
+
+  <h3>Panel Layout</h3>
+  <p>The Class Helper window is divided into two resizable panes:</p>
+  <ul>
+    <li>
+      <strong>Class Tree (top)</strong> &mdash; A hierarchical tree view showing parsed class
+      structures. Classes appear as top-level nodes, with methods and data members as children.
+    </li>
+    <li>
+      <strong>Output Pane (bottom)</strong> &mdash; A rich-text log displaying operation
+      results, error messages, and generated code summaries.
+    </li>
+  </ul>
+  <p>A status bar along the bottom provides brief feedback on the current operation.</p>
+
+  <h3>Toolbar Reference</h3>
+  <table class="feature-table">
+    <thead>
+      <tr>
+        <th>Button</th>
+        <th>Description</th>
+        <th>When to Use</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Analyze</strong></td>
+        <td>Parses the current <code>.inc</code> or <code>.clw</code> file for CLASS definitions. Populates the tree with class names, methods, and data members.</td>
+        <td>When you want to explore or understand a class structure.</td>
+      </tr>
+      <tr>
+        <td><strong>Generate Stubs</strong></td>
+        <td>Compares <code>.inc</code> declarations against <code>.clw</code> implementations and generates method stubs for any missing methods.</td>
+        <td>After adding new method declarations to a <code>.inc</code> file.</td>
+      </tr>
+      <tr>
+        <td><strong>Sync Check</strong></td>
+        <td>
+          Bidirectional comparison reporting:
+          <ul>
+            <li><strong>Missing methods</strong> &mdash; declared but not implemented</li>
+            <li><strong>Orphaned methods</strong> &mdash; implemented but no longer declared</li>
+          </ul>
+        </td>
+        <td>For auditing class consistency and finding dead code.</td>
+      </tr>
+      <tr>
+        <td><strong>New .clw</strong></td>
+        <td>Generates a complete <code>.clw</code> implementation file with proper <code>MEMBER</code>/<code>INCLUDE</code>/<code>MAP</code> structure.</td>
+        <td>When starting a brand-new class.</td>
+      </tr>
+      <tr>
+        <td><strong>Start MCP</strong></td>
+        <td>Toggles the Class Helper's embedded MCP server so Claude Code can invoke class tools directly.</td>
+        <td>When using Claude Code alongside the IDE.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Tree Navigation</h3>
+  <ul>
+    <li><strong>Double-click</strong> any node to jump directly to that line in the editor.</li>
+    <li><strong>Class nodes</strong> display the class name and inheritance relationships.</li>
+    <li><strong>Method nodes</strong> show the method name along with parameter signatures.</li>
+    <li><strong>Data member nodes</strong> display the member name and its declared type.</li>
+  </ul>
+
+  <div class="info-box info-box--tip">
+    <strong>Tip:</strong> After running <strong>Sync Check</strong>, the output pane lists missing and orphaned methods. Use this as a checklist to clean up your class files.
+  </div>
+
+  <h3>Typical Workflows</h3>
+
+  <h4>Starting a New Class</h4>
+  <div class="workflow-step">
+    <span class="step-number">1</span>
+    <div><p>Write your CLASS declaration in a new <code>.inc</code> file.</p></div>
+  </div>
+  <div class="workflow-step">
+    <span class="step-number">2</span>
+    <div><p>Open the <code>.inc</code> file and click <strong>Analyze</strong> to verify the class tree.</p></div>
+  </div>
+  <div class="workflow-step">
+    <span class="step-number">3</span>
+    <div><p>Click <strong>New .clw</strong> to generate the complete implementation file.</p></div>
+  </div>
+  <div class="workflow-step">
+    <span class="step-number">4</span>
+    <div><p>Open the generated <code>.clw</code> file and fill in the method bodies.</p></div>
+  </div>
+
+  <h4>Adding Methods to an Existing Class</h4>
+  <div class="workflow-step">
+    <span class="step-number">1</span>
+    <div><p>Add new METHOD declarations to your <code>.inc</code> file.</p></div>
+  </div>
+  <div class="workflow-step">
+    <span class="step-number">2</span>
+    <div><p>With the <code>.inc</code> open, click <strong>Generate Stubs</strong>. Only missing methods are appended.</p></div>
+  </div>
+  <div class="workflow-step">
+    <span class="step-number">3</span>
+    <div><p>Open the <code>.clw</code> file and implement the newly generated stubs.</p></div>
+  </div>
+
+  <h4>Auditing Class Consistency</h4>
+  <div class="workflow-step">
+    <span class="step-number">1</span>
+    <div><p>Open either the <code>.inc</code> or <code>.clw</code> file and click <strong>Sync Check</strong>.</p></div>
+  </div>
+  <div class="workflow-step">
+    <span class="step-number">2</span>
+    <div><p>Review the output. <strong>Missing methods</strong> need implementations. <strong>Orphaned methods</strong> may be dead code to remove.</p></div>
+  </div>
+
+  <div class="info-box info-box--tip">
+    <strong>Tip:</strong> The <strong>Analyze</strong> button works on both <code>.inc</code> and
+    <code>.clw</code> files. Analyzing the <code>.inc</code> shows the declared interface;
+    analyzing the <code>.clw</code> shows what is actually implemented.
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════ -->
+<!--  SECTION 4: AGENT PANEL & TASK BOARD                -->
+<!-- ════════════════════════════════════════════════════ -->
+<section id="agent-panel" class="doc-section">
+  <h2>Agent Panel &amp; Task Board</h2>
+
+  <div class="info-box">
+    <strong>Requirement:</strong> These features require a running
+    <strong>MultiTerminal</strong> instance (REST API on
+    <code>localhost:5050</code>) for team collaboration and task management.
+  </div>
+
+  <h3 id="agent-panel-overview">Agent Panel <span style="font-weight:400;font-size:0.85em;color:var(--text-light)">(<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>A</kbd>)</span></h3>
+
+  <p>
+    The Agent Panel is a dockable IDE pad that gives you a live view of every
+    MultiTerminal agent connected to your workspace.
+  </p>
+
+  <div class="feature-card">
+    <h4>Live Agent List</h4>
+    <table class="doc-table">
+      <thead>
+        <tr>
+          <th>Column</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Agent Name</strong></td>
+          <td>The registered name of the MultiTerminal agent.</td>
+        </tr>
+        <tr>
+          <td><strong>Active Task</strong></td>
+          <td>The title of the task the agent is working on, or <em>(idle)</em> if none.</td>
+        </tr>
+        <tr>
+          <td><strong>Status</strong></td>
+          <td>Current agent state &mdash; <em>active</em>, <em>idle</em>, or <em>offline</em>.</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      Agents with an active task are rendered in <strong>black</strong> text;
+      idle agents appear in gray.
+    </p>
+  </div>
+
+  <div class="feature-card">
+    <h4>Controls</h4>
+    <ul>
+      <li><strong>Refresh</strong> &mdash; Forces an immediate update, bypassing the polling interval.</li>
+      <li><strong>Open Board</strong> &mdash; Opens the Task Lifecycle Board for the selected agent's active task.</li>
+      <li><strong>Double-click a row</strong> &mdash; Same as Open Board.</li>
+    </ul>
+    <p>Auto-refreshes every 8 seconds (backs off to 15&ndash;30s on connection errors).</p>
+  </div>
+
+  <h3 id="task-lifecycle-board">Task Lifecycle Board</h3>
+
+  <p>
+    A floating, kanban-style window for visual task management. Open it from the Agent Panel
+    or the <strong>Task Board</strong> button in Claude Chat.
+  </p>
+
+  <div class="feature-card">
+    <h4>Board Layout</h4>
+    <p>Four kanban columns representing the lifecycle phases:</p>
+    <div class="kanban-diagram">
+      <span class="kanban-col">Planning</span>
+      <span class="kanban-arrow">&rarr;</span>
+      <span class="kanban-col">Coding</span>
+      <span class="kanban-arrow">&rarr;</span>
+      <span class="kanban-col">Testing</span>
+      <span class="kanban-arrow">&rarr;</span>
+      <span class="kanban-col">Done</span>
+    </div>
+    <ul>
+      <li>Checklist items appear as <strong>cards</strong> in their current column</li>
+      <li>Each column includes a <strong>phase notes</strong> section</li>
+      <li>Header shows: task title, description, priority, assignee, helpers</li>
+      <li>Footer shows: continuation notes for session handoff</li>
+    </ul>
+  </div>
+
+  <div class="feature-card">
+    <h4>Card Features</h4>
+    <h5>Drag-and-Drop</h5>
+    <p>Cards follow a state machine: <code>pending &rarr; coding &rarr; testing &rarr; done</code>,
+    with free back-and-forth between Coding and Testing.</p>
+
+    <h5>Inline Editing</h5>
+    <p>Click a card to edit its content directly on the board.</p>
+
+    <h5>Agent Assignment</h5>
+    <p>Individual cards can be assigned to a specific agent.</p>
+
+    <h5>Cycle Count</h5>
+    <p>Tracks how many times a card moves between Coding and Testing &mdash; a signal for items needing deeper investigation.</p>
+
+    <h5>Transition Notes</h5>
+    <p>Attach notes explaining why a card moved and what was tried, building a lightweight audit trail.</p>
+  </div>
+
+  <div class="feature-card">
+    <h4>Real-Time Updates</h4>
+    <ul>
+      <li><strong>Polling:</strong> Every 5 seconds, with exponential back-off on errors</li>
+      <li><strong>Change detection:</strong> Lightweight hash comparison minimizes UI redraws</li>
+      <li><strong>Minimized optimization:</strong> Polling paused when window is minimized</li>
+      <li><strong>Immediate refresh:</strong> After drag-drop or inline edits</li>
+    </ul>
+  </div>
+
+  <div class="feature-card">
+    <h4>Multi-Board Support</h4>
+    <ul>
+      <li>Multiple boards can be open simultaneously, one per task</li>
+      <li>Opening a board for an already-open task reuses the existing window</li>
+      <li>Theme (dark/light) synchronized across all boards</li>
+      <li>Window position and size remembered between sessions</li>
+    </ul>
+  </div>
+
+  <h3 id="typical-team-workflow">Typical Team Workflow</h3>
+
+  <div class="workflow-step">
+    <span class="step-number">1</span>
+    <div>
+      <h4>Create a Task</h4>
+      <p>A new task is created with a title, description, priority, and checklist items.</p>
+    </div>
+  </div>
+  <div class="workflow-step">
+    <span class="step-number">2</span>
+    <div>
+      <h4>Claim &amp; Plan</h4>
+      <p>An agent claims the task. Checklist items start in <strong>Planning</strong>.</p>
+    </div>
+  </div>
+  <div class="workflow-step">
+    <span class="step-number">3</span>
+    <div>
+      <h4>Code &amp; Test</h4>
+      <p>Items move through <strong>Coding</strong> and <strong>Testing</strong> with transition notes.</p>
+    </div>
+  </div>
+  <div class="workflow-step">
+    <span class="step-number">4</span>
+    <div>
+      <h4>Handle Regressions</h4>
+      <p>Items cycle back to <strong>Coding</strong> if issues are found. Cycle count increments.</p>
+    </div>
+  </div>
+  <div class="workflow-step">
+    <span class="step-number">5</span>
+    <div>
+      <h4>Session Handoff</h4>
+      <p>Continuation notes capture current state. The next agent picks up where the previous one left off.</p>
+    </div>
+  </div>
+  <div class="workflow-step">
+    <span class="step-number">6</span>
+    <div>
+      <h4>Monitor Progress</h4>
+      <p>The Agent Panel provides a real-time overview of every team member's activity.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════ -->
+<!--  SECTION 5: LSP INTEGRATION                         -->
+<!-- ════════════════════════════════════════════════════ -->
+<section id="lsp-integration" class="doc-section">
+  <h2>Language Server Integration</h2>
+
+  <p>
+    Clarion.Assistant includes integration with a Clarion Language Server Protocol (LSP) implementation,
+    bringing modern code intelligence features to the Clarion IDE. The LSP provides real-time,
+    compiler-grade analysis of your source code &mdash; enabling go-to-definition, find-references,
+    hover documentation, and symbol search across your entire workspace.
+  </p>
+
+  <div class="info-box info-box--tip">
+    <strong>Acknowledgment:</strong> The LSP integration in Clarion.Assistant was inspired by and builds upon
+    the pioneering work of <strong>Mark Sarson</strong>, who developed LSP support for Clarion in his
+    <a href="https://github.com/msarson/Clarion-Extension" target="_blank" style="color: var(--primary-dark); font-weight: 600;">Clarion Extension for VS Code</a>.
+    Mark's extension demonstrated that modern language intelligence features &mdash; IntelliSense,
+    go-to-definition, parameter hints, and more &mdash; could be brought to Clarion development.
+    His work laid the groundwork that made this integration possible. Special thanks to Mark for
+    his contributions to the Clarion developer community.
+  </div>
+
+  <h3>Capabilities</h3>
+
+  <div class="feature-grid">
+    <div class="feature-card">
+      <h4>Go to Definition</h4>
+      <p>
+        Jump directly to where any symbol is defined, even across files and projects. Select a
+        procedure name, variable, or class reference and Claude can navigate you to its declaration
+        instantly using <code>lsp_definition</code>.
+      </p>
+    </div>
+
+    <div class="feature-card">
+      <h4>Find All References</h4>
+      <p>
+        Locate every usage of a symbol across your entire workspace. Ask Claude &ldquo;where is
+        this used?&rdquo; and it queries <code>lsp_references</code> to return every call site,
+        assignment, and reference with file paths and line numbers.
+      </p>
+    </div>
+
+    <div class="feature-card">
+      <h4>Hover Information</h4>
+      <p>
+        Get type information, method signatures, and documentation for any symbol. Claude uses
+        <code>lsp_hover</code> to provide detailed context about variables, procedures, and
+        class members without you needing to find the declaration yourself.
+      </p>
+    </div>
+
+    <div class="feature-card">
+      <h4>Symbol Search</h4>
+      <p>
+        Search for symbols by name across the entire workspace with <code>lsp_find_symbol</code>,
+        or list all symbols in a specific file with <code>lsp_document_symbols</code>. Useful for
+        quickly locating procedures, classes, or variables when you know part of the name.
+      </p>
+    </div>
+  </div>
+
+  <h3>How It Works</h3>
+
+  <p>
+    The Language Server starts automatically when you select a solution in the Claude Chat panel.
+    It runs in the background, analyzing your Clarion source files and maintaining an up-to-date
+    model of your codebase.
+  </p>
+
+  <div class="feature-card">
+    <h4>LSP vs. CodeGraph</h4>
+    <p>
+      Clarion.Assistant offers two complementary code intelligence systems:
+    </p>
+    <table class="doc-table">
+      <thead>
+        <tr>
+          <th>Feature</th>
+          <th>LSP</th>
+          <th>CodeGraph</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Analysis type</strong></td>
+          <td>Real-time, live analysis of current source</td>
+          <td>Indexed snapshot of the codebase</td>
+        </tr>
+        <tr>
+          <td><strong>Best for</strong></td>
+          <td>Precise definitions, references, type info</td>
+          <td>Call chains, impact analysis, dead code detection</td>
+        </tr>
+        <tr>
+          <td><strong>Scope</strong></td>
+          <td>Current workspace</td>
+          <td>Entire solution (SQL-queryable)</td>
+        </tr>
+        <tr>
+          <td><strong>Update frequency</strong></td>
+          <td>Continuous (as you edit)</td>
+          <td>On-demand (Full Index / Update)</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      Claude uses both systems and chooses the best one for each query automatically. For simple
+      &ldquo;where is X defined?&rdquo; questions, the LSP is preferred. For complex cross-project
+      queries like &ldquo;what breaks if I change X?&rdquo;, CodeGraph is used.
+    </p>
+  </div>
+
+  <h3>Example Queries</h3>
+
+  <table class="feature-table">
+    <thead>
+      <tr>
+        <th>You Ask</th>
+        <th>LSP Tool Used</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>&ldquo;Where is this procedure defined?&rdquo;</td>
+        <td><code>lsp_definition</code> &mdash; jumps to the declaration</td>
+      </tr>
+      <tr>
+        <td>&ldquo;Who uses this variable?&rdquo;</td>
+        <td><code>lsp_references</code> &mdash; lists all usage sites</td>
+      </tr>
+      <tr>
+        <td>&ldquo;What type is this?&rdquo;</td>
+        <td><code>lsp_hover</code> &mdash; shows type and signature info</td>
+      </tr>
+      <tr>
+        <td>&ldquo;What procedures are in this file?&rdquo;</td>
+        <td><code>lsp_document_symbols</code> &mdash; lists all symbols</td>
+      </tr>
+      <tr>
+        <td>&ldquo;Find a procedure called UpdateCustomer&rdquo;</td>
+        <td><code>lsp_find_symbol</code> &mdash; searches by name</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ════════════════════════════════════════════════════ -->
+<!--  SECTION 6: MCP TOOLS REFERENCE                     -->
+<!-- ════════════════════════════════════════════════════ -->
+<section id="mcp-tools" class="doc-section">
+  <h2>MCP Tools Reference</h2>
+
+  <p>
+    When Claude runs inside Clarion.Assistant, it has access to a rich set of MCP (Model Context Protocol) tools
+    that directly interact with the Clarion IDE, your source files, and solution-wide code intelligence.
+    You do not need to call these tools yourself &mdash; Claude selects and invokes them automatically based on
+    your questions and requests. This reference is provided so you know what capabilities are available.
+  </p>
+
+  <h3 id="tools-ide-context">IDE Context (Read-Only)</h3>
+  <p>These tools let Claude observe what you are currently working on without making any changes.</p>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>get_active_file</code></td><td>Get the path and full content of the file currently open in the editor.</td></tr>
+      <tr><td><code>get_selected_text</code></td><td>Get the currently selected (highlighted) text.</td></tr>
+      <tr><td><code>get_word_under_cursor</code></td><td>Get the word at the current cursor position.</td></tr>
+      <tr><td><code>get_cursor_position</code></td><td>Get the current line number, column, and total line count.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="tools-editor-operations">Editor Operations</h3>
+  <p>These tools let Claude open files, navigate, edit code, and manage editor tabs.</p>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>open_file</code></td><td>Open a file in the editor, optionally navigating to a specific line.</td></tr>
+      <tr><td><code>go_to_line</code></td><td>Navigate to a specific line in the currently open file.</td></tr>
+      <tr><td><code>insert_text_at_cursor</code></td><td>Insert text at the current cursor position.</td></tr>
+      <tr><td><code>replace_text</code></td><td>Find and replace all occurrences in the active editor.</td></tr>
+      <tr><td><code>replace_range</code></td><td>Replace text between specific line/column positions (1-based).</td></tr>
+      <tr><td><code>select_range</code></td><td>Select and highlight a range of text (1-based line/col).</td></tr>
+      <tr><td><code>delete_range</code></td><td>Delete text between specific positions (1-based).</td></tr>
+      <tr><td><code>undo</code></td><td>Undo the last edit operation.</td></tr>
+      <tr><td><code>redo</code></td><td>Redo the last undone edit.</td></tr>
+      <tr><td><code>save_file</code></td><td>Save the active file to disk.</td></tr>
+      <tr><td><code>close_file</code></td><td>Close the active editor tab.</td></tr>
+      <tr><td><code>get_open_files</code></td><td>List all currently open editor tabs.</td></tr>
+      <tr><td><code>get_line_text</code></td><td>Get the text of a specific line (includes unsaved changes).</td></tr>
+      <tr><td><code>find_in_file</code></td><td>Search for text in the active editor buffer.</td></tr>
+      <tr><td><code>is_modified</code></td><td>Check if the active file has unsaved changes.</td></tr>
+      <tr><td><code>toggle_comment</code></td><td>Toggle Clarion line comments (<code>!</code>) on a range of lines.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="tools-app-tree">Application Tree</h3>
+  <p>Work with Clarion <code>.app</code> files to inspect application structure and procedures.</p>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>open_app</code></td><td>Open a <code>.app</code> file in the IDE.</td></tr>
+      <tr><td><code>get_app_info</code></td><td>Get info about the currently open app (name, file path, target type).</td></tr>
+      <tr><td><code>list_procedures</code></td><td>List all procedure names in the currently open app.</td></tr>
+      <tr><td><code>get_procedure_details</code></td><td>Get detailed procedure info including prototype, module, parent, and template.</td></tr>
+      <tr><td><code>open_procedure_embed</code></td><td>Open the embeditor for a specific procedure.</td></tr>
+      <tr><td><code>get_embed_info</code></td><td>Get info about the active embeditor.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="tools-file-system">File System</h3>
+  <p>Direct file system access independent of what is open in the editor.</p>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>read_file</code></td><td>Read file content from disk. Supports <code>start_line</code> and <code>end_line</code> for specific ranges.</td></tr>
+      <tr><td><code>write_file</code></td><td>Write content to a file on disk.</td></tr>
+      <tr><td><code>append_to_file</code></td><td>Append text to an existing file.</td></tr>
+      <tr><td><code>list_directory</code></td><td>List files in a directory with an optional pattern filter.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="tools-class-intelligence">Clarion Class Intelligence</h3>
+  <p>Specialized tools for working with Clarion CLASS structures.</p>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>analyze_class</code></td><td>Parse CLASS definitions from a <code>.inc</code> file. Returns class names, methods, data members, and module references.</td></tr>
+      <tr><td><code>sync_check</code></td><td>Compare <code>.inc</code> declarations against <code>.clw</code> implementations. Reports missing and orphaned methods.</td></tr>
+      <tr><td><code>generate_stubs</code></td><td>Generate method stubs for methods declared in <code>.inc</code> but missing from <code>.clw</code>.</td></tr>
+      <tr><td><code>generate_clw</code></td><td>Generate a complete <code>.clw</code> implementation file from a <code>.inc</code> file.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="tools-codegraph">CodeGraph (Solution-Wide Intelligence)</h3>
+  <p>Indexed, queryable access to every symbol, relationship, and call chain across your entire solution.</p>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>query_codegraph</code></td><td>Run SQL queries against the indexed CodeGraph database to find symbols, trace call chains, and analyze dependencies.</td></tr>
+      <tr><td><code>list_codegraph_databases</code></td><td>Find available indexed CodeGraph databases.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="info-box">
+    <strong>CodeGraph Database Schema</strong>
+    <p>The CodeGraph database contains three main tables:</p>
+    <ul>
+      <li><strong>symbols</strong> &mdash; <code>name</code>, <code>type</code> (procedure, function, class, interface, routine, variable), <code>file_path</code>, <code>line_number</code>, <code>params</code>, <code>return_type</code>, <code>parent_name</code>, <code>scope</code></li>
+      <li><strong>relationships</strong> &mdash; <code>from_id</code>, <code>to_id</code>, <code>type</code> (calls, do, inherits, implements, references), <code>file_path</code>, <code>line_number</code></li>
+      <li><strong>projects</strong> &mdash; <code>name</code>, <code>cwproj_path</code>, <code>sln_path</code></li>
+    </ul>
+    <p>Example questions: &ldquo;Who calls this procedure?&rdquo;, &ldquo;Show me dead code&rdquo;, &ldquo;What is the class hierarchy?&rdquo;, &ldquo;If I change X, what breaks?&rdquo;</p>
+  </div>
+
+  <h3 id="tools-lsp">LSP (Language Server)</h3>
+  <p>Real-time, compiler-grade analysis for precise definitions, references, and type information.</p>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>lsp_start</code></td><td>Start the Clarion Language Server. Auto-starts when a solution is selected.</td></tr>
+      <tr><td><code>lsp_definition</code></td><td>Go to definition: find where a symbol is defined, across files.</td></tr>
+      <tr><td><code>lsp_references</code></td><td>Find all references to a symbol across the entire workspace.</td></tr>
+      <tr><td><code>lsp_hover</code></td><td>Get type information, signature, and documentation for a symbol.</td></tr>
+      <tr><td><code>lsp_document_symbols</code></td><td>Get all symbols defined in a file (procedures, classes, variables).</td></tr>
+      <tr><td><code>lsp_find_symbol</code></td><td>Search for symbols by name across the entire workspace.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="info-box">
+    <strong>Note:</strong> The LSP uses 0-based line numbers internally, while IDE tools use 1-based line numbers. Claude handles this conversion automatically.
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════ -->
+<!--  SECTION 7: ACKNOWLEDGMENTS                         -->
+<!-- ════════════════════════════════════════════════════ -->
+<section id="acknowledgments" class="doc-section">
+  <h2>Acknowledgments</h2>
+
+  <p>
+    Clarion.Assistant is built on the shoulders of the Clarion developer community and the open-source
+    ecosystem. We would like to recognize the following contributions:
+  </p>
+
+  <div class="feature-card" style="border-left: 4px solid var(--primary);">
+    <h4>Mark Sarson &mdash; Clarion Extension for VS Code</h4>
+    <p>
+      Special thanks to <strong>Mark Sarson</strong> for his outstanding work on the
+      <a href="https://github.com/msarson/Clarion-Extension" target="_blank" style="color: var(--primary-dark); font-weight: 600;">Clarion Extension for Visual Studio Code</a>.
+      Mark pioneered Language Server Protocol support for the Clarion language, bringing
+      IntelliSense, go-to-definition, parameter hints, smart snippets, and code navigation
+      to Clarion developers. His extension proved that modern language intelligence features
+      could be successfully applied to Clarion development, and his work directly inspired
+      the LSP integration in Clarion.Assistant. The Clarion community is better for his
+      contributions.
+    </p>
+    <p style="margin-top: 0.75rem;">
+      <a href="https://github.com/msarson/Clarion-Extension" target="_blank" style="color: var(--primary);">
+        github.com/msarson/Clarion-Extension
+      </a>
+    </p>
+  </div>
+
+  <div class="feature-card">
+    <h4>Open Source Technologies</h4>
+    <ul>
+      <li><strong>WebView2</strong> &mdash; Microsoft Edge-based browser control for terminal and board rendering</li>
+      <li><strong>xterm.js</strong> &mdash; Terminal emulation in the browser</li>
+      <li><strong>Claude Code</strong> &mdash; Anthropic's CLI for AI-assisted development</li>
+      <li><strong>SharpDevelop / ICSharpCode</strong> &mdash; The IDE platform that powers Clarion's editor</li>
+    </ul>
+  </div>
+</section>
+
+  </main>
+</div>
+
+<!-- ════════════════════════════════════════════════════ -->
+<!--  FOOTER                                             -->
+<!-- ════════════════════════════════════════════════════ -->
+<footer class="site-footer">
+  <p>Clarion.Assistant User Guide &middot; v1.0 &middot; &copy; 2025</p>
+</footer>
+
+<!-- Smooth scrolling -->
+<script>
+  document.querySelectorAll('.sidebar a[href^="#"]').forEach(function(a) {
+    a.addEventListener('click', function(e) {
+      e.preventDefault();
+      var target = document.querySelector(this.getAttribute('href'));
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        history.pushState(null, '', this.getAttribute('href'));
+      }
+    });
+  });
+</script>
+
+</body>
+</html>

@@ -6,6 +6,7 @@ using System.IO;
 using System.Windows.Forms;
 using ClarionAssistant.Dialogs;
 using ClarionAssistant.Services;
+using ClarionAssistant.TaskLifecycleBoard;
 using ClarionAssistant.Terminal;
 
 namespace ClarionAssistant
@@ -36,6 +37,7 @@ namespace ClarionAssistant
 
         private string _mcpConfigPath;
         private bool _claudeLaunched;
+        private MultiTerminalApiClient _multiTerminalApi;
         private string _currentSlnPath;
         private string _indexerPath;
         private ClarionVersionInfo _versionInfo;
@@ -204,11 +206,15 @@ namespace ClarionAssistant
             var settingsButton = new ToolStripButton("Settings") { ForeColor = Color.White, ToolTipText = "Terminal and Claude settings" };
             settingsButton.Click += OnSettings;
 
+            var taskBoardButton = new ToolStripButton("Task Board") { ForeColor = Color.White, ToolTipText = "Open lifecycle board for active task" };
+            taskBoardButton.Click += OnOpenTaskBoard;
+
             _statusLabel = new ToolStripLabel("Starting...") { Alignment = ToolStripItemAlignment.Right, ForeColor = Color.Gray };
 
             _toolbar.Items.Add(newChatButton);
             _toolbar.Items.Add(new ToolStripSeparator());
             _toolbar.Items.Add(settingsButton);
+            _toolbar.Items.Add(taskBoardButton);
             _toolbar.Items.Add(_statusLabel);
 
             // === Terminal renderer ===
@@ -498,6 +504,43 @@ namespace ClarionAssistant
             }
         }
 
+        private void OnOpenTaskBoard(object sender, EventArgs e)
+        {
+            if (_multiTerminalApi == null)
+                _multiTerminalApi = new MultiTerminalApiClient();
+            var api = _multiTerminalApi;
+            string agentName = Environment.GetEnvironmentVariable("MULTITERMINAL_NAME");
+            if (string.IsNullOrEmpty(agentName)) agentName = "ClarionAssistant";
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                if (!api.IsAvailable()) return new { taskId = (string)null, error = "MultiTerminal is not running." };
+                var result = api.GetActiveTask(agentName);
+                if (result.Success && result.Data != null && result.Data.Task != null)
+                    return new { taskId = result.Data.Task.Id, error = (string)null };
+                var tasksResult = api.ListTasks("in_progress");
+                if (tasksResult.Success && tasksResult.Data != null && tasksResult.Data.Count > 0)
+                    return new { taskId = tasksResult.Data[0].Id, error = (string)null };
+                return new { taskId = (string)null, error = "No active tasks found." };
+            }).ContinueWith(t =>
+            {
+                if (IsDisposed) return;
+                if (t.IsFaulted)
+                {
+                    MessageBox.Show("Error opening task board: " + t.Exception.InnerException.Message,
+                        "Task Board", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+                if (t.Result.error != null)
+                {
+                    MessageBox.Show(t.Result.error, "Task Board", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                bool isDark = BackColor.GetBrightness() < 0.5f;
+                TaskLifecycleBoardForm.OpenForTask(t.Result.taskId, api, isDark);
+            }, System.Threading.Tasks.TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
         #endregion
 
         #region MCP Server (auto-start)
@@ -682,9 +725,11 @@ namespace ClarionAssistant
 
     internal class DarkToolStripRenderer : ToolStripProfessionalRenderer
     {
+        private static readonly SolidBrush _backgroundBrush = new SolidBrush(Color.FromArgb(30, 30, 30));
+
         protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
         {
-            e.Graphics.FillRectangle(new SolidBrush(Color.FromArgb(30, 30, 30)), e.AffectedBounds);
+            e.Graphics.FillRectangle(_backgroundBrush, e.AffectedBounds);
         }
     }
 }

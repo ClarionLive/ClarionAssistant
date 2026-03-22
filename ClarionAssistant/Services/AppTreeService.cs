@@ -172,8 +172,16 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
+        #region P/Invoke declarations
+
         [DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, StringBuilder lParam);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, string lParam);
 
         [DllImport("user32.dll")]
         private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
@@ -195,12 +203,79 @@ namespace ClarionAssistant.Services
         [DllImport("user32.dll")]
         private static extern IntPtr SetFocus(IntPtr hWnd);
 
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetParent(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+        [DllImport("user32.dll")]
+        private static extern short VkKeyScan(char ch);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetFocus();
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        [DllImport("user32.dll")]
+        private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetCurrentThreadId();
+
         private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        private const uint KEYEVENTF_KEYUP = 0x0002;
+        private const byte VK_SHIFT = 0x10;
+
+        #endregion
+
+        #region Win32 constants
 
         private const uint WM_KEYDOWN = 0x0100;
         private const uint WM_KEYUP = 0x0101;
+        private const uint WM_CHAR = 0x0102;
+        private const uint WM_COMMAND = 0x0111;
+        private const uint WM_LBUTTONDOWN = 0x0201;
+        private const uint WM_LBUTTONUP = 0x0202;
         private const uint WM_LBUTTONDBLCLK = 0x0203;
+        private const uint WM_GETTEXT = 0x000D;
+        private const uint WM_GETTEXTLENGTH = 0x000E;
+
+        private const uint LB_GETCOUNT = 0x018B;
+        private const uint LB_GETCURSEL = 0x0188;
+        private const uint LB_SETCURSEL = 0x0186;
+        private const uint LB_GETTEXT = 0x0189;
+        private const uint LB_GETTEXTLEN = 0x018A;
+        private const uint LB_FINDSTRING = 0x018F;
+        private const uint LB_FINDSTRINGEXACT = 0x01A2;
+
+        private const uint BM_CLICK = 0x00F5;
+        private const uint BN_CLICKED = 0;
+
+        private const uint WM_SYSKEYDOWN = 0x0104;
+        private const uint WM_SYSKEYUP = 0x0105;
+        private const uint WM_SYSCHAR = 0x0106;
+
+        private const int VK_HOME = 0x24;
+        private const int VK_MENU = 0x12;  // ALT key
         private const int VK_RETURN = 0x0D;
+        private const int VK_UP = 0x26;
+        private const int VK_DOWN = 0x28;
+        private const int GWL_ID = -12;
+        private const int MK_LBUTTON = 0x0001;
+
+        #endregion
 
         /// <summary>
         /// Enumerate all child windows of a parent and return them with class names.
@@ -220,185 +295,360 @@ namespace ClarionAssistant.Services
 
         /// <summary>
         /// Open the embeditor for a specific procedure.
-        /// Phase 5: Grab Hosted UINetBinding from CWWindow, select procedure, call OpenGeneratorWindow.
+        /// Iteration 14: PostMessage WM_KEYDOWN/WM_CHAR directly to ClaList handle
+        /// + AttachThreadInput for cross-thread focus.
         /// </summary>
         public string OpenProcedureEmbed(string procedureName)
         {
             try
             {
-                var app = GetAppObject();
-                if (app == null) return "Error: no app object found";
-
-                var procedures = GetProp(app, "Procedures");
-                if (procedures == null) return "Error: no Procedures property";
-
-                // Find the target procedure
-                object targetProc = null;
-                if (procedures is Array procArray)
+                // Check if an embeditor is already open
+                var embedInfo = GetEmbedInfo();
+                if (embedInfo != null)
                 {
-                    foreach (var proc in procArray)
-                    {
-                        var name = (GetProp(proc, "Name") ?? GetProp(proc, "ProcedureName") ?? "").ToString();
-                        if (name.Equals(procedureName, StringComparison.OrdinalIgnoreCase))
-                        {
-                            targetProc = proc;
-                            break;
-                        }
-                    }
+                    var openFile = (embedInfo["fileName"] ?? "").ToString();
+                    return "Error: An embeditor is already open (" + openFile + "). Please close it before opening another procedure.";
                 }
 
-                if (targetProc == null) return "Error: procedure '" + procedureName + "' not found";
+                var log = new StringBuilder();
+                log.AppendLine("=== Iteration 14: PostMessage + AttachThreadInput ===");
+                log.AppendLine("Target: " + procedureName);
 
+                // --- Get the ApplicationMainWindowControl ---
                 var workbench = WorkbenchSingleton.Workbench;
                 var activeWindow = GetProp(workbench, "ActiveWorkbenchWindow");
                 var viewContent = GetProp(activeWindow, "ViewContent")
                                ?? GetProp(activeWindow, "ActiveViewContent");
+                if (viewContent == null) return "Error: no ViewContent — is an .app file open?";
 
-                if (viewContent == null) return "Error: no ViewContent";
+                var container = GetProp(viewContent, "_Container")
+                             ?? GetProp(viewContent, "ApplicationContainer");
+                if (!(container is Control containerCtrl) || containerCtrl.Controls.Count == 0)
+                    return "Error: cannot access ApplicationContainer";
 
-                var appContainer = GetProp(viewContent, "Control");
+                var mainCtrl = containerCtrl.Controls[0] as Control;
+                if (mainCtrl == null || !mainCtrl.IsHandleCreated)
+                    return "Error: ApplicationMainWindowControl has no handle";
+
+                // --- Find native controls ---
+                var children = GetChildWindows(mainCtrl.Handle);
+                IntPtr listHwnd = IntPtr.Zero;
+                foreach (var (hwnd, cls, vis) in children)
+                {
+                    if (cls.Contains("ClaList") && vis && listHwnd == IntPtr.Zero)
+                        listHwnd = hwnd;
+                }
+
+                log.AppendLine("ClaList: " + (listHwnd != IntPtr.Zero ? "0x" + listHwnd.ToString("X") : "NOT FOUND"));
+                if (listHwnd == IntPtr.Zero)
+                    return log + "\nCannot proceed — ClaList not found";
+
+                // ================================================================
+                // PHASE 1: AttachThreadInput + SetFocus on ClaList
+                // ================================================================
+                log.AppendLine("\n--- Phase 1: AttachThreadInput + Focus ---");
+
+                uint listThreadId = GetWindowThreadProcessId(listHwnd, out _);
+                uint curThreadId = GetCurrentThreadId();
+                bool attached = false;
+
+                if (listThreadId != curThreadId)
+                {
+                    attached = AttachThreadInput(curThreadId, listThreadId, true);
+                    log.AppendLine("AttachThreadInput: " + (attached ? "OK" : "FAILED") +
+                                   " (cur=" + curThreadId + " list=" + listThreadId + ")");
+                }
+                else
+                {
+                    log.AppendLine("Same thread — no attach needed");
+                }
+
+                SetFocus(listHwnd);
+                Application.DoEvents();
+                System.Threading.Thread.Sleep(100);
+
+                IntPtr focusWnd = GetFocus();
+                log.AppendLine("Focused: 0x" + focusWnd.ToString("X") +
+                               (focusWnd == listHwnd ? " (ClaList!)" : " (not ClaList)"));
+
+                // ================================================================
+                // PHASE 2: Select procedure in ClaList
+                // ================================================================
+                log.AppendLine("\n--- Phase 2: Select procedure in ClaList ---");
+
+                bool selected = false;
+
+                // Probe: check if ClaList actually supports LB_ messages
+                // LB_GETCOUNT returns item count for real listboxes, but ClaList returns 0
+                const uint LB_GETCOUNT = 0x018B;
+                int lbCount = (int)SendMessage(listHwnd, LB_GETCOUNT, IntPtr.Zero, IntPtr.Zero);
+                log.AppendLine("LB_GETCOUNT probe: " + lbCount);
+                bool claListSupportsLB = (lbCount > 0);
+
+                if (claListSupportsLB)
+                {
+                    // Approach 1: LB_FINDSTRINGEXACT + LB_SETCURSEL (direct listbox selection)
+                    IntPtr foundIndex = SendMessage(listHwnd, LB_FINDSTRINGEXACT, new IntPtr(-1), procedureName);
+                    log.AppendLine("LB_FINDSTRINGEXACT('" + procedureName + "'): index=" + foundIndex.ToInt32());
+
+                    if (foundIndex.ToInt32() >= 0)
+                    {
+                        SendMessage(listHwnd, LB_SETCURSEL, foundIndex, IntPtr.Zero);
+
+                        // Notify parent of selection change (LBN_SELCHANGE = 1)
+                        IntPtr listParent = GetParent(listHwnd);
+                        int controlId = GetWindowLong(listHwnd, GWL_ID);
+                        int wParamNotify = (controlId & 0xFFFF) | (1 << 16);
+                        SendMessage(listParent, WM_COMMAND, (IntPtr)wParamNotify, listHwnd);
+
+                        Application.DoEvents();
+                        System.Threading.Thread.Sleep(200);
+                        Application.DoEvents();
+
+                        log.AppendLine("Selected via LB_SETCURSEL at index " + foundIndex.ToInt32());
+                        selected = true;
+                    }
+
+                    if (!selected)
+                    {
+                        // Approach 2: LB_FINDSTRING (prefix match)
+                        IntPtr foundIndex2 = SendMessage(listHwnd, LB_FINDSTRING, new IntPtr(-1), procedureName);
+                        log.AppendLine("LB_FINDSTRING('" + procedureName + "'): index=" + foundIndex2.ToInt32());
+
+                        if (foundIndex2.ToInt32() >= 0)
+                        {
+                            SendMessage(listHwnd, LB_SETCURSEL, foundIndex2, IntPtr.Zero);
+
+                            IntPtr listParent = GetParent(listHwnd);
+                            int controlId = GetWindowLong(listHwnd, GWL_ID);
+                            int wParamNotify = (controlId & 0xFFFF) | (1 << 16);
+                            SendMessage(listParent, WM_COMMAND, (IntPtr)wParamNotify, listHwnd);
+
+                            Application.DoEvents();
+                            System.Threading.Thread.Sleep(200);
+                            Application.DoEvents();
+
+                            log.AppendLine("Selected via LB_FINDSTRING + LB_SETCURSEL at index " + foundIndex2.ToInt32());
+                            selected = true;
+                        }
+                    }
+                }
+
+                if (!selected)
+                {
+                    // Approach 3: PostMessage + WM_CHAR only (matches working SelectProcedure)
+                    log.AppendLine("ClaList does not support LB_ messages (count=" + lbCount + "), using keystrokes");
+
+                    foreach (char c in procedureName)
+                    {
+                        PostMessage(listHwnd, WM_CHAR, (IntPtr)c, IntPtr.Zero);
+                        Application.DoEvents();
+                        System.Threading.Thread.Sleep(100);
+                    }
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(500);
+                    Application.DoEvents();
+
+                    log.AppendLine("Posted " + procedureName.Length + " WM_CHAR messages");
+
+                    // Down+Up clears the locator's incremental search buffer
+                    // without changing the selected item
+                    PostMessage(listHwnd, WM_KEYDOWN, (IntPtr)0x28, IntPtr.Zero); // VK_DOWN
+                    PostMessage(listHwnd, WM_KEYUP, (IntPtr)0x28, IntPtr.Zero);
+                    System.Threading.Thread.Sleep(100);
+                    Application.DoEvents();
+                    PostMessage(listHwnd, WM_KEYDOWN, (IntPtr)0x26, IntPtr.Zero); // VK_UP
+                    PostMessage(listHwnd, WM_KEYUP, (IntPtr)0x26, IntPtr.Zero);
+                    System.Threading.Thread.Sleep(300);
+                    Application.DoEvents();
+                }
+
+                // Verify: read back current selection
+                int verifyIdx = (int)SendMessage(listHwnd, LB_GETCURSEL, IntPtr.Zero, IntPtr.Zero);
+                if (verifyIdx >= 0)
+                {
+                    int textLen = (int)SendMessage(listHwnd, LB_GETTEXTLEN, (IntPtr)verifyIdx, IntPtr.Zero);
+                    if (textLen > 0)
+                    {
+                        var selBuf = new StringBuilder(textLen + 1);
+                        SendMessage(listHwnd, LB_GETTEXT, (IntPtr)verifyIdx, selBuf);
+                        log.AppendLine("Verify — selected item: '" + selBuf.ToString() + "' at index " + verifyIdx);
+                    }
+                    else
+                    {
+                        log.AppendLine("Verify — LB_GETTEXTLEN returned " + textLen + " (ClaList may not support LB_ read)");
+                    }
+                }
+                else
+                {
+                    log.AppendLine("Verify — LB_GETCURSEL returned " + verifyIdx + " (no selection or not a standard listbox)");
+                }
+
+                // ================================================================
+                // PHASE 3: Open embeditor — find and click the Embeditor button
+                // ================================================================
+                log.AppendLine("\n--- Phase 3: Click Embeditor button ---");
+
+                IntPtr embeditorBtn = IntPtr.Zero;
+                foreach (var (hwnd, cls, vis) in children)
+                {
+                    if (cls.Contains("ClaButton") && vis)
+                    {
+                        // Try GetWindowText first
+                        var textBuf = new StringBuilder(256);
+                        GetWindowText(hwnd, textBuf, 256);
+                        string btnText = textBuf.ToString();
+
+                        // If empty, try WM_GETTEXT (custom controls may not respond to GetWindowText)
+                        if (string.IsNullOrEmpty(btnText))
+                        {
+                            int textLen = (int)SendMessage(hwnd, WM_GETTEXTLENGTH, IntPtr.Zero, IntPtr.Zero);
+                            if (textLen > 0)
+                            {
+                                textBuf = new StringBuilder(textLen + 1);
+                                SendMessage(hwnd, WM_GETTEXT, (IntPtr)(textLen + 1), textBuf);
+                                btnText = textBuf.ToString();
+                            }
+                        }
+
+                        log.AppendLine("  ClaButton: 0x" + hwnd.ToString("X") + " text='" + btnText + "'");
+
+                        if (btnText.IndexOf("beditor", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            embeditorBtn = hwnd;
+                            log.AppendLine("  ^ MATCH — this is the Embeditor button");
+                        }
+                    }
+                }
+
+                if (embeditorBtn == IntPtr.Zero)
+                {
+                    log.AppendLine("Embeditor button NOT FOUND among ClaButtons");
+
+                    if (attached)
+                        AttachThreadInput(curThreadId, listThreadId, false);
+                    return log.ToString();
+                }
+
+                // Send BM_CLICK to the Embeditor button
+                SendMessage(embeditorBtn, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
+                Application.DoEvents();
+                System.Threading.Thread.Sleep(500);
+                Application.DoEvents();
+
+                log.AppendLine("BM_CLICK sent to Embeditor button");
+
+                // Detach thread input
+                if (attached)
+                    AttachThreadInput(curThreadId, listThreadId, false);
+
+                log.AppendLine("\nEmbeditor opened for " + procedureName);
+                return log.ToString();
+            }
+            catch (Exception ex)
+            {
+                return "Error: " + (ex.InnerException?.Message ?? ex.Message) + "\n" + ex.StackTrace;
+            }
+        }
+
+        /// <summary>
+        /// Select a procedure in the ClaList without opening the embeditor. For testing.
+        /// </summary>
+        public string SelectProcedure(string procedureName)
+        {
+            try
+            {
+                // Check if an embeditor is already open
+                var embedInfo = GetEmbedInfo();
+                if (embedInfo != null)
+                {
+                    var openFile = (embedInfo["fileName"] ?? "").ToString();
+                    return "Error: An embeditor is already open (" + openFile + "). Please close it before selecting a procedure.";
+                }
+
                 var log = new StringBuilder();
-                log.AppendLine("Procedure: " + procedureName);
+                log.AppendLine("=== SelectProcedure: " + procedureName + " ===");
 
-                // Find UINetBinding and UIBindingInterfaceKind types
-                Type uiNetBindingType = null;
-                Type uiBindingKindType = null;
-                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                // --- Get the ApplicationMainWindowControl ---
+                var workbench = WorkbenchSingleton.Workbench;
+                var activeWindow = GetProp(workbench, "ActiveWorkbenchWindow");
+                var viewContent = GetProp(activeWindow, "ViewContent")
+                               ?? GetProp(activeWindow, "ActiveViewContent");
+                if (viewContent == null) return "Error: no ViewContent — is an .app file open?";
+
+                var container = GetProp(viewContent, "_Container")
+                             ?? GetProp(viewContent, "ApplicationContainer");
+                if (!(container is Control containerCtrl) || containerCtrl.Controls.Count == 0)
+                    return "Error: cannot access ApplicationContainer";
+
+                var mainCtrl = containerCtrl.Controls[0] as Control;
+                if (mainCtrl == null || !mainCtrl.IsHandleCreated)
+                    return "Error: ApplicationMainWindowControl has no handle";
+
+                // --- Find ClaList ---
+                var children = GetChildWindows(mainCtrl.Handle);
+                IntPtr listHwnd = IntPtr.Zero;
+                foreach (var (hwnd, cls, vis) in children)
                 {
-                    var asmName = asm.GetName().Name;
-                    if (asmName.Equals("clarion.asl", StringComparison.OrdinalIgnoreCase) ||
-                        asmName.Equals("Clarion.ASL", StringComparison.OrdinalIgnoreCase))
-                    {
-                        foreach (var t in asm.GetExportedTypes())
-                        {
-                            if (t.Name == "UINetBinding") uiNetBindingType = t;
-                            if (t.Name == "UIBindingInterfaceKind") uiBindingKindType = t;
-                        }
-                        break;
-                    }
+                    if (cls.Contains("ClaList") && vis && listHwnd == IntPtr.Zero)
+                        listHwnd = hwnd;
                 }
 
-                if (uiNetBindingType == null || uiBindingKindType == null)
-                    return "Error: could not find UINetBinding/UIBindingInterfaceKind types";
+                if (listHwnd == IntPtr.Zero)
+                    return "Error: ClaList not found";
 
-                // Find ApplicationMainWindowControl
-                object appMainControl = null;
-                if (appContainer is Control container)
+                log.AppendLine("ClaList: 0x" + listHwnd.ToString("X"));
+
+                // --- AttachThreadInput + Focus ---
+                uint listThreadId = GetWindowThreadProcessId(listHwnd, out _);
+                uint curThreadId = GetCurrentThreadId();
+                bool attached = false;
+
+                if (listThreadId != curThreadId)
                 {
-                    foreach (Control child in container.Controls)
-                    {
-                        if (child.GetType().Name == "ApplicationMainWindowControl")
-                        {
-                            appMainControl = child;
-                            break;
-                        }
-                    }
+                    attached = AttachThreadInput(curThreadId, listThreadId, true);
+                    log.AppendLine("AttachThreadInput: " + (attached ? "OK" : "FAILED"));
                 }
 
-                if (appMainControl == null)
-                    return "Error: ApplicationMainWindowControl not found";
+                SetFocus(listHwnd);
+                Application.DoEvents();
+                System.Threading.Thread.Sleep(100);
 
-                // Get the Hosted UINetBinding from CWWindow base class
-                var cwWindowType = appMainControl.GetType();
-                FieldInfo hostedField = null;
-                var searchType = cwWindowType;
-                while (searchType != null && searchType != typeof(object))
+                IntPtr focusWnd = GetFocus();
+                log.AppendLine("Focused: 0x" + focusWnd.ToString("X") +
+                               (focusWnd == listHwnd ? " (ClaList)" : " (not ClaList)"));
+
+                // --- Keystroke selection using PostMessage + WM_CHAR only ---
+                // Type each character via PostMessage (async, natural queue)
+                // 100ms delay + DoEvents between each char so ClaList locator processes them
+                foreach (char c in procedureName)
                 {
-                    hostedField = searchType.GetField("Hosted", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
-                    if (hostedField != null && hostedField.FieldType.Name == "UINetBinding")
-                        break;
-                    hostedField = null;
-                    searchType = searchType.BaseType;
+                    PostMessage(listHwnd, WM_CHAR, (IntPtr)c, IntPtr.Zero);
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(100);
                 }
+                Application.DoEvents();
+                System.Threading.Thread.Sleep(500);
+                Application.DoEvents();
 
-                if (hostedField == null)
-                    return "Error: could not find Hosted UINetBinding field on CWWindow";
+                log.AppendLine("Posted " + procedureName.Length + " WM_CHAR messages");
 
-                var hostedBinding = hostedField.GetValue(appMainControl);
-                if (hostedBinding == null)
-                    return "Error: Hosted UINetBinding is null";
+                // Down+Up clears the locator's incremental search buffer
+                // without changing the selected item
+                PostMessage(listHwnd, WM_KEYDOWN, (IntPtr)0x28, IntPtr.Zero); // VK_DOWN
+                PostMessage(listHwnd, WM_KEYUP, (IntPtr)0x28, IntPtr.Zero);
+                System.Threading.Thread.Sleep(100);
+                Application.DoEvents();
+                PostMessage(listHwnd, WM_KEYDOWN, (IntPtr)0x26, IntPtr.Zero); // VK_UP
+                PostMessage(listHwnd, WM_KEYUP, (IntPtr)0x26, IntPtr.Zero);
+                System.Threading.Thread.Sleep(300);
+                Application.DoEvents();
 
-                log.AppendLine("Got Hosted UINetBinding: " + hostedBinding.GetType().FullName);
+                // Detach
+                if (attached)
+                    AttachThreadInput(curThreadId, listThreadId, false);
 
-                // Step 1: Select the procedure first (sets internal state)
-                log.AppendLine("\n=== Step 1: Select procedure ===");
-                try
-                {
-                    var selectMethod = targetProc.GetType().GetMethod("Select", AllInstance);
-                    if (selectMethod != null)
-                    {
-                        var selParams = selectMethod.GetParameters();
-                        if (selParams.Length == 1 && selParams[0].ParameterType == typeof(bool))
-                        {
-                            selectMethod.Invoke(targetProc, new object[] { true });
-                            log.AppendLine("Called Procedure.Select(true)");
-                        }
-                        else if (selParams.Length == 0)
-                        {
-                            selectMethod.Invoke(targetProc, null);
-                            log.AppendLine("Called Procedure.Select()");
-                        }
-                        else
-                        {
-                            log.AppendLine("Select method has unexpected params: " + selParams.Length);
-                        }
-                    }
-                    else
-                    {
-                        log.AppendLine("No Select method found on Procedure");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    log.AppendLine("Select failed: " + (ex.InnerException?.Message ?? ex.Message));
-                }
-
-                // Step 2: Try OpenGeneratorWindow on the container
-                log.AppendLine("\n=== Step 2: OpenGeneratorWindow ===");
-                var editProcKind = Enum.ToObject(uiBindingKindType, 10); // UI_EditProcedureControl = 10
-                log.AppendLine("UIBindingInterfaceKind value: " + editProcKind);
-
-                // Try on ApplicationContainer first
-                try
-                {
-                    var ogwMethod = appContainer.GetType().GetMethod("OpenGeneratorWindow", AllInstance);
-                    if (ogwMethod != null)
-                    {
-                        log.AppendLine("Calling Container.OpenGeneratorWindow(hosted, UI_EditProcedureControl)...");
-                        ogwMethod.Invoke(appContainer, new object[] { hostedBinding, editProcKind });
-                        log.AppendLine("SUCCESS - OpenGeneratorWindow returned without exception!");
-                    }
-                    else
-                    {
-                        log.AppendLine("No OpenGeneratorWindow on Container");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    var inner = ex.InnerException ?? ex;
-                    log.AppendLine("Container.OpenGeneratorWindow FAILED: " + inner.GetType().Name + ": " + inner.Message);
-                    if (inner.StackTrace != null)
-                        log.AppendLine("  Stack: " + inner.StackTrace.Substring(0, Math.Min(500, inner.StackTrace.Length)));
-
-                    // Fallback: Try on ViewContent
-                    log.AppendLine("\n=== Step 2b: Try ViewContent.OpenGeneratorWindow ===");
-                    try
-                    {
-                        var vcOgwMethod = viewContent.GetType().GetMethod("OpenGeneratorWindow", AllInstance);
-                        if (vcOgwMethod != null)
-                        {
-                            log.AppendLine("Calling ViewContent.OpenGeneratorWindow(hosted, UI_EditProcedureControl)...");
-                            vcOgwMethod.Invoke(viewContent, new object[] { hostedBinding, editProcKind });
-                            log.AppendLine("SUCCESS - ViewContent.OpenGeneratorWindow returned without exception!");
-                        }
-                    }
-                    catch (Exception ex2)
-                    {
-                        var inner2 = ex2.InnerException ?? ex2;
-                        log.AppendLine("ViewContent.OpenGeneratorWindow FAILED: " + inner2.GetType().Name + ": " + inner2.Message);
-                    }
-                }
-
+                log.AppendLine("Done — check ClaList visually for selected procedure");
                 return log.ToString();
             }
             catch (Exception ex)
@@ -415,14 +665,133 @@ namespace ClarionAssistant.Services
             var editor = GetClaGenEditor();
             if (editor == null) return null;
 
+            // ClaGenEditor persists in SecondaryViewContents even when closed.
+            // Check AppName to determine if the embeditor is actually active.
+            var appName = (GetProp(editor, "AppName") ?? "").ToString();
+            if (string.IsNullOrEmpty(appName)) return null;
+
             return new Dictionary<string, object>
             {
-                { "appName", (GetProp(editor, "AppName") ?? "").ToString() },
+                { "appName", appName },
                 { "fileName", (GetProp(editor, "FileName") ?? "").ToString() },
                 { "isPwee", GetProp(editor, "IsPwee") },
                 { "isOnFirstEmbed", GetProp(editor, "IsOnFirstEmbed") },
                 { "isOnLastEmbed", GetProp(editor, "IsOnLastEmbed") }
             };
+        }
+
+        /// <summary>
+        /// Save changes and close the embeditor.
+        /// </summary>
+        public string SaveAndCloseEmbeditor()
+        {
+            var editor = GetClaGenEditor();
+            if (editor == null) return "Error: No embeditor is currently open.";
+
+            try
+            {
+                // Check for the IGeneratorDialog interface which provides TryClose/HaveChanges
+                var dialogInterface = editor.GetType().GetInterface("SoftVelocity.Generator.IGeneratorDialog");
+                if (dialogInterface == null)
+                    return "Error: ClaGenEditor does not implement IGeneratorDialog.";
+
+                var tryCloseMethod = dialogInterface.GetMethod("TryClose");
+                if (tryCloseMethod == null)
+                    return "Error: TryClose method not found on IGeneratorDialog.";
+
+                bool closed = (bool)tryCloseMethod.Invoke(editor, null);
+                return closed
+                    ? "Embeditor saved and closed."
+                    : "Embeditor TryClose returned false — may have validation errors or was cancelled.";
+            }
+            catch (Exception ex)
+            {
+                return "Error: " + (ex.InnerException?.Message ?? ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Discard changes and close the embeditor.
+        /// </summary>
+        public string CancelEmbeditor()
+        {
+            var editor = GetClaGenEditor();
+            if (editor == null) return "Error: No embeditor is currently open.";
+
+            try
+            {
+                var dialogInterface = editor.GetType().GetInterface("SoftVelocity.Generator.IGeneratorDialog");
+                if (dialogInterface == null)
+                    return "Error: ClaGenEditor does not implement IGeneratorDialog.";
+
+                var discardMethod = dialogInterface.GetMethod("Discard");
+                if (discardMethod == null)
+                    return "Error: Discard method not found on IGeneratorDialog.";
+
+                discardMethod.Invoke(editor, null);
+
+                // After discarding, close the editor
+                var tryCloseMethod = dialogInterface.GetMethod("TryClose");
+                if (tryCloseMethod != null)
+                    tryCloseMethod.Invoke(editor, null);
+
+                return "Embeditor changes discarded and closed.";
+            }
+            catch (Exception ex)
+            {
+                return "Error: " + (ex.InnerException?.Message ?? ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Navigate to the next/previous embed or filled embed in the embeditor
+        /// by invoking the corresponding SharpDevelop command class.
+        /// </summary>
+        public string NavigateEmbed(string direction, bool filledOnly)
+        {
+            var editor = GetClaGenEditor();
+            if (editor == null) return "Error: No embeditor is currently open.";
+
+            string commandName = "SoftVelocity.Generator.Editor.Commands.Goto"
+                + (direction == "prev" ? "Prev" : "Next")
+                + (filledOnly ? "Filled" : "")
+                + "Embed";
+
+            try
+            {
+                // Find the command type in loaded assemblies (CommonSources.dll)
+                Type cmdType = null;
+                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    cmdType = asm.GetType(commandName);
+                    if (cmdType != null) break;
+                }
+                if (cmdType == null)
+                    return "Error: Command type not found: " + commandName;
+
+                var cmd = Activator.CreateInstance(cmdType);
+
+                // AbstractMenuCommand requires Owner set to the editor before Run()
+                var ownerProp = cmdType.GetProperty("Owner", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (ownerProp != null)
+                    ownerProp.SetValue(cmd, editor, null);
+
+                // AbstractMenuCommand.Run() performs the navigation
+                var runMethod = cmdType.GetMethod("Run", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (runMethod == null)
+                    return "Error: Run() method not found on " + commandName;
+
+                runMethod.Invoke(cmd, null);
+
+                string label = (direction == "prev" ? "Previous" : "Next")
+                    + (filledOnly ? " filled" : "")
+                    + " embed";
+                return "Navigated to " + label + ".";
+            }
+            catch (Exception ex)
+            {
+                return "Error: " + (ex.InnerException?.Message ?? ex.Message);
+            }
         }
 
         private static object GetProp(object obj, string name)

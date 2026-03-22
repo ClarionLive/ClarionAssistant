@@ -13,6 +13,9 @@
     <Pad id="ClaudeChat" category="Tools" title="Claude Chat"
          icon="PadIcons.Output" shortcut="Control|Alt|C"
          class="ClarionAssistant.ClaudeChatPad"/>
+    <Pad id="AgentPanel" category="Tools" title="Agent Panel"
+         icon="PadIcons.TaskList" shortcut="Control|Alt|A"
+         class="ClarionAssistant.AgentPanelPad"/>
   </Path>
 
   <Path name="/Workspace/Tools">
@@ -20,5 +23,7 @@
               class="ClarionAssistant.ShowClassHelperCommand"/>
     <MenuItem id="ShowClaudeChat" label="Claude Chat"
               class="ClarionAssistant.ShowClaudeChatCommand"/>
+    <MenuItem id="ShowAgentPanel" label="Agent Panel"
+              class="ClarionAssistant.ShowAgentPanelCommand"/>
   </Path>
 </AddIn>

@@ -16,13 +16,28 @@ namespace ClarionAssistant.Terminal
             if (_environment != null)
                 return _environment;
 
+            Task<CoreWebView2Environment> task;
             lock (_lock)
             {
                 if (_initTask == null)
                     _initTask = CreateEnvironmentAsync();
+                task = _initTask;
             }
 
-            return await _initTask;
+            try
+            {
+                return await task;
+            }
+            catch
+            {
+                // Reset so the next caller can retry initialization
+                lock (_lock)
+                {
+                    if (_initTask == task)
+                        _initTask = null;
+                }
+                throw;
+            }
         }
 
         private static async Task<CoreWebView2Environment> CreateEnvironmentAsync()
