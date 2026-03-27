@@ -4,16 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Diff Viewer</title>
-<!-- Prefetch Monaco resources so subsequent loads are instant from cache -->
-<link rel="prefetch" href="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js">
-<link rel="prefetch" href="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/editor/editor.main.js">
-<link rel="prefetch" href="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/editor/editor.main.css">
-<link rel="prefetch" href="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/editor/editor.main.nls.js">
-<link rel="prefetch" href="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/base/worker/workerMain.js">
 <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
-    /* ---------- Theme variables ---------- */
+    /* ---------- Theme variables (Catppuccin Mocha / Latte) ---------- */
     :root {
         --bg: #1e1e2e; --fg: #cdd6f4;
         --toolbar-bg: #181825; --toolbar-border: #313244;
@@ -21,11 +15,14 @@
         --btn-border: #45475a; --btn-hover: #313244;
         --nav-color: #89b4fa; --nav-border: #585b70;
         --counter-color: #a6adc8;
-        --apply-bg: #a6e3a1; --apply-text: #1e1e2e; --apply-hover: #94e2d5;
-        --cancel-color: #cdd6f4;
-        --accent: #89b4fa; --accent-border: #89b4fa; --accent-hover: #1e3a5f;
+        --accent: #89b4fa; --accent-hover: #1e3a5f;
+        --border-color: #313244; --text-color: #cdd6f4;
         --loading-color: #6c7086;
-        --theme-icon: "\263E"; /* moon */
+        --add-bg: rgba(166,227,161,0.1); --add-bg-hover: rgba(166,227,161,0.18); --add-fg: #a6e3a1;
+        --del-bg: rgba(243,139,168,0.1); --del-bg-hover: rgba(243,139,168,0.18); --del-fg: #f38ba8;
+        --hunk-bg: rgba(137,180,250,0.05); --hunk-fg: #89b4fa;
+        --input-bg: #2a2a2a; --input-border: #555;
+        --theme-icon: "\263E";
     }
     body.light {
         --bg: #eff1f5; --fg: #4c4f69;
@@ -34,544 +31,639 @@
         --btn-border: #acb0be; --btn-hover: #ccd0da;
         --nav-color: #1e66f5; --nav-border: #acb0be;
         --counter-color: #6c6f85;
-        --apply-bg: #40a02b; --apply-text: #ffffff; --apply-hover: #37913a;
-        --cancel-color: #4c4f69;
-        --accent: #1e66f5; --accent-border: #1e66f5; --accent-hover: #dce5f7;
+        --accent: #1e66f5; --accent-hover: #dce5f7;
+        --border-color: #bcc0cc; --text-color: #4c4f69;
         --loading-color: #8c8fa1;
-        --theme-icon: "\2600"; /* sun */
+        --add-bg: rgba(64,160,43,0.1); --add-bg-hover: rgba(64,160,43,0.18); --add-fg: #40a02b;
+        --del-bg: rgba(210,15,57,0.1); --del-bg-hover: rgba(210,15,57,0.18); --del-fg: #d20f39;
+        --hunk-bg: rgba(30,102,245,0.05); --hunk-fg: #1e66f5;
+        --input-bg: #e6e9ef; --input-border: #acb0be;
+        --theme-icon: "\2600";
     }
 
     html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', Tahoma, sans-serif; background: var(--bg); color: var(--fg); }
 
+    /* ---------- Toolbar ---------- */
     #toolbar {
-        display: flex; align-items: center; justify-content: space-between;
+        display: flex; align-items: center; gap: 8px;
         padding: 6px 12px; background: var(--toolbar-bg); border-bottom: 1px solid var(--toolbar-border);
-        height: 38px;
+        height: 38px; flex-shrink: 0;
     }
-    #toolbar .title { font-size: 13px; color: var(--title-color); }
+    #toolbar .title { font-size: 13px; color: var(--title-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #toolbar .title span { color: var(--title-accent); font-weight: 600; }
-    #toolbar .nav { display: flex; align-items: center; gap: 4px; }
-    #toolbar .nav button {
-        padding: 3px 10px; border: 1px solid var(--nav-border); border-radius: 4px;
-        font-size: 12px; cursor: pointer; font-family: inherit;
+    #toolbar .spacer { flex: 1; }
+    #toolbar button {
+        padding: 3px 10px; border: 1px solid var(--btn-border); border-radius: 4px;
+        font-size: 11px; cursor: pointer; font-family: inherit;
         background: transparent; color: var(--nav-color);
     }
-    #toolbar .nav button:hover { background: var(--btn-hover); }
-    #toolbar .nav button:disabled { opacity: 0.3; cursor: default; }
-    #diff-counter {
-        font-size: 11px; color: var(--counter-color); min-width: 80px; text-align: center;
-        user-select: none;
-    }
-    #toolbar .buttons { display: flex; gap: 8px; }
-    #toolbar button {
-        padding: 4px 16px; border: 1px solid var(--btn-border); border-radius: 4px;
-        font-size: 12px; cursor: pointer; font-family: inherit;
-    }
-    #btn-apply {
-        background: var(--apply-bg); color: var(--apply-text); border-color: var(--apply-bg); font-weight: 600;
-    }
-    #btn-apply:hover { background: var(--apply-hover); }
-    #btn-cancel {
-        background: transparent; color: var(--cancel-color);
-    }
-    #btn-cancel:hover { background: var(--btn-hover); }
-    #btn-inline, #btn-theme, #btn-whitespace {
-        background: transparent; color: var(--accent); border-color: var(--accent-border); font-size: 11px;
-    }
-    #btn-inline:hover, #btn-theme:hover, #btn-whitespace:hover { background: var(--accent-hover); }
-    #btn-whitespace.active { background: var(--accent); color: var(--bg); }
-    #btn-theme { min-width: 28px; padding: 4px 8px; font-size: 14px; line-height: 1; }
-
+    #toolbar button:hover { background: var(--btn-hover); }
+    #diff-counter { font-size: 11px; color: var(--counter-color); min-width: 60px; text-align: center; user-select: none; }
     #font-family-select {
         padding: 2px 4px; border: 1px solid var(--btn-border); border-radius: 4px;
-        background: var(--toolbar-bg); color: var(--fg); font-size: 11px; font-family: inherit;
-        cursor: pointer; max-width: 150px;
+        background: var(--toolbar-bg); color: var(--fg); font-size: 11px; cursor: pointer; max-width: 140px;
     }
-    #font-family-select:focus { outline: 1px solid var(--accent-border); }
     #font-size-input {
-        width: 48px; padding: 2px 4px; border: 1px solid var(--btn-border); border-radius: 4px;
-        background: transparent; color: var(--fg); font-size: 11px; font-family: inherit;
-        text-align: center; -moz-appearance: textfield;
+        width: 44px; padding: 2px 4px; border: 1px solid var(--btn-border); border-radius: 4px;
+        background: transparent; color: var(--fg); font-size: 11px; text-align: center;
+        -moz-appearance: textfield;
     }
     #font-size-input::-webkit-inner-spin-button,
     #font-size-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-    #font-size-input:focus { outline: 1px solid var(--accent-border); }
     .font-label { font-size: 11px; color: var(--counter-color); user-select: none; }
+    #btn-theme { min-width: 28px; padding: 3px 8px; font-size: 14px; line-height: 1; }
 
-    #editor-container { height: calc(100% - 38px); width: 100%; }
+    /* ---------- Main layout ---------- */
+    .cr-container { display: flex; height: calc(100% - 38px); flex-direction: column; }
+    .cr-body { display: flex; flex: 1; overflow: hidden; }
+    .cr-diff-area { flex: 1; overflow: auto; }
+    .cr-diff-pane { font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 12px; }
 
-    #loading {
-        display: flex; align-items: center; justify-content: center;
-        height: calc(100% - 38px); color: var(--loading-color); font-size: 14px;
-    }
+    /* ---------- Diff lines ---------- */
+    .diff-line { padding: 0 12px; line-height: 20px; white-space: pre-wrap; word-break: break-all; display: flex; }
+    .diff-line:hover { background: rgba(255,255,255,0.04); }
+    .diff-line.add { background: var(--add-bg); color: var(--add-fg); }
+    .diff-line.add:hover { background: var(--add-bg-hover); }
+    .diff-line.remove { background: var(--del-bg); color: var(--del-fg); }
+    .diff-line.remove:hover { background: var(--del-bg-hover); }
+    .diff-line.hunk { color: var(--hunk-fg); background: var(--hunk-bg); padding: 4px 12px; margin: 4px 0; }
+    .diff-line.context { color: var(--text-color); }
+    .diff-line-num { width: 40px; text-align: right; padding-right: 8px; color: #666; cursor: pointer; user-select: none; flex-shrink: 0; font-size: 11px; }
+    .diff-line-num:hover { color: var(--accent); text-decoration: underline; }
+    .diff-line-content { flex: 1; }
+    .diff-line.hunk .diff-line-num { color: transparent; cursor: default; }
+    .diff-line.hunk .diff-line-num:hover { color: transparent; text-decoration: none; }
+    .diff-line.hunk.highlighted { background: rgba(137,180,250,0.15); }
+
+    /* ---------- No changes message ---------- */
+    .no-changes { padding: 40px; text-align: center; color: var(--counter-color); font-size: 14px; }
+
+    /* ---------- Comment input ---------- */
+    .cr-comment-input { padding: 8px 12px 8px 48px; background: rgba(137,180,250,0.08); border-left: 3px solid var(--accent); margin: 2px 0; }
+    .cr-comment-row { display: flex; gap: 8px; align-items: flex-start; }
+    .cr-severity-select { background: var(--input-bg); color: var(--fg); border: 1px solid var(--input-border); border-radius: 4px; padding: 4px 6px; font-size: 11px; }
+    .cr-comment-textarea { flex: 1; background: var(--bg); color: var(--fg); border: 1px solid var(--input-border); border-radius: 4px; padding: 6px 8px; font-size: 12px; font-family: inherit; resize: vertical; min-height: 40px; max-height: 120px; }
+    .cr-comment-textarea:focus { border-color: var(--accent); outline: none; }
+    .cr-comment-actions { display: flex; gap: 6px; margin-top: 6px; justify-content: flex-end; }
+    .cr-comment-btn { padding: 4px 12px; border-radius: 4px; border: none; cursor: pointer; font-size: 11px; font-weight: 600; }
+    .cr-comment-btn.add { background: var(--accent); color: #fff; }
+    .cr-comment-btn.add:hover { opacity: 0.85; }
+    .cr-comment-btn.cancel { background: var(--btn-border); color: var(--fg); }
+    .cr-comment-btn.cancel:hover { opacity: 0.85; }
+
+    /* ---------- Inline comment badges ---------- */
+    .cr-inline-comment { padding: 6px 12px 6px 48px; margin: 1px 0; display: flex; align-items: flex-start; gap: 8px; font-size: 11px; }
+    .cr-inline-comment .cr-sev-tag { padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 700; flex-shrink: 0; }
+    .cr-sev-tag.BLOCKER { background: rgba(243,139,168,0.2); color: #f38ba8; }
+    .cr-sev-tag.SUGGESTION { background: rgba(137,180,250,0.2); color: #89b4fa; }
+    .cr-sev-tag.NITPICK { background: rgba(158,158,158,0.2); color: #bbb; }
+    .cr-sev-tag.QUESTION { background: rgba(249,226,175,0.2); color: #f9e2af; }
+    .cr-inline-comment .cr-comment-text { flex: 1; color: var(--fg); }
+    .cr-inline-comment .cr-comment-del { cursor: pointer; color: #888; font-size: 13px; }
+    .cr-inline-comment .cr-comment-del:hover { color: #f38ba8; }
+    .cr-inline-comment .cr-comment-edit { cursor: pointer; color: #888; font-size: 13px; margin-right: 2px; }
+    .cr-inline-comment .cr-comment-edit:hover { color: var(--accent); }
+
+    /* ---------- Bottom bar ---------- */
+    .cr-bottom { border-top: 1px solid var(--border-color); flex-shrink: 0; }
+    .cr-summary { padding: 6px 12px; font-size: 11px; color: #aaa; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .cr-summary-tag { padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 700; }
+    .cr-actions { display: flex; gap: 8px; padding: 8px 12px; justify-content: flex-end; }
+    .cr-btn { padding: 6px 16px; border-radius: 4px; border: none; cursor: pointer; font-size: 12px; font-weight: 600; }
+    .cr-btn.pass { background: #a6e3a1; color: #1e1e2e; }
+    .cr-btn.pass:hover { background: #94e2d5; }
+    .cr-btn.submit-notes { background: var(--accent); color: #fff; opacity: 0.4; pointer-events: none; }
+    .cr-btn.submit-notes.enabled { opacity: 1; pointer-events: auto; cursor: pointer; }
+    .cr-btn.submit-notes.enabled:hover { opacity: 0.85; }
+    .cr-btn.cancel-btn { background: transparent; color: var(--fg); border: 1px solid var(--btn-border); }
+    .cr-btn.cancel-btn:hover { background: var(--btn-hover); }
+
+    /* ---------- Summary sidebar ---------- */
+    .cr-summary-sidebar { width: 260px; border-left: 1px solid var(--border-color); overflow-y: auto; flex-shrink: 0; display: flex; flex-direction: column; transition: width 0.2s ease; }
+    .cr-summary-sidebar.collapsed { width: 0; border-left: none; overflow: hidden; }
+    .cr-sidebar-header { padding: 8px 12px; font-size: 11px; font-weight: 600; color: var(--text-color); border-bottom: 1px solid var(--border-color); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+    .cr-sidebar-header button { background: none; border: none; color: #888; cursor: pointer; font-size: 14px; padding: 0 4px; }
+    .cr-sidebar-header button:hover { color: var(--text-color); }
+    .cr-sidebar-content { flex: 1; overflow-y: auto; padding: 4px 0; }
+    .cr-summary-card { padding: 8px 12px; margin: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; border-left: 3px solid #555; background: rgba(255,255,255,0.02); transition: background 0.15s; }
+    .cr-summary-card:hover { background: rgba(255,255,255,0.06); }
+    .cr-summary-card.active { background: rgba(137,180,250,0.12); border-left-color: var(--accent) !important; }
+    .cr-summary-card.additions { border-left-color: #a6e3a1; }
+    .cr-summary-card.deletions { border-left-color: #f38ba8; }
+    .cr-summary-card.mixed { border-left-color: #fab387; }
+    .cr-scard-title { color: var(--text-color); margin-bottom: 3px; line-height: 1.3; }
+    .cr-scard-meta { color: #888; font-size: 10px; }
+    .cr-toggle-sidebar { background: none; border: 1px solid var(--border-color); color: var(--text-color); padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; }
+    .cr-toggle-sidebar:hover { background: rgba(255,255,255,0.05); }
 </style>
 </head>
 <body>
-
+<!-- Toolbar -->
 <div id="toolbar">
-    <div class="title" id="diff-title">Diff: <span id="diff-name">Loading...</span></div>
-    <div class="nav">
-        <button id="btn-prev" onclick="goToPrevDiff()" title="Previous change (Shift+F7)" disabled>&#9650; Prev</button>
-        <span id="diff-counter">--</span>
-        <button id="btn-next" onclick="goToNextDiff()" title="Next change (F7)" disabled>Next &#9660;</button>
+    <div class="title">Diff: <span id="diff-title">...</span></div>
+    <div class="spacer"></div>
+    <button onclick="goPrev()" title="Previous change (Shift+F7)">&#x25B2; Prev</button>
+    <span id="diff-counter">--</span>
+    <button onclick="goNext()" title="Next change (F7)">Next &#x25BC;</button>
+    <span class="font-label">|</span>
+    <select id="font-family-select" onchange="applyFontFamily(this.value)" title="Font family">
+        <option value="'Cascadia Code','Consolas',monospace">Cascadia Code</option>
+        <option value="'Consolas',monospace">Consolas</option>
+        <option value="'Courier New',monospace">Courier New</option>
+        <option value="'Fira Code',monospace">Fira Code</option>
+        <option value="monospace">Monospace</option>
+    </select>
+    <input id="font-size-input" type="number" min="8" max="40" value="12" onchange="applyFontSize(parseInt(this.value))" title="Font size (px)">
+    <span class="font-label">px</span>
+    <button id="btn-theme" onclick="toggleTheme()" title="Toggle light/dark theme">&#x263E;</button>
+</div>
+
+<!-- Main content -->
+<div class="cr-container">
+    <div class="cr-body">
+        <div class="cr-diff-area" id="cr-diff-area">
+            <div class="cr-diff-pane" id="cr-diff-pane">
+                <div class="no-changes" id="loading-msg">Loading diff...</div>
+            </div>
+        </div>
+        <div class="cr-summary-sidebar" id="cr-summary-sidebar">
+            <div class="cr-sidebar-header">
+                <span id="cr-sidebar-title">Changes</span>
+                <button onclick="toggleSummarySidebar()" title="Hide sidebar">&#x2715;</button>
+            </div>
+            <div class="cr-sidebar-content" id="cr-sidebar-content"></div>
+        </div>
     </div>
-    <div class="buttons">
-        <span class="font-label">Font:</span>
-        <select id="font-family-select" title="Font family">
-            <option value="'Cascadia Code', 'Consolas', monospace">Cascadia Code</option>
-            <option value="'Consolas', monospace">Consolas</option>
-            <option value="'Courier New', monospace">Courier New</option>
-            <option value="'Fira Code', monospace">Fira Code</option>
-            <option value="'JetBrains Mono', monospace">JetBrains Mono</option>
-            <option value="'Source Code Pro', monospace">Source Code Pro</option>
-            <option value="'Cascadia Mono', monospace">Cascadia Mono</option>
-            <option value="'Lucida Console', monospace">Lucida Console</option>
-        </select>
-        <input id="font-size-input" type="number" min="8" max="40" list="font-sizes"
-               title="Font size (type or pick)" />
-        <datalist id="font-sizes">
-            <option value="10"><option value="11"><option value="12"><option value="13">
-            <option value="14"><option value="16"><option value="18"><option value="20">
-            <option value="24"><option value="28"><option value="32">
-        </datalist>
-        <button id="btn-theme" onclick="toggleTheme()" title="Toggle light/dark mode">&#9790;</button>
-        <button id="btn-whitespace" onclick="toggleWhitespace()" title="Toggle whitespace comparison">Ignore WS</button>
-        <button id="btn-inline" onclick="toggleInline()">Inline</button>
-        <button id="btn-cancel" onclick="onCancel()">Cancel</button>
-        <button id="btn-apply" onclick="onApply()">Apply</button>
+    <div class="cr-bottom">
+        <div class="cr-summary" id="cr-summary"><span style="color:#888;">Loading...</span></div>
+        <div class="cr-actions">
+            <button class="cr-toggle-sidebar" onclick="toggleSummarySidebar()" id="cr-sidebar-toggle" style="display:none;">Changes</button>
+            <button class="cr-btn submit-notes" id="cr-submit-btn" onclick="onSubmitNotes()">Submit Notes</button>
+            <button class="cr-btn pass" onclick="onApprove()">Approve</button>
+            <button class="cr-btn cancel-btn" onclick="onCancel()">Cancel</button>
+        </div>
     </div>
 </div>
 
-<div id="loading">Loading Monaco Editor...</div>
-<div id="editor-container" style="display:none;"></div>
-
 <script>
-    var diffEditor = null;
-    var isInline = false;
-    var isDark = true;
-    var ignoreWhitespace = false;
-    var currentDiffIndex = -1;
-    var diffChanges = [];
-    var rawOriginal = '';
-    var rawModified = '';
+    // ── State ──
+    let _comments = [];          // [{line, lineContent, severity, comment}]
+    let _hunkSummaries = [];     // [{oldStart, oldCount, newStart, newCount, addedLines, removedLines, hunkId, hunkIndex, changeType, basicSummary}]
+    let _hunkStarts = [];        // DOM element IDs of hunk headers
+    let _currentHunkIndex = -1;
+    let savedFontSize = parseInt(localStorage.getItem('diffFontSize') || '12');
+    let savedFontFamily = localStorage.getItem('diffFontFamily') || "'Cascadia Code','Consolas',monospace";
 
-    // Load Monaco from CDN
-    var loadStart = performance.now();
-    var script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js';
-    script.onload = function() {
-        console.log('[DiffViewer] loader.js loaded in ' + Math.round(performance.now() - loadStart) + 'ms');
-        require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs' } });
-        require(['vs/editor/editor.main'], function() {
-            console.log('[DiffViewer] Monaco ready in ' + Math.round(performance.now() - loadStart) + 'ms');
-            registerClarionLanguage();
-            document.getElementById('loading').style.display = 'none';
-            document.getElementById('editor-container').style.display = 'block';
-            notifyReady();
-        });
-    };
-    script.onerror = function() {
-        document.getElementById('loading').textContent = 'Failed to load Monaco Editor. Check internet connection.';
-    };
-    document.head.appendChild(script);
-
-    function registerClarionLanguage() {
-        monaco.languages.register({ id: 'clarion' });
-        monaco.languages.setMonarchTokensProvider('clarion', {
-            ignoreCase: true,
-            keywords: [
-                'PROCEDURE', 'FUNCTION', 'ROUTINE', 'CODE', 'DATA', 'MAP', 'END',
-                'IF', 'THEN', 'ELSIF', 'ELSE', 'OF', 'CASE', 'OROF', 'EXECUTE',
-                'LOOP', 'WHILE', 'UNTIL', 'TIMES', 'DO', 'CYCLE', 'BREAK', 'EXIT',
-                'RETURN', 'BEGIN', 'SECTION', 'ACCEPT', 'MEMBER', 'INCLUDE', 'ONCE',
-                'MODULE', 'PROGRAM', 'CLASS', 'VIRTUAL', 'DERIVED', 'TYPE', 'IMPLEMENTS',
-                'INTERFACE', 'PRIVATE', 'PROTECTED', 'PUBLIC', 'SELF', 'PARENT',
-                'NEW', 'DISPOSE', 'FREE', 'CLEAR', 'ADD', 'GET', 'PUT', 'DELETE',
-                'SORT', 'RECORDS', 'APPEND', 'CLIP', 'LEFT', 'RIGHT', 'UPPER', 'LOWER',
-                'LEN', 'SUB', 'INSTRING', 'FORMAT', 'DEFORMAT', 'MESSAGE', 'HALT',
-                'OPEN', 'CLOSE', 'CREATE', 'SET', 'NEXT', 'PREVIOUS', 'NOMEMO',
-                'STRING', 'LONG', 'SHORT', 'BYTE', 'REAL', 'DECIMAL', 'CSTRING',
-                'PSTRING', 'GROUP', 'QUEUE', 'FILE', 'RECORD', 'KEY', 'INDEX',
-                'WINDOW', 'APPLICATION', 'TOOLBAR', 'MENUBAR', 'MENU', 'ITEM',
-                'SHEET', 'TAB', 'OPTION', 'RADIO', 'CHECK', 'LIST', 'COMBO',
-                'ENTRY', 'TEXT', 'BUTTON', 'IMAGE', 'PROMPT', 'REGION',
-                'TRUE', 'FALSE', 'AND', 'OR', 'NOT', 'XOR', 'BAND', 'BOR', 'BXOR',
-                'COMPILE', 'OMIT', 'EQUATE', 'LIKE', 'OVER', 'AUTO', 'THREAD',
-                'BIND', 'UNBIND', 'REGISTER', 'UNREGISTER', 'EVENT', 'PROP'
-            ],
-            tokenizer: {
-                root: [
-                    [/!.*$/, 'comment'],
-                    [/'[^']*'/, 'string'],
-                    [/[a-zA-Z_]\w*/, { cases: { '@keywords': 'keyword', '@default': 'identifier' } }],
-                    [/[{}()\[\]]/, 'delimiter'],
-                    [/[0-9]+(\.[0-9]+)?/, 'number'],
-                    [/[,.:;=<>+\-*\/&|~^]/, 'operator'],
-                    [/\?[a-zA-Z_]\w*/, 'variable.predefined'],
-                ]
-            }
-        });
-
-        monaco.editor.defineTheme('clarion-dark', {
-            base: 'vs-dark',
-            inherit: true,
-            rules: [
-                { token: 'keyword', foreground: '89b4fa', fontStyle: 'bold' },
-                { token: 'comment', foreground: '6c7086', fontStyle: 'italic' },
-                { token: 'string', foreground: 'a6e3a1' },
-                { token: 'number', foreground: 'fab387' },
-                { token: 'variable.predefined', foreground: 'f5c2e7' },
-                { token: 'operator', foreground: '94e2d5' },
-            ],
-            colors: {
-                'editor.background': '#1e1e2e',
-                'editor.foreground': '#cdd6f4',
-                'editorLineNumber.foreground': '#a6adc8',
-                'editorLineNumber.activeForeground': '#cdd6f4',
-                'editor.selectionBackground': '#45475a',
-                'diffEditor.insertedTextBackground': '#a6e3a140',
-                'diffEditor.removedTextBackground': '#f3899940',
-                'diffEditor.insertedLineBackground': '#a6e3a125',
-                'diffEditor.removedLineBackground': '#f3899925',
-                'diffEditorGutter.insertedLineBackground': '#a6e3a130',
-                'diffEditorGutter.removedLineBackground': '#f3899930',
-                'editorGutter.background': '#181825',
-            }
-        });
-
-        monaco.editor.defineTheme('clarion-light', {
-            base: 'vs',
-            inherit: true,
-            rules: [
-                { token: 'keyword', foreground: '1e66f5', fontStyle: 'bold' },
-                { token: 'comment', foreground: '8c8fa1', fontStyle: 'italic' },
-                { token: 'string', foreground: '40a02b' },
-                { token: 'number', foreground: 'fe640b' },
-                { token: 'variable.predefined', foreground: 'ea76cb' },
-                { token: 'operator', foreground: '179299' },
-            ],
-            colors: {
-                'editor.background': '#eff1f5',
-                'editor.foreground': '#4c4f69',
-                'editorLineNumber.foreground': '#6c6f85',
-                'editorLineNumber.activeForeground': '#4c4f69',
-                'editor.selectionBackground': '#acb0be',
-                'diffEditor.insertedTextBackground': '#40a02b40',
-                'diffEditor.removedTextBackground': '#d2042d40',
-                'diffEditor.insertedLineBackground': '#40a02b25',
-                'diffEditor.removedLineBackground': '#d2042d25',
-                'diffEditorGutter.insertedLineBackground': '#40a02b30',
-                'diffEditorGutter.removedLineBackground': '#d2042d30',
-                'editorGutter.background': '#dce0e8',
-            }
-        });
+    // ── Utility ──
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 
-    // Normalize whitespace: collapse runs of spaces/tabs to single space, trim each line
-    function normalizeWhitespace(text) {
-        return text.split('\n').map(function(line) {
-            return line.replace(/[ \t]+/g, ' ').trim();
-        }).join('\n');
-    }
-
-    function createDiffEditor(original, modified, language) {
-        // Store raw texts for toggling and Apply
-        rawOriginal = original;
-        rawModified = modified;
-
-        var container = document.getElementById('editor-container');
-        container.innerHTML = '';
-
-        // When ignoring whitespace, normalize text so internal spacing diffs disappear
-        var displayOriginal = ignoreWhitespace ? normalizeWhitespace(original) : original;
-        var displayModified = ignoreWhitespace ? normalizeWhitespace(modified) : modified;
-
-        diffEditor = monaco.editor.createDiffEditor(container, {
-            theme: 'clarion-dark',
-            automaticLayout: true,
-            renderSideBySide: !isInline,
-            readOnly: false,
-            originalEditable: false,
-            fontSize: savedFontSize,
-            fontFamily: savedFontFamily,
-            lineNumbers: 'on',
-            lineNumbersMinChars: 4,
-            glyphMargin: false,
-            folding: false,
-            minimap: { enabled: false },
-            scrollBeyondLastLine: false,
-            renderWhitespace: 'selection',
-            wordWrap: 'off',
-            ignoreTrimWhitespace: ignoreWhitespace,
-            renderIndicators: true,
-            renderMarginRevertIcon: true,
-            mouseWheelZoom: true,
-        });
-
-        var lang = language || 'clarion';
-        var originalModel = monaco.editor.createModel(displayOriginal, lang);
-        var modifiedModel = monaco.editor.createModel(displayModified, lang);
-
-        diffEditor.setModel({
-            original: originalModel,
-            modified: modifiedModel
-        });
-
-        // Persist font size on Ctrl+wheel zoom and sync the input
-        diffEditor.getModifiedEditor().onDidChangeConfiguration(function(e) {
-            if (e.hasChanged(monaco.editor.EditorOption.fontSize)) {
-                var newSize = diffEditor.getModifiedEditor().getOption(monaco.editor.EditorOption.fontSize);
-                savedFontSize = newSize;
-                fontInput.value = newSize;
-                localStorage.setItem('diffViewerFontSize', newSize);
-            }
-        });
-
-        // Hook up diff navigation once diff computation completes
-        if (diffEditor.onDidUpdateDiff) {
-            diffEditor.onDidUpdateDiff(function() {
-                refreshDiffChanges();
-            });
-        }
-        // Also refresh after a short delay as fallback
-        setTimeout(refreshDiffChanges, 500);
-    }
-
-    // ---------- Diff Navigation (hunk-based) ----------
-
-    var diffHunks = []; // grouped change blocks
-    var savedFontSize = parseInt(localStorage.getItem('diffViewerFontSize')) || 13;
-    var savedFontFamily = localStorage.getItem('diffViewerFontFamily') || "'Cascadia Code', 'Consolas', 'Courier New', monospace";
-
-    // Merge adjacent line changes within `proximity` lines into logical hunks
-    function groupIntoHunks(changes, proximity) {
-        if (!changes || changes.length === 0) return [];
-        proximity = proximity || 3;
-        var hunks = [];
-        var cur = {
-            modStart: changes[0].modifiedStartLineNumber,
-            modEnd:   changes[0].modifiedEndLineNumber,
-            origStart: changes[0].originalStartLineNumber,
-            origEnd:   changes[0].originalEndLineNumber
-        };
-
-        for (var i = 1; i < changes.length; i++) {
-            var c = changes[i];
-            var nextStart = c.modifiedStartLineNumber > 0 ? c.modifiedStartLineNumber : c.originalStartLineNumber;
-            var curEnd    = cur.modEnd > 0 ? cur.modEnd : cur.origEnd;
-
-            if (nextStart <= curEnd + proximity) {
-                // Merge into current hunk
-                cur.modEnd  = Math.max(cur.modEnd,  c.modifiedEndLineNumber);
-                cur.origEnd = Math.max(cur.origEnd, c.originalEndLineNumber);
-            } else {
-                hunks.push(cur);
-                cur = {
-                    modStart: c.modifiedStartLineNumber,
-                    modEnd:   c.modifiedEndLineNumber,
-                    origStart: c.originalStartLineNumber,
-                    origEnd:   c.originalEndLineNumber
-                };
-            }
-        }
-        hunks.push(cur);
-        return hunks;
-    }
-
-    function refreshDiffChanges() {
-        if (!diffEditor) return;
-        var changes = diffEditor.getLineChanges();
-        if (!changes) return;
-        diffChanges = changes;
-        diffHunks = groupIntoHunks(changes, 3);
-        currentDiffIndex = -1;
-        var hasDiffs = diffHunks.length > 0;
-        document.getElementById('btn-prev').disabled = !hasDiffs;
-        document.getElementById('btn-next').disabled = !hasDiffs;
-        updateDiffCounter();
-        // Auto-jump to first hunk
-        if (hasDiffs && currentDiffIndex < 0) {
-            goToNextDiff();
+    function postMsg(obj) {
+        if (window.chrome && window.chrome.webview) {
+            window.chrome.webview.postMessage(JSON.stringify(obj));
         }
     }
 
-    function goToNextDiff() {
-        if (!diffEditor || diffHunks.length === 0) return;
-        currentDiffIndex = (currentDiffIndex + 1) % diffHunks.length;
-        jumpToHunk(currentDiffIndex);
-    }
-
-    function goToPrevDiff() {
-        if (!diffEditor || diffHunks.length === 0) return;
-        currentDiffIndex = (currentDiffIndex - 1 + diffHunks.length) % diffHunks.length;
-        jumpToHunk(currentDiffIndex);
-    }
-
-    function jumpToHunk(index) {
-        var hunk = diffHunks[index];
-        var line = hunk.modStart > 0 ? hunk.modStart : hunk.origStart;
-        var modEditor = diffEditor.getModifiedEditor();
-        modEditor.revealLineInCenter(line);
-        modEditor.setPosition({ lineNumber: line, column: 1 });
-        modEditor.focus();
-        updateDiffCounter();
-    }
-
-    function updateDiffCounter() {
-        var el = document.getElementById('diff-counter');
-        if (diffHunks.length === 0) {
-            el.textContent = 'No changes';
-        } else if (currentDiffIndex < 0) {
-            el.textContent = diffHunks.length + ' changes';
-        } else {
-            el.textContent = (currentDiffIndex + 1) + ' of ' + diffHunks.length;
-        }
-    }
-
-    // --- Font family select ---
-    var fontFamilySelect = document.getElementById('font-family-select');
-    // Restore saved selection
-    for (var i = 0; i < fontFamilySelect.options.length; i++) {
-        if (fontFamilySelect.options[i].value === savedFontFamily) {
-            fontFamilySelect.selectedIndex = i;
-            break;
-        }
-    }
-    fontFamilySelect.addEventListener('change', function() {
-        savedFontFamily = this.value;
-        localStorage.setItem('diffViewerFontFamily', savedFontFamily);
-        if (diffEditor) diffEditor.updateOptions({ fontFamily: savedFontFamily });
-    });
-
-    // --- Font size input ---
-    var fontInput = document.getElementById('font-size-input');
-    fontInput.value = savedFontSize;
-
+    // ── Font Controls ──
     function applyFontSize(size) {
-        size = Math.max(8, Math.min(40, parseInt(size) || 13));
+        size = Math.max(8, Math.min(40, size || 12));
         savedFontSize = size;
-        fontInput.value = size;
-        localStorage.setItem('diffViewerFontSize', size);
-        if (diffEditor) diffEditor.updateOptions({ fontSize: size });
+        localStorage.setItem('diffFontSize', size);
+        const pane = document.getElementById('cr-diff-pane');
+        if (pane) pane.style.fontSize = size + 'px';
+        const input = document.getElementById('font-size-input');
+        if (input) input.value = size;
     }
 
-    fontInput.addEventListener('change', function() { applyFontSize(this.value); });
-    fontInput.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') { e.preventDefault(); applyFontSize(this.value); this.blur(); }
-    });
-
-    // Ctrl+MouseWheel zoom — handle manually since WebView2 may block the event from Monaco
-    document.addEventListener('wheel', function(e) {
-        if (!e.ctrlKey || !diffEditor) return;
-        e.preventDefault();
-        var delta = e.deltaY > 0 ? -1 : 1;
-        applyFontSize(savedFontSize + delta);
-    }, { passive: false });
-
-    // Keyboard shortcuts: F7 = next diff, Shift+F7 = prev diff
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'F7' || e.keyCode === 118) {
-            e.preventDefault();
-            if (e.shiftKey) { goToPrevDiff(); } else { goToNextDiff(); }
-        }
-    });
-
-    function toggleInline() {
-        if (!diffEditor) return;
-        isInline = !isInline;
-        diffEditor.updateOptions({ renderSideBySide: !isInline });
-        document.getElementById('btn-inline').textContent = isInline ? 'Side by Side' : 'Inline';
-        // Re-check diffs after layout change
-        setTimeout(refreshDiffChanges, 300);
+    function applyFontFamily(family) {
+        savedFontFamily = family;
+        localStorage.setItem('diffFontFamily', family);
+        const pane = document.getElementById('cr-diff-pane');
+        if (pane) pane.style.fontFamily = family;
+        const sel = document.getElementById('font-family-select');
+        if (sel) sel.value = family;
     }
 
-    function toggleWhitespace() {
-        if (!diffEditor) return;
-        ignoreWhitespace = !ignoreWhitespace;
-        var btn = document.getElementById('btn-whitespace');
-        btn.classList.toggle('active', ignoreWhitespace);
-        btn.textContent = ignoreWhitespace ? 'Show WS' : 'Ignore WS';
-
-        // Swap models between normalized and raw text
-        var displayOriginal = ignoreWhitespace ? normalizeWhitespace(rawOriginal) : rawOriginal;
-        var displayModified = ignoreWhitespace ? normalizeWhitespace(rawModified) : rawModified;
-        var lang = diffEditor.getModel().original.getLanguageId();
-        var oldModel = diffEditor.getModel();
-        var originalModel = monaco.editor.createModel(displayOriginal, lang);
-        var modifiedModel = monaco.editor.createModel(displayModified, lang);
-        diffEditor.setModel({ original: originalModel, modified: modifiedModel });
-        diffEditor.updateOptions({ ignoreTrimWhitespace: ignoreWhitespace });
-        if (oldModel.original) oldModel.original.dispose();
-        if (oldModel.modified) oldModel.modified.dispose();
-        setTimeout(refreshDiffChanges, 300);
-    }
-
+    // ── Theme ──
     function toggleTheme() {
-        isDark = !isDark;
-        document.body.classList.toggle('light', !isDark);
-        document.getElementById('btn-theme').innerHTML = isDark ? '&#9790;' : '&#9728;';
-        if (diffEditor) {
-            monaco.editor.setTheme(isDark ? 'clarion-dark' : 'clarion-light');
-        }
+        document.body.classList.toggle('light');
+        const btn = document.getElementById('btn-theme');
+        if (btn) btn.innerHTML = document.body.classList.contains('light') ? '\u2600' : '\u263E';
+        localStorage.setItem('diffTheme', document.body.classList.contains('light') ? 'light' : 'dark');
     }
 
-    function onApply() {
-        if (!diffEditor) return;
-        // If whitespace-normalized, return the raw modified text (user edits on normalized view are lost)
-        // If not normalized, return the editor content (which may include user edits)
-        var modifiedText = ignoreWhitespace
-            ? rawModified
-            : diffEditor.getModel().modified.getValue();
-        window.chrome.webview.postMessage(JSON.stringify({
-            action: 'apply',
-            text: modifiedText
-        }));
-    }
+    // ── Unified Diff Renderer ──
+    function renderUnifiedDiff(diffText) {
+        const lines = diffText.split(/\r?\n/);
+        let html = '';
+        let lineNum = 0;
+        let hunkIndex = -1;
+        let currentHunk = null;
+        _hunkSummaries = [];
+        _hunkStarts = [];
 
-    function onCancel() {
-        window.chrome.webview.postMessage(JSON.stringify({
-            action: 'cancel'
-        }));
-    }
+        for (let idx = 0; idx < lines.length; idx++) {
+            const line = lines[idx];
+            if (line.startsWith('@@')) {
+                // Finalize previous hunk
+                if (currentHunk) finalizeHunk(currentHunk);
 
-    function notifyReady() {
-        window.chrome.webview.postMessage(JSON.stringify({ action: 'ready' }));
-    }
-
-    // Receive messages from C# (PostWebMessageAsJson delivers e.data as parsed object)
-    window.chrome.webview.addEventListener('message', function(e) {
-        var msg = (typeof e.data === 'string') ? JSON.parse(e.data) : e.data;
-        if (msg.type === 'setDiff') {
-            document.getElementById('diff-name').textContent = msg.title || 'Untitled';
-            if (msg.ignoreWhitespace !== undefined) {
-                ignoreWhitespace = !!msg.ignoreWhitespace;
-                var btn = document.getElementById('btn-whitespace');
-                btn.classList.toggle('active', ignoreWhitespace);
-                btn.textContent = ignoreWhitespace ? 'Show WS' : 'Ignore WS';
-            }
-
-            // Fetch content from temp files via virtual host (avoids large message corruption)
-            if (msg.originalUrl && msg.modifiedUrl) {
-                Promise.all([
-                    fetch(msg.originalUrl).then(function(r) { return r.text(); }),
-                    fetch(msg.modifiedUrl).then(function(r) { return r.text(); })
-                ]).then(function(texts) {
-                    console.log('[DiffViewer] fetched original lines: ' + texts[0].split('\n').length +
-                                ', modified lines: ' + texts[1].split('\n').length);
-                    createDiffEditor(texts[0], texts[1], msg.language);
-                }).catch(function(err) {
-                    console.error('[DiffViewer] fetch failed: ' + err);
-                    // Fallback to inline text if available
-                    createDiffEditor(msg.original || '', msg.modified || '', msg.language);
-                });
+                // Parse hunk header
+                const match = line.match(/@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@/);
+                hunkIndex++;
+                const hunkId = 'cr-hunk-' + hunkIndex;
+                currentHunk = {
+                    oldStart: match ? parseInt(match[1]) : 0,
+                    oldCount: match ? parseInt(match[2] || '1') : 0,
+                    newStart: match ? parseInt(match[3]) : 0,
+                    newCount: match ? parseInt(match[4] || '1') : 0,
+                    addedLines: 0, removedLines: 0,
+                    hunkId: hunkId, hunkIndex: hunkIndex
+                };
+                if (match) lineNum = parseInt(match[3]) - 1;
+                _hunkStarts.push(hunkId);
+                html += '<div class="diff-line hunk" id="' + hunkId + '" onclick="highlightSummaryCard(' + hunkIndex + ')"><span class="diff-line-num"></span><span class="diff-line-content">' + escapeHtml(line) + '</span></div>';
+            } else if (line.startsWith('+') && !line.startsWith('+++')) {
+                lineNum++;
+                if (currentHunk) currentHunk.addedLines++;
+                html += '<div class="diff-line add"><span class="diff-line-num" onclick="openComment(' + lineNum + ',this)" title="Click to add a review note">' + lineNum + '</span><span class="diff-line-content">' + escapeHtml(line) + '</span></div>';
+            } else if (line.startsWith('-') && !line.startsWith('---')) {
+                if (currentHunk) currentHunk.removedLines++;
+                html += '<div class="diff-line remove"><span class="diff-line-num" onclick="openComment(' + (lineNum || -1) + ',this)" title="Click to add a review note">&minus;</span><span class="diff-line-content">' + escapeHtml(line) + '</span></div>';
+            } else if (line.startsWith('---') || line.startsWith('+++')) {
+                continue; // skip file headers
             } else {
-                // Inline text fallback for small payloads
-                console.log('[DiffViewer] inline original lines: ' + (msg.original || '').split('\n').length +
-                            ', modified lines: ' + (msg.modified || '').split('\n').length);
-                createDiffEditor(msg.original || '', msg.modified || '', msg.language);
+                lineNum++;
+                html += '<div class="diff-line context"><span class="diff-line-num" onclick="openComment(' + lineNum + ',this)" title="Click to add a review note">' + lineNum + '</span><span class="diff-line-content">' + escapeHtml(line) + '</span></div>';
             }
+        }
+        // Finalize last hunk
+        if (currentHunk) finalizeHunk(currentHunk);
+
+        return html;
+    }
+
+    function finalizeHunk(hunk) {
+        let changeType = 'mixed';
+        if (hunk.addedLines > 0 && hunk.removedLines === 0) changeType = 'additions';
+        else if (hunk.removedLines > 0 && hunk.addedLines === 0) changeType = 'deletions';
+
+        let basicSummary = '';
+        if (changeType === 'additions') basicSummary = 'Added ' + hunk.addedLines + ' line' + (hunk.addedLines !== 1 ? 's' : '');
+        else if (changeType === 'deletions') basicSummary = 'Removed ' + hunk.removedLines + ' line' + (hunk.removedLines !== 1 ? 's' : '');
+        else basicSummary = 'Changed: +' + hunk.addedLines + ' \u2212' + hunk.removedLines + ' lines';
+
+        _hunkSummaries.push({
+            oldStart: hunk.oldStart, oldCount: hunk.oldCount,
+            newStart: hunk.newStart, newCount: hunk.newCount,
+            addedLines: hunk.addedLines, removedLines: hunk.removedLines,
+            hunkId: hunk.hunkId, hunkIndex: hunk.hunkIndex,
+            changeType: changeType, basicSummary: basicSummary
+        });
+    }
+
+    // ── Comment System ──
+    function openComment(lineNum, clickedEl) {
+        // Remove any existing comment input
+        const existing = document.querySelector('.cr-comment-input');
+        if (existing) existing.remove();
+
+        const lineEl = clickedEl.closest('.diff-line');
+        const lineContent = lineEl ? (lineEl.querySelector('.diff-line-content')?.textContent || '') : '';
+
+        const inputDiv = document.createElement('div');
+        inputDiv.className = 'cr-comment-input';
+        inputDiv.setAttribute('data-line-num', lineNum);
+        inputDiv.setAttribute('data-line-content', lineContent);
+        inputDiv.innerHTML =
+            '<div class="cr-comment-row">' +
+                '<select class="cr-severity-select" id="cr-sev-select">' +
+                    '<option value="BLOCKER">BLOCKER</option>' +
+                    '<option value="SUGGESTION" selected>SUGGESTION</option>' +
+                    '<option value="NITPICK">NITPICK</option>' +
+                    '<option value="QUESTION">QUESTION</option>' +
+                '</select>' +
+                '<textarea class="cr-comment-textarea" id="cr-comment-text" placeholder="What should the agent know about this line?" rows="2"></textarea>' +
+            '</div>' +
+            '<div class="cr-comment-actions">' +
+                '<button class="cr-comment-btn cancel" onclick="this.closest(\'.cr-comment-input\').remove()">Cancel</button>' +
+                '<button class="cr-comment-btn add" onclick="addCommentFromInput(this)">Add Note</button>' +
+            '</div>';
+        lineEl.after(inputDiv);
+
+        const textarea = inputDiv.querySelector('#cr-comment-text');
+        textarea.focus();
+        textarea.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') { inputDiv.remove(); e.stopPropagation(); }
+            if (e.key === 'Enter' && e.ctrlKey) {
+                document.querySelector('.cr-comment-btn.add')?.click();
+                e.preventDefault();
+            }
+        });
+    }
+
+    function addCommentFromInput(btnEl) {
+        const container = btnEl.closest('.cr-comment-input');
+        if (!container) return;
+        const lineNum = parseInt(container.getAttribute('data-line-num'));
+        const lineContent = container.getAttribute('data-line-content') || '';
+        const severity = document.getElementById('cr-sev-select').value;
+        const comment = document.getElementById('cr-comment-text').value.trim();
+        if (!comment) return;
+
+        _comments.push({ line: lineNum, lineContent: lineContent, severity: severity, comment: comment });
+        container.remove();
+        renderInlineComments();
+        updateSummary();
+    }
+
+    function deleteComment(commentIndex) {
+        _comments.splice(commentIndex, 1);
+        renderInlineComments();
+        updateSummary();
+    }
+
+    function editComment(commentIndex) {
+        const c = _comments[commentIndex];
+        // For deletion lines (line=-1), we can't re-locate in DOM — re-add the comment as-is
+        if (c.line < 0) {
+            // Don't delete, just remove the input if open and return
+            return;
+        }
+        deleteComment(commentIndex);
+        // Find the matching line number in the diff and open comment there
+        const pane = document.getElementById('cr-diff-pane');
+        if (!pane) return;
+        const lineNums = pane.querySelectorAll('.diff-line-num');
+        for (const ln of lineNums) {
+            if (ln.textContent.trim() == c.line) {
+                openComment(c.line, ln);
+                setTimeout(function() {
+                    const sevSelect = document.getElementById('cr-sev-select');
+                    const textArea = document.getElementById('cr-comment-text');
+                    if (sevSelect) sevSelect.value = c.severity;
+                    if (textArea) { textArea.value = c.comment; textArea.focus(); }
+                }, 50);
+                return;
+            }
+        }
+        // Line not found in DOM — re-add the comment to avoid losing it
+        _comments.push(c);
+        renderInlineComments();
+        updateSummary();
+    }
+
+    function renderInlineComments() {
+        const pane = document.getElementById('cr-diff-pane');
+        if (!pane) return;
+        // Remove existing inline comments
+        pane.querySelectorAll('.cr-inline-comment').forEach(function(el) { el.remove(); });
+
+        // Build line -> last element map
+        const lineNums = pane.querySelectorAll('.diff-line-num');
+        const lineMap = {};
+        lineNums.forEach(function(ln) {
+            const num = ln.textContent.trim();
+            if (num && num !== '\u2212') lineMap[num] = ln.closest('.diff-line');
+        });
+
+        const validSeverities = ['BLOCKER', 'SUGGESTION', 'NITPICK', 'QUESTION'];
+        _comments.forEach(function(c, ci) {
+            const targetLine = lineMap[c.line];
+            if (!targetLine) return;
+            const safeSeverity = validSeverities.indexOf(c.severity) >= 0 ? c.severity : 'SUGGESTION';
+            const badge = document.createElement('div');
+            badge.className = 'cr-inline-comment';
+            var editBtn = c.line >= 0 ? '<span class="cr-comment-edit" onclick="editComment(' + ci + ')" title="Edit">&#x270E;</span>' : '';
+            badge.innerHTML =
+                '<span class="cr-sev-tag ' + safeSeverity + '">' + escapeHtml(safeSeverity) + '</span>' +
+                '<span class="cr-comment-text">' + escapeHtml(c.comment) + '</span>' +
+                editBtn +
+                '<span class="cr-comment-del" onclick="deleteComment(' + ci + ')" title="Delete">&#x2716;</span>';
+            // Insert after the target line (or after last comment on same line)
+            let insertAfter = targetLine;
+            let next = insertAfter.nextElementSibling;
+            while (next && next.classList.contains('cr-inline-comment')) {
+                insertAfter = next;
+                next = insertAfter.nextElementSibling;
+            }
+            insertAfter.after(badge);
+        });
+    }
+
+    // ── Summary ──
+    function updateSummary() {
+        const summaryEl = document.getElementById('cr-summary');
+        const submitBtn = document.getElementById('cr-submit-btn');
+        if (!summaryEl) return;
+
+        const total = _comments.length;
+        if (total === 0) {
+            summaryEl.innerHTML = '<span style="color:#888;">Click a line number to add review notes</span>';
+            if (submitBtn) submitBtn.classList.remove('enabled');
+            return;
+        }
+
+        const counts = { BLOCKER: 0, SUGGESTION: 0, NITPICK: 0, QUESTION: 0 };
+        _comments.forEach(function(c) { counts[c.severity] = (counts[c.severity] || 0) + 1; });
+
+        let parts = ['<span>' + total + ' note' + (total !== 1 ? 's' : '') + ':</span>'];
+        if (counts.BLOCKER) parts.push('<span class="cr-summary-tag cr-sev-tag BLOCKER">' + counts.BLOCKER + ' blocker' + (counts.BLOCKER !== 1 ? 's' : '') + '</span>');
+        if (counts.SUGGESTION) parts.push('<span class="cr-summary-tag cr-sev-tag SUGGESTION">' + counts.SUGGESTION + ' suggestion' + (counts.SUGGESTION !== 1 ? 's' : '') + '</span>');
+        if (counts.NITPICK) parts.push('<span class="cr-summary-tag cr-sev-tag NITPICK">' + counts.NITPICK + ' nitpick' + (counts.NITPICK !== 1 ? 's' : '') + '</span>');
+        if (counts.QUESTION) parts.push('<span class="cr-summary-tag cr-sev-tag QUESTION">' + counts.QUESTION + ' question' + (counts.QUESTION !== 1 ? 's' : '') + '</span>');
+        summaryEl.innerHTML = parts.join('');
+
+        if (submitBtn) submitBtn.classList.add('enabled');
+    }
+
+    // ── Summary Sidebar ──
+    function renderSummaryCards() {
+        const sidebar = document.getElementById('cr-sidebar-content');
+        if (!sidebar) return;
+        if (_hunkSummaries.length === 0) {
+            sidebar.innerHTML = '<div style="padding:12px;color:#888;font-size:11px;">No changes.</div>';
+            return;
+        }
+
+        sidebar.innerHTML = _hunkSummaries.map(function(h, i) {
+            const metaRange = 'Lines ' + h.newStart + '\u2013' + (h.newStart + h.newCount - 1);
+            const metaStats = '+' + h.addedLines + ' \u2212' + h.removedLines;
+            return '<div class="cr-summary-card ' + h.changeType + '" id="cr-scard-' + i + '" onclick="scrollToHunk(' + i + ')">' +
+                '<div class="cr-scard-title">' + escapeHtml(h.basicSummary) + '</div>' +
+                '<div class="cr-scard-meta">' + metaRange + ' &middot; ' + metaStats + '</div>' +
+                '</div>';
+        }).join('');
+
+        // Update header with count
+        const header = document.getElementById('cr-sidebar-title');
+        if (header) header.textContent = 'Changes (' + _hunkSummaries.length + ')';
+    }
+
+    function scrollToHunk(hunkIndex) {
+        const hunk = _hunkSummaries[hunkIndex];
+        if (!hunk) return;
+        const el = document.getElementById(hunk.hunkId);
+        if (!el) return;
+
+        document.querySelectorAll('.diff-line.hunk.highlighted').forEach(function(h) { h.classList.remove('highlighted'); });
+        el.classList.add('highlighted');
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setTimeout(function() { el.classList.remove('highlighted'); }, 2000);
+        setActiveCard(hunkIndex);
+        _currentHunkIndex = hunkIndex;
+        updateCounter();
+    }
+
+    function highlightSummaryCard(hunkIndex) {
+        setActiveCard(hunkIndex);
+        var card = document.getElementById('cr-scard-' + hunkIndex);
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function setActiveCard(hunkIndex) {
+        document.querySelectorAll('.cr-summary-card.active').forEach(function(c) { c.classList.remove('active'); });
+        var card = document.getElementById('cr-scard-' + hunkIndex);
+        if (card) card.classList.add('active');
+    }
+
+    function toggleSummarySidebar() {
+        var sidebar = document.getElementById('cr-summary-sidebar');
+        var toggleBtn = document.getElementById('cr-sidebar-toggle');
+        if (!sidebar) return;
+        var isCollapsed = sidebar.classList.toggle('collapsed');
+        if (toggleBtn) toggleBtn.style.display = isCollapsed ? 'inline-block' : 'none';
+    }
+
+    function setupScrollTracking() {
+        var diffArea = document.getElementById('cr-diff-area');
+        if (!diffArea) return;
+        var scrollTimeout;
+        diffArea.addEventListener('scroll', function() {
+            clearTimeout(scrollTimeout);
+            scrollTimeout = setTimeout(function() {
+                var hunks = diffArea.querySelectorAll('.diff-line.hunk');
+                var areaRect = diffArea.getBoundingClientRect();
+                var areaAnchor = areaRect.top + areaRect.height / 3;
+                var closestHunk = null;
+                var closestDist = Infinity;
+                hunks.forEach(function(h) {
+                    var rect = h.getBoundingClientRect();
+                    var dist = Math.abs(rect.top - areaAnchor);
+                    if (dist < closestDist) { closestDist = dist; closestHunk = h; }
+                });
+                if (closestHunk && closestHunk.id) {
+                    var match = closestHunk.id.match(/cr-hunk-(\d+)/);
+                    if (match) {
+                        var hi = parseInt(match[1]);
+                        setActiveCard(hi);
+                        _currentHunkIndex = hi;
+                        updateCounter();
+                    }
+                }
+            }, 100);
+        });
+    }
+
+    // ── Hunk Navigation (F7 / Shift+F7) ──
+    function goNext() {
+        if (_hunkStarts.length === 0) return;
+        _currentHunkIndex = (_currentHunkIndex + 1) % _hunkStarts.length;
+        scrollToHunk(_currentHunkIndex);
+    }
+
+    function goPrev() {
+        if (_hunkStarts.length === 0) return;
+        _currentHunkIndex = (_currentHunkIndex - 1 + _hunkStarts.length) % _hunkStarts.length;
+        scrollToHunk(_currentHunkIndex);
+    }
+
+    function updateCounter() {
+        var el = document.getElementById('diff-counter');
+        if (!el) return;
+        if (_hunkStarts.length === 0) el.textContent = 'No changes';
+        else if (_currentHunkIndex < 0) el.textContent = _hunkStarts.length + ' changes';
+        else el.textContent = (_currentHunkIndex + 1) + ' of ' + _hunkStarts.length;
+    }
+
+    // ── Actions ──
+    function onApprove() { postMsg({ action: 'approve' }); }
+    function onCancel() { postMsg({ action: 'cancel' }); }
+    function onSubmitNotes() {
+        if (_comments.length === 0) return;
+        var now = new Date().toISOString();
+        _comments.forEach(function(c) { c.timestamp = now; });
+        postMsg({ action: 'notes', notes: JSON.stringify(_comments) });
+    }
+
+    // ── Keyboard shortcuts ──
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'F7' && e.shiftKey) { goPrev(); e.preventDefault(); }
+        else if (e.key === 'F7') { goNext(); e.preventDefault(); }
+        else if (e.key === 'Escape') {
+            // If comment input is open, remove it; otherwise cancel
+            var ci = document.querySelector('.cr-comment-input');
+            if (ci) ci.remove();
+            else onCancel();
         }
     });
+
+    // ── WebView2 Message Handler ──
+    if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.addEventListener('message', function(event) {
+            var msg = event.data;
+            if (typeof msg === 'string') {
+                try { msg = JSON.parse(msg); } catch(e) { return; }
+            }
+            if (msg.type === 'setDiff') {
+                document.getElementById('diff-title').textContent = msg.title || 'Untitled';
+
+                // Apply saved preferences
+                applyFontSize(savedFontSize);
+                applyFontFamily(savedFontFamily);
+
+                // Restore theme
+                var savedTheme = localStorage.getItem('diffTheme');
+                if (savedTheme === 'light') {
+                    document.body.classList.add('light');
+                    document.getElementById('btn-theme').innerHTML = '\u2600';
+                }
+
+                // Fetch the unified diff from virtual host
+                if (msg.diffUrl) {
+                    fetch(msg.diffUrl).then(function(r) { return r.text(); }).then(function(diffText) {
+                        var pane = document.getElementById('cr-diff-pane');
+                        if (!diffText || diffText.trim() === '') {
+                            pane.innerHTML = '<div class="no-changes">No differences found.</div>';
+                            updateCounter();
+                            updateSummary();
+                            renderSummaryCards();
+                            return;
+                        }
+                        pane.innerHTML = renderUnifiedDiff(diffText);
+                        renderSummaryCards();
+                        setupScrollTracking();
+                        updateCounter();
+                        updateSummary();
+                        // Jump to first hunk
+                        if (_hunkStarts.length > 0) {
+                            _currentHunkIndex = 0;
+                            setActiveCard(0);
+                            updateCounter();
+                        }
+                    }).catch(function(err) {
+                        document.getElementById('cr-diff-pane').innerHTML = '<div class="no-changes">Error loading diff: ' + escapeHtml(err.message || String(err)) + '</div>';
+                    });
+                }
+            }
+        });
+
+        // Signal ready
+        postMsg({ action: 'ready' });
+    }
 </script>
 </body>
 </html>

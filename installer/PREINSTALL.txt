@@ -1,0 +1,20 @@
+Clarion Assistant Beta - Pre-Installation Notes
+
+PREREQUISITES:
+  - Clarion IDE (version 11 or 12) must be installed
+  - Claude Code CLI must be installed (https://claude.ai/download)
+  - Microsoft Edge WebView2 Runtime (usually pre-installed on Windows 11)
+
+WHAT WILL BE INSTALLED:
+  - Clarion Assistant addin (AI-powered coding assistant for the Clarion IDE)
+  - COM for Clarion addin (COM control browser and creator)
+  - Claude Code skills for Clarion development (17 skills)
+  - Code quality agents (code reviewer, debugger, security auditor)
+  - Pre-loaded documentation database (Clarion 12 core docs)
+  - User Guide
+
+IMPORTANT:
+  - Close the Clarion IDE before installing.
+  - The installer will detect your Clarion installation automatically.
+  - Your existing Claude Code settings will be preserved (merged, not replaced).
+  - After installation, restart the Clarion IDE to activate the addins.

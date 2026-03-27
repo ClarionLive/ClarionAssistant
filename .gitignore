@@ -5,3 +5,15 @@ obj/
 .vs/
 *.pdb
 packages/
+
+# Installer output and large binaries (release assets, not repo content)
+installer/output/
+installer/docgraph.db
+installer/preview-icon.png
+
+# Claude Code local settings
+ClarionAssistant/.claude/settings.local.json
+ClarionAssistant/.claude/continuation.md
+
+# Project-level Claude config (dev-specific)
+.claude/project.json

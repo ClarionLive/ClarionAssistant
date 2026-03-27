@@ -146,7 +146,7 @@ namespace ClarionAssistant.Services
                 var args = new StringBuilder();
                 args.Append("-p ");
                 args.Append(EscapeArgument(message));
-                args.Append(" --output-format stream-json");
+                args.Append(" --output-format stream-json --verbose");
                 args.Append(" --model ");
                 args.Append(_model);
                 args.Append(" --system-prompt ");

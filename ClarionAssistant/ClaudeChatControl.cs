@@ -123,6 +123,7 @@ namespace ClarionAssistant
                 case "newChat": OnNewChat(sender, EventArgs.Empty); break;
                 case "settings": OnSettings(sender, EventArgs.Empty); break;
                 case "createCom": OnCreateCom(sender, EventArgs.Empty); break;
+                case "evaluateCode": OnEvaluateCode(sender, EventArgs.Empty); break;
                 case "refresh": DetectFromIde(); break;
                 case "browse": OnBrowseSolution(sender, EventArgs.Empty); break;
                 case "fullIndex": RunIndex(false); break;
@@ -475,6 +476,18 @@ namespace ClarionAssistant
             _terminal.Write(Encoding.UTF8.GetBytes(command));
         }
 
+        private void OnEvaluateCode(object sender, EventArgs e)
+        {
+            if (_terminal == null || !_terminal.IsRunning)
+            {
+                MessageBox.Show("Claude is not running. Please wait for it to start.",
+                    "Evaluate Code", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            _terminal.Write(Encoding.UTF8.GetBytes("/evaluate-code\r"));
+        }
+
         #endregion
 
         #region MCP Server (auto-start)
@@ -575,7 +588,10 @@ namespace ClarionAssistant
             string allowedTools = "mcp__clarion-assistant__*,Read,Edit,Write,Bash,Glob,Grep";
             if (_mcpServer.IncludeMultiTerminal)
                 allowedTools += ",mcp__multiterminal__*";
-            string claudeCmd = $"cd '{safeWorkDir}'; claude{mcpArg} --strict-mcp-config --allowedTools '{allowedTools}'";
+
+            // CLARION_ASSISTANT_EMBEDDED suppresses global hooks that inject /session-start, /project-management
+            // instructions — those tools aren't in the addin's allowedTools and confuse the model
+            string claudeCmd = $"cd '{safeWorkDir}'; $env:CLARION_ASSISTANT_EMBEDDED='1'; claude{mcpArg} --strict-mcp-config --allowedTools '{allowedTools}'";
             string commandLine = $"\"{pwsh}\" -NoLogo -ExecutionPolicy Bypass -NoExit -Command \"{envSetup}{claudeCmd}\"";
 
             _terminal.Start(_renderer.VisibleCols, _renderer.VisibleRows, commandLine, workDir);

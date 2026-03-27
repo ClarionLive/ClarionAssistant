@@ -478,6 +478,8 @@
     <a href="#tools-class-intelligence" class="sub">Class Intelligence</a>
     <a href="#tools-codegraph" class="sub">CodeGraph</a>
     <a href="#tools-lsp" class="sub">Language Server</a>
+    <a href="#tools-docgraph" class="sub">DocGraph</a>
+    <a href="#tools-build" class="sub">Build Tools</a>
 
     <h3>Acknowledgments</h3>
     <a href="#acknowledgments">Credits &amp; Thanks</a>
@@ -1632,6 +1634,41 @@
   <div class="info-box">
     <strong>Note:</strong> The LSP uses 0-based line numbers internally, while IDE tools use 1-based line numbers. Claude handles this conversion automatically.
   </div>
+
+  <h3 id="tools-docgraph">DocGraph (Documentation Search)</h3>
+  <p>Search indexed Clarion documentation &mdash; core language references, ABC library docs, and third-party template documentation (CapeSoft, Icetips, Noyantis, etc.).</p>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>query_docs</code></td><td>Full-text search across all indexed documentation. Filter by library or class. Returns ranked results with method signatures, descriptions, and code examples.</td></tr>
+      <tr><td><code>ingest_docs</code></td><td>Ingest documentation from a Clarion installation. Auto-discovers vendors and formats (HTM, CHM, PDF) from <code>docs/</code> and <code>accessory/Documents/</code>.</td></tr>
+      <tr><td><code>list_doc_libraries</code></td><td>List all ingested documentation libraries with chunk counts.</td></tr>
+      <tr><td><code>discover_docs</code></td><td>Preview discoverable documentation sources without ingesting them.</td></tr>
+      <tr><td><code>docgraph_stats</code></td><td>Get database statistics &mdash; library count, chunk count, breakdown by topic and vendor.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="info-box">
+    <strong>Tip:</strong> The installer ships a pre-loaded DocGraph database with core Clarion 12 documentation. Run <code>ingest_docs</code> to add your own third-party template docs.
+  </div>
+
+  <h3 id="tools-build">Build Tools</h3>
+  <p>Build and generate Clarion applications and C# COM controls directly from the assistant. All tools auto-detect paths when possible &mdash; solution, active app, Clarion install, and MSBuild location.</p>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>build_solution</code></td><td>Build the entire loaded Clarion solution using <code>ClarionCL.exe</code>. Generates and compiles all .app files in the solution.</td></tr>
+      <tr><td><code>build_app</code></td><td>Build a single .app file. Ideal for multi-DLL solutions where you only need to rebuild one target. Defaults to the currently active app.</td></tr>
+      <tr><td><code>generate_source</code></td><td>Generate Clarion source code (.clw/.inc) from an .app file via template code generation. Supports conditional and #DEBUG generation toggles.</td></tr>
+      <tr><td><code>build_com_project</code></td><td>Build a C# COM control project (.csproj) using MSBuild. Auto-detects Visual Studio 2022/2019. Supports Debug/Release configuration.</td></tr>
+      <tr><td><code>run_command</code></td><td>Execute a command-line process and capture output. Use for scripts, utilities, or tools not covered by the dedicated build tools.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="info-box">
+    <strong>Example:</strong> Ask Claude to &ldquo;build the current app&rdquo; and it will invoke <code>build_app</code> on the active .app file, returning any errors and warnings directly in the chat.
+  </div>
+
 </section>
 
 <!-- ════════════════════════════════════════════════════ -->

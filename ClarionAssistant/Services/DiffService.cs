@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using ClarionAssistant.Terminal;
 using ICSharpCode.SharpDevelop.Gui;
@@ -17,7 +16,8 @@ namespace ClarionAssistant.Services
     {
         private DiffViewContent _currentDiff;
         private string _lastResult;
-        private string _lastAction; // "apply", "cancel", or null (pending)
+        private string _lastNotes;
+        private string _lastAction; // "apply", "cancel", "notes", or null (pending)
 
         /// <summary>
         /// Show a diff in the IDE editor panel. Must be called on the UI thread.
@@ -28,6 +28,7 @@ namespace ClarionAssistant.Services
         {
             // Reset state
             _lastResult = null;
+            _lastNotes = null;
             _lastAction = null;
 
             try
@@ -48,6 +49,7 @@ namespace ClarionAssistant.Services
 
                 _currentDiff.Applied += OnApplied;
                 _currentDiff.Cancelled += OnCancelled;
+                _currentDiff.NotesSubmitted += OnNotesSubmitted;
 
                 WorkbenchSingleton.Workbench.ShowView(_currentDiff);
                 return "Diff viewer opened: " + title;
@@ -138,12 +140,20 @@ namespace ClarionAssistant.Services
         {
             _lastAction = "cancel";
             _lastResult = null;
+            _lastNotes = null;
+            CloseDiff();
+        }
+
+        private void OnNotesSubmitted(string notesJson)
+        {
+            _lastAction = "notes";
+            _lastNotes = notesJson;
             CloseDiff();
         }
 
         /// <summary>
         /// Get the result of the last diff interaction.
-        /// Returns a dictionary with status and optionally text.
+        /// Returns a dictionary with status and optionally text or notes.
         /// </summary>
         public Dictionary<string, string> GetResult()
         {
@@ -152,14 +162,21 @@ namespace ClarionAssistant.Services
             if (_lastAction == null)
             {
                 result["status"] = "pending";
-                result["message"] = "Diff viewer is still open. The developer hasn't clicked Apply or Cancel yet.";
+                result["message"] = "Diff viewer is still open. The developer hasn't acted yet.";
                 return result;
             }
 
             if (_lastAction == "apply")
             {
-                result["status"] = "applied";
+                result["status"] = "approved";
                 result["text"] = _lastResult ?? "";
+                return result;
+            }
+
+            if (_lastAction == "notes")
+            {
+                result["status"] = "notes";
+                result["notes"] = _lastNotes ?? "[]";
                 return result;
             }
 

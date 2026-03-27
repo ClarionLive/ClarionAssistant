@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.SQLite;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 
 namespace ClarionAssistant.Services
 {
@@ -33,12 +35,14 @@ namespace ClarionAssistant.Services
         private ClaudeChatControl _chatControl;
         private LspClient _lspClient;
         private DiffService _diffService;
+        private DocGraphService _docGraph;
 
         public McpToolRegistry(EditorService editorService, ClarionClassParser parser)
         {
             _editorService = editorService;
             _parser = parser;
             _appTree = new AppTreeService();
+            _docGraph = new DocGraphService();
             RegisterAllTools();
         }
 
@@ -1442,7 +1446,8 @@ COMMON QUERIES:
             Register(new McpTool
             {
                 Name = "show_diff",
-                Description = "Open a side-by-side diff viewer in the IDE editor panel. The left pane shows the original text (read-only) and the right pane shows the modified text (editable). " +
+                Description = "Open a unified diff viewer in the IDE editor panel. Shows color-coded additions/removals with a changes sidebar and inline code review notes. " +
+                    "The developer can add severity-tagged notes (BLOCKER/SUGGESTION/NITPICK/QUESTION) on any line. " +
                     "You can provide text directly via original_text/modified_text, OR provide file paths via original_file/modified_file to load from disk (avoids encoding issues with large files). " +
                     "Use ignore_whitespace to suppress trivial whitespace-only differences. Use get_diff_result to check the outcome.",
                 InputSchema = McpJsonRpc.BuildSchema(
@@ -1504,7 +1509,10 @@ COMMON QUERIES:
             Register(new McpTool
             {
                 Name = "get_diff_result",
-                Description = "Check the result of the diff viewer. Returns 'pending' if the developer hasn't acted yet, 'applied' with the final text if they clicked Apply, or 'cancelled' if they dismissed it.",
+                Description = "Check the result of the diff viewer. Returns: 'pending' if the developer hasn't acted yet, " +
+                    "'approved' with the modified text if they clicked Approve, " +
+                    "'notes' with an array of review notes [{line, lineContent, severity, comment}] if they submitted feedback, " +
+                    "or 'cancelled' if they dismissed it.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>(),
                     new string[0]),
@@ -1515,6 +1523,349 @@ COMMON QUERIES:
                         return "Error: Diff service not available.";
 
                     return _diffService.GetResult();
+                }
+            });
+
+            // === DocGraph Tools ===
+
+            Register(new McpTool
+            {
+                Name = "query_docs",
+                Description = @"Search third-party Clarion template documentation using full-text search.
+Returns matching documentation chunks ranked by relevance, including method signatures, descriptions, parameters, and code examples.
+Covers CapeSoft (StringTheory, NetTalk, FM3, etc.), Icetips, Noyantis, LANSRAD, Super templates, and other vendors.
+
+EXAMPLES:
+- query_docs(query='parse CSV') → finds StringTheory CSV parsing docs
+- query_docs(query='Split', library='StringTheory') → StringTheory.Split method docs
+- query_docs(query='email send', library='NetTalk') → NetTalk email sending docs
+- query_docs(query='encryption', class_name='StringTheory') → all encryption-related methods",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "query", "Search text — method names, topics, or natural language questions" },
+                        { "library", "Filter to a specific library name (e.g. 'StringTheory', 'NetTalk', 'fm3'). Optional." },
+                        { "class_name", "Filter to a specific class name. Optional." },
+                        { "limit", "Max results to return (default 10). Optional." }
+                    },
+                    new[] { "query" }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string query = McpJsonRpc.GetString(args, "query");
+                    string library = McpJsonRpc.GetString(args, "library");
+                    string className = McpJsonRpc.GetString(args, "class_name");
+                    int limit = 10;
+                    object limitObj;
+                    if (args.TryGetValue("limit", out limitObj) && limitObj != null)
+                    {
+                        int.TryParse(limitObj.ToString(), out limit);
+                        if (limit <= 0) limit = 10;
+                    }
+
+                    return _docGraph.QueryDocs(query, library, className, limit);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "ingest_docs",
+                Description = @"Ingest documentation files (HTM, HTML, CHM, PDF) into the DocGraph search database.
+Accepts ANY folder path — scans it recursively for doc files and ingests everything found.
+Also works with a Clarion installation root (auto-discovers docs/, bin/, accessory/Documents/).
+If no path is given, auto-detects the Clarion installation.
+Optional vendor parameter sets the vendor name (defaults to the folder name).",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "clarion_root", "Path to any folder containing doc files, or a Clarion installation root. Optional — auto-detects if omitted." },
+                        { "vendor", "Vendor name for the ingested docs. Optional — defaults to the folder name." }
+                    }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string input = McpJsonRpc.GetString(args, "clarion_root");
+                    string vendor = McpJsonRpc.GetString(args, "vendor");
+
+                    // Try to resolve as a Clarion root first
+                    string root = DocGraphService.ResolveClarionRoot(input);
+                    if (root != null)
+                        return _docGraph.IngestAll(root);
+
+                    // Not a Clarion root — treat as a plain folder and scan it
+                    if (!string.IsNullOrEmpty(input) && Directory.Exists(input))
+                        return _docGraph.IngestFolder(input, vendor);
+
+                    return string.IsNullOrEmpty(input)
+                        ? "Error: Could not auto-detect a Clarion installation. Pass a folder path explicitly."
+                        : "Error: Folder not found: " + input;
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "ingest_web_docs",
+                Description = @"Ingest documentation from a web URL into the DocGraph search database.
+Fetches the start page, discovers all linked HTM pages in the same directory, downloads and parses them.
+Works great for CapeSoft online docs — just point it at the index page.
+
+EXAMPLES:
+- ingest_web_docs(url='https://capesoft.com/docs/NetTalk14/nettalkindex.htm') → ingests all NetTalk docs
+- ingest_web_docs(url='https://capesoft.com/accessories/netsp.htm') → ingests from product page
+- ingest_web_docs(url='...', vendor='Capesoft', library='FM3') → explicit vendor/library naming",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "url", "URL to the documentation index page. All linked HTM pages in the same directory will be fetched." },
+                        { "vendor", "Vendor name (e.g. 'Capesoft'). Optional — auto-detected from the domain." },
+                        { "library", "Library name (e.g. 'NetTalk'). Optional — auto-detected from the URL path." }
+                    },
+                    new[] { "url" }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string url = McpJsonRpc.GetString(args, "url");
+                    string vendor = McpJsonRpc.GetString(args, "vendor");
+                    string library = McpJsonRpc.GetString(args, "library");
+
+                    if (string.IsNullOrEmpty(url))
+                        return "Error: url parameter is required.";
+
+                    return _docGraph.IngestFromWeb(url, vendor, library);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "list_doc_libraries",
+                Description = "List all third-party libraries that have been ingested into the DocGraph documentation database, with chunk counts.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                RequiresUiThread = false,
+                Handler = args => _docGraph.ListLibraries()
+            });
+
+            Register(new McpTool
+            {
+                Name = "discover_docs",
+                Description = "Preview what documentation sources would be ingested from a Clarion installation. Lists all discoverable HTM, CHM, and PDF files without ingesting them. The clarion_root parameter is optional — auto-detects if omitted.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "clarion_root", "Path to Clarion installation root or any subfolder. Optional — auto-detects if omitted." }
+                    }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string input = McpJsonRpc.GetString(args, "clarion_root");
+                    string root = DocGraphService.ResolveClarionRoot(input);
+                    if (root == null)
+                        return string.IsNullOrEmpty(input)
+                            ? "Error: Could not auto-detect a Clarion installation. Pass clarion_root explicitly."
+                            : "Error: Could not find a Clarion installation at or above: " + input;
+
+                    var sources = _docGraph.DiscoverDocSources(root);
+                    if (sources.Count == 0)
+                        return "No documentation sources found in " + root;
+
+                    var sb = new StringBuilder();
+                    sb.AppendLine(string.Format("Found {0} documentation sources in {1}:\n", sources.Count, root));
+                    sb.AppendLine("Vendor\tLibrary\tFormat\tPath");
+                    foreach (var s in sources)
+                        sb.AppendLine(string.Format("{0}\t{1}\t{2}\t{3}", s.Vendor, s.Library, s.Format, s.FilePath));
+                    return sb.ToString();
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "docgraph_stats",
+                Description = "Get statistics about the DocGraph documentation database — library count, chunk count, breakdown by topic and vendor.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                RequiresUiThread = false,
+                Handler = args => _docGraph.GetStats()
+            });
+
+            // === Build Tools ===
+
+            Register(new McpTool
+            {
+                Name = "build_solution",
+                Description = "Build the entire loaded Clarion solution using ClarionCL.exe. Returns build output with errors and warnings. Use build_app instead for multi-DLL solutions when you only need to rebuild one target.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "solution_path", "Path to .sln file. Defaults to the currently loaded solution." },
+                        { "timeout", "Timeout in seconds (default: 120)" }
+                    }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string slnPath = McpJsonRpc.GetString(args, "solution_path", null);
+                    int timeout = McpJsonRpc.GetInt(args, "timeout", 120);
+
+                    if (string.IsNullOrEmpty(slnPath))
+                        slnPath = EditorService.GetOpenSolutionPath();
+
+                    if (string.IsNullOrEmpty(slnPath) || !File.Exists(slnPath))
+                        return "Error: No solution path provided and no solution is currently loaded in the IDE.";
+
+                    string clarionRoot = EditorService.GetClarionInstallPath();
+                    if (string.IsNullOrEmpty(clarionRoot))
+                        return "Error: Could not detect Clarion installation path.";
+
+                    string clarionCl = Path.Combine(clarionRoot, "bin", "ClarionCL.exe");
+                    if (!File.Exists(clarionCl))
+                        return "Error: ClarionCL.exe not found at " + clarionCl;
+
+                    string arguments = "/ag \"" + slnPath + "\"";
+                    return RunBuildProcess(clarionCl, arguments, Path.GetDirectoryName(slnPath), timeout);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "build_app",
+                Description = "Build a single Clarion .app file using ClarionCL.exe. Ideal for multi-DLL solutions where you only need to rebuild one target. Defaults to the currently active app in the IDE.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "app_path", "Path to .app file. Defaults to the currently active app in the IDE." },
+                        { "timeout", "Timeout in seconds (default: 120)" }
+                    }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string appPath = McpJsonRpc.GetString(args, "app_path", null);
+                    int timeout = McpJsonRpc.GetInt(args, "timeout", 120);
+
+                    if (string.IsNullOrEmpty(appPath))
+                    {
+                        var appInfo = _appTree.GetAppInfo();
+                        if (appInfo != null && appInfo.ContainsKey("fileName"))
+                            appPath = appInfo["fileName"]?.ToString();
+                    }
+
+                    if (string.IsNullOrEmpty(appPath) || !File.Exists(appPath))
+                        return "Error: No app path provided and no .app file is currently open in the IDE.";
+
+                    string clarionRoot = EditorService.GetClarionInstallPath();
+                    if (string.IsNullOrEmpty(clarionRoot))
+                        return "Error: Could not detect Clarion installation path.";
+
+                    string clarionCl = Path.Combine(clarionRoot, "bin", "ClarionCL.exe");
+                    if (!File.Exists(clarionCl))
+                        return "Error: ClarionCL.exe not found at " + clarionCl;
+
+                    string arguments = "/ag \"" + appPath + "\"";
+                    return RunBuildProcess(clarionCl, arguments, Path.GetDirectoryName(appPath), timeout);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "generate_source",
+                Description = "Generate Clarion source code (.clw/.inc files) from an .app file using ClarionCL.exe without a full build. Runs template code generation to produce the source files. Defaults to the currently active app.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "app_path", "Path to .app file. Defaults to the currently active app in the IDE." },
+                        { "conditional_generation", "on/off — toggle conditional code generation (default: use app setting)" },
+                        { "debug_generation", "on/off — toggle #DEBUG generation (default: use app setting)" },
+                        { "timeout", "Timeout in seconds (default: 120)" }
+                    }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string appPath = McpJsonRpc.GetString(args, "app_path", null);
+                    string condGen = McpJsonRpc.GetString(args, "conditional_generation", null);
+                    string debugGen = McpJsonRpc.GetString(args, "debug_generation", null);
+                    int timeout = McpJsonRpc.GetInt(args, "timeout", 120);
+
+                    if (string.IsNullOrEmpty(appPath))
+                    {
+                        var appInfo = _appTree.GetAppInfo();
+                        if (appInfo != null && appInfo.ContainsKey("fileName"))
+                            appPath = appInfo["fileName"]?.ToString();
+                    }
+
+                    if (string.IsNullOrEmpty(appPath) || !File.Exists(appPath))
+                        return "Error: No app path provided and no .app file is currently open in the IDE.";
+
+                    string clarionRoot = EditorService.GetClarionInstallPath();
+                    if (string.IsNullOrEmpty(clarionRoot))
+                        return "Error: Could not detect Clarion installation path.";
+
+                    string clarionCl = Path.Combine(clarionRoot, "bin", "ClarionCL.exe");
+                    if (!File.Exists(clarionCl))
+                        return "Error: ClarionCL.exe not found at " + clarionCl;
+
+                    var argBuilder = new StringBuilder();
+                    argBuilder.Append("/ag \"" + appPath + "\"");
+                    if (!string.IsNullOrEmpty(condGen))
+                        argBuilder.Append(" /agc " + condGen);
+                    if (!string.IsNullOrEmpty(debugGen))
+                        argBuilder.Append(" /agd " + debugGen);
+
+                    return RunBuildProcess(clarionCl, argBuilder.ToString(), Path.GetDirectoryName(appPath), timeout);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "build_com_project",
+                Description = "Build a C# COM control project (.csproj) using MSBuild. Auto-detects VS2022 MSBuild. Use for building Clarion COM controls written in C#.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "project_path", "Path to .csproj file (required)" },
+                        { "configuration", "Build configuration: Debug or Release (default: Debug)" },
+                        { "timeout", "Timeout in seconds (default: 120)" }
+                    },
+                    new[] { "project_path" }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string projectPath = McpJsonRpc.GetString(args, "project_path");
+                    string config = McpJsonRpc.GetString(args, "configuration", "Debug");
+                    int timeout = McpJsonRpc.GetInt(args, "timeout", 120);
+
+                    if (string.IsNullOrEmpty(projectPath) || !File.Exists(projectPath))
+                        return "Error: Project file not found: " + (projectPath ?? "(null)");
+
+                    string msbuild = FindMSBuild();
+                    if (msbuild == null)
+                        return "Error: MSBuild.exe not found. Searched VS2022, VS2019, and BuildTools paths.";
+
+                    string arguments = string.Format("\"{0}\" /p:Configuration={1} /p:Platform=x86 /t:Build /v:minimal /nologo", projectPath, config);
+                    return RunBuildProcess(msbuild, arguments, Path.GetDirectoryName(projectPath), timeout);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "run_command",
+                Description = "Execute a command-line process and capture its output. Use for general-purpose build tasks, scripts, or tools not covered by the dedicated build tools.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "command", "The executable to run (required)" },
+                        { "arguments", "Command-line arguments" },
+                        { "working_directory", "Working directory for the process" },
+                        { "timeout", "Timeout in seconds (default: 60)" }
+                    },
+                    new[] { "command" }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string command = McpJsonRpc.GetString(args, "command");
+                    string arguments = McpJsonRpc.GetString(args, "arguments", "");
+                    string workDir = McpJsonRpc.GetString(args, "working_directory", "");
+                    int timeout = McpJsonRpc.GetInt(args, "timeout", 60);
+
+                    if (string.IsNullOrEmpty(command))
+                        return "Error: command is required";
+
+                    return RunBuildProcess(command, arguments, workDir, timeout);
                 }
             });
         }
@@ -1654,6 +2005,144 @@ COMMON QUERIES:
             {
                 return "SQL Error: " + ex.Message;
             }
+        }
+
+        #endregion
+
+        #region Build Helpers
+
+        private string RunBuildProcess(string fileName, string arguments, string workingDirectory, int timeoutSeconds)
+        {
+            try
+            {
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = fileName,
+                    Arguments = arguments,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8
+                };
+
+                if (!string.IsNullOrEmpty(workingDirectory) && Directory.Exists(workingDirectory))
+                    startInfo.WorkingDirectory = workingDirectory;
+
+                var output = new StringBuilder();
+                var errors = new StringBuilder();
+                int errorCount = 0;
+                int warningCount = 0;
+
+                using (var process = new Process { StartInfo = startInfo })
+                {
+                    process.OutputDataReceived += (s, e) =>
+                    {
+                        if (e.Data == null) return;
+                        output.AppendLine(e.Data);
+                        string line = e.Data;
+                        // Count errors and warnings from build output
+                        if (line.IndexOf(": error ", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            line.IndexOf(": error(", StringComparison.OrdinalIgnoreCase) >= 0)
+                            errorCount++;
+                        else if (line.IndexOf(": warning ", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                 line.IndexOf(": warning(", StringComparison.OrdinalIgnoreCase) >= 0)
+                            warningCount++;
+                    };
+
+                    process.ErrorDataReceived += (s, e) =>
+                    {
+                        if (e.Data != null)
+                            errors.AppendLine(e.Data);
+                    };
+
+                    process.Start();
+                    process.BeginOutputReadLine();
+                    process.BeginErrorReadLine();
+
+                    bool exited = process.WaitForExit(timeoutSeconds * 1000);
+
+                    if (!exited)
+                    {
+                        try { process.Kill(); } catch { }
+                        return string.Format("Error: Build timed out after {0} seconds.\n\nPartial output:\n{1}", timeoutSeconds, output.ToString());
+                    }
+
+                    var result = new StringBuilder();
+                    bool success = process.ExitCode == 0;
+
+                    result.AppendLine(success ? "BUILD SUCCEEDED" : "BUILD FAILED");
+                    result.AppendLine(string.Format("Exit code: {0} | Errors: {1} | Warnings: {2}", process.ExitCode, errorCount, warningCount));
+                    result.AppendLine(string.Format("Command: {0} {1}", fileName, arguments));
+                    result.AppendLine();
+
+                    if (output.Length > 0)
+                        result.Append(output.ToString());
+
+                    if (errors.Length > 0)
+                    {
+                        result.AppendLine("\n--- STDERR ---");
+                        result.Append(errors.ToString());
+                    }
+
+                    return result.ToString();
+                }
+            }
+            catch (Exception ex)
+            {
+                return "Error launching build process: " + ex.Message;
+            }
+        }
+
+        private static string FindMSBuild()
+        {
+            // Search common MSBuild locations in priority order
+            string[] searchPaths = new[]
+            {
+                @"C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe",
+                @"C:\Program Files\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe",
+                @"C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe",
+                @"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe",
+                @"C:\Program Files\Microsoft Visual Studio\2019\Community\MSBuild\Current\Bin\MSBuild.exe",
+                @"C:\Program Files\Microsoft Visual Studio\2019\Professional\MSBuild\Current\Bin\MSBuild.exe",
+                @"C:\Program Files\Microsoft Visual Studio\2019\Enterprise\MSBuild\Current\Bin\MSBuild.exe",
+                @"C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\MSBuild\Current\Bin\MSBuild.exe"
+            };
+
+            foreach (var path in searchPaths)
+            {
+                if (File.Exists(path))
+                    return path;
+            }
+
+            // Fallback: try vswhere.exe to find MSBuild
+            try
+            {
+                string vswhere = @"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe";
+                if (File.Exists(vswhere))
+                {
+                    var startInfo = new ProcessStartInfo
+                    {
+                        FileName = vswhere,
+                        Arguments = "-latest -requires Microsoft.Component.MSBuild -find MSBuild\\**\\Bin\\MSBuild.exe",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        CreateNoWindow = true
+                    };
+
+                    using (var process = Process.Start(startInfo))
+                    {
+                        string result = process.StandardOutput.ReadLine();
+                        process.WaitForExit(5000);
+                        if (!string.IsNullOrEmpty(result) && File.Exists(result))
+                            return result;
+                    }
+                }
+            }
+            catch { }
+
+            return null;
         }
 
         #endregion

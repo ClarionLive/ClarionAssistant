@@ -33,6 +33,10 @@ namespace ClarionAssistant.Terminal
         private Panel _panel;
         private DataGridView _grid;
         private ToolStripLabel _counterLabel;
+        private ToolStripLabel _fontSizeLabel;
+        private float _fontSize = 10f;
+        private const float MinFontSize = 8f;
+        private const float MaxFontSize = 30f;
 
         private List<DiffRow> _rows = new List<DiffRow>();
         private List<int> _hunkStarts = new List<int>();
@@ -94,6 +98,19 @@ namespace ClarionAssistant.Terminal
             var next = new ToolStripButton("Next \u25BC") { ForeColor = AccentFg, ToolTipText = "Next change (F7)" };
             next.Click += (s, e) => GoNext();
             bar.Items.Add(next);
+
+            bar.Items.Add(new ToolStripSeparator());
+
+            var smaller = new ToolStripButton("A\u2212") { ForeColor = AccentFg, ToolTipText = "Decrease font size (Ctrl+minus)" };
+            smaller.Click += (s, e) => ChangeFontSize(-1f);
+            bar.Items.Add(smaller);
+
+            _fontSizeLabel = new ToolStripLabel(_fontSize + "px") { ForeColor = GutterFg, AutoSize = true };
+            bar.Items.Add(_fontSizeLabel);
+
+            var larger = new ToolStripButton("A+") { ForeColor = AccentFg, ToolTipText = "Increase font size (Ctrl+plus)" };
+            larger.Click += (s, e) => ChangeFontSize(1f);
+            bar.Items.Add(larger);
 
             bar.Items.Add(new ToolStripSeparator());
 
@@ -175,6 +192,7 @@ namespace ClarionAssistant.Terminal
 
             _grid.CellFormatting += OnCellFormatting;
             _grid.KeyDown += OnGridKeyDown;
+            _grid.MouseWheel += OnGridMouseWheel;
 
             _panel.Controls.Add(_grid);
         }
@@ -326,7 +344,7 @@ namespace ClarionAssistant.Terminal
             for (int i = 0; i < _rows.Count; i++)
             {
                 var r = _rows[i];
-                var gr = new DataGridViewRow { Height = 20 };
+                var gr = new DataGridViewRow { Height = Math.Max(16, (int)(_fontSize * 1.8f)) };
                 gr.CreateCells(_grid,
                     r.LeftNo.HasValue ? r.LeftNo.Value.ToString() : "",
                     r.LeftText ?? "",
@@ -423,6 +441,47 @@ namespace ClarionAssistant.Terminal
             if (e.KeyCode == Keys.F7 && e.Shift) { GoPrev(); e.Handled = true; }
             else if (e.KeyCode == Keys.F7) { GoNext(); e.Handled = true; }
             else if (e.KeyCode == Keys.Escape) { Cancelled?.Invoke(); e.Handled = true; }
+            else if (e.Control && (e.KeyCode == Keys.Oemplus || e.KeyCode == Keys.Add))
+            { ChangeFontSize(1f); e.Handled = true; e.SuppressKeyPress = true; }
+            else if (e.Control && (e.KeyCode == Keys.OemMinus || e.KeyCode == Keys.Subtract))
+            { ChangeFontSize(-1f); e.Handled = true; e.SuppressKeyPress = true; }
+            else if (e.Control && e.KeyCode == Keys.D0)
+            { ChangeFontSize(10f - _fontSize); e.Handled = true; e.SuppressKeyPress = true; }
+        }
+
+        private void OnGridMouseWheel(object sender, MouseEventArgs e)
+        {
+            if (Control.ModifierKeys != Keys.Control) return;
+            ChangeFontSize(e.Delta > 0 ? 1f : -1f);
+            ((HandledMouseEventArgs)e).Handled = true;
+        }
+
+        private void ChangeFontSize(float delta)
+        {
+            float newSize = Math.Max(MinFontSize, Math.Min(MaxFontSize, _fontSize + delta));
+            if (Math.Abs(newSize - _fontSize) < 0.01f) return;
+            _fontSize = newSize;
+
+            _grid.SuspendLayout();
+
+            var newFont = new Font("Consolas", _fontSize);
+            var oldFont = _grid.Font;
+            _grid.Font = newFont;
+
+            var gutterFont = new Font("Consolas", _fontSize - 1f);
+            _grid.Columns["LNo"].DefaultCellStyle.Font = gutterFont;
+            _grid.Columns["RNo"].DefaultCellStyle.Font = gutterFont;
+
+            int rowH = Math.Max(16, (int)(_fontSize * 1.8f));
+            _grid.RowTemplate.Height = rowH;
+            foreach (DataGridViewRow row in _grid.Rows)
+                row.Height = rowH;
+
+            oldFont.Dispose();
+            _grid.ResumeLayout();
+
+            if (_fontSizeLabel != null)
+                _fontSizeLabel.Text = _fontSize + "px";
         }
 
         #endregion

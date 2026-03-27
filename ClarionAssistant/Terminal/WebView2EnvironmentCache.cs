@@ -57,10 +57,15 @@ namespace ClarionAssistant.Terminal
                 Directory.CreateDirectory(userDataFolder);
             }
 
+            var options = new CoreWebView2EnvironmentOptions();
+            // Disable GPU rasterization to prevent progressive text rendering
+            // corruption in Monaco editor (characters render as empty squares)
+            options.AdditionalBrowserArguments = "--disable-gpu-rasterization";
+
             _environment = await CoreWebView2Environment.CreateAsync(
                 browserExecutableFolder: null,
                 userDataFolder: userDataFolder,
-                options: new CoreWebView2EnvironmentOptions());
+                options: options);
 
             return _environment;
         }

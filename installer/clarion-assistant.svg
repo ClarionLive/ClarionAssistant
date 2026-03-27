@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Created with: Axialis IconVectors - www.axialis.com -->
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="screen" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1a2744"/>
+      <stop offset="100%" stop-color="#0f1926"/>
+    </linearGradient>
+  </defs>
+  <rect fill="#3a3a3c" x="12" y="8" width="232" height="180" rx="12" ry="12"/>
+  <rect fill="url(#screen)" x="22" y="18" width="212" height="160" rx="4" ry="4"/>
+  <rect fill="#3a3a3c" x="112" y="188" width="32" height="28" rx="2" ry="2"/>
+  <ellipse fill="#3a3a3c" cx="128" cy="228" rx="56" ry="12"/>
+  <g>
+    <rect opacity="0.25" fill="#64748b" x="30" y="30" width="10" height="6" rx="1"/>
+    <rect opacity="0.25" fill="#64748b" x="30" y="42" width="10" height="6" rx="1"/>
+    <rect opacity="0.25" fill="#64748b" x="30" y="54" width="10" height="6" rx="1"/>
+    <rect opacity="0.25" fill="#64748b" x="30" y="66" width="10" height="6" rx="1"/>
+    <rect opacity="0.25" fill="#64748b" x="30" y="78" width="10" height="6" rx="1"/>
+    <rect opacity="0.25" fill="#64748b" x="30" y="90" width="10" height="6" rx="1"/>
+    <rect opacity="0.25" fill="#64748b" x="30" y="102" width="10" height="6" rx="1"/>
+    <rect opacity="0.25" fill="#64748b" x="30" y="114" width="10" height="6" rx="1"/>
+    <rect opacity="0.25" fill="#64748b" x="30" y="126" width="10" height="6" rx="1"/>
+    <rect opacity="0.25" fill="#64748b" x="30" y="138" width="10" height="6" rx="1"/>
+    <rect opacity="0.25" fill="#64748b" x="30" y="150" width="10" height="6" rx="1"/>
+  </g>
+  <rect opacity="0.8" fill="#c084fc" x="48" y="30" width="36" height="6" rx="1"/>
+  <rect opacity="0.7" fill="#60a5fa" x="88" y="30" width="52" height="6" rx="1"/>
+  <rect opacity="0.7" fill="#4ade80" x="58" y="42" width="28" height="6" rx="1"/>
+  <rect opacity="0.5" fill="#e2e8f0" x="90" y="42" width="44" height="6" rx="1"/>
+  <rect opacity="0.7" fill="#f97316" x="68" y="54" width="40" height="6" rx="1"/>
+  <rect opacity="0.4" fill="#e2e8f0" x="112" y="54" width="60" height="6" rx="1"/>
+  <rect opacity="0.7" fill="#4ade80" x="68" y="66" width="24" height="6" rx="1"/>
+  <rect opacity="0.5" fill="#e2e8f0" x="96" y="66" width="32" height="6" rx="1"/>
+  <rect opacity="0.8" fill="#c084fc" x="58" y="78" width="20" height="6" rx="1"/>
+  <rect opacity="0.8" fill="#c084fc" x="48" y="102" width="42" height="6" rx="1"/>
+  <rect opacity="0.7" fill="#60a5fa" x="94" y="102" width="48" height="6" rx="1"/>
+  <rect opacity="0.7" fill="#fbbf24" x="58" y="114" width="30" height="6" rx="1"/>
+  <rect opacity="0.4" fill="#e2e8f0" x="92" y="114" width="56" height="6" rx="1"/>
+  <rect opacity="0.7" fill="#4ade80" x="58" y="126" width="36" height="6" rx="1"/>
+  <rect opacity="0.5" fill="#e2e8f0" x="98" y="126" width="40" height="6" rx="1"/>
+  <rect opacity="0.7" fill="#f97316" x="68" y="138" width="48" height="6" rx="1"/>
+  <rect opacity="0.8" fill="#c084fc" x="48" y="150" width="20" height="6" rx="1"/>
+  <g>
+    <path fill="#2874C0" d="M186,108L186,132L164,152z"/>
+    <path fill="#E8871E" d="M186,108L208,152L186,132z"/>
+    <path fill="#C42B1C" d="M164,152L186,132L208,152z"/>
+  </g>
+</svg>

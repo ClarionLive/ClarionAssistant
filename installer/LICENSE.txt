@@ -1,0 +1,17 @@
+Clarion Assistant Beta License Agreement
+
+Copyright (c) 2025-2026 ClarionLive. All rights reserved.
+
+This software is provided as a beta release for evaluation purposes.
+
+By installing this software, you agree to the following terms:
+
+1. This software is provided "AS IS" without warranty of any kind.
+2. You may use this software for development purposes with the Clarion IDE.
+3. Redistribution of this installer or its components is not permitted
+   without written permission from ClarionLive.
+4. This software requires a separate Claude Code subscription from Anthropic.
+   ClarionLive is not affiliated with Anthropic and does not provide
+   Claude Code licenses.
+
+For support and feedback, visit: https://clarionlive.com

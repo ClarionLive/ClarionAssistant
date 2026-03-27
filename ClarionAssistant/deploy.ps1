@@ -34,6 +34,10 @@ $Items = @(
     "runtimes"
 )
 
+# SQLite DLLs with FTS5 support (from lib/sqlite-fts5 in project)
+# NOTE: Deployed AFTER indexer items to ensure ClarionAssistant's version wins
+$SqliteFts5Dir = Join-Path $ProjectDir "lib\sqlite-fts5"
+
 # --- Build ---
 if (-not $NoBuild) {
     Write-Host "Restoring packages..." -ForegroundColor Cyan
@@ -127,6 +131,33 @@ foreach ($item in $IndexerItems) {
     catch {
         Write-Host "  FAIL  $item - $($_.Exception.Message)" -ForegroundColor Red
         $failed++
+    }
+}
+
+# --- Deploy SQLite FTS5 DLLs (after indexer, so correct version wins) ---
+$SqliteItems = @{
+    "System.Data.SQLite.dll" = Join-Path $SqliteFts5Dir "System.Data.SQLite.dll"
+    "SQLite.Interop.dll"     = Join-Path $SqliteFts5Dir "SQLite.Interop.dll"
+}
+foreach ($name in $SqliteItems.Keys) {
+    $src = $SqliteItems[$name]
+    if (Test-Path $src) {
+        try {
+            Copy-Item $src (Join-Path $DeployDir $name) -Force
+            # Also copy interop to x86 subfolder
+            if ($name -eq "SQLite.Interop.dll") {
+                $x86Dir = Join-Path $DeployDir "x86"
+                if (-not (Test-Path $x86Dir)) { New-Item $x86Dir -ItemType Directory | Out-Null }
+                Copy-Item $src (Join-Path $x86Dir $name) -Force
+            }
+            Write-Host "  OK    $name (FTS5)" -ForegroundColor Green
+            $copied++
+        } catch {
+            Write-Host "  FAIL  $name - $($_.Exception.Message)" -ForegroundColor Red
+            $failed++
+        }
+    } else {
+        Write-Host "  SKIP  $name (not found in lib/sqlite-fts5)" -ForegroundColor DarkGray
     }
 }
 
