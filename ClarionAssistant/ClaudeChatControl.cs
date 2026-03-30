@@ -22,6 +22,8 @@ namespace ClarionAssistant
 
         private McpServer _mcpServer;
         private McpToolRegistry _toolRegistry;
+        private Services.KnowledgeService _knowledgeService;
+        private int _sessionId;
         private readonly EditorService _editorService;
         private readonly ClarionClassParser _parser;
         private readonly SettingsService _settings;
@@ -504,6 +506,14 @@ namespace ClarionAssistant
             _diffService = new DiffService();
             _toolRegistry.SetDiffService(_diffService);
 
+            // Set up standalone knowledge/memory service
+            try
+            {
+                _knowledgeService = new Services.KnowledgeService();
+                _toolRegistry.SetKnowledgeService(_knowledgeService);
+            }
+            catch { /* non-fatal: knowledge tools won't be available */ }
+
             _mcpServer.SetToolRegistry(_toolRegistry);
 
             _mcpServer.OnStatusChanged += (running, port) =>
@@ -583,15 +593,62 @@ namespace ClarionAssistant
 
             DeployClaudeMd(workDir);
 
+            // Track this session for continuity
+            if (_knowledgeService != null)
+            {
+                try { _sessionId = _knowledgeService.StartSession(workDir); }
+                catch { }
+            }
+
+            // Build dynamic context — write to temp files to avoid PowerShell escaping issues
+            string systemPromptExtra = BuildSystemPromptInjection(workDir);
+            string initialPrompt = BuildInitialPrompt(workDir);
+
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string tempDir = Path.Combine(appData, "ClarionAssistant");
+            Directory.CreateDirectory(tempDir);
+
+            string extraFlags = "";
+
+            if (!string.IsNullOrEmpty(systemPromptExtra))
+            {
+                string promptFile = Path.Combine(tempDir, "system-prompt-extra.md");
+                File.WriteAllText(promptFile, systemPromptExtra, System.Text.Encoding.UTF8);
+                extraFlags += $" --append-system-prompt-file '{promptFile.Replace("'", "''")}'";
+            }
+
+            string initialPromptFile = null;
+            if (!string.IsNullOrEmpty(initialPrompt))
+            {
+                initialPromptFile = Path.Combine(tempDir, "initial-prompt.txt");
+                File.WriteAllText(initialPromptFile, initialPrompt, System.Text.Encoding.UTF8);
+            }
+
             string envSetup = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8; ";
             string safeWorkDir = workDir.Replace("'", "''");
             string allowedTools = "mcp__clarion-assistant__*,Read,Edit,Write,Bash,Glob,Grep";
             if (_mcpServer.IncludeMultiTerminal)
                 allowedTools += ",mcp__multiterminal__*";
 
-            // CLARION_ASSISTANT_EMBEDDED suppresses global hooks that inject /session-start, /project-management
-            // instructions — those tools aren't in the addin's allowedTools and confuse the model
-            string claudeCmd = $"cd '{safeWorkDir}'; $env:CLARION_ASSISTANT_EMBEDDED='1'; claude{mcpArg} --strict-mcp-config --allowedTools '{allowedTools}'";
+            // Load the Clarion Assistant plugin (skills, hooks, CLAUDE.md)
+            string pluginArg = "";
+            string pluginDir = GetClarionAssistantPluginPath();
+            if (pluginDir != null)
+            {
+                string safePluginDir = pluginDir.Replace("'", "''");
+                pluginArg = $" --plugin-dir '{safePluginDir}'";
+            }
+
+            // CLARION_ASSISTANT_EMBEDDED env var causes all MultiTerminal hooks to exit(0) immediately
+            string claudeCmd = $"cd '{safeWorkDir}'; $env:CLARION_ASSISTANT_EMBEDDED='1'; claude{mcpArg}{pluginArg} --strict-mcp-config --allowedTools '{allowedTools}'{extraFlags}";
+
+            // Pass initial prompt via file content to avoid escaping issues
+            if (initialPromptFile != null)
+            {
+                string safeFile = initialPromptFile.Replace("'", "''");
+                claudeCmd += $" (Get-Content -Raw '{safeFile}')";
+            }
+
             string commandLine = $"\"{pwsh}\" -NoLogo -ExecutionPolicy Bypass -NoExit -Command \"{envSetup}{claudeCmd}\"";
 
             _terminal.Start(_renderer.VisibleCols, _renderer.VisibleRows, commandLine, workDir);
@@ -618,6 +675,15 @@ namespace ClarionAssistant
         private void OnTerminalProcessExited(object sender, EventArgs e)
         {
             _claudeLaunched = false;
+
+            // Mark session ended (summary can be saved by the agent via save_session_summary MCP tool,
+            // or we mark it ended without a summary so the timestamp is recorded)
+            if (_knowledgeService != null && _sessionId > 0)
+            {
+                try { _knowledgeService.EndSession(_sessionId, null); }
+                catch { }
+            }
+
             if (InvokeRequired)
                 BeginInvoke((Action)(() => UpdateStatus("Claude Code exited")));
             else
@@ -655,10 +721,93 @@ namespace ClarionAssistant
                     Directory.CreateDirectory(claudeDir);
 
                 string dest = Path.Combine(claudeDir, "CLAUDE.md");
-                if (!File.Exists(dest) || File.GetLastWriteTime(source) > File.GetLastWriteTime(dest))
-                    File.Copy(source, dest, true);
+                // Always overwrite — the dynamic context from last session needs to be cleared
+                File.Copy(source, dest, true);
             }
             catch { }
+        }
+
+        /// <summary>
+        /// Appends host-controlled knowledge and session recap to CLAUDE.md.
+        /// Reads from the addin's own SQLite database — no external dependencies.
+        /// </summary>
+        /// <summary>
+        /// Builds the full system prompt injection file containing knowledge + session recap.
+        /// Everything goes into the system prompt (invisible to the user).
+        /// </summary>
+        private string BuildSystemPromptInjection(string workDir)
+        {
+            var sb = new System.Text.StringBuilder();
+
+            // 1. Knowledge entries
+            if (_knowledgeService != null)
+            {
+                try
+                {
+                    string knowledge = _knowledgeService.GetInjectionMarkdown(15);
+                    if (!string.IsNullOrEmpty(knowledge))
+                    {
+                        sb.AppendLine(knowledge);
+                        sb.AppendLine();
+                    }
+                }
+                catch { }
+            }
+
+            // 2. Session recap from JSONL (primary) or DB (fallback)
+            try
+            {
+                string recap = Services.KnowledgeService.GetSessionRecapFromJsonl(workDir, 10);
+                if (string.IsNullOrEmpty(recap) && _knowledgeService != null)
+                    recap = _knowledgeService.GetLastSessionSummary(workDir);
+
+                if (!string.IsNullOrEmpty(recap))
+                {
+                    sb.AppendLine("# Last Session Recap");
+                    sb.AppendLine("When the session starts, briefly greet the developer and summarize what you were working on last session in 1-2 sentences based on the recap below. Then ask what they'd like to work on.");
+                    sb.AppendLine();
+                    sb.AppendLine(recap);
+                }
+            }
+            catch { }
+
+            string result = sb.ToString().Trim();
+            return result.Length > 5 ? result : null;
+        }
+
+        /// <summary>
+        /// Builds a clean initial prompt — just a short greeting trigger.
+        /// The actual context is in the system prompt file.
+        /// </summary>
+        private string BuildInitialPrompt(string workDir)
+        {
+            int hour = DateTime.Now.Hour;
+            string[] timeGreetings;
+
+            if (hour < 12)
+                timeGreetings = new[] { "Good morning!", "Morning!", "Top of the morning!" };
+            else if (hour < 17)
+                timeGreetings = new[] { "Good afternoon!", "Afternoon!" };
+            else
+                timeGreetings = new[] { "Good evening!", "Evening!" };
+
+            string[] funGreetings = new[]
+            {
+                "Clarion Assistant is on-line!",
+                "Greetings, Clarion Developer!",
+                "Ready to write some Clarion!",
+                "Let's build something!",
+                "Reporting for duty!",
+                "At your service!",
+            };
+
+            // Combine time-based and fun greetings, pick one randomly
+            var all = new System.Collections.Generic.List<string>();
+            all.AddRange(timeGreetings);
+            all.AddRange(funGreetings);
+
+            var rng = new Random();
+            return all[rng.Next(all.Count)];
         }
 
         private string FindPowerShell()
@@ -668,6 +817,20 @@ namespace ClarionAssistant
                 "PowerShell", "7", "pwsh.exe");
             if (File.Exists(pwsh7)) return pwsh7;
             return "powershell.exe";
+        }
+
+        private static string GetClarionAssistantPluginPath()
+        {
+            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string marketplacePath = Path.Combine(userProfile, ".claude", "plugins", "marketplaces",
+                "clarionassistant-marketplace", "plugins", "clarion-assistant");
+            if (Directory.Exists(marketplacePath))
+                return marketplacePath;
+            string cachePath = Path.Combine(userProfile, ".claude", "plugins", "cache",
+                "clarionassistant-marketplace", "clarion-assistant", "1.0.0");
+            if (Directory.Exists(cachePath))
+                return cachePath;
+            return null;
         }
 
         private void UpdateStatus(string text)
@@ -687,6 +850,7 @@ namespace ClarionAssistant
             {
                 if (_terminal != null) _terminal.Dispose();
                 if (_mcpServer != null) _mcpServer.Dispose();
+                if (_knowledgeService != null) _knowledgeService.Dispose();
                 if (_renderer != null) _renderer.Dispose();
             }
             base.Dispose(disposing);

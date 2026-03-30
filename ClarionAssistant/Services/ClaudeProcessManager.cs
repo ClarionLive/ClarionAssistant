@@ -164,6 +164,16 @@ namespace ClarionAssistant.Services
                     args.Append(EscapeArgument(_mcpConfigPath));
                 }
 
+                // Load the Clarion Assistant plugin (skills, hooks, CLAUDE.md)
+                // Note: use simple quoting, not EscapeArgument which double-escapes backslashes
+                string pluginDir = GetClarionAssistantPluginPath();
+                if (pluginDir != null)
+                {
+                    args.Append(" --plugin-dir \"");
+                    args.Append(pluginDir);
+                    args.Append("\"");
+                }
+
                 var startInfo = new ProcessStartInfo
                 {
                     FileName = _claudePath,
@@ -350,6 +360,29 @@ namespace ClarionAssistant.Services
                     return output;
             }
             catch { }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Finds the Clarion Assistant plugin directory.
+        /// Checks marketplace source first, then cache.
+        /// </summary>
+        private static string GetClarionAssistantPluginPath()
+        {
+            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+            // Check marketplace source
+            string marketplacePath = Path.Combine(userProfile, ".claude", "plugins", "marketplaces",
+                "clarionassistant-marketplace", "plugins", "clarion-assistant");
+            if (Directory.Exists(marketplacePath))
+                return marketplacePath;
+
+            // Check cache
+            string cachePath = Path.Combine(userProfile, ".claude", "plugins", "cache",
+                "clarionassistant-marketplace", "clarion-assistant", "1.0.0");
+            if (Directory.Exists(cachePath))
+                return cachePath;
 
             return null;
         }
