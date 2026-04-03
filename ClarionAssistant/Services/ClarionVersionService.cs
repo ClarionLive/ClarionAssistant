@@ -249,5 +249,44 @@ namespace ClarionAssistant.Services
             }
             catch { return null; }
         }
+
+        /// <summary>
+        /// Parse RecentOpen.xml (same folder as ClarionProperties.xml) and return .sln paths
+        /// in order (most recent first). Paths that don't exist on disk are included so the
+        /// caller can decide whether to skip them.
+        /// </summary>
+        public static List<string> GetRecentSolutionPaths(string propertiesXmlPath)
+        {
+            var result = new List<string>();
+            try
+            {
+                if (string.IsNullOrEmpty(propertiesXmlPath)) return result;
+                string dir = Path.GetDirectoryName(propertiesXmlPath);
+                string recentPath = Path.Combine(dir, "RecentOpen.xml");
+                if (!File.Exists(recentPath)) return result;
+
+                var doc = new XmlDocument();
+                doc.Load(recentPath);
+                var projectNode = doc.SelectSingleNode("//Properties/Project");
+                if (projectNode == null) return result;
+                XmlAttribute attr = projectNode.Attributes["value"];
+                if (attr == null || string.IsNullOrEmpty(attr.Value)) return result;
+
+                // Deduplicate while preserving order (most-recent first)
+                var seen = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (string part in attr.Value.Split(','))
+                {
+                    string path = part.Trim();
+                    if (!string.IsNullOrEmpty(path) &&
+                        path.EndsWith(".sln", StringComparison.OrdinalIgnoreCase) &&
+                        seen.Add(path))
+                    {
+                        result.Add(path);
+                    }
+                }
+            }
+            catch { }
+            return result;
+        }
     }
 }

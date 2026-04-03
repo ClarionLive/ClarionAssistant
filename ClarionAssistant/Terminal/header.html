@@ -149,6 +149,93 @@
     gap: 6px;
   }
   .action-bar .spacer { flex: 1; }
+
+  /* Light theme overrides */
+  body.light { background: #eff1f5; color: #4c4f69; }
+  body.light .title { color: #1e66f5; }
+  body.light .status { color: #8c8fa1; }
+  body.light .status.connected { color: #40a02b; }
+  body.light .status.error { color: #d20f39; }
+  body.light .form-label { color: #6c6f85; }
+  body.light .form-select {
+    background-color: #e6e9ef; color: #4c4f69; border-color: #bcc0cc;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238c8fa1'/%3E%3C/svg%3E");
+  }
+  body.light .form-select:hover { border-color: #acb0be; }
+  body.light .form-select:focus { border-color: #1e66f5; }
+  body.light .btn { border-color: #bcc0cc; background-color: #e6e9ef; color: #4c4f69; }
+  body.light .btn:hover { background-color: #ccd0da; border-color: #acb0be; }
+  body.light .btn:active { background-color: #bcc0cc; }
+  body.light .btn-primary { background-color: #1e66f5; border-color: #1e66f5; color: #fff; }
+  body.light .btn-primary:hover { background-color: #3b8cf8; }
+  body.light .btn-primary:active { background-color: #1e66f5; }
+  body.light .btn-accent { color: #04a5e5; border-color: rgba(4,165,229,0.3); }
+  body.light .btn-accent:hover { background: rgba(4,165,229,0.1); border-color: rgba(4,165,229,0.5); }
+  body.light .index-status { color: #40a02b; }
+  body.light .index-status.warning { color: #fe640b; }
+  body.light .index-status.active { color: #1e66f5; }
+  body.light .index-status.error { color: #d20f39; }
+  body.light .divider { background: #ccd0da; }
+
+  /* Tab bar */
+  .tab-bar {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    padding: 4px 0 0 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    min-height: 26px;
+    flex-shrink: 0;
+  }
+  .tab-bar::-webkit-scrollbar { height: 3px; }
+  .tab-bar::-webkit-scrollbar-thumb { background: #45475a; border-radius: 2px; }
+  .tab {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    background: #252536;
+    border: 1px solid #313244;
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+    color: #7f849c;
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+    max-width: 180px;
+    transition: all 0.12s;
+    flex-shrink: 0;
+  }
+  .tab:hover { background: #313244; color: #bac2de; }
+  .tab.active {
+    background: #1e1e2e;
+    color: #cdd6f4;
+    border-color: #45475a;
+  }
+  .tab-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tab .close-btn {
+    margin-left: 4px;
+    opacity: 0;
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 0 2px;
+    border-radius: 3px;
+    transition: all 0.12s;
+  }
+  .tab:hover .close-btn { opacity: 0.5; }
+  .tab .close-btn:hover { opacity: 1; color: #f38ba8; background: rgba(243,139,168,0.1); }
+
+  /* Light tab overrides */
+  body.light .tab { background: #dce0e8; border-color: #ccd0da; color: #8c8fa1; }
+  body.light .tab:hover { background: #ccd0da; color: #5c5f77; }
+  body.light .tab.active { background: #eff1f5; color: #4c4f69; border-color: #acb0be; }
+  body.light .tab .close-btn:hover { color: #d20f39; background: rgba(210,15,57,0.1); }
+  body.light .tab-bar::-webkit-scrollbar-thumb { background: #bcc0cc; }
 </style>
 </head>
 <body>
@@ -176,37 +263,44 @@
       <span id="indexStatus" class="index-status"></span>
     </div>
 
-    <!-- Font row -->
-    <div class="form-row">
-      <span class="form-label">Font</span>
-      <select id="fontFamilySelect" class="form-select" style="flex:2">
-        <option value="Cascadia Mono">Cascadia Mono</option>
-        <option value="Consolas">Consolas</option>
-        <option value="Courier New">Courier New</option>
-        <option value="Lucida Console">Lucida Console</option>
-        <option value="Fira Code">Fira Code</option>
-        <option value="JetBrains Mono">JetBrains Mono</option>
-        <option value="Source Code Pro">Source Code Pro</option>
-      </select>
-      <span class="form-label" style="min-width:30px">Size</span>
-      <select id="fontSizeSelect" class="form-select" style="flex:0 0 60px"></select>
-    </div>
-
     <div class="divider"></div>
 
     <!-- Action bar -->
     <div class="action-bar">
       <button class="btn" onclick="send('newChat')">New Chat</button>
-      <button class="btn" onclick="send('settings')">&#9881; Settings</button>
       <button class="btn btn-accent" onclick="send('createCom')">+ Create COM</button>
       <button class="btn btn-accent" onclick="send('evaluateCode')">&#128269; Evaluate Code</button>
       <span class="spacer"></span>
+      <button class="btn btn-icon" onclick="send('cheatSheet')" title="Cheat Sheet">&#128214;</button>
+      <button class="btn btn-icon" onclick="send('docs')" title="Documentation">&#128195;</button>
+      <button class="btn btn-icon" onclick="send('settings')" title="Settings">&#9881;</button>
+      <button class="btn btn-icon" id="btnTheme" onclick="toggleTheme()" title="Toggle light/dark theme">&#9790;</button>
     </div>
+
   </div>
 
 <script>
+  var currentTheme = 'dark';
+
   function send(action, data) {
     window.chrome.webview.postMessage(JSON.stringify({ action: action, data: data || null }));
+  }
+
+  function setTheme(theme) {
+    currentTheme = theme;
+    if (theme === 'light') {
+      document.body.classList.add('light');
+    } else {
+      document.body.classList.remove('light');
+    }
+    var btn = document.getElementById('btnTheme');
+    if (btn) btn.innerHTML = theme === 'light' ? '&#9788;' : '&#9790;';
+  }
+
+  function toggleTheme() {
+    var newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    send('themeChanged', newTheme);
   }
 
   // Version select change
@@ -219,25 +313,34 @@
     send('solutionChanged', this.value);
   });
 
-  // Font family select change
-  document.getElementById('fontFamilySelect').addEventListener('change', function() {
-    send('fontFamilyChanged', this.value);
-  });
-
-  // Font size select — populate 6-32
-  (function() {
-    var sel = document.getElementById('fontSizeSelect');
-    for (var s = 6; s <= 32; s++) {
-      var opt = document.createElement('option');
-      opt.value = s;
-      opt.textContent = s;
-      sel.appendChild(opt);
+  // Tab bar functions
+  function renderTabBar(tabs) {
+    var bar = document.getElementById('tabBar');
+    var html = '';
+    for (var i = 0; i < tabs.length; i++) {
+      var t = tabs[i];
+      var cls = 'tab' + (t.isActive ? ' active' : '');
+      var icon = t.isHome ? '&#8962; ' : '';
+      var close = t.isHome ? '' : '<span class="close-btn" onclick="event.stopPropagation(); send(\'tabClose\',\'' + t.id + '\')" title="Close">&times;</span>';
+      html += '<div class="' + cls + '" onclick="send(\'tabActivate\',\'' + t.id + '\')">' +
+        icon + '<span class="tab-name">' + escapeHtml(t.name) + '</span>' + close + '</div>';
     }
-    sel.value = '14'; // default
-    sel.addEventListener('change', function() {
-      send('fontSizeChanged', this.value);
-    });
-  })();
+    bar.innerHTML = html;
+  }
+
+  function highlightActiveTab(tabId) {
+    var tabs = document.querySelectorAll('#tabBar .tab');
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].classList.remove('active');
+    }
+    var active = document.querySelector('#tabBar .tab[onclick*="' + tabId + '"]');
+    if (active) active.classList.add('active');
+  }
+
+  function escapeHtml(s) {
+    if (!s) return '';
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
 
   // Receive messages from C#
   window.chrome.webview.addEventListener('message', function(e) {
@@ -284,24 +387,16 @@
       document.getElementById('btnUpdate').disabled = !msg.enabled;
     }
 
-    if (msg.type === 'setFontFamily') {
-      var sel = document.getElementById('fontFamilySelect');
-      // If the saved font is in our list, select it; otherwise add it
-      var found = false;
-      for (var i = 0; i < sel.options.length; i++) {
-        if (sel.options[i].value === msg.value) { sel.selectedIndex = i; found = true; break; }
-      }
-      if (!found && msg.value) {
-        var opt = document.createElement('option');
-        opt.value = msg.value;
-        opt.textContent = msg.value;
-        sel.appendChild(opt);
-        opt.selected = true;
-      }
+    if (msg.type === 'setTheme') {
+      setTheme(msg.theme);
     }
 
-    if (msg.type === 'setFontSize') {
-      document.getElementById('fontSizeSelect').value = msg.value;
+    if (msg.type === 'setTabs') {
+      renderTabBar(msg.tabs);
+    }
+
+    if (msg.type === 'setActiveTab') {
+      highlightActiveTab(msg.tabId);
     }
   });
 </script>

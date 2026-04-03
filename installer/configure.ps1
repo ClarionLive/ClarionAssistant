@@ -123,6 +123,9 @@ if (-not $settings.ContainsKey('env')) {
 if (-not $settings['env'].ContainsKey('CLAUDE_CODE_USE_POWERSHELL_TOOL')) {
     $settings['env']['CLAUDE_CODE_USE_POWERSHELL_TOOL'] = '1'
 }
+if (-not $settings['env'].ContainsKey('CLAUDE_CODE_NO_FLICKER')) {
+    $settings['env']['CLAUDE_CODE_NO_FLICKER'] = '1'
+}
 
 # Write settings.json
 $settingsJson = $settings | ConvertTo-Json -Depth 10

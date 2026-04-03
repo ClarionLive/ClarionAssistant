@@ -59,18 +59,30 @@ namespace ClarionAssistant.Terminal
             Controls.Add(_webView);
             ResumeLayout(false);
 
-            HandleCreated += OnHandleCreated;
+            // Lazy init: only initialize WebView2 when the control becomes visible.
+            // This avoids WebView2 issues with hidden controls and matches
+            // the MultiTerminal pattern (BrowserTabPage.OnVisibleChanged).
+            VisibleChanged += OnVisibleChanged;
         }
 
-        private async void OnHandleCreated(object sender, EventArgs e)
+        private async void OnVisibleChanged(object sender, EventArgs e)
         {
-            if (_isInitializing || _isInitialized) return;
+            if (!Visible) return; // Only init when becoming visible
+            System.Diagnostics.Debug.WriteLine("[WVRenderer] VisibleChanged(true). _isInitializing=" + _isInitializing + ", _isInitialized=" + _isInitialized + ", Parent=" + (Parent?.Name ?? "null"));
+            if (_isInitializing || _isInitialized)
+            {
+                System.Diagnostics.Debug.WriteLine("[WVRenderer] Init BLOCKED by guard");
+                return;
+            }
             _isInitializing = true;
 
             try
             {
+                System.Diagnostics.Debug.WriteLine("[WVRenderer] Getting WebView2 environment...");
                 var environment = await WebView2EnvironmentCache.GetEnvironmentAsync();
+                System.Diagnostics.Debug.WriteLine("[WVRenderer] Got environment. Calling EnsureCoreWebView2Async...");
                 await _webView.EnsureCoreWebView2Async(environment);
+                System.Diagnostics.Debug.WriteLine("[WVRenderer] EnsureCoreWebView2Async completed.");
 
                 var settings = _webView.CoreWebView2.Settings;
                 settings.IsScriptEnabled = true;
@@ -83,16 +95,23 @@ namespace ClarionAssistant.Terminal
                 _webView.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
 
                 string htmlPath = GetTerminalHtmlPath();
+                System.Diagnostics.Debug.WriteLine("[WVRenderer] HTML path: " + htmlPath + ", exists: " + File.Exists(htmlPath));
                 if (File.Exists(htmlPath))
-                    _webView.CoreWebView2.Navigate(new Uri(htmlPath).AbsoluteUri);
+                {
+                    string uri = new Uri(htmlPath).AbsoluteUri;
+                    System.Diagnostics.Debug.WriteLine("[WVRenderer] Navigating to: " + uri);
+                    _webView.CoreWebView2.Navigate(uri);
+                }
                 else
                 {
+                    System.Diagnostics.Debug.WriteLine("[WVRenderer] HTML NOT FOUND!");
                     ShowError("Terminal HTML not found: " + htmlPath);
                     _isInitializing = false;
                 }
             }
             catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine("[WVRenderer] EXCEPTION: " + ex);
                 ShowError("Failed to initialize WebView2: " + ex.Message);
             }
         }
@@ -284,6 +303,13 @@ namespace ClarionAssistant.Terminal
             _fontFamily = family;
             if (_isInitialized && _webView?.CoreWebView2 != null)
                 _webView.CoreWebView2.PostWebMessageAsString("fontFamily:" + family);
+        }
+
+        public void SetTheme(bool isDark)
+        {
+            BackColor = isDark ? Color.FromArgb(12, 12, 12) : Color.White;
+            if (_isInitialized && _webView?.CoreWebView2 != null)
+                _webView.CoreWebView2.PostWebMessageAsString("theme:" + (isDark ? "dark" : "light"));
         }
 
         public void Clear()

@@ -25,10 +25,22 @@ namespace ClarionAssistant.Services
         {
             // Store in the ClarionAssistant data folder
             string appData = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 "ClarionAssistant");
             Directory.CreateDirectory(appData);
             return Path.Combine(appData, "docgraph.db");
+        }
+
+        /// <summary>
+        /// Gets the personal DocGraph database path (user's own docs, never overwritten by installer).
+        /// </summary>
+        public static string GetPersonalDbPath()
+        {
+            string appData = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "ClarionAssistant");
+            Directory.CreateDirectory(appData);
+            return Path.Combine(appData, "personal-docgraph.db");
         }
 
         public string DbPath { get { return _dbPath; } }
@@ -124,6 +136,14 @@ namespace ClarionAssistant.Services
                 using (var cmd = new SQLiteCommand(sql, conn))
                     cmd.ExecuteNonQuery();
             }
+
+            // Migration: add tags column if missing
+            try
+            {
+                using (var cmd = new SQLiteCommand("ALTER TABLE libraries ADD COLUMN tags TEXT", conn))
+                    cmd.ExecuteNonQuery();
+            }
+            catch (SQLiteException) { /* column already exists */ }
         }
 
         #endregion
@@ -1448,6 +1468,143 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// Query both bundled and personal DocGraph databases using ATTACH DATABASE.
+        /// Falls back to single-DB query if one database is missing.
+        /// </summary>
+        public string QueryDocsMulti(string personalDbPath, string query, string library = null, string className = null, int limit = 10)
+        {
+            bool hasBundled = File.Exists(_dbPath);
+            bool hasPersonal = !string.IsNullOrEmpty(personalDbPath) && File.Exists(personalDbPath);
+
+            if (!hasBundled && !hasPersonal)
+                return "Error: No DocGraph databases found. Run ingest_docs first.";
+
+            // If only one DB exists, use the simple query
+            if (!hasPersonal) return QueryDocs(query, library, className, limit);
+            if (!hasBundled)
+            {
+                var personalSvc = new DocGraphService(personalDbPath);
+                return personalSvc.QueryDocs(query, library, className, limit);
+            }
+
+            // Both exist — use ATTACH to query across both
+            string ftsQuery = SanitizeFtsQuery(query);
+            if (string.IsNullOrEmpty(ftsQuery))
+                return "Error: invalid search query";
+
+            string firstWord = query.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? query;
+
+            var sb = new StringBuilder();
+            using (var conn = OpenConnection(readOnly: true))
+            {
+                // Attach personal DB
+                using (var cmd = new SQLiteCommand("ATTACH DATABASE @path AS personal", conn))
+                {
+                    cmd.Parameters.AddWithValue("@path", personalDbPath);
+                    cmd.ExecuteNonQuery();
+                }
+
+                string filterSql = "";
+                var parameters = new List<SQLiteParameter>();
+                parameters.Add(new SQLiteParameter("@query", ftsQuery));
+                parameters.Add(new SQLiteParameter("@exact", firstWord));
+                parameters.Add(new SQLiteParameter("@limit", limit));
+
+                if (!string.IsNullOrEmpty(library))
+                {
+                    filterSql += " AND l.name = @library";
+                    parameters.Add(new SQLiteParameter("@library", library));
+                }
+                if (!string.IsNullOrEmpty(className))
+                {
+                    filterSql += " AND dc.class_name = @class";
+                    parameters.Add(new SQLiteParameter("@class", className));
+                }
+
+                string selectCols = @"dc.id, l.vendor, l.name as library, dc.class_name, dc.method_name,
+                    dc.topic, dc.heading, dc.signature, dc.content, dc.code_example,
+                    CASE
+                        WHEN dc.method_name = @exact THEN 0
+                        WHEN dc.method_name LIKE '%' || @exact || '%' THEN 1
+                        WHEN dc.heading = @exact THEN 2
+                        WHEN dc.heading LIKE '%' || @exact || '%' THEN 3
+                        WHEN dc.signature LIKE '%' || @exact || '%' THEN 4
+                        ELSE 5
+                    END as tier,
+                    rank as bm25_score, LENGTH(dc.content) as content_len";
+
+                string sql = string.Format(@"
+                    SELECT * FROM (
+                        SELECT {0}, 'bundled' as source
+                        FROM main.doc_fts
+                        JOIN main.doc_chunks dc ON dc.id = CAST(main.doc_fts.chunk_id AS INTEGER)
+                        JOIN main.libraries l ON l.id = dc.library_id
+                        WHERE main.doc_fts MATCH @query {1}
+
+                        UNION ALL
+
+                        SELECT {0}, 'personal' as source
+                        FROM personal.doc_fts
+                        JOIN personal.doc_chunks dc ON dc.id = CAST(personal.doc_fts.chunk_id AS INTEGER)
+                        JOIN personal.libraries l ON l.id = dc.library_id
+                        WHERE personal.doc_fts MATCH @query {1}
+                    ) combined
+                    ORDER BY tier, bm25_score, content_len DESC
+                    LIMIT @limit", selectCols, filterSql);
+
+                using (var cmd = new SQLiteCommand(sql, conn))
+                {
+                    foreach (var p in parameters)
+                        cmd.Parameters.Add(p);
+
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        int count = 0;
+                        while (reader.Read())
+                        {
+                            count++;
+                            string vendor = reader["vendor"] as string ?? "";
+                            string lib = reader["library"] as string ?? "";
+                            string cls = reader["class_name"] as string ?? "";
+                            string method = reader["method_name"] as string ?? "";
+                            string topic = reader["topic"] as string ?? "";
+                            string heading = reader["heading"] as string ?? "";
+                            string sig = reader["signature"] as string ?? "";
+                            string content = reader["content"] as string ?? "";
+                            string code = reader["code_example"] as string ?? "";
+                            string source = reader["source"] as string ?? "bundled";
+
+                            sb.AppendLine(string.Format("--- Result {0} [{1}/{2}] ({3}) ---", count, vendor, lib, source));
+                            if (!string.IsNullOrEmpty(cls))
+                                sb.AppendLine("Class: " + cls);
+                            if (!string.IsNullOrEmpty(method))
+                                sb.AppendLine("Method: " + method);
+                            if (!string.IsNullOrEmpty(sig))
+                                sb.AppendLine("Signature: " + sig);
+                            sb.AppendLine("Topic: " + topic + " | " + heading);
+                            sb.AppendLine();
+                            sb.AppendLine(content);
+                            if (!string.IsNullOrEmpty(code))
+                            {
+                                sb.AppendLine();
+                                sb.AppendLine("Example:");
+                                sb.AppendLine(code);
+                            }
+                            sb.AppendLine();
+                        }
+
+                        if (count == 0)
+                            return "No documentation found for: " + query;
+                    }
+                }
+
+                try { using (var cmd = new SQLiteCommand("DETACH DATABASE personal", conn)) cmd.ExecuteNonQuery(); } catch { }
+            }
+
+            return sb.ToString();
+        }
+
+        /// <summary>
         /// List all ingested libraries.
         /// </summary>
         public string ListLibraries()
@@ -1527,6 +1684,52 @@ namespace ClarionAssistant.Services
             }
 
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Delete a library and all its chunks from the database. Rebuilds FTS index.
+        /// </summary>
+        public void DeleteLibrary(long libraryId)
+        {
+            DeleteLibraryCore(libraryId);
+            RebuildFtsIndex();
+        }
+
+        /// <summary>
+        /// Delete multiple libraries in a batch with a single FTS rebuild at the end.
+        /// </summary>
+        public void DeleteLibraries(IEnumerable<long> libraryIds)
+        {
+            foreach (long id in libraryIds)
+                DeleteLibraryCore(id);
+            RebuildFtsIndex();
+        }
+
+        private void DeleteLibraryCore(long libraryId)
+        {
+            using (var conn = OpenConnection(readOnly: false))
+            {
+                DeleteLibraryChunks(conn, libraryId);
+                using (var cmd = new SQLiteCommand("DELETE FROM libraries WHERE id = @id", conn))
+                {
+                    cmd.Parameters.AddWithValue("@id", libraryId);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Update the tags on a library.
+        /// </summary>
+        public void UpdateLibraryTags(long libraryId, string tags)
+        {
+            using (var conn = OpenConnection(readOnly: false))
+            using (var cmd = new SQLiteCommand("UPDATE libraries SET tags = @tags WHERE id = @id", conn))
+            {
+                cmd.Parameters.AddWithValue("@tags", (object)tags ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("@id", libraryId);
+                cmd.ExecuteNonQuery();
+            }
         }
 
         #endregion

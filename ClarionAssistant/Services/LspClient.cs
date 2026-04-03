@@ -18,7 +18,7 @@ namespace ClarionAssistant.Services
         private readonly object _writeLock = new object();
         private readonly object _readLock = new object();
         private int _nextId = 1;
-        private bool _initialized;
+
         private readonly JavaScriptSerializer _serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
 
         // Pending responses keyed by request ID
@@ -85,7 +85,7 @@ namespace ClarionAssistant.Services
                 // Send initialized notification
                 SendNotification("initialized", new Dictionary<string, object>());
 
-                _initialized = true;
+
 
                 // Give the server a moment to finish initialization
                 Thread.Sleep(1000);
@@ -102,7 +102,7 @@ namespace ClarionAssistant.Services
         public void Stop()
         {
             _running = false;
-            _initialized = false;
+
 
             try
             {

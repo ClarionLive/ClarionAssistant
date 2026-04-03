@@ -894,6 +894,87 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
+        /// <summary>
+        /// Opens a Clarion solution or project file in the IDE.
+        /// Prompts to save the current solution first (BeforeLoadSolution handles this).
+        /// </summary>
+        public static string OpenSolution(string fileName)
+        {
+            try
+            {
+                if (!System.IO.File.Exists(fileName))
+                    return "Error: file not found: " + fileName;
+
+                var sharpDevelopAsm = Assembly.Load("ICSharpCode.SharpDevelop");
+                if (sharpDevelopAsm == null) return "Error: could not load SharpDevelop assembly";
+
+                var projectServiceType = sharpDevelopAsm.GetType("ICSharpCode.SharpDevelop.Project.ProjectService");
+                if (projectServiceType == null) return "Error: ProjectService type not found";
+
+                var beforeLoad = projectServiceType.GetMethod("BeforeLoadSolution",
+                    BindingFlags.Public | BindingFlags.Static);
+                if (beforeLoad != null)
+                {
+                    bool canLoad = (bool)beforeLoad.Invoke(null, null);
+                    if (!canLoad) return "Cancelled: user chose not to close the current solution";
+                }
+
+                var loadMethod = projectServiceType.GetMethod("LoadSolutionOrProject",
+                    BindingFlags.Public | BindingFlags.Static);
+                if (loadMethod == null) return "Error: LoadSolutionOrProject method not found";
+
+                loadMethod.Invoke(null, new object[] { fileName });
+                return "Opened solution: " + fileName;
+            }
+            catch (Exception ex) { return "Error: " + ex.Message; }
+        }
+
+        /// <summary>
+        /// Close the currently open solution in the IDE.
+        /// Uses ProjectService.CloseSolution() via reflection.
+        /// </summary>
+        public static string CloseSolution()
+        {
+            try
+            {
+                var sharpDevelopAsm = Assembly.Load("ICSharpCode.SharpDevelop");
+                if (sharpDevelopAsm == null) return "Error: could not load SharpDevelop assembly";
+
+                var projectServiceType = sharpDevelopAsm.GetType("ICSharpCode.SharpDevelop.Project.ProjectService");
+                if (projectServiceType == null) return "Error: ProjectService type not found";
+
+                // Check if a solution is open
+                var openSolutionProp = projectServiceType.GetProperty("OpenSolution",
+                    BindingFlags.Public | BindingFlags.Static);
+                if (openSolutionProp != null)
+                {
+                    var currentSolution = openSolutionProp.GetValue(null, null);
+                    if (currentSolution == null) return "No solution is currently open";
+                }
+
+                // Try CloseSolution method
+                var closeMethod = projectServiceType.GetMethod("CloseSolution",
+                    BindingFlags.Public | BindingFlags.Static);
+                if (closeMethod != null)
+                {
+                    closeMethod.Invoke(null, null);
+                    return "Solution closed";
+                }
+
+                // Fallback: try CloseSolution(bool) overload
+                closeMethod = projectServiceType.GetMethod("CloseSolution",
+                    BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(bool) }, null);
+                if (closeMethod != null)
+                {
+                    closeMethod.Invoke(null, new object[] { true });
+                    return "Solution closed";
+                }
+
+                return "Error: CloseSolution method not found on ProjectService";
+            }
+            catch (Exception ex) { return "Error: " + ex.Message; }
+        }
+
         public static string GetClarionInstallPath()
         {
             try

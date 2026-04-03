@@ -259,6 +259,24 @@ namespace ClarionAssistant.Services
             return Get<List<TeamMemberProfile>>(path);
         }
 
+        // ── Knowledge Injection ──────────────────────────────
+
+        /// <summary>Get decay-ranked knowledge entries as pre-formatted markdown for context injection.</summary>
+        public ApiResult<KnowledgeInjectionResponse> GetKnowledgeInjection(int limit = 15)
+        {
+            return Get<KnowledgeInjectionResponse>(string.Format("/api/knowledge/inject?limit={0}", limit));
+        }
+
+        // ── Session Recap ────────────────────────────────────
+
+        /// <summary>Get the most recent session recap for an agent on a project.</summary>
+        public ApiResult<SessionRecap> GetLatestSessionRecap(string projectPath, string agentName = null)
+        {
+            string path = string.Format("/api/session-lineage/latest?projectPath={0}", E(projectPath));
+            if (agentName != null) path += "&agentName=" + E(agentName);
+            return Get<SessionRecap>(path);
+        }
+
         // ── Health ──────────────────────────────────────────
 
         /// <summary>Check if the MultiTerminal API is reachable.</summary>

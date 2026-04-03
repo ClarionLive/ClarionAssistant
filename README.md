@@ -32,7 +32,9 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 - **Build tools** &mdash; build solutions, individual apps, or C# COM controls without leaving the chat
 - **Class intelligence** &mdash; parse CLASS definitions, sync .inc/.clw, generate method stubs
 - **Application tree** &mdash; open .app files, list procedures, navigate the embeditor
-- **Diff viewer** &mdash; side-by-side diffs with syntax highlighting
+- **Diff viewer** &mdash; Monaco-based side-by-side diffs with syntax highlighting
+- **Tabbed terminal** &mdash; multiple Claude Code sessions with a Home page, settings, and cheat sheet
+- **Knowledge system** &mdash; persistent cross-session memory for decisions, patterns, and gotchas
 
 ---
 
@@ -72,19 +74,19 @@ The installer bundles **COM for Clarion**, a complete toolkit for creating .NET 
 | COM for Clarion addin | `{Clarion}\accessory\addins\ComForClarion\` | COM browser addin |
 | UltimateCOM template | `{Clarion}\accessory\template\win\` | .tpl, .inc, .clw, and template DLLs |
 | Documentation | `{Clarion}\accessory\resources\ComForClarionDocumentation\` | COM for Clarion docs |
-| Claude Code skills | `%USERPROFILE%\.claude\skills\` | 17 Clarion-specific skills |
+| Claude Code plugin | `%USERPROFILE%\.claude\plugins\...\clarion-assistant\` | 20+ Clarion-specific skills, hooks, and docs |
 | Code quality agents | `%USERPROFILE%\.claude\agents\` | 6 agents (won't overwrite existing) |
 | ClarionCOM tooling | `%APPDATA%\ClarionCOM\` | Project templates and scripts |
-| DocGraph database | `%LOCALAPPDATA%\ClarionAssistant\` | Pre-loaded Clarion 12 docs (won't overwrite existing) |
+| DocGraph database | `%APPDATA%\ClarionAssistant\` | Pre-loaded Clarion 12 documentation index |
 | Reference prompt | `%USERPROFILE%\.claude\` | `clarion-assistant-reference.md` |
 
-Your existing Claude Code settings are preserved &mdash; the installer merges permissions non-destructively.
+Your existing Claude Code settings are preserved &mdash; the installer merges permissions non-destructively. The `CLAUDE_CODE_NO_FLICKER` environment variable is enabled automatically for a smoother terminal experience.
 
 ---
 
 ## MCP Tools Reference
 
-Clarion Assistant exposes **70+ MCP tools** that Claude uses to interact with the IDE:
+Clarion Assistant exposes **90+ MCP tools** that Claude uses to interact with the IDE:
 
 ### IDE & Editor
 | Tool | Description |
@@ -135,11 +137,17 @@ Clarion Assistant exposes **70+ MCP tools** that Claude uses to interact with th
 | `lsp_hover` | Get type info and documentation |
 | `lsp_find_symbol` | Search for symbols by name |
 
+### Knowledge & Memory
+| Tool | Description |
+|---|---|
+| `add_knowledge` | Save reusable insights (decisions, patterns, gotchas) across sessions |
+| `query_knowledge` | Search past decisions and patterns |
+
 ---
 
 ## Claude Code Skills
 
-The installer includes 17 Clarion-specific skills for Claude Code:
+The installer includes 20+ Clarion-specific skills for Claude Code (installed as a plugin):
 
 | Skill | Description |
 |---|---|
@@ -155,6 +163,10 @@ The installer includes 17 Clarion-specific skills for Claude Code:
 | `clarioncom-get` | Download controls from the marketplace |
 | `clarioncom-github-init` | Initialize GitHub repos for COM projects |
 | `evaluate-code` | Evaluate Clarion app code for issues and improvements |
+| `clarion-analyze` | Analyze Clarion code generation traces for recurring failure patterns |
+| `clarion-benchmark` | Benchmark Clarion code generation quality |
+| `clarion-convert-driver` | Convert Clarion dictionaries between file drivers (e.g., TopSpeed to SQLite) |
+| `jfiles` | jFiles JSON serialization patterns for Clarion |
 
 ---
 
@@ -198,13 +210,17 @@ cd ClarionAssistant
 ClarionAssistant/
 ├── ClarionAssistant/           # Main addin source (C#, .NET Framework 4.8)
 │   ├── Services/               # Core services
-│   │   ├── McpToolRegistry.cs  # 70+ MCP tool definitions
+│   │   ├── McpToolRegistry.cs  # 90+ MCP tool definitions
 │   │   ├── EditorService.cs    # IDE editor integration
 │   │   ├── DocGraphService.cs  # Documentation search (FTS5)
 │   │   ├── AppTreeService.cs   # .app file operations
 │   │   ├── ClarionClassParser.cs # CLASS intelligence
+│   │   ├── KnowledgeService.cs # Persistent cross-session knowledge
 │   │   └── LspClient.cs       # Language Server Protocol
-│   ├── Terminal/               # WebView2 terminal UI
+│   ├── Terminal/               # WebView2 terminal UI (tabbed)
+│   │   ├── TabManager.cs      # Multi-tab terminal management
+│   │   ├── HomeWebView.cs     # Home page with recent solutions
+│   │   └── *.html             # terminal, home, settings, cheatsheet, diff, header
 │   └── ClaudeChatControl.cs    # Main chat control
 ├── docs/                       # User guide
 └── installer/                  # Inno Setup installer

@@ -42,7 +42,9 @@ namespace ClarionAssistant.Terminal
         private List<int> _hunkStarts = new List<int>();
         private int _currentHunk = -1;
 
+#pragma warning disable 67
         public event Action<string> Applied;
+#pragma warning restore 67
         public event Action Cancelled;
 
         public override Control Control { get { return _panel; } }

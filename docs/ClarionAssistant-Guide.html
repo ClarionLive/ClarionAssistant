@@ -427,7 +427,7 @@
 <header class="site-header">
   <h1>Clarion.Assistant</h1>
   <div class="subtitle">AI-Powered Development for the Clarion IDE</div>
-  <div class="version-badge">User Guide &middot; v1.0</div>
+  <div class="version-badge">User Guide &middot; v1.1</div>
 </header>
 
 <!-- ════════════════════════════════════════════════════ -->
@@ -444,13 +444,15 @@
     <a href="#getting-started-first-launch" class="sub">First Launch</a>
     <a href="#getting-started-first-conversation" class="sub">Your First Conversation</a>
 
-    <h3>Claude Chat Terminal</h3>
+    <h3>Clarion Assistant Terminal</h3>
     <a href="#claude-chat">Overview</a>
-    <a href="#claude-chat" class="sub">Solution Bar</a>
-    <a href="#claude-chat" class="sub">Terminal Toolbar</a>
-    <a href="#claude-chat" class="sub">What Claude Can Do</a>
-    <a href="#claude-chat" class="sub">Example Conversations</a>
-    <a href="#claude-chat" class="sub">Settings</a>
+    <a href="#claude-chat-home" class="sub">Home Tab</a>
+    <a href="#claude-chat-tabs" class="sub">Tab System</a>
+    <a href="#claude-chat-solution" class="sub">Solution Bar</a>
+    <a href="#claude-chat-toolbar" class="sub">Terminal Toolbar</a>
+    <a href="#claude-chat-capabilities" class="sub">What Claude Can Do</a>
+    <a href="#claude-chat-examples" class="sub">Example Conversations</a>
+    <a href="#claude-chat-settings" class="sub">Settings</a>
 
     <h3>Class Helper</h3>
     <a href="#class-helper">Overview</a>
@@ -479,7 +481,18 @@
     <a href="#tools-codegraph" class="sub">CodeGraph</a>
     <a href="#tools-lsp" class="sub">Language Server</a>
     <a href="#tools-docgraph" class="sub">DocGraph</a>
+    <a href="#tools-file-resolution" class="sub">File Path Resolution</a>
+    <a href="#tools-search" class="sub">Everything Search</a>
+    <a href="#tools-instance" class="sub">Instance Coordination</a>
+    <a href="#tools-knowledge" class="sub">Knowledge &amp; Memory</a>
     <a href="#tools-build" class="sub">Build Tools</a>
+    <a href="#tools-traces" class="sub">Trace Tools</a>
+
+    <h3>Self-Improving Code Generation</h3>
+    <a href="#self-improvement">Overview</a>
+    <a href="#self-improvement-how" class="sub">How It Works</a>
+    <a href="#self-improvement-skills" class="sub">Skills Reference</a>
+    <a href="#self-improvement-technical" class="sub">Technical Architecture</a>
 
     <h3>Acknowledgments</h3>
     <a href="#acknowledgments">Credits &amp; Thanks</a>
@@ -545,18 +558,18 @@
     </div>
 
     <div class="feature-card">
-      <h4>Agent Monitoring</h4>
+      <h4>Documentation Search</h4>
       <p>
-        Monitor AI agent activity, review task progress, and coordinate work across multiple
-        terminals through the MultiTerminal integration.
+        Search indexed Clarion documentation &mdash; core language references, ABC library docs,
+        and third-party template documentation from CapeSoft, Icetips, Noyantis, and others.
       </p>
     </div>
 
     <div class="feature-card">
-      <h4>Task Lifecycle Board</h4>
+      <h4>Multi-Instance Coordination</h4>
       <p>
-        A visual Kanban board for managing development tasks from creation through completion,
-        integrated directly into the IDE workflow.
+        Run multiple Clarion IDE instances simultaneously. Each instance registers its presence,
+        detects procedure editing conflicts, and can send messages to coordinate multi-app work.
       </p>
     </div>
   </div>
@@ -616,22 +629,22 @@
   <h3 id="getting-started-installation">Installation</h3>
 
   <p>
-    Clarion.Assistant is deployed as a single file &mdash; <code>ClarionAssistant.dll</code> &mdash;
-    placed into the Clarion IDE's AddIns directory. No separate installer or configuration wizard
-    is required.
+    Clarion.Assistant is deployed to the Clarion IDE's accessory addins directory. An Inno Setup
+    installer is provided, or you can deploy manually. No configuration wizard is required.
   </p>
 
   <div class="step">
     <span class="step-number">1</span>
     <div class="step-content">
-      <h4>Deploy the DLL</h4>
+      <h4>Deploy the Files</h4>
       <p>
-        Copy <code>ClarionAssistant.dll</code> to your Clarion IDE's AddIns folder. The typical
-        path is:
+        Copy the <code>ClarionAssistant</code> folder to your Clarion IDE's accessory addins
+        directory. The typical path is:
       </p>
-      <pre class="code-block"><code>C:\Program Files\SoftVelocity\ClarionXX\Bin\AddIns\ClarionAssistant.dll</code></pre>
+      <pre class="code-block"><code>C:\Clarion12\accessory\addins\ClarionAssistant\</code></pre>
       <p>
-        Replace <code>XX</code> with your Clarion version number (e.g., <code>Clarion11</code>).
+        The folder contains the main DLL, HTML terminal files, support libraries, and documentation.
+        If using the installer, this is done automatically.
       </p>
     </div>
   </div>
@@ -688,13 +701,14 @@
   <div class="panels-overview">
     <div class="panel-card">
       <div class="panel-header">
-        <h4>Claude Chat</h4>
+        <h4>Clarion Assistant</h4>
         <span class="shortcut"><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>C</kbd></span>
       </div>
       <p>
-        The primary AI assistant panel. An embedded Claude Code terminal with full awareness
-        of your IDE state. It can read your active file, navigate to specific lines, make edits,
-        analyze classes, and query your entire codebase.
+        The primary AI assistant panel. Features a Home tab with your solution history and
+        a multi-tab terminal interface where each tab runs an independent Claude Code session.
+        It can read your active file, navigate to specific lines, make edits,
+        analyze classes, search documentation, and query your entire codebase.
       </p>
     </div>
 
@@ -725,7 +739,7 @@
   <h3 id="getting-started-first-conversation">Your First Conversation</h3>
 
   <p>
-    Once you have the Claude Chat panel open, try these common tasks to get familiar:
+    Once you have the Clarion Assistant panel open, try these common tasks to get familiar:
   </p>
 
   <div class="example">
@@ -789,18 +803,54 @@
 <!--  SECTION 2: CLAUDE CHAT TERMINAL                    -->
 <!-- ════════════════════════════════════════════════════ -->
 <section id="claude-chat" class="doc-section">
-  <h2>Claude Chat Terminal</h2>
+  <h2>Clarion Assistant Terminal</h2>
   <p>
-    The Claude Chat Terminal is the centerpiece of Clarion.Assistant. It embeds a fully functional
-    Claude Code session directly inside the Clarion IDE, connected to over 30 MCP tools that give
+    The Clarion Assistant Terminal is the centerpiece of Clarion.Assistant. It embeds a fully functional
+    Claude Code session directly inside the Clarion IDE, connected to over 60 MCP tools that give
     Claude real-time awareness of your editor, your solution, and your codebase. You can ask Claude
     to read your open file, navigate to a line, analyze a class hierarchy, or refactor code &mdash; all
     without leaving the IDE.
   </p>
 
-  <h3>Solution Bar</h3>
+  <h3 id="claude-chat-home">Home Tab</h3>
   <p>
-    The Solution Bar runs across the top of the Claude Chat panel. It controls which Clarion
+    When the panel first opens, it shows the <strong>Home</strong> tab &mdash; a landing page that
+    lists your recently opened solutions in a searchable, sortable table. From here you can:
+  </p>
+  <ul>
+    <li><strong>Click a solution name</strong> to open it in a new terminal tab.</li>
+    <li><strong>Expand a row</strong> to see the full path, last indexed date, and project details.</li>
+    <li><strong>Browse</strong> for a solution not in the list.</li>
+    <li><strong>Remove</strong> solutions from your history.</li>
+    <li><strong>Open the containing folder</strong> of any solution.</li>
+  </ul>
+  <p>
+    The Home tab also provides <strong>+ Create COM</strong> and <strong>Evaluate Code</strong>
+    quick-action buttons.
+  </p>
+
+  <h3 id="claude-chat-tabs">Tab System</h3>
+  <p>
+    The terminal supports multiple concurrent tabs, each running its own independent Claude Code
+    session against a separate solution. The tab strip appears below the header when more than one
+    tab is open.
+  </p>
+  <ul>
+    <li><strong>Home tab</strong> &mdash; Always present, not closable. Returns to the solution list.</li>
+    <li><strong>Terminal tabs</strong> &mdash; Each opened solution gets its own tab with a full
+      terminal emulator, its own MCP server, and independent CodeGraph/LSP context.</li>
+    <li><strong>Close tabs</strong> &mdash; Click the &times; button on any terminal tab to stop
+      the session and close it. The Home tab cannot be closed.</li>
+  </ul>
+
+  <div class="info-box info-box--tip">
+    <strong>Tip:</strong> Use multiple tabs to work on different parts of a multi-solution project.
+    Each tab has its own Claude Code process with full IDE integration.
+  </div>
+
+  <h3 id="claude-chat-solution">Solution Bar</h3>
+  <p>
+    The Solution Bar runs across the top of the Clarion Assistant panel. It controls which Clarion
     environment and solution Claude operates against.
   </p>
 
@@ -865,7 +915,7 @@
     are only as current as the last index.
   </div>
 
-  <h3>Terminal Toolbar</h3>
+  <h3 id="claude-chat-toolbar">Terminal Toolbar</h3>
 
   <table class="feature-table">
     <thead>
@@ -883,17 +933,45 @@
         </td>
       </tr>
       <tr>
-        <td><strong>Settings</strong></td>
+        <td><strong>+ Create COM</strong></td>
+        <td>
+          Launches the COM control creation wizard. Sends a <code>/ClarionCOM</code> command to
+          the active terminal to scaffold a new C# COM control project for Clarion.
+        </td>
+      </tr>
+      <tr>
+        <td><strong>Evaluate Code</strong></td>
+        <td>
+          Runs the <code>/evaluate-code</code> skill, which exports the current app's TXA,
+          analyzes the generated code for issues and improvements, shows diffs, and can
+          apply fixes via the embeditor.
+        </td>
+      </tr>
+      <tr>
+        <td><strong>Cheat Sheet</strong> (book icon)</td>
+        <td>
+          Opens a quick-reference popup listing common things you can ask the assistant
+          &mdash; organized by category (editor, classes, apps, CodeGraph, LSP, docs, COM).
+        </td>
+      </tr>
+      <tr>
+        <td><strong>Documentation</strong> (page icon)</td>
+        <td>
+          Opens this full User Guide in your default web browser.
+        </td>
+      </tr>
+      <tr>
+        <td><strong>Settings</strong> (gear icon)</td>
         <td>
           Opens the configuration dialog where you can adjust font size, set the working
           directory, and configure MultiTerminal integration.
         </td>
       </tr>
       <tr>
-        <td><strong>Task Board</strong></td>
+        <td><strong>Theme Toggle</strong> (moon/sun icon)</td>
         <td>
-          Opens the Task Lifecycle Board for the currently active task. Only functional when
-          MultiTerminal integration is enabled and a task is active.
+          Switches between dark and light themes. The theme applies to the header, terminal,
+          home tab, and all dialogs.
         </td>
       </tr>
       <tr>
@@ -924,13 +1002,13 @@
   <div class="feature-card">
     <h4>IDE-Aware MCP Tools</h4>
     <p>
-      Claude has direct access to the Clarion IDE through over 30 MCP tools. These tools let
+      Claude has direct access to the Clarion IDE through over 60 MCP tools. These tools let
       Claude interact with the editor, the file system, the application tree, the CodeGraph
       database, and the Language Server.
     </p>
   </div>
 
-  <h3>What Claude Can Do</h3>
+  <h3 id="claude-chat-capabilities">What Claude Can Do</h3>
 
   <div class="feature-card">
     <h4>Editor Operations</h4>
@@ -972,7 +1050,53 @@
     </ul>
   </div>
 
-  <h3>Example Conversations</h3>
+  <div class="feature-card">
+    <h4>Application Tree &amp; Embeditor</h4>
+    <ul>
+      <li>Open .app files and list all procedures</li>
+      <li>Open the embeditor for any procedure and navigate between embed points</li>
+      <li>Save, cancel, and close the embeditor programmatically</li>
+      <li>Export and import TXA (Text Application) files for bulk analysis</li>
+      <li>Close apps and solutions to switch contexts cleanly</li>
+    </ul>
+  </div>
+
+  <div class="feature-card">
+    <h4>Instant File Search (Everything)</h4>
+    <ul>
+      <li>Search for files instantly across all indexed drives via Everything (voidtools)</li>
+      <li>Advanced filtering by path, extension, size, and date</li>
+      <li>Find duplicate files and search within file content</li>
+    </ul>
+  </div>
+
+  <div class="feature-card">
+    <h4>Multi-Instance Coordination</h4>
+    <ul>
+      <li>See all running Clarion IDE instances and what they are working on</li>
+      <li>Check for procedure conflicts before editing</li>
+      <li>Send messages between instances to coordinate multi-app work</li>
+    </ul>
+  </div>
+
+  <div class="feature-card">
+    <h4>File Path Resolution</h4>
+    <ul>
+      <li>Resolve Clarion filenames to full paths using the active <code>.red</code> (redirection) file</li>
+      <li>Get search paths for any file extension to discover library locations</li>
+    </ul>
+  </div>
+
+  <div class="feature-card">
+    <h4>Knowledge &amp; Memory</h4>
+    <ul>
+      <li>Save reusable insights (patterns, decisions, gotchas) that persist across sessions</li>
+      <li>Query past decisions and patterns</li>
+      <li>Save session summaries for seamless handoff between conversations</li>
+    </ul>
+  </div>
+
+  <h3 id="claude-chat-examples">Example Conversations</h3>
 
   <table class="feature-table">
     <thead>
@@ -1014,7 +1138,7 @@
     in plain language and Claude will select the right tools automatically.
   </div>
 
-  <h3>Settings Dialog</h3>
+  <h3 id="claude-chat-settings">Settings Dialog</h3>
 
   <table class="feature-table">
     <thead>
@@ -1253,7 +1377,7 @@
 
   <p>
     A floating, kanban-style window for visual task management. Open it from the Agent Panel
-    or the <strong>Task Board</strong> button in Claude Chat.
+    or the <strong>Task Board</strong> button in the Clarion Assistant terminal.
   </p>
 
   <div class="feature-card">
@@ -1427,7 +1551,7 @@
   <h3>How It Works</h3>
 
   <p>
-    The Language Server starts automatically when you select a solution in the Claude Chat panel.
+    The Language Server starts automatically when you select a solution in the Clarion Assistant panel.
     It runs in the background, analyzing your Clarion source files and maintaining an up-to-date
     model of your codebase.
   </p>
@@ -1564,11 +1688,20 @@
     <thead><tr><th>Tool</th><th>Description</th></tr></thead>
     <tbody>
       <tr><td><code>open_app</code></td><td>Open a <code>.app</code> file in the IDE.</td></tr>
+      <tr><td><code>close_app</code></td><td>Close the currently open <code>.app</code> file. Use before closing a solution or switching apps.</td></tr>
       <tr><td><code>get_app_info</code></td><td>Get info about the currently open app (name, file path, target type).</td></tr>
       <tr><td><code>list_procedures</code></td><td>List all procedure names in the currently open app.</td></tr>
       <tr><td><code>get_procedure_details</code></td><td>Get detailed procedure info including prototype, module, parent, and template.</td></tr>
+      <tr><td><code>select_procedure</code></td><td>Select a procedure in the procedure list without opening the embeditor.</td></tr>
       <tr><td><code>open_procedure_embed</code></td><td>Open the embeditor for a specific procedure.</td></tr>
       <tr><td><code>get_embed_info</code></td><td>Get info about the active embeditor.</td></tr>
+      <tr><td><code>save_and_close_embeditor</code></td><td>Save changes and close the currently open embeditor.</td></tr>
+      <tr><td><code>cancel_embeditor</code></td><td>Discard changes and close the currently open embeditor.</td></tr>
+      <tr><td><code>next_embed</code> / <code>prev_embed</code></td><td>Navigate to the next or previous embed point in the embeditor.</td></tr>
+      <tr><td><code>next_filled_embed</code> / <code>prev_filled_embed</code></td><td>Navigate to the next or previous embed point that contains user code.</td></tr>
+      <tr><td><code>export_txa</code></td><td>Export the entire current app to a TXA (Text Application) file for analysis.</td></tr>
+      <tr><td><code>import_txa</code></td><td>Import a TXA file into the current app.</td></tr>
+      <tr><td><code>close_solution</code></td><td>Close the currently open Clarion solution. Close any open apps first.</td></tr>
     </tbody>
   </table>
 
@@ -1652,6 +1785,59 @@
     <strong>Tip:</strong> The installer ships a pre-loaded DocGraph database with core Clarion 12 documentation. Run <code>ingest_docs</code> to add your own third-party template docs.
   </div>
 
+  <h3 id="tools-file-resolution">File Path Resolution</h3>
+  <p>Resolve Clarion filenames to full paths using the active <code>.red</code> (redirection) file, and discover where Clarion searches for different file types.</p>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>resolve_red_path</code></td><td>Resolve a Clarion filename (e.g. <code>MyClass.inc</code>) to its full path using the active .red file. Searches the Common section by default.</td></tr>
+      <tr><td><code>get_red_search_paths</code></td><td>Get all search directories for a file extension from the .red file. Useful for discovering where Clarion source files, includes, and libraries are located.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="tools-search">Everything Search (Instant File Search)</h3>
+  <p>Instant file search powered by <a href="https://www.voidtools.com/" target="_blank" style="color: var(--primary-dark);">Everything</a> (voidtools). Requires Everything to be installed and running. Searches file and folder names across all indexed drives.</p>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>search_files</code></td><td>Instant file name search across all indexed drives. Supports case-sensitive, whole-word, and regex modes.</td></tr>
+      <tr><td><code>search_files_advanced</code></td><td>Advanced search with path, extension, size, and date-modified filters. Supports multiple sort orders.</td></tr>
+      <tr><td><code>find_duplicates</code></td><td>Find all instances of a filename across all indexed drives. Useful for locating duplicate or shadowed files.</td></tr>
+      <tr><td><code>search_content</code></td><td>Search for text content within files. Requires Everything content indexing to be enabled.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="info-box">
+    <strong>Requirement:</strong> The Everything search tools require <a href="https://www.voidtools.com/" target="_blank" style="color: var(--primary-dark);">Everything by voidtools</a> to be installed and running. If Everything is not detected, these tools will return an error message.
+  </div>
+
+  <h3 id="tools-instance">Instance Coordination</h3>
+  <p>Coordinate work across multiple Clarion IDE instances. Uses a shared SQLite database for presence, heartbeat, conflict detection, and inter-instance messaging.</p>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>list_instances</code></td><td>List all running Clarion IDE instances with their open apps, active files, and current activity.</td></tr>
+      <tr><td><code>check_conflicts</code></td><td>Check if another instance is editing the same procedure before opening the embeditor. Prevents save conflicts in multi-instance workflows.</td></tr>
+      <tr><td><code>send_to_instances</code></td><td>Send a message to other instances (broadcast or targeted by PID). Message types: info, warning, question, conflict.</td></tr>
+      <tr><td><code>get_instance_messages</code></td><td>Get unread messages from other instances. Check periodically to stay coordinated.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="info-box info-box--tip">
+    <strong>Tip:</strong> Instance coordination is especially useful when working with multi-DLL Clarion solutions where different .app files are open in separate IDE instances. Claude can check for conflicts before editing shared procedures.
+  </div>
+
+  <h3 id="tools-knowledge">Knowledge &amp; Memory</h3>
+  <p>Persistent knowledge base that carries insights, decisions, and session context across conversations.</p>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>add_knowledge</code></td><td>Save a reusable insight. Categories: <code>decision</code>, <code>pattern</code>, <code>gotcha</code>, <code>anti_pattern</code>, <code>debug_insight</code>, <code>preference</code>. Saved knowledge is auto-injected at session start, ranked by reference count.</td></tr>
+      <tr><td><code>query_knowledge</code></td><td>Search the knowledge base by text. Use to recall past decisions, patterns, or gotchas.</td></tr>
+      <tr><td><code>save_session_summary</code></td><td>Save a summary of the current session. Appears at the start of the next session for seamless continuity.</td></tr>
+    </tbody>
+  </table>
+
   <h3 id="tools-build">Build Tools</h3>
   <p>Build and generate Clarion applications and C# COM controls directly from the assistant. All tools auto-detect paths when possible &mdash; solution, active app, Clarion install, and MSBuild location.</p>
   <table class="tools-table">
@@ -1667,6 +1853,143 @@
 
   <div class="info-box">
     <strong>Example:</strong> Ask Claude to &ldquo;build the current app&rdquo; and it will invoke <code>build_app</code> on the active .app file, returning any errors and warnings directly in the chat.
+  </div>
+
+  <h3 id="tools-traces">Trace Tools (Self-Improvement)</h3>
+  <p>These tools support the recursive self-improvement system. Every build is automatically traced, and you can query the trace database to find recurring failure patterns.</p>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>query_traces</code></td><td>Run SQL queries against the <code>clarion_traces</code> table. Columns: id, timestamp, trace_type, target_file, code_snippet, build_result, error_count, warning_count, errors, tool_name, agent.</td></tr>
+      <tr><td><code>trace_stats</code></td><td>Get summary statistics &mdash; total traces, build success/failure counts, error totals by type.</td></tr>
+      <tr><td><code>log_skill_update</code></td><td>Record a modification to the /clarion skill for changelog tracking. Logs pattern name, action (added/modified/removed), reason, and occurrence count.</td></tr>
+    </tbody>
+  </table>
+
+</section>
+
+<!-- ════════════════════════════════════════════════════ -->
+<!--  SECTION 6b: SELF-IMPROVING CODE GENERATION          -->
+<!-- ════════════════════════════════════════════════════ -->
+<section id="self-improvement" class="doc-section">
+  <h2>Self-Improving Clarion Code Generation</h2>
+
+  <p>
+    Clarion Assistant includes a <strong>recursive self-improvement system</strong> that learns from its own mistakes when writing Clarion code. Every time Claude generates code and builds it, the result is traced. Over time, recurring failure patterns are detected, analyzed, and used to improve the assistant&rsquo;s Clarion language skill &mdash; so the same mistake is never made twice.
+  </p>
+
+  <p>
+    This system is adapted from the <a href="https://github.com/kayba-ai/recursive-improve">kayba-ai/recursive-improve</a> pattern and tailored specifically for Clarion code generation.
+  </p>
+
+  <h3 id="self-improvement-how">How It Works</h3>
+
+  <p>The improvement loop has four stages:</p>
+
+  <table class="tools-table">
+    <thead><tr><th>Stage</th><th>What Happens</th><th>Triggered By</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>1. Trace</strong></td>
+        <td>Every build (<code>build_solution</code>, <code>build_app</code>, <code>generate_source</code>, <code>build_com_project</code>) automatically logs its result to a SQLite trace database. The trace captures: which file was built, whether it passed or failed, error count, warning count, and the full error messages.</td>
+        <td>Automatic &mdash; no user action needed</td>
+      </tr>
+      <tr>
+        <td><strong>2. Analyze</strong></td>
+        <td>The <code>/clarion-analyze</code> skill reads the trace database, groups failures by error type (syntax, declaration, structure, template, reference, COM/OLE), and applies <strong>evidence-gating</strong>: only patterns seen 2 or more times are reported. Single-occurrence errors are treated as noise and monitored but not acted on.</td>
+        <td>User runs <code>/clarion-analyze</code></td>
+      </tr>
+      <tr>
+        <td><strong>3. Fix</strong></td>
+        <td>For each qualifying pattern, the analyzer generates a suggested addition to the <code>/clarion</code> skill &mdash; a wrong/right code pair with an explanation. The user reviews and approves each fix. Approved fixes are appended to the skill&rsquo;s &ldquo;Common Mistakes&rdquo; section and logged via <code>log_skill_update</code> for changelog tracking.</td>
+        <td>User approves suggested fixes</td>
+      </tr>
+      <tr>
+        <td><strong>4. Verify</strong></td>
+        <td>The <code>/clarion-benchmark</code> skill runs 6 standardized test cases (68 scored checks) to measure code generation quality before and after skill updates. If the score improves, the changes are kept. If it regresses, they can be reverted.</td>
+        <td>User runs <code>/clarion-benchmark</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="info-box">
+    <strong>Evidence-Gating:</strong> The system deliberately avoids chasing one-off errors. A pattern must appear at least twice in the trace database before it is promoted to a skill fix. This prevents noise from polluting the skill with overly specific or context-dependent rules.
+  </div>
+
+  <h3 id="self-improvement-skills">Skills Reference</h3>
+
+  <table class="tools-table">
+    <thead><tr><th>Skill</th><th>Command</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>/clarion</strong></td>
+        <td><code>/clarion</code></td>
+        <td>The core Clarion language reference skill. Contains syntax rules, code patterns, and the &ldquo;Common Mistakes&rdquo; section that grows over time as new patterns are discovered. This is the skill that gets improved by the feedback loop.</td>
+      </tr>
+      <tr>
+        <td><strong>/clarion-analyze</strong></td>
+        <td><code>/clarion-analyze</code></td>
+        <td>Reads the trace database, classifies failures into 6 categories (syntax, declaration, structure, template, reference, COM/OLE), applies evidence-gating, checks against existing skill rules, and presents suggested fixes for approval.</td>
+      </tr>
+      <tr>
+        <td><strong>/clarion-benchmark</strong></td>
+        <td><code>/clarion-benchmark</code></td>
+        <td>Runs 6 test cases that cover the most common Clarion coding tasks: procedures, class implementations, window/event handling, queue operations, COM integration, and class declarations. Scores the output against 68 checks and tracks improvement over time.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 id="self-improvement-technical">Technical Architecture</h3>
+
+  <h4>Trace Database</h4>
+  <p>
+    Build traces are stored in a SQLite database at <code>%LOCALAPPDATA%\ClarionAssistant\clarion-traces.db</code>. The schema:
+  </p>
+  <table class="tools-table">
+    <thead><tr><th>Column</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>id</code></td><td>INTEGER</td><td>Auto-incrementing primary key</td></tr>
+      <tr><td><code>timestamp</code></td><td>TEXT</td><td>When the trace was recorded (UTC datetime)</td></tr>
+      <tr><td><code>trace_type</code></td><td>TEXT</td><td><code>build_result</code>, <code>code_generation</code>, or <code>skill_update</code></td></tr>
+      <tr><td><code>target_file</code></td><td>TEXT</td><td>Path to the file that was built or modified</td></tr>
+      <tr><td><code>code_snippet</code></td><td>TEXT</td><td>Generated code (for code_generation) or change description (for skill_update)</td></tr>
+      <tr><td><code>build_result</code></td><td>TEXT</td><td><code>success</code> or <code>failure</code></td></tr>
+      <tr><td><code>error_count</code></td><td>INTEGER</td><td>Number of compiler errors</td></tr>
+      <tr><td><code>warning_count</code></td><td>INTEGER</td><td>Number of compiler warnings</td></tr>
+      <tr><td><code>errors</code></td><td>TEXT</td><td>Extracted error and warning lines from build output</td></tr>
+      <tr><td><code>tool_name</code></td><td>TEXT</td><td>Which MCP tool generated this trace</td></tr>
+      <tr><td><code>agent</code></td><td>TEXT</td><td>Agent identifier (reserved for future multi-agent use)</td></tr>
+    </tbody>
+  </table>
+
+  <h4>Integration Points</h4>
+  <p>Tracing is integrated into the following MCP tools in <code>McpToolRegistry.cs</code>:</p>
+  <ul>
+    <li><code>build_solution</code> &mdash; logs build result after ClarionCL.exe completes</li>
+    <li><code>build_app</code> &mdash; logs build result for single .app builds</li>
+    <li><code>generate_source</code> &mdash; logs result of template code generation</li>
+    <li><code>build_com_project</code> &mdash; logs MSBuild result for C# COM controls</li>
+  </ul>
+  <p>
+    The trace service (<code>ClarionTraceService.cs</code>) handles all database operations. It automatically creates the database and schema on first use. Trace logging is fire-and-forget &mdash; failures to log never block the build tool from returning its result.
+  </p>
+
+  <h4>Benchmark Test Cases</h4>
+  <p>The <code>/clarion-benchmark</code> skill tests 6 categories of Clarion code generation:</p>
+  <ol>
+    <li><strong>Simple Procedure</strong> &mdash; local variables, LOOP, QUEUE access, return values (12 checks)</li>
+    <li><strong>.clw Class Implementation</strong> &mdash; MEMBER header, method prefix, SELF usage, FILE access (10 checks)</li>
+    <li><strong>Window with ACCEPT Loop</strong> &mdash; WINDOW declaration, event handling, control references (10 checks)</li>
+    <li><strong>QUEUE Operations</strong> &mdash; CLEAR/ADD/SORT/GET/FREE patterns (8 checks)</li>
+    <li><strong>COM Control Integration</strong> &mdash; OLE setup, property/method syntax, events (10 checks)</li>
+    <li><strong>CLASS Declaration (.inc)</strong> &mdash; attributes, CONSTRUCT/DESTRUCT, VIRTUAL, access modifiers (10 checks)</li>
+  </ol>
+  <p>
+    Total: <strong>68 scored checks</strong>. Results are logged to the trace database for trend analysis.
+  </p>
+
+  <div class="info-box">
+    <strong>Ratchet Mode:</strong> For autonomous improvement, run the cycle: <code>/clarion-benchmark</code> &rarr; <code>/clarion-analyze</code> (apply fixes) &rarr; <code>/clarion-benchmark</code> (verify). If the score improves, keep the changes. If it regresses, revert with <code>git checkout</code>.
   </div>
 
 </section>
@@ -1719,7 +2042,7 @@
 <!--  FOOTER                                             -->
 <!-- ════════════════════════════════════════════════════ -->
 <footer class="site-footer">
-  <p>Clarion.Assistant User Guide &middot; v1.0 &middot; &copy; 2025</p>
+  <p>Clarion.Assistant User Guide &middot; v1.1 &middot; &copy; 2025&ndash;2026</p>
 </footer>
 
 <!-- Smooth scrolling -->

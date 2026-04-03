@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Settings</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #1e1e2e; --fg: #cdd6f4;
+    --sidebar-bg: #181825; --sidebar-border: #313244;
+    --input-bg: #313244; --input-fg: #cdd6f4; --input-border: #45475a;
+    --btn-bg: #313244; --btn-fg: #cdd6f4; --btn-border: #45475a;
+    --btn-hover: #45475a;
+    --accent: #89b4fa; --accent-hover: #74a8f7;
+    --ok-bg: #1e66a8; --ok-hover: #2580d4;
+    --section-fg: #a6adc8;
+    --footer-bg: #181825; --footer-border: #313244;
+    --active-bg: rgba(137,180,250,0.1);
+    --hover-bg: rgba(137,180,250,0.05);
+    --desc-fg: #6c7086;
+    --danger: #f38ba8; --danger-hover: rgba(243,139,168,0.15);
+    --success: #a6e3a1; --warning: #fab387;
+    --toggle-off-bg: #45475a; --toggle-on-bg: #89b4fa;
+    --card-bg: #252536; --card-border: #313244;
+  }
+  body.light {
+    --bg: #eff1f5; --fg: #4c4f69;
+    --sidebar-bg: #dce0e8; --sidebar-border: #bcc0cc;
+    --input-bg: #ffffff; --input-fg: #4c4f69; --input-border: #bcc0cc;
+    --btn-bg: #e6e9ef; --btn-fg: #4c4f69; --btn-border: #bcc0cc;
+    --btn-hover: #ccd0da;
+    --accent: #1e66f5; --accent-hover: #3b7cf8;
+    --ok-bg: #1e66f5; --ok-hover: #3b7cf8;
+    --section-fg: #6c6f85;
+    --footer-bg: #dce0e8; --footer-border: #bcc0cc;
+    --active-bg: rgba(30,102,245,0.1);
+    --hover-bg: rgba(30,102,245,0.05);
+    --desc-fg: #8c8fa1;
+    --danger: #d20f39; --danger-hover: rgba(210,15,57,0.1);
+    --success: #40a02b; --warning: #fe640b;
+    --toggle-off-bg: #bcc0cc; --toggle-on-bg: #1e66f5;
+    --card-bg: #e6e9ef; --card-border: #bcc0cc;
+  }
+
+  html { height: 100%; }
+  body { height: 100%; margin: 0; overflow: hidden; font-family: 'Segoe UI', sans-serif; font-size: 13px; background-color: var(--bg); color: var(--fg); }
+
+  .layout { display: flex; height: calc(100vh - 52px); }
+
+  /* Sidebar */
+  .sidebar { width: 170px; background: var(--sidebar-bg); border-right: 1px solid var(--sidebar-border); padding: 12px 0; flex-shrink: 0; }
+  .nav-item {
+    padding: 10px 20px; cursor: pointer; border-left: 3px solid transparent;
+    transition: all 0.15s; user-select: none; font-size: 13px; color: var(--section-fg);
+  }
+  .nav-item:hover { background: var(--hover-bg); color: var(--fg); }
+  .nav-item.active { border-left-color: var(--accent); background: var(--active-bg); color: var(--fg); font-weight: 600; }
+
+  /* Content */
+  .content { flex: 1; overflow-y: auto; padding: 24px 28px; }
+  .page { display: none; }
+  .page.active { display: block; }
+
+  h2 { font-size: 18px; font-weight: 600; margin-bottom: 20px; color: var(--fg); }
+  h3 { font-size: 14px; font-weight: 600; margin: 20px 0 10px; color: var(--accent); }
+
+  /* Form controls */
+  .field { margin-bottom: 16px; }
+  .field-label { font-size: 12px; color: var(--section-fg); margin-bottom: 5px; font-weight: 500; }
+  .field-desc { font-size: 11px; color: var(--desc-fg); margin-top: 3px; }
+
+  select, input[type="text"], input[type="number"] {
+    width: 100%; height: 34px; padding: 0 10px;
+    background: var(--input-bg); color: var(--input-fg); border: 1px solid var(--input-border);
+    border-radius: 6px; font-size: 13px; font-family: inherit; outline: none;
+    transition: border-color 0.15s;
+  }
+  select:focus, input:focus { border-color: var(--accent); }
+  select { cursor: pointer; appearance: none; -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236c7086'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px;
+  }
+  body.light select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238c8fa1'/%3E%3C/svg%3E");
+  }
+  input[type="number"] { width: 90px; }
+  input[type="number"]::-webkit-inner-spin-button { opacity: 1; }
+
+  .input-row { display: flex; gap: 8px; align-items: center; }
+  .input-row input[type="text"] { flex: 1; }
+
+  .btn {
+    height: 34px; padding: 0 16px; border: 1px solid var(--btn-border); border-radius: 6px;
+    background: var(--btn-bg); color: var(--btn-fg); font-size: 13px; font-family: inherit;
+    cursor: pointer; transition: all 0.15s; white-space: nowrap;
+  }
+  .btn:hover { background: var(--btn-hover); }
+  .btn-sm { height: 28px; padding: 0 10px; font-size: 12px; }
+  .btn-accent { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn-accent:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+  /* Toggle switch */
+  .toggle-row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .toggle { position: relative; width: 44px; height: 24px; cursor: pointer; flex-shrink: 0; }
+  .toggle input { display: none; }
+  .toggle-track {
+    position: absolute; inset: 0; background: var(--toggle-off-bg); border-radius: 12px;
+    transition: background 0.2s;
+  }
+  .toggle input:checked + .toggle-track { background: var(--toggle-on-bg); }
+  .toggle-thumb {
+    position: absolute; top: 2px; left: 2px; width: 20px; height: 20px;
+    background: #fff; border-radius: 50%; transition: transform 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  }
+  .toggle input:checked ~ .toggle-thumb { transform: translateX(20px); }
+  .toggle-label { font-size: 13px; }
+
+  /* Checkbox */
+  .check-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .check-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+
+  /* Theme cards */
+  .theme-cards { display: flex; gap: 12px; margin-bottom: 8px; }
+  .theme-card {
+    flex: 1; padding: 14px; border: 2px solid var(--card-border); border-radius: 10px;
+    background: var(--card-bg); cursor: pointer; text-align: center; transition: all 0.15s;
+  }
+  .theme-card:hover { border-color: var(--accent); }
+  .theme-card.active { border-color: var(--accent); background: var(--active-bg); }
+  .theme-card .preview {
+    width: 100%; height: 40px; border-radius: 6px; margin-bottom: 8px;
+    display: flex; align-items: center; justify-content: center; font-size: 11px; font-family: monospace;
+  }
+  .theme-card .theme-name { font-size: 12px; font-weight: 600; }
+
+  /* Path list */
+  .path-list { margin: 8px 0; }
+  .path-item {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 6px;
+    margin-bottom: 6px; font-size: 12px;
+  }
+  .path-item .path-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'Cascadia Mono', Consolas, monospace; }
+  .path-item .btn-remove { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 16px; padding: 0 4px; }
+  .path-item .btn-remove:hover { background: var(--danger-hover); border-radius: 4px; }
+
+  /* Status badge */
+  .status { font-size: 12px; padding: 3px 10px; border-radius: 10px; display: inline-block; }
+  .status-success { color: var(--success); background: rgba(166,227,161,0.1); }
+  .status-warning { color: var(--warning); background: rgba(250,179,135,0.1); }
+  body.light .status-success { background: rgba(64,160,43,0.1); }
+  body.light .status-warning { background: rgba(254,100,11,0.1); }
+
+  /* Font preview */
+  .font-preview {
+    padding: 12px 16px; margin-top: 8px; background: var(--card-bg); border: 1px solid var(--card-border);
+    border-radius: 6px; font-size: 14px; line-height: 1.5;
+  }
+
+  /* Footer */
+  .footer {
+    height: 52px; display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+    padding: 0 24px; background: var(--footer-bg); border-top: 1px solid var(--footer-border);
+  }
+  .btn-ok {
+    height: 34px; padding: 0 28px; border: none; border-radius: 6px;
+    background: var(--ok-bg); color: #fff; font-size: 13px; font-family: inherit;
+    font-weight: 600; cursor: pointer; transition: background 0.15s;
+  }
+  .btn-ok:hover { background: var(--ok-hover); }
+  .btn-cancel {
+    height: 34px; padding: 0 20px; border: 1px solid var(--btn-border); border-radius: 6px;
+    background: var(--btn-bg); color: var(--btn-fg); font-size: 13px; font-family: inherit;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .btn-cancel:hover { background: var(--btn-hover); }
+
+  /* Overlay / modal */
+  .overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 100;
+    align-items: center; justify-content: center;
+  }
+  .overlay.visible { display: flex; }
+  .overlay-panel {
+    background: var(--bg); border: 1px solid var(--card-border); border-radius: 10px;
+    width: 520px; max-height: 80vh; display: flex; flex-direction: column;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+  }
+  .overlay-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px; border-bottom: 1px solid var(--card-border);
+  }
+  .overlay-header h3 { font-size: 15px; font-weight: 600; color: var(--fg); margin: 0; }
+  .overlay-close { background: none; border: none; color: var(--section-fg); font-size: 20px; cursor: pointer; padding: 0 4px; }
+  .overlay-close:hover { color: var(--fg); }
+  .overlay-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+  .overlay-body table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .overlay-body th { text-align: left; padding: 6px 8px; color: var(--section-fg); font-weight: 600; border-bottom: 1px solid var(--card-border); }
+  .overlay-body td { padding: 5px 8px; border-bottom: 1px solid var(--card-border); }
+  .overlay-body td:last-child { text-align: right; color: var(--section-fg); }
+  .overlay-summary { display: flex; gap: 16px; margin-bottom: 14px; flex-wrap: wrap; }
+  .overlay-stat { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 16px; text-align: center; flex: 1; min-width: 100px; }
+  .overlay-stat .stat-value { font-size: 20px; font-weight: 700; color: var(--accent); }
+  .overlay-stat .stat-label { font-size: 11px; color: var(--section-fg); margin-top: 2px; }
+
+  /* Scrollbar */
+  .content::-webkit-scrollbar { width: 8px; }
+  .content::-webkit-scrollbar-track { background: transparent; }
+  .content::-webkit-scrollbar-thumb { background: var(--btn-border); border-radius: 4px; }
+  .content::-webkit-scrollbar-thumb:hover { background: var(--section-fg); }
+
+  /* DocGraph management overlay */
+  .overlay-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--card-border); padding: 0 20px; }
+  .overlay-tab {
+    padding: 10px 16px; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent;
+    color: var(--section-fg); transition: all 0.15s; user-select: none;
+  }
+  .overlay-tab:hover { color: var(--fg); }
+  .overlay-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .overlay-tab .tab-count { font-size: 11px; color: var(--desc-fg); margin-left: 4px; }
+
+  .lib-row {
+    display: flex; align-items: center; gap: 8px; padding: 7px 0;
+    border-bottom: 1px solid var(--card-border); font-size: 12px;
+  }
+  .lib-row:last-child { border-bottom: none; }
+  .lib-row input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); flex-shrink: 0; }
+  .lib-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .lib-vendor { width: 90px; color: var(--section-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+  .lib-chunks { width: 50px; text-align: right; color: var(--section-fg); flex-shrink: 0; }
+  .lib-tags {
+    width: 120px; flex-shrink: 0; height: 24px; padding: 0 6px; font-size: 11px;
+    background: var(--input-bg); color: var(--input-fg); border: 1px solid var(--input-border);
+    border-radius: 4px; outline: none;
+  }
+  .lib-tags:focus { border-color: var(--accent); }
+  .lib-tags::placeholder { color: var(--desc-fg); }
+
+  .overlay-toolbar {
+    display: flex; align-items: center; gap: 8px; padding: 10px 20px;
+    border-top: 1px solid var(--card-border); background: var(--sidebar-bg);
+    border-radius: 0 0 10px 10px;
+  }
+  .overlay-toolbar .sel-count { font-size: 12px; color: var(--section-fg); margin-left: auto; }
+
+  .btn-danger { background: none; border: 1px solid var(--danger); color: var(--danger); }
+  .btn-danger:hover { background: var(--danger-hover); }
+  .btn-danger:disabled { opacity: 0.4; cursor: default; }
+  .btn-danger:disabled:hover { background: none; }
+
+  /* Commands table */
+  .cmd-table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+  .cmd-table th { text-align: left; padding: 6px 10px; font-size: 11px; color: var(--section-fg); font-weight: 600; border-bottom: 1px solid var(--card-border); }
+  .cmd-table td { padding: 5px 10px; border-bottom: 1px solid var(--card-border); font-size: 13px; }
+  .cmd-table tr { cursor: pointer; }
+  .cmd-table tr:hover { background: var(--hover-bg); }
+  .cmd-table tr.selected { background: var(--active-bg); }
+  .cmd-table td.cmd-default { text-align: center; width: 60px; }
+  .cmd-table-wrap { border: 1px solid var(--card-border); border-radius: 6px; background: var(--card-bg); max-height: 150px; overflow-y: auto; }
+  .cmd-btn-row { display: flex; gap: 6px; margin-top: 8px; }
+
+  /* Command input overlay */
+  .cmd-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 200; align-items: center; justify-content: center; }
+  .cmd-overlay.visible { display: flex; }
+  .cmd-dialog { background: var(--bg); border: 1px solid var(--card-border); border-radius: 10px; width: 400px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+  .cmd-dialog-header { padding: 14px 20px; border-bottom: 1px solid var(--card-border); font-size: 14px; font-weight: 600; }
+  .cmd-dialog-body { padding: 16px 20px; }
+  .cmd-dialog-body label { font-size: 12px; color: var(--section-fg); display: block; margin-bottom: 6px; }
+  .cmd-dialog-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--card-border); }
+
+  /* About page */
+  .about-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 16px 20px; }
+  .about-version { font-size: 22px; font-weight: 700; color: var(--accent); }
+  .about-desc { font-size: 13px; color: var(--section-fg); margin-top: 4px; }
+  .about-table { width: 100%; border-collapse: collapse; }
+  .about-table td { padding: 6px 0; font-size: 13px; border-bottom: 1px solid var(--card-border); }
+  .about-table tr:last-child td { border-bottom: none; }
+  .about-label { width: 140px; font-weight: 600; color: var(--section-fg); }
+</style>
+</head>
+<body>
+
+<div class="layout">
+  <nav class="sidebar">
+    <div class="nav-item active" onclick="showPage('appearance')">Appearance</div>
+    <div class="nav-item" onclick="showPage('data')">Data</div>
+    <div class="nav-item" onclick="showPage('general')">General</div>
+    <div class="nav-item" onclick="showPage('launch')">Launch</div>
+    <div class="nav-item" onclick="showPage('about')">About</div>
+  </nav>
+
+  <div class="content">
+    <!-- Appearance -->
+    <div class="page active" id="page-appearance">
+      <h2>Appearance</h2>
+
+      <div class="field">
+        <div class="field-label">Theme</div>
+        <div class="theme-cards">
+          <div class="theme-card" id="card-light" onclick="setThemeChoice('light')">
+            <div class="preview" style="background:#eff1f5;color:#4c4f69;border:1px solid #bcc0cc">Aa Bb Cc</div>
+            <div class="theme-name">Light</div>
+          </div>
+          <div class="theme-card active" id="card-dark" onclick="setThemeChoice('dark')">
+            <div class="preview" style="background:#1e1e2e;color:#cdd6f4;border:1px solid #313244">Aa Bb Cc</div>
+            <div class="theme-name">Dark</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">Font Family</div>
+        <select id="fontFamily">
+          <option value="Cascadia Mono">Cascadia Mono</option>
+          <option value="Consolas">Consolas</option>
+          <option value="Courier New">Courier New</option>
+          <option value="Lucida Console">Lucida Console</option>
+          <option value="Fira Code">Fira Code</option>
+          <option value="JetBrains Mono">JetBrains Mono</option>
+          <option value="Source Code Pro">Source Code Pro</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <div class="field-label">Font Size</div>
+        <input type="number" id="fontSize" min="6" max="32" value="14">
+      </div>
+
+      <div class="field">
+        <div class="field-label">Preview</div>
+        <div class="font-preview" id="fontPreview">The quick brown fox jumps over the lazy dog. 0123456789</div>
+      </div>
+    </div>
+
+    <!-- Data -->
+    <div class="page" id="page-data">
+      <h2>Data</h2>
+
+      <h3>Library CodeGraph</h3>
+      <div class="field-desc" style="margin-bottom:10px">Index Clarion standard library symbols for cross-reference and code intelligence.</div>
+      <div class="input-row">
+        <button class="btn" id="btnBuildLib" onclick="send('buildLib')">Build Index</button>
+        <span id="libStatus" class="status status-success">Ready</span>
+      </div>
+
+      <h3>Documentation Graph</h3>
+      <div class="field-desc" style="margin-bottom:10px">Documentation libraries indexed for AI-powered search and context injection.</div>
+      <div class="input-row" style="margin-bottom:12px">
+        <button class="btn" onclick="send('docGraphInfo')">Info</button>
+        <span id="docGraphSummary" class="status" style="font-size:12px"></span>
+      </div>
+
+      <div class="field-desc" style="margin-bottom:8px">Add your own documentation to the personal knowledge graph:</div>
+      <div class="path-list" id="docPaths"></div>
+      <div class="input-row" style="margin-top:6px">
+        <button class="btn btn-sm" onclick="send('browseDocPath')">+ Add Folder</button>
+        <button class="btn btn-sm" onclick="send('browseDocFile')">+ Add Document</button>
+      </div>
+    </div>
+
+    <!-- General -->
+    <div class="page" id="page-general">
+      <h2>General</h2>
+
+      <div class="field">
+        <div class="field-label">Claude Model</div>
+        <select id="model">
+          <option value="sonnet">Sonnet</option>
+          <option value="opus">Opus</option>
+          <option value="haiku">Haiku</option>
+        </select>
+        <div class="field-desc">Model used for new chat sessions.</div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">Working Directory</div>
+        <div class="input-row">
+          <input type="text" id="workingDir" placeholder="Select a directory...">
+          <button class="btn" onclick="send('browseWorkingDir')">Browse</button>
+        </div>
+        <div class="field-desc">Default directory for Claude Code sessions.</div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">COM Projects Folder</div>
+        <div class="input-row">
+          <input type="text" id="comFolder" placeholder="Select a directory...">
+          <button class="btn" onclick="send('browseComFolder')">Browse</button>
+        </div>
+        <div class="field-desc">Where new COM control projects are created.</div>
+      </div>
+
+    </div>
+
+    <!-- Launch -->
+    <div class="page" id="page-launch">
+      <h2>Launch</h2>
+
+      <h3>Claude Commands</h3>
+      <div class="field-desc" style="margin-bottom:8px">Configure launch commands for Claude Code terminal sessions.</div>
+      <div class="cmd-table-wrap">
+        <table class="cmd-table" id="cmdTable">
+          <thead><tr><th>Command</th><th style="text-align:center;width:60px">Default</th></tr></thead>
+          <tbody id="cmdBody"></tbody>
+        </table>
+      </div>
+      <div class="cmd-btn-row">
+        <button class="btn btn-sm" onclick="cmdAdd()">Add</button>
+        <button class="btn btn-sm" onclick="cmdEdit()">Edit</button>
+        <button class="btn btn-sm" onclick="cmdDelete()">Delete</button>
+        <button class="btn btn-sm" onclick="cmdSetDefault()">Set Default</button>
+      </div>
+
+      <h3>MultiTerminal</h3>
+      <div class="check-row">
+        <input type="checkbox" id="mtEnabled">
+        <label for="mtEnabled">Enable MultiTerminal connection</label>
+        <span id="mtStatus" class="status status-success" style="margin-left:8px">Detected</span>
+      </div>
+      <div class="field">
+        <div class="field-label">Agent Name</div>
+        <input type="text" id="agentName" value="ClarionIDE" style="width:200px">
+      </div>
+    </div>
+
+    <!-- About -->
+    <div class="page" id="page-about">
+      <h2>Clarion Assistant</h2>
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <div class="about-card">
+          <div class="about-version">Version 2.0.0</div>
+          <div class="about-desc">AI-powered development assistant for the Clarion IDE</div>
+        </div>
+        <div class="about-card">
+          <table class="about-table">
+            <tr><td class="about-label">Publisher</td><td>ClarionLive</td></tr>
+            <tr><td class="about-label">Website</td><td><a href="#" onclick="openUrl('https://clarionlive.com');return false" style="color:var(--accent)">clarionlive.com</a></td></tr>
+            <tr><td class="about-label">AI Engine</td><td>Claude by Anthropic</td></tr>
+            <tr><td class="about-label">Runtime</td><td>Microsoft Edge WebView2</td></tr>
+          </table>
+        </div>
+        <div class="about-card">
+          <h3 style="margin-top:0">Components</h3>
+          <table class="about-table">
+            <tr><td class="about-label">Clarion Assistant</td><td>IDE addin with MCP tools, CodeGraph, DocGraph</td></tr>
+            <tr><td class="about-label">COM for Clarion</td><td>COM browser addin with UltimateCOM templates</td></tr>
+            <tr><td class="about-label">Plugin</td><td>Skills, hooks, and documentation for Claude Code</td></tr>
+            <tr><td class="about-label">Clarion Indexer</td><td>Solution-wide code intelligence</td></tr>
+          </table>
+        </div>
+        <div style="font-size:11px;color:var(--desc-fg);margin-top:8px">
+          &copy; 2026 ClarionLive. All rights reserved.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- DocGraph Management Overlay -->
+<div class="overlay" id="docInfoOverlay" onclick="if(event.target===this)closeDocInfo()">
+  <div class="overlay-panel" style="width:620px;height:520px">
+    <div class="overlay-header">
+      <h3>Documentation Graph</h3>
+      <button class="overlay-close" onclick="closeDocInfo()">&times;</button>
+    </div>
+    <div class="overlay-summary" id="docInfoSummary" style="padding:12px 20px 0 20px"></div>
+    <div class="overlay-tabs">
+      <div class="overlay-tab active" id="tabPersonal" onclick="showDocTab('personal')">Personal <span class="tab-count" id="countPersonal"></span></div>
+      <div class="overlay-tab" id="tabBundled" onclick="showDocTab('bundled')">Bundled <span class="tab-count" id="countBundled"></span></div>
+    </div>
+    <div class="overlay-body" id="docInfoBody" style="height:300px">Loading...</div>
+    <div class="overlay-toolbar" id="docToolbar">
+      <button class="btn btn-sm btn-danger" id="btnRemoveLibs" disabled onclick="removeSelectedLibraries()">Remove Selected</button>
+      <span class="sel-count" id="selCount">0 selected</span>
+    </div>
+  </div>
+</div>
+
+<!-- Command Input Overlay -->
+<div class="cmd-overlay" id="cmdOverlay" onclick="if(event.target===this)cmdDialogCancel()">
+  <div class="cmd-dialog">
+    <div class="cmd-dialog-header" id="cmdDialogTitle">Add Command</div>
+    <div class="cmd-dialog-body">
+      <label for="cmdInput">Command:</label>
+      <input type="text" id="cmdInput" placeholder="e.g. claude --dangerously-skip-permissions">
+    </div>
+    <div class="cmd-dialog-footer">
+      <button class="btn-cancel" onclick="cmdDialogCancel()">Cancel</button>
+      <button class="btn-ok" onclick="cmdDialogOk()">OK</button>
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  <button class="btn-cancel" onclick="send('cancel')">Cancel</button>
+  <button class="btn-ok" onclick="saveAndClose()">OK</button>
+</div>
+
+<script>
+  // Apply theme from URL parameter immediately to prevent flash of wrong colors
+  (function() {
+    var params = new URLSearchParams(window.location.search);
+    var theme = params.get('theme');
+    if (theme === 'light') document.body.classList.add('light');
+  })();
+
+  var currentSettings = {};
+
+  function esc(s) { var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+
+  function send(action, data) {
+    window.chrome.webview.postMessage(JSON.stringify({ action: action, data: data || null }));
+  }
+
+  function showPage(name) {
+    document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
+    document.querySelectorAll('.nav-item').forEach(function(n) { n.classList.remove('active'); });
+    document.getElementById('page-' + name).classList.add('active');
+    document.querySelector('.nav-item[onclick*="' + name + '"]').classList.add('active');
+  }
+
+  function setThemeChoice(theme) {
+    document.getElementById('card-light').classList.toggle('active', theme === 'light');
+    document.getElementById('card-dark').classList.toggle('active', theme === 'dark');
+    currentSettings.theme = theme;
+    // Apply theme to this dialog immediately
+    if (theme === 'light') document.body.classList.add('light');
+    else document.body.classList.remove('light');
+  }
+
+  function updateFontPreview() {
+    var preview = document.getElementById('fontPreview');
+    var family = document.getElementById('fontFamily').value;
+    var size = document.getElementById('fontSize').value;
+    preview.style.fontFamily = '"' + family + '", Consolas, monospace';
+    preview.style.fontSize = size + 'px';
+  }
+
+  document.getElementById('fontFamily').addEventListener('change', updateFontPreview);
+  document.getElementById('fontSize').addEventListener('input', updateFontPreview);
+
+  function renderDocPaths(paths) {
+    var container = document.getElementById('docPaths');
+    container.innerHTML = '';
+    if (!paths || paths.length === 0) {
+      container.innerHTML = '<div style="color:var(--desc-fg);font-size:12px;padding:4px 0">No documentation sources added.</div>';
+      return;
+    }
+    paths.forEach(function(p, i) {
+      var item = document.createElement('div');
+      item.className = 'path-item';
+      item.innerHTML = '<span class="path-text" title="' + esc(p).replace(/"/g,'&quot;') + '">' + esc(p) + '</span>' +
+        '<button class="btn-remove" onclick="removeDocPath(' + i + ')" title="Remove">&times;</button>';
+      container.appendChild(item);
+    });
+  }
+
+  function removeDocPath(index) {
+    var paths = currentSettings.docPaths || [];
+    paths.splice(index, 1);
+    currentSettings.docPaths = paths;
+    renderDocPaths(paths);
+  }
+
+  var _docData = null;
+  var _docTab = 'personal';
+
+  function closeDocInfo() {
+    document.getElementById('docInfoOverlay').classList.remove('visible');
+  }
+
+  function showDocInfo(data) {
+    _docData = data;
+
+    // Summary stats
+    var sumEl = document.getElementById('docInfoSummary');
+    sumEl.innerHTML =
+      '<div class="overlay-summary" style="margin:0">' +
+      '<div class="overlay-stat"><div class="stat-value">' + (data.libraries || 0) + '</div><div class="stat-label">Libraries</div></div>' +
+      '<div class="overlay-stat"><div class="stat-value">' + (data.chunks || 0).toLocaleString() + '</div><div class="stat-label">Chunks</div></div>' +
+      '<div class="overlay-stat"><div class="stat-value">' + (data.dbSizeMb || '?') + ' MB</div><div class="stat-label">Database</div></div>' +
+      '</div>';
+
+    // Count per source
+    var pCount = 0, bCount = 0;
+    (data.items || []).forEach(function(lib) {
+      if (lib.source === 'personal') pCount++; else bCount++;
+    });
+    document.getElementById('countPersonal').textContent = pCount ? '(' + pCount + ')' : '';
+    document.getElementById('countBundled').textContent = bCount ? '(' + bCount + ')' : '';
+
+    renderDocTab();
+    document.getElementById('docInfoOverlay').classList.add('visible');
+  }
+
+  function showDocTab(tab) {
+    _docTab = tab;
+    document.getElementById('tabPersonal').classList.toggle('active', tab === 'personal');
+    document.getElementById('tabBundled').classList.toggle('active', tab === 'bundled');
+    renderDocTab();
+  }
+
+  function renderDocTab() {
+    var body = document.getElementById('docInfoBody');
+    var toolbar = document.getElementById('docToolbar');
+    if (!_docData) { body.innerHTML = 'Loading...'; return; }
+
+    var items = (_docData.items || []).filter(function(lib) { return lib.source === _docTab; });
+    var isPersonal = _docTab === 'personal';
+
+    toolbar.style.visibility = isPersonal ? 'visible' : 'hidden';
+
+    if (items.length === 0) {
+      body.innerHTML = '<div style="color:var(--desc-fg);padding:20px 0;text-align:center">' +
+        (isPersonal ? 'No personal documentation added yet. Use "Add Folder" or "Add Document" below.' : 'No bundled documentation indexed.') +
+        '</div>';
+      updateSelCount();
+      return;
+    }
+
+    // Header
+    var html = '<div style="display:flex;align-items:center;gap:8px;padding:0 0 6px;border-bottom:1px solid var(--card-border);font-size:11px;color:var(--section-fg);font-weight:600">';
+    if (isPersonal) html += '<div style="width:15px"></div>';
+    html += '<div style="flex:1">Library</div><div style="width:90px">Vendor</div>';
+    if (isPersonal) html += '<div style="width:120px">Tags</div>';
+    html += '<div style="width:50px;text-align:right">Chunks</div></div>';
+
+    // Rows
+    items.forEach(function(lib) {
+      html += '<div class="lib-row">';
+      if (isPersonal) {
+        html += '<input type="checkbox" data-libid="' + lib.id + '" onchange="updateSelCount()">';
+      }
+      html += '<div class="lib-name" title="' + esc(lib.name).replace(/"/g,'&quot;') + '">' + esc(lib.name) + '</div>';
+      html += '<div class="lib-vendor" title="' + esc(lib.vendor).replace(/"/g,'&quot;') + '">' + esc(lib.vendor) + '</div>';
+      if (isPersonal) {
+        html += '<input type="text" class="lib-tags" placeholder="add tags..." value="' + (lib.tags || '').replace(/"/g,'&quot;') + '" data-libid="' + lib.id + '" onblur="saveLibTags(this)">';
+      }
+      html += '<div class="lib-chunks">' + (lib.chunks || 0) + '</div>';
+      html += '</div>';
+    });
+
+    body.innerHTML = html;
+    updateSelCount();
+  }
+
+  function updateSelCount() {
+    var checks = document.querySelectorAll('#docInfoBody input[type="checkbox"]:checked');
+    var count = checks.length;
+    document.getElementById('selCount').textContent = count + ' selected';
+    document.getElementById('btnRemoveLibs').disabled = count === 0;
+  }
+
+  function removeSelectedLibraries() {
+    var checks = document.querySelectorAll('#docInfoBody input[type="checkbox"]:checked');
+    if (checks.length === 0) return;
+    var ids = [];
+    checks.forEach(function(cb) { ids.push(parseInt(cb.dataset.libid)); });
+    if (!confirm('Remove ' + ids.length + ' librar' + (ids.length === 1 ? 'y' : 'ies') + ' from the personal docgraph?')) return;
+    send('removeDocLibraries', { ids: ids });
+  }
+
+  function saveLibTags(el) {
+    var id = parseInt(el.dataset.libid);
+    var tags = el.value.trim();
+    send('updateLibraryTags', { id: id, tags: tags });
+    // Update cached data too
+    if (_docData && _docData.items) {
+      _docData.items.forEach(function(lib) { if (lib.id === id) lib.tags = tags; });
+    }
+  }
+
+  // ── Claude Commands ──────────────────────────────
+  var _commands = [];   // [{command:'...', isDefault:true/false}, ...]
+  var _cmdSelectedIdx = -1;
+  var _cmdEditIdx = -1; // -1 = adding new, >=0 = editing existing
+
+  function renderCommands() {
+    var tbody = document.getElementById('cmdBody');
+    tbody.innerHTML = '';
+    _commands.forEach(function(c, i) {
+      var tr = document.createElement('tr');
+      if (i === _cmdSelectedIdx) tr.className = 'selected';
+      tr.onclick = function() { _cmdSelectedIdx = i; renderCommands(); };
+      tr.innerHTML = '<td>' + esc(c.command) + '</td>' +
+        '<td class="cmd-default"><input type="checkbox" disabled ' + (c.isDefault ? 'checked' : '') + ' style="pointer-events:none"></td>';
+      tbody.appendChild(tr);
+    });
+  }
+
+  function cmdAdd() {
+    _cmdEditIdx = -1;
+    document.getElementById('cmdDialogTitle').textContent = 'Add Command';
+    document.getElementById('cmdInput').value = '';
+    document.getElementById('cmdOverlay').classList.add('visible');
+    setTimeout(function() { document.getElementById('cmdInput').focus(); }, 50);
+  }
+
+  function cmdEdit() {
+    if (_cmdSelectedIdx < 0 || _cmdSelectedIdx >= _commands.length) return;
+    _cmdEditIdx = _cmdSelectedIdx;
+    document.getElementById('cmdDialogTitle').textContent = 'Edit Command';
+    document.getElementById('cmdInput').value = _commands[_cmdSelectedIdx].command;
+    document.getElementById('cmdOverlay').classList.add('visible');
+    setTimeout(function() { var inp = document.getElementById('cmdInput'); inp.focus(); inp.select(); }, 50);
+  }
+
+  function cmdDelete() {
+    if (_cmdSelectedIdx < 0 || _cmdSelectedIdx >= _commands.length) return;
+    if (_commands.length <= 1) return; // keep at least one
+    _commands.splice(_cmdSelectedIdx, 1);
+    // If we deleted the default, make first one default
+    if (!_commands.some(function(c) { return c.isDefault; })) _commands[0].isDefault = true;
+    _cmdSelectedIdx = Math.min(_cmdSelectedIdx, _commands.length - 1);
+    renderCommands();
+  }
+
+  function cmdSetDefault() {
+    if (_cmdSelectedIdx < 0 || _cmdSelectedIdx >= _commands.length) return;
+    _commands.forEach(function(c) { c.isDefault = false; });
+    _commands[_cmdSelectedIdx].isDefault = true;
+    renderCommands();
+  }
+
+  function cmdDialogOk() {
+    var val = document.getElementById('cmdInput').value.trim();
+    if (!val) return;
+    if (_cmdEditIdx >= 0) {
+      _commands[_cmdEditIdx].command = val;
+    } else {
+      _commands.push({ command: val, isDefault: false });
+      _cmdSelectedIdx = _commands.length - 1;
+    }
+    document.getElementById('cmdOverlay').classList.remove('visible');
+    renderCommands();
+  }
+
+  function cmdDialogCancel() {
+    document.getElementById('cmdOverlay').classList.remove('visible');
+  }
+
+  // Enter key in command input
+  document.getElementById('cmdInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') cmdDialogOk();
+    if (e.key === 'Escape') cmdDialogCancel();
+  });
+
+  function saveAndClose() {
+    var data = {
+      theme: currentSettings.theme || 'dark',
+      fontFamily: document.getElementById('fontFamily').value,
+      fontSize: document.getElementById('fontSize').value,
+      model: document.getElementById('model').value,
+      workingDir: document.getElementById('workingDir').value,
+      comFolder: document.getElementById('comFolder').value,
+      mtEnabled: document.getElementById('mtEnabled').checked,
+      agentName: document.getElementById('agentName').value,
+      docPaths: currentSettings.docPaths || [],
+      commands: _commands
+    };
+    send('save', data);
+  }
+
+  // Receive messages from C#
+  window.chrome.webview.addEventListener('message', function(e) {
+    var msg;
+    try { msg = JSON.parse(e.data); } catch(ex) { return; }
+
+    if (msg.type === 'setSettings') {
+      var s = msg.settings;
+      currentSettings = s;
+
+      // Theme
+      setThemeChoice(s.theme || 'dark');
+
+      // Font
+      var fontSel = document.getElementById('fontFamily');
+      var found = false;
+      for (var i = 0; i < fontSel.options.length; i++) {
+        if (fontSel.options[i].value === s.fontFamily) { fontSel.selectedIndex = i; found = true; break; }
+      }
+      if (!found && s.fontFamily) {
+        var opt = document.createElement('option');
+        opt.value = s.fontFamily; opt.textContent = s.fontFamily;
+        fontSel.appendChild(opt); opt.selected = true;
+      }
+      document.getElementById('fontSize').value = s.fontSize || 14;
+      updateFontPreview();
+
+      // Model
+      document.getElementById('model').value = s.model || 'sonnet';
+
+      // Paths
+      document.getElementById('workingDir').value = s.workingDir || '';
+      document.getElementById('comFolder').value = s.comFolder || '';
+
+      // MultiTerminal
+      document.getElementById('mtEnabled').checked = !!s.mtEnabled;
+      document.getElementById('agentName').value = s.agentName || 'ClarionIDE';
+      var mtStat = document.getElementById('mtStatus');
+      if (s.mtAvailable) { mtStat.textContent = 'Detected'; mtStat.className = 'status status-success'; }
+      else { mtStat.textContent = 'Not installed'; mtStat.className = 'status status-warning'; }
+      document.getElementById('mtEnabled').disabled = !s.mtAvailable;
+
+      // Lib status
+      var libStat = document.getElementById('libStatus');
+      libStat.textContent = s.libStatus || 'Ready';
+      libStat.className = 'status ' + (s.libStatus ? 'status-success' : 'status-warning');
+
+      // Doc paths
+      renderDocPaths(s.docPaths || []);
+
+      // Claude Commands
+      _commands = s.commands || [];
+      _cmdSelectedIdx = _commands.length > 0 ? 0 : -1;
+      renderCommands();
+    }
+
+    if (msg.type === 'browseResult') {
+      if (msg.target === 'workingDir') document.getElementById('workingDir').value = msg.path;
+      else if (msg.target === 'comFolder') document.getElementById('comFolder').value = msg.path;
+      else if (msg.target === 'docPath') {
+        var paths = currentSettings.docPaths || [];
+        if (msg.path && paths.indexOf(msg.path) < 0) {
+          paths.push(msg.path);
+          currentSettings.docPaths = paths;
+          renderDocPaths(paths);
+        }
+      }
+    }
+
+    if (msg.type === 'docGraphInfo') {
+      showDocInfo(msg);
+      // Also update the inline summary
+      var sum = document.getElementById('docGraphSummary');
+      if (msg.libraries > 0) {
+        sum.textContent = msg.libraries + ' libraries, ' + (msg.chunks || 0).toLocaleString() + ' chunks';
+        sum.className = 'status status-success';
+      } else {
+        sum.textContent = 'No data';
+        sum.className = 'status status-warning';
+      }
+    }
+
+    if (msg.type === 'buildResult') {
+      var btn = document.getElementById('btnBuildLib');
+      var stat = document.getElementById('libStatus');
+      btn.disabled = false; btn.textContent = 'Build Index';
+      if (msg.success) { stat.textContent = msg.message; stat.className = 'status status-success'; }
+      else { stat.textContent = msg.message; stat.className = 'status status-warning'; }
+    }
+  });
+
+  // Signal ready
+  document.title = 'Settings - ' + document.body.offsetWidth + 'x' + document.body.offsetHeight;
+  send('ready');
+</script>
+</body>
+</html>

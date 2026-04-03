@@ -1,7 +1,114 @@
 # Continuation: ClarionAssistant
 
-## NEXT SESSION — TEST THIS
+## CRITICAL — Diff Viewer Switch (2026-03-25)
 
+### What was changed
+`DiffService.cs` was switched from `NativeDiffViewContent` (WinForms DataGridView) to `DiffViewContent` (WebView2 + Monaco Editor).
+
+- Line 18: `private NativeDiffViewContent _currentDiff;` → `private DiffViewContent _currentDiff;`
+- Line 47: `new NativeDiffViewContent(...)` → `new DiffViewContent(...)`
+
+### Why
+The user expected the diff viewer to have font size/family selectors, theme toggle, inline/side-by-side toggle — all of which exist in `diff.html` (Monaco version) but NOT in `NativeDiffViewContent` (WinForms version). The WinForms version only has Prev/Next/Close buttons.
+
+### Risk — Monaco version may not work
+The user recalls the Monaco-based `DiffViewContent` **did not work** in prior testing. The `NativeDiffViewContent` was likely created as a fallback BECAUSE the WebView2/Monaco version failed. Possible failure modes:
+1. **WebView2 initialization fails** — `DiffViewContent` uses `WebView2EnvironmentCache.GetEnvironmentAsync()`. If WebView2 runtime isn't available or the shared environment has issues, it will show a blank panel.
+2. **Monaco CDN load fails** — `diff.html` loads Monaco from `cdn.jsdelivr.net`. If the machine has no internet or the CDN is blocked, it shows "Failed to load Monaco Editor."
+3. **diff.html not found** — `GetHtmlPath()` looks for `Terminal/diff.html` relative to the assembly. If the file isn't deployed to the addins folder, blank screen.
+4. **Large file corruption** — The old inline text approach corrupted files >200KB. This was fixed with the temp-file + virtual host approach, but it hasn't been tested.
+
+### How to roll back
+```
+git revert e07c57e
+```
+Or manually change DiffService.cs back:
+- Line 18: `DiffViewContent` → `NativeDiffViewContent`
+- Line 47: `new DiffViewContent(...)` → `new NativeDiffViewContent(...)`
+
+### What to test after deploy
+1. Run `show_diff` with two files — does the Monaco editor render?
+2. Font family dropdown visible and changes the editor font?
+3. Font size input works (type value, use arrows, Ctrl+mousewheel)?
+4. Theme toggle (moon/sun icon) switches dark/light?
+5. Inline/Side-by-side toggle works?
+6. Ignore WS button works?
+7. Prev/Next diff navigation with F7/Shift+F7?
+8. Apply and Cancel buttons fire correctly?
+9. Test with a LARGE file (the ClassifyIt018.clw is ~12K lines) — does it load without corruption?
+
+### If Monaco fails — Plan B
+Add font controls to `NativeDiffViewContent.BuildToolbar()` instead:
+- `ToolStripComboBox` for font family (Consolas, Cascadia Code, Courier New, etc.)
+- `ToolStripTextBox` for font size
+- Apply changes to `_grid.Font` and `_grid.DefaultCellStyle.Font`
+- This avoids WebView2 entirely while still giving the user the controls they want
+
+## DocGraph FTS5 Fix — DEPLOYED, TESTED, WORKING (2026-03-26)
+FTS5 now works via `LoadExtension("SQLite.Interop.dll", "sqlite3_fts5_init")` on every connection open.
+Successfully ingested 5,325 chunks from 27 libraries (SoftVelocity + CapeSoft) from local `C:\Clarion12`.
+`query_docs` confirmed working — tested StringTheory Split, jFiles queue/JSON, ABC PreCreate.
+
+## CHM Ingestion Fix — BUILT 2026-03-26, AWAITING DEPLOY + TEST
+
+### Problem
+`hh.exe -decompile` silently fails when called from .NET `Process.Start` — returns exit code 0 but extracts zero files. This happens regardless of `UseShellExecute`, `CreateNoWindow`, STA threads, cmd.exe wrappers, or batch files. However, it works perfectly from Git Bash. This is why CHM files (11 in `C:\Clarion12\bin`) were discovered but produced 0 chunks on every prior ingest attempt (they were silently skipped because `IngestChm` returned 0).
+
+### Root cause
+`hh.exe` is a Windows GUI application. Its `-decompile` mode apparently requires something about the Git Bash/MSYS2 process hosting environment that .NET's `Process.Start` doesn't provide. Not a path issue, not a 32/64-bit issue, not a message pump issue — confirmed via extensive testing.
+
+### Fix applied
+`DocGraphService.cs` — `IngestChm()` method rewritten:
+- Added `FindGitBash()` helper — searches `C:\Program Files\Git\bin\bash.exe` etc.
+- `IngestChm()` now invokes `bash.exe -c "hh.exe -decompile '<dest>' '<chm>'"` via Git Bash
+- Converts Windows paths to Unix paths for bash (`C:\Temp\...` → `/c/Temp/...`)
+- Uses short temp path `C:\Temp\dg_<guid>` instead of user temp (avoids long-path issues)
+- Timeout increased to 120s (ClarionHelp.chm has 4700+ files, takes ~10s)
+
+### What NOT to try again (dead ends confirmed)
+- `Process.Start("hh.exe", ...)` with any combination of UseShellExecute/CreateNoWindow — **always 0 files**
+- `cmd.exe /c hh.exe -decompile` — **0 files**
+- `cmd.exe /c start /wait hh.exe -decompile` — **0 files**
+- Batch file wrapping hh.exe — **0 files**
+- `HtmlHelp` P/Invoke API with `HH_DECOMPILE` (0x0010) — that constant is actually `HH_TP_HELP_CONTEXTMENU`, opens a help window instead of decompiling
+- STA thread with Process.Start — **0 files**
+
+### CHM files to be ingested (11 files in C:\Clarion12\bin)
+AnyScreen.chm, ClaDebugger.chm, ClarionHelp.chm, ClarionRW.chm, DynaDrv.chm, IC.CHM, IMDD.chm, MESSAGING.chm, TOPSCAN.chm, WB.CHM, Win32QuickStart.chm
+
+### What to test after deploy
+1. Run `ingest_docs(clarion_root="C:\\Clarion12\\bin")` — should now show CHM libraries in output alongside PDF/HTM
+2. Specifically look for "ClarionHelp" library — should have hundreds of chunks
+3. Run `query_docs(query="ACCEPT loop")` — should return results from CHM-sourced content
+4. Run `list_doc_libraries` — should show 30+ libraries (27 existing + 11 CHM)
+
+## NEXT SESSION — TEST `ingest_web_docs` THEN RESUME EMBEDITOR WORK
+
+### 1. Test `ingest_web_docs` (NEW — built 2026-03-26, awaiting deploy)
+Added web URL ingestion to DocGraphService. New MCP tool `ingest_web_docs` crawls an index page, discovers all linked HTM pages in the same directory, fetches them, and parses through existing CapeSoft/generic HTML parsers.
+
+**Code changes:**
+- `DocGraphService.cs`: Added `IngestFromWeb()`, `DiscoverLinkedPages()`, `DetectVendorFromUrl()`, `DetectLibraryFromUrl()` in new `#region Web Ingestion`
+- `McpToolRegistry.cs`: Registered `ingest_web_docs` tool with params: `url` (required), `vendor` (optional), `library` (optional)
+
+**What to test:**
+1. Run `ingest_web_docs(url="https://capesoft.com/docs/NetTalk14/nettalkindex.htm")` — should crawl ~30 linked HTM pages and ingest NetTalk docs
+2. Run `query_docs(query="email send", library="NetTalk14")` — should return results
+3. Run `list_doc_libraries` — should show NetTalk14 alongside existing local libs
+4. Try another CapeSoft product: `ingest_web_docs(url="https://capesoft.com/accessories/fm3sp.htm")` for FM3
+
+**If it fails:**
+- If `System.Net.WebClient` download fails: check if the machine has internet access from the IDE process
+- If no chunks extracted: the start page might not link to HTM docs in the same directory. Check if the actual docs are in a subdirectory (e.g., `/docs/NetTalk14/` vs `/accessories/`). The tool only follows links within the same directory tree.
+- If vendor/library auto-detection is wrong: pass explicit `vendor` and `library` params
+
+**Architecture notes:**
+- Uses `System.Net.WebClient` (sync, simple, .NET Framework compatible)
+- Link discovery: regex `<a href="...htm">` filtered to same host + same directory tree
+- Parses through existing `ParseCapesoftHtml()` first, falls back to `ParseGenericHtml()`
+- Stores with `format="web"` and the start URL as `source_path`
+
+### 2. Resume ClassifyIt embeditor work (deferred from previous session)
 "all deployed. load the classify app. load the txa file classifyit.txa into the ide editor. there was another file CreateTheClass_optimized.clw where you made some changes in the code. we were trying to see if you could go to the embeditor for the CreateTheClass procedure and make the changes you made in the .clw in the correct embeds in the embeditor"
 
 ### What to do:

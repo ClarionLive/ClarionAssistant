@@ -33,6 +33,8 @@ namespace ClarionAssistant.Terminal
         private string _tempDir;
         private const string VIRTUAL_HOST = "clarion-diff-data";
 
+        private static readonly List<DiffViewContent> _instances = new List<DiffViewContent>();
+
         /// <summary>Fires when the user clicks Approve (modified text is passed through).</summary>
         public event Action<string> Applied;
 
@@ -44,20 +46,24 @@ namespace ClarionAssistant.Terminal
 
         public override Control Control { get { return _panel; } }
 
+        private bool _isDark = true;
+
         public DiffViewContent(string title, string originalText, string modifiedText, string language = "clarion",
-            bool ignoreWhitespace = false)
+            bool ignoreWhitespace = false, bool isDark = true)
         {
             _title = title ?? "Diff";
             _originalText = originalText ?? "";
             _modifiedText = modifiedText ?? "";
             _language = language ?? "clarion";
             _ignoreWhitespace = ignoreWhitespace;
+            _isDark = isDark;
             TitleName = "Diff: " + _title;
 
             _panel = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(30, 30, 46) };
             _webView = new ZoomableWebView2 { Dock = DockStyle.Fill };
             _panel.Controls.Add(_webView);
 
+            lock (_instances) { _instances.Add(this); }
             _panel.HandleCreated += OnHandleCreated;
         }
 
@@ -177,6 +183,7 @@ namespace ClarionAssistant.Terminal
                 string json = "{\"type\":\"setDiff\"," +
                     "\"title\":" + JsonString(_title) + "," +
                     "\"language\":" + JsonString(_language) + "," +
+                    "\"isDark\":" + (_isDark ? "true" : "false") + "," +
                     "\"diffUrl\":\"https://" + VIRTUAL_HOST + "/diff.txt\"}";
                 _webView.CoreWebView2.PostWebMessageAsJson(json);
             }
@@ -595,8 +602,29 @@ namespace ClarionAssistant.Terminal
             return json.Substring(start, idx - start).Trim();
         }
 
+        /// <summary>Apply light or dark theme to this diff viewer.</summary>
+        public void ApplyTheme(bool isDark)
+        {
+            _isDark = isDark;
+            if (_panel != null)
+                _panel.BackColor = isDark ? Color.FromArgb(30, 30, 46) : Color.FromArgb(239, 241, 245);
+            if (_isInitialized && _webView?.CoreWebView2 != null)
+                _webView.CoreWebView2.PostWebMessageAsJson("{\"type\":\"applyTheme\",\"isDark\":" + (isDark ? "true" : "false") + "}");
+        }
+
+        /// <summary>Apply theme to all open diff viewers.</summary>
+        public static void ApplyThemeToAll(bool isDark)
+        {
+            lock (_instances)
+            {
+                foreach (var inst in _instances)
+                    inst.ApplyTheme(isDark);
+            }
+        }
+
         public override void Dispose()
         {
+            lock (_instances) { _instances.Remove(this); }
             if (_webView != null)
             {
                 _webView.Dispose();

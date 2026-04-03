@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 13px;
+    background: #1e1e2e;
+    color: #cdd6f4;
+    padding: 20px 24px;
+    overflow-y: auto;
+    line-height: 1.5;
+  }
+  h1 {
+    font-size: 18px;
+    font-weight: 600;
+    color: #89b4fa;
+    margin-bottom: 4px;
+  }
+  .subtitle {
+    font-size: 12px;
+    color: #6c7086;
+    margin-bottom: 16px;
+  }
+  .section {
+    margin-bottom: 14px;
+  }
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #cba6f7;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .section-title .icon { font-size: 15px; }
+  .items {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding-left: 4px;
+  }
+  .item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 12px;
+  }
+  .item .prompt {
+    color: #a6e3a1;
+    font-family: 'Cascadia Mono', 'Consolas', monospace;
+    font-size: 11px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .item .desc {
+    color: #9399b2;
+  }
+  .tip {
+    background: #313244;
+    border: 1px solid #45475a;
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin-top: 14px;
+    font-size: 12px;
+    color: #9399b2;
+  }
+  .tip strong { color: #f9e2af; }
+  kbd {
+    display: inline-block;
+    background: #313244;
+    border: 1px solid #45475a;
+    border-radius: 3px;
+    padding: 0 5px;
+    font-size: 11px;
+    font-family: 'Cascadia Mono', 'Consolas', monospace;
+    color: #cdd6f4;
+  }
+
+  /* Light theme */
+  body.light { background: #eff1f5; color: #4c4f69; }
+  body.light h1 { color: #1e66f5; }
+  body.light .subtitle { color: #8c8fa1; }
+  body.light .section-title { color: #8839ef; }
+  body.light .item .prompt { color: #40a02b; }
+  body.light .item .desc { color: #6c6f85; }
+  body.light .tip { background: #e6e9ef; border-color: #ccd0da; color: #6c6f85; }
+  body.light .tip strong { color: #df8e1d; }
+  body.light kbd { background: #e6e9ef; border-color: #ccd0da; color: #4c4f69; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #45475a; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #585b70; }
+  body.light ::-webkit-scrollbar-thumb { background: #bcc0cc; }
+  body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
+</style>
+</head>
+<body>
+  <h1>Clarion Assistant Cheat Sheet</h1>
+  <div class="subtitle">Things you can ask the assistant to do in the terminal</div>
+
+  <div class="section">
+    <div class="section-title"><span class="icon">&#128196;</span> Editor &amp; Navigation</div>
+    <div class="items">
+      <div class="item"><span class="prompt">"Open MyFile.clw"</span><span class="desc">Opens a file in the IDE editor</span></div>
+      <div class="item"><span class="prompt">"Go to line 42"</span><span class="desc">Navigates the cursor to a specific line</span></div>
+      <div class="item"><span class="prompt">"Find all uses of MyVar"</span><span class="desc">Searches for text in the active file</span></div>
+      <div class="item"><span class="prompt">"Comment out lines 10-20"</span><span class="desc">Toggles Clarion line comments</span></div>
+      <div class="item"><span class="prompt">"Replace OldName with NewName"</span><span class="desc">Find &amp; replace in the active editor</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span class="icon">&#128736;</span> Clarion Classes</div>
+    <div class="items">
+      <div class="item"><span class="prompt">"Analyze MyClass.inc"</span><span class="desc">Parse class structure &mdash; methods, properties, data members</span></div>
+      <div class="item"><span class="prompt">"Sync check MyClass"</span><span class="desc">Find missing or orphaned method implementations</span></div>
+      <div class="item"><span class="prompt">"Generate stubs for MyClass"</span><span class="desc">Create .clw stubs for unimplemented methods</span></div>
+      <div class="item"><span class="prompt">"Write a class that does X"</span><span class="desc">Generates .inc and .clw from a description</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span class="icon">&#128450;</span> Application &amp; Embeditor</div>
+    <div class="items">
+      <div class="item"><span class="prompt">"List procedures"</span><span class="desc">Lists all procedures in the open .app file</span></div>
+      <div class="item"><span class="prompt">"Open the embeditor for Main"</span><span class="desc">Opens the embed editor for a procedure</span></div>
+      <div class="item"><span class="prompt">"Show me procedure details for X"</span><span class="desc">Template, prototype, module, parent info</span></div>
+      <div class="item"><span class="prompt">"Export the app to TXA"</span><span class="desc">Exports the application as text for analysis</span></div>
+      <div class="item"><span class="prompt">"Evaluate code"</span><span class="desc">Analyze app code for issues &amp; improvements</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span class="icon">&#128269;</span> CodeGraph &amp; Search</div>
+    <div class="items">
+      <div class="item"><span class="prompt">"Index this solution"</span><span class="desc">Indexes all symbols &amp; relationships in the solution</span></div>
+      <div class="item"><span class="prompt">"Who calls UpdateOrder?"</span><span class="desc">Traces callers across the entire codebase</span></div>
+      <div class="item"><span class="prompt">"What does Main call?"</span><span class="desc">Shows all outgoing calls from a procedure</span></div>
+      <div class="item"><span class="prompt">"Find dead code"</span><span class="desc">Finds symbols with no incoming references</span></div>
+      <div class="item"><span class="prompt">"If I change X, what breaks?"</span><span class="desc">Impact analysis across the solution</span></div>
+      <div class="item"><span class="prompt">"Show the class hierarchy"</span><span class="desc">Traces inheritance relationships</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span class="icon">&#127891;</span> LSP &mdash; Language Server</div>
+    <div class="items">
+      <div class="item"><span class="prompt">"Where is X defined?"</span><span class="desc">Go-to-definition across files</span></div>
+      <div class="item"><span class="prompt">"Find all references to X"</span><span class="desc">Every usage of a symbol in the workspace</span></div>
+      <div class="item"><span class="prompt">"What type is X?"</span><span class="desc">Hover info &mdash; type, signature, docs</span></div>
+      <div class="item"><span class="prompt">"What symbols are in this file?"</span><span class="desc">Lists procedures, classes, and variables</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span class="icon">&#128218;</span> Documentation Search</div>
+    <div class="items">
+      <div class="item"><span class="prompt">"How do I parse CSV with StringTheory?"</span><span class="desc">Searches installed template docs</span></div>
+      <div class="item"><span class="prompt">"Show me NetTalk email methods"</span><span class="desc">Finds methods, params, and examples</span></div>
+      <div class="item"><span class="prompt">"What FM3 methods handle backups?"</span><span class="desc">Searches across all ingested libraries</span></div>
+      <div class="item"><span class="prompt">"Ingest docs"</span><span class="desc">Indexes docs from your Clarion install (run once)</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span class="icon">&#9878;</span> COM Controls</div>
+    <div class="items">
+      <div class="item"><span class="prompt">"Create a COM control"</span><span class="desc">Scaffolds a C# COM project for Clarion</span></div>
+      <div class="item"><span class="prompt">"Build the COM project"</span><span class="desc">MSBuild compile with manifest generation</span></div>
+      <div class="item"><span class="prompt">"Validate the COM control"</span><span class="desc">Checks RegFree COM compliance</span></div>
+      <div class="item"><span class="prompt">"Create a WebView2 COM control"</span><span class="desc">HTML/CSS/JS rendered control for Clarion</span></div>
+    </div>
+  </div>
+
+  <div class="tip">
+    <strong>Tip:</strong> The assistant can read and edit files directly in your IDE. Just describe what you want to do &mdash;
+    it has full access to your editor, app tree, solution index, docs, and language server.
+  </div>
+
+<script>
+  // Apply theme from URL parameter
+  var params = new URLSearchParams(window.location.search);
+  if (params.get('theme') === 'light') {
+    document.body.classList.add('light');
+  }
+</script>
+</body>
+</html>

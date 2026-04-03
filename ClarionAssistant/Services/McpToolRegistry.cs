@@ -36,6 +36,9 @@ namespace ClarionAssistant.Services
         private LspClient _lspClient;
         private DiffService _diffService;
         private DocGraphService _docGraph;
+        private ClarionTraceService _traceService;
+        private KnowledgeService _knowledgeService;
+        private InstanceCoordinationService _instanceCoord;
 
         public McpToolRegistry(EditorService editorService, ClarionClassParser parser)
         {
@@ -43,6 +46,7 @@ namespace ClarionAssistant.Services
             _parser = parser;
             _appTree = new AppTreeService();
             _docGraph = new DocGraphService();
+            _traceService = new ClarionTraceService();
             RegisterAllTools();
         }
 
@@ -59,7 +63,18 @@ namespace ClarionAssistant.Services
             _diffService = diffService;
         }
 
+        public void SetKnowledgeService(KnowledgeService knowledgeService)
+        {
+            _knowledgeService = knowledgeService;
+        }
+
+        public void SetInstanceCoordination(InstanceCoordinationService instanceCoord)
+        {
+            _instanceCoord = instanceCoord;
+        }
+
         public int GetToolCount() { return _tools.Count; }
+        public AppTreeService GetAppTreeService() { return _appTree; }
 
         public bool RequiresUiThread(string toolName)
         {
@@ -502,6 +517,15 @@ Use this tool to discover IDE APIs and understand what's available for automatio
 
             Register(new McpTool
             {
+                Name = "close_app",
+                Description = "Close the currently open Clarion .app file. Use before closing a solution or switching to a different app.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                RequiresUiThread = true,
+                Handler = args => _appTree.CloseApp()
+            });
+
+            Register(new McpTool
+            {
                 Name = "get_app_info",
                 Description = "Get info about the currently open Clarion application (.app) - name, filename, target type, language.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
@@ -544,7 +568,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "open_procedure_embed",
-                Description = "Open the embeditor for a specific procedure in the currently open Clarion app. The app must be loaded first.",
+                Description = "Open the embeditor for a specific procedure in the currently open Clarion app. The app must be loaded first. Automatically checks for conflicts with other IDE instances.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "procedure_name", "Name of the procedure to open" } },
                     new[] { "procedure_name" }),
@@ -553,6 +577,31 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                 {
                     string name = McpJsonRpc.GetString(args, "procedure_name");
                     if (string.IsNullOrEmpty(name)) return "Error: procedure_name required";
+
+                    // Auto-check for conflicts with other IDE instances
+                    if (_instanceCoord != null)
+                    {
+                        try
+                        {
+                            string appFile = null;
+                            var appInfo = _appTree.GetAppInfo();
+                            if (appInfo != null && appInfo.ContainsKey("fileName"))
+                                appFile = appInfo["fileName"]?.ToString();
+
+                            var conflict = _instanceCoord.CheckProcedureConflict(appFile, name);
+                            if (conflict != null)
+                            {
+                                string warning = string.Format(
+                                    "WARNING: Another IDE instance (PID {0}) has procedure '{1}' open in {2}. " +
+                                    "Editing here may cause save conflicts. Proceeding anyway.",
+                                    conflict.Pid, name, Path.GetFileName(conflict.AppFile ?? ""));
+                                string result = _appTree.OpenProcedureEmbed(name);
+                                return warning + "\n\n" + result;
+                            }
+                        }
+                        catch { /* conflict check failed — proceed anyway */ }
+                    }
+
                     return _appTree.OpenProcedureEmbed(name);
                 }
             });
@@ -647,12 +696,11 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "export_txa",
-                Description = "Export the current Clarion app (or selected procedures) to a TXA (Text Application) file. If no procedures specified, exports the entire app.",
+                Description = "Export the ENTIRE current Clarion app to a TXA (Text Application) file. This always exports all procedures. To work with individual procedure code, use open_procedure_embed instead.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
-                        { "path", "Absolute path for the output TXA file" },
-                        { "procedures", "Comma-separated list of procedure names to export (optional — omit to export entire app)" }
+                        { "path", "Absolute path for the output TXA file" }
                     },
                     new[] { "path" }),
                 RequiresUiThread = true,
@@ -662,20 +710,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                     if (string.IsNullOrEmpty(path))
                         return "Error: path is required";
 
-                    string procsStr = McpJsonRpc.GetString(args, "procedures");
-                    List<string> procList = null;
-                    if (!string.IsNullOrEmpty(procsStr))
-                    {
-                        procList = new List<string>();
-                        foreach (var p in procsStr.Split(','))
-                        {
-                            string trimmed = p.Trim();
-                            if (trimmed.Length > 0)
-                                procList.Add(trimmed);
-                        }
-                    }
-
-                    return _appTree.ExportTxa(path, procList);
+                    return _appTree.ExportTxa(path);
                 }
             });
 
@@ -724,6 +759,172 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                         return "Error: file not found: " + path;
                     _editorService.NavigateToFileAndLine(path, line);
                     return "Opened " + path + " at line " + line;
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "open_solution",
+                Description = "Open a Clarion solution (.sln) or project (.cwproj) file in the IDE. Prompts to save the current solution if one is open.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string> { { "path", "Absolute path to the .sln or .cwproj file" } },
+                    new[] { "path" }),
+                RequiresUiThread = true,
+                Handler = args =>
+                {
+                    string path = McpJsonRpc.GetString(args, "path");
+                    if (string.IsNullOrEmpty(path))
+                        return "Error: path is required";
+                    string result = EditorService.OpenSolution(path);
+                    _chatControl?.DetectFromIde();
+                    return result;
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "close_solution",
+                Description = "Close the currently open Clarion solution. Close any open .app files first with close_app.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                RequiresUiThread = true,
+                Handler = args =>
+                {
+                    string result = EditorService.CloseSolution();
+                    _chatControl?.DetectFromIde();
+                    return result;
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "open_dictionary",
+                Description = "Open a Clarion data dictionary (.dct) file in the IDE's Dictionary Editor. If no path is provided, auto-discovers the .dct file in the current solution folder.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "path", "Absolute path to the .dct file (optional — auto-discovers from solution folder if omitted)" }
+                    }),
+                RequiresUiThread = true,
+                Handler = args =>
+                {
+                    string path = McpJsonRpc.GetString(args, "path", "");
+
+                    if (string.IsNullOrEmpty(path))
+                    {
+                        // Auto-discover from solution folder
+                        string slnPath = _chatControl?.CurrentSolutionPath;
+                        if (string.IsNullOrEmpty(slnPath))
+                            return "Error: no solution selected and no path provided";
+
+                        string slnDir = Path.GetDirectoryName(slnPath);
+                        var dctFiles = Directory.GetFiles(slnDir, "*.dct", SearchOption.TopDirectoryOnly);
+                        if (dctFiles.Length == 0)
+                        {
+                            // Try subdirectories one level deep
+                            dctFiles = Directory.GetFiles(slnDir, "*.dct", SearchOption.AllDirectories);
+                        }
+                        if (dctFiles.Length == 0)
+                            return "Error: no .dct file found in solution folder: " + slnDir;
+                        if (dctFiles.Length > 1)
+                        {
+                            var sb = new StringBuilder();
+                            sb.AppendLine("Multiple .dct files found. Please specify which one:");
+                            foreach (var f in dctFiles)
+                                sb.AppendLine("  " + f);
+                            return sb.ToString();
+                        }
+                        path = dctFiles[0];
+                    }
+
+                    if (!File.Exists(path))
+                        return "Error: file not found: " + path;
+
+                    _editorService.NavigateToFileAndLine(path, 0);
+                    return "Opened dictionary: " + path;
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "export_dctx",
+                Description = "Export the currently open Clarion data dictionary to a .dctx text file. The dictionary must be open in the IDE (use open_dictionary first). The .dctx format is a human-readable text representation of the dictionary.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "path", "Absolute path for the output .dctx file (optional — defaults to same folder as the .dct with .dctx extension)" }
+                    }),
+                RequiresUiThread = true,
+                Handler = args =>
+                {
+                    var dct = FindOpenDictionary();
+                    if (dct == null)
+                        return "Error: no dictionary is open in the IDE. Use open_dictionary first.";
+
+                    var fileNameProp = dct.GetType().GetProperty("FileName",
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    string dctPath = fileNameProp != null ? fileNameProp.GetValue(dct, null) as string : null;
+                    string outPath = McpJsonRpc.GetString(args, "path", "");
+                    if (string.IsNullOrEmpty(outPath))
+                    {
+                        if (string.IsNullOrEmpty(dctPath))
+                            return "Error: could not determine dictionary path and no output path provided";
+                        outPath = Path.ChangeExtension(dctPath, ".dctx");
+                    }
+
+                    // Call ExportToText(string destination, bool quiet, out string errorMessage)
+                    var method = dct.GetType().GetMethod("ExportToText",
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    if (method == null)
+                        return "Error: ExportToText method not found on dictionary object";
+
+                    var methodParams = new object[] { outPath, true, null };
+                    bool success = (bool)method.Invoke(dct, methodParams);
+                    string errorMsg = methodParams[2] as string;
+
+                    if (success)
+                        return "Dictionary exported to: " + outPath;
+                    else
+                        return "Export failed: " + (errorMsg ?? "unknown error");
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "import_dctx",
+                Description = "Import a .dctx text file into the currently open Clarion data dictionary. The dictionary must be open in the IDE (use open_dictionary first). WARNING: This modifies the dictionary — changes must be saved manually.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "path", "Absolute path to the .dctx file to import" }
+                    },
+                    new[] { "path" }),
+                RequiresUiThread = true,
+                Handler = args =>
+                {
+                    var dct = FindOpenDictionary();
+                    if (dct == null)
+                        return "Error: no dictionary is open in the IDE. Use open_dictionary first.";
+
+                    string importPath = McpJsonRpc.GetString(args, "path");
+                    if (string.IsNullOrEmpty(importPath))
+                        return "Error: path is required";
+                    if (!File.Exists(importPath))
+                        return "Error: file not found: " + importPath;
+
+                    // Call ImportFromText(string textFile, out string errorMessage)
+                    var method = dct.GetType().GetMethod("ImportFromText",
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    if (method == null)
+                        return "Error: ImportFromText method not found on dictionary object";
+
+                    var methodParams = new object[] { importPath, null };
+                    bool success = (bool)method.Invoke(dct, methodParams);
+                    string errorMsg = methodParams[1] as string;
+
+                    if (success)
+                        return "Dictionary imported from: " + importPath + ". Review changes in the Dictionary Editor and save when ready.";
+                    else
+                        return "Import failed: " + (errorMsg ?? "unknown error");
                 }
             });
 
@@ -1122,7 +1323,23 @@ COMMON QUERIES:
                     if (_chatControl == null)
                         return "Error: chat control not initialized";
 
-                    string slnPath = _chatControl.CurrentSolutionPath;
+                    // Check the live IDE state first — the cached path may be stale
+                    string ideSlnPath = EditorService.GetOpenSolutionPath();
+                    string slnPath = !string.IsNullOrEmpty(ideSlnPath) ? ideSlnPath : _chatControl.CurrentSolutionPath;
+
+                    // If nothing is open in the IDE and we only have a cached path, report no solution
+                    if (string.IsNullOrEmpty(ideSlnPath) && !string.IsNullOrEmpty(slnPath))
+                    {
+                        return new Dictionary<string, object>
+                        {
+                            { "solutionPath", "(none open)" },
+                            { "lastSelectedPath", slnPath },
+                            { "isIndexed", false },
+                            { "lastIndexed", "(never)" },
+                            { "note", "No solution is currently open in the IDE. The lastSelectedPath was the most recently selected solution." }
+                        };
+                    }
+
                     string dbPath = _chatControl.CurrentDbPath;
                     bool hasDb = !string.IsNullOrEmpty(dbPath) && File.Exists(dbPath);
                     var vConfig = _chatControl.CurrentVersionConfig;
@@ -1563,7 +1780,8 @@ EXAMPLES:
                         if (limit <= 0) limit = 10;
                     }
 
-                    return _docGraph.QueryDocs(query, library, className, limit);
+                    string personalPath = DocGraphService.GetPersonalDbPath();
+                    return _docGraph.QueryDocsMulti(personalPath, query, library, className, limit);
                 }
             });
 
@@ -1718,7 +1936,7 @@ EXAMPLES:
                         return "Error: ClarionCL.exe not found at " + clarionCl;
 
                     string arguments = "/ag \"" + slnPath + "\"";
-                    return RunBuildProcess(clarionCl, arguments, Path.GetDirectoryName(slnPath), timeout);
+                    return RunBuildProcess(clarionCl, arguments, Path.GetDirectoryName(slnPath), timeout, "build_solution", slnPath);
                 }
             });
 
@@ -1757,7 +1975,7 @@ EXAMPLES:
                         return "Error: ClarionCL.exe not found at " + clarionCl;
 
                     string arguments = "/ag \"" + appPath + "\"";
-                    return RunBuildProcess(clarionCl, arguments, Path.GetDirectoryName(appPath), timeout);
+                    return RunBuildProcess(clarionCl, arguments, Path.GetDirectoryName(appPath), timeout, "build_app", appPath);
                 }
             });
 
@@ -1806,7 +2024,7 @@ EXAMPLES:
                     if (!string.IsNullOrEmpty(debugGen))
                         argBuilder.Append(" /agd " + debugGen);
 
-                    return RunBuildProcess(clarionCl, argBuilder.ToString(), Path.GetDirectoryName(appPath), timeout);
+                    return RunBuildProcess(clarionCl, argBuilder.ToString(), Path.GetDirectoryName(appPath), timeout, "generate_source", appPath);
                 }
             });
 
@@ -1837,7 +2055,7 @@ EXAMPLES:
                         return "Error: MSBuild.exe not found. Searched VS2022, VS2019, and BuildTools paths.";
 
                     string arguments = string.Format("\"{0}\" /p:Configuration={1} /p:Platform=x86 /t:Build /v:minimal /nologo", projectPath, config);
-                    return RunBuildProcess(msbuild, arguments, Path.GetDirectoryName(projectPath), timeout);
+                    return RunBuildProcess(msbuild, arguments, Path.GetDirectoryName(projectPath), timeout, "build_com_project", projectPath);
                 }
             });
 
@@ -1866,6 +2084,478 @@ EXAMPLES:
                         return "Error: command is required";
 
                     return RunBuildProcess(command, arguments, workDir, timeout);
+                }
+            });
+
+            // === Trace Tools (Recursive Self-Improvement) ===
+
+            Register(new McpTool
+            {
+                Name = "query_traces",
+                Description = "Query the Clarion code generation trace database. Use SQL to analyze build failures, find recurring error patterns, and identify areas where code generation needs improvement. Table: clarion_traces (id, timestamp, trace_type, target_file, code_snippet, build_result, error_count, warning_count, errors, tool_name, agent).",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "sql", "SQL query to run against the clarion_traces table (required)" }
+                    },
+                    new[] { "sql" }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string sql = McpJsonRpc.GetString(args, "sql");
+                    if (string.IsNullOrEmpty(sql))
+                        return "Error: sql is required";
+                    return _traceService.QueryTraces(sql);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "trace_stats",
+                Description = "Get summary statistics from the Clarion code generation trace database — total traces, build failures, error counts by type.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                RequiresUiThread = false,
+                Handler = args => _traceService.GetStats()
+            });
+
+            Register(new McpTool
+            {
+                Name = "log_skill_update",
+                Description = "Log a modification to the /clarion skill for changelog tracking. Call this after adding or modifying a pattern in the skill file. Records what was changed and why, enabling rollback analysis.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "pattern_name", "Short name of the pattern added/modified (required)" },
+                        { "action", "What was done: 'added', 'strengthened', 'removed', 'modified' (required)" },
+                        { "reason", "Why this change was made — reference trace evidence (required)" },
+                        { "occurrence_count", "How many times this pattern was seen in traces" }
+                    },
+                    new[] { "pattern_name", "action", "reason" }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string patternName = McpJsonRpc.GetString(args, "pattern_name");
+                    string action = McpJsonRpc.GetString(args, "action");
+                    string reason = McpJsonRpc.GetString(args, "reason");
+                    int count = McpJsonRpc.GetInt(args, "occurrence_count", 0);
+
+                    string entry = string.Format("[{0}] {1}: {2} (seen {3}x) — {4}",
+                        DateTime.Now.ToString("yyyy-MM-dd HH:mm"), action, patternName, count, reason);
+
+                    _traceService.LogCodeGeneration("skill_update", "clarion/SKILL.md", entry);
+                    return "Logged skill update: " + entry;
+                }
+            });
+
+            // === Knowledge & Memory Tools ===
+
+            Register(new McpTool
+            {
+                Name = "add_knowledge",
+                Description = "Save a reusable insight to the Clarion Assistant's knowledge base. Categories: decision, pattern, gotcha, anti_pattern, debug_insight, preference. Knowledge persists across sessions and is auto-injected at startup ranked by usage.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "title", "Short title summarizing the knowledge entry (required)" },
+                        { "content", "Full content of the knowledge entry (required)" },
+                        { "category", "Category: decision, pattern, gotcha, anti_pattern, debug_insight, preference (required)" },
+                        { "tags", "Comma-separated tags for categorization (optional)" },
+                        { "confidence", "Confidence level: confirmed, likely, uncertain (default: confirmed)" }
+                    },
+                    new[] { "title", "content", "category" }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    if (_knowledgeService == null) return "Knowledge service not initialized.";
+                    string title = McpJsonRpc.GetString(args, "title");
+                    string content = McpJsonRpc.GetString(args, "content");
+                    string category = McpJsonRpc.GetString(args, "category");
+                    string tags = McpJsonRpc.GetString(args, "tags");
+                    string confidence = McpJsonRpc.GetString(args, "confidence") ?? "confirmed";
+
+                    int id = _knowledgeService.AddEntry(title, content, category, tags, confidence);
+                    return string.Format("Knowledge entry saved (id: {0}): [{1}] {2}", id, category, title);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "query_knowledge",
+                Description = "Search the Clarion Assistant's knowledge base for decisions, patterns, gotchas, and insights. Uses full-text search. Returns matching entries ranked by relevance.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "query", "Search text to find within knowledge entries (required)" },
+                        { "limit", "Max results to return (default: 20)" }
+                    },
+                    new[] { "query" }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    if (_knowledgeService == null) return "Knowledge service not initialized.";
+                    string query = McpJsonRpc.GetString(args, "query");
+                    int limit = McpJsonRpc.GetInt(args, "limit", 20);
+
+                    var results = _knowledgeService.Search(query, limit);
+                    if (results.Count == 0)
+                        return string.Format("No knowledge entries found matching \"{0}\".", query);
+
+                    var sb = new System.Text.StringBuilder();
+                    sb.AppendLine(string.Format("Knowledge Search: \"{0}\" — {1} result(s)", query, results.Count));
+                    sb.AppendLine();
+                    foreach (var e in results)
+                    {
+                        string preview = e.Content != null && e.Content.Length > 300
+                            ? e.Content.Substring(0, 300) + "..." : e.Content ?? "";
+                        sb.AppendLine(string.Format("- [{0}] {1}", e.Category, e.Title));
+                        sb.AppendLine("  " + preview);
+                        if (e.Tags != null) sb.AppendLine("  Tags: " + e.Tags);
+                        sb.AppendLine();
+                    }
+                    return sb.ToString().TrimEnd();
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "save_session_summary",
+                Description = "Save a summary of the current session's work for continuity. This summary will be injected at the start of the next session so you can pick up where you left off. Call this before the session ends.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "summary", "Concise summary of what was accomplished, current state, and what to do next (required)" }
+                    },
+                    new[] { "summary" }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    if (_knowledgeService == null) return "Knowledge service not initialized.";
+                    string summary = McpJsonRpc.GetString(args, "summary");
+                    if (string.IsNullOrWhiteSpace(summary)) return "Summary cannot be empty.";
+
+                    // Save as a new session with summary
+                    int sessionId = _knowledgeService.StartSession(null);
+                    _knowledgeService.EndSession(sessionId, summary);
+                    return "Session summary saved. It will be injected at the start of your next session.";
+                }
+            });
+
+            // === Instance Coordination Tools ===
+
+            Register(new McpTool
+            {
+                Name = "list_instances",
+                Description = "List all running Clarion IDE instances with their open apps, active files, and what they're working on. Use this to see the full picture across a multi-app solution.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                Handler = args =>
+                {
+                    if (_instanceCoord == null) return "Instance coordination not initialized.";
+                    var instances = _instanceCoord.GetAllInstances();
+                    if (instances.Count == 0) return "No instances registered.";
+
+                    var sb = new System.Text.StringBuilder();
+                    sb.AppendLine("Running Clarion IDE instances:");
+                    sb.AppendLine();
+                    foreach (var inst in instances)
+                    {
+                        string label = inst.IsSelf ? " (this instance)" : "";
+                        sb.AppendLine(string.Format("PID {0}{1}", inst.Pid, label));
+                        if (!string.IsNullOrEmpty(inst.AppFile))
+                            sb.AppendLine("  App: " + Path.GetFileName(inst.AppFile));
+                        if (!string.IsNullOrEmpty(inst.ActiveFile))
+                            sb.AppendLine("  File: " + inst.ActiveFile);
+                        if (!string.IsNullOrEmpty(inst.ActiveProcedure))
+                            sb.AppendLine("  Procedure: " + inst.ActiveProcedure);
+                        if (!string.IsNullOrEmpty(inst.WorkingOn))
+                            sb.AppendLine("  Working on: " + inst.WorkingOn);
+                        sb.AppendLine("  Since: " + inst.StartedAt);
+                        sb.AppendLine();
+                    }
+                    return sb.ToString();
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "check_conflicts",
+                Description = "Check if any other Clarion IDE instance is editing the same procedure. Call before opening a procedure in the embeditor to avoid conflicts.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "app_file", "App file path (defaults to current app)" },
+                    { "procedure_name", "Name of the procedure to check" }
+                }, new[] { "procedure_name" }),
+                Handler = args =>
+                {
+                    if (_instanceCoord == null) return "Instance coordination not initialized.";
+                    string appFile = args.ContainsKey("app_file") ? args["app_file"]?.ToString() : _instanceCoord.AppFile;
+                    string proc = args.ContainsKey("procedure_name") ? args["procedure_name"]?.ToString() : null;
+                    if (string.IsNullOrEmpty(proc)) return "procedure_name is required.";
+
+                    var conflict = _instanceCoord.CheckProcedureConflict(appFile, proc);
+                    if (conflict == null)
+                        return "No conflict. No other instance has " + proc + " open.";
+
+                    return string.Format(
+                        "CONFLICT: Instance PID {0} has procedure '{1}' open in {2}. " +
+                        "Editing it here may cause save conflicts. Consider coordinating with the other instance first.",
+                        conflict.Pid, proc, Path.GetFileName(conflict.AppFile ?? ""));
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "send_to_instances",
+                Description = "Send a message to other Clarion IDE instances. Use to coordinate work across a multi-app solution (e.g., 'I changed the API in ProcX, you may need to update callers').",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "message", "Message text to send" },
+                    { "to_pid", "Target instance PID (omit to broadcast to all)" },
+                    { "type", "Message type: info, warning, question, conflict" }
+                }, new[] { "message" }),
+                Handler = args =>
+                {
+                    if (_instanceCoord == null) return "Instance coordination not initialized.";
+                    string message = args.ContainsKey("message") ? args["message"]?.ToString() : null;
+                    if (string.IsNullOrEmpty(message)) return "message is required.";
+
+                    int? toPid = null;
+                    if (args.ContainsKey("to_pid"))
+                    {
+                        int pid;
+                        if (int.TryParse(args["to_pid"]?.ToString(), out pid))
+                            toPid = pid;
+                    }
+                    string type = args.ContainsKey("type") ? args["type"]?.ToString() : "info";
+
+                    _instanceCoord.SendMessage(toPid, type, null, message);
+                    return toPid.HasValue
+                        ? "Message sent to instance PID " + toPid.Value + "."
+                        : "Message broadcast to all instances.";
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "get_instance_messages",
+                Description = "Get unread messages from other Clarion IDE instances. Check this when starting work or periodically to stay coordinated.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                Handler = args =>
+                {
+                    if (_instanceCoord == null) return "Instance coordination not initialized.";
+                    var messages = _instanceCoord.GetMessages();
+                    if (messages.Count == 0) return "No unread messages from other instances.";
+
+                    var sb = new System.Text.StringBuilder();
+                    sb.AppendLine(messages.Count + " message(s) from other instances:");
+                    sb.AppendLine();
+                    foreach (var msg in messages)
+                    {
+                        sb.AppendLine(string.Format("[{0}] From PID {1} at {2}:",
+                            msg.Type.ToUpper(), msg.FromPid, msg.CreatedAt));
+                        sb.AppendLine("  " + msg.Payload);
+                        sb.AppendLine();
+                    }
+                    return sb.ToString();
+                }
+            });
+
+            // ── Everything Search Tools ──────────────────────────────────────
+
+            Register(new McpTool
+            {
+                Name = "search_files",
+                Description = "Instant file search using Everything (voidtools). Searches file/folder names across all indexed drives.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "query", "Search query for file names" },
+                    { "max_results?", "Maximum results to return (default: 100, max: 1000)" },
+                    { "match_case?", "Enable case-sensitive search (true/false)" },
+                    { "match_whole_word?", "Match whole words only (true/false)" },
+                    { "regex?", "Enable regular expression search (true/false)" }
+                }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string query = args.ContainsKey("query") ? args["query"]?.ToString() : null;
+                    if (string.IsNullOrEmpty(query)) return "Error: query is required.";
+
+                    var opts = new SearchOptions
+                    {
+                        MaxResults = GetIntArg(args, "max_results", 100),
+                        MatchCase = GetBoolArg(args, "match_case"),
+                        MatchWholeWord = GetBoolArg(args, "match_whole_word"),
+                        Regex = GetBoolArg(args, "regex")
+                    };
+
+                    var result = EverythingService.Search(query, opts);
+                    if (result.HasError) return "Error: " + result.Error;
+                    if (result.Items.Count == 0) return "No files found matching \"" + query + "\"";
+
+                    var sb = new StringBuilder();
+                    sb.AppendLine("Found " + result.TotalResults + " results (showing " + result.Items.Count + "):");
+                    sb.AppendLine();
+                    foreach (var item in result.Items)
+                        sb.AppendLine("[" + item.Type + "] " + item.FullPath);
+                    return sb.ToString();
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "search_files_advanced",
+                Description = "Advanced file search with path, extension, size, and date filters using Everything.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "query", "Search query for file names" },
+                    { "path?", "Limit search to specific path" },
+                    { "extension?", "Filter by file extension (e.g., 'txt', 'pdf', 'clw')" },
+                    { "size?", "Filter by file size (e.g., '>1mb', '<100kb', '1gb..2gb')" },
+                    { "date_modified?", "Filter by date modified (e.g., 'today', 'yesterday', 'thisweek', '2024')" },
+                    { "max_results?", "Maximum results to return (default: 100, max: 1000)" },
+                    { "match_case?", "Enable case-sensitive search (true/false)" },
+                    { "match_whole_word?", "Match whole words only (true/false)" },
+                    { "regex?", "Enable regular expression search (true/false)" },
+                    { "sort_by?", "Sort results: name_asc, name_desc, path_asc, path_desc, size_asc, size_desc, date_asc, date_desc" }
+                }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string query = args.ContainsKey("query") ? args["query"]?.ToString() : null;
+                    if (string.IsNullOrEmpty(query)) return "Error: query is required.";
+
+                    // Build Everything search query with filters
+                    var sb = new StringBuilder();
+                    string path = GetStringArg(args, "path");
+                    string ext = GetStringArg(args, "extension");
+                    string size = GetStringArg(args, "size");
+                    string dateMod = GetStringArg(args, "date_modified");
+
+                    if (!string.IsNullOrEmpty(path)) sb.Append("path:\"" + path + "\" ");
+                    if (!string.IsNullOrEmpty(ext)) sb.Append("ext:" + ext + " ");
+                    if (!string.IsNullOrEmpty(size)) sb.Append("size:" + size + " ");
+                    if (!string.IsNullOrEmpty(dateMod)) sb.Append("dm:" + dateMod + " ");
+                    sb.Append(query);
+
+                    var opts = new SearchOptions
+                    {
+                        MaxResults = GetIntArg(args, "max_results", 100),
+                        MatchCase = GetBoolArg(args, "match_case"),
+                        MatchWholeWord = GetBoolArg(args, "match_whole_word"),
+                        Regex = GetBoolArg(args, "regex"),
+                        SortBy = GetStringArg(args, "sort_by")
+                    };
+
+                    var result = EverythingService.Search(sb.ToString(), opts);
+                    if (result.HasError) return "Error: " + result.Error;
+                    if (result.Items.Count == 0) return "No files found matching \"" + query + "\"";
+
+                    var filters = new List<string>();
+                    if (!string.IsNullOrEmpty(path)) filters.Add("path: \"" + path + "\"");
+                    if (!string.IsNullOrEmpty(ext)) filters.Add("extension: " + ext);
+                    if (!string.IsNullOrEmpty(size)) filters.Add("size: " + size);
+                    if (!string.IsNullOrEmpty(dateMod)) filters.Add("date modified: " + dateMod);
+
+                    var output = new StringBuilder();
+                    output.Append("Found " + result.TotalResults + " results");
+                    if (filters.Count > 0) output.Append(" (filtered by " + string.Join(", ", filters) + ")");
+                    output.AppendLine(" (showing " + result.Items.Count + "):");
+                    output.AppendLine();
+                    foreach (var item in result.Items)
+                        output.AppendLine("[" + item.Type + "] " + item.FullPath);
+                    return output.ToString();
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "find_duplicates",
+                Description = "Find duplicate files by filename across all indexed drives using Everything.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "filename", "Filename to search for duplicates" },
+                    { "path?", "Limit search to specific path" },
+                    { "max_results?", "Maximum results to return (default: 50)" }
+                }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string filename = args.ContainsKey("filename") ? args["filename"]?.ToString() : null;
+                    if (string.IsNullOrEmpty(filename)) return "Error: filename is required.";
+
+                    string searchQuery = filename;
+                    string path = GetStringArg(args, "path");
+                    if (!string.IsNullOrEmpty(path)) searchQuery = "path:\"" + path + "\" " + searchQuery;
+
+                    var opts = new SearchOptions
+                    {
+                        MaxResults = GetIntArg(args, "max_results", 50),
+                        MatchWholeWord = true
+                    };
+
+                    var result = EverythingService.Search(searchQuery, opts);
+                    if (result.HasError) return "Error: " + result.Error;
+                    if (result.Items.Count == 0) return "No files found with name \"" + filename + "\"";
+
+                    if (result.TotalResults == 1)
+                        return "Found only 1 instance of \"" + filename + "\":\n\n[" + result.Items[0].Type + "] " + result.Items[0].FullPath;
+
+                    var sb = new StringBuilder();
+                    sb.AppendLine("Found " + result.TotalResults + " instances of \"" + filename + "\" (showing " + result.Items.Count + "):");
+                    sb.AppendLine();
+                    foreach (var item in result.Items)
+                        sb.AppendLine("[" + item.Type + "] " + item.FullPath);
+                    return sb.ToString();
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "search_content",
+                Description = "Search for text content within files using Everything. Requires Everything content indexing to be enabled.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "content", "Text content to search for within files" },
+                    { "file_types?", "Limit to specific file types, semicolon-separated (e.g., 'clw;inc;txt')" },
+                    { "path?", "Limit search to specific path" },
+                    { "max_results?", "Maximum results to return (default: 50)" }
+                }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string content = args.ContainsKey("content") ? args["content"]?.ToString() : null;
+                    if (string.IsNullOrEmpty(content)) return "Error: content is required.";
+
+                    var sb = new StringBuilder();
+                    string path = GetStringArg(args, "path");
+                    string fileTypes = GetStringArg(args, "file_types");
+
+                    if (!string.IsNullOrEmpty(fileTypes))
+                    {
+                        var types = fileTypes.Split(';');
+                        var parts = new List<string>();
+                        foreach (var t in types)
+                        {
+                            string trimmed = t.Trim();
+                            if (!string.IsNullOrEmpty(trimmed)) parts.Add("ext:" + trimmed);
+                        }
+                        if (parts.Count > 0) sb.Append("(" + string.Join(" | ", parts) + ") ");
+                    }
+
+                    if (!string.IsNullOrEmpty(path)) sb.Append("path:\"" + path + "\" ");
+                    sb.Append("content:\"" + content + "\"");
+
+                    var opts = new SearchOptions { MaxResults = GetIntArg(args, "max_results", 50) };
+
+                    var result = EverythingService.Search(sb.ToString(), opts);
+                    if (result.HasError) return "Error: " + result.Error + " Note: Content search requires Everything to have content indexing enabled.";
+                    if (result.Items.Count == 0) return "No files found containing \"" + content + "\". Note: Content search requires Everything to have content indexing enabled.";
+
+                    var output = new StringBuilder();
+                    output.AppendLine("Found " + result.TotalResults + " files containing \"" + content + "\" (showing " + result.Items.Count + "):");
+                    output.AppendLine();
+                    foreach (var item in result.Items)
+                        output.AppendLine("[" + item.Type + "] " + item.FullPath);
+                    return output.ToString();
                 }
             });
         }
@@ -1910,6 +2600,43 @@ EXAMPLES:
             }
 
             return McpJsonRpc.Serialize(response);
+        }
+
+        #endregion
+
+        #region Dictionary Helpers
+
+        /// <summary>
+        /// Find an open DDDataDictionary object by iterating open ViewContents.
+        /// Returns the DCT property of the first DataDictionaryViewContent found.
+        /// </summary>
+        private object FindOpenDictionary()
+        {
+            try
+            {
+                var workbench = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
+                if (workbench == null) return null;
+
+                var vcProp = workbench.GetType().GetProperty("ViewContentCollection",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (vcProp == null) return null;
+
+                var viewContents = vcProp.GetValue(workbench, null) as System.Collections.IEnumerable;
+                if (viewContents == null) return null;
+
+                foreach (var vc in viewContents)
+                {
+                    if (vc.GetType().Name == "DataDictionaryViewContent")
+                    {
+                        var dctProp = vc.GetType().GetProperty("DCT",
+                            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        if (dctProp != null)
+                            return dctProp.GetValue(vc, null);
+                    }
+                }
+            }
+            catch { }
+            return null;
         }
 
         #endregion
@@ -2011,7 +2738,7 @@ EXAMPLES:
 
         #region Build Helpers
 
-        private string RunBuildProcess(string fileName, string arguments, string workingDirectory, int timeoutSeconds)
+        private string RunBuildProcess(string fileName, string arguments, string workingDirectory, int timeoutSeconds, string toolName = null, string targetFile = null)
         {
             try
             {
@@ -2086,6 +2813,10 @@ EXAMPLES:
                         result.Append(errors.ToString());
                     }
 
+                    // Log trace for recursive self-improvement
+                    if (_traceService != null && !string.IsNullOrEmpty(toolName))
+                        _traceService.LogBuildResult(toolName, targetFile ?? workingDirectory, result.ToString(), success, errorCount, warningCount);
+
                     return result.ToString();
                 }
             }
@@ -2143,6 +2874,39 @@ EXAMPLES:
             catch { }
 
             return null;
+        }
+
+        #endregion
+
+        #region Argument Helpers
+
+        private static string GetStringArg(Dictionary<string, object> args, string key)
+        {
+            if (args.ContainsKey(key) && args[key] != null)
+                return args[key].ToString();
+            return null;
+        }
+
+        private static int GetIntArg(Dictionary<string, object> args, string key, int defaultValue = 0)
+        {
+            if (args.ContainsKey(key) && args[key] != null)
+            {
+                int val;
+                if (int.TryParse(args[key].ToString(), out val))
+                    return val;
+            }
+            return defaultValue;
+        }
+
+        private static bool GetBoolArg(Dictionary<string, object> args, string key, bool defaultValue = false)
+        {
+            if (args.ContainsKey(key) && args[key] != null)
+            {
+                bool val;
+                if (bool.TryParse(args[key].ToString(), out val))
+                    return val;
+            }
+            return defaultValue;
         }
 
         #endregion

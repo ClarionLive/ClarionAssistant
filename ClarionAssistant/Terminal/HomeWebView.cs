@@ -2,53 +2,74 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Reflection;
+using System.Text;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
 namespace ClarionAssistant.Terminal
 {
-    public class HeaderActionEventArgs : EventArgs
+    public class HomeActionEventArgs : EventArgs
     {
         public string Action { get; private set; }
         public string Data { get; private set; }
-        public HeaderActionEventArgs(string action, string data) { Action = action; Data = data; }
+        public HomeActionEventArgs(string action, string data) { Action = action; Data = data; }
     }
 
-    public class HeaderWebView : UserControl
+    /// <summary>
+    /// WebView2-based Home page showing recent solutions, Open Solution, and Create COM.
+    /// Follows the same pattern as HeaderWebView.
+    /// </summary>
+    public class HomeWebView : UserControl
     {
         private WebView2 _webView;
         private bool _isInitialized;
         private bool _isInitializing;
 
-        public event EventHandler<HeaderActionEventArgs> ActionReceived;
-        public event EventHandler HeaderReady;
+        public event EventHandler<HomeActionEventArgs> ActionReceived;
+        public event EventHandler HomeReady;
 
         public bool IsReady { get { return _isInitialized; } }
 
-        public HeaderWebView()
+        public HomeWebView()
         {
             SuspendLayout();
             BackColor = Color.FromArgb(30, 30, 46);
-            Height = 130;
-            Dock = DockStyle.Top;
+            Dock = DockStyle.Fill;
 
-            _webView = new WebView2 { Dock = DockStyle.Fill, Name = "headerWebView" };
+            _webView = new WebView2 { Dock = DockStyle.Fill, Name = "homeWebView" };
             Controls.Add(_webView);
             ResumeLayout(false);
 
             HandleCreated += OnHandleCreated;
         }
 
+        protected override void OnVisibleChanged(EventArgs e)
+        {
+            base.OnVisibleChanged(e);
+            System.Diagnostics.Debug.WriteLine("[HomeWebView] OnVisibleChanged: Visible=" + Visible
+                + ", IsHandleCreated=" + IsHandleCreated
+                + ", HasParent=" + (Parent != null));
+        }
+
         private async void OnHandleCreated(object sender, EventArgs e)
         {
+            System.Diagnostics.Debug.WriteLine("[HomeWebView] OnHandleCreated: Visible=" + Visible
+                + ", IsHandleCreated=" + IsHandleCreated
+                + ", HasParent=" + (Parent != null)
+                + ", _isInitializing=" + _isInitializing
+                + ", _isInitialized=" + _isInitialized);
+
             if (_isInitializing || _isInitialized) return;
             _isInitializing = true;
 
             try
             {
+                System.Diagnostics.Debug.WriteLine("[HomeWebView] Starting WebView2 init...");
                 var environment = await WebView2EnvironmentCache.GetEnvironmentAsync();
+                System.Diagnostics.Debug.WriteLine("[HomeWebView] Got environment, calling EnsureCoreWebView2Async...");
                 await _webView.EnsureCoreWebView2Async(environment);
+                System.Diagnostics.Debug.WriteLine("[HomeWebView] EnsureCoreWebView2Async completed.");
 
                 var settings = _webView.CoreWebView2.Settings;
                 settings.IsScriptEnabled = true;
@@ -61,12 +82,14 @@ namespace ClarionAssistant.Terminal
                 _webView.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
 
                 string htmlPath = GetHtmlPath();
+                System.Diagnostics.Debug.WriteLine("[HomeWebView] htmlPath=" + htmlPath + ", exists=" + File.Exists(htmlPath));
                 if (File.Exists(htmlPath))
                     _webView.CoreWebView2.Navigate(new Uri(htmlPath).AbsoluteUri);
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[HeaderWebView] Init error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[HomeWebView] Init error: " + ex.GetType().Name + ": " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[HomeWebView] Stack: " + ex.StackTrace);
             }
         }
 
@@ -74,7 +97,7 @@ namespace ClarionAssistant.Terminal
         {
             _isInitialized = true;
             _isInitializing = false;
-            HeaderReady?.Invoke(this, EventArgs.Empty);
+            HomeReady?.Invoke(this, EventArgs.Empty);
         }
 
         private void OnWebMessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -82,106 +105,43 @@ namespace ClarionAssistant.Terminal
             try
             {
                 string json = e.TryGetWebMessageAsString();
-                // Simple JSON parse — avoid dependency on JSON library
+                System.Diagnostics.Debug.WriteLine("[HomeWebView] Message: " + json);
                 string action = ExtractJsonValue(json, "action");
                 string data = ExtractJsonValue(json, "data");
+                System.Diagnostics.Debug.WriteLine("[HomeWebView] Action=" + action + ", Data=" + data);
                 if (!string.IsNullOrEmpty(action))
-                    ActionReceived?.Invoke(this, new HeaderActionEventArgs(action, data));
+                    ActionReceived?.Invoke(this, new HomeActionEventArgs(action, data));
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[HeaderWebView] Message error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[HomeWebView] Message error: " + ex.Message);
             }
         }
 
-        /// <summary>Send a JSON message to the header JavaScript.</summary>
+        /// <summary>Send a JSON message to the home page JavaScript.</summary>
         public void SendMessage(string json)
         {
             if (!_isInitialized || _webView.CoreWebView2 == null) return;
             _webView.CoreWebView2.PostWebMessageAsString(json);
         }
 
-        /// <summary>Set the version dropdown items.</summary>
-        public void SetVersions(string[] labels, string[] values, int selectedIndex)
+        /// <summary>Send solution history entries to the home page.</summary>
+        public void SetSolutionHistory(string[] names, string[] paths, string[] modified, long[] sizes, long[] modifiedTs)
         {
-            var items = new System.Text.StringBuilder("[");
-            for (int i = 0; i < labels.Length; i++)
-            {
-                if (i > 0) items.Append(",");
-                items.AppendFormat("{{\"label\":\"{0}\",\"value\":\"{1}\",\"selected\":{2}}}",
-                    EscapeJson(labels[i]), EscapeJson(values[i]), i == selectedIndex ? "true" : "false");
-            }
-            items.Append("]");
-            SendMessage("{\"type\":\"setVersions\",\"items\":" + items + "}");
-        }
-
-        /// <summary>Set the solution dropdown items.</summary>
-        public void SetSolutions(string[] paths, int selectedIndex)
-        {
-            var items = new System.Text.StringBuilder("[");
-            for (int i = 0; i < paths.Length; i++)
-            {
-                if (i > 0) items.Append(",");
-                string label = paths[i].Length > 60
-                    ? "..." + paths[i].Substring(paths[i].Length - 57)
-                    : paths[i];
-                items.AppendFormat("{{\"label\":\"{0}\",\"value\":\"{1}\",\"selected\":{2}}}",
-                    EscapeJson(label), EscapeJson(paths[i]), i == selectedIndex ? "true" : "false");
-            }
-            items.Append("]");
-            SendMessage("{\"type\":\"setSolutions\",\"items\":" + items + "}");
-        }
-
-        /// <summary>Descriptor for a tab in the header tab bar.</summary>
-        public class TabDescriptor
-        {
-            public string Id;
-            public string Name;
-            public bool IsHome;
-            public bool IsActive;
-        }
-
-        /// <summary>Update the tab bar in the header.</summary>
-        public void SetTabs(TabDescriptor[] tabs)
-        {
-            var sb = new System.Text.StringBuilder("[");
-            for (int i = 0; i < tabs.Length; i++)
+            var sb = new StringBuilder("[");
+            for (int i = 0; i < names.Length; i++)
             {
                 if (i > 0) sb.Append(",");
-                sb.AppendFormat("{{\"id\":\"{0}\",\"name\":\"{1}\",\"isHome\":{2},\"isActive\":{3}}}",
-                    EscapeJson(tabs[i].Id), EscapeJson(tabs[i].Name),
-                    tabs[i].IsHome ? "true" : "false",
-                    tabs[i].IsActive ? "true" : "false");
+                long sz = (sizes != null && i < sizes.Length) ? sizes[i] : 0;
+                long ts = (modifiedTs != null && i < modifiedTs.Length) ? modifiedTs[i] : 0;
+                sb.AppendFormat("{{\"name\":\"{0}\",\"path\":\"{1}\",\"modified\":\"{2}\",\"size\":{3},\"modifiedTs\":{4}}}",
+                    EscapeJson(names[i]), EscapeJson(paths[i]), EscapeJson(modified[i]), sz, ts);
             }
             sb.Append("]");
-            SendMessage("{\"type\":\"setTabs\",\"tabs\":" + sb + "}");
+            SendMessage("{\"type\":\"setSolutions\",\"items\":" + sb + "}");
         }
 
-        /// <summary>Highlight one tab as active in the header.</summary>
-        public void SetActiveTab(string tabId)
-        {
-            SendMessage("{\"type\":\"setActiveTab\",\"tabId\":\"" + EscapeJson(tabId) + "\"}");
-        }
-
-        /// <summary>Update the MCP/status text in the header.</summary>
-        public void SetStatus(string text, string cssClass = "")
-        {
-            SendMessage("{\"type\":\"setStatus\",\"text\":\"" + EscapeJson(text) + "\",\"css\":\"" + EscapeJson(cssClass) + "\"}");
-        }
-
-        /// <summary>Update the index status text.</summary>
-        public void SetIndexStatus(string text, string cssClass = "")
-        {
-            SendMessage("{\"type\":\"setIndexStatus\",\"text\":\"" + EscapeJson(text) + "\",\"css\":\"" + EscapeJson(cssClass) + "\"}");
-        }
-
-        /// <summary>Enable or disable the index buttons.</summary>
-        public void SetIndexButtonsEnabled(bool enabled)
-        {
-            SendMessage("{\"type\":\"setIndexButtons\",\"enabled\":" + (enabled ? "true" : "false") + "}");
-        }
-
-        /// <summary>Switch the header between light and dark theme.</summary>
+        /// <summary>Switch the home page between light and dark theme.</summary>
         public void SetTheme(bool isDark)
         {
             BackColor = isDark ? Color.FromArgb(30, 30, 46) : Color.FromArgb(220, 224, 232);
@@ -191,14 +151,12 @@ namespace ClarionAssistant.Terminal
         private string GetHtmlPath()
         {
             string assemblyDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            string path = Path.Combine(assemblyDir, "Terminal", "header.html");
+            string path = Path.Combine(assemblyDir, "Terminal", "home.html");
             if (File.Exists(path)) return path;
-            path = Path.Combine(assemblyDir, "header.html");
+            path = Path.Combine(assemblyDir, "home.html");
             if (File.Exists(path)) return path;
-            return Path.Combine(assemblyDir, "Terminal", "header.html");
+            return Path.Combine(assemblyDir, "Terminal", "home.html");
         }
-
-        public static string EscapeJsonStatic(string s) { return EscapeJson(s); }
 
         private static string EscapeJson(string s)
         {
@@ -216,7 +174,7 @@ namespace ClarionAssistant.Terminal
             idx += search.Length;
             while (idx < json.Length && json[idx] == ' ') idx++;
             if (idx >= json.Length) return null;
-            if (json[idx] == 'n') return null; // null
+            if (json[idx] == 'n') return null;
             if (json[idx] == '"')
             {
                 idx++; // skip opening quote
@@ -231,7 +189,6 @@ namespace ClarionAssistant.Terminal
                 }
                 return sb.ToString();
             }
-            // Number or boolean
             int start = idx;
             while (idx < json.Length && json[idx] != ',' && json[idx] != '}') idx++;
             return json.Substring(start, idx - start).Trim();

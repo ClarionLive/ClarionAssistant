@@ -120,4 +120,31 @@ namespace ClarionAssistant.Models
         public int CycleCount { get; set; }
         public bool EscalationTriggered { get; set; }
     }
+
+    // ── Knowledge Injection ───────────────────────────────
+
+    public class KnowledgeInjectionResponse
+    {
+        public string Markdown { get; set; }
+        public int EntryCount { get; set; }
+    }
+
+    // ── Session Lineage ───────────────────────────────────
+
+    public class SessionRecap
+    {
+        public string SessionId { get; set; }
+        public string AgentName { get; set; }
+        public string Summary { get; set; }
+        public string SessionType { get; set; }
+        public string StartedAt { get; set; }
+        public List<SessionMessage> RecentMessages { get; set; }
+    }
+
+    public class SessionMessage
+    {
+        public string Role { get; set; }
+        public string Content { get; set; }
+        public string Timestamp { get; set; }
+    }
 }

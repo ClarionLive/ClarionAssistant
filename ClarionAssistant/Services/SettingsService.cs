@@ -65,5 +65,69 @@ namespace ClarionAssistant.Services
             }
             catch { }
         }
+
+        // ── Claude Commands ──────────────────────────────────────
+
+        /// <summary>
+        /// Returns the list of configured Claude launch commands.
+        /// Format in settings.txt: Claude.Commands = command1|0;command2|1;command3|0
+        /// where |1 = default.
+        /// </summary>
+        public List<KeyValuePair<string, bool>> GetClaudeCommands()
+        {
+            var result = new List<KeyValuePair<string, bool>>();
+            string raw = Get("Claude.Commands");
+            if (!string.IsNullOrEmpty(raw))
+            {
+                foreach (string entry in raw.Split(';'))
+                {
+                    if (string.IsNullOrWhiteSpace(entry)) continue;
+                    int pipe = entry.LastIndexOf('|');
+                    if (pipe > 0)
+                    {
+                        string cmd = entry.Substring(0, pipe);
+                        bool isDefault = entry.Substring(pipe + 1) == "1";
+                        result.Add(new KeyValuePair<string, bool>(cmd, isDefault));
+                    }
+                    else
+                    {
+                        result.Add(new KeyValuePair<string, bool>(entry.Trim(), false));
+                    }
+                }
+            }
+            if (result.Count == 0)
+            {
+                // Defaults
+                result.Add(new KeyValuePair<string, bool>("claude", true));
+                result.Add(new KeyValuePair<string, bool>("claude -c", false));
+                result.Add(new KeyValuePair<string, bool>("claude --dangerously-skip-permissions", false));
+            }
+            return result;
+        }
+
+        public void SetClaudeCommands(List<KeyValuePair<string, bool>> commands)
+        {
+            var sb = new StringBuilder();
+            for (int i = 0; i < commands.Count; i++)
+            {
+                if (i > 0) sb.Append(';');
+                sb.Append(commands[i].Key);
+                sb.Append('|');
+                sb.Append(commands[i].Value ? "1" : "0");
+            }
+            Set("Claude.Commands", sb.ToString());
+        }
+
+        /// <summary>
+        /// Returns the default Claude launch command (the base command, e.g. "claude -c").
+        /// Falls back to "claude" if none marked as default.
+        /// </summary>
+        public string GetDefaultClaudeCommand()
+        {
+            var commands = GetClaudeCommands();
+            foreach (var kv in commands)
+                if (kv.Value) return kv.Key;
+            return commands.Count > 0 ? commands[0].Key : "claude";
+        }
     }
 }

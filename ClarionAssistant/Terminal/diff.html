@@ -618,6 +618,14 @@
             if (typeof msg === 'string') {
                 try { msg = JSON.parse(msg); } catch(e) { return; }
             }
+            if (msg.type === 'applyTheme') {
+                var isLight = msg.isDark === false;
+                document.body.classList.toggle('light', isLight);
+                var btn = document.getElementById('btn-theme');
+                if (btn) btn.innerHTML = isLight ? '\u2600' : '\u263E';
+                localStorage.setItem('diffTheme', isLight ? 'light' : 'dark');
+                return;
+            }
             if (msg.type === 'setDiff') {
                 document.getElementById('diff-title').textContent = msg.title || 'Untitled';
 
@@ -625,12 +633,16 @@
                 applyFontSize(savedFontSize);
                 applyFontFamily(savedFontFamily);
 
-                // Restore theme
-                var savedTheme = localStorage.getItem('diffTheme');
-                if (savedTheme === 'light') {
-                    document.body.classList.add('light');
-                    document.getElementById('btn-theme').innerHTML = '\u2600';
+                // Apply theme from message (authoritative), falling back to localStorage
+                var isLight;
+                if (typeof msg.isDark === 'boolean') {
+                    isLight = !msg.isDark;
+                } else {
+                    isLight = localStorage.getItem('diffTheme') === 'light';
                 }
+                document.body.classList.toggle('light', isLight);
+                var btn = document.getElementById('btn-theme');
+                if (btn) btn.innerHTML = isLight ? '\u2600' : '\u263E';
 
                 // Fetch the unified diff from virtual host
                 if (msg.diffUrl) {

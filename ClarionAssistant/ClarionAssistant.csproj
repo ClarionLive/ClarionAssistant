@@ -80,16 +80,22 @@
     <Compile Include="Services\AppTreeService.cs" />
     <Compile Include="Services\IdeReflectionService.cs" />
     <Compile Include="Dialogs\ClaudeChatSettingsDialog.cs" />
+    <Compile Include="Dialogs\CheatSheetDialog.cs" />
     <Compile Include="Terminal\NativeMethods.cs" />
     <Compile Include="Terminal\ConPtyTerminal.cs" />
     <Compile Include="Terminal\WebViewTerminalRenderer.cs" />
     <Compile Include="Terminal\WebView2EnvironmentCache.cs" />
     <Compile Include="Terminal\HeaderWebView.cs" />
+    <Compile Include="Terminal\HomeWebView.cs" />
+    <Compile Include="Terminal\TerminalTab.cs" />
+    <Compile Include="Terminal\TabManager.cs" />
     <Compile Include="Terminal\DiffViewContent.cs" />
     <Compile Include="Terminal\NativeDiffViewContent.cs" />
     <Compile Include="Services\DiffService.cs" />
     <Compile Include="Services\DocGraphService.cs" />
+    <Compile Include="Services\InstanceCoordinationService.cs" />
     <Compile Include="Services\ClarionTraceService.cs" />
+    <Compile Include="Services\EverythingService.cs" />
     <Compile Include="Models\MultiTerminalModels.cs" />
     <Compile Include="Services\MultiTerminalApiClient.cs" />
     <Compile Include="Services\ClaudeProcessManager.cs" />
@@ -106,13 +112,29 @@
     <Content Include="Terminal\header.html">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="Terminal\home.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="Terminal\diff.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Terminal\settings.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Terminal\cheatsheet.html">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Terminal\clarion-assistant-prompt.md">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="TaskLifecycleBoard\lifecycle-board.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\docs\ClarionAssistant-Guide.html">
+      <Link>docs\ClarionAssistant-Guide.html</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Everything32.dll">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

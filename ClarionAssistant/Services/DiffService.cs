@@ -18,6 +18,9 @@ namespace ClarionAssistant.Services
         private string _lastResult;
         private string _lastNotes;
         private string _lastAction; // "apply", "cancel", "notes", or null (pending)
+        private bool _isDark = true;
+
+        public void SetTheme(bool isDark) { _isDark = isDark; }
 
         /// <summary>
         /// Show a diff in the IDE editor panel. Must be called on the UI thread.
@@ -45,7 +48,7 @@ namespace ClarionAssistant.Services
                     _currentDiff = null;
                 }
 
-                _currentDiff = new DiffViewContent(title, originalText, modifiedText, language, ignoreWhitespace);
+                _currentDiff = new DiffViewContent(title, originalText, modifiedText, language, ignoreWhitespace, _isDark);
 
                 _currentDiff.Applied += OnApplied;
                 _currentDiff.Cancelled += OnCancelled;

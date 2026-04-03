@@ -41,6 +41,57 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// Close the currently open .app file by finding its workbench window and closing it.
+        /// </summary>
+        public string CloseApp()
+        {
+            try
+            {
+                var workbench = WorkbenchSingleton.Workbench;
+                if (workbench == null) return "Error: workbench not available";
+
+                // Reuse the same search that GetAppInfo uses (proven to work)
+                var viewContent = FindAppViewContent();
+                if (viewContent == null) return "Error: no .app file is open";
+
+                // Get the WorkbenchWindow that hosts this ViewContent
+                var parentWindow = GetProp(viewContent, "WorkbenchWindow");
+                if (parentWindow == null)
+                    return "Error: could not find WorkbenchWindow for the app ViewContent";
+
+                // Try CloseWindow(bool force)
+                var closeMethod = parentWindow.GetType().GetMethod("CloseWindow",
+                    AllInstance, null, new[] { typeof(bool) }, null);
+                if (closeMethod != null)
+                {
+                    closeMethod.Invoke(parentWindow, new object[] { true });
+                    return "App closed";
+                }
+
+                // Fallback: try parameterless CloseWindow()
+                closeMethod = parentWindow.GetType().GetMethod("CloseWindow",
+                    AllInstance, null, Type.EmptyTypes, null);
+                if (closeMethod != null)
+                {
+                    closeMethod.Invoke(parentWindow, null);
+                    return "App closed";
+                }
+
+                // Last resort: try Close()
+                closeMethod = parentWindow.GetType().GetMethod("Close",
+                    AllInstance, null, Type.EmptyTypes, null);
+                if (closeMethod != null)
+                {
+                    closeMethod.Invoke(parentWindow, null);
+                    return "App closed";
+                }
+
+                return "Error: no close method found on " + parentWindow.GetType().FullName;
+            }
+            catch (Exception ex) { return "Error: " + ex.Message; }
+        }
+
+        /// <summary>
         /// Get the Application object from the active view (if an .app is open).
         /// </summary>
         /// <summary>
@@ -867,12 +918,11 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// Export the current app (or selected procedures) to a TXA file.
+        /// Export the entire current app to a TXA file.
         /// </summary>
         /// <param name="txaPath">Output TXA file path</param>
-        /// <param name="procedureNames">Optional list of procedure names to export. If null/empty, exports all.</param>
         /// <returns>Status message</returns>
-        public string ExportTxa(string txaPath, List<string> procedureNames)
+        public string ExportTxa(string txaPath)
         {
             try
             {
@@ -880,45 +930,14 @@ namespace ClarionAssistant.Services
                 if (win32App == null)
                     return "Error: No .app file is currently open";
 
-                bool exportAll = (procedureNames == null || procedureNames.Count == 0);
-
-                if (!exportAll)
-                {
-                    // Deselect all modules first
-                    var deselectAll = win32App.GetType().GetMethod("ModulesSelectAll", AllInstance);
-                    if (deselectAll != null)
-                        deselectAll.Invoke(win32App, new object[] { false });
-
-                    // Find and select the requested procedures
-                    var procedures = GetProp(win32App, "Procedures") as Array;
-                    if (procedures == null)
-                        return "Error: Could not access procedures";
-
-                    var matched = new List<string>();
-                    foreach (var proc in procedures)
-                    {
-                        string name = GetProp(proc, "Name")?.ToString();
-                        if (name != null && procedureNames.Contains(name))
-                        {
-                            var selectMethod = proc.GetType().GetMethod("SelectAll", AllInstance);
-                            if (selectMethod != null)
-                                selectMethod.Invoke(proc, new object[] { true });
-                            matched.Add(name);
-                        }
-                    }
-
-                    if (matched.Count == 0)
-                        return "Error: None of the specified procedures were found in the app";
-                }
-
-                // Call Export(string txaName, bool all)
+                // Call Export(string txaName, bool all) — always export all
                 var exportMethod = win32App.GetType().GetMethod("Export", AllInstance,
                     null, new Type[] { typeof(string), typeof(bool) }, null);
 
                 if (exportMethod == null)
                     return "Error: Export method not found on Win32App";
 
-                bool result = (bool)exportMethod.Invoke(win32App, new object[] { txaPath, exportAll });
+                bool result = (bool)exportMethod.Invoke(win32App, new object[] { txaPath, true });
 
                 if (!result)
                     return "Error: Export returned false — export may have failed";
@@ -938,10 +957,7 @@ namespace ClarionAssistant.Services
                     return "Error: Export completed but TXA file was not created at " + txaPath;
 
                 long fileSize = new System.IO.FileInfo(txaPath).Length;
-                if (exportAll)
-                    return "Exported entire app to " + txaPath + " (" + fileSize + " bytes)";
-                else
-                    return "Exported " + procedureNames.Count + " procedure(s) to " + txaPath + " (" + fileSize + " bytes)";
+                return "Exported entire app to " + txaPath + " (" + fileSize + " bytes)";
             }
             catch (Exception ex)
             {

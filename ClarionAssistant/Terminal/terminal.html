@@ -34,6 +34,12 @@
         .xterm-viewport::-webkit-scrollbar-thumb:hover {
             background: #666;
         }
+        body.light .xterm-viewport::-webkit-scrollbar-thumb {
+            background: #bbb;
+        }
+        body.light .xterm-viewport::-webkit-scrollbar-thumb:hover {
+            background: #999;
+        }
     </style>
 </head>
 <body>
@@ -42,6 +48,8 @@
     <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/lib/xterm.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.11.0/lib/addon-fit.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.12.0/lib/addon-web-links.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-canvas@0.7.0/lib/addon-canvas.min.js"
+            onerror="console.warn('Canvas addon unavailable — block characters may render imperfectly with non-Cascadia fonts')"></script>
 
     <script>
         // Theme definitions matching TerminalTheme.cs
@@ -72,37 +80,112 @@
             },
             light: {
                 background: '#FFFFFF',
-                foreground: '#1E1E1E',
-                cursor: '#000000',
+                foreground: '#1a5fb4',
+                cursor: '#1e66f5',
                 cursorAccent: '#FFFFFF',
                 selectionBackground: '#ADD6FF',
                 selectionForeground: '#000000',
-                black: '#1E1E1E',
+                black: '#1a3a5c',
                 red: '#C50F1F',
                 green: '#13A10E',
-                yellow: '#C19C00',
+                yellow: '#9d7d00',
                 blue: '#0037DA',
                 magenta: '#881798',
-                cyan: '#3A96DD',
-                white: '#CCCCCC',
+                cyan: '#0e7a8a',
+                white: '#5c5c5c',
                 brightBlack: '#767676',
                 brightRed: '#E74856',
                 brightGreen: '#16C60C',
-                brightYellow: '#F9F1A5',
+                brightYellow: '#c19c00',
                 brightBlue: '#3B78FF',
                 brightMagenta: '#B4009E',
-                brightCyan: '#61D6D6',
-                brightWhite: '#F2F2F2'
+                brightCyan: '#3A96DD',
+                brightWhite: '#4c4c4c'
             }
         };
 
         let term = null;
         let fitAddon = null;
         let currentFontSize = 10;
+        let currentThemeName = 'dark';
         let isInitialized = false;
+
+        // Remap ANSI colors for light mode readability.
+        // Claude Code hardcodes dark-theme RGB values that are unreadable on white.
+        function remapForLightMode(text) {
+            // Helper: darken an RGB foreground that's too light for white background
+            function darkenFg(r, g, b) {
+                var lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+                if (lum > 0.55) {
+                    var factor = Math.max(0.25, 0.55 / lum);
+                    return Math.round(r * factor) + ';' + Math.round(g * factor) + ';' + Math.round(b * factor);
+                }
+                return null;
+            }
+
+            // 1) Standard ANSI bg colors (41-47, 101-107) → light pastel 24-bit equivalents
+            var lightBg = {
+                '41': '48;2;254;215;220', '42': '48;2;210;240;208',
+                '43': '48;2;252;245;200', '44': '48;2;200;220;254',
+                '45': '48;2;240;215;240', '46': '48;2;210;242;242',
+                '101': '48;2;254;225;230', '102': '48;2;220;245;218',
+                '103': '48;2;253;248;210', '104': '48;2;210;228;254',
+                '105': '48;2;245;225;245', '106': '48;2;220;248;248'
+            };
+            text = text.replace(/\x1b\[((?:4[1-7]|10[1-7]))m/g, function(match, code) {
+                return lightBg[code] ? '\x1b[' + lightBg[code] + 'm' : match;
+            });
+
+            // 2) Dark 24-bit backgrounds → light pastel blue
+            text = text.replace(/\x1b\[48;2;(\d+);(\d+);(\d+)m/g, function(match, r, g, b) {
+                r = parseInt(r); g = parseInt(g); b = parseInt(b);
+                if (r < 70 && g < 70 && b < 70) {
+                    return '\x1b[48;2;220;232;254m'; // light blue #DCE8FE
+                }
+                return match;
+            });
+
+            // 3) 24-bit foregrounds → darken light colors for white background
+            //    Also handles combined SGR sequences (e.g. \x1b[0;38;2;R;G;Bm)
+            text = text.replace(/\x1b\[([0-9;]*)38;2;(\d+);(\d+);(\d+)((?:;[0-9]*)*)m/g, function(match, pre, r, g, b, post) {
+                r = parseInt(r); g = parseInt(g); b = parseInt(b);
+                var dark = darkenFg(r, g, b);
+                if (dark) {
+                    return '\x1b[' + (pre || '') + '38;2;' + dark + (post || '') + 'm';
+                }
+                return match;
+            });
+
+            // 4) 256-color foregrounds → convert light colors to darker equivalents
+            text = text.replace(/\x1b\[([0-9;]*)38;5;(\d+)((?:;[0-9]*)*)m/g, function(match, pre, n, post) {
+                n = parseInt(n);
+                var r, g, b;
+                if (n >= 232) {
+                    // Grayscale ramp: 232=rgb(8,8,8) .. 255=rgb(238,238,238)
+                    var gray = 8 + (n - 232) * 10;
+                    r = g = b = gray;
+                } else if (n >= 16) {
+                    // 6x6x6 color cube
+                    var idx = n - 16;
+                    b = (idx % 6) * 51; idx = Math.floor(idx / 6);
+                    g = (idx % 6) * 51;
+                    r = Math.floor(idx / 6) * 51;
+                } else {
+                    return match; // standard 0-15 handled by xterm theme
+                }
+                var dark = darkenFg(r, g, b);
+                if (dark) {
+                    return '\x1b[' + (pre || '') + '38;2;' + dark + (post || '') + 'm';
+                }
+                return match;
+            });
+
+            return text;
+        }
 
         // Initialize terminal
         function initTerminal(themeName = 'dark') {
+            currentThemeName = themeName;
             const container = document.getElementById('terminal-container');
 
             term = new Terminal({
@@ -111,6 +194,7 @@
                 fontFamily: '"Cascadia Mono", Consolas, "Courier New", monospace',
                 fontSize: currentFontSize,
                 theme: themes[themeName] || themes.dark,
+                customGlyphs: true,
                 allowProposedApi: true,
                 scrollback: 10000,
                 convertEol: false,
@@ -127,6 +211,42 @@
 
             // Open terminal in container
             term.open(container);
+
+            // Load canvas renderer for customGlyphs support — draws block/box
+            // characters as pixel-perfect rectangles independent of font choice
+            if (typeof CanvasAddon !== 'undefined') {
+                try {
+                    term.loadAddon(new CanvasAddon.CanvasAddon());
+                } catch (e) {
+                    console.warn('Canvas addon failed:', e);
+                }
+            }
+
+            // Handle OSC 10/11 queries — lets CLI tools (Claude Code) detect terminal fg/bg colors
+            function oscColorResponse(code, hexColor) {
+                const r = parseInt(hexColor.substr(1,2), 16);
+                const g = parseInt(hexColor.substr(3,2), 16);
+                const b = parseInt(hexColor.substr(5,2), 16);
+                const hex4 = (v) => (v * 257).toString(16).padStart(4, '0');
+                const resp = '\x1b]' + code + ';rgb:' + hex4(r) + '/' + hex4(g) + '/' + hex4(b) + '\x1b\\';
+                const encoder = new TextEncoder();
+                const bytes = encoder.encode(resp);
+                sendToHost({ type: 'input', data: btoa(String.fromCharCode(...bytes)) });
+            }
+            // OSC 10: foreground color query
+            term.parser.registerOscHandler(10, (data) => {
+                if (data === '?') {
+                    oscColorResponse(10, (term.options.theme && term.options.theme.foreground) || '#ffffff');
+                }
+                return true;
+            });
+            // OSC 11: background color query
+            term.parser.registerOscHandler(11, (data) => {
+                if (data === '?') {
+                    oscColorResponse(11, (term.options.theme && term.options.theme.background) || '#000000');
+                }
+                return true;
+            });
 
             // Initial fit
             fitAddon.fit();
@@ -259,7 +379,10 @@
                             for (let i = 0; i < binaryString.length; i++) {
                                 bytes[i] = binaryString.charCodeAt(i) & 0xFF;
                             }
-                            const text = new TextDecoder('utf-8').decode(bytes);
+                            let text = new TextDecoder('utf-8').decode(bytes);
+                            if (currentThemeName === 'light') {
+                                text = remapForLightMode(text);
+                            }
                             term.write(text);
                             break;
 
@@ -366,11 +489,18 @@
 
         // Set theme
         function setTheme(themeName) {
+            currentThemeName = themeName;
             const theme = themes[themeName] || themes.dark;
             if (term) {
                 term.options.theme = theme;
                 document.body.style.backgroundColor = theme.background;
             }
+            if (themeName === 'light') {
+                document.body.classList.add('light');
+            } else {
+                document.body.classList.remove('light');
+            }
+            try { localStorage.setItem('terminalTheme', themeName); } catch(e) {}
         }
 
         // Set font size
@@ -408,16 +538,24 @@
             });
         }
 
+        // Use saved theme to avoid flash on load
+        var savedTheme = 'dark';
+        try { savedTheme = localStorage.getItem('terminalTheme') || 'dark'; } catch(e) {}
+
+        // Set body background immediately to prevent white flash
+        document.body.style.backgroundColor = (themes[savedTheme] || themes.dark).background;
+        if (savedTheme === 'light') document.body.classList.add('light');
+
         // Initialize on load
         document.addEventListener('DOMContentLoaded', () => {
-            initTerminal('dark');
+            initTerminal(savedTheme);
         });
 
         // Also handle case where DOM is already loaded
         if (document.readyState === 'complete' || document.readyState === 'interactive') {
             setTimeout(() => {
                 if (!isInitialized) {
-                    initTerminal('dark');
+                    initTerminal(savedTheme);
                 }
             }, 0);
         }

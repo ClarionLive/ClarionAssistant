@@ -13,8 +13,11 @@ namespace ClarionAssistant
 {
     public class ClaudeChatControl : UserControl
     {
-        private WebViewTerminalRenderer _renderer;
-        private ConPtyTerminal _terminal;
+        // Tab system (MultiTerminal Panel-based pattern)
+        private TabManager _tabManager;
+        private Panel _tabStrip;    // custom-painted tab header strip (hidden when 1 tab)
+        private Panel _contentArea; // holds all tab content controls
+        private HomeWebView _homeView;
 
         // Header (WebView2)
         private HeaderWebView _header;
@@ -23,13 +26,14 @@ namespace ClarionAssistant
         private McpServer _mcpServer;
         private McpToolRegistry _toolRegistry;
         private Services.KnowledgeService _knowledgeService;
-        private int _sessionId;
+        private Services.InstanceCoordinationService _instanceCoord;
         private readonly EditorService _editorService;
         private readonly ClarionClassParser _parser;
         private readonly SettingsService _settings;
 
         private string _mcpConfigPath;
-        private bool _claudeLaunched;
+        private bool _isDarkTheme = true;
+        private System.Windows.Forms.Timer _instanceStateTimer;
         private string _currentSlnPath;
         private string _indexerPath;
         private ClarionVersionInfo _versionInfo;
@@ -55,6 +59,7 @@ namespace ClarionAssistant
             _editorService = new EditorService();
             _parser = new ClarionClassParser();
             _settings = new SettingsService();
+            _isDarkTheme = (_settings.Get("Theme") ?? "dark") != "light";
             _indexerPath = FindIndexer();
             InitializeComponents();
         }
@@ -76,7 +81,7 @@ namespace ClarionAssistant
             if (!string.IsNullOrEmpty(heightStr) && int.TryParse(heightStr, out savedHeight))
                 _header.Height = Math.Max(60, Math.Min(400, savedHeight));
 
-            // === Splitter between header and terminal ===
+            // === Splitter between header and content ===
             _splitter = new Splitter
             {
                 Dock = DockStyle.Top,
@@ -87,18 +92,41 @@ namespace ClarionAssistant
             };
             _splitter.SplitterMoved += OnSplitterMoved;
 
-            // === Terminal renderer ===
-            _renderer = new WebViewTerminalRenderer { Dock = DockStyle.Fill };
-            _renderer.DataReceived += OnRendererDataReceived;
-            _renderer.TerminalResized += OnRendererResized;
-            _renderer.Initialized += OnRendererInitialized;
+            // === Tab strip (custom-painted, hidden when only 1 tab — MultiTerminal pattern) ===
+            _tabStrip = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 28,
+                BackColor = _isDarkTheme ? Color.FromArgb(24, 24, 37) : Color.FromArgb(210, 214, 222),
+                Visible = false  // hidden until 2+ tabs
+            };
 
-            // Add in correct order (bottom to top for docking)
-            Controls.Add(_renderer);
+            // === Content area (tab pages shown/hidden via Visible) ===
+            _contentArea = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = _isDarkTheme ? Color.FromArgb(12, 12, 12) : Color.White
+            };
+
+            // === Home page ===
+            _homeView = new HomeWebView();
+            _homeView.ActionReceived += OnHomeAction;
+            _homeView.HomeReady += OnHomeReady;
+
+            // === Tab manager ===
+            _tabManager = new TabManager(_tabStrip, _contentArea);
+            _tabManager.ActiveTabChanged += OnActiveTabChanged;
+
+            // Add in correct order (Fill first, then Top items from bottom to top)
+            Controls.Add(_contentArea);
+            Controls.Add(_tabStrip);
             Controls.Add(_splitter);
             Controls.Add(_header);
 
-            BackColor = Color.FromArgb(12, 12, 12);
+            // Create Home tab — HomeWebView added to _contentArea, visible immediately
+            _tabManager.CreateHomeTab(_homeView);
+
+            ApplyThemeColors();
 
             ResumeLayout(false);
         }
@@ -107,15 +135,41 @@ namespace ClarionAssistant
         {
             LoadVersions();
             LoadSolutionHistory();
-            SyncHeaderFontSettings();
+            DetectFromIde();
+            StartMcpServer();
+            _header.SetTheme(_isDarkTheme);
+            SyncTabBarToHeader();
+            RefreshHomePageData(); // home may have initialized before _versionInfo was set
         }
 
-        private void SyncHeaderFontSettings()
+        private void OnHomeReady(object sender, EventArgs e)
         {
-            string family = GetFontFamily();
-            int size = (int)Math.Round(GetFontSize());
-            _header.SendMessage("{\"type\":\"setFontFamily\",\"value\":\"" + HeaderWebView.EscapeJsonStatic(family) + "\"}");
-            _header.SendMessage("{\"type\":\"setFontSize\",\"value\":\"" + size + "\"}");
+            _homeView.SetTheme(_isDarkTheme);
+            RefreshHomePageData();
+        }
+
+        private void OnHomeAction(object sender, HomeActionEventArgs e)
+        {
+            switch (e.Action)
+            {
+                case "openSolution": OpenSolutionInNewTab(e.Data); break;
+                case "removeSolution": RemoveSolutionFromHistory(e.Data); break;
+                case "openFolder": OpenFolder(e.Data); break;
+                case "browseSolution": OnBrowseSolutionForNewTab(); break;
+                case "createCom": OnCreateCom(sender, EventArgs.Empty); break;
+            }
+        }
+
+        private void OnActiveTabChanged(object sender, TerminalTab tab)
+        {
+            SyncTabBarToHeader();
+            if (tab != null && !tab.IsHome && tab.Renderer != null)
+                tab.Renderer.Focus();
+        }
+
+        private void SyncTabBarToHeader()
+        {
+            // Tab bar is now managed by the WinForms TabControl directly
         }
 
         private void OnHeaderAction(object sender, HeaderActionEventArgs e)
@@ -132,8 +186,9 @@ namespace ClarionAssistant
                 case "updateIndex": RunIndex(true); break;
                 case "versionChanged": OnVersionChanged(e.Data); break;
                 case "solutionChanged": OnSolutionChanged(e.Data); break;
-                case "fontFamilyChanged": OnFontFamilyChanged(e.Data); break;
-                case "fontSizeChanged": OnFontSizeChangedFromHeader(e.Data); break;
+                case "themeChanged": OnThemeChanged(e.Data); break;
+                case "cheatSheet": OnCheatSheet(); break;
+                case "docs": OnDocs(); break;
             }
         }
 
@@ -239,7 +294,7 @@ namespace ClarionAssistant
         /// Auto-detect the currently loaded solution from the IDE.
         /// Version detection is handled by LoadVersions() via ClarionVersionService.
         /// </summary>
-        private void DetectFromIde()
+        public void DetectFromIde()
         {
             // Detect open solution from the IDE
             string slnPath = EditorService.GetOpenSolutionPath();
@@ -253,6 +308,7 @@ namespace ClarionAssistant
             // Always re-detect version (user may have changed build in IDE)
             LoadVersions();
             LoadRedFile();
+            UpdateInstanceState();
         }
 
         private void OnSolutionChanged(string path)
@@ -263,7 +319,52 @@ namespace ClarionAssistant
                 AddToSolutionHistory(path);
                 UpdateIndexStatus();
                 LoadRedFile();
+                UpdateInstanceState();
             }
+        }
+
+        /// <summary>
+        /// Push current IDE context into the instance coordination service.
+        /// The heartbeat timer will broadcast it to the shared DB.
+        /// Also updates the status line with peer count.
+        /// </summary>
+        private void UpdateInstanceState()
+        {
+            if (_instanceCoord == null) return;
+            try
+            {
+                _instanceCoord.SolutionPath = _currentSlnPath;
+                _instanceCoord.ActiveFile = _editorService.GetActiveDocumentPath();
+
+                // Pull app file and active procedure from AppTreeService
+                if (_toolRegistry != null)
+                {
+                    try
+                    {
+                        var appInfo = _toolRegistry.GetAppTreeService()?.GetAppInfo();
+                        if (appInfo != null && appInfo.ContainsKey("fileName"))
+                            _instanceCoord.AppFile = appInfo["fileName"]?.ToString();
+
+                        var embedInfo = _toolRegistry.GetAppTreeService()?.GetEmbedInfo();
+                        if (embedInfo != null && embedInfo.ContainsKey("fileName"))
+                            _instanceCoord.ActiveProcedure = embedInfo["fileName"]?.ToString();
+                        else
+                            _instanceCoord.ActiveProcedure = null;
+                    }
+                    catch { /* AppTree reflection may fail — non-fatal */ }
+                }
+
+                // Append peer count to MCP status line
+                int peerCount = _instanceCoord.GetPeers().Count;
+                if (_mcpServer != null && _mcpServer.IsRunning)
+                {
+                    string status = "MCP: port " + _mcpServer.Port + " | " + _toolRegistry.GetToolCount() + " tools";
+                    if (peerCount > 0)
+                        status += " | " + peerCount + " peer" + (peerCount > 1 ? "s" : "");
+                    _header?.SetStatus(status, "connected");
+                }
+            }
+            catch { /* non-fatal */ }
         }
 
         private void OnBrowseSolution(object sender, EventArgs e)
@@ -297,6 +398,146 @@ namespace ClarionAssistant
             {
                 _header.SetIndexStatus("Not indexed", "warning");
             }
+        }
+
+        private void RefreshHomePageData()
+        {
+            if (!_homeView.IsReady) return;
+
+            // Prefer Clarion's own RecentOpen.xml; fall back to internal SolutionHistory
+            var rawPaths = new System.Collections.Generic.List<string>();
+            if (_versionInfo != null && !string.IsNullOrEmpty(_versionInfo.PropertiesXmlPath))
+                rawPaths = ClarionVersionService.GetRecentSolutionPaths(_versionInfo.PropertiesXmlPath);
+            if (rawPaths.Count == 0)
+            {
+                string history = _settings.Get("SolutionHistory") ?? "";
+                foreach (string p in history.Split('|'))
+                    if (!string.IsNullOrEmpty(p)) rawPaths.Add(p);
+            }
+
+            // Filter out paths the user has suppressed from the home view
+            string suppressed = _settings.Get("SuppressedSolutions") ?? "";
+            var suppressedSet = new System.Collections.Generic.HashSet<string>(
+                suppressed.Split('|'), StringComparer.OrdinalIgnoreCase);
+
+            var names = new System.Collections.Generic.List<string>();
+            var paths = new System.Collections.Generic.List<string>();
+            var modified = new System.Collections.Generic.List<string>();
+            var sizes = new System.Collections.Generic.List<long>();
+            var modifiedTs = new System.Collections.Generic.List<long>();
+            var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+            foreach (string path in rawPaths)
+            {
+                if (string.IsNullOrEmpty(path) || !File.Exists(path)) continue;
+                if (suppressedSet.Contains(path)) continue;
+                try
+                {
+                    var fi = new FileInfo(path);
+                    names.Add(Path.GetFileNameWithoutExtension(path));
+                    paths.Add(path);
+                    modified.Add(fi.LastWriteTime.ToString("M/d/yyyy"));
+                    sizes.Add(fi.Length);
+                    modifiedTs.Add((long)(fi.LastWriteTime.ToUniversalTime() - epoch).TotalMilliseconds);
+                }
+                catch { /* skip unreadable files */ }
+            }
+            _homeView.SetSolutionHistory(names.ToArray(), paths.ToArray(), modified.ToArray(), sizes.ToArray(), modifiedTs.ToArray());
+        }
+
+        private void OpenFolder(string path)
+        {
+            try
+            {
+                string dir = File.Exists(path) ? Path.GetDirectoryName(path) : path;
+                if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+                    Process.Start("explorer.exe", "\"" + dir + "\"");
+            }
+            catch { }
+        }
+
+        private void RemoveSolutionFromHistory(string path)
+        {
+            // Add to suppressed list so it stays hidden from the home page
+            // (we don't modify Clarion's own RecentOpen.xml)
+            string suppressed = _settings.Get("SuppressedSolutions") ?? "";
+            var suppressedList = new System.Collections.Generic.List<string>(suppressed.Split('|'));
+            suppressedList.RemoveAll(p => string.IsNullOrEmpty(p));
+            if (!suppressedList.Exists(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase)))
+                suppressedList.Add(path);
+            _settings.Set("SuppressedSolutions", string.Join("|", suppressedList));
+
+            // Also remove from internal SolutionHistory if present
+            string history = _settings.Get("SolutionHistory") ?? "";
+            var histList = new System.Collections.Generic.List<string>(history.Split('|'));
+            histList.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+            _settings.Set("SolutionHistory", string.Join("|", histList));
+
+            RefreshHomePageData();
+            LoadSolutionHistory(); // also refresh header dropdown
+        }
+
+        private void OnBrowseSolutionForNewTab()
+        {
+            using (var dlg = new OpenFileDialog())
+            {
+                dlg.Filter = "Clarion Solution (*.sln)|*.sln";
+                dlg.Title = "Select Clarion Solution";
+                if (!string.IsNullOrEmpty(_currentSlnPath))
+                    dlg.InitialDirectory = Path.GetDirectoryName(_currentSlnPath);
+
+                if (dlg.ShowDialog() == DialogResult.OK)
+                {
+                    AddToSolutionHistory(dlg.FileName);
+                    LoadSolutionHistory();
+                    RefreshHomePageData();
+                    OpenSolutionInNewTab(dlg.FileName);
+                }
+            }
+        }
+
+        private void OpenSolutionInNewTab(string slnPath)
+        {
+            System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] OpenSolutionInNewTab: " + slnPath);
+            if (string.IsNullOrEmpty(slnPath) || !File.Exists(slnPath))
+            {
+                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] OpenSolutionInNewTab ABORTED: path empty or not found");
+                return;
+            }
+
+            // Update global solution state
+            _currentSlnPath = slnPath;
+            AddToSolutionHistory(slnPath);
+            LoadSolutionHistory();
+
+            string name = Path.GetFileNameWithoutExtension(slnPath);
+            var renderer = new WebViewTerminalRenderer { Dock = DockStyle.Fill };
+            var tab = _tabManager.CreateTerminalTab(name, renderer);
+            tab.WorkingDirectory = Path.GetDirectoryName(slnPath);
+            tab.VersionConfig = _currentVersionConfig;
+
+            // Wire renderer events to per-tab handlers
+            renderer.DataReceived += data => OnTabRendererDataReceived(tab, data);
+            renderer.TerminalResized += (s, ev) => OnTabRendererResized(tab, ev);
+            renderer.Initialized += (s, ev) => OnTabRendererInitialized(tab);
+            System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] Events wired for tab " + tab.Id + ", calling ActivateTab");
+
+            _tabManager.ActivateTab(tab.Id);
+            System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] ActivateTab completed for tab " + tab.Id);
+        }
+
+        private void CloseTerminalTab(string tabId)
+        {
+            var tab = _tabManager.FindTab(tabId);
+            if (tab == null || tab.IsHome) return;
+
+            if (_knowledgeService != null && tab.SessionId > 0)
+            {
+                try { _knowledgeService.EndSession(tab.SessionId, null); }
+                catch { }
+            }
+
+            _tabManager.CloseTab(tabId);
         }
 
         #endregion
@@ -402,20 +643,27 @@ namespace ClarionAssistant
             _settings.Set("Header.Height", _header.Height.ToString());
         }
 
-        private void OnFontFamilyChanged(string family)
+        private void OnThemeChanged(string theme)
         {
-            if (string.IsNullOrEmpty(family)) return;
-            _settings.Set("Claude.FontFamily", family);
-            _renderer.SetFontFamily(family);
+            _isDarkTheme = theme != "light";
+            _settings.Set("Theme", _isDarkTheme ? "dark" : "light");
+            ApplyThemeColors();
+            _header.SetTheme(_isDarkTheme);
+            _homeView.SetTheme(_isDarkTheme);
+            foreach (var tab in _tabManager.Tabs)
+            {
+                if (tab.Renderer != null) tab.Renderer.SetTheme(_isDarkTheme);
+            }
+            Terminal.DiffViewContent.ApplyThemeToAll(_isDarkTheme);
+            _diffService?.SetTheme(_isDarkTheme);
         }
 
-        private void OnFontSizeChangedFromHeader(string sizeStr)
+        private void ApplyThemeColors()
         {
-            float size;
-            if (!float.TryParse(sizeStr, out size)) return;
-            size = Math.Max(6f, Math.Min(32f, size));
-            _settings.Set("Claude.FontSize", size.ToString());
-            _renderer.SetFontSize(size);
+            BackColor = _isDarkTheme ? Color.FromArgb(12, 12, 12) : Color.White;
+            _splitter.BackColor = _isDarkTheme ? Color.FromArgb(49, 50, 68) : Color.FromArgb(204, 208, 218);
+            if (_tabStrip != null) _tabManager?.ApplyTheme(_isDarkTheme);
+            if (_contentArea != null) _contentArea.BackColor = _isDarkTheme ? Color.FromArgb(12, 12, 12) : Color.White;
         }
 
         private float GetFontSize()
@@ -443,10 +691,61 @@ namespace ClarionAssistant
 
         private void OnSettings(object sender, EventArgs e)
         {
-            using (var dlg = new ClaudeChatSettingsDialog(_settings))
+            var parent = FindForm();
+            var dlg = new ClaudeChatSettingsDialog(_settings, _isDarkTheme);
+
+            dlg.SettingsSaved += (d) =>
             {
-                if (dlg.ShowDialog(FindForm()) == DialogResult.OK)
-                    _renderer.SetFontSize(dlg.FontSize);
+                foreach (var tab in _tabManager.Tabs)
+                {
+                    if (tab.Renderer != null)
+                    {
+                        tab.Renderer.SetFontSize(d.FontSize);
+                        tab.Renderer.SetFontFamily(d.FontFamily);
+                    }
+                }
+                if (d.ThemeChanged)
+                    OnThemeChanged(d.IsDarkTheme ? "dark" : "light");
+            };
+
+            dlg.FormClosed += (s2, e2) =>
+            {
+                if (parent != null) parent.Enabled = true;
+                dlg.Dispose();
+            };
+
+            // Show non-modal with parent disabled — WebView2 cannot init inside ShowDialog()
+            if (parent != null) parent.Enabled = false;
+            dlg.Show(parent);
+        }
+
+        private void OnCheatSheet()
+        {
+            var parent = FindForm();
+            var dlg = new Dialogs.CheatSheetDialog(_isDarkTheme);
+
+            dlg.FormClosed += (s, e2) =>
+            {
+                if (parent != null) parent.Enabled = true;
+                dlg.Dispose();
+            };
+
+            if (parent != null) parent.Enabled = false;
+            dlg.Show(parent);
+        }
+
+        private void OnDocs()
+        {
+            string basePath = Path.GetDirectoryName(GetType().Assembly.Location);
+            string docsPath = Path.Combine(basePath, "docs", "ClarionAssistant-Guide.html");
+            if (File.Exists(docsPath))
+            {
+                System.Diagnostics.Process.Start(docsPath);
+            }
+            else
+            {
+                MessageBox.Show("Documentation file not found:\n" + docsPath,
+                    "Documentation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
 
@@ -467,27 +766,30 @@ namespace ClarionAssistant
                     return;
             }
 
-            if (_terminal == null || !_terminal.IsRunning)
+            var active = _tabManager.ActiveTab;
+            if (active == null || active.IsHome || active.Terminal == null || !active.Terminal.IsRunning)
             {
-                MessageBox.Show("Claude is not running. Please wait for it to start.",
+                MessageBox.Show("Claude is not running. Please open a terminal first.",
                     "Create COM Control", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            string command = "/ClarionCOM Create a new COM control in " + comFolder + "\r";
-            _terminal.Write(Encoding.UTF8.GetBytes(command));
+            string safeFolder = comFolder.Replace("'", "''");
+            string command = "/ClarionCOM Create a new COM control in '" + safeFolder + "'\r";
+            active.Terminal.Write(Encoding.UTF8.GetBytes(command));
         }
 
         private void OnEvaluateCode(object sender, EventArgs e)
         {
-            if (_terminal == null || !_terminal.IsRunning)
+            var active = _tabManager.ActiveTab;
+            if (active == null || active.IsHome || active.Terminal == null || !active.Terminal.IsRunning)
             {
-                MessageBox.Show("Claude is not running. Please wait for it to start.",
+                MessageBox.Show("Claude is not running. Please open a terminal first.",
                     "Evaluate Code", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            _terminal.Write(Encoding.UTF8.GetBytes("/evaluate-code\r"));
+            active.Terminal.Write(Encoding.UTF8.GetBytes("/evaluate-code\r"));
         }
 
         #endregion
@@ -513,6 +815,15 @@ namespace ClarionAssistant
                 _toolRegistry.SetKnowledgeService(_knowledgeService);
             }
             catch { /* non-fatal: knowledge tools won't be available */ }
+
+            // Set up instance coordination for multi-IDE awareness
+            try
+            {
+                _instanceCoord = new Services.InstanceCoordinationService();
+                _toolRegistry.SetInstanceCoordination(_instanceCoord);
+                _instanceCoord.Start();
+            }
+            catch { /* non-fatal: coordination tools won't be available */ }
 
             _mcpServer.SetToolRegistry(_toolRegistry);
 
@@ -543,144 +854,181 @@ namespace ClarionAssistant
             {
                 UpdateStatus("MCP failed to start");
             }
+
+            // Periodic UI-thread timer to refresh instance state (app, procedure, peers)
+            if (_instanceCoord != null)
+            {
+                _instanceStateTimer = new System.Windows.Forms.Timer { Interval = 10000 };
+                _instanceStateTimer.Tick += (s, ev) => UpdateInstanceState();
+                _instanceStateTimer.Start();
+            }
         }
 
         #endregion
 
         #region Terminal Lifecycle
 
-        private void OnRendererInitialized(object sender, EventArgs e)
+        private void OnTabRendererInitialized(TerminalTab tab)
         {
-            _renderer.SetFontSize(GetFontSize());
-            _renderer.SetFontFamily(GetFontFamily());
-
-            // Sync header dropdowns with saved font settings
-            _renderer.FontSizeChangedByUser += OnFontSizeChangedByWheel;
-
-            LoadVersions();
-            LoadSolutionHistory();
-            DetectFromIde();
-            StartMcpServer();
-            LaunchClaude();
+            System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] OnTabRendererInitialized for tab " + tab.Id + " (" + tab.Name + ")");
+            if (tab.Renderer == null)
+            {
+                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] OnTabRendererInitialized: renderer is null!");
+                return;
+            }
+            tab.Renderer.SetTheme(_isDarkTheme);
+            tab.Renderer.SetFontSize(GetFontSize());
+            tab.Renderer.SetFontFamily(GetFontFamily());
+            tab.Renderer.FontSizeChangedByUser += OnFontSizeChangedByWheel;
+            LaunchClaudeForTab(tab);
+            tab.Renderer.Focus();
         }
 
         private void OnFontSizeChangedByWheel(object sender, float size)
         {
             _settings.Set("Claude.FontSize", size.ToString());
-            // Update header dropdown to match
-            int rounded = (int)Math.Round(size);
-            _header.SendMessage("{\"type\":\"setFontSize\",\"value\":\"" + rounded + "\"}");
         }
 
-        private void LaunchClaude()
+        private void LaunchClaudeForTab(TerminalTab tab)
         {
-            if (_claudeLaunched) return;
-            _claudeLaunched = true;
+            System.Diagnostics.Debug.WriteLine("[LaunchClaude] ENTER tab=" + tab.Id + ", ClaudeLaunched=" + tab.ClaudeLaunched);
+            if (tab.ClaudeLaunched) return;
+            tab.ClaudeLaunched = true;
 
-            _terminal = new ConPtyTerminal();
-            _terminal.DataReceived += OnTerminalDataReceived;
-            _terminal.ProcessExited += OnTerminalProcessExited;
-
-            string pwsh = FindPowerShell();
-            string workDir = GetWorkingDirectory();
-
-            string mcpArg = "";
-            if (!string.IsNullOrEmpty(_mcpConfigPath) && File.Exists(_mcpConfigPath))
+            try
             {
-                string safePath = _mcpConfigPath.Replace("'", "''");
-                mcpArg = $" --mcp-config '{safePath}'";
+                tab.Terminal = new ConPtyTerminal();
+                tab.Terminal.DataReceived += data => OnTabTerminalDataReceived(tab, data);
+                tab.Terminal.ProcessExited += (s, ev) => OnTabTerminalProcessExited(tab);
+
+                string pwsh = FindPowerShell();
+                string workDir = !string.IsNullOrEmpty(tab.WorkingDirectory) && Directory.Exists(tab.WorkingDirectory)
+                    ? tab.WorkingDirectory
+                    : GetWorkingDirectory();
+                System.Diagnostics.Debug.WriteLine("[LaunchClaude] pwsh=" + pwsh + ", workDir=" + workDir);
+
+                string mcpArg = "";
+                if (!string.IsNullOrEmpty(_mcpConfigPath) && File.Exists(_mcpConfigPath))
+                {
+                    string safePath = _mcpConfigPath.Replace("'", "''");
+                    mcpArg = $" --mcp-config '{safePath}'";
+                }
+                System.Diagnostics.Debug.WriteLine("[LaunchClaude] mcpConfigPath=" + _mcpConfigPath + ", mcpArg=" + mcpArg);
+
+                DeployClaudeMd(workDir);
+
+                if (_knowledgeService != null)
+                {
+                    try { tab.SessionId = _knowledgeService.StartSession(workDir); }
+                    catch { }
+                }
+
+                string systemPromptExtra = BuildSystemPromptInjection(workDir);
+                string initialPrompt = BuildInitialPrompt(workDir);
+                System.Diagnostics.Debug.WriteLine("[LaunchClaude] prompts built");
+
+                string tempDir = Path.Combine(Path.GetTempPath(), "ClarionAssistant");
+                Directory.CreateDirectory(tempDir);
+
+                string tabSuffix = tab.Id;
+                string extraFlags = "";
+                var tempFiles = new System.Collections.Generic.List<string>();
+
+                if (!string.IsNullOrEmpty(systemPromptExtra))
+                {
+                    string promptFile = Path.Combine(tempDir, "system-prompt-extra-" + tabSuffix + ".md");
+                    File.WriteAllText(promptFile, systemPromptExtra, System.Text.Encoding.UTF8);
+                    extraFlags += $" --append-system-prompt-file '{promptFile.Replace("'", "''")}'";
+                    tempFiles.Add(promptFile);
+                }
+
+                string initialPromptFile = null;
+                if (!string.IsNullOrEmpty(initialPrompt))
+                {
+                    initialPromptFile = Path.Combine(tempDir, "initial-prompt-" + tabSuffix + ".txt");
+                    File.WriteAllText(initialPromptFile, initialPrompt, System.Text.Encoding.UTF8);
+                    tempFiles.Add(initialPromptFile);
+                }
+
+                string envSetup = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8; ";
+                string safeWorkDir = workDir.Replace("'", "''");
+                string allowedTools = "mcp__clarion-assistant__*,Read,Edit,Write,Bash,Glob,Grep";
+                if (_mcpServer != null && _mcpServer.IncludeMultiTerminal)
+                    allowedTools += ",mcp__multiterminal__*";
+
+                string pluginArg = "";
+                string pluginDir = GetClarionAssistantPluginPath();
+                if (pluginDir != null)
+                {
+                    string safePluginDir = pluginDir.Replace("'", "''");
+                    pluginArg = $" --plugin-dir '{safePluginDir}'";
+                }
+
+                string colorfgbg = _isDarkTheme ? "$env:COLORFGBG='15;0'" : "$env:COLORFGBG='0;15'";
+                string claudeBase = _settings.GetDefaultClaudeCommand();
+                string claudeCmd = $"cd '{safeWorkDir}'; $env:CLARION_ASSISTANT_EMBEDDED='1'; {colorfgbg}; {claudeBase}{mcpArg}{pluginArg} --strict-mcp-config --allowedTools '{allowedTools}'{extraFlags}";
+
+                if (initialPromptFile != null)
+                {
+                    string safeFile = initialPromptFile.Replace("'", "''");
+                    claudeCmd += $" (Get-Content -Raw '{safeFile}')";
+                }
+
+                string commandLine = $"\"{pwsh}\" -NoLogo -ExecutionPolicy Bypass -NoExit -Command \"{envSetup}{claudeCmd}\"";
+
+                System.Diagnostics.Debug.WriteLine("[LaunchClaude] cols=" + tab.Renderer.VisibleCols + ", rows=" + tab.Renderer.VisibleRows);
+                System.Diagnostics.Debug.WriteLine("[LaunchClaude] Starting ConPTY: " + commandLine.Substring(0, Math.Min(200, commandLine.Length)));
+                tab.Terminal.Start(tab.Renderer.VisibleCols, tab.Renderer.VisibleRows, commandLine, workDir);
+                System.Diagnostics.Debug.WriteLine("[LaunchClaude] ConPTY started OK");
+                UpdateStatus("MCP: port " + (_mcpServer?.Port ?? 0) + " | Claude Code running");
+
+                // Clean up temp prompt files after Claude Code has read them
+                if (tempFiles.Count > 0)
+                {
+                    var filesToDelete = new System.Collections.Generic.List<string>(tempFiles);
+                    System.Threading.Tasks.Task.Delay(30000).ContinueWith(_ =>
+                    {
+                        foreach (var f in filesToDelete)
+                            try { File.Delete(f); } catch { }
+                    });
+                }
             }
-
-            DeployClaudeMd(workDir);
-
-            // Track this session for continuity
-            if (_knowledgeService != null)
+            catch (Exception ex)
             {
-                try { _sessionId = _knowledgeService.StartSession(workDir); }
-                catch { }
+                System.Diagnostics.Debug.WriteLine("[LaunchClaude] EXCEPTION: " + ex);
             }
-
-            // Build dynamic context — write to temp files to avoid PowerShell escaping issues
-            string systemPromptExtra = BuildSystemPromptInjection(workDir);
-            string initialPrompt = BuildInitialPrompt(workDir);
-
-            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            string tempDir = Path.Combine(appData, "ClarionAssistant");
-            Directory.CreateDirectory(tempDir);
-
-            string extraFlags = "";
-
-            if (!string.IsNullOrEmpty(systemPromptExtra))
-            {
-                string promptFile = Path.Combine(tempDir, "system-prompt-extra.md");
-                File.WriteAllText(promptFile, systemPromptExtra, System.Text.Encoding.UTF8);
-                extraFlags += $" --append-system-prompt-file '{promptFile.Replace("'", "''")}'";
-            }
-
-            string initialPromptFile = null;
-            if (!string.IsNullOrEmpty(initialPrompt))
-            {
-                initialPromptFile = Path.Combine(tempDir, "initial-prompt.txt");
-                File.WriteAllText(initialPromptFile, initialPrompt, System.Text.Encoding.UTF8);
-            }
-
-            string envSetup = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8; ";
-            string safeWorkDir = workDir.Replace("'", "''");
-            string allowedTools = "mcp__clarion-assistant__*,Read,Edit,Write,Bash,Glob,Grep";
-            if (_mcpServer.IncludeMultiTerminal)
-                allowedTools += ",mcp__multiterminal__*";
-
-            // Load the Clarion Assistant plugin (skills, hooks, CLAUDE.md)
-            string pluginArg = "";
-            string pluginDir = GetClarionAssistantPluginPath();
-            if (pluginDir != null)
-            {
-                string safePluginDir = pluginDir.Replace("'", "''");
-                pluginArg = $" --plugin-dir '{safePluginDir}'";
-            }
-
-            // CLARION_ASSISTANT_EMBEDDED env var causes all MultiTerminal hooks to exit(0) immediately
-            string claudeCmd = $"cd '{safeWorkDir}'; $env:CLARION_ASSISTANT_EMBEDDED='1'; claude{mcpArg}{pluginArg} --strict-mcp-config --allowedTools '{allowedTools}'{extraFlags}";
-
-            // Pass initial prompt via file content to avoid escaping issues
-            if (initialPromptFile != null)
-            {
-                string safeFile = initialPromptFile.Replace("'", "''");
-                claudeCmd += $" (Get-Content -Raw '{safeFile}')";
-            }
-
-            string commandLine = $"\"{pwsh}\" -NoLogo -ExecutionPolicy Bypass -NoExit -Command \"{envSetup}{claudeCmd}\"";
-
-            _terminal.Start(_renderer.VisibleCols, _renderer.VisibleRows, commandLine, workDir);
-            UpdateStatus("MCP: port " + (_mcpServer?.Port ?? 0) + " | Claude Code running");
         }
 
-        private void OnRendererDataReceived(byte[] data)
+        private void OnTabRendererDataReceived(TerminalTab tab, byte[] data)
         {
-            if (_terminal != null && _terminal.IsRunning)
-                _terminal.Write(data);
+            if (tab.Terminal != null && tab.Terminal.IsRunning)
+                tab.Terminal.Write(data);
         }
 
-        private void OnTerminalDataReceived(byte[] data)
+        private static int _dataRecvCount;
+        private void OnTabTerminalDataReceived(TerminalTab tab, byte[] data)
         {
-            _renderer.WriteToTerminal(data);
+            _dataRecvCount++;
+            if (_dataRecvCount <= 5)
+                System.Diagnostics.Debug.WriteLine("[DataFlow] Terminal→Renderer: " + data.Length + " bytes, renderer=" + (tab.Renderer != null) + ", disposed=" + (tab.Renderer?.IsDisposed) + ", initialized=" + (tab.Renderer?.IsInitialized));
+            var renderer = tab.Renderer;
+            if (renderer != null && !renderer.IsDisposed)
+                renderer.WriteToTerminal(data);
         }
 
-        private void OnRendererResized(object sender, TerminalSizeEventArgs e)
+        private void OnTabRendererResized(TerminalTab tab, TerminalSizeEventArgs e)
         {
-            if (_terminal != null && _terminal.IsRunning)
-                _terminal.Resize(e.Columns, e.Rows);
+            if (tab.Terminal != null && tab.Terminal.IsRunning)
+                tab.Terminal.Resize(e.Columns, e.Rows);
         }
 
-        private void OnTerminalProcessExited(object sender, EventArgs e)
+        private void OnTabTerminalProcessExited(TerminalTab tab)
         {
-            _claudeLaunched = false;
+            tab.ClaudeLaunched = false;
 
-            // Mark session ended (summary can be saved by the agent via save_session_summary MCP tool,
-            // or we mark it ended without a summary so the timestamp is recorded)
-            if (_knowledgeService != null && _sessionId > 0)
+            if (_knowledgeService != null && tab.SessionId > 0)
             {
-                try { _knowledgeService.EndSession(_sessionId, null); }
+                try { _knowledgeService.EndSession(tab.SessionId, null); }
                 catch { }
             }
 
@@ -692,15 +1040,29 @@ namespace ClarionAssistant
 
         private void OnNewChat(object sender, EventArgs e)
         {
-            if (_terminal != null)
+            var active = _tabManager.ActiveTab;
+            if (active == null || active.IsHome)
             {
-                _terminal.Stop();
-                _terminal.Dispose();
-                _terminal = null;
+                // From Home tab — open a new terminal without a specific solution
+                var renderer = new WebViewTerminalRenderer { Dock = DockStyle.Fill };
+                var tab = _tabManager.CreateTerminalTab(null, renderer);
+                renderer.DataReceived += data => OnTabRendererDataReceived(tab, data);
+                renderer.TerminalResized += (s, ev) => OnTabRendererResized(tab, ev);
+                renderer.Initialized += (s, ev) => OnTabRendererInitialized(tab);
+                _tabManager.ActivateTab(tab.Id);
+                return;
             }
-            _claudeLaunched = false;
-            _renderer.Clear();
-            LaunchClaude();
+
+            // Active tab is a terminal — restart Claude in it
+            if (active.Terminal != null)
+            {
+                active.Terminal.Stop();
+                active.Terminal.Dispose();
+                active.Terminal = null;
+            }
+            active.ClaudeLaunched = false;
+            active.Renderer.Clear();
+            LaunchClaudeForTab(active);
         }
 
         #endregion
@@ -807,7 +1169,9 @@ namespace ClarionAssistant
             all.AddRange(funGreetings);
 
             var rng = new Random();
-            return all[rng.Next(all.Count)];
+            string greeting = all[rng.Next(all.Count)];
+
+            return greeting;
         }
 
         private string FindPowerShell()
@@ -848,10 +1212,13 @@ namespace ClarionAssistant
         {
             if (disposing)
             {
-                if (_terminal != null) _terminal.Dispose();
+                if (_tabManager != null) _tabManager.Dispose();
                 if (_mcpServer != null) _mcpServer.Dispose();
                 if (_knowledgeService != null) _knowledgeService.Dispose();
-                if (_renderer != null) _renderer.Dispose();
+                if (_instanceStateTimer != null) { _instanceStateTimer.Stop(); _instanceStateTimer.Dispose(); }
+                if (_instanceCoord != null) _instanceCoord.Dispose();
+                if (_homeView != null) _homeView.Dispose();
+                if (_header != null) _header.Dispose();
             }
             base.Dispose(disposing);
         }
