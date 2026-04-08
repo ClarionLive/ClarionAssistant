@@ -194,7 +194,7 @@ namespace ClarionAssistant.Services
             return null;
         }
 
-        private static bool IsClarionRoot(string path)
+        public static bool IsClarionRoot(string path)
         {
             if (!Directory.Exists(path)) return false;
             return Directory.Exists(Path.Combine(path, "docs"))
@@ -889,6 +889,8 @@ namespace ClarionAssistant.Services
 
                 using (var proc = System.Diagnostics.Process.Start(psi))
                 {
+                    // Drain stderr asynchronously to prevent deadlock when buffer fills
+                    proc.BeginErrorReadLine();
                     string output = proc.StandardOutput.ReadToEnd();
                     proc.WaitForExit(60000);
                     if (proc.ExitCode == 0 && !string.IsNullOrEmpty(output))
@@ -1001,6 +1003,28 @@ namespace ClarionAssistant.Services
                     {
                         isHeading = true;
                         newHeading = km.Groups[1].Value.Trim();
+                    }
+                }
+
+                // Section header: "Something......:" or "Something:"
+                if (!isHeading)
+                {
+                    var sm = sectionPattern.Match(trimmed);
+                    if (sm.Success)
+                    {
+                        isHeading = true;
+                        newHeading = sm.Groups[1].Value.Trim().TrimEnd('.', ':');
+                    }
+                }
+
+                // ALL CAPS heading (5+ characters)
+                if (!isHeading)
+                {
+                    var am = allCapsHeading.Match(trimmed);
+                    if (am.Success)
+                    {
+                        isHeading = true;
+                        newHeading = am.Groups[1].Value.Trim();
                     }
                 }
 
@@ -1487,120 +1511,27 @@ namespace ClarionAssistant.Services
                 return personalSvc.QueryDocs(query, library, className, limit);
             }
 
-            // Both exist — use ATTACH to query across both
-            string ftsQuery = SanitizeFtsQuery(query);
-            if (string.IsNullOrEmpty(ftsQuery))
-                return "Error: invalid search query";
+            // Both exist — query each independently and merge results
+            // (FTS5 virtual tables cannot be referenced via ATTACH schema prefix)
+            var bundledResults = QueryDocs(query, library, className, limit);
+            var personalSvc2 = new DocGraphService(personalDbPath);
+            var personalResults = personalSvc2.QueryDocs(query, library, className, limit);
 
-            string firstWord = query.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? query;
+            // If one returned nothing, return the other
+            bool bundledEmpty = string.IsNullOrEmpty(bundledResults) || bundledResults.StartsWith("No results") || bundledResults.StartsWith("Error");
+            bool personalEmpty = string.IsNullOrEmpty(personalResults) || personalResults.StartsWith("No results") || personalResults.StartsWith("Error");
 
+            if (bundledEmpty && personalEmpty) return "No results found for: " + query;
+            if (personalEmpty) return bundledResults;
+            if (bundledEmpty) return personalResults;
+
+            // Merge: show personal results first, then bundled
             var sb = new StringBuilder();
-            using (var conn = OpenConnection(readOnly: true))
-            {
-                // Attach personal DB
-                using (var cmd = new SQLiteCommand("ATTACH DATABASE @path AS personal", conn))
-                {
-                    cmd.Parameters.AddWithValue("@path", personalDbPath);
-                    cmd.ExecuteNonQuery();
-                }
-
-                string filterSql = "";
-                var parameters = new List<SQLiteParameter>();
-                parameters.Add(new SQLiteParameter("@query", ftsQuery));
-                parameters.Add(new SQLiteParameter("@exact", firstWord));
-                parameters.Add(new SQLiteParameter("@limit", limit));
-
-                if (!string.IsNullOrEmpty(library))
-                {
-                    filterSql += " AND l.name = @library";
-                    parameters.Add(new SQLiteParameter("@library", library));
-                }
-                if (!string.IsNullOrEmpty(className))
-                {
-                    filterSql += " AND dc.class_name = @class";
-                    parameters.Add(new SQLiteParameter("@class", className));
-                }
-
-                string selectCols = @"dc.id, l.vendor, l.name as library, dc.class_name, dc.method_name,
-                    dc.topic, dc.heading, dc.signature, dc.content, dc.code_example,
-                    CASE
-                        WHEN dc.method_name = @exact THEN 0
-                        WHEN dc.method_name LIKE '%' || @exact || '%' THEN 1
-                        WHEN dc.heading = @exact THEN 2
-                        WHEN dc.heading LIKE '%' || @exact || '%' THEN 3
-                        WHEN dc.signature LIKE '%' || @exact || '%' THEN 4
-                        ELSE 5
-                    END as tier,
-                    rank as bm25_score, LENGTH(dc.content) as content_len";
-
-                string sql = string.Format(@"
-                    SELECT * FROM (
-                        SELECT {0}, 'bundled' as source
-                        FROM main.doc_fts
-                        JOIN main.doc_chunks dc ON dc.id = CAST(main.doc_fts.chunk_id AS INTEGER)
-                        JOIN main.libraries l ON l.id = dc.library_id
-                        WHERE main.doc_fts MATCH @query {1}
-
-                        UNION ALL
-
-                        SELECT {0}, 'personal' as source
-                        FROM personal.doc_fts
-                        JOIN personal.doc_chunks dc ON dc.id = CAST(personal.doc_fts.chunk_id AS INTEGER)
-                        JOIN personal.libraries l ON l.id = dc.library_id
-                        WHERE personal.doc_fts MATCH @query {1}
-                    ) combined
-                    ORDER BY tier, bm25_score, content_len DESC
-                    LIMIT @limit", selectCols, filterSql);
-
-                using (var cmd = new SQLiteCommand(sql, conn))
-                {
-                    foreach (var p in parameters)
-                        cmd.Parameters.Add(p);
-
-                    using (var reader = cmd.ExecuteReader())
-                    {
-                        int count = 0;
-                        while (reader.Read())
-                        {
-                            count++;
-                            string vendor = reader["vendor"] as string ?? "";
-                            string lib = reader["library"] as string ?? "";
-                            string cls = reader["class_name"] as string ?? "";
-                            string method = reader["method_name"] as string ?? "";
-                            string topic = reader["topic"] as string ?? "";
-                            string heading = reader["heading"] as string ?? "";
-                            string sig = reader["signature"] as string ?? "";
-                            string content = reader["content"] as string ?? "";
-                            string code = reader["code_example"] as string ?? "";
-                            string source = reader["source"] as string ?? "bundled";
-
-                            sb.AppendLine(string.Format("--- Result {0} [{1}/{2}] ({3}) ---", count, vendor, lib, source));
-                            if (!string.IsNullOrEmpty(cls))
-                                sb.AppendLine("Class: " + cls);
-                            if (!string.IsNullOrEmpty(method))
-                                sb.AppendLine("Method: " + method);
-                            if (!string.IsNullOrEmpty(sig))
-                                sb.AppendLine("Signature: " + sig);
-                            sb.AppendLine("Topic: " + topic + " | " + heading);
-                            sb.AppendLine();
-                            sb.AppendLine(content);
-                            if (!string.IsNullOrEmpty(code))
-                            {
-                                sb.AppendLine();
-                                sb.AppendLine("Example:");
-                                sb.AppendLine(code);
-                            }
-                            sb.AppendLine();
-                        }
-
-                        if (count == 0)
-                            return "No documentation found for: " + query;
-                    }
-                }
-
-                try { using (var cmd = new SQLiteCommand("DETACH DATABASE personal", conn)) cmd.ExecuteNonQuery(); } catch { }
-            }
-
+            sb.AppendLine("## Personal DocGraph Results");
+            sb.AppendLine(personalResults);
+            sb.AppendLine();
+            sb.AppendLine("## Bundled DocGraph Results");
+            sb.AppendLine(bundledResults);
             return sb.ToString();
         }
 

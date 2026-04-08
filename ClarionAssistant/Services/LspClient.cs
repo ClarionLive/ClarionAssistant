@@ -26,8 +26,18 @@ namespace ClarionAssistant.Services
         private readonly AutoResetEvent _responseReceived = new AutoResetEvent(false);
         private Thread _readerThread;
         private volatile bool _running;
+        private Dictionary<string, object> _pendingUpdatePaths;
 
         public bool IsRunning { get { return _running && _process != null && !_process.HasExited; } }
+
+        /// <summary>
+        /// Set clarion/updatePaths data to be sent after LSP initialization.
+        /// Must be called before Start().
+        /// </summary>
+        public void SetUpdatePaths(Dictionary<string, object> updatePaths)
+        {
+            _pendingUpdatePaths = updatePaths;
+        }
 
         /// <summary>
         /// Start the LSP server and initialize the protocol.
@@ -41,11 +51,24 @@ namespace ClarionAssistant.Services
 
             try
             {
+                // Use bundled node.exe next to server.js, fall back to system PATH
+                string lspDir = Path.GetDirectoryName(serverJsPath);
+                string lspRoot = Path.GetFullPath(Path.Combine(lspDir, "..", "..", ".."));
+                string nodeExe = Path.Combine(lspRoot, "node.exe");
+                System.Diagnostics.Debug.WriteLine("[LSP] Looking for node.exe at: " + nodeExe);
+                if (!File.Exists(nodeExe))
+                {
+                    System.Diagnostics.Debug.WriteLine("[LSP] Bundled node.exe not found, falling back to PATH");
+                    nodeExe = "node";
+                }
+
+                System.Diagnostics.Debug.WriteLine("[LSP] Starting: " + nodeExe + " \"" + serverJsPath + "\" --stdio");
+
                 _process = new Process
                 {
                     StartInfo = new ProcessStartInfo
                     {
-                        FileName = "node",
+                        FileName = nodeExe,
                         Arguments = "\"" + serverJsPath + "\" --stdio",
                         UseShellExecute = false,
                         RedirectStandardInput = true,
@@ -55,8 +78,19 @@ namespace ClarionAssistant.Services
                         StandardOutputEncoding = Encoding.UTF8
                     }
                 };
+
+                // Capture stderr for diagnostics
+                _process.ErrorDataReceived += (s, e) =>
+                {
+                    if (!string.IsNullOrEmpty(e.Data))
+                        System.Diagnostics.Debug.WriteLine("[LSP stderr] " + e.Data);
+                };
+
                 _process.Start();
+                _process.BeginErrorReadLine();
                 _running = true;
+
+                System.Diagnostics.Debug.WriteLine("[LSP] Process started, PID=" + _process.Id);
 
                 // Start reader thread
                 _readerThread = new Thread(ReadLoop) { IsBackground = true, Name = "LSP-Reader" };
@@ -79,21 +113,41 @@ namespace ClarionAssistant.Services
                     }
                 };
 
-                var initResult = SendRequest("initialize", initParams, 10000);
-                if (initResult == null) return false;
+                System.Diagnostics.Debug.WriteLine("[LSP] Sending initialize request...");
+                var initResult = SendRequest("initialize", initParams, 15000);
+                if (initResult == null)
+                {
+                    System.Diagnostics.Debug.WriteLine("[LSP] Initialize timed out or returned null");
+                    // Check if process crashed
+                    if (_process.HasExited)
+                        System.Diagnostics.Debug.WriteLine("[LSP] Process exited with code: " + _process.ExitCode);
+                    Stop();
+                    return false;
+                }
+
+                System.Diagnostics.Debug.WriteLine("[LSP] Initialize succeeded");
 
                 // Send initialized notification
                 SendNotification("initialized", new Dictionary<string, object>());
 
-
+                // Send clarion/updatePaths if provided — required for cross-file LSP features
+                if (_pendingUpdatePaths != null)
+                {
+                    System.Diagnostics.Debug.WriteLine("[LSP] Sending clarion/updatePaths...");
+                    SendNotification("clarion/updatePaths", _pendingUpdatePaths);
+                    _pendingUpdatePaths = null;
+                }
 
                 // Give the server a moment to finish initialization
                 Thread.Sleep(1000);
 
+                System.Diagnostics.Debug.WriteLine("[LSP] Ready");
                 return true;
             }
-            catch
+            catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine("[LSP] Start failed: " + ex.GetType().Name + ": " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[LSP] Stack: " + ex.StackTrace);
                 Stop();
                 return false;
             }

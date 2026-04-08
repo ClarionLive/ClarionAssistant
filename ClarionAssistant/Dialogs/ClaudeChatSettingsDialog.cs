@@ -100,6 +100,8 @@ namespace ClarionAssistant.Dialogs
             settings.AreBrowserAcceleratorKeysEnabled = false;
 
             _webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
+            _webView.ZoomFactorChanged += (s2, ev) => Terminal.WebViewZoomHelper.SetZoom("settings", _webView.ZoomFactor);
+            _webView.ZoomFactor = Terminal.WebViewZoomHelper.GetZoom("settings");
 
             string htmlPath = GetHtmlPath();
             System.Diagnostics.Debug.WriteLine("[SettingsDialog] HTML path: " + htmlPath + " exists=" + File.Exists(htmlPath));
@@ -151,8 +153,23 @@ namespace ClarionAssistant.Dialogs
                     case "updateLibraryTags":
                         HandleUpdateLibraryTags(json);
                         break;
+                    case "importDocPaths":
+                        HandleImportDocPaths(json);
+                        break;
                     case "buildLib":
                         HandleBuildLib();
+                        break;
+                    case "addGitHubAccount":
+                        HandleAddGitHubAccount(json);
+                        break;
+                    case "editGitHubAccount":
+                        HandleEditGitHubAccount(json);
+                        break;
+                    case "deleteGitHubAccount":
+                        HandleDeleteGitHubAccount(json);
+                        break;
+                    case "testGitHubToken":
+                        HandleTestGitHubToken(json);
                         break;
                 }
             }
@@ -218,6 +235,215 @@ namespace ClarionAssistant.Dialogs
                 + ",\"commands\":" + cmdsSb
                 + "}}";
             _webView.CoreWebView2.PostWebMessageAsString(json);
+
+            // Send GitHub accounts (separate message — keeps setSettings clean)
+            SendGitHubAccounts();
+        }
+
+        private void SendGitHubAccounts()
+        {
+            try
+            {
+                var accounts = Services.SchemaGraphService.GetAllGitHubAccounts();
+                var sb = new StringBuilder("[");
+                for (int i = 0; i < accounts.Count; i++)
+                {
+                    if (i > 0) sb.Append(",");
+                    var a = accounts[i];
+                    // Mask token — send placeholder
+                    string hasToken = !string.IsNullOrEmpty((string)a["token"]) ? "\u2022\u2022\u2022\u2022" : "";
+                    string provider = a.ContainsKey("provider") ? (string)a["provider"] : "github";
+                    sb.AppendFormat("{{\"id\":\"{0}\",\"displayName\":\"{1}\",\"username\":\"{2}\",\"token\":\"{3}\",\"provider\":\"{4}\"}}",
+                        EscapeJson((string)a["id"]), EscapeJson((string)a["displayName"]),
+                        EscapeJson((string)a["username"]), EscapeJson(hasToken), EscapeJson(provider));
+                }
+                sb.Append("]");
+                _webView.CoreWebView2.PostWebMessageAsString(
+                    "{\"type\":\"setGitHubAccounts\",\"accounts\":" + sb + "}");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[SettingsDialog] SendGitHubAccounts error: " + ex.Message);
+            }
+        }
+
+        private void HandleAddGitHubAccount(string json)
+        {
+            try
+            {
+                string data = ExtractJsonValue(json, "data");
+                if (data == null) return;
+                // data is a JSON string that was stringified — parse the inner object
+                string displayName = ExtractJsonValue(data, "displayName");
+                string username = ExtractJsonValue(data, "username");
+                string token = ExtractJsonValue(data, "token");
+                string provider = ExtractJsonValue(data, "provider") ?? "github";
+                Services.SchemaGraphService.AddGitHubAccount(displayName, username, token, provider);
+                SendGitHubAccounts();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[SettingsDialog] AddGitHubAccount error: " + ex.Message);
+            }
+        }
+
+        private void HandleEditGitHubAccount(string json)
+        {
+            try
+            {
+                string data = ExtractJsonValue(json, "data");
+                if (data == null) return;
+                string id = ExtractJsonValue(data, "id");
+                string displayName = ExtractJsonValue(data, "displayName");
+                string username = ExtractJsonValue(data, "username");
+                string token = ExtractJsonValue(data, "token");
+
+                // If token is the placeholder, preserve existing
+                if (token == "\u2022\u2022\u2022\u2022" || string.IsNullOrEmpty(token))
+                {
+                    var existing = Services.SchemaGraphService.GetGitHubAccount(id);
+                    if (existing != null) token = (string)existing["token"];
+                }
+                string provider = ExtractJsonValue(data, "provider");
+                Services.SchemaGraphService.UpdateGitHubAccount(id, displayName, username, token, provider);
+                SendGitHubAccounts();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[SettingsDialog] EditGitHubAccount error: " + ex.Message);
+            }
+        }
+
+        private void HandleDeleteGitHubAccount(string json)
+        {
+            try
+            {
+                string id = ExtractJsonValue(json, "data");
+                if (!string.IsNullOrEmpty(id))
+                {
+                    Services.SchemaGraphService.DeleteGitHubAccount(id);
+                    SendGitHubAccounts();
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[SettingsDialog] DeleteGitHubAccount error: " + ex.Message);
+            }
+        }
+
+        private void HandleTestGitHubToken(string json)
+        {
+            string token;
+            string provider;
+            string username;
+            try
+            {
+                string data = ExtractJsonValue(json, "data");
+                token = ExtractJsonValue(data ?? "", "token");
+                string id = ExtractJsonValue(data ?? "", "id");
+                provider = ExtractJsonValue(data ?? "", "provider") ?? "github";
+                username = ExtractJsonValue(data ?? "", "username") ?? "";
+
+                // If token is placeholder or empty, get from stored account
+                if ((string.IsNullOrEmpty(token) || token == "\u2022\u2022\u2022\u2022") && !string.IsNullOrEmpty(id))
+                {
+                    var existing = Services.SchemaGraphService.GetGitHubAccount(id);
+                    if (existing != null)
+                    {
+                        token = (string)existing["token"];
+                        if (string.IsNullOrEmpty(provider) || provider == "github")
+                            provider = existing.ContainsKey("provider") ? (string)existing["provider"] : "github";
+                        if (string.IsNullOrEmpty(username))
+                            username = (string)existing["username"];
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                PostTestResult(false, "Error: " + ex.Message);
+                return;
+            }
+
+            if (string.IsNullOrEmpty(token))
+            {
+                PostTestResult(false, "No token provided");
+                return;
+            }
+
+            string finalToken = token;
+            string finalProvider = provider;
+            string finalUsername = username;
+            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+            {
+                bool success = false;
+                string message;
+                try
+                {
+                    System.Net.HttpWebRequest request;
+
+                    if (finalProvider == "bitbucket")
+                    {
+                        // Bitbucket uses Basic Auth: username + app password
+                        request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create("https://api.bitbucket.org/2.0/user");
+                        string credentials = Convert.ToBase64String(
+                            Encoding.ASCII.GetBytes(finalUsername + ":" + finalToken));
+                        request.Headers["Authorization"] = "Basic " + credentials;
+                    }
+                    else
+                    {
+                        // GitHub uses Bearer token
+                        request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create("https://api.github.com/user");
+                        request.Headers["Authorization"] = "Bearer " + finalToken;
+                    }
+
+                    request.UserAgent = "ClarionAssistant";
+                    request.Timeout = 10000;
+
+                    using (var response = (System.Net.HttpWebResponse)request.GetResponse())
+                    using (var reader = new StreamReader(response.GetResponseStream()))
+                    {
+                        string body = reader.ReadToEnd();
+                        string login = ExtractJsonValue(body, finalProvider == "bitbucket" ? "display_name" : "login") ?? "unknown";
+                        message = "Authenticated as " + login;
+                        success = true;
+                    }
+                }
+                catch (System.Net.WebException wex)
+                {
+                    if (wex.Response is System.Net.HttpWebResponse hr && (int)hr.StatusCode == 401)
+                        message = "Authentication failed — invalid credentials";
+                    else
+                        message = wex.Message;
+                }
+                catch (Exception ex)
+                {
+                    message = ex.Message;
+                }
+
+                PostTestResult(success, message);
+            });
+        }
+
+        private void PostTestResult(bool success, string message)
+        {
+            try
+            {
+                if (IsDisposed || _webView == null || _webView.CoreWebView2 == null) return;
+                bool s = success;
+                string m = message;
+                BeginInvoke(new Action(() =>
+                {
+                    try
+                    {
+                        if (_webView != null && _webView.CoreWebView2 != null)
+                            _webView.CoreWebView2.PostWebMessageAsString(
+                                "{\"type\":\"testGitHubResult\",\"success\":" + (s ? "true" : "false") +
+                                ",\"message\":\"" + EscapeJson(m) + "\"}");
+                    }
+                    catch { }
+                }));
+            }
+            catch { }
         }
 
         private void HandleSave(string json)
@@ -380,8 +606,8 @@ namespace ClarionAssistant.Dialogs
                         using (var cmd = conn.CreateCommand())
                         {
                             cmd.CommandText = hasTags
-                                ? "SELECT l.id, l.name, l.vendor, l.tags, COUNT(c.id) as cnt FROM libraries l LEFT JOIN doc_chunks c ON c.library_id = l.id GROUP BY l.id ORDER BY cnt DESC"
-                                : "SELECT l.id, l.name, l.vendor, NULL as tags, COUNT(c.id) as cnt FROM libraries l LEFT JOIN doc_chunks c ON c.library_id = l.id GROUP BY l.id ORDER BY cnt DESC";
+                                ? "SELECT l.id, l.name, l.vendor, l.tags, COUNT(c.id) as cnt, l.source_path FROM libraries l LEFT JOIN doc_chunks c ON c.library_id = l.id GROUP BY l.id ORDER BY cnt DESC"
+                                : "SELECT l.id, l.name, l.vendor, NULL as tags, COUNT(c.id) as cnt, l.source_path FROM libraries l LEFT JOIN doc_chunks c ON c.library_id = l.id GROUP BY l.id ORDER BY cnt DESC";
                             using (var reader = cmd.ExecuteReader())
                             {
                                 while (reader.Read())
@@ -391,11 +617,12 @@ namespace ClarionAssistant.Dialogs
                                     string vendor = reader.IsDBNull(2) ? "" : reader.GetString(2);
                                     string tags = reader.IsDBNull(3) ? "" : reader.GetString(3);
                                     int cnt = reader.GetInt32(4);
+                                    string sourcePath = reader.IsDBNull(5) ? "" : reader.GetString(5);
                                     totalLibs++;
                                     totalChunks += cnt;
                                     if (!first) items.Append(",");
-                                    items.AppendFormat("{{\"id\":{0},\"name\":\"{1}\",\"vendor\":\"{2}\",\"chunks\":{3},\"source\":\"{4}\",\"tags\":\"{5}\"}}",
-                                        id, EscapeJson(name), EscapeJson(vendor), cnt, label, EscapeJson(tags));
+                                    items.AppendFormat("{{\"id\":{0},\"name\":\"{1}\",\"vendor\":\"{2}\",\"chunks\":{3},\"source\":\"{4}\",\"tags\":\"{5}\",\"path\":\"{6}\"}}",
+                                        id, EscapeJson(name), EscapeJson(vendor), cnt, label, EscapeJson(tags), EscapeJson(sourcePath));
                                     first = false;
                                 }
                             }
@@ -489,6 +716,105 @@ namespace ClarionAssistant.Dialogs
             {
                 System.Diagnostics.Debug.WriteLine("[SettingsDialog] Update tags error: " + ex.Message);
             }
+        }
+
+        private void HandleImportDocPaths(string json)
+        {
+            string data = ExtractJsonValue(json, "data");
+            if (string.IsNullOrEmpty(data)) return;
+
+            // Parse paths from JSON array
+            var paths = new System.Collections.Generic.List<string>();
+            int pos = 0;
+            while (pos < data.Length)
+            {
+                int q1 = data.IndexOf('"', pos);
+                if (q1 < 0) break;
+                int q2 = data.IndexOf('"', q1 + 1);
+                if (q2 < 0) break;
+                paths.Add(data.Substring(q1 + 1, q2 - q1 - 1).Replace("\\\\", "\\"));
+                pos = q2 + 1;
+            }
+
+            if (paths.Count == 0) return;
+
+            // Save paths to settings
+            _settings.Set("DocGraph.Paths", string.Join("|", paths));
+
+            // Ingest on background thread with UI feedback
+            var worker = new System.ComponentModel.BackgroundWorker();
+            worker.DoWork += (s, e) =>
+            {
+                var svc = new DocGraphService(DocGraphService.GetPersonalDbPath());
+                svc.EnsureDatabase();
+                int totalChunks = 0;
+
+                foreach (string path in paths)
+                {
+                    System.Diagnostics.Debug.WriteLine("[SettingsDialog] Importing: " + path);
+                    try
+                    {
+                        if (Directory.Exists(path))
+                        {
+                            string folderVendor = Path.GetFileName(path.TrimEnd('\\', '/'));
+                            string result = svc.IngestFolder(path, folderVendor);
+                            System.Diagnostics.Debug.WriteLine("[SettingsDialog] IngestFolder result: " + result);
+                            // Parse "Ingested N chunks" from result
+                            if (result != null)
+                            {
+                                var match = System.Text.RegularExpressions.Regex.Match(result, @"Ingested\s+(\d+)\s+chunks");
+                                if (match.Success) totalChunks += int.Parse(match.Groups[1].Value);
+                            }
+                        }
+                        else if (File.Exists(path))
+                        {
+                            var source = new DocSource
+                            {
+                                Vendor = "Personal",
+                                Library = Path.GetFileNameWithoutExtension(path),
+                                FilePath = path,
+                                Format = Path.GetExtension(path).TrimStart('.').ToLower()
+                            };
+                            int chunks = svc.IngestSource(source);
+                            System.Diagnostics.Debug.WriteLine("[SettingsDialog] IngestSource: " + path + " -> " + chunks + " chunks");
+                            totalChunks += chunks;
+                        }
+                        else
+                        {
+                            System.Diagnostics.Debug.WriteLine("[SettingsDialog] Path not found: " + path);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine("[SettingsDialog] Import error for " + path + ": " + ex.Message);
+                    }
+                }
+
+                // Only rebuild FTS if single files were added (IngestFolder already rebuilds internally)
+                System.Diagnostics.Debug.WriteLine("[SettingsDialog] Import complete. Total chunks: " + totalChunks);
+                e.Result = totalChunks;
+            };
+            worker.RunWorkerCompleted += (s, e) =>
+            {
+                try
+                {
+                    if (_webView != null && _webView.CoreWebView2 != null)
+                    {
+                        int chunks = e.Result is int ? (int)e.Result : 0;
+                        string resultMsg = chunks > 0
+                            ? "Imported " + chunks + " chunks"
+                            : "No documentation files found (htm, html, chm, pdf)";
+                        string msg = "{\"type\":\"importDocResult\",\"success\":" + (chunks > 0 ? "true" : "false")
+                            + ",\"message\":\"" + EscapeJson(resultMsg) + "\"}";
+                        _webView.CoreWebView2.PostWebMessageAsString(msg);
+
+                        // Auto-refresh the Info panel
+                        HandleDocGraphInfo();
+                    }
+                }
+                catch { }
+            };
+            worker.RunWorkerAsync();
         }
 
         private void IngestPersonalPaths(System.Collections.Generic.List<string> paths)

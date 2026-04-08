@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 13px;
+    background: #1e1e2e;
+    color: #cdd6f4;
+    overflow: hidden;
+    user-select: none;
+}
+
+/* ── Collapsed bar ── */
+.collapse-bar {
+    display: flex;
+    align-items: center;
+    padding: 4px 12px;
+    background: #181825;
+    border-bottom: 1px solid #313244;
+    cursor: pointer;
+    height: 30px;
+}
+.collapse-bar:hover { background: #1e1e2e; }
+.collapse-bar .chevron {
+    font-size: 10px;
+    margin-right: 8px;
+    transition: transform 0.15s;
+    color: #6c7086;
+}
+.collapse-bar .chevron.open { transform: rotate(90deg); }
+.collapse-bar .title { font-weight: 600; font-size: 12px; color: #a6adc8; }
+.collapse-bar .count { color: #6c7086; margin-left: 6px; font-size: 11px; }
+.collapse-bar .actions { margin-left: auto; display: flex; gap: 6px; }
+
+.btn-sm {
+    padding: 2px 10px;
+    font-size: 11px;
+    border: 1px solid #45475a;
+    background: #313244;
+    color: #cdd6f4;
+    border-radius: 4px;
+    cursor: pointer;
+}
+.btn-sm:hover { background: #45475a; }
+.btn-sm.primary { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; }
+.btn-sm.primary:hover { background: #74c7ec; }
+
+/* ── Expanded content ── */
+.content { display: none; padding: 6px 12px 8px; }
+.content.visible { display: block; }
+
+/* ── Source table ── */
+.source-table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+.source-table th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    color: #6c7086;
+    padding: 3px 8px;
+    border-bottom: 1px solid #313244;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.source-table td { padding: 4px 8px; border-bottom: 1px solid #1e1e2e; font-size: 12px; }
+.source-table tr:hover td { background: #181825; }
+
+.type-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+.type-badge.dctx { background: #a6e3a1; color: #1e1e2e; }
+.type-badge.mssql { background: #89b4fa; color: #1e1e2e; }
+.type-badge.sqlite { background: #f9e2af; color: #1e1e2e; }
+.type-badge.postgres { background: #cba6f7; color: #1e1e2e; }
+
+.status-text { font-size: 11px; }
+.status-text.pending { color: #6c7086; }
+.status-text.indexed { color: #a6e3a1; }
+.status-text.indexing { color: #f9e2af; }
+.status-text.error { color: #f38ba8; }
+
+.btn-index {
+    padding: 2px 8px;
+    font-size: 10px;
+    border: 1px solid #45475a;
+    background: #313244;
+    color: #cdd6f4;
+    border-radius: 3px;
+    cursor: pointer;
+}
+.btn-index:hover { background: #45475a; }
+.btn-index:disabled { opacity: 0.4; cursor: default; }
+
+.empty-msg { color: #6c7086; font-style: italic; font-size: 12px; padding: 12px 0; text-align: center; }
+
+.bottom-actions { margin-top: 6px; display: flex; gap: 8px; }
+
+/* ── Tabs ── */
+.tab-btn {
+    padding: 5px 14px;
+    font-size: 12px; font-weight: 500;
+    color: #7f849c; cursor: pointer;
+    border: none; border-bottom: 2px solid transparent;
+    margin-bottom: -2px; background: none;
+    font-family: 'Segoe UI', sans-serif;
+    transition: all 0.15s;
+}
+.tab-btn:hover { color: #cdd6f4; }
+.tab-btn.active { color: #89b4fa; border-bottom-color: #89b4fa; font-weight: 600; }
+
+.repo-field {
+    flex: 1; height: 26px;
+    background: #313244; color: #cdd6f4;
+    border: 1px solid #45475a; border-radius: 4px;
+    padding: 0 8px; font-size: 12px; font-family: inherit;
+    outline: none;
+}
+.repo-field:focus { border-color: #89b4fa; }
+
+/* ── Manage Sources Modal ── */
+.modal-overlay {
+    display: none;
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 100;
+    justify-content: center;
+    align-items: flex-start;
+    padding-top: 20px;
+}
+.modal-overlay.visible { display: flex; }
+
+.modal {
+    background: #1e1e2e;
+    border: 1px solid #45475a;
+    border-radius: 8px;
+    width: 580px;
+    max-height: calc(100vh - 40px);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+.modal-header {
+    display: flex;
+    align-items: center;
+    padding: 10px 16px;
+    border-bottom: 1px solid #313244;
+    font-weight: 600;
+    font-size: 14px;
+}
+.modal-header .close-btn {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: #6c7086;
+    font-size: 16px;
+    cursor: pointer;
+}
+.modal-header .close-btn:hover { color: #f38ba8; }
+
+.modal-body { padding: 12px 16px; overflow-y: auto; flex: 1; }
+
+.modal-footer {
+    padding: 10px 16px;
+    border-top: 1px solid #313244;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+/* ── Global source list in modal ── */
+.global-table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+.global-table th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    color: #6c7086;
+    padding: 4px 8px;
+    border-bottom: 1px solid #313244;
+}
+.global-table td { padding: 5px 8px; border-bottom: 1px solid #1e1e2e; font-size: 12px; }
+.global-table tr:hover td { background: #181825; }
+.global-table input[type="checkbox"] { margin: 0; cursor: pointer; }
+
+.global-actions { margin-bottom: 10px; display: flex; gap: 6px; }
+
+/* ── Add/Edit Source Form ── */
+.source-form { display: none; }
+.source-form.visible { display: block; }
+.source-form .form-title { font-weight: 600; font-size: 13px; margin-bottom: 8px; color: #89b4fa; }
+
+.form-row { margin-bottom: 8px; }
+.form-row label { display: block; font-size: 11px; color: #a6adc8; margin-bottom: 3px; }
+.form-row input, .form-row select {
+    width: 100%;
+    padding: 5px 8px;
+    background: #313244;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    color: #cdd6f4;
+    font-size: 12px;
+    font-family: inherit;
+}
+.form-row input:focus, .form-row select:focus {
+    outline: none;
+    border-color: #89b4fa;
+}
+.form-row .browse-row { display: flex; gap: 6px; }
+.form-row .browse-row input { flex: 1; }
+
+.form-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+/* ── Light theme ── */
+body.light { background: #dce0e8; color: #4c4f69; }
+body.light .collapse-bar { background: #ccd0da; border-bottom-color: #bcc0cc; }
+body.light .collapse-bar:hover { background: #dce0e8; }
+body.light .collapse-bar .title { color: #5c5f77; }
+body.light .collapse-bar .chevron, body.light .collapse-bar .count { color: #7c7f93; }
+body.light .btn-sm { background: #ccd0da; border-color: #bcc0cc; color: #4c4f69; }
+body.light .btn-sm:hover { background: #bcc0cc; }
+body.light .btn-sm.primary { background: #1e66f5; color: #fff; border-color: #1e66f5; }
+body.light .source-table th { color: #7c7f93; border-bottom-color: #bcc0cc; }
+body.light .source-table td { border-bottom-color: #dce0e8; }
+body.light .source-table tr:hover td { background: #ccd0da; }
+body.light .btn-index { background: #ccd0da; border-color: #bcc0cc; color: #4c4f69; }
+body.light .empty-msg { color: #7c7f93; }
+body.light .modal { background: #eff1f5; border-color: #bcc0cc; }
+body.light .modal-header { border-bottom-color: #ccd0da; }
+body.light .modal-footer { border-top-color: #ccd0da; }
+body.light .global-table th { color: #7c7f93; border-bottom-color: #ccd0da; }
+body.light .global-table td { border-bottom-color: #eff1f5; }
+body.light .global-table tr:hover td { background: #e6e9ef; }
+body.light .form-row input, body.light .form-row select {
+    background: #ccd0da; border-color: #bcc0cc; color: #4c4f69;
+}
+body.light .form-row input:focus, body.light .form-row select:focus { border-color: #1e66f5; }
+body.light .source-form .form-title { color: #1e66f5; }
+body.light .tab-btn { color: #7c7f93; }
+body.light .tab-btn:hover { color: #4c4f69; }
+body.light .tab-btn.active { color: #1e66f5; border-bottom-color: #1e66f5; }
+body.light .repo-field { background: #e6e9ef; border-color: #bcc0cc; color: #4c4f69; }
+body.light .status-text.pending { color: #7c7f93; }
+body.light .status-text.indexed { color: #40a02b; }
+body.light .status-text.indexing { color: #df8e1d; }
+body.light .status-text.error { color: #d20f39; }
+</style>
+</head>
+<body>
+
+<!-- Collapse bar (always visible) -->
+<div class="collapse-bar" onclick="toggleCollapse()">
+    <span class="chevron" id="chevron">&#9654;</span>
+    <span class="title">Solution Settings</span>
+    <span class="count" id="sourceCount"></span>
+</div>
+
+<!-- Expanded content -->
+<div class="content" id="contentArea">
+
+<!-- Tab bar -->
+<div style="display:flex;gap:0;border-bottom:2px solid #313244;margin-bottom:8px">
+    <button class="tab-btn active" id="tabSchema" onclick="switchTab('schema')">Schema Sources</button>
+    <button class="tab-btn" id="tabRepo" onclick="switchTab('repo')">Source Control</button>
+</div>
+
+<!-- Schema Sources tab -->
+<div id="tabSchemaContent">
+    <table class="source-table" id="sourceTable">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Tables</th>
+                <th>Last Indexed</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody id="sourceBody"></tbody>
+    </table>
+    <div class="empty-msg" id="emptyMsg" style="display:none">No schema sources linked to this solution. Click "Manage Sources" to add some.</div>
+    <div class="bottom-actions">
+        <button class="btn-sm primary" onclick="openManageModal()">Manage Sources</button>
+        <button class="btn-sm" onclick="indexAll()">Index All</button>
+    </div>
+</div>
+
+<!-- Source Control tab -->
+<div id="tabRepoContent" style="display:none">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <span style="font-size:12px;color:#a6adc8;min-width:60px">Account:</span>
+        <select id="repoAccount" class="repo-field" onchange="onRepoChanged()">
+            <option value="">(none)</option>
+        </select>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <span style="font-size:12px;color:#a6adc8;min-width:60px">Repo:</span>
+        <input type="text" id="repoName" placeholder="e.g. MyProject" class="repo-field" onblur="onRepoChanged()">
+    </div>
+    <div style="font-size:11px;color:#6c7086;margin-top:4px" id="repoStatus"></div>
+</div>
+
+</div>
+
+<!-- Manage Sources Modal -->
+<div class="modal-overlay" id="manageModal">
+    <div class="modal">
+        <div class="modal-header">
+            Manage Schema Sources
+            <button class="close-btn" onclick="closeManageModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <!-- Source list view -->
+            <div id="listView">
+                <div class="global-actions">
+                    <button class="btn-sm primary" onclick="showAddForm()">Add Source</button>
+                </div>
+                <table class="global-table" id="globalTable">
+                    <thead>
+                        <tr>
+                            <th style="width:30px"></th>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th style="width:80px"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="globalBody"></tbody>
+                </table>
+            </div>
+            <!-- Add/Edit form view -->
+            <div class="source-form" id="formView">
+                <div class="form-title" id="formTitle">Add Source</div>
+                <input type="hidden" id="formId" value="">
+                <div class="form-row">
+                    <label>Source Type</label>
+                    <select id="formType" onchange="onTypeChange()">
+                        <option value="dctx">Clarion Dictionary (.dctx)</option>
+                        <option value="mssql">Microsoft SQL Server</option>
+                        <option value="sqlite">SQLite</option>
+                        <option value="postgres">PostgreSQL</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>Display Name</label>
+                    <input type="text" id="formName" placeholder="e.g. POS Dictionary">
+                </div>
+                <!-- DCTX / SQLite fields -->
+                <div class="form-row" id="fieldFilePath">
+                    <label>File Path</label>
+                    <div class="browse-row">
+                        <input type="text" id="formFilePath" placeholder="C:\path\to\file">
+                        <button class="btn-sm" onclick="browseFile()">Browse</button>
+                    </div>
+                </div>
+                <!-- MSSQL / Postgres fields -->
+                <div class="form-row" id="fieldServer" style="display:none">
+                    <label>Server</label>
+                    <input type="text" id="formServer" placeholder="localhost">
+                </div>
+                <div class="form-row" id="fieldPort" style="display:none">
+                    <label>Port</label>
+                    <input type="text" id="formPort" placeholder="5432">
+                </div>
+                <div class="form-row" id="fieldDatabase" style="display:none">
+                    <label>Database</label>
+                    <input type="text" id="formDatabase" placeholder="mydb">
+                </div>
+                <div class="form-row" id="fieldUsername" style="display:none">
+                    <label>Username</label>
+                    <input type="text" id="formUsername" placeholder="sa">
+                </div>
+                <div class="form-row" id="fieldPassword" style="display:none">
+                    <label>Password</label>
+                    <input type="password" id="formPassword" placeholder="">
+                </div>
+                <div class="form-row" id="fieldTestConn" style="display:none">
+                    <button class="btn-sm" id="btnTestConn" onclick="testConnection()">Test Connection</button>
+                    <span class="status-text" id="testConnResult" style="margin-left:8px"></span>
+                </div>
+                <div class="form-actions">
+                    <button class="btn-sm primary" onclick="saveSource()">Save</button>
+                    <button class="btn-sm" onclick="cancelForm()">Cancel</button>
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-sm primary" onclick="applySelection()">Select</button>
+            <button class="btn-sm" onclick="closeManageModal()">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<script>
+var sources = [];
+var globalSources = [];
+var linkedIds = [];
+var collapsed = true;
+var currentTab = 'schema';
+
+function send(action, data) {
+    if (window.chrome && window.chrome.webview)
+        window.chrome.webview.postMessage(JSON.stringify({ action: action, data: data || '' }));
+}
+
+// ── Tabs ──
+function switchTab(tab) {
+    currentTab = tab;
+    document.getElementById('tabSchema').classList.toggle('active', tab === 'schema');
+    document.getElementById('tabRepo').classList.toggle('active', tab === 'repo');
+    document.getElementById('tabSchemaContent').style.display = tab === 'schema' ? '' : 'none';
+    document.getElementById('tabRepoContent').style.display = tab === 'repo' ? '' : 'none';
+}
+
+// ── Source Control ──
+function onRepoChanged() {
+    var accountId = document.getElementById('repoAccount').value;
+    var repoName = document.getElementById('repoName').value.trim();
+    send('setSolutionRepo', JSON.stringify({ accountId: accountId, repoName: repoName }));
+
+    var status = document.getElementById('repoStatus');
+    if (accountId && repoName) {
+        status.textContent = 'Saved';
+        status.style.color = '#a6e3a1';
+    } else if (!accountId && !repoName) {
+        status.textContent = '';
+    } else {
+        status.textContent = 'Select both account and repo name';
+        status.style.color = '#6c7086';
+    }
+    setTimeout(function() { if (status.textContent === 'Saved') status.textContent = ''; }, 2000);
+}
+
+// ── Collapse ──
+function toggleCollapse() {
+    collapsed = !collapsed;
+    document.getElementById('chevron').classList.toggle('open', !collapsed);
+    document.getElementById('contentArea').classList.toggle('visible', !collapsed);
+    send('toggleCollapse');
+}
+
+// ── Solution sources table ──
+function renderSources() {
+    var tbody = document.getElementById('sourceBody');
+    var empty = document.getElementById('emptyMsg');
+    var countEl = document.getElementById('sourceCount');
+
+    if (sources.length === 0) {
+        tbody.innerHTML = '';
+        empty.style.display = 'block';
+        countEl.textContent = '';
+        return;
+    }
+
+    empty.style.display = 'none';
+    countEl.textContent = '(' + sources.length + ')';
+
+    var html = '';
+    for (var i = 0; i < sources.length; i++) {
+        var s = sources[i];
+        var statusClass = s.indexed ? 'indexed' : 'pending';
+        var statusText = s.indexed
+            ? s.tableCount + ' tables'
+            : 'not indexed';
+        var lastIndexed = s.lastIndexed ? formatDate(s.lastIndexed) : '\u2014';
+
+        html += '<tr data-id="' + esc(s.id) + '">'
+            + '<td>' + esc(s.name) + '</td>'
+            + '<td><span class="type-badge ' + s.type + '">' + s.type + '</span></td>'
+            + '<td><span class="status-text ' + statusClass + '" id="status-' + s.id + '">' + statusText + '</span></td>'
+            + '<td><span id="date-' + s.id + '">' + lastIndexed + '</span></td>'
+            + '<td><button class="btn-index" id="idx-' + s.id + '" onclick="indexSource(\'' + esc(s.id) + '\')">Index</button></td>'
+            + '</tr>';
+    }
+    tbody.innerHTML = html;
+}
+
+function indexSource(id) {
+    var btn = document.getElementById('idx-' + id);
+    var status = document.getElementById('status-' + id);
+    if (btn) { btn.disabled = true; btn.textContent = '...'; }
+    if (status) { status.className = 'status-text indexing'; status.textContent = 'indexing...'; }
+    send('indexSource', id);
+}
+
+function indexAll() {
+    for (var i = 0; i < sources.length; i++) {
+        indexSource(sources[i].id);
+    }
+}
+
+// ── Manage Sources Modal ──
+function openManageModal() {
+    send('modalOpened');
+    send('getGlobalSources');
+    document.getElementById('manageModal').classList.add('visible');
+    document.getElementById('listView').style.display = 'block';
+    document.getElementById('formView').classList.remove('visible');
+}
+
+function closeManageModal() {
+    document.getElementById('manageModal').classList.remove('visible');
+    send('modalClosed');
+}
+
+function renderGlobalSources() {
+    var tbody = document.getElementById('globalBody');
+    var html = '';
+    for (var i = 0; i < globalSources.length; i++) {
+        var s = globalSources[i];
+        var checked = linkedIds.indexOf(s.id) >= 0 ? ' checked' : '';
+        html += '<tr>'
+            + '<td><input type="checkbox" data-id="' + esc(s.id) + '"' + checked + '></td>'
+            + '<td>' + esc(s.name) + '</td>'
+            + '<td><span class="type-badge ' + s.type + '">' + s.type + '</span></td>'
+            + '<td>'
+            + '<button class="btn-sm" onclick="showEditForm(\'' + esc(s.id) + '\')" style="margin-right:4px">Edit</button>'
+            + '<button class="btn-sm" onclick="deleteSource(\'' + esc(s.id) + '\')">Del</button>'
+            + '</td>'
+            + '</tr>';
+    }
+    tbody.innerHTML = html;
+}
+
+function applySelection() {
+    var checks = document.querySelectorAll('#globalBody input[type=checkbox]');
+    var selected = [];
+    for (var i = 0; i < checks.length; i++) {
+        if (checks[i].checked) selected.push(checks[i].getAttribute('data-id'));
+    }
+    send('applySourceSelection', JSON.stringify(selected));
+    closeManageModal();
+}
+
+// ── Add/Edit Form ──
+function showAddForm() {
+    document.getElementById('listView').style.display = 'none';
+    document.getElementById('formView').classList.add('visible');
+    document.getElementById('formTitle').textContent = 'Add Source';
+    document.getElementById('formId').value = '';
+    document.getElementById('formType').value = 'dctx';
+    document.getElementById('formType').disabled = false;
+    document.getElementById('formName').value = '';
+    clearFormFields();
+    onTypeChange();
+}
+
+function showEditForm(id) {
+    var src = null;
+    for (var i = 0; i < globalSources.length; i++) {
+        if (globalSources[i].id === id) { src = globalSources[i]; break; }
+    }
+    if (!src) return;
+
+    document.getElementById('listView').style.display = 'none';
+    document.getElementById('formView').classList.add('visible');
+    document.getElementById('formTitle').textContent = 'Edit Source';
+    document.getElementById('formId').value = src.id;
+    document.getElementById('formType').value = src.type;
+    document.getElementById('formType').disabled = true;
+    document.getElementById('formName').value = src.name;
+
+    clearFormFields();
+    var info = {};
+    try { info = JSON.parse(src.connectionInfo || '{}'); } catch(e) {}
+
+    if (src.type === 'dctx' || src.type === 'sqlite') {
+        document.getElementById('formFilePath').value = info.filePath || '';
+    } else {
+        document.getElementById('formServer').value = info.server || '';
+        document.getElementById('formDatabase').value = info.database || '';
+        document.getElementById('formUsername').value = info.username || '';
+        document.getElementById('formPassword').value = info.password || '';
+        document.getElementById('formPassword').placeholder = info.password ? '(unchanged)' : '';
+        if (src.type === 'postgres')
+            document.getElementById('formPort').value = info.port || '5432';
+    }
+    onTypeChange();
+}
+
+function cancelForm() {
+    document.getElementById('formView').classList.remove('visible');
+    document.getElementById('listView').style.display = 'block';
+}
+
+function clearFormFields() {
+    document.getElementById('formFilePath').value = '';
+    document.getElementById('formServer').value = '';
+    document.getElementById('formPort').value = '';
+    document.getElementById('formDatabase').value = '';
+    document.getElementById('formUsername').value = '';
+    document.getElementById('formPassword').value = '';
+}
+
+function onTypeChange() {
+    var type = document.getElementById('formType').value;
+    var isFile = (type === 'dctx' || type === 'sqlite');
+    var isServer = (type === 'mssql' || type === 'postgres');
+
+    document.getElementById('fieldFilePath').style.display = isFile ? '' : 'none';
+    document.getElementById('fieldServer').style.display = isServer ? '' : 'none';
+    document.getElementById('fieldPort').style.display = type === 'postgres' ? '' : 'none';
+    document.getElementById('fieldDatabase').style.display = isServer ? '' : 'none';
+    document.getElementById('fieldUsername').style.display = isServer ? '' : 'none';
+    document.getElementById('fieldPassword').style.display = isServer ? '' : 'none';
+    document.getElementById('fieldTestConn').style.display = isServer ? '' : 'none';
+    document.getElementById('testConnResult').textContent = '';
+    document.getElementById('testConnResult').className = 'status-text';
+}
+
+function saveSource() {
+    var id = document.getElementById('formId').value;
+    var type = document.getElementById('formType').value;
+    var name = document.getElementById('formName').value.trim();
+    if (!name) { document.getElementById('formName').focus(); return; }
+
+    var connInfo = {};
+    if (type === 'dctx' || type === 'sqlite') {
+        connInfo.filePath = document.getElementById('formFilePath').value.trim();
+        if (!connInfo.filePath) { document.getElementById('formFilePath').focus(); return; }
+    } else {
+        connInfo.server = document.getElementById('formServer').value.trim();
+        connInfo.database = document.getElementById('formDatabase').value.trim();
+        connInfo.username = document.getElementById('formUsername').value.trim();
+        connInfo.password = document.getElementById('formPassword').value;
+        if (type === 'postgres')
+            connInfo.port = document.getElementById('formPort').value.trim() || '5432';
+        if (!connInfo.server || !connInfo.database) {
+            document.getElementById(connInfo.server ? 'formDatabase' : 'formServer').focus();
+            return;
+        }
+    }
+
+    var payload = JSON.stringify({ id: id, name: name, type: type, connectionInfo: JSON.stringify(connInfo) });
+    send(id ? 'editSource' : 'addSource', payload);
+
+    cancelForm();
+}
+
+function deleteSource(id) {
+    send('deleteSource', id);
+}
+
+function testConnection() {
+    var type = document.getElementById('formType').value;
+    var connInfo = {
+        server: document.getElementById('formServer').value.trim(),
+        database: document.getElementById('formDatabase').value.trim(),
+        username: document.getElementById('formUsername').value.trim(),
+        password: document.getElementById('formPassword').value
+    };
+    if (type === 'postgres')
+        connInfo.port = document.getElementById('formPort').value.trim() || '5432';
+
+    var btn = document.getElementById('btnTestConn');
+    var result = document.getElementById('testConnResult');
+    btn.disabled = true;
+    btn.textContent = 'Testing...';
+    result.textContent = '';
+    result.className = 'status-text';
+
+    send('testConnection', JSON.stringify({ type: type, connectionInfo: JSON.stringify(connInfo) }));
+}
+
+function browseFile() {
+    var editId = document.getElementById('formId').value || 'new';
+    var type = document.getElementById('formType').value;
+    send('browseFile', JSON.stringify({ editId: editId, type: type }));
+}
+
+// ── Message handlers from C# ──
+if (window.chrome && window.chrome.webview) {
+    window.chrome.webview.addEventListener('message', function(e) {
+        var msg = e.data;
+        if (typeof msg === 'string') try { msg = JSON.parse(msg); } catch(ex) { return; }
+
+        if (msg.type === 'setSources') {
+            sources = msg.items || [];
+            renderSources();
+        }
+        if (msg.type === 'setGlobalSources') {
+            globalSources = msg.items || [];
+            linkedIds = msg.linkedIds || [];
+            renderGlobalSources();
+        }
+        if (msg.type === 'indexStatus') {
+            var statusEl = document.getElementById('status-' + msg.sourceId);
+            var dateEl = document.getElementById('date-' + msg.sourceId);
+            var btnEl = document.getElementById('idx-' + msg.sourceId);
+            var st = msg.status || {};
+            if (st.error) {
+                if (statusEl) { statusEl.className = 'status-text error'; statusEl.textContent = 'error'; }
+                if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Index'; }
+            } else {
+                if (statusEl) {
+                    statusEl.className = 'status-text indexed';
+                    statusEl.textContent = (st.tableCount || 0) + ' tables';
+                }
+                if (dateEl) dateEl.textContent = formatDate(st.lastIndexed);
+                if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Index'; }
+                // Update local source data
+                for (var i = 0; i < sources.length; i++) {
+                    if (sources[i].id === msg.sourceId) {
+                        sources[i].indexed = true;
+                        sources[i].tableCount = st.tableCount;
+                        sources[i].lastIndexed = st.lastIndexed;
+                    }
+                }
+            }
+        }
+        if (msg.type === 'testConnectionResult') {
+            var btn = document.getElementById('btnTestConn');
+            var result = document.getElementById('testConnResult');
+            if (btn) { btn.disabled = false; btn.textContent = 'Test Connection'; }
+            if (result) {
+                if (msg.success) {
+                    result.className = 'status-text indexed';
+                    result.textContent = msg.message || 'Connected!';
+                } else {
+                    result.className = 'status-text error';
+                    result.textContent = msg.message || 'Failed';
+                }
+            }
+        }
+        if (msg.type === 'setRepoAccounts') {
+            var sel = document.getElementById('repoAccount');
+            var curVal = sel.value;
+            sel.innerHTML = '<option value="">(none)</option>';
+            (msg.accounts || []).forEach(function(a) {
+                var opt = document.createElement('option');
+                opt.value = a.id;
+                var provIcon = a.provider === 'bitbucket' ? 'BB' : 'GH';
+                opt.textContent = a.displayName + ' [' + provIcon + '] (' + a.username + ')';
+                sel.appendChild(opt);
+            });
+            sel.value = curVal;
+        }
+        if (msg.type === 'setSolutionRepo') {
+            document.getElementById('repoAccount').value = msg.accountId || '';
+            document.getElementById('repoName').value = msg.repoName || '';
+        }
+        if (msg.type === 'browseResult') {
+            document.getElementById('formFilePath').value = msg.path || '';
+        }
+        if (msg.type === 'setTheme') {
+            document.body.classList.toggle('light', msg.theme === 'light');
+        }
+        if (msg.type === 'setCollapsed') {
+            collapsed = msg.collapsed;
+            document.getElementById('chevron').classList.toggle('open', !collapsed);
+            document.getElementById('contentArea').classList.toggle('visible', !collapsed);
+        }
+    });
+}
+
+function formatDate(iso) {
+    if (!iso) return '\u2014';
+    try {
+        var d = new Date(iso);
+        var mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        return mon[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getHours() + ':' + (d.getMinutes() < 10 ? '0' : '') + d.getMinutes();
+    } catch(e) { return iso; }
+}
+
+function esc(s) {
+    if (!s) return '';
+    var d = document.createElement('div');
+    d.appendChild(document.createTextNode(s));
+    return d.innerHTML;
+}
+
+// Signal ready
+window.addEventListener('load', function() { send('schemaSourcesReady'); });
+
+// Close modal on Escape
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        if (document.getElementById('formView').classList.contains('visible')) {
+            cancelForm();
+        } else if (document.getElementById('manageModal').classList.contains('visible')) {
+            closeManageModal();
+        }
+    }
+});
+</script>
+</body>
+</html>

@@ -287,6 +287,7 @@
     <div class="nav-item" onclick="showPage('data')">Data</div>
     <div class="nav-item" onclick="showPage('general')">General</div>
     <div class="nav-item" onclick="showPage('launch')">Launch</div>
+    <div class="nav-item" onclick="showPage('github')">Source Control</div>
     <div class="nav-item" onclick="showPage('about')">About</div>
   </nav>
 
@@ -352,11 +353,13 @@
       </div>
 
       <div class="field-desc" style="margin-bottom:8px">Add your own documentation to the personal knowledge graph:</div>
-      <div class="path-list" id="docPaths"></div>
-      <div class="input-row" style="margin-top:6px">
+      <div class="input-row" style="margin-bottom:8px">
         <button class="btn btn-sm" onclick="send('browseDocPath')">+ Add Folder</button>
         <button class="btn btn-sm" onclick="send('browseDocFile')">+ Add Document</button>
+        <button class="btn btn-sm" id="btnImportDocs" onclick="importDocs()" style="display:none;background:var(--accent);color:#fff;border-color:var(--accent)">Import Now</button>
+        <span id="importStatus" style="font-size:12px;margin-left:6px"></span>
       </div>
+      <div class="path-list" id="docPaths"></div>
     </div>
 
     <!-- General -->
@@ -424,12 +427,65 @@
       </div>
     </div>
 
+    <!-- GitHub -->
+    <div class="page" id="page-github">
+      <h2>Source Control Accounts</h2>
+      <div class="field-desc" style="margin-bottom:12px">Manage GitHub and Bitbucket accounts for pushing builds and managing repositories from your projects.</div>
+
+      <table style="width:100%;border-collapse:collapse;margin-bottom:10px" id="ghTable">
+        <thead>
+          <tr>
+            <th style="text-align:left;font-size:11px;font-weight:600;color:var(--section-fg);padding:6px 8px;border-bottom:1px solid var(--input-border)">DISPLAY NAME</th>
+            <th style="text-align:left;font-size:11px;font-weight:600;color:var(--section-fg);padding:6px 8px;border-bottom:1px solid var(--input-border);width:80px">PROVIDER</th>
+            <th style="text-align:left;font-size:11px;font-weight:600;color:var(--section-fg);padding:6px 8px;border-bottom:1px solid var(--input-border)">USERNAME</th>
+            <th style="width:120px;text-align:right;font-size:11px;font-weight:600;color:var(--section-fg);padding:6px 8px;border-bottom:1px solid var(--input-border)"></th>
+          </tr>
+        </thead>
+        <tbody id="ghBody"></tbody>
+      </table>
+      <div id="ghEmpty" style="color:var(--desc-fg);font-size:12px;font-style:italic;padding:8px 0;display:none">No GitHub accounts configured.</div>
+
+      <button class="btn" onclick="showGhForm()" style="margin-top:4px">+ Add Account</button>
+
+      <!-- Add/Edit form (inline, shown/hidden) -->
+      <div id="ghForm" style="display:none;margin-top:16px;padding:16px;background:var(--card-bg);border:1px solid var(--card-border);border-radius:8px">
+        <h3 style="margin-top:0" id="ghFormTitle">Add Account</h3>
+        <input type="hidden" id="ghFormId" value="">
+        <div class="field">
+          <div class="field-label">Provider</div>
+          <select id="ghProvider" onchange="onProviderChange()">
+            <option value="github">GitHub</option>
+            <option value="bitbucket">Bitbucket</option>
+          </select>
+        </div>
+        <div class="field">
+          <div class="field-label">Display Name</div>
+          <input type="text" id="ghDisplayName" placeholder="e.g. My GitHub">
+        </div>
+        <div class="field">
+          <div class="field-label">Username</div>
+          <input type="text" id="ghUsername" placeholder="e.g. clarionlive">
+        </div>
+        <div class="field">
+          <div class="field-label">Personal Access Token</div>
+          <input type="text" id="ghToken" placeholder="ghp_..." style="font-family:'Cascadia Mono',Consolas,monospace;font-size:12px">
+          <div class="field-desc" id="ghTokenDesc">Generate a token at GitHub &rarr; Settings &rarr; Developer settings &rarr; Personal access tokens</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+          <button class="btn" style="background:var(--accent);color:#fff;border-color:var(--accent)" onclick="saveGhAccount()">Save</button>
+          <button class="btn" onclick="cancelGhForm()">Cancel</button>
+          <button class="btn" id="ghTestBtn" onclick="testGhToken()">Test</button>
+          <span id="ghTestResult" style="font-size:12px;margin-left:4px"></span>
+        </div>
+      </div>
+    </div>
+
     <!-- About -->
     <div class="page" id="page-about">
       <h2>Clarion Assistant</h2>
       <div style="display:flex;flex-direction:column;gap:16px">
         <div class="about-card">
-          <div class="about-version">Version 2.0.0</div>
+          <div class="about-version">Version 3.0.0</div>
           <div class="about-desc">AI-powered development assistant for the Clarion IDE</div>
         </div>
         <div class="about-card">
@@ -472,6 +528,7 @@
     <div class="overlay-body" id="docInfoBody" style="height:300px">Loading...</div>
     <div class="overlay-toolbar" id="docToolbar">
       <button class="btn btn-sm btn-danger" id="btnRemoveLibs" disabled onclick="removeSelectedLibraries()">Remove Selected</button>
+      <button class="btn btn-sm btn-danger" id="btnRemoveAll" onclick="removeAllPersonal()" style="margin-left:8px">Remove All Personal</button>
       <span class="sel-count" id="selCount">0 selected</span>
     </div>
   </div>
@@ -542,11 +599,14 @@
 
   function renderDocPaths(paths) {
     var container = document.getElementById('docPaths');
+    var importBtn = document.getElementById('btnImportDocs');
     container.innerHTML = '';
     if (!paths || paths.length === 0) {
       container.innerHTML = '<div style="color:var(--desc-fg);font-size:12px;padding:4px 0">No documentation sources added.</div>';
+      if (importBtn) importBtn.style.display = 'none';
       return;
     }
+    if (importBtn) importBtn.style.display = '';
     paths.forEach(function(p, i) {
       var item = document.createElement('div');
       item.className = 'path-item';
@@ -554,6 +614,17 @@
         '<button class="btn-remove" onclick="removeDocPath(' + i + ')" title="Remove">&times;</button>';
       container.appendChild(item);
     });
+  }
+
+  function importDocs() {
+    var paths = currentSettings.docPaths || [];
+    if (paths.length === 0) return;
+    var btn = document.getElementById('btnImportDocs');
+    var status = document.getElementById('importStatus');
+    btn.disabled = true; btn.textContent = 'Importing...';
+    status.textContent = '';
+    status.style.color = '';
+    send('importDocPaths', JSON.stringify(paths));
   }
 
   function removeDocPath(index) {
@@ -622,8 +693,8 @@
     // Header
     var html = '<div style="display:flex;align-items:center;gap:8px;padding:0 0 6px;border-bottom:1px solid var(--card-border);font-size:11px;color:var(--section-fg);font-weight:600">';
     if (isPersonal) html += '<div style="width:15px"></div>';
-    html += '<div style="flex:1">Library</div><div style="width:90px">Vendor</div>';
-    if (isPersonal) html += '<div style="width:120px">Tags</div>';
+    html += '<div style="flex:1">Library</div>';
+    if (!isPersonal) html += '<div style="width:90px">Vendor</div>';
     html += '<div style="width:50px;text-align:right">Chunks</div></div>';
 
     // Rows
@@ -632,10 +703,18 @@
       if (isPersonal) {
         html += '<input type="checkbox" data-libid="' + lib.id + '" onchange="updateSelCount()">';
       }
-      html += '<div class="lib-name" title="' + esc(lib.name).replace(/"/g,'&quot;') + '">' + esc(lib.name) + '</div>';
-      html += '<div class="lib-vendor" title="' + esc(lib.vendor).replace(/"/g,'&quot;') + '">' + esc(lib.vendor) + '</div>';
-      if (isPersonal) {
-        html += '<input type="text" class="lib-tags" placeholder="add tags..." value="' + (lib.tags || '').replace(/"/g,'&quot;') + '" data-libid="' + lib.id + '" onblur="saveLibTags(this)">';
+      // For personal: show name + source path for clarity
+      var displayName = esc(lib.name);
+      var tooltip = lib.path ? esc(lib.path) : esc(lib.name);
+      if (isPersonal && lib.path) {
+        // Show filename from path, with full path as tooltip
+        var fname = lib.path.replace(/\\/g,'/').split('/').pop();
+        displayName = '<span style="font-weight:500">' + esc(fname) + '</span>';
+        displayName += '<span style="color:var(--desc-fg);font-size:11px;margin-left:6px">' + esc(lib.path) + '</span>';
+      }
+      html += '<div class="lib-name" title="' + tooltip.replace(/"/g,'&quot;') + '">' + displayName + '</div>';
+      if (!isPersonal) {
+        html += '<div class="lib-vendor" title="' + esc(lib.vendor).replace(/"/g,'&quot;') + '">' + esc(lib.vendor) + '</div>';
       }
       html += '<div class="lib-chunks">' + (lib.chunks || 0) + '</div>';
       html += '</div>';
@@ -658,6 +737,15 @@
     var ids = [];
     checks.forEach(function(cb) { ids.push(parseInt(cb.dataset.libid)); });
     if (!confirm('Remove ' + ids.length + ' librar' + (ids.length === 1 ? 'y' : 'ies') + ' from the personal docgraph?')) return;
+    send('removeDocLibraries', { ids: ids });
+  }
+
+  function removeAllPersonal() {
+    if (!_docData || !_docData.items) return;
+    var ids = [];
+    _docData.items.forEach(function(lib) { if (lib.source === 'personal') ids.push(lib.id); });
+    if (ids.length === 0) return;
+    if (!confirm('Remove all ' + ids.length + ' personal libraries from the docgraph?')) return;
     send('removeDocLibraries', { ids: ids });
   }
 
@@ -745,6 +833,113 @@
     if (e.key === 'Enter') cmdDialogOk();
     if (e.key === 'Escape') cmdDialogCancel();
   });
+
+  // ── GitHub Accounts ──
+  var ghAccounts = [];
+
+  function renderGhAccounts() {
+    var tbody = document.getElementById('ghBody');
+    var empty = document.getElementById('ghEmpty');
+    if (ghAccounts.length === 0) {
+      tbody.innerHTML = '';
+      empty.style.display = 'block';
+      return;
+    }
+    empty.style.display = 'none';
+    var html = '';
+    for (var i = 0; i < ghAccounts.length; i++) {
+      var a = ghAccounts[i];
+      var provLabel = (a.provider === 'bitbucket') ? 'Bitbucket' : 'GitHub';
+      html += '<tr>'
+        + '<td style="padding:6px 8px;border-bottom:1px solid var(--input-border);font-size:13px">' + esc(a.displayName) + '</td>'
+        + '<td style="padding:6px 8px;border-bottom:1px solid var(--input-border);font-size:12px;color:var(--section-fg)">' + provLabel + '</td>'
+        + '<td style="padding:6px 8px;border-bottom:1px solid var(--input-border);font-size:13px;color:var(--section-fg)">' + esc(a.username) + '</td>'
+        + '<td style="padding:6px 8px;border-bottom:1px solid var(--input-border);text-align:right">'
+        + '<button class="btn btn-sm" onclick="editGhAccount(\'' + esc(a.id) + '\')" style="margin-right:4px">Edit</button>'
+        + '<button class="btn btn-sm" onclick="deleteGhAccount(\'' + esc(a.id) + '\')">Delete</button>'
+        + '</td></tr>';
+    }
+    tbody.innerHTML = html;
+  }
+
+  function showGhForm(id) {
+    var form = document.getElementById('ghForm');
+    form.style.display = 'block';
+    document.getElementById('ghTestResult').textContent = '';
+    document.getElementById('ghTestBtn').disabled = false;
+    document.getElementById('ghTestBtn').textContent = 'Test';
+    if (id) {
+      var acct = null;
+      for (var i = 0; i < ghAccounts.length; i++) { if (ghAccounts[i].id === id) { acct = ghAccounts[i]; break; } }
+      if (!acct) return;
+      document.getElementById('ghFormTitle').textContent = 'Edit Account';
+      document.getElementById('ghFormId').value = acct.id;
+      document.getElementById('ghProvider').value = acct.provider || 'github';
+      document.getElementById('ghProvider').disabled = true;
+      document.getElementById('ghDisplayName').value = acct.displayName;
+      document.getElementById('ghUsername').value = acct.username;
+      document.getElementById('ghToken').value = acct.token || '';
+      document.getElementById('ghToken').placeholder = acct.token ? '(unchanged)' : '';
+      onProviderChange();
+    } else {
+      document.getElementById('ghFormTitle').textContent = 'Add Account';
+      document.getElementById('ghFormId').value = '';
+      document.getElementById('ghProvider').value = 'github';
+      document.getElementById('ghProvider').disabled = false;
+      document.getElementById('ghDisplayName').value = '';
+      document.getElementById('ghUsername').value = '';
+      document.getElementById('ghToken').value = '';
+      onProviderChange();
+    }
+  }
+
+  function editGhAccount(id) { showGhForm(id); }
+
+  function cancelGhForm() {
+    document.getElementById('ghForm').style.display = 'none';
+  }
+
+  function saveGhAccount() {
+    var id = document.getElementById('ghFormId').value;
+    var displayName = document.getElementById('ghDisplayName').value.trim();
+    var username = document.getElementById('ghUsername').value.trim();
+    var token = document.getElementById('ghToken').value;
+    if (!displayName) { document.getElementById('ghDisplayName').focus(); return; }
+    if (!username) { document.getElementById('ghUsername').focus(); return; }
+    var provider = document.getElementById('ghProvider').value;
+    var payload = JSON.stringify({ id: id, displayName: displayName, username: username, token: token, provider: provider });
+    send(id ? 'editGitHubAccount' : 'addGitHubAccount', payload);
+    cancelGhForm();
+  }
+
+  function deleteGhAccount(id) {
+    if (!confirm('Delete this GitHub account?')) return;
+    send('deleteGitHubAccount', id);
+  }
+
+  function onProviderChange() {
+    var prov = document.getElementById('ghProvider').value;
+    var desc = document.getElementById('ghTokenDesc');
+    var tokenField = document.getElementById('ghToken');
+    if (prov === 'bitbucket') {
+      desc.innerHTML = 'Create an App Password at Bitbucket &rarr; Personal settings &rarr; App passwords';
+      if (!tokenField.value) tokenField.placeholder = 'App password';
+    } else {
+      desc.innerHTML = 'Generate a token at GitHub &rarr; Settings &rarr; Developer settings &rarr; Personal access tokens';
+      if (!tokenField.value) tokenField.placeholder = 'ghp_...';
+    }
+  }
+
+  function testGhToken() {
+    var token = document.getElementById('ghToken').value;
+    var id = document.getElementById('ghFormId').value;
+    if (!token && !id) { document.getElementById('ghToken').focus(); return; }
+    var btn = document.getElementById('ghTestBtn');
+    var result = document.getElementById('ghTestResult');
+    btn.disabled = true; btn.textContent = 'Testing...';
+    result.textContent = '';
+    send('testGitHubToken', JSON.stringify({ token: token, id: id }));
+  }
 
   function saveAndClose() {
     var data = {
@@ -840,6 +1035,31 @@
       } else {
         sum.textContent = 'No data';
         sum.className = 'status status-warning';
+      }
+    }
+
+    if (msg.type === 'setGitHubAccounts') {
+      ghAccounts = msg.accounts || [];
+      renderGhAccounts();
+    }
+
+    if (msg.type === 'testGitHubResult') {
+      var btn = document.getElementById('ghTestBtn');
+      var result = document.getElementById('ghTestResult');
+      if (btn) { btn.disabled = false; btn.textContent = 'Test'; }
+      if (result) {
+        result.style.color = msg.success ? 'var(--success)' : 'var(--danger)';
+        result.textContent = msg.message || '';
+      }
+    }
+
+    if (msg.type === 'importDocResult') {
+      var btn = document.getElementById('btnImportDocs');
+      var status = document.getElementById('importStatus');
+      if (btn) { btn.disabled = false; btn.textContent = 'Import Now'; }
+      if (status) {
+        status.style.color = msg.success ? 'var(--success)' : 'var(--danger)';
+        status.textContent = msg.message || '';
       }
     }
 

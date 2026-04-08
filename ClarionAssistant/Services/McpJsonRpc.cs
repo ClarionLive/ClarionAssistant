@@ -185,9 +185,23 @@ namespace ClarionAssistant.Services
             string[] required = null)
         {
             var props = new Dictionary<string, object>();
+            var requiredList = required != null ? new List<string>(required) : new List<string>();
+
             foreach (var kv in properties)
             {
-                props[kv.Key] = new Dictionary<string, object>
+                string key = kv.Key;
+                if (key.EndsWith("?"))
+                {
+                    // Trailing '?' marks the property as optional — strip it from the key
+                    key = key.Substring(0, key.Length - 1);
+                }
+                else if (required == null)
+                {
+                    // No explicit required array: keys without '?' are required
+                    requiredList.Add(key);
+                }
+
+                props[key] = new Dictionary<string, object>
                 {
                     { "type", "string" },
                     { "description", kv.Value }
@@ -200,8 +214,8 @@ namespace ClarionAssistant.Services
                 { "properties", props }
             };
 
-            if (required != null)
-                schema["required"] = required;
+            if (requiredList.Count > 0)
+                schema["required"] = requiredList.ToArray();
 
             return schema;
         }

@@ -43,6 +43,12 @@ namespace ClarionAssistant.Terminal
         /// <summary>Whether Claude Code has been launched in this tab.</summary>
         public bool ClaudeLaunched { get; set; }
 
+        /// <summary>Skill command to auto-run after Claude starts (e.g. "/ClarionCOM").</summary>
+        public string StartupCommand { get; set; }
+
+        /// <summary>Schema sources panel for this tab (null for Home tab).</summary>
+        public SchemaSourcesView SchemaSourcesView { get; set; }
+
         private bool _disposed;
 
         public TerminalTab()
@@ -66,6 +72,12 @@ namespace ClarionAssistant.Terminal
             {
                 try { Renderer.Dispose(); } catch { }
                 Renderer = null;
+            }
+
+            if (SchemaSourcesView != null)
+            {
+                try { SchemaSourcesView.Dispose(); } catch { }
+                SchemaSourcesView = null;
             }
 
             ContentControl = null;

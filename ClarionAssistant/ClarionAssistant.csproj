@@ -10,13 +10,19 @@
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Clarion version: 10, 11, or 12 (default). Pass /p:ClarionVersion=10 to build for Clarion 10. -->
+    <ClarionVersion Condition=" '$(ClarionVersion)' == '' ">12</ClarionVersion>
+    <ClarionRoot Condition=" '$(ClarionVersion)' == '12' ">C:\Clarion12</ClarionRoot>
+    <ClarionRoot Condition=" '$(ClarionVersion)' == '11' ">C:\Clarion11-13372</ClarionRoot>
+    <ClarionRoot Condition=" '$(ClarionVersion)' == '10' ">C:\Clarion10</ClarionRoot>
+    <OutputPath Condition=" '$(Configuration)' == 'Debug' ">bin\Debug-C$(ClarionVersion)\</OutputPath>
+    <OutputPath Condition=" '$(Configuration)' == 'Release' ">bin\Release-C$(ClarionVersion)\</OutputPath>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <PlatformTarget>x86</PlatformTarget>
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
-    <OutputPath>bin\Debug\</OutputPath>
     <DefineConstants>DEBUG;TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
@@ -25,7 +31,6 @@
     <PlatformTarget>x86</PlatformTarget>
     <DebugType>pdbonly</DebugType>
     <Optimize>true</Optimize>
-    <OutputPath>bin\Release\</OutputPath>
     <DefineConstants>TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
@@ -38,16 +43,17 @@
     <Reference Include="System.Web.Extensions" />
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Xml" />
+    <Reference Include="System.Security" />
     <Reference Include="System.Data.SQLite">
       <HintPath>lib\sqlite-fts5\System.Data.SQLite.dll</HintPath>
       <Private>True</Private>
     </Reference>
     <Reference Include="ICSharpCode.Core">
-      <HintPath>C:\Clarion12\bin\ICSharpCode.Core.dll</HintPath>
+      <HintPath>$(ClarionRoot)\bin\ICSharpCode.Core.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="ICSharpCode.SharpDevelop">
-      <HintPath>C:\Clarion12\bin\ICSharpCode.SharpDevelop.dll</HintPath>
+      <HintPath>$(ClarionRoot)\bin\ICSharpCode.SharpDevelop.dll</HintPath>
       <Private>False</Private>
     </Reference>
   </ItemGroup>
@@ -96,11 +102,51 @@
     <Compile Include="Services\InstanceCoordinationService.cs" />
     <Compile Include="Services\ClarionTraceService.cs" />
     <Compile Include="Services\EverythingService.cs" />
+    <Compile Include="Services\SchemaGraphService.cs" />
+    <Compile Include="Terminal\SchemaSourcesView.cs" />
+    <Compile Include="Terminal\WebViewZoomHelper.cs" />
     <Compile Include="Models\MultiTerminalModels.cs" />
     <Compile Include="Services\MultiTerminalApiClient.cs" />
     <Compile Include="Services\ClaudeProcessManager.cs" />
     <Compile Include="TaskLifecycleBoard\TaskLifecycleBoardForm.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <!-- CodeGraph engine - linked from ClarionCodeGraphAddin (no IDE dependencies) -->
+    <Compile Include="..\..\ClarionCodeGraphAddin\ClarionCodeGraph\Graph\CodeGraphDatabase.cs">
+      <Link>CodeGraph\CodeGraphDatabase.cs</Link>
+    </Compile>
+    <Compile Include="..\..\ClarionCodeGraphAddin\ClarionCodeGraph\Graph\CodeGraphIndexer.cs">
+      <Link>CodeGraph\CodeGraphIndexer.cs</Link>
+    </Compile>
+    <Compile Include="..\..\ClarionCodeGraphAddin\ClarionCodeGraph\Graph\CodeGraphQuery.cs">
+      <Link>CodeGraph\CodeGraphQuery.cs</Link>
+    </Compile>
+    <Compile Include="..\..\ClarionCodeGraphAddin\ClarionCodeGraph\Parsing\ClarionParser.cs">
+      <Link>CodeGraph\ClarionParser.cs</Link>
+    </Compile>
+    <Compile Include="..\..\ClarionCodeGraphAddin\ClarionCodeGraph\Parsing\ClarionBuiltins.cs">
+      <Link>CodeGraph\ClarionBuiltins.cs</Link>
+    </Compile>
+    <Compile Include="..\..\ClarionCodeGraphAddin\ClarionCodeGraph\Parsing\SolutionParser.cs">
+      <Link>CodeGraph\SolutionParser.cs</Link>
+    </Compile>
+    <Compile Include="..\..\ClarionCodeGraphAddin\ClarionCodeGraph\Parsing\ProjectParser.cs">
+      <Link>CodeGraph\ProjectParser.cs</Link>
+    </Compile>
+    <Compile Include="..\..\ClarionCodeGraphAddin\ClarionCodeGraph\Parsing\SourceResolver.cs">
+      <Link>CodeGraph\SourceResolver.cs</Link>
+    </Compile>
+    <Compile Include="..\..\ClarionCodeGraphAddin\ClarionCodeGraph\Parsing\Models\ClarionSymbol.cs">
+      <Link>CodeGraph\ClarionSymbol.cs</Link>
+    </Compile>
+    <Compile Include="..\..\ClarionCodeGraphAddin\ClarionCodeGraph\Parsing\Models\ClarionRelationship.cs">
+      <Link>CodeGraph\ClarionRelationship.cs</Link>
+    </Compile>
+    <Compile Include="..\..\ClarionCodeGraphAddin\ClarionCodeGraph\Parsing\Models\SolutionProject.cs">
+      <Link>CodeGraph\SolutionProject.cs</Link>
+    </Compile>
+    <Compile Include="..\..\ClarionCodeGraphAddin\ClarionCodeGraph\Parsing\Models\ParseResult.cs">
+      <Link>CodeGraph\ParseResult.cs</Link>
+    </Compile>
   </ItemGroup>
   <ItemGroup>
     <Content Include="ClarionAssistant.addin">
@@ -110,6 +156,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Terminal\header.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Terminal\schema-sources.html">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Terminal\home.html">

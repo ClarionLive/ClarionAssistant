@@ -498,31 +498,8 @@ Use this tool to discover IDE APIs and understand what's available for automatio
 
             // === Application Tree Tools ===
 
-            Register(new McpTool
-            {
-                Name = "open_app",
-                Description = "Open a Clarion .app file in the IDE. The app must be loaded before listing procedures or opening embeds.",
-                InputSchema = McpJsonRpc.BuildSchema(
-                    new Dictionary<string, string> { { "path", "Absolute path to the .app file" } },
-                    new[] { "path" }),
-                RequiresUiThread = true,
-                Handler = args =>
-                {
-                    string path = McpJsonRpc.GetString(args, "path");
-                    if (string.IsNullOrEmpty(path) || !File.Exists(path))
-                        return "Error: .app file not found: " + path;
-                    return _appTree.OpenApp(path) ? "App opened: " + path : "Error: could not open app";
-                }
-            });
-
-            Register(new McpTool
-            {
-                Name = "close_app",
-                Description = "Close the currently open Clarion .app file. Use before closing a solution or switching to a different app.",
-                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args => _appTree.CloseApp()
-            });
+            // open_app and close_app removed — opening/closing apps from the assistant
+            // can break the IDE. The developer opens and closes apps manually.
 
             Register(new McpTool
             {
@@ -653,6 +630,138 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                 Handler = args => _appTree.CancelEmbeditor()
             });
 
+            Register(new McpTool
+            {
+                Name = "open_embeditor_source",
+                Description = "Open the module .clw source file for the procedure currently displayed in the embeditor. " +
+                    "Parses the module filename from the embeditor header and opens it in the text editor.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                RequiresUiThread = true,
+                Handler = args =>
+                {
+                    try
+                    {
+                        var workbench = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
+                        if (workbench == null)
+                            return new Dictionary<string, object> { { "error", "No workbench" } };
+
+                        var activeWindow = workbench.ActiveWorkbenchWindow;
+                        if (activeWindow == null)
+                            return new Dictionary<string, object> { { "error", "No active window" } };
+
+                        var viewContent = activeWindow.ViewContent;
+                        if (viewContent == null)
+                            return new Dictionary<string, object> { { "error", "No view content" } };
+
+                        // Get HeaderTitle: "ProcName - Embeditor - (module001.clw)"
+                        var headerProp = viewContent.GetType().GetProperty("HeaderTitle",
+                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                        string headerTitle = headerProp?.GetValue(viewContent, null) as string;
+                        if (string.IsNullOrEmpty(headerTitle))
+                            return new Dictionary<string, object> { { "error", "Not in an embeditor window" } };
+
+                        // Parse .clw filename from parentheses
+                        var match = System.Text.RegularExpressions.Regex.Match(headerTitle, @"\(([^)]+\.clw)\)",
+                            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        if (!match.Success)
+                            return new Dictionary<string, object> { { "error", "No module name found in: " + headerTitle } };
+
+                        string clwFileName = match.Groups[1].Value;
+
+                        // Get app directory from ViewContent.FileName
+                        string appFilePath = viewContent.FileName;
+                        if (string.IsNullOrEmpty(appFilePath))
+                            return new Dictionary<string, object> { { "error", "Could not determine app file path" } };
+
+                        string appDir = Path.GetDirectoryName(appFilePath);
+                        string clwFullPath = Path.Combine(appDir, clwFileName);
+
+                        // Search subdirectories if not in app dir (e.g. source\ subfolder)
+                        if (!File.Exists(clwFullPath))
+                        {
+                            string[] found = Directory.GetFiles(appDir, clwFileName, SearchOption.AllDirectories);
+                            if (found.Length > 0)
+                                clwFullPath = found[0];
+                            else
+                                return new Dictionary<string, object> { { "error", "File not found: " + clwFileName + " in " + appDir } };
+                        }
+
+                        // Open in editor
+                        _editorService.NavigateToFileAndLine(clwFullPath, 1);
+
+                        return new Dictionary<string, object>
+                        {
+                            { "success", true },
+                            { "file", clwFullPath },
+                            { "module", clwFileName },
+                            { "header", headerTitle }
+                        };
+                    }
+                    catch (Exception ex)
+                    {
+                        return new Dictionary<string, object> { { "error", ex.Message } };
+                    }
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "execute_command",
+                Description = "Execute a registered SharpDevelop/Clarion IDE addin command by class name. " +
+                    "Instantiates the command and calls Run(). Use to invoke toolbar buttons, menu commands, " +
+                    "or any AbstractMenuCommand/AbstractCommand class loaded by an addin. " +
+                    "Example: execute_command(class_name: 'OpenSourceButton.OpenSourceCommand')",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "class_name", "Fully qualified class name of the command to execute (e.g. 'OpenSourceButton.OpenSourceCommand')" }
+                }),
+                RequiresUiThread = true,
+                Handler = args =>
+                {
+                    string className = args.ContainsKey("class_name") ? args["class_name"]?.ToString() : null;
+                    if (string.IsNullOrEmpty(className))
+                        return new Dictionary<string, object> { { "error", "class_name is required" } };
+
+                    try
+                    {
+                        // Search all loaded assemblies for the command type
+                        Type cmdType = null;
+                        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                        {
+                            try
+                            {
+                                cmdType = asm.GetType(className, false);
+                                if (cmdType != null) break;
+                            }
+                            catch { }
+                        }
+
+                        if (cmdType == null)
+                            return new Dictionary<string, object> { { "error", "Class not found: " + className } };
+
+                        var cmd = Activator.CreateInstance(cmdType);
+                        var runMethod = cmdType.GetMethod("Run");
+                        if (runMethod == null)
+                            return new Dictionary<string, object> { { "error", "No Run() method on: " + className } };
+
+                        runMethod.Invoke(cmd, null);
+                        return new Dictionary<string, object>
+                        {
+                            { "success", true },
+                            { "command", className }
+                        };
+                    }
+                    catch (Exception ex)
+                    {
+                        return new Dictionary<string, object>
+                        {
+                            { "error", ex.InnerException != null ? ex.InnerException.Message : ex.Message },
+                            { "command", className }
+                        };
+                    }
+                }
+            });
+
             // === Embed Navigation Tools ===
 
             Register(new McpTool
@@ -762,87 +871,11 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                 }
             });
 
-            Register(new McpTool
-            {
-                Name = "open_solution",
-                Description = "Open a Clarion solution (.sln) or project (.cwproj) file in the IDE. Prompts to save the current solution if one is open.",
-                InputSchema = McpJsonRpc.BuildSchema(
-                    new Dictionary<string, string> { { "path", "Absolute path to the .sln or .cwproj file" } },
-                    new[] { "path" }),
-                RequiresUiThread = true,
-                Handler = args =>
-                {
-                    string path = McpJsonRpc.GetString(args, "path");
-                    if (string.IsNullOrEmpty(path))
-                        return "Error: path is required";
-                    string result = EditorService.OpenSolution(path);
-                    _chatControl?.DetectFromIde();
-                    return result;
-                }
-            });
+            // open_solution and close_solution removed — opening/closing solutions from
+            // the assistant can break the IDE. The developer manages solutions manually.
 
-            Register(new McpTool
-            {
-                Name = "close_solution",
-                Description = "Close the currently open Clarion solution. Close any open .app files first with close_app.",
-                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args =>
-                {
-                    string result = EditorService.CloseSolution();
-                    _chatControl?.DetectFromIde();
-                    return result;
-                }
-            });
-
-            Register(new McpTool
-            {
-                Name = "open_dictionary",
-                Description = "Open a Clarion data dictionary (.dct) file in the IDE's Dictionary Editor. If no path is provided, auto-discovers the .dct file in the current solution folder.",
-                InputSchema = McpJsonRpc.BuildSchema(
-                    new Dictionary<string, string>
-                    {
-                        { "path", "Absolute path to the .dct file (optional — auto-discovers from solution folder if omitted)" }
-                    }),
-                RequiresUiThread = true,
-                Handler = args =>
-                {
-                    string path = McpJsonRpc.GetString(args, "path", "");
-
-                    if (string.IsNullOrEmpty(path))
-                    {
-                        // Auto-discover from solution folder
-                        string slnPath = _chatControl?.CurrentSolutionPath;
-                        if (string.IsNullOrEmpty(slnPath))
-                            return "Error: no solution selected and no path provided";
-
-                        string slnDir = Path.GetDirectoryName(slnPath);
-                        var dctFiles = Directory.GetFiles(slnDir, "*.dct", SearchOption.TopDirectoryOnly);
-                        if (dctFiles.Length == 0)
-                        {
-                            // Try subdirectories one level deep
-                            dctFiles = Directory.GetFiles(slnDir, "*.dct", SearchOption.AllDirectories);
-                        }
-                        if (dctFiles.Length == 0)
-                            return "Error: no .dct file found in solution folder: " + slnDir;
-                        if (dctFiles.Length > 1)
-                        {
-                            var sb = new StringBuilder();
-                            sb.AppendLine("Multiple .dct files found. Please specify which one:");
-                            foreach (var f in dctFiles)
-                                sb.AppendLine("  " + f);
-                            return sb.ToString();
-                        }
-                        path = dctFiles[0];
-                    }
-
-                    if (!File.Exists(path))
-                        return "Error: file not found: " + path;
-
-                    _editorService.NavigateToFileAndLine(path, 0);
-                    return "Opened dictionary: " + path;
-                }
-            });
+            // open_dictionary removed — opening dictionaries from the assistant can
+            // interfere with the IDE. The developer opens dictionaries manually.
 
             Register(new McpTool
             {
@@ -1227,6 +1260,64 @@ Use this tool to discover IDE APIs and understand what's available for automatio
 
             Register(new McpTool
             {
+                Name = "index_codegraph",
+                Description = "Index a Clarion solution into a CodeGraph database. Parses all .clw/.inc files and builds a symbol/relationship graph for cross-file queries, impact analysis, and dead code detection. Run this when you first open a solution or after code changes.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "sln_path?", "Path to .sln file (auto-detected from current solution if omitted)" },
+                    { "incremental?", "Only re-index changed projects (default: true)" }
+                }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string slnPath = McpJsonRpc.GetString(args, "sln_path");
+                    if (string.IsNullOrEmpty(slnPath) && _chatControl != null)
+                        slnPath = _chatControl.CurrentSolutionPath;
+                    if (string.IsNullOrEmpty(slnPath))
+                        return "Error: no solution path provided and no solution is open in the IDE.";
+                    if (!File.Exists(slnPath))
+                        return "Error: solution file not found: " + slnPath;
+
+                    bool incremental = McpJsonRpc.GetString(args, "incremental") != "false";
+
+                    string dbPath = Path.Combine(
+                        Path.GetDirectoryName(slnPath),
+                        Path.GetFileNameWithoutExtension(slnPath) + ".codegraph.db");
+
+                    try
+                    {
+                        var db = new ClarionCodeGraph.Graph.CodeGraphDatabase();
+                        db.Open(dbPath);
+
+                        var indexer = new ClarionCodeGraph.Graph.CodeGraphIndexer(db);
+                        var progress = new System.Text.StringBuilder();
+                        indexer.OnProgress += msg => progress.AppendLine(msg);
+
+                        var result = indexer.IndexSolution(slnPath, incremental);
+                        db.Close();
+
+                        return string.Format(
+                            "CodeGraph indexed successfully:\n" +
+                            "  Solution: {0}\n" +
+                            "  Projects: {1}\n" +
+                            "  Files: {2}\n" +
+                            "  Symbols: {3}\n" +
+                            "  Duration: {4}ms\n" +
+                            "  Database: {5}\n" +
+                            "  Mode: {6}",
+                            Path.GetFileName(slnPath), result.ProjectCount, result.FileCount,
+                            result.SymbolCount, result.DurationMs, dbPath,
+                            incremental ? "incremental" : "full");
+                    }
+                    catch (Exception ex)
+                    {
+                        return "Error indexing solution: " + ex.Message;
+                    }
+                }
+            });
+
+            Register(new McpTool
+            {
                 Name = "query_codegraph",
                 Description = @"Run a read-only SQL query against the Clarion CodeGraph database. The database indexes an entire Clarion solution with these tables:
 
@@ -1512,9 +1603,9 @@ COMMON QUERIES:
                     if (string.IsNullOrEmpty(wsPath) || !Directory.Exists(wsPath))
                         return "Error: workspace_path required (directory containing .sln)";
 
-                    string serverJs = @"H:\DevLaptop\ClarionLSP\out\server\src\server.js";
-                    if (!File.Exists(serverJs))
-                        return "Error: LSP server not found at " + serverJs;
+                    string serverJs = ResolveLspServerPath();
+                    if (serverJs == null)
+                        return "Error: LSP server not found. Place server.js in the lsp-server subfolder next to the addin DLL, or set the 'Lsp.ServerPath' setting to the full path.";
 
                     if (_lspClient != null) _lspClient.Dispose();
                     _lspClient = new LspClient();
@@ -1523,9 +1614,18 @@ COMMON QUERIES:
                     string wsName = Path.GetFileName(wsPath);
 
                     bool ok = _lspClient.Start(serverJs, wsUri, wsName);
-                    return ok
-                        ? "LSP server started for workspace: " + wsPath
-                        : "Error: LSP server failed to start";
+                    if (ok)
+                        return "LSP server started for workspace: " + wsPath;
+
+                    // Provide diagnostic info on failure
+                    string lspRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(serverJs), "..", "..", ".."));
+                    string nodeExe = Path.Combine(lspRoot, "node.exe");
+                    string diag = "Error: LSP server failed to start.\n"
+                        + "  server.js: " + serverJs + " (exists: " + File.Exists(serverJs) + ")\n"
+                        + "  node.exe: " + nodeExe + " (exists: " + File.Exists(nodeExe) + ")\n"
+                        + "  workspace: " + wsUri + "\n"
+                        + "  Check the IDE Debug Output for [LSP] messages for more detail.";
+                    return diag;
                 }
             });
 
@@ -1805,12 +1905,19 @@ Optional vendor parameter sets the vendor name (defaults to the folder name).",
                     string input = McpJsonRpc.GetString(args, "clarion_root");
                     string vendor = McpJsonRpc.GetString(args, "vendor");
 
-                    // Try to resolve as a Clarion root first
-                    string root = DocGraphService.ResolveClarionRoot(input);
-                    if (root != null)
-                        return _docGraph.IngestAll(root);
+                    // If the path itself is a Clarion root, ingest everything
+                    if (!string.IsNullOrEmpty(input) && DocGraphService.IsClarionRoot(input))
+                        return _docGraph.IngestAll(input);
 
-                    // Not a Clarion root — treat as a plain folder and scan it
+                    // If no path given, try auto-detect
+                    if (string.IsNullOrEmpty(input))
+                    {
+                        string root = DocGraphService.ResolveClarionRoot(null);
+                        if (root != null)
+                            return _docGraph.IngestAll(root);
+                    }
+
+                    // Treat as a plain folder and scan it directly
                     if (!string.IsNullOrEmpty(input) && Directory.Exists(input))
                         return _docGraph.IngestFolder(input, vendor);
 
@@ -2558,9 +2665,355 @@ EXAMPLES:
                     return output.ToString();
                 }
             });
+
+            // ── SchemaGraph Tools ─────────────────────────────────────────
+            RegisterSchemaGraphTools();
+        }
+
+        // ── SchemaGraph Tools ─────────────────────────────────────────
+
+        private SchemaGraphService GetSchemaGraph(Dictionary<string, object> args)
+        {
+            string dbPath = McpJsonRpc.GetString(args, "db_path");
+            if (string.IsNullOrEmpty(dbPath))
+                dbPath = FindSchemaGraphDb();
+            if (string.IsNullOrEmpty(dbPath))
+                return null;
+            return new SchemaGraphService(dbPath);
+        }
+
+        private string FindSchemaGraphDb()
+        {
+            // 1. Check Schema Sources registry for the current solution
+            if (_chatControl != null)
+            {
+                // Try both the .sln path and the working directory — source may be linked with either
+                var pathsToTry = new List<string>();
+                string slnPath = _chatControl.CurrentSolutionPath;
+                if (!string.IsNullOrEmpty(slnPath)) pathsToTry.Add(slnPath);
+                // Also try the solution directory (in case source was linked with folder path)
+                if (!string.IsNullOrEmpty(slnPath))
+                {
+                    string slnDir = Path.GetDirectoryName(slnPath);
+                    if (!string.IsNullOrEmpty(slnDir) && !pathsToTry.Contains(slnDir))
+                        pathsToTry.Add(slnDir);
+                }
+
+                foreach (string tryPath in pathsToTry)
+                {
+                    try
+                    {
+                        var sources = SchemaGraphService.GetSourcesForSolution(tryPath);
+                        foreach (var src in sources)
+                        {
+                            string id = (string)src["id"];
+                            string type = (string)src["type"];
+                            string connInfo = (string)src["connectionInfo"];
+                            string dbPath = SchemaGraphService.GetDbPathForSource(id, type, connInfo);
+                            if (File.Exists(dbPath))
+                                return dbPath;
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            // 2. Check near the currently open file or solution (legacy .dctx path)
+            try
+            {
+                string activePath = _editorService.GetActiveDocumentPath();
+                if (!string.IsNullOrEmpty(activePath))
+                {
+                    string dir = Path.GetDirectoryName(activePath);
+                    while (!string.IsNullOrEmpty(dir))
+                    {
+                        var dbFiles = Directory.GetFiles(dir, "*.schemagraph.db");
+                        if (dbFiles.Length > 0) return dbFiles[0];
+                        var parent = Directory.GetParent(dir);
+                        if (parent == null) break;
+                        dir = parent.FullName;
+                    }
+                }
+            }
+            catch { }
+
+            // 3. Try solution directory
+            if (_chatControl != null)
+            {
+                string slnPath = _chatControl.CurrentSolutionPath;
+                if (!string.IsNullOrEmpty(slnPath))
+                {
+                    string slnDir = Path.GetDirectoryName(slnPath);
+                    try
+                    {
+                        var dbFiles = Directory.GetFiles(slnDir, "*.schemagraph.db", SearchOption.AllDirectories);
+                        if (dbFiles.Length > 0) return dbFiles[0];
+                    }
+                    catch { }
+                }
+            }
+
+            return null;
+        }
+
+        private void RegisterSchemaGraphTools()
+        {
+            Register(new McpTool
+            {
+                Name = "ingest_schema",
+                Description = "Ingest a Clarion dictionary (.dctx file) into a SchemaGraph database for fast schema queries. Creates a .schemagraph.db alongside the dictionary.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "dctx_path", "Path to the .dctx file to ingest" }
+                }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string dctxPath = McpJsonRpc.GetString(args, "dctx_path");
+                    if (string.IsNullOrEmpty(dctxPath))
+                        return "Error: dctx_path is required";
+                    if (!File.Exists(dctxPath))
+                        return "Error: File not found: " + dctxPath;
+
+                    string dbPath = SchemaGraphService.GetDbPathForDictionary(dctxPath);
+                    var service = new SchemaGraphService(dbPath);
+                    service.EnsureDatabase();
+                    return service.IngestDctx(dctxPath);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "ingest_sql_database",
+                Description = "Ingest schema from a SQL Server database into the SchemaGraph. Extracts tables, columns, keys, relationships, stored procedures, functions, and views. Merges with existing .dctx data by default.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "connection_string", "SQL Server connection string (e.g. 'Server=localhost;Database=MyDB;Trusted_Connection=True;')" },
+                    { "db_path?", "Path to .schemagraph.db to merge into (auto-detected if omitted)" },
+                    { "merge?", "Merge with existing dctx data (default: true). Set to false to replace all data." }
+                }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string connStr = McpJsonRpc.GetString(args, "connection_string");
+                    if (string.IsNullOrEmpty(connStr))
+                        return "Error: connection_string is required";
+
+                    string dbPath = McpJsonRpc.GetString(args, "db_path");
+                    if (string.IsNullOrEmpty(dbPath))
+                        dbPath = FindSchemaGraphDb();
+                    if (string.IsNullOrEmpty(dbPath))
+                    {
+                        // Create in appdata if no existing DB found
+                        string appData = Path.Combine(
+                            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                            "ClarionAssistant");
+                        Directory.CreateDirectory(appData);
+                        dbPath = Path.Combine(appData, "schemagraph.db");
+                    }
+
+                    bool merge = McpJsonRpc.GetString(args, "merge") != "false";
+
+                    var service = new SchemaGraphService(dbPath);
+                    service.EnsureDatabase();
+                    return service.IngestSqlDatabase(connStr, merge);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "query_schema",
+                Description = "Run a read-only SQL query against a SchemaGraph database. Tables: tables, columns, keys, key_columns, relationships, relationship_mappings, procedures, procedure_params, views, view_references, schema_fts, schema_metadata.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "sql", "SQL SELECT query to run (read-only)" },
+                    { "db_path?", "Path to .schemagraph.db (auto-detected if omitted)" }
+                }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string sql = McpJsonRpc.GetString(args, "sql");
+                    if (string.IsNullOrEmpty(sql))
+                        return "Error: sql parameter is required";
+
+                    var service = GetSchemaGraph(args);
+                    if (service == null)
+                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+
+                    return service.ExecuteQuery(sql);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "search_tables",
+                Description = "Search for database tables by name pattern in the SchemaGraph. Returns table name, prefix, driver, column count, key count.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "pattern", "Table name search pattern (FTS or LIKE with %)" },
+                    { "limit?", "Maximum results (default 50)" },
+                    { "db_path?", "Path to .schemagraph.db (auto-detected if omitted)" }
+                }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string pattern = McpJsonRpc.GetString(args, "pattern");
+                    if (string.IsNullOrEmpty(pattern))
+                        return "Error: pattern is required";
+
+                    var service = GetSchemaGraph(args);
+                    if (service == null)
+                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+
+                    int limit = McpJsonRpc.GetInt(args, "limit", 50);
+                    return service.SearchTables(pattern, limit);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "get_table",
+                Description = "Get full detail for a database table: all columns (name, type, size, picture), keys with their fields, and relationships to other tables.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "name", "Exact table name (case-insensitive)" },
+                    { "db_path?", "Path to .schemagraph.db (auto-detected if omitted)" }
+                }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string name = McpJsonRpc.GetString(args, "name");
+                    if (string.IsNullOrEmpty(name))
+                        return "Error: name is required";
+
+                    var service = GetSchemaGraph(args);
+                    if (service == null)
+                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+
+                    return service.GetTable(name);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "search_columns",
+                Description = "Search for columns across all tables by name pattern. Returns table name, column name, data type, size, picture.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "pattern", "Column name search pattern (FTS or LIKE with %)" },
+                    { "limit?", "Maximum results (default 100)" },
+                    { "db_path?", "Path to .schemagraph.db (auto-detected if omitted)" }
+                }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string pattern = McpJsonRpc.GetString(args, "pattern");
+                    if (string.IsNullOrEmpty(pattern))
+                        return "Error: pattern is required";
+
+                    var service = GetSchemaGraph(args);
+                    if (service == null)
+                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+
+                    int limit = McpJsonRpc.GetInt(args, "limit", 100);
+                    return service.SearchColumns(pattern, limit);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "get_relationships",
+                Description = "Get all relationships for a table — both tables it references (parents) and tables that reference it (children).",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "table", "Table name to get relationships for" },
+                    { "db_path?", "Path to .schemagraph.db (auto-detected if omitted)" }
+                }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string table = McpJsonRpc.GetString(args, "table");
+                    if (string.IsNullOrEmpty(table))
+                        return "Error: table is required";
+
+                    var service = GetSchemaGraph(args);
+                    if (service == null)
+                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+
+                    return service.GetRelationships(table);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "validate_names",
+                Description = "Validate table and column names exist in the schema. Supports plain names and Prefix:Column format. Suggests corrections for misspelled names.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "names", "Comma-separated table/column names to validate (e.g. 'Customers, ORD:OrderDate, Products')" },
+                    { "db_path?", "Path to .schemagraph.db (auto-detected if omitted)" }
+                }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string names = McpJsonRpc.GetString(args, "names");
+                    if (string.IsNullOrEmpty(names))
+                        return "Error: names is required";
+
+                    var service = GetSchemaGraph(args);
+                    if (service == null)
+                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+
+                    return service.ValidateNames(names);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "schema_stats",
+                Description = "Get SchemaGraph database statistics: table count, column count, relationships, driver breakdown, database size.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "db_path?", "Path to .schemagraph.db (auto-detected if omitted)" }
+                }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    var service = GetSchemaGraph(args);
+                    if (service == null)
+                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+
+                    return service.GetStats();
+                }
+            });
         }
 
         #region LSP Helpers
+
+        /// <summary>
+        /// Resolves the LSP server.js path. Priority:
+        /// 1. Settings key "Lsp.ServerPath" (user-configured)
+        /// 2. Relative to assembly: {assemblyDir}\lsp-server\server.js
+        /// Returns null if not found.
+        /// </summary>
+        private string ResolveLspServerPath()
+        {
+            // 1. Check user settings
+            if (_chatControl != null)
+            {
+                string configured = _chatControl.Settings?.Get("Lsp.ServerPath");
+                if (!string.IsNullOrEmpty(configured) && File.Exists(configured))
+                    return configured;
+            }
+
+            // 2. Resolve relative to assembly location
+            string assemblyDir = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+            string lspPath = Path.Combine(assemblyDir, "lsp-server", "out", "server", "src", "server.js");
+            if (File.Exists(lspPath))
+                return lspPath;
+
+            return null;
+        }
 
         private void EnsureLspRunning()
         {
@@ -2571,11 +3024,66 @@ EXAMPLES:
             if (string.IsNullOrEmpty(slnPath)) return;
 
             string wsPath = Path.GetDirectoryName(slnPath);
-            string serverJs = @"H:\DevLaptop\ClarionLSP\out\server\src\server.js";
-            if (!File.Exists(serverJs)) return;
+            string serverJs = ResolveLspServerPath();
+            if (serverJs == null) return;
 
             if (_lspClient != null) _lspClient.Dispose();
             _lspClient = new LspClient();
+
+            // Build clarion/updatePaths for cross-file LSP features (definition, references, etc.)
+            try
+            {
+                var versionConfig = _chatControl.CurrentVersionConfig;
+                if (versionConfig != null)
+                {
+                    var redFile = _chatControl.RedFile;
+                    var redirectionPaths = new List<string>();
+                    var libsrcPaths = new List<string>();
+                    var projectPaths = new List<string>();
+
+                    if (redFile != null)
+                    {
+                        redirectionPaths = redFile.GetSearchPaths(".clw");
+                        libsrcPaths = redFile.GetSearchPaths(".clw", "[*.CLW]");
+                    }
+
+                    // Parse project paths from .sln
+                    if (File.Exists(slnPath))
+                    {
+                        foreach (string line in File.ReadAllLines(slnPath))
+                        {
+                            if (line.TrimStart().StartsWith("Project("))
+                            {
+                                var parts = line.Split(',');
+                                if (parts.Length >= 2)
+                                {
+                                    string projRelPath = parts[1].Trim().Trim('"');
+                                    string projFullPath = Path.Combine(wsPath, projRelPath);
+                                    if (File.Exists(projFullPath))
+                                        projectPaths.Add(Path.GetDirectoryName(projFullPath));
+                                }
+                            }
+                        }
+                    }
+
+                    _lspClient.SetUpdatePaths(new Dictionary<string, object>
+                    {
+                        { "solutionFilePath", slnPath },
+                        { "redirectionFile", versionConfig.RedFilePath ?? "" },
+                        { "clarionVersion", versionConfig.Name ?? "" },
+                        { "configuration", "Debug" },
+                        { "macros", versionConfig.Macros ?? new Dictionary<string, string>() },
+                        { "redirectionPaths", redirectionPaths },
+                        { "libsrcPaths", libsrcPaths },
+                        { "projectPaths", projectPaths },
+                        { "defaultLookupExtensions", new[] { ".clw", ".inc", ".equ", ".int" } }
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[McpToolRegistry] Failed to build LSP updatePaths: " + ex.Message);
+            }
 
             string wsUri = "file:///" + wsPath.Replace("\\", "/");
             string wsName = Path.GetFileName(wsPath);

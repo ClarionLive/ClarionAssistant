@@ -55,6 +55,7 @@
     align-items: center;
     gap: 6px;
     margin-bottom: 4px;
+    flex-wrap: wrap;
   }
   .form-label {
     font-size: 11px;
@@ -64,6 +65,7 @@
   }
   .form-select {
     flex: 1;
+    min-width: 120px;
     height: 24px;
     background: #313244;
     color: #cdd6f4;
@@ -135,6 +137,26 @@
   .index-status.active { color: #89b4fa; }
   .index-status.error { color: #f38ba8; }
 
+  .index-log {
+    display: none;
+    max-height: 120px;
+    overflow-y: auto;
+    background: rgba(0,0,0,0.25);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 4px;
+    padding: 4px 8px;
+    margin-top: 4px;
+    font-family: 'Cascadia Code', 'Consolas', monospace;
+    font-size: 11px;
+    color: #a6adc8;
+    line-height: 1.5;
+  }
+  .index-log.visible { display: block; }
+  .index-log .log-line { white-space: nowrap; }
+  .index-log .log-line:last-child { color: #89b4fa; }
+  body.light .index-log { background: rgba(0,0,0,0.06); border-color: rgba(0,0,0,0.1); color: #5c5f77; }
+  body.light .index-log .log-line:last-child { color: #1e66f5; }
+
   /* Divider */
   .divider {
     height: 1px;
@@ -147,6 +169,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
+    flex-wrap: wrap;
   }
   .action-bar .spacer { flex: 1; }
 
@@ -262,14 +285,12 @@
       <button class="btn" onclick="send('updateIndex')" id="btnUpdate">Update</button>
       <span id="indexStatus" class="index-status"></span>
     </div>
+    <div id="indexLog" class="index-log"></div>
 
     <div class="divider"></div>
 
     <!-- Action bar -->
     <div class="action-bar">
-      <button class="btn" onclick="send('newChat')">New Chat</button>
-      <button class="btn btn-accent" onclick="send('createCom')">+ Create COM</button>
-      <button class="btn btn-accent" onclick="send('evaluateCode')">&#128269; Evaluate Code</button>
       <span class="spacer"></span>
       <button class="btn btn-icon" onclick="send('cheatSheet')" title="Cheat Sheet">&#128214;</button>
       <button class="btn btn-icon" onclick="send('docs')" title="Documentation">&#128195;</button>
@@ -385,6 +406,22 @@
     if (msg.type === 'setIndexButtons') {
       document.getElementById('btnFullIndex').disabled = !msg.enabled;
       document.getElementById('btnUpdate').disabled = !msg.enabled;
+    }
+
+    if (msg.type === 'appendIndexLog') {
+      var log = document.getElementById('indexLog');
+      log.classList.add('visible');
+      var line = document.createElement('div');
+      line.className = 'log-line';
+      line.textContent = msg.text;
+      log.appendChild(line);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    if (msg.type === 'clearIndexLog') {
+      var log = document.getElementById('indexLog');
+      log.innerHTML = '';
+      log.classList.remove('visible');
     }
 
     if (msg.type === 'setTheme') {

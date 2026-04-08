@@ -225,7 +225,12 @@ namespace ClarionAssistant.Services
                     return;
                 }
 
+                string notFound = "{\"error\":\"not_found\",\"path\":\"" + path.Replace("\"", "\\\"") + "\"}";
+                byte[] notFoundBuf = System.Text.Encoding.UTF8.GetBytes(notFound);
                 response.StatusCode = 404;
+                response.ContentType = "application/json";
+                response.ContentLength64 = notFoundBuf.Length;
+                response.OutputStream.Write(notFoundBuf, 0, notFoundBuf.Length);
                 response.Close();
             }
             catch (Exception ex)
@@ -310,15 +315,23 @@ namespace ClarionAssistant.Services
                 body = reader.ReadToEnd();
             }
 
-            // Process the JSON-RPC request
-            string responseJson = ProcessJsonRpc(body);
-
-            // Send response as SSE event on the client's stream
-            client.SendEvent("message", responseJson);
-
-            // Respond to the POST with 202 Accepted
+            // Respond to the POST with 202 Accepted immediately
             response.StatusCode = 202;
             response.Close();
+
+            // Process the JSON-RPC request asynchronously and send result via SSE
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    string responseJson = ProcessJsonRpc(body);
+                    client.SendEvent("message", responseJson);
+                }
+                catch (Exception ex)
+                {
+                    RaiseError("Async tool call error: " + ex.Message);
+                }
+            });
         }
 
         #endregion

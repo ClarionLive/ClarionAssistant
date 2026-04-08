@@ -59,6 +59,7 @@ namespace ClarionAssistant.Terminal
 
                 _webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
                 _webView.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
+                _webView.ZoomFactorChanged += (s, ev) => WebViewZoomHelper.SetZoom("header", _webView.ZoomFactor);
 
                 string htmlPath = GetHtmlPath();
                 if (File.Exists(htmlPath))
@@ -74,6 +75,7 @@ namespace ClarionAssistant.Terminal
         {
             _isInitialized = true;
             _isInitializing = false;
+            _webView.ZoomFactor = WebViewZoomHelper.GetZoom("header");
             HeaderReady?.Invoke(this, EventArgs.Empty);
         }
 
@@ -173,6 +175,18 @@ namespace ClarionAssistant.Terminal
         public void SetIndexStatus(string text, string cssClass = "")
         {
             SendMessage("{\"type\":\"setIndexStatus\",\"text\":\"" + EscapeJson(text) + "\",\"css\":\"" + EscapeJson(cssClass) + "\"}");
+        }
+
+        /// <summary>Append a line to the index progress log.</summary>
+        public void AppendIndexLog(string text)
+        {
+            SendMessage("{\"type\":\"appendIndexLog\",\"text\":\"" + EscapeJson(text) + "\"}");
+        }
+
+        /// <summary>Clear and hide the index progress log.</summary>
+        public void ClearIndexLog()
+        {
+            SendMessage("{\"type\":\"clearIndexLog\"}");
         }
 
         /// <summary>Enable or disable the index buttons.</summary>

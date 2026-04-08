@@ -11,8 +11,8 @@
 
 <p align="center">
   <a href="https://github.com/peterparker57/ClarionAssistant/releases/latest"><img src="https://img.shields.io/github/v/release/peterparker57/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
-  <img src="https://img.shields.io/badge/Clarion-11%20%7C%2012-blue?style=for-the-badge" alt="Clarion 11 | 12">
-  <img src="https://img.shields.io/badge/status-beta-orange?style=for-the-badge" alt="Beta">
+  <img src="https://img.shields.io/badge/Clarion-10%20%7C%2011%20%7C%2012-blue?style=for-the-badge" alt="Clarion 10 | 11 | 12">
+  <img src="https://img.shields.io/badge/version-3.0-green?style=for-the-badge" alt="v3.0">
 </p>
 
 ---
@@ -26,15 +26,66 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 ### Key Capabilities
 
 - **Write and edit Clarion code** directly in the IDE editor
+- **Multi-tab terminal** &mdash; multiple Claude Code sessions with independent workspaces
 - **CodeGraph** &mdash; solution-wide code intelligence via SQL queries over every symbol, relationship, and call chain
 - **DocGraph** &mdash; instant search across 14,000+ indexed documentation chunks (Clarion core, CapeSoft, Icetips, and more)
-- **LSP integration** &mdash; real-time go-to-definition, find references, hover info, and symbol search
+- **SchemaGraph** &mdash; database schema intelligence from Clarion dictionaries, SQL Server, SQLite, and PostgreSQL
+- **Source Control** &mdash; GitHub and Bitbucket integration with per-solution repo linking
 - **Build tools** &mdash; build solutions, individual apps, or C# COM controls without leaving the chat
 - **Class intelligence** &mdash; parse CLASS definitions, sync .inc/.clw, generate method stubs
 - **Application tree** &mdash; open .app files, list procedures, navigate the embeditor
+- **Evaluate Code** &mdash; interactive code review for entire apps, procedures, open files, or selected code
 - **Diff viewer** &mdash; Monaco-based side-by-side diffs with syntax highlighting
-- **Tabbed terminal** &mdash; multiple Claude Code sessions with a Home page, settings, and cheat sheet
 - **Knowledge system** &mdash; persistent cross-session memory for decisions, patterns, and gotchas
+- **Zoom persistence** &mdash; Ctrl+mousewheel zoom is saved and restored across sessions
+
+---
+
+## What's New in v3.0
+
+### Schema Sources &mdash; Database Intelligence
+- **Schema Source Manager** &mdash; collapsible "Solution Settings" panel above the terminal with per-solution database source linking
+- **Multi-database support** &mdash; index schemas from Clarion dictionaries (.dctx), SQL Server, SQLite, and PostgreSQL
+- **Global source registry** &mdash; define database sources once, link to multiple solutions
+- **DPAPI-encrypted credentials** &mdash; connection info stored securely with Windows data protection
+- **Test Connection** &mdash; validate database connections before indexing
+- **MCP integration** &mdash; Claude automatically finds and queries your indexed schemas via `search_tables`, `get_table`, `get_relationships`, and more
+
+### Source Control Integration
+- **GitHub and Bitbucket** accounts with encrypted token/app password storage
+- **Per-solution repo linking** &mdash; assign a source control account + repo to each solution
+- **Test authentication** &mdash; validates credentials against GitHub/Bitbucket APIs
+
+### Simplified Home Page
+- **Quick Actions** &mdash; New Chat, Evaluate Code, Settings, and Work With Open Solution cards
+- **Projects table** &mdash; manage COM controls, addins, and other projects with GitHub/Bitbucket repo linking
+- **Removed Solutions tab** &mdash; the IDE manages solutions; Clarion Assistant auto-detects the open solution
+
+### Multi-Version Installer
+- **Supports Clarion 10, 11, and 12** &mdash; install to one or all versions from a single installer
+- **Per-version installation** &mdash; installing for one version won't affect another
+- **Auto-detection** &mdash; finds Clarion installations from the Windows registry and common paths
+- **Browse buttons** &mdash; pick custom Clarion paths for non-standard installations
+
+### Evaluate Code Improvements
+- **5 scope options** &mdash; evaluate the entire app, a specific procedure, embeditor content, text editor file, or selected code
+- **Smart file detection** &mdash; correctly identifies text files vs .app files in the IDE
+- **No fabricated results** &mdash; always reads real code from the IDE before producing any evaluation
+
+### Bug Fixes
+- **Fixed: Empty 404 crashes Claude Code SDK** &mdash; MCP server now returns JSON body on 404 responses during OAuth discovery ([#3](https://github.com/peterparker57/ClarionAssistant/issues/3))
+- **Fixed: replace_text destroys embeditor content** &mdash; now uses surgical `Document.Replace()` instead of full-document replacement ([#2](https://github.com/peterparker57/ClarionAssistant/issues/2))
+- **Fixed: LSP server path hardcoded** &mdash; resolved relative to assembly location with configurable override ([#1](https://github.com/peterparker57/ClarionAssistant/issues/1))
+- **Fixed: Solution not auto-detected** &mdash; 10-second polling detects solution changes in the IDE
+- **Fixed: DocGraph personal search crashes** &mdash; FTS5 virtual tables can't use schema-qualified names; queries now run independently and merge results
+- **Fixed: Header/action bar text clipping** &mdash; responsive flex-wrap layout
+
+### Other Improvements
+- **Zoom persistence** across all WebView2 panels (header, home, settings, schema sources)
+- **Responsive header** &mdash; text wraps instead of clipping at narrow widths
+- **Import Now button** for personal DocGraph documentation with progress feedback
+- **Remove All Personal** button for bulk DocGraph cleanup
+- **Delete confirmation** for source control accounts
 
 ---
 
@@ -55,15 +106,15 @@ The installer bundles **COM for Clarion**, a complete toolkit for creating .NET 
 
 | Requirement | Notes |
 |---|---|
-| **Clarion IDE** (v11 or v12) | Auto-detected from Windows registry |
+| **Clarion IDE** (v10, v11, or v12) | Auto-detected from Windows registry |
 | **Claude Code CLI** | [Download from Anthropic](https://claude.ai/download) |
 | **WebView2 Runtime** | Pre-installed on Windows 11; [download for Windows 10](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) |
 
 ### Install
 
-1. **[Download the latest installer](https://github.com/peterparker57/ClarionAssistant/releases/latest)** (17 MB, code-signed)
+1. **[Download the latest installer](https://github.com/peterparker57/ClarionAssistant/releases/latest)** (code-signed)
 2. Close the Clarion IDE
-3. Run the installer &mdash; it auto-detects your Clarion installation
+3. Run the installer &mdash; select which Clarion versions to install for
 4. Restart the Clarion IDE
 
 ### What Gets Installed
@@ -78,9 +129,8 @@ The installer bundles **COM for Clarion**, a complete toolkit for creating .NET 
 | Code quality agents | `%USERPROFILE%\.claude\agents\` | 6 agents (won't overwrite existing) |
 | ClarionCOM tooling | `%APPDATA%\ClarionCOM\` | Project templates and scripts |
 | DocGraph database | `%APPDATA%\ClarionAssistant\` | Pre-loaded Clarion 12 documentation index |
-| Reference prompt | `%USERPROFILE%\.claude\` | `clarion-assistant-reference.md` |
 
-Your existing Claude Code settings are preserved &mdash; the installer merges permissions non-destructively. The `CLAUDE_CODE_NO_FLICKER` environment variable is enabled automatically for a smoother terminal experience.
+Your existing Claude Code settings are preserved &mdash; the installer merges permissions non-destructively.
 
 ---
 
@@ -113,6 +163,17 @@ Clarion Assistant exposes **90+ MCP tools** that Claude uses to interact with th
 | `sync_check` | Compare .inc declarations vs .clw implementations |
 | `generate_stubs` / `generate_clw` | Generate missing method implementations |
 
+### Schema Intelligence
+| Tool | Description |
+|---|---|
+| `search_tables` | Search database tables by name |
+| `get_table` | Full table detail with columns, keys, relationships |
+| `search_columns` | Find columns across all tables |
+| `get_relationships` | Show parent/child table relationships |
+| `query_schema` | Run SQL queries against the schema index |
+| `ingest_schema` | Index a Clarion dictionary (.dctx) |
+| `ingest_sql_database` | Index schema from SQL Server |
+
 ### Documentation Search
 | Tool | Description |
 |---|---|
@@ -128,14 +189,6 @@ Clarion Assistant exposes **90+ MCP tools** that Claude uses to interact with th
 | `generate_source` | Generate .clw/.inc source from templates |
 | `build_com_project` | Build a C# COM control via MSBuild |
 | `run_command` | Execute any command-line tool |
-
-### Language Server
-| Tool | Description |
-|---|---|
-| `lsp_definition` | Go to definition (cross-file) |
-| `lsp_references` | Find all references across the workspace |
-| `lsp_hover` | Get type info and documentation |
-| `lsp_find_symbol` | Search for symbols by name |
 
 ### Knowledge & Memory
 | Tool | Description |
@@ -182,74 +235,27 @@ The installer includes 20+ Clarion-specific skills for Claude Code (installed as
 ### Build
 
 ```powershell
-# Build the addin
+# Build the addin for all Clarion versions
 cd ClarionAssistant
-msbuild ClarionAssistant.csproj /p:Configuration=Debug /p:Platform=AnyCPU
+.\deploy.ps1 -NoBuild:$false -Version all
 
-# Build the installer (builds all projects + compiles Inno Setup)
-cd ..\installer
-.\build-installer.ps1
-
-# Build and sign
-.\build-installer.ps1 -Sign
+# Or build for a specific version
+msbuild ClarionAssistant.csproj /p:Configuration=Debug /p:ClarionVersion=12
 ```
 
 ### Deploy for Development
 
 ```powershell
-# Deploy to your local Clarion IDE
+# Deploy to your local Clarion IDE (builds + copies)
 cd ClarionAssistant
-.\deploy.ps1
-```
+.\deploy.ps1 -Version 12
 
----
-
-## Project Structure
-
-```
-ClarionAssistant/
-├── ClarionAssistant/           # Main addin source (C#, .NET Framework 4.8)
-│   ├── Services/               # Core services
-│   │   ├── McpToolRegistry.cs  # 90+ MCP tool definitions
-│   │   ├── EditorService.cs    # IDE editor integration
-│   │   ├── DocGraphService.cs  # Documentation search (FTS5)
-│   │   ├── AppTreeService.cs   # .app file operations
-│   │   ├── ClarionClassParser.cs # CLASS intelligence
-│   │   ├── KnowledgeService.cs # Persistent cross-session knowledge
-│   │   └── LspClient.cs       # Language Server Protocol
-│   ├── Terminal/               # WebView2 terminal UI (tabbed)
-│   │   ├── TabManager.cs      # Multi-tab terminal management
-│   │   ├── HomeWebView.cs     # Home page with recent solutions
-│   │   └── *.html             # terminal, home, settings, cheatsheet, diff, header
-│   └── ClaudeChatControl.cs    # Main chat control
-├── docs/                       # User guide
-└── installer/                  # Inno Setup installer
-    ├── ClarionAssistant.iss    # Installer script
-    ├── configure.ps1           # Post-install settings merger
-    └── build-installer.ps1     # Build orchestrator
+# Deploy all versions
+.\deploy.ps1 -Version all
 ```
 
 ---
 
 ## License
 
-Copyright (c) 2025-2026 ClarionLive. All rights reserved.
-
-This software is provided as a beta release for evaluation purposes. See [LICENSE.txt](installer/LICENSE.txt) for details.
-
-Clarion Assistant requires a separate [Claude Code](https://claude.ai/download) subscription from Anthropic.
-
----
-
-## Acknowledgments
-
-- **[Mark Sarson](https://github.com/msarson/Clarion-Extension)** &mdash; pioneered Language Server Protocol support for Clarion, directly inspiring the LSP integration in this project
-- **[SoftVelocity](https://softvelocity.com)** &mdash; Clarion IDE and compiler
-- **[Anthropic](https://anthropic.com)** &mdash; Claude Code CLI
-- **[Microsoft](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)** &mdash; WebView2 runtime
-
----
-
-<p align="center">
-  Built for the Clarion community by <a href="https://clarionlive.com">ClarionLive</a>
-</p>
+Proprietary &mdash; &copy; 2026 ClarionLive. All rights reserved.

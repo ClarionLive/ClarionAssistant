@@ -187,28 +187,51 @@ namespace ClarionAssistant.Services
                 if (!content.Contains(oldText))
                     return InsertResult.Failed("Text not found in document");
 
-                string updated = content.Replace(oldText, newText);
-
-                // Use Document.TextContent setter or Replace full text
-                var textContentProp = document.GetType().GetProperty("TextContent",
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-                if (textContentProp != null && textContentProp.CanWrite)
+                // Find all occurrence offsets
+                var offsets = new List<int>();
+                int searchFrom = 0;
+                while (searchFrom < content.Length)
                 {
-                    textContentProp.SetValue(document, updated, null);
+                    int idx = content.IndexOf(oldText, searchFrom, StringComparison.Ordinal);
+                    if (idx < 0) break;
+                    offsets.Add(idx);
+                    searchFrom = idx + oldText.Length;
+                }
+
+                // Use Document.Replace(offset, length, text) to surgically replace each occurrence.
+                // Replace from end to start to preserve earlier offsets.
+                var replaceMethod = document.GetType().GetMethod("Replace",
+                    new[] { typeof(int), typeof(int), typeof(string) });
+                if (replaceMethod != null)
+                {
+                    for (int i = offsets.Count - 1; i >= 0; i--)
+                    {
+                        replaceMethod.Invoke(document, new object[] { offsets[i], oldText.Length, newText });
+                    }
                 }
                 else
                 {
-                    var textProp = document.GetType().GetProperty("Text",
+                    // Fallback: set full text (may break PWEE line tracking)
+                    string updated = content.Replace(oldText, newText);
+                    var textContentProp = document.GetType().GetProperty("TextContent",
                         System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-                    if (textProp != null && textProp.CanWrite)
-                        textProp.SetValue(document, updated, null);
+                    if (textContentProp != null && textContentProp.CanWrite)
+                    {
+                        textContentProp.SetValue(document, updated, null);
+                    }
                     else
-                        return InsertResult.Failed("Cannot set document text");
+                    {
+                        var textProp = document.GetType().GetProperty("Text",
+                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                        if (textProp != null && textProp.CanWrite)
+                            textProp.SetValue(document, updated, null);
+                        else
+                            return InsertResult.Failed("Cannot set document text");
+                    }
                 }
 
                 try { textArea.GetType().GetMethod("Invalidate", Type.EmptyTypes)?.Invoke(textArea, null); } catch { }
 
-                int count = (content.Length - content.Replace(oldText, "").Length) / oldText.Length;
                 return InsertResult.Succeeded();
             }
             catch (Exception ex) { return InsertResult.Failed(ex.Message); }

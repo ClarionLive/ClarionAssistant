@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
@@ -22,6 +23,7 @@ namespace ClarionAssistant
         // Header (WebView2)
         private HeaderWebView _header;
         private Splitter _splitter;
+        private int _preIndexHeaderHeight = -1;
 
         private McpServer _mcpServer;
         private McpToolRegistry _toolRegistry;
@@ -35,13 +37,13 @@ namespace ClarionAssistant
         private bool _isDarkTheme = true;
         private System.Windows.Forms.Timer _instanceStateTimer;
         private string _currentSlnPath;
-        private string _indexerPath;
         private ClarionVersionInfo _versionInfo;
         private ClarionVersionConfig _currentVersionConfig;
         private RedFileService _redFileService;
         private DiffService _diffService;
 
         public string CurrentSolutionPath { get { return _currentSlnPath; } }
+        public SettingsService Settings { get { return _settings; } }
         public ClarionVersionConfig CurrentVersionConfig { get { return _currentVersionConfig; } }
         public RedFileService RedFile { get { return _redFileService; } }
         public string CurrentDbPath
@@ -60,7 +62,6 @@ namespace ClarionAssistant
             _parser = new ClarionClassParser();
             _settings = new SettingsService();
             _isDarkTheme = (_settings.Get("Theme") ?? "dark") != "light";
-            _indexerPath = FindIndexer();
             InitializeComponents();
         }
 
@@ -139,24 +140,55 @@ namespace ClarionAssistant
             StartMcpServer();
             _header.SetTheme(_isDarkTheme);
             SyncTabBarToHeader();
-            RefreshHomePageData(); // home may have initialized before _versionInfo was set
+            // Solutions now auto-detected from IDE, no longer shown on home page
         }
 
         private void OnHomeReady(object sender, EventArgs e)
         {
             _homeView.SetTheme(_isDarkTheme);
-            RefreshHomePageData();
+            LoadProjects();
+            SendProjectsToHome();
+            SendGitHubAccountsToHome();
+        }
+
+        private void SendGitHubAccountsToHome()
+        {
+            if (!_homeView.IsReady) return;
+            try
+            {
+                var accounts = Services.SchemaGraphService.GetAllGitHubAccounts();
+                var sb = new System.Text.StringBuilder("[");
+                for (int i = 0; i < accounts.Count; i++)
+                {
+                    if (i > 0) sb.Append(",");
+                    var a = accounts[i];
+                    string prov = a.ContainsKey("provider") ? (string)a["provider"] : "github";
+                    sb.AppendFormat("{{\"id\":\"{0}\",\"displayName\":\"{1}\",\"username\":\"{2}\",\"provider\":\"{3}\"}}",
+                        EscJson((string)a["id"]), EscJson((string)a["displayName"]), EscJson((string)a["username"]), EscJson(prov));
+                }
+                sb.Append("]");
+                _homeView.SetGitHubAccounts(sb.ToString());
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] SendGitHubAccountsToHome error: " + ex.Message);
+            }
         }
 
         private void OnHomeAction(object sender, HomeActionEventArgs e)
         {
             switch (e.Action)
             {
-                case "openSolution": OpenSolutionInNewTab(e.Data); break;
-                case "removeSolution": RemoveSolutionFromHistory(e.Data); break;
                 case "openFolder": OpenFolder(e.Data); break;
-                case "browseSolution": OnBrowseSolutionForNewTab(); break;
-                case "createCom": OnCreateCom(sender, EventArgs.Empty); break;
+                case "addProject": OnAddProject(e.Data); break;
+                case "editProject": OnEditProject(e.Data); break;
+                case "deleteProject": OnDeleteProject(e.Data); break;
+                case "openProject": OnOpenProject(e.Data); break;
+                case "browseProjectFolder": OnBrowseProjectFolder(e.Data); break;
+                case "workWithSolution": OnWorkWithSolution(); break;
+                case "newChat": OnNewChat(sender, EventArgs.Empty); break;
+                case "evaluateCode": OnEvaluateCode(sender, EventArgs.Empty); break;
+                case "settings": OnSettings(sender, EventArgs.Empty); break;
             }
         }
 
@@ -190,6 +222,308 @@ namespace ClarionAssistant
                 case "cheatSheet": OnCheatSheet(); break;
                 case "docs": OnDocs(); break;
             }
+        }
+
+        #endregion
+
+        #region Projects
+
+        private class ProjectEntry
+        {
+            public string Id { get; set; }
+            public string Name { get; set; }
+            public string Type { get; set; }   // "COM Control", "Addin", "Other"
+            public string Folder { get; set; }
+            public long LastAccessed { get; set; }  // Unix ms
+            public string GitHubAccountId { get; set; }
+            public string RepoName { get; set; }
+        }
+
+        private List<ProjectEntry> _projects = new List<ProjectEntry>();
+
+        private string GetProjectsJsonPath()
+        {
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "ClarionAssistant", "projects.json");
+        }
+
+        private void LoadProjects()
+        {
+            _projects.Clear();
+            string path = GetProjectsJsonPath();
+            if (!File.Exists(path)) return;
+            try
+            {
+                string json = File.ReadAllText(path);
+                // JSON array parser — quote-aware brace matching to handle } inside string values
+                int idx = json.IndexOf('[');
+                if (idx < 0) return;
+                idx++;
+                while (idx < json.Length)
+                {
+                    int objStart = json.IndexOf('{', idx);
+                    if (objStart < 0) break;
+                    int objEnd = FindClosingBrace(json, objStart);
+                    if (objEnd < 0) break;
+                    string obj = json.Substring(objStart, objEnd - objStart + 1);
+                    var entry = new ProjectEntry
+                    {
+                        Id = ExtractJsonString(obj, "id"),
+                        Name = ExtractJsonString(obj, "name"),
+                        Type = ExtractJsonString(obj, "type"),
+                        Folder = ExtractJsonString(obj, "folder"),
+                        LastAccessed = ExtractJsonLong(obj, "lastAccessed"),
+                        GitHubAccountId = ExtractJsonString(obj, "githubAccountId"),
+                        RepoName = ExtractJsonString(obj, "repoName")
+                    };
+                    if (!string.IsNullOrEmpty(entry.Id))
+                        _projects.Add(entry);
+                    idx = objEnd + 1;
+                }
+            }
+            catch { }
+        }
+
+        private void SaveProjects()
+        {
+            try
+            {
+                string dir = Path.GetDirectoryName(GetProjectsJsonPath());
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+
+                var sb = new StringBuilder();
+                sb.AppendLine("[");
+                for (int i = 0; i < _projects.Count; i++)
+                {
+                    var p = _projects[i];
+                    if (i > 0) sb.AppendLine(",");
+                    sb.Append("  {");
+                    sb.AppendFormat("\"id\":\"{0}\",", EscJson(p.Id));
+                    sb.AppendFormat("\"name\":\"{0}\",", EscJson(p.Name));
+                    sb.AppendFormat("\"type\":\"{0}\",", EscJson(p.Type));
+                    sb.AppendFormat("\"folder\":\"{0}\",", EscJson(p.Folder));
+                    sb.AppendFormat("\"lastAccessed\":{0}", p.LastAccessed);
+                    if (!string.IsNullOrEmpty(p.GitHubAccountId))
+                        sb.AppendFormat(",\"githubAccountId\":\"{0}\"", EscJson(p.GitHubAccountId));
+                    if (!string.IsNullOrEmpty(p.RepoName))
+                        sb.AppendFormat(",\"repoName\":\"{0}\"", EscJson(p.RepoName));
+                    sb.Append("}");
+                }
+                sb.AppendLine();
+                sb.AppendLine("]");
+                File.WriteAllText(GetProjectsJsonPath(), sb.ToString(), Encoding.UTF8);
+            }
+            catch { }
+        }
+
+        private void SendProjectsToHome()
+        {
+            if (!_homeView.IsReady) return;
+            var sb = new StringBuilder("[");
+            for (int i = 0; i < _projects.Count; i++)
+            {
+                var p = _projects[i];
+                if (i > 0) sb.Append(",");
+                sb.AppendFormat("{{\"id\":\"{0}\",\"name\":\"{1}\",\"type\":\"{2}\",\"folder\":\"{3}\",\"lastAccessed\":{4},\"githubAccountId\":\"{5}\",\"repoName\":\"{6}\"}}",
+                    EscJson(p.Id), EscJson(p.Name), EscJson(p.Type), EscJson(p.Folder), p.LastAccessed,
+                    EscJson(p.GitHubAccountId ?? ""), EscJson(p.RepoName ?? ""));
+            }
+            sb.Append("]");
+            _homeView.SetProjectsJson(sb.ToString());
+        }
+
+        private static readonly DateTime UnixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        private static long NowUnixMs()
+        {
+            return (long)(DateTime.UtcNow - UnixEpoch).TotalMilliseconds;
+        }
+
+        private static string EscJson(string s)
+        {
+            if (s == null) return "";
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"")
+                    .Replace("\n", "\\n").Replace("\r", "\\r")
+                    .Replace("\t", "\\t").Replace("\b", "\\b").Replace("\f", "\\f");
+        }
+
+        private static string ExtractJsonString(string json, string key)
+        {
+            string search = "\"" + key + "\":";
+            int idx = json.IndexOf(search, StringComparison.Ordinal);
+            if (idx < 0) return null;
+            idx += search.Length;
+            while (idx < json.Length && (json[idx] == ' ' || json[idx] == '\t')) idx++;
+            if (idx >= json.Length || json[idx] != '"') return null;
+            idx++; // skip opening quote
+            var sb = new StringBuilder();
+            while (idx < json.Length)
+            {
+                char c = json[idx];
+                if (c == '\\' && idx + 1 < json.Length) { sb.Append(json[idx + 1]); idx += 2; continue; }
+                if (c == '"') break;
+                sb.Append(c);
+                idx++;
+            }
+            return sb.ToString();
+        }
+
+        private static long ExtractJsonLong(string json, string key)
+        {
+            string search = "\"" + key + "\":";
+            int idx = json.IndexOf(search, StringComparison.Ordinal);
+            if (idx < 0) return 0;
+            idx += search.Length;
+            while (idx < json.Length && (json[idx] == ' ' || json[idx] == '\t')) idx++;
+            int start = idx;
+            while (idx < json.Length && ((json[idx] >= '0' && json[idx] <= '9') || json[idx] == '-')) idx++;
+            long val;
+            long.TryParse(json.Substring(start, idx - start), out val);
+            return val;
+        }
+
+        /// <summary>
+        /// Find the closing } that matches the { at position start,
+        /// skipping over characters inside double-quoted strings.
+        /// </summary>
+        private static int FindClosingBrace(string json, int start)
+        {
+            int depth = 0;
+            bool inString = false;
+            for (int i = start; i < json.Length; i++)
+            {
+                char c = json[i];
+                if (inString)
+                {
+                    if (c == '\\' && i + 1 < json.Length) { i++; continue; } // skip escaped char
+                    if (c == '"') inString = false;
+                }
+                else
+                {
+                    if (c == '"') inString = true;
+                    else if (c == '{') depth++;
+                    else if (c == '}') { depth--; if (depth == 0) return i; }
+                }
+            }
+            return -1; // malformed JSON
+        }
+
+        private void OnAddProject(string json)
+        {
+            string name = ExtractJsonString(json, "name");
+            string type = ExtractJsonString(json, "type");
+            string folder = ExtractJsonString(json, "folder");
+            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(folder)) return;
+
+            var entry = new ProjectEntry
+            {
+                Id = Guid.NewGuid().ToString("N").Substring(0, 8),
+                Name = name,
+                Type = type ?? "Other",
+                Folder = folder,
+                LastAccessed = NowUnixMs(),
+                GitHubAccountId = ExtractJsonString(json, "githubAccountId"),
+                RepoName = ExtractJsonString(json, "repoName")
+            };
+            _projects.Add(entry);
+            SaveProjects();
+            SendProjectsToHome();
+        }
+
+        private void OnEditProject(string json)
+        {
+            string id = ExtractJsonString(json, "id");
+            string name = ExtractJsonString(json, "name");
+            string folder = ExtractJsonString(json, "folder");
+            if (string.IsNullOrEmpty(id)) return;
+
+            var entry = _projects.Find(p => p.Id == id);
+            if (entry == null) return;
+
+            if (!string.IsNullOrEmpty(name)) entry.Name = name;
+            if (!string.IsNullOrEmpty(folder)) entry.Folder = folder;
+            entry.GitHubAccountId = ExtractJsonString(json, "githubAccountId");
+            entry.RepoName = ExtractJsonString(json, "repoName");
+            SaveProjects();
+            SendProjectsToHome();
+        }
+
+        private void OnDeleteProject(string id)
+        {
+            if (string.IsNullOrEmpty(id)) return;
+            _projects.RemoveAll(p => p.Id == id);
+            SaveProjects();
+            SendProjectsToHome();
+        }
+
+        private void OnOpenProject(string id)
+        {
+            if (string.IsNullOrEmpty(id)) return;
+            var entry = _projects.Find(p => p.Id == id);
+            if (entry == null) return;
+
+            // Update lastAccessed
+            entry.LastAccessed = NowUnixMs();
+            SaveProjects();
+            SendProjectsToHome();
+
+            OpenProjectInNewTab(entry);
+        }
+
+        private void OnBrowseProjectFolder(string editId)
+        {
+            using (var dlg = new FolderBrowserDialog())
+            {
+                dlg.Description = "Select Project Folder";
+                dlg.ShowNewFolderButton = true;
+                if (dlg.ShowDialog() == DialogResult.OK)
+                {
+                    _homeView.SendBrowseResult(dlg.SelectedPath, editId ?? "");
+                }
+            }
+        }
+
+        private void OpenProjectInNewTab(ProjectEntry project)
+        {
+            System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] OpenProjectInNewTab: " + project.Name + " (" + project.Type + ") -> " + project.Folder);
+            string folder = project.Folder;
+            if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
+            {
+                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] OpenProjectInNewTab ABORTED: folder empty or not found");
+                MessageBox.Show("Project folder not found:\n" + (folder ?? "(empty)"),
+                    "Open Project", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            string name = project.Name;
+            var renderer = new WebViewTerminalRenderer { Dock = DockStyle.Fill };
+            var tab = _tabManager.CreateTerminalTab(name, renderer);
+            tab.WorkingDirectory = folder;
+            tab.VersionConfig = _currentVersionConfig;
+
+            // Set startup command based on project type
+            switch (project.Type)
+            {
+                case "COM Control":
+                    tab.StartupCommand = "/ClarionCOM";
+                    break;
+                case "Addin":
+                    tab.StartupCommand = "/clarion-ide-addin";
+                    break;
+                // "Other" — no startup command
+            }
+
+            renderer.DataReceived += data => OnTabRendererDataReceived(tab, data);
+            renderer.TerminalResized += (s, ev) => OnTabRendererResized(tab, ev);
+            renderer.Initialized += (s, ev) => OnTabRendererInitialized(tab);
+            System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] Events wired for project tab " + tab.Id + ", StartupCommand=" + (tab.StartupCommand ?? "(none)"));
+
+            // Schema sources panel (above terminal)
+            AttachSchemaSourcesView(tab);
+
+            _tabManager.ActivateTab(tab.Id);
+            System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] ActivateTab completed for project tab " + tab.Id);
         }
 
         #endregion
@@ -276,6 +610,18 @@ namespace ClarionAssistant
 
             _header.SetSolutions(paths.ToArray(), selectedIdx);
             UpdateIndexStatus();
+
+            // Auto-index on startup if a solution is loaded
+            if (!string.IsNullOrEmpty(_currentSlnPath))
+            {
+                string dbPath = Path.Combine(
+                    Path.GetDirectoryName(_currentSlnPath),
+                    Path.GetFileNameWithoutExtension(_currentSlnPath) + ".codegraph.db");
+                if (!File.Exists(dbPath))
+                    RunIndex(false);
+                else
+                    RunIndex(true);
+            }
         }
 
         private void AddToSolutionHistory(string path)
@@ -294,6 +640,25 @@ namespace ClarionAssistant
         /// Auto-detect the currently loaded solution from the IDE.
         /// Version detection is handled by LoadVersions() via ClarionVersionService.
         /// </summary>
+        /// <summary>
+        /// Called every 10s by the instance state timer. Checks if the IDE's open solution
+        /// has changed and triggers a full refresh if so.
+        /// </summary>
+        private void PollForSolutionChange()
+        {
+            try
+            {
+                string slnPath = EditorService.GetOpenSolutionPath();
+                if (!string.IsNullOrEmpty(slnPath) && File.Exists(slnPath) &&
+                    !string.Equals(slnPath, _currentSlnPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] Solution changed: " + slnPath);
+                    DetectFromIde();
+                }
+            }
+            catch { }
+        }
+
         public void DetectFromIde()
         {
             // Detect open solution from the IDE
@@ -320,6 +685,26 @@ namespace ClarionAssistant
                 UpdateIndexStatus();
                 LoadRedFile();
                 UpdateInstanceState();
+
+                // Ensure active tab has schema sources panel
+                var activeTab = _tabManager.ActiveTab;
+                if (activeTab != null && !activeTab.IsHome)
+                {
+                    activeTab.SolutionPath = path;
+                    if (activeTab.SchemaSourcesView == null)
+                        AttachSchemaSourcesView(activeTab);
+                    else
+                        SendSchemaSourcesForTab(activeTab);
+                }
+
+                // Auto-index in background if no codegraph.db exists yet
+                string dbPath = Path.Combine(
+                    Path.GetDirectoryName(path),
+                    Path.GetFileNameWithoutExtension(path) + ".codegraph.db");
+                if (!File.Exists(dbPath))
+                    RunIndex(false); // full index
+                else
+                    RunIndex(true); // incremental update
             }
         }
 
@@ -400,51 +785,6 @@ namespace ClarionAssistant
             }
         }
 
-        private void RefreshHomePageData()
-        {
-            if (!_homeView.IsReady) return;
-
-            // Prefer Clarion's own RecentOpen.xml; fall back to internal SolutionHistory
-            var rawPaths = new System.Collections.Generic.List<string>();
-            if (_versionInfo != null && !string.IsNullOrEmpty(_versionInfo.PropertiesXmlPath))
-                rawPaths = ClarionVersionService.GetRecentSolutionPaths(_versionInfo.PropertiesXmlPath);
-            if (rawPaths.Count == 0)
-            {
-                string history = _settings.Get("SolutionHistory") ?? "";
-                foreach (string p in history.Split('|'))
-                    if (!string.IsNullOrEmpty(p)) rawPaths.Add(p);
-            }
-
-            // Filter out paths the user has suppressed from the home view
-            string suppressed = _settings.Get("SuppressedSolutions") ?? "";
-            var suppressedSet = new System.Collections.Generic.HashSet<string>(
-                suppressed.Split('|'), StringComparer.OrdinalIgnoreCase);
-
-            var names = new System.Collections.Generic.List<string>();
-            var paths = new System.Collections.Generic.List<string>();
-            var modified = new System.Collections.Generic.List<string>();
-            var sizes = new System.Collections.Generic.List<long>();
-            var modifiedTs = new System.Collections.Generic.List<long>();
-            var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-
-            foreach (string path in rawPaths)
-            {
-                if (string.IsNullOrEmpty(path) || !File.Exists(path)) continue;
-                if (suppressedSet.Contains(path)) continue;
-                try
-                {
-                    var fi = new FileInfo(path);
-                    names.Add(Path.GetFileNameWithoutExtension(path));
-                    paths.Add(path);
-                    modified.Add(fi.LastWriteTime.ToString("M/d/yyyy"));
-                    sizes.Add(fi.Length);
-                    modifiedTs.Add((long)(fi.LastWriteTime.ToUniversalTime() - epoch).TotalMilliseconds);
-                }
-                catch { /* skip unreadable files */ }
-            }
-            _homeView.SetSolutionHistory(names.ToArray(), paths.ToArray(), modified.ToArray(), sizes.ToArray(), modifiedTs.ToArray());
-        }
-
         private void OpenFolder(string path)
         {
             try
@@ -473,7 +813,6 @@ namespace ClarionAssistant
             histList.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
             _settings.Set("SolutionHistory", string.Join("|", histList));
 
-            RefreshHomePageData();
             LoadSolutionHistory(); // also refresh header dropdown
         }
 
@@ -490,8 +829,7 @@ namespace ClarionAssistant
                 {
                     AddToSolutionHistory(dlg.FileName);
                     LoadSolutionHistory();
-                    RefreshHomePageData();
-                    OpenSolutionInNewTab(dlg.FileName);
+                            OpenSolutionInNewTab(dlg.FileName);
                 }
             }
         }
@@ -513,6 +851,7 @@ namespace ClarionAssistant
             string name = Path.GetFileNameWithoutExtension(slnPath);
             var renderer = new WebViewTerminalRenderer { Dock = DockStyle.Fill };
             var tab = _tabManager.CreateTerminalTab(name, renderer);
+            tab.SolutionPath = slnPath;
             tab.WorkingDirectory = Path.GetDirectoryName(slnPath);
             tab.VersionConfig = _currentVersionConfig;
 
@@ -521,6 +860,9 @@ namespace ClarionAssistant
             renderer.TerminalResized += (s, ev) => OnTabRendererResized(tab, ev);
             renderer.Initialized += (s, ev) => OnTabRendererInitialized(tab);
             System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] Events wired for tab " + tab.Id + ", calling ActivateTab");
+
+            // Schema sources panel (above terminal)
+            AttachSchemaSourcesView(tab);
 
             _tabManager.ActivateTab(tab.Id);
             System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] ActivateTab completed for tab " + tab.Id);
@@ -542,6 +884,577 @@ namespace ClarionAssistant
 
         #endregion
 
+        #region Schema Sources
+
+        private void AttachSchemaSourcesView(TerminalTab tab)
+        {
+            var schemaView = new SchemaSourcesView();
+            schemaView.ActionReceived += (s, ev) => OnSchemaSourceAction(tab, ev);
+            schemaView.Ready += (s, ev) => OnSchemaSourcesReady(tab);
+            tab.SchemaSourcesView = schemaView;
+
+            // TabManager adds renderer directly to _contentArea (no TabPage).
+            // Wrap renderer + SchemaSourcesView in a container Panel so
+            // ActivateTab's Visible toggle controls both together.
+            var renderer = tab.Renderer;
+            if (renderer == null) return;
+            var parent = renderer.Parent;
+            if (parent == null) return;
+
+            bool wasVisible = renderer.Visible;
+
+            var container = new Panel { Dock = DockStyle.Fill };
+            container.SuspendLayout();
+            parent.SuspendLayout();
+
+            parent.Controls.Remove(renderer);
+            renderer.Visible = true;
+            renderer.Dock = DockStyle.Fill;
+
+            // Add Fill control first, then Top — WinForms docks later-added controls first
+            container.Controls.Add(renderer);
+            container.Controls.Add(schemaView);
+
+            container.Visible = wasVisible;
+            parent.Controls.Add(container);
+            tab.ContentControl = container;
+
+            parent.ResumeLayout(true);
+            container.ResumeLayout(true);
+        }
+
+        private void OnSchemaSourcesReady(TerminalTab tab)
+        {
+            if (tab.SchemaSourcesView == null) return;
+            tab.SchemaSourcesView.SetTheme(_isDarkTheme);
+
+            // Check if collapse state was saved
+            string collapsed = _settings.Get("SchemaSourcesCollapsed");
+            if (collapsed == "true")
+                tab.SchemaSourcesView.SetCollapsed(true);
+
+            // Send linked sources for this tab's solution
+            SendSchemaSourcesForTab(tab);
+
+            // Send source control accounts and current repo link
+            SendRepoDataForTab(tab);
+        }
+
+        private void SendSchemaSourcesForTab(TerminalTab tab)
+        {
+            if (tab.SchemaSourcesView == null || !tab.SchemaSourcesView.IsReady) return;
+
+            string slnPath = tab.SolutionPath ?? tab.WorkingDirectory ?? "";
+            if (string.IsNullOrEmpty(slnPath)) { tab.SchemaSourcesView.SetSources("[]"); return; }
+
+            try
+            {
+                var sources = Services.SchemaGraphService.GetSourcesForSolution(slnPath);
+                var sb = new System.Text.StringBuilder("[");
+                for (int i = 0; i < sources.Count; i++)
+                {
+                    if (i > 0) sb.Append(",");
+                    var src = sources[i];
+                    string id = (string)src["id"];
+                    string name = (string)src["name"];
+                    string type = (string)src["type"];
+                    string connInfo = (string)src["connectionInfo"];
+
+                    // Get index status
+                    var status = Services.SchemaGraphService.GetSourceStatus(id, type, connInfo);
+                    bool indexed = (bool)status["indexed"];
+                    int tableCount = status.ContainsKey("tableCount") ? (int)status["tableCount"] : 0;
+                    string lastIndexed = status.ContainsKey("lastIndexed") ? (string)status["lastIndexed"] : null;
+
+                    sb.AppendFormat("{{\"id\":\"{0}\",\"name\":\"{1}\",\"type\":\"{2}\",\"indexed\":{3},\"tableCount\":{4},\"lastIndexed\":{5}}}",
+                        EscJson(id), EscJson(name), EscJson(type),
+                        indexed ? "true" : "false", tableCount,
+                        lastIndexed != null ? "\"" + EscJson(lastIndexed) + "\"" : "null");
+                }
+                sb.Append("]");
+                tab.SchemaSourcesView.SetSources(sb.ToString());
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] SendSchemaSourcesForTab error: " + ex.Message);
+                tab.SchemaSourcesView.SetSources("[]");
+            }
+        }
+
+        private void SendRepoDataForTab(TerminalTab tab)
+        {
+            if (tab.SchemaSourcesView == null || !tab.SchemaSourcesView.IsReady) return;
+
+            // Send accounts list
+            try
+            {
+                var accounts = Services.SchemaGraphService.GetAllGitHubAccounts();
+                var sb = new System.Text.StringBuilder("[");
+                for (int i = 0; i < accounts.Count; i++)
+                {
+                    if (i > 0) sb.Append(",");
+                    var a = accounts[i];
+                    string prov = a.ContainsKey("provider") ? (string)a["provider"] : "github";
+                    sb.AppendFormat("{{\"id\":\"{0}\",\"displayName\":\"{1}\",\"username\":\"{2}\",\"provider\":\"{3}\"}}",
+                        EscJson((string)a["id"]), EscJson((string)a["displayName"]),
+                        EscJson((string)a["username"]), EscJson(prov));
+                }
+                sb.Append("]");
+                tab.SchemaSourcesView.SendMessage("{\"type\":\"setRepoAccounts\",\"accounts\":" + sb + "}");
+            }
+            catch { }
+
+            // Send current repo link
+            string slnPath = tab.SolutionPath ?? tab.WorkingDirectory ?? "";
+            if (!string.IsNullOrEmpty(slnPath))
+            {
+                try
+                {
+                    var repo = Services.SchemaGraphService.GetSolutionRepo(slnPath);
+                    if (repo != null)
+                    {
+                        tab.SchemaSourcesView.SendMessage(
+                            "{\"type\":\"setSolutionRepo\",\"accountId\":\"" + EscJson(repo["accountId"]) +
+                            "\",\"repoName\":\"" + EscJson(repo["repoName"]) + "\"}");
+                    }
+                }
+                catch { }
+            }
+        }
+
+        private void OnSchemaSourceAction(TerminalTab tab, SchemaSourceActionEventArgs e)
+        {
+            switch (e.Action)
+            {
+                case "schemaSourcesReady":
+                    OnSchemaSourcesReady(tab);
+                    break;
+
+                case "toggleCollapse":
+                    // Save collapse state
+                    bool isCollapsed = tab.SchemaSourcesView != null && tab.SchemaSourcesView.Height <= 32;
+                    _settings.Set("SchemaSourcesCollapsed", isCollapsed ? "true" : "false");
+                    break;
+
+                case "getGlobalSources":
+                    SendGlobalSourcesToModal(tab);
+                    break;
+
+                case "addSource":
+                    HandleAddSource(tab, e.Data);
+                    break;
+
+                case "editSource":
+                    HandleEditSource(tab, e.Data);
+                    break;
+
+                case "deleteSource":
+                    HandleDeleteSource(tab, e.Data);
+                    break;
+
+                case "applySourceSelection":
+                    HandleApplySelection(tab, e.Data);
+                    break;
+
+                case "indexSource":
+                    HandleIndexSource(tab, e.Data);
+                    break;
+
+                case "testConnection":
+                    HandleTestConnection(tab, e.Data);
+                    break;
+
+                case "setSolutionRepo":
+                    HandleSetSolutionRepo(tab, e.Data);
+                    break;
+
+                case "browseFile":
+                    HandleBrowseFile(tab, e.Data);
+                    break;
+            }
+        }
+
+        private void SendGlobalSourcesToModal(TerminalTab tab)
+        {
+            if (tab.SchemaSourcesView == null) return;
+            try
+            {
+                string slnPath = tab.SolutionPath ?? tab.WorkingDirectory ?? "";
+                var allSources = Services.SchemaGraphService.GetAllSources();
+                var linkedSources = Services.SchemaGraphService.GetSourcesForSolution(slnPath);
+                var linkedIdSet = new System.Collections.Generic.HashSet<string>();
+                foreach (var ls in linkedSources)
+                    linkedIdSet.Add((string)ls["id"]);
+
+                // Build global sources JSON — mask passwords before sending to WebView
+                var sb = new System.Text.StringBuilder("[");
+                for (int i = 0; i < allSources.Count; i++)
+                {
+                    if (i > 0) sb.Append(",");
+                    var src = allSources[i];
+                    string connInfo = (string)src["connectionInfo"];
+                    string maskedConnInfo = MaskPassword(connInfo);
+                    sb.AppendFormat("{{\"id\":\"{0}\",\"name\":\"{1}\",\"type\":\"{2}\",\"connectionInfo\":\"{3}\"}}",
+                        EscJson((string)src["id"]), EscJson((string)src["name"]),
+                        EscJson((string)src["type"]), EscJson(maskedConnInfo));
+                }
+                sb.Append("]");
+
+                // Build linked IDs JSON
+                var idSb = new System.Text.StringBuilder("[");
+                int idx = 0;
+                foreach (var id in linkedIdSet)
+                {
+                    if (idx++ > 0) idSb.Append(",");
+                    idSb.Append("\"" + EscJson(id) + "\"");
+                }
+                idSb.Append("]");
+
+                tab.SchemaSourcesView.SetGlobalSources(sb.ToString(), idSb.ToString());
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] SendGlobalSources error: " + ex.Message);
+            }
+        }
+
+        private void HandleAddSource(TerminalTab tab, string data)
+        {
+            try
+            {
+                string name = ExtractJsonField(data, "name");
+                string type = ExtractJsonField(data, "type");
+                string connInfo = ExtractJsonField(data, "connectionInfo");
+                Services.SchemaGraphService.AddSource(name, type, connInfo);
+                SendGlobalSourcesToModal(tab);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] AddSource error: " + ex.Message);
+            }
+        }
+
+        private void HandleEditSource(TerminalTab tab, string data)
+        {
+            try
+            {
+                string id = ExtractJsonField(data, "id");
+                string name = ExtractJsonField(data, "name");
+                string type = ExtractJsonField(data, "type");
+                string connInfo = ExtractJsonField(data, "connectionInfo");
+                connInfo = RestorePasswordIfPlaceholder(connInfo, id);
+                Services.SchemaGraphService.UpdateSource(id, name, type, connInfo);
+                SendGlobalSourcesToModal(tab);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] EditSource error: " + ex.Message);
+            }
+        }
+
+        private void HandleDeleteSource(TerminalTab tab, string data)
+        {
+            try
+            {
+                Services.SchemaGraphService.DeleteSource(data);
+                SendGlobalSourcesToModal(tab);
+                SendSchemaSourcesForTab(tab);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] DeleteSource error: " + ex.Message);
+            }
+        }
+
+        private void HandleApplySelection(TerminalTab tab, string selectedIdsJson)
+        {
+            try
+            {
+                string slnPath = tab.SolutionPath ?? tab.WorkingDirectory ?? "";
+                if (string.IsNullOrEmpty(slnPath)) return;
+
+                // Parse selected IDs from JSON array
+                var selectedIds = new System.Collections.Generic.List<string>();
+                string inner = selectedIdsJson.Trim().TrimStart('[').TrimEnd(']');
+                if (!string.IsNullOrEmpty(inner))
+                {
+                    foreach (string part in inner.Split(','))
+                    {
+                        string id = part.Trim().Trim('"');
+                        if (!string.IsNullOrEmpty(id)) selectedIds.Add(id);
+                    }
+                }
+
+                // Get current linked IDs
+                var currentLinked = Services.SchemaGraphService.GetSourcesForSolution(slnPath);
+                var currentIds = new System.Collections.Generic.HashSet<string>();
+                foreach (var src in currentLinked)
+                    currentIds.Add((string)src["id"]);
+
+                // Add new links
+                foreach (string id in selectedIds)
+                {
+                    if (!currentIds.Contains(id))
+                        Services.SchemaGraphService.LinkSourceToSolution(slnPath, id);
+                }
+
+                // Remove unlinked
+                foreach (string id in currentIds)
+                {
+                    if (!selectedIds.Contains(id))
+                        Services.SchemaGraphService.UnlinkSourceFromSolution(slnPath, id);
+                }
+
+                SendSchemaSourcesForTab(tab);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] ApplySelection error: " + ex.Message);
+            }
+        }
+
+        private void HandleIndexSource(TerminalTab tab, string sourceId)
+        {
+            // Run indexing on a background thread to avoid blocking UI
+            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    string result = Services.SchemaGraphService.IndexSource(sourceId);
+                    bool isError = result != null && result.StartsWith("Error");
+
+                    // Get updated status
+                    var source = Services.SchemaGraphService.GetSource(sourceId);
+                    string type = source != null ? (string)source["type"] : "";
+                    string connInfo = source != null ? (string)source["connectionInfo"] : "{}";
+                    var status = Services.SchemaGraphService.GetSourceStatus(sourceId, type, connInfo);
+
+                    // Build status JSON
+                    string statusJson;
+                    if (isError)
+                    {
+                        statusJson = "{\"error\":\"" + EscJson(result) + "\"}";
+                    }
+                    else
+                    {
+                        int tCount = status.ContainsKey("tableCount") ? (int)status["tableCount"] : 0;
+                        string lastIdx = status.ContainsKey("lastIndexed") ? (string)status["lastIndexed"] : null;
+                        statusJson = string.Format("{{\"tableCount\":{0},\"lastIndexed\":{1}}}",
+                            tCount, lastIdx != null ? "\"" + EscJson(lastIdx) + "\"" : "null");
+                    }
+
+                    // Send back to UI on UI thread
+                    if (!IsDisposed && tab.SchemaSourcesView != null)
+                    {
+                        string sid = sourceId;
+                        string sj = statusJson;
+                        try
+                        {
+                            BeginInvoke(new Action(() =>
+                            {
+                                if (tab.SchemaSourcesView != null)
+                                    tab.SchemaSourcesView.SetIndexStatus(sid, sj);
+                            }));
+                        }
+                        catch (ObjectDisposedException) { }
+                        catch (InvalidOperationException) { }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] IndexSource error: " + ex.Message);
+                    if (!IsDisposed && tab.SchemaSourcesView != null)
+                    {
+                        string sid = sourceId;
+                        string msg = ex.Message;
+                        try
+                        {
+                            BeginInvoke(new Action(() =>
+                            {
+                                if (tab.SchemaSourcesView != null)
+                                    tab.SchemaSourcesView.SetIndexStatus(sid, "{\"error\":\"" + EscJson(msg) + "\"}");
+                            }));
+                        }
+                        catch (ObjectDisposedException) { }
+                        catch (InvalidOperationException) { }
+                    }
+                }
+            });
+        }
+
+        private void HandleSetSolutionRepo(TerminalTab tab, string data)
+        {
+            try
+            {
+                string slnPath = tab.SolutionPath ?? tab.WorkingDirectory ?? "";
+                if (string.IsNullOrEmpty(slnPath)) return;
+                string accountId = ExtractJsonField(data, "accountId");
+                string repoName = ExtractJsonField(data, "repoName");
+                Services.SchemaGraphService.SetSolutionRepo(slnPath, accountId, repoName);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] SetSolutionRepo error: " + ex.Message);
+            }
+        }
+
+        private void HandleBrowseFile(TerminalTab tab, string data)
+        {
+            try
+            {
+                string editId = ExtractJsonField(data, "editId") ?? "new";
+                string type = ExtractJsonField(data, "type") ?? "dctx";
+
+                if (type == "dctx")
+                {
+                    using (var dlg = new OpenFileDialog())
+                    {
+                        dlg.Filter = "Clarion Dictionary (*.dctx)|*.dctx|All files (*.*)|*.*";
+                        dlg.Title = "Select Clarion Dictionary";
+                        if (dlg.ShowDialog() == DialogResult.OK && tab.SchemaSourcesView != null)
+                            tab.SchemaSourcesView.SendBrowseResult(dlg.FileName, editId);
+                    }
+                }
+                else if (type == "sqlite")
+                {
+                    using (var dlg = new OpenFileDialog())
+                    {
+                        dlg.Filter = "SQLite Database (*.db;*.sqlite;*.sqlite3)|*.db;*.sqlite;*.sqlite3|All files (*.*)|*.*";
+                        dlg.Title = "Select SQLite Database";
+                        if (dlg.ShowDialog() == DialogResult.OK && tab.SchemaSourcesView != null)
+                            tab.SchemaSourcesView.SendBrowseResult(dlg.FileName, editId);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] BrowseFile error: " + ex.Message);
+            }
+        }
+
+        private void HandleTestConnection(TerminalTab tab, string data)
+        {
+            string type = ExtractJsonField(data, "type") ?? "";
+            string connInfo = ExtractJsonField(data, "connectionInfo") ?? "{}";
+
+            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+            {
+                bool success = false;
+                string message;
+                try
+                {
+                    if (type == "mssql")
+                    {
+                        string connStr = Services.SchemaGraphService.BuildMssqlConnectionString(connInfo);
+                        using (var conn = new System.Data.SqlClient.SqlConnection(connStr))
+                        {
+                            conn.Open();
+                            message = "Connected to " + conn.Database;
+                            success = true;
+                        }
+                    }
+                    else if (type == "postgres")
+                    {
+                        string connStr = Services.SchemaGraphService.BuildPostgresConnectionString(connInfo);
+                        var asm = System.Reflection.Assembly.Load("Npgsql");
+                        var connType = asm.GetType("Npgsql.NpgsqlConnection");
+                        using (var conn = (System.Data.Common.DbConnection)Activator.CreateInstance(connType, connStr))
+                        {
+                            conn.Open();
+                            message = "Connected to " + conn.Database;
+                            success = true;
+                        }
+                    }
+                    else
+                    {
+                        message = "Test not supported for type: " + type;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    message = ex.Message;
+                }
+
+                if (!IsDisposed && tab.SchemaSourcesView != null)
+                {
+                    bool s = success;
+                    string m = message;
+                    try
+                    {
+                        BeginInvoke(new Action(() =>
+                        {
+                            if (tab.SchemaSourcesView != null)
+                                tab.SchemaSourcesView.SendMessage(
+                                    "{\"type\":\"testConnectionResult\",\"success\":" + (s ? "true" : "false") +
+                                    ",\"message\":\"" + EscJson(m) + "\"}");
+                        }));
+                    }
+                    catch (ObjectDisposedException) { }
+                    catch (InvalidOperationException) { }
+                }
+            });
+        }
+
+        private const string PasswordPlaceholder = "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022";
+
+        /// <summary>Replace password value with placeholder for safe display in WebView.</summary>
+        private static string MaskPassword(string connectionInfoJson)
+        {
+            if (string.IsNullOrEmpty(connectionInfoJson)) return connectionInfoJson;
+            string password = ExtractJsonField(connectionInfoJson, "password");
+            if (string.IsNullOrEmpty(password)) return connectionInfoJson;
+            // Replace the password value with a placeholder
+            return connectionInfoJson.Replace("\"password\":\"" + password.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"",
+                "\"password\":\"" + PasswordPlaceholder + "\"");
+        }
+
+        /// <summary>If the password is the placeholder, preserve the existing stored password.</summary>
+        private static string RestorePasswordIfPlaceholder(string newConnInfo, string sourceId)
+        {
+            string newPassword = ExtractJsonField(newConnInfo, "password");
+            if (newPassword != PasswordPlaceholder) return newConnInfo;
+
+            // Get existing password from stored source
+            var existing = Services.SchemaGraphService.GetSource(sourceId);
+            if (existing == null) return newConnInfo;
+            string existingConnInfo = (string)existing["connectionInfo"];
+            string existingPassword = ExtractJsonField(existingConnInfo, "password");
+            if (string.IsNullOrEmpty(existingPassword)) return newConnInfo;
+
+            return newConnInfo.Replace("\"password\":\"" + PasswordPlaceholder + "\"",
+                "\"password\":\"" + existingPassword.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"");
+        }
+
+        private static string ExtractJsonField(string json, string key)
+        {
+            if (string.IsNullOrEmpty(json)) return null;
+            string pattern = "\"" + key + "\":";
+            int idx = json.IndexOf(pattern, StringComparison.Ordinal);
+            if (idx < 0) return null;
+            idx += pattern.Length;
+            while (idx < json.Length && json[idx] == ' ') idx++;
+            if (idx >= json.Length) return null;
+            if (json[idx] == '"')
+            {
+                idx++;
+                var sb = new System.Text.StringBuilder();
+                while (idx < json.Length)
+                {
+                    char c = json[idx];
+                    if (c == '\\' && idx + 1 < json.Length) { sb.Append(json[idx + 1]); idx += 2; continue; }
+                    if (c == '"') break;
+                    sb.Append(c);
+                    idx++;
+                }
+                return sb.ToString();
+            }
+            int start = idx;
+            while (idx < json.Length && json[idx] != ',' && json[idx] != '}') idx++;
+            return json.Substring(start, idx - start).Trim();
+        }
+
+        #endregion
+
         #region Indexing
 
         public void RunIndex(bool incremental)
@@ -552,58 +1465,52 @@ namespace ClarionAssistant
                 return;
             }
 
-            if (string.IsNullOrEmpty(_indexerPath) || !File.Exists(_indexerPath))
-            {
-                MessageBox.Show("Indexer not found: " + (_indexerPath ?? "(null)"), "Index", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return;
-            }
-
             _header.SetIndexButtonsEnabled(false);
             _header.SetIndexStatus(incremental ? "Updating..." : "Indexing...", "active");
 
+            string slnPath = _currentSlnPath;
+
             // Build library paths from RED file .inc search paths
-            string libPathsArg = null;
+            List<string> libPaths = null;
             if (_redFileService != null)
             {
                 var incPaths = _redFileService.GetSearchPaths(".inc");
                 if (incPaths.Count > 0)
-                    libPathsArg = string.Join(";", incPaths);
+                    libPaths = incPaths;
             }
 
+            _header.ClearIndexLog();
+
+            // Expand header so the progress log is visible
+            _preIndexHeaderHeight = _header.Height;
+            if (_header.Height < 300)
+                _header.Height = 300;
+
             var worker = new BackgroundWorker();
+            worker.WorkerReportsProgress = true;
             worker.DoWork += (s, e) =>
             {
-                string args = $"index \"{_currentSlnPath}\"";
-                if (incremental) args += " --incremental";
-                if (!string.IsNullOrEmpty(libPathsArg))
-                {
-                    // Escape double-quotes in paths to prevent argument injection
-                    string safePaths = libPathsArg.Replace("\"", "\\\"");
-                    args += $" --lib-paths \"{safePaths}\"";
-                }
+                string dbPath = Path.Combine(
+                    Path.GetDirectoryName(slnPath),
+                    Path.GetFileNameWithoutExtension(slnPath) + ".codegraph.db");
 
-                var psi = new ProcessStartInfo
+                var db = new ClarionCodeGraph.Graph.CodeGraphDatabase();
+                db.Open(dbPath);
+
+                var indexer = new ClarionCodeGraph.Graph.CodeGraphIndexer(db);
+                indexer.OnProgress += msg =>
                 {
-                    FileName = _indexerPath,
-                    Arguments = args,
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = false,
-                    CreateNoWindow = true
+                    ((BackgroundWorker)s).ReportProgress(0, msg);
                 };
-
-                using (var proc = Process.Start(psi))
-                {
-                    // Read stdout asynchronously so WaitForExit timeout is effective
-                    var readTask = System.Threading.Tasks.Task.Run(
-                        () => proc.StandardOutput.ReadToEnd());
-                    bool exited = proc.WaitForExit(300000); // 5 min max
-                    if (!exited)
-                    {
-                        try { proc.Kill(); } catch { }
-                    }
-                    e.Result = readTask.Wait(5000) ? readTask.Result : "";
-                }
+                var result = indexer.IndexSolution(slnPath, incremental, libPaths);
+                db.Close();
+                e.Result = result;
+            };
+            worker.ProgressChanged += (s, e) =>
+            {
+                string msg = e.UserState as string;
+                if (msg != null)
+                    _header.AppendIndexLog(msg);
             };
             worker.RunWorkerCompleted += (s, e) =>
             {
@@ -612,26 +1519,15 @@ namespace ClarionAssistant
 
                 if (e.Error != null)
                     _header.SetIndexStatus("Error: " + e.Error.Message, "error");
+
+                // Restore header to its pre-index height
+                if (_preIndexHeaderHeight > 0)
+                {
+                    _header.Height = _preIndexHeaderHeight;
+                    _preIndexHeaderHeight = -1;
+                }
             };
             worker.RunWorkerAsync();
-        }
-
-        private string FindIndexer()
-        {
-            // Check next to our assembly first
-            string assemblyDir = Path.GetDirectoryName(
-                System.Reflection.Assembly.GetExecutingAssembly().Location);
-            string path = Path.Combine(assemblyDir, "clarion-indexer.exe");
-            if (File.Exists(path)) return path;
-
-            // Check the LSP indexer build output
-            path = @"H:\DevLaptop\ClarionLSP\indexer\bin\Release\clarion-indexer.exe";
-            if (File.Exists(path)) return path;
-
-            path = @"H:\DevLaptop\ClarionLSP\indexer\bin\Debug\clarion-indexer.exe";
-            if (File.Exists(path)) return path;
-
-            return null;
         }
 
         #endregion
@@ -653,6 +1549,7 @@ namespace ClarionAssistant
             foreach (var tab in _tabManager.Tabs)
             {
                 if (tab.Renderer != null) tab.Renderer.SetTheme(_isDarkTheme);
+                if (tab.SchemaSourcesView != null) tab.SchemaSourcesView.SetTheme(_isDarkTheme);
             }
             Terminal.DiffViewContent.ApplyThemeToAll(_isDarkTheme);
             _diffService?.SetTheme(_isDarkTheme);
@@ -711,6 +1608,7 @@ namespace ClarionAssistant
             dlg.FormClosed += (s2, e2) =>
             {
                 if (parent != null) parent.Enabled = true;
+                SendGitHubAccountsToHome(); // Refresh home dropdown after settings changes
                 dlg.Dispose();
             };
 
@@ -782,14 +1680,22 @@ namespace ClarionAssistant
         private void OnEvaluateCode(object sender, EventArgs e)
         {
             var active = _tabManager.ActiveTab;
-            if (active == null || active.IsHome || active.Terminal == null || !active.Terminal.IsRunning)
+            if (active != null && !active.IsHome && active.Terminal != null && active.Terminal.IsRunning)
             {
-                MessageBox.Show("Claude is not running. Please open a terminal first.",
-                    "Evaluate Code", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                // Terminal already running — send command directly
+                active.Terminal.Write(Encoding.UTF8.GetBytes("/evaluate-code\r"));
                 return;
             }
 
-            active.Terminal.Write(Encoding.UTF8.GetBytes("/evaluate-code\r"));
+            // No terminal — open one with /evaluate-code as startup command
+            var renderer = new WebViewTerminalRenderer { Dock = DockStyle.Fill };
+            var tab = _tabManager.CreateTerminalTab("Evaluate Code", renderer);
+            tab.StartupCommand = "/evaluate-code";
+            renderer.DataReceived += data => OnTabRendererDataReceived(tab, data);
+            renderer.TerminalResized += (s, ev) => OnTabRendererResized(tab, ev);
+            renderer.Initialized += (s, ev) => OnTabRendererInitialized(tab);
+            AttachSchemaSourcesView(tab);
+            _tabManager.ActivateTab(tab.Id);
         }
 
         #endregion
@@ -859,7 +1765,7 @@ namespace ClarionAssistant
             if (_instanceCoord != null)
             {
                 _instanceStateTimer = new System.Windows.Forms.Timer { Interval = 10000 };
-                _instanceStateTimer.Tick += (s, ev) => UpdateInstanceState();
+                _instanceStateTimer.Tick += (s, ev) => { PollForSolutionChange(); UpdateInstanceState(); };
                 _instanceStateTimer.Start();
             }
         }
@@ -1014,6 +1920,42 @@ namespace ClarionAssistant
             var renderer = tab.Renderer;
             if (renderer != null && !renderer.IsDisposed)
                 renderer.WriteToTerminal(data);
+
+            // Auto-send startup command once Claude is ready for human input.
+            // Detection: look for the prompt character (> or ❯) at a line boundary,
+            // but only after Claude has been running long enough to finish initialization.
+            if (!string.IsNullOrEmpty(tab.StartupCommand) && tab.Terminal != null && tab.Terminal.IsRunning)
+            {
+                try
+                {
+                    // Skip early output — Claude Code takes several seconds to initialize
+                    if (!tab.ClaudeLaunched) { /* terminal not ready yet */ }
+                    else
+                    {
+                        string text = Encoding.UTF8.GetString(data);
+                        // Strip ANSI escape sequences before checking for prompt
+                        string clean = System.Text.RegularExpressions.Regex.Replace(text, @"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][0-2]|\x1b\[[\?]?[0-9;]*[hlm]", "");
+                        // Look for prompt at line boundary: newline followed by > or ❯ (with optional space)
+                        bool hasPrompt = System.Text.RegularExpressions.Regex.IsMatch(clean, @"(^|[\r\n])[\s]*[>\u276f]\s");
+                        if (hasPrompt)
+                        {
+                            string cmd = tab.StartupCommand;
+                            tab.StartupCommand = null; // only send once
+                            // Delay to ensure Claude is fully ready for input
+                            System.Threading.Tasks.Task.Delay(1500).ContinueWith(_ =>
+                            {
+                                try
+                                {
+                                    if (tab.Terminal != null && tab.Terminal.IsRunning)
+                                        tab.Terminal.Write(Encoding.UTF8.GetBytes(cmd + "\r"));
+                                }
+                                catch { }
+                            });
+                        }
+                    }
+                }
+                catch { }
+            }
         }
 
         private void OnTabRendererResized(TerminalTab tab, TerminalSizeEventArgs e)
@@ -1038,31 +1980,35 @@ namespace ClarionAssistant
                 UpdateStatus("Claude Code exited");
         }
 
-        private void OnNewChat(object sender, EventArgs e)
+        private void OnWorkWithSolution()
         {
-            var active = _tabManager.ActiveTab;
-            if (active == null || active.IsHome)
+            // Detect current solution from the IDE
+            DetectFromIde();
+
+            if (string.IsNullOrEmpty(_currentSlnPath) || !File.Exists(_currentSlnPath))
             {
-                // From Home tab — open a new terminal without a specific solution
-                var renderer = new WebViewTerminalRenderer { Dock = DockStyle.Fill };
-                var tab = _tabManager.CreateTerminalTab(null, renderer);
-                renderer.DataReceived += data => OnTabRendererDataReceived(tab, data);
-                renderer.TerminalResized += (s, ev) => OnTabRendererResized(tab, ev);
-                renderer.Initialized += (s, ev) => OnTabRendererInitialized(tab);
-                _tabManager.ActivateTab(tab.Id);
+                MessageBox.Show("No solution is currently open in the IDE.\nOpen a solution in Clarion first.",
+                    "Work With Solution", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
-            // Active tab is a terminal — restart Claude in it
-            if (active.Terminal != null)
-            {
-                active.Terminal.Stop();
-                active.Terminal.Dispose();
-                active.Terminal = null;
-            }
-            active.ClaudeLaunched = false;
-            active.Renderer.Clear();
-            LaunchClaudeForTab(active);
+            // Open a terminal tab for the detected solution
+            OpenSolutionInNewTab(_currentSlnPath);
+        }
+
+        private void OnNewChat(object sender, EventArgs e)
+        {
+            // Always open a new terminal tab so the user doesn't lose existing work
+            var renderer = new WebViewTerminalRenderer { Dock = DockStyle.Fill };
+            var tab = _tabManager.CreateTerminalTab(null, renderer);
+            renderer.DataReceived += data => OnTabRendererDataReceived(tab, data);
+            renderer.TerminalResized += (s, ev) => OnTabRendererResized(tab, ev);
+            renderer.Initialized += (s, ev) => OnTabRendererInitialized(tab);
+
+            // Schema sources panel
+            AttachSchemaSourcesView(tab);
+
+            _tabManager.ActivateTab(tab.Id);
         }
 
         #endregion

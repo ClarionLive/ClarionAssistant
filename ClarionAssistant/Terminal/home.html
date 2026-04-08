@@ -20,10 +20,35 @@ body {
   padding: 24px 24px 32px;
 }
 .title { font-size: 18px; font-weight: 600; color: #89b4fa; margin-bottom: 6px; }
-.subtitle { font-size: 12px; color: #6c7086; margin-bottom: 20px; }
+.subtitle { font-size: 12px; color: #6c7086; margin-bottom: 16px; }
 
-/* Action bar */
-.action-bar { display: flex; gap: 8px; margin-bottom: 14px; }
+/* Quick Actions */
+.quick-actions {
+  display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;
+}
+.action-card {
+  flex: 1; min-width: 140px;
+  padding: 14px 16px;
+  background: #252536;
+  border: 1px solid #313244;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: center;
+}
+.action-card:hover { background: #313244; border-color: #45475a; }
+.action-card .action-icon { font-size: 22px; margin-bottom: 6px; }
+.action-card .action-label { font-size: 12px; font-weight: 600; color: #cdd6f4; }
+.action-card .action-desc { font-size: 11px; color: #6c7086; margin-top: 2px; }
+
+/* Section header */
+.section-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px;
+}
+.section-title { font-size: 14px; font-weight: 600; color: #a6adc8; }
+
+/* Buttons */
 .btn {
   height: 28px; padding: 0 14px;
   border: 1px solid #45475a; border-radius: 4px;
@@ -37,8 +62,6 @@ body {
 .btn:active { background: #585b70; }
 .btn-primary { background: #1e66a8; border-color: #2580d4; color: #fff; font-weight: 600; }
 .btn-primary:hover { background: #2580d4; }
-.btn-accent { color: #89dceb; border-color: rgba(137,220,235,0.3); }
-.btn-accent:hover { background: rgba(137,220,235,0.1); border-color: rgba(137,220,235,0.5); }
 
 /* Table controls */
 .table-controls {
@@ -61,152 +84,134 @@ body {
 }
 .search-wrap input:focus { border-color: #89b4fa; }
 
-/* Table */
-.solutions-table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
-.solutions-table thead th {
+/* Projects table */
+.projects-table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+.projects-table thead th {
   text-align: left; font-size: 11px; font-weight: 600;
   color: #7f849c; padding: 7px 10px;
   border-top: 1px solid #313244; border-bottom: 1px solid #313244;
   text-transform: uppercase; letter-spacing: 0.4px;
   white-space: nowrap; cursor: pointer;
 }
-.solutions-table thead th:hover { color: #a6adc8; }
-.solutions-table thead th.col-expand,
-.solutions-table thead th.col-actions { cursor: default; }
-.solutions-table thead th .sort-arrow { margin-left: 3px; opacity: 0.4; }
-.solutions-table thead th.sort-asc .sort-arrow,
-.solutions-table thead th.sort-desc .sort-arrow { opacity: 1; color: #89b4fa; }
+.projects-table thead th:hover { color: #a6adc8; }
+.projects-table thead th .sort-arrow { margin-left: 3px; opacity: 0.4; }
+.projects-table thead th.sort-asc .sort-arrow,
+.projects-table thead th.sort-desc .sort-arrow { opacity: 1; color: #89b4fa; }
+.projects-table thead th.col-actions { cursor: default; }
+.project-row td { padding: 7px 10px; border-bottom: 1px solid rgba(49,50,68,0.5); font-size: 12px; }
+.project-row:hover td { background: rgba(137,180,250,0.04); }
+.project-name { color: #89b4fa; cursor: pointer; font-weight: 500; }
+.project-name:hover { text-decoration: underline; }
 
-.solutions-table tbody td {
-  padding: 7px 10px; border-bottom: 1px solid #232334; vertical-align: middle;
+.type-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 4px;
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
 }
-.solution-row:hover td { background: #2a2a3e; }
-.col-expand { width: 38px; }
-.col-actions { width: 68px; }
+.type-badge.com { background: rgba(203,166,247,0.15); color: #cba6f7; }
+.type-badge.addin { background: rgba(116,199,236,0.15); color: #74c7ec; }
+.type-badge.other { background: rgba(108,112,134,0.15); color: #6c7086; }
 
-/* Expand toggle button */
-.expand-btn {
-  background: none; border: 1px solid #45475a; color: #7f849c;
-  cursor: pointer; font-size: 12px; font-weight: 700;
-  width: 20px; height: 20px; border-radius: 3px;
-  display: inline-flex; align-items: center; justify-content: center;
-  transition: all 0.12s; line-height: 1; font-family: monospace;
-}
-.expand-btn:hover { border-color: #89b4fa; color: #89b4fa; }
-.expand-btn.open { background: #1e66a8; border-color: #2580d4; color: #fff; }
-
-/* Cell content */
-.solution-name { color: #89b4fa; font-weight: 500; cursor: pointer; }
-.solution-name:hover { text-decoration: underline; }
-.solution-modified { color: #7f849c; font-size: 12px; white-space: nowrap; }
-.solution-path {
-  color: #6c7086; font-size: 11px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  max-width: 380px; display: inline-block; vertical-align: middle;
-}
-
-/* Row action buttons */
-.row-actions { display: flex; align-items: center; gap: 3px; }
+.row-actions { display: flex; gap: 4px; justify-content: flex-end; }
 .icon-btn {
-  background: none; border: none; cursor: pointer;
-  padding: 3px 5px; border-radius: 3px;
-  font-size: 13px; line-height: 1; transition: all 0.12s;
+  width: 26px; height: 26px; border: none; border-radius: 4px;
+  cursor: pointer; font-size: 13px; display: flex; align-items: center; justify-content: center;
+  transition: all 0.15s;
 }
-.icon-btn-del { color: #f38ba8; background: rgba(243,139,168,0.12); }
-.icon-btn-del:hover { background: rgba(243,139,168,0.28); }
-.icon-btn-folder { color: #89dceb; background: rgba(137,220,235,0.12); }
-.icon-btn-folder:hover { background: rgba(137,220,235,0.28); }
-
-/* Expand detail panel */
-.detail-row td { padding: 0; border-bottom: 1px solid #313244; }
-.detail-panel {
-  padding: 12px 50px 14px;
-  display: grid; grid-template-columns: 130px 1fr;
-  gap: 6px 12px; background: #181825;
-}
-.detail-label {
-  font-size: 11px; font-weight: 600; color: #7f849c;
-  text-transform: uppercase; letter-spacing: 0.5px;
-  text-align: right; white-space: nowrap;
-  background: #313244; border-radius: 3px;
-  padding: 2px 8px; align-self: start;
-}
-.detail-value {
-  font-size: 12px; color: #cdd6f4;
-  display: flex; align-items: center; gap: 6px; padding: 2px 0;
-  word-break: break-all;
-}
+.icon-btn-del { color: #f38ba8; background: rgba(243,139,168,0.1); }
+.icon-btn-del:hover { background: rgba(243,139,168,0.22); }
+.icon-btn-folder { color: #89b4fa; background: rgba(137,180,250,0.1); }
+.icon-btn-folder:hover { background: rgba(137,180,250,0.22); }
+.icon-btn-edit { color: #a6e3a1; background: rgba(166,227,161,0.1); }
+.icon-btn-edit:hover { background: rgba(166,227,161,0.22); }
 
 /* Table footer */
-.table-footer {
-  display: flex; justify-content: space-between;
-  align-items: center; margin-top: 6px; min-height: 28px;
-}
-.showing-info { font-size: 12px; color: #7f849c; }
-.pagination { display: flex; gap: 3px; align-items: center; }
+.table-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
+.showing-info { font-size: 11px; color: #6c7086; }
+.pagination { display: flex; gap: 3px; }
 .page-btn {
-  background: #313244; border: 1px solid #45475a;
-  color: #cdd6f4; font-size: 12px;
-  padding: 3px 9px; border-radius: 3px;
-  cursor: pointer; font-family: 'Segoe UI', sans-serif;
-  min-width: 28px; text-align: center;
-  transition: all 0.12s;
+  min-width: 28px; height: 26px; padding: 0 6px;
+  border: 1px solid #313244; border-radius: 4px;
+  background: #252536; color: #7f849c;
+  font-size: 11px; cursor: pointer; transition: all 0.15s;
 }
-.page-btn:hover { background: #45475a; }
-.page-btn.active { background: #1e66a8; border-color: #2580d4; color: #fff; font-weight: 600; }
-.page-btn[disabled] { opacity: 0.35; cursor: default; pointer-events: none; }
+.page-btn:hover { background: #313244; }
+.page-btn.active { background: #89b4fa; border-color: #89b4fa; color: #1e1e2e; font-weight: 600; }
+.page-btn:disabled { opacity: 0.3; cursor: default; }
 
-.empty-state {
-  text-align: center; color: #6c7086;
-  padding: 40px 0; font-size: 13px;
+.empty-state { text-align: center; padding: 30px; color: #6c7086; font-size: 13px; }
+
+/* Modal */
+.modal-overlay {
+  display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.55); z-index: 100;
+  justify-content: center; align-items: center;
 }
+.modal-overlay.visible { display: flex; }
+.modal {
+  background: #1e1e2e; border: 1px solid #45475a; border-radius: 10px;
+  padding: 20px; width: 420px; max-width: 90%;
+}
+.modal-title { font-size: 15px; font-weight: 600; color: #89b4fa; margin-bottom: 16px; }
+.form-group { margin-bottom: 12px; }
+.form-label { font-size: 11px; color: #7f849c; margin-bottom: 4px; font-weight: 500; display: block; }
+.form-input, .form-select {
+  width: 100%; height: 32px; padding: 0 10px;
+  background: #313244; color: #cdd6f4; border: 1px solid #45475a;
+  border-radius: 5px; font-size: 12px; font-family: 'Segoe UI', sans-serif; outline: none;
+}
+.form-input:focus, .form-select:focus { border-color: #89b4fa; }
+.form-select { cursor: pointer; }
+.form-error { color: #f38ba8; font-size: 11px; margin-top: 3px; display: none; }
+.folder-row { display: flex; gap: 6px; }
+.folder-row .form-input { flex: 1; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 
 /* Scrollbar */
-::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #45475a; border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: #45475a; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #585b70; }
 
-/* ====== Light theme ====== */
+/* Light theme */
 body.light { background: #eff1f5; color: #4c4f69; }
 body.light .title { color: #1e66f5; }
 body.light .subtitle { color: #8c8fa1; }
-body.light .btn { border-color: #bcc0cc; background: #e6e9ef; color: #4c4f69; }
-body.light .btn:hover { background: #ccd0da; border-color: #acb0be; }
-body.light .btn-primary { background: #1e66f5; border-color: #1e66f5; color: #fff; }
-body.light .btn-primary:hover { background: #3b8cf8; }
-body.light .btn-accent { color: #04a5e5; border-color: rgba(4,165,229,0.3); }
-body.light .btn-accent:hover { background: rgba(4,165,229,0.1); }
-body.light .page-size-wrap { color: #6c6f85; }
-body.light .page-size-wrap select { background: #e6e9ef; border-color: #bcc0cc; color: #4c4f69; }
-body.light .search-wrap { color: #6c6f85; }
-body.light .search-wrap input { background: #e6e9ef; border-color: #bcc0cc; color: #4c4f69; }
-body.light .search-wrap input:focus { border-color: #1e66f5; }
-body.light .solutions-table thead th { color: #6c6f85; border-color: #ccd0da; }
-body.light .solutions-table thead th:hover { color: #4c4f69; }
-body.light .solutions-table thead th.sort-asc .sort-arrow,
-body.light .solutions-table thead th.sort-desc .sort-arrow { color: #1e66f5; }
-body.light .solutions-table tbody td { border-color: #dce0e8; }
-body.light .solution-row:hover td { background: #e6e9ef; }
-body.light .expand-btn { border-color: #bcc0cc; color: #6c6f85; }
-body.light .expand-btn:hover { border-color: #1e66f5; color: #1e66f5; }
-body.light .expand-btn.open { background: #1e66f5; border-color: #1e66f5; color: #fff; }
-body.light .solution-name { color: #1e66f5; }
-body.light .solution-modified { color: #6c6f85; }
-body.light .solution-path { color: #8c8fa1; }
+body.light .action-card { background: #e6e9ef; border-color: #ccd0da; }
+body.light .action-card:hover { background: #ccd0da; border-color: #bcc0cc; }
+body.light .action-card .action-label { color: #4c4f69; }
+body.light .action-card .action-desc { color: #8c8fa1; }
+body.light .section-title { color: #5c5f77; }
+body.light .btn { background: #e6e9ef; border-color: #bcc0cc; color: #4c4f69; }
+body.light .btn:hover { background: #ccd0da; }
+body.light .projects-table thead th { color: #7c7f93; border-color: #bcc0cc; }
+body.light .project-row td { border-bottom-color: #dce0e8; }
+body.light .project-row:hover td { background: rgba(30,102,245,0.04); }
+body.light .project-name { color: #1e66f5; }
+body.light .type-badge.com { background: rgba(136,57,239,0.12); color: #8839ef; }
+body.light .type-badge.addin { background: rgba(4,165,229,0.12); color: #04a5e5; }
+body.light .type-badge.other { background: rgba(108,111,133,0.12); color: #6c6f85; }
 body.light .icon-btn-del { color: #d20f39; background: rgba(210,15,57,0.1); }
 body.light .icon-btn-del:hover { background: rgba(210,15,57,0.22); }
 body.light .icon-btn-folder { color: #1e66f5; background: rgba(30,102,245,0.1); }
 body.light .icon-btn-folder:hover { background: rgba(30,102,245,0.22); }
-body.light .detail-row td { }
-body.light .detail-panel { background: #e6e9ef; }
-body.light .detail-label { color: #5c5f77; background: #ccd0da; }
-body.light .detail-value { color: #4c4f69; }
+body.light .icon-btn-edit { color: #40a02b; background: rgba(64,160,43,0.1); }
+body.light .icon-btn-edit:hover { background: rgba(64,160,43,0.22); }
 body.light .showing-info { color: #6c6f85; }
 body.light .page-btn { background: #e6e9ef; border-color: #bcc0cc; color: #4c4f69; }
 body.light .page-btn:hover { background: #ccd0da; }
 body.light .page-btn.active { background: #1e66f5; border-color: #1e66f5; color: #fff; }
 body.light .empty-state { color: #8c8fa1; }
+body.light .modal { background: #eff1f5; border-color: #bcc0cc; }
+body.light .modal-title { color: #1e66f5; }
+body.light .form-label { color: #6c6f85; }
+body.light .form-input { background: #e6e9ef; border-color: #bcc0cc; color: #4c4f69; }
+body.light .form-input:focus { border-color: #1e66f5; }
+body.light .form-select { background: #e6e9ef; border-color: #bcc0cc; color: #4c4f69; }
+body.light .form-select:focus { border-color: #1e66f5; }
+body.light .modal-overlay { background: rgba(0,0,0,0.35); }
+body.light .search-wrap input { background: #fff; border-color: #bcc0cc; color: #4c4f69; }
+body.light .search-wrap input:focus { border-color: #1e66f5; }
+body.light .page-size-wrap select { background: #fff; border-color: #bcc0cc; color: #4c4f69; }
 body.light ::-webkit-scrollbar-thumb { background: #bcc0cc; }
 body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
 </style>
@@ -214,15 +219,41 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
 <body>
 <div class="home">
   <div class="title">Clarion Assistant</div>
-  <div class="subtitle">Select a solution to open a terminal in its folder, or browse for one.</div>
+  <div class="subtitle">Manage your projects and tools.</div>
 
-  <div class="action-bar">
-    <button class="btn btn-primary" onclick="send('browseSolution')">&#128194; Open Solution...</button>
+  <!-- Quick Actions -->
+  <div class="quick-actions">
+    <div class="action-card" onclick="send('workWithSolution')">
+      <div class="action-icon">&#128194;</div>
+      <div class="action-label">Work With Open Solution</div>
+      <div class="action-desc">Open terminal for IDE solution</div>
+    </div>
+    <div class="action-card" onclick="send('newChat')">
+      <div class="action-icon">&#128172;</div>
+      <div class="action-label">New Chat</div>
+      <div class="action-desc">Open a new terminal</div>
+    </div>
+    <div class="action-card" onclick="send('evaluateCode')">
+      <div class="action-icon">&#128269;</div>
+      <div class="action-label">Evaluate Code</div>
+      <div class="action-desc">Analyze current app</div>
+    </div>
+    <div class="action-card" onclick="send('settings')">
+      <div class="action-icon">&#9881;</div>
+      <div class="action-label">Settings</div>
+      <div class="action-desc">Configure assistant</div>
+    </div>
+  </div>
+
+  <!-- Projects Section -->
+  <div class="section-header">
+    <div class="section-title">Projects</div>
+    <button class="btn btn-primary" onclick="openProjectModal()">&#43; Add Project</button>
   </div>
 
   <div class="table-controls">
     <div class="page-size-wrap">
-      <select id="pageSize" onchange="onPageSizeChange()">
+      <select id="projPageSize" onchange="onProjPageSizeChange()">
         <option value="10">10</option>
         <option value="25">25</option>
         <option value="50">50</option>
@@ -232,91 +263,86 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
     </div>
     <div class="search-wrap">
       <span>Search:</span>
-      <input type="text" id="searchInput" oninput="onSearch()" />
+      <input type="text" id="projSearchInput" oninput="onProjSearch()" />
     </div>
   </div>
 
-  <table class="solutions-table">
+  <table class="projects-table">
     <thead>
       <tr>
-        <th class="col-expand"></th>
-        <th id="th-name" onclick="sortBy('name')">Name <span class="sort-arrow">&#8597;</span></th>
-        <th id="th-modifiedTs" onclick="sortBy('modifiedTs')" style="width:200px">Modified <span class="sort-arrow">&#8597;</span></th>
-        <th id="th-path" onclick="sortBy('path')">Location <span class="sort-arrow">&#8597;</span></th>
-        <th class="col-actions"></th>
+        <th id="pth-name" onclick="projSortBy('name')">Name <span class="sort-arrow">&#8597;</span></th>
+        <th id="pth-type" onclick="projSortBy('type')" style="width:130px">Type <span class="sort-arrow">&#8597;</span></th>
+        <th class="col-actions" style="width:90px"></th>
       </tr>
     </thead>
-    <tbody id="solutionList"></tbody>
+    <tbody id="projectList"></tbody>
   </table>
 
   <div class="table-footer">
-    <div class="showing-info" id="showingInfo"></div>
-    <div class="pagination" id="pagination"></div>
+    <div class="showing-info" id="projShowingInfo"></div>
+    <div class="pagination" id="projPagination"></div>
   </div>
 
-  <div id="emptyState" class="empty-state" style="display:none;">
-    No recent solutions found. Click "Open Solution..." to get started.
+  <div id="projEmptyState" class="empty-state" style="display:none;">
+    No projects yet. Click "Add Project" to create one.
+  </div>
+</div>
+
+<!-- Add/Edit Project Modal -->
+<div class="modal-overlay" id="projectModal">
+  <div class="modal">
+    <div class="modal-title" id="modalTitle">Add Project</div>
+    <input type="hidden" id="modalEditId" value="" />
+    <div class="form-group">
+      <label class="form-label">Project Type</label>
+      <select class="form-select" id="modalType">
+        <option value="COM Control">COM Control</option>
+        <option value="Addin">Addin</option>
+        <option value="Other">Other</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Project Name</label>
+      <input class="form-input" type="text" id="modalName" placeholder="MyProject" />
+      <div class="form-error" id="nameError">Project name is required.</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Project Folder</label>
+      <div class="folder-row">
+        <input class="form-input" type="text" id="modalFolder" placeholder="C:\Projects\MyProject" />
+        <button class="btn" onclick="browseProjectFolder()">Browse...</button>
+      </div>
+      <div class="form-error" id="folderError">Project folder is required.</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">GitHub Account</label>
+      <select class="form-select" id="modalGitHubAccount">
+        <option value="">(none)</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Repository Name</label>
+      <input class="form-input" type="text" id="modalRepoName" placeholder="e.g. MyProject" />
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeProjectModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveProject()">Save</button>
+    </div>
   </div>
 </div>
 
 <script>
-  var allItems = [];
-  var filteredItems = [];
-  var currentPage = 1;
-  var pageSize = 10;
-  var sortCol = 'modifiedTs';
-  var sortDir = 'desc';
-  var expandedIdx = -1;
+  /* ==================== Projects State ==================== */
+  var allProjects = [];
+  var filteredProjects = [];
+  var projCurrentPage = 1;
+  var projPageSize = 10;
+  var projSortCol = 'lastAccessed';
+  var projSortDir = 'desc';
 
   function send(action, data) {
     if (window.chrome && window.chrome.webview)
       window.chrome.webview.postMessage(JSON.stringify({ action: action, data: data || '' }));
-  }
-
-  /* ---- Formatting helpers ---- */
-  function relativeTime(ts) {
-    if (!ts) return '';
-    var diff = Date.now() - ts;
-    var sec = diff / 1000, min = sec / 60, hr = min / 60, day = hr / 24;
-    var yr = day / 365.25, mo = day / 30.44;
-    if (yr >= 2)  return Math.round(yr) + ' years ago';
-    if (yr >= 1)  return 'a year ago';
-    if (mo >= 2)  return Math.round(mo) + ' months ago';
-    if (mo >= 1)  return 'a month ago';
-    if (day >= 2) return Math.round(day) + ' days ago';
-    if (day >= 1) return 'a day ago';
-    if (hr >= 2)  return Math.round(hr) + ' hours ago';
-    if (hr >= 1)  return 'an hour ago';
-    return 'just now';
-  }
-
-  var MON_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  var MON_LONG  = ['January','February','March','April','May','June',
-                   'July','August','September','October','November','December'];
-  var DAY_LONG  = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-
-  function fmtShort(item) {
-    if (!item.modifiedTs) return item.modified || '';
-    var d = new Date(item.modifiedTs);
-    return relativeTime(item.modifiedTs) + ' - ' + MON_SHORT[d.getMonth()] + ' ' + d.getDate() + ' ' + d.getFullYear();
-  }
-
-  function fmtFull(item) {
-    if (!item.modifiedTs) return item.modified || '';
-    var d = new Date(item.modifiedTs);
-    var h = d.getHours(), m = d.getMinutes();
-    var ampm = h >= 12 ? 'PM' : 'AM';
-    h = h % 12 || 12;
-    m = (m < 10 ? '0' : '') + m;
-    return DAY_LONG[d.getDay()] + ', ' + MON_LONG[d.getMonth()] + ' ' + d.getDate() +
-           ' ' + d.getFullYear() + ' ' + h + ':' + m + ' ' + ampm;
-  }
-
-  function fmtSize(bytes) {
-    if (!bytes || bytes <= 0) return '';
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1048576) return (bytes / 1024).toFixed(2) + ' kB';
-    return (bytes / 1048576).toFixed(2) + ' MB';
   }
 
   function esc(s) {
@@ -329,48 +355,47 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
       .replace(/"/g,'&quot;').replace(/\n/g,'\\n').replace(/\r/g,'\\r');
   }
 
-  /* ---- Filtering & sorting ---- */
-  function applyFilter() {
-    var q = (document.getElementById('searchInput').value || '').toLowerCase().trim();
-    filteredItems = q
-      ? allItems.filter(function(s) {
-          return s.name.toLowerCase().indexOf(q) >= 0 || s.path.toLowerCase().indexOf(q) >= 0;
+  /* ==================== Projects: Filtering & sorting ==================== */
+  function applyProjFilter() {
+    var q = (document.getElementById('projSearchInput').value || '').toLowerCase().trim();
+    filteredProjects = q
+      ? allProjects.filter(function(p) {
+          return p.name.toLowerCase().indexOf(q) >= 0 || p.type.toLowerCase().indexOf(q) >= 0;
         })
-      : allItems.slice();
-    applySort();
+      : allProjects.slice();
+    applyProjSort();
   }
 
-  function applySort() {
-    filteredItems.sort(function(a, b) {
-      var av = a[sortCol] || (typeof a[sortCol] === 'number' ? 0 : '');
-      var bv = b[sortCol] || (typeof b[sortCol] === 'number' ? 0 : '');
+  function applyProjSort() {
+    filteredProjects.sort(function(a, b) {
+      var av = a[projSortCol] || (typeof a[projSortCol] === 'number' ? 0 : '');
+      var bv = b[projSortCol] || (typeof b[projSortCol] === 'number' ? 0 : '');
       if (typeof av === 'number' && typeof bv === 'number')
-        return sortDir === 'asc' ? av - bv : bv - av;
+        return projSortDir === 'asc' ? av - bv : bv - av;
       av = String(av).toLowerCase(); bv = String(bv).toLowerCase();
-      if (av < bv) return sortDir === 'asc' ? -1 : 1;
-      if (av > bv) return sortDir === 'asc' ? 1 : -1;
+      if (av < bv) return projSortDir === 'asc' ? -1 : 1;
+      if (av > bv) return projSortDir === 'asc' ? 1 : -1;
       return 0;
     });
-    currentPage = 1;
-    expandedIdx = -1;
-    render();
+    projCurrentPage = 1;
+    renderProjects();
   }
 
-  function sortBy(col) {
-    if (sortCol === col) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
-    else { sortCol = col; sortDir = col === 'modifiedTs' ? 'desc' : 'asc'; }
-    updateSortHeaders();
-    applySort();
+  function projSortBy(col) {
+    if (projSortCol === col) projSortDir = projSortDir === 'asc' ? 'desc' : 'asc';
+    else { projSortCol = col; projSortDir = col === 'lastAccessed' ? 'desc' : 'asc'; }
+    updateProjSortHeaders();
+    applyProjSort();
   }
 
-  function updateSortHeaders() {
-    ['name','modifiedTs','path'].forEach(function(c) {
-      var th = document.getElementById('th-' + c);
+  function updateProjSortHeaders() {
+    ['name','type'].forEach(function(c) {
+      var th = document.getElementById('pth-' + c);
       if (!th) return;
       var arrow = th.querySelector('.sort-arrow');
-      if (c === sortCol) {
-        th.className = sortDir === 'asc' ? 'sort-asc' : 'sort-desc';
-        if (arrow) arrow.innerHTML = sortDir === 'asc' ? '&#8593;' : '&#8595;';
+      if (c === projSortCol) {
+        th.className = projSortDir === 'asc' ? 'sort-asc' : 'sort-desc';
+        if (arrow) arrow.innerHTML = projSortDir === 'asc' ? '&#8593;' : '&#8595;';
       } else {
         th.className = '';
         if (arrow) arrow.innerHTML = '&#8597;';
@@ -378,37 +403,27 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
     });
   }
 
-  function onPageSizeChange() {
-    pageSize = parseInt(document.getElementById('pageSize').value, 10);
-    currentPage = 1; expandedIdx = -1;
-    render();
+  function onProjPageSizeChange() {
+    projPageSize = parseInt(document.getElementById('projPageSize').value, 10);
+    projCurrentPage = 1;
+    renderProjects();
   }
+  function onProjSearch() { applyProjFilter(); }
+  function goToProjPage(p) { projCurrentPage = p; renderProjects(); }
 
-  function onSearch() { applyFilter(); }
+  /* ==================== Projects: Render ==================== */
+  function renderProjects() {
+    var tbody = document.getElementById('projectList');
+    var emptyEl = document.getElementById('projEmptyState');
+    var showingEl = document.getElementById('projShowingInfo');
+    var pagEl = document.getElementById('projPagination');
 
-  function goToPage(p) {
-    currentPage = p; expandedIdx = -1;
-    render();
-  }
+    var total = filteredProjects.length;
+    var totalPages = Math.max(1, Math.ceil(total / projPageSize));
+    if (projCurrentPage > totalPages) projCurrentPage = totalPages;
 
-  function toggleExpand(globalIdx) {
-    expandedIdx = (expandedIdx === globalIdx) ? -1 : globalIdx;
-    render();
-  }
-
-  /* ---- Render ---- */
-  function render() {
-    var tbody = document.getElementById('solutionList');
-    var emptyEl = document.getElementById('emptyState');
-    var showingEl = document.getElementById('showingInfo');
-    var pagEl = document.getElementById('pagination');
-
-    var total = filteredItems.length;
-    var totalPages = Math.max(1, Math.ceil(total / pageSize));
-    if (currentPage > totalPages) currentPage = totalPages;
-
-    var start = (currentPage - 1) * pageSize;
-    var end = Math.min(start + pageSize, total);
+    var start = (projCurrentPage - 1) * projPageSize;
+    var end = Math.min(start + projPageSize, total);
 
     if (total === 0) {
       tbody.innerHTML = '';
@@ -423,91 +438,154 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
       ? 'Showing 1 entry'
       : 'Showing ' + (start + 1) + ' to ' + end + ' of ' + total + ' entries';
 
-    var pageItems = filteredItems.slice(start, end);
+    var pageItems = filteredProjects.slice(start, end);
     var html = '';
 
     for (var i = 0; i < pageItems.length; i++) {
-      var gi = start + i;
-      var s = pageItems[i];
-      var isOpen = (expandedIdx === gi);
-      var btnClass = isOpen ? 'expand-btn open' : 'expand-btn';
-      var btnSym = isOpen ? '&#8722;' : '&#43;';
-
+      var proj = pageItems[i];
+      var badgeClass = proj.type === 'COM Control' ? 'com' : proj.type === 'Addin' ? 'addin' : 'other';
       html +=
-        '<tr class="solution-row">' +
-          '<td class="col-expand">' +
-            '<button class="' + btnClass + '" onclick="event.stopPropagation();toggleExpand(' + gi + ')" title="Details">' + btnSym + '</button>' +
-          '</td>' +
-          '<td><span class="solution-name" onclick="send(\'openSolution\',\'' + escAttr(s.path) + '\')">' + esc(s.name) + '</span></td>' +
-          '<td><span class="solution-modified">' + esc(fmtShort(s)) + '</span></td>' +
-          '<td><span class="solution-path" title="' + esc(s.path) + '">' + esc(s.path) + '</span></td>' +
+        '<tr class="project-row">' +
+          '<td><span class="project-name" onclick="send(\'openProject\',\'' + escAttr(proj.id) + '\')">' + esc(proj.name) + '</span></td>' +
+          '<td><span class="type-badge ' + badgeClass + '">' + esc(proj.type) + '</span></td>' +
           '<td>' +
             '<div class="row-actions">' +
-              '<button class="icon-btn icon-btn-del" title="Hide from list" onclick="event.stopPropagation();send(\'removeSolution\',\'' + escAttr(s.path) + '\')">&#128465;</button>' +
-              '<button class="icon-btn icon-btn-folder" title="Open folder" onclick="event.stopPropagation();send(\'openFolder\',\'' + escAttr(s.path) + '\')">&#128193;</button>' +
+              '<button class="icon-btn icon-btn-edit" title="Edit project" onclick="event.stopPropagation();editProject(\'' + escAttr(proj.id) + '\')">&#9998;</button>' +
+              '<button class="icon-btn icon-btn-del" title="Remove from list" onclick="event.stopPropagation();deleteProject(\'' + escAttr(proj.id) + '\')">&#128465;</button>' +
+              '<button class="icon-btn icon-btn-folder" title="Open folder" onclick="event.stopPropagation();send(\'openFolder\',\'' + escAttr(proj.folder) + '\')">&#128193;</button>' +
             '</div>' +
           '</td>' +
         '</tr>';
-
-      if (isOpen) {
-        html +=
-          '<tr class="detail-row"><td colspan="5">' +
-            '<div class="detail-panel">' +
-              '<span class="detail-label">NAME</span>' +
-              '<span class="detail-value">' + esc(s.name) + '</span>' +
-              '<span class="detail-label">MODIFIED</span>' +
-              '<span class="detail-value">' + esc(fmtFull(s)) + '</span>' +
-              '<span class="detail-label">LOCATION</span>' +
-              '<span class="detail-value">' +
-                '<button class="icon-btn icon-btn-del" title="Hide from list" onclick="send(\'removeSolution\',\'' + escAttr(s.path) + '\')">&#128465;</button>' +
-                '<button class="icon-btn icon-btn-folder" title="Open folder" onclick="send(\'openFolder\',\'' + escAttr(s.path) + '\')">&#128193;</button>' +
-                esc(s.path) +
-              '</span>' +
-              '<span class="detail-label">SIZE</span>' +
-              '<span class="detail-value">' + esc(fmtSize(s.size)) + '</span>' +
-            '</div>' +
-          '</td></tr>';
-      }
     }
 
     tbody.innerHTML = html;
 
     /* Pagination */
     if (totalPages <= 1) { pagEl.innerHTML = ''; return; }
-
     var ph = '';
-    ph += '<button class="page-btn" onclick="goToPage(' + (currentPage - 1) + ')"' +
-          (currentPage <= 1 ? ' disabled' : '') + '>&lt;</button>';
-
-    var ps = Math.max(1, currentPage - 2);
+    ph += '<button class="page-btn" onclick="goToProjPage(' + (projCurrentPage - 1) + ')"' +
+          (projCurrentPage <= 1 ? ' disabled' : '') + '>&lt;</button>';
+    var ps = Math.max(1, projCurrentPage - 2);
     var pe = Math.min(totalPages, ps + 4);
     if (pe - ps < 4) ps = Math.max(1, pe - 4);
-
     for (var p = ps; p <= pe; p++) {
-      ph += '<button class="page-btn' + (p === currentPage ? ' active' : '') +
-            '" onclick="goToPage(' + p + ')">' + p + '</button>';
+      ph += '<button class="page-btn' + (p === projCurrentPage ? ' active' : '') +
+            '" onclick="goToProjPage(' + p + ')">' + p + '</button>';
     }
-    ph += '<button class="page-btn" onclick="goToPage(' + (currentPage + 1) + ')"' +
-          (currentPage >= totalPages ? ' disabled' : '') + '>&gt;</button>';
+    ph += '<button class="page-btn" onclick="goToProjPage(' + (projCurrentPage + 1) + ')"' +
+          (projCurrentPage >= totalPages ? ' disabled' : '') + '>&gt;</button>';
     pagEl.innerHTML = ph;
   }
 
-  function renderSolutions(items) {
-    allItems = items || [];
-    applyFilter();
+  function setProjects(items) {
+    allProjects = items || [];
+    applyProjFilter();
   }
 
-  /* ---- Messages from C# ---- */
+  /* ==================== Project Modal ==================== */
+  function openProjectModal(editId) {
+    var modal = document.getElementById('projectModal');
+    var titleEl = document.getElementById('modalTitle');
+    var typeEl = document.getElementById('modalType');
+    var nameEl = document.getElementById('modalName');
+    var folderEl = document.getElementById('modalFolder');
+    var editIdEl = document.getElementById('modalEditId');
+    var ghAcctEl = document.getElementById('modalGitHubAccount');
+    var repoEl = document.getElementById('modalRepoName');
+
+    document.getElementById('nameError').style.display = 'none';
+    document.getElementById('folderError').style.display = 'none';
+
+    if (editId) {
+      var proj = allProjects.find(function(p) { return p.id === editId; });
+      if (!proj) return;
+      titleEl.textContent = 'Edit Project';
+      editIdEl.value = editId;
+      typeEl.value = proj.type;
+      typeEl.disabled = true;
+      nameEl.value = proj.name;
+      folderEl.value = proj.folder;
+      ghAcctEl.value = proj.githubAccountId || '';
+      repoEl.value = proj.repoName || '';
+    } else {
+      titleEl.textContent = 'Add Project';
+      editIdEl.value = '';
+      typeEl.value = 'COM Control';
+      typeEl.disabled = false;
+      nameEl.value = '';
+      folderEl.value = '';
+      ghAcctEl.value = '';
+      repoEl.value = '';
+    }
+
+    modal.classList.add('visible');
+    nameEl.focus();
+  }
+
+  function closeProjectModal() {
+    document.getElementById('projectModal').classList.remove('visible');
+  }
+
+  function saveProject() {
+    var editId = document.getElementById('modalEditId').value;
+    var type = document.getElementById('modalType').value;
+    var name = document.getElementById('modalName').value.trim();
+    var folder = document.getElementById('modalFolder').value.trim();
+
+    var valid = true;
+    if (!name) { document.getElementById('nameError').style.display = 'block'; valid = false; }
+    else { document.getElementById('nameError').style.display = 'none'; }
+    if (!folder) { document.getElementById('folderError').style.display = 'block'; valid = false; }
+    else { document.getElementById('folderError').style.display = 'none'; }
+    if (!valid) return;
+
+    var githubAccountId = document.getElementById('modalGitHubAccount').value;
+    var repoName = document.getElementById('modalRepoName').value.trim();
+    var data = JSON.stringify({ id: editId || '', type: type, name: name, folder: folder, githubAccountId: githubAccountId, repoName: repoName });
+    if (editId) { send('editProject', data); } else { send('addProject', data); }
+    closeProjectModal();
+  }
+
+  function editProject(id) { openProjectModal(id); }
+  function deleteProject(id) { send('deleteProject', id); }
+  function browseProjectFolder() {
+    var editId = document.getElementById('modalEditId').value || '';
+    send('browseProjectFolder', editId);
+  }
+
+  /* ==================== Messages from C# ==================== */
   if (window.chrome && window.chrome.webview) {
     window.chrome.webview.addEventListener('message', function(e) {
       var msg = e.data;
       if (typeof msg === 'string') { try { msg = JSON.parse(msg); } catch(ex) { return; } }
-      if (msg.type === 'setSolutions') renderSolutions(msg.items);
+      if (msg.type === 'setProjects') setProjects(msg.items);
+      if (msg.type === 'setGitHubAccounts') {
+        var sel = document.getElementById('modalGitHubAccount');
+        var curVal = sel.value;
+        sel.innerHTML = '<option value="">(none)</option>';
+        (msg.accounts || []).forEach(function(a) {
+          var opt = document.createElement('option');
+          opt.value = a.id;
+          var provIcon = a.provider === 'bitbucket' ? 'BB' : 'GH';
+          opt.textContent = a.displayName + ' [' + provIcon + '] (' + a.username + ')';
+          sel.appendChild(opt);
+        });
+        sel.value = curVal;
+      }
       if (msg.type === 'setTheme') {
         document.body.classList.toggle('light', msg.theme === 'light');
       }
+      if (msg.type === 'browseResult') {
+        if (msg.folder) {
+          document.getElementById('modalFolder').value = msg.folder;
+        }
+      }
     });
   }
+
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeProjectModal();
+  });
 
   send('homeReady');
 </script>
