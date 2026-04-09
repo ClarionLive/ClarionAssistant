@@ -10,11 +10,7 @@
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <!-- Clarion version: 10, 11, or 12 (default). Pass /p:ClarionVersion=10 to build for Clarion 10. -->
-    <ClarionVersion Condition=" '$(ClarionVersion)' == '' ">12</ClarionVersion>
-    <ClarionRoot Condition=" '$(ClarionVersion)' == '12' ">C:\Clarion12</ClarionRoot>
-    <ClarionRoot Condition=" '$(ClarionVersion)' == '11' ">C:\Clarion11-13372</ClarionRoot>
-    <ClarionRoot Condition=" '$(ClarionVersion)' == '10' ">C:\Clarion10</ClarionRoot>
+    <!-- ClarionVersion and ClarionRoot are defined in Directory.Build.props (with .user override support) -->
     <OutputPath Condition=" '$(Configuration)' == 'Debug' ">bin\Debug-C$(ClarionVersion)\</OutputPath>
     <OutputPath Condition=" '$(Configuration)' == 'Release' ">bin\Release-C$(ClarionVersion)\</OutputPath>
   </PropertyGroup>
@@ -159,7 +155,7 @@
       <Link>docs\ClarionAssistant-Guide.html</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <Content Include="Everything32.dll">
+    <Content Include="Everything32.dll" Condition="Exists('Everything32.dll')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

@@ -1,0 +1,32 @@
+<Project>
+  <!--
+    ClarionRoot: path to the Clarion IDE installation directory.
+
+    Override options (in priority order):
+      1. Create a Directory.Build.props.user file alongside this one (gitignored) containing:
+           <Project><PropertyGroup><ClarionRoot>C:\YourClarion\bin\..</ClarionRoot></PropertyGroup></Project>
+      2. Pass on the command line: msbuild /p:ClarionRoot=C:\YourClarion
+      3. Default below (John's machine layout — change to match your install if building without a .user file)
+
+    ClarionVersion (10, 11, or 12) selects the default ClarionRoot when no .user override is present.
+    Pass /p:ClarionVersion=11 to target a different version.
+  -->
+  <!-- Import local developer overrides (gitignored) — must come before defaults so overrides win -->
+  <Import Project="$(MSBuildThisFileDirectory)Directory.Build.props.user" Condition="Exists('$(MSBuildThisFileDirectory)Directory.Build.props.user')" />
+
+  <PropertyGroup>
+    <ClarionVersion Condition="'$(ClarionVersion)' == ''">12</ClarionVersion>
+  </PropertyGroup>
+
+  <!-- Per-version defaults — only applied when ClarionRoot not already set by .user file or command line -->
+  <PropertyGroup Condition="'$(ClarionRoot)' == '' and '$(ClarionVersion)' == '12'">
+    <ClarionRoot>C:\Clarion12</ClarionRoot>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(ClarionRoot)' == '' and '$(ClarionVersion)' == '11'">
+    <ClarionRoot>C:\Clarion11-13372</ClarionRoot>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(ClarionRoot)' == '' and '$(ClarionVersion)' == '10'">
+    <ClarionRoot>C:\Clarion10</ClarionRoot>
+  </PropertyGroup>
+
+</Project>

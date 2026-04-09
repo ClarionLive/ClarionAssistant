@@ -232,26 +232,54 @@ The installer includes 20+ Clarion-specific skills for Claude Code (installed as
 - Clarion IDE (for reference assemblies in `{Clarion}\bin\`)
 - [Inno Setup 6](https://jrsoftware.org/isdownload.php) (for building the installer)
 
+### Configuring your Clarion path
+
+The build uses `Directory.Build.props` at the repo root to locate your Clarion installation. The defaults assume John's machine layout (`C:\Clarion12`, `C:\Clarion11-13372`, `C:\Clarion10`).
+
+If your Clarion is installed elsewhere, create a `Directory.Build.props.user` file alongside `Directory.Build.props` (it is gitignored — never commit it):
+
+```xml
+<Project>
+  <!-- Replace with your actual Clarion installation path -->
+  <PropertyGroup>
+    <ClarionRoot>C:\Clarion\Clarion12</ClarionRoot>
+  </PropertyGroup>
+</Project>
+```
+
+The `.user` file overrides the defaults for all `ClarionVersion` values, so a single path entry is enough if you only build for one version. You can still pass `/p:ClarionVersion=11` on the command line to select the target version.
+
+Alternatively, pass the path directly on the command line without creating a `.user` file:
+
+```powershell
+msbuild ClarionAssistant.csproj /p:ClarionVersion=11 /p:ClarionRoot="C:\Clarion\Clarion11.1"
+```
+
 ### Build
 
 ```powershell
-# Build the addin for all Clarion versions
+# Build for a specific version (uses Directory.Build.props.user if present)
 cd ClarionAssistant
-.\deploy.ps1 -NoBuild:$false -Version all
-
-# Or build for a specific version
 msbuild ClarionAssistant.csproj /p:Configuration=Debug /p:ClarionVersion=12
+
+# Build the addin for all Clarion versions via deploy script
+.\deploy.ps1 -NoBuild:$false -Version all
 ```
+
+> **Note:** Use MSBuild directly — do **not** use `dotnet build`. WebView2 NuGet resolution fails with the .NET CLI on this .NET Framework 4.8 project.
 
 ### Deploy for Development
 
 ```powershell
-# Deploy to your local Clarion IDE (builds + copies)
+# Deploy to your local Clarion IDE (builds + copies DLLs)
 cd ClarionAssistant
 .\deploy.ps1 -Version 12
 
-# Deploy all versions
-.\deploy.ps1 -Version all
+# Deploy without rebuilding (e.g. HTML-only changes)
+.\deploy.ps1 -Version 12 -NoBuild
+
+# Kill the IDE before deploying (when DLLs are locked)
+.\deploy.ps1 -Version 12 -Kill
 ```
 
 ---
