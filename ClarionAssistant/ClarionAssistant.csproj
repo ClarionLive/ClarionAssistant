@@ -155,7 +155,7 @@
       <Link>docs\ClarionAssistant-Guide.html</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <Content Include="Everything32.dll">
+    <Content Include="Everything32.dll" Condition="Exists('Everything32.dll')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

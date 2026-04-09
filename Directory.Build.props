@@ -11,6 +11,9 @@
     ClarionVersion (10, 11, or 12) selects the default ClarionRoot when no .user override is present.
     Pass /p:ClarionVersion=11 to target a different version.
   -->
+  <!-- Import local developer overrides (gitignored) — must come before defaults so overrides win -->
+  <Import Project="$(MSBuildThisFileDirectory)Directory.Build.props.user" Condition="Exists('$(MSBuildThisFileDirectory)Directory.Build.props.user')" />
+
   <PropertyGroup>
     <ClarionVersion Condition="'$(ClarionVersion)' == ''">12</ClarionVersion>
   </PropertyGroup>
