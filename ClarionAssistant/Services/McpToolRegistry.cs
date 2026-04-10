@@ -869,8 +869,8 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                     "Overlapping match windows are automatically merged. Output is capped at ~6 KB.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
-                    { "pattern",       "string"  },
-                    { "context_lines", "integer" }
+                    { "pattern",       "Regex pattern to search for (case-insensitive). Use specific terms to avoid truncation." },
+                    { "context_lines", "Lines of context around each match (default 5)" }
                 }, new[] { "pattern" }),
                 RequiresUiThread = true,
                 Handler = args =>
@@ -892,7 +892,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                     "Returns '(empty embed)' if the slot has no user code yet.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
-                    { "line_number", "integer" }
+                    { "line_number", "1-based line number from «E:N» tokens in get_embeditor_source or search_embeditor_source output" }
                 }, new[] { "line_number" }),
                 RequiresUiThread = true,
                 Handler = args =>
@@ -914,8 +914,8 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                     "call search_embeditor_source or get_embeditor_source again before writing to later embeds.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
-                    { "line_number", "integer" },
-                    { "code",        "string"  }
+                    { "line_number", "1-based line number from «E:N» tokens in get_embeditor_source or search_embeditor_source output" },
+                    { "code",        "Complete replacement Clarion code for the embed (overwrites existing content; indentation applied automatically)" }
                 }, new[] { "line_number", "code" }),
                 RequiresUiThread = true,
                 Handler = args =>

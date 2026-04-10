@@ -241,15 +241,24 @@ public string WriteEmbedContentByLine(int lineNumber, string code)
         if (pweePart.GetType().GetInterface("SoftVelocity.Generator.PWEE.IPweeEmbedPoint") == null)
             return "Error: Line " + lineNumber + " is a read-only generated section, not an embed point.";
 
-        // Normalise line endings
+        // Normalise input to LF for internal work
         code = code.Replace("\r\n", "\n").Replace("\r", "\n");
 
         int startLine0 = (int)GetProp(customLine, "StartLineNr");
         int endLine0   = (int)GetProp(customLine, "EndLineNr");
 
-        // Write to the underlying PWEE data store
+        // Resolve the Data setter directly. IPweeEmbedPoint.Data lacks an accessible
+        // getter in the shipping SDK, so PropertyInfo.SetValue fails with
+        // "Property Get method was not found." Invoking the set accessor via
+        // MethodInfo bypasses that machinery.
         var dataProp = pweePart.GetType().GetProperty("Data", AllInstance);
-        if (dataProp != null) dataProp.SetValue(pweePart, code, null);
+        var dataSetter = dataProp?.GetSetMethod(true);
+        if (dataSetter == null)
+            return "Error: IPweeEmbedPoint.Data setter not found via reflection.";
+
+        // Clarion is a Windows tool; write Data in CRLF to match the document buffer.
+        string dataValue = code.Replace("\n", "\r\n");
+        dataSetter.Invoke(pweePart, new object[] { dataValue });
 
         // Calculate document offsets for the embed region
         var getSegMethod  = document.GetType().GetMethod("GetLineSegment", AllInstance);
@@ -587,10 +596,10 @@ must be included in the rewrite.
 
 ### The `SetIsDirty` call in `WriteEmbedContentByLine`
 
-`SetIsDirty(editor, true, new StringBuilder())` marks the embeditor window as
-modified (shows the asterisk in the tab title and enables Save). This method
-already exists in `AppTreeService` — it is used by `WriteToEmbeditor` and other
-write operations.
+`SetIsDirty(editor, true)` marks the embeditor window as modified (shows the
+asterisk in the tab title and enables Save). The helper walks the inheritance
+chain on the editor object via reflection to find a writable `IsDirty` property
+on `AbstractViewContent` or a subclass.
 
 ---
 

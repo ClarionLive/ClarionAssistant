@@ -913,25 +913,35 @@ namespace ClarionAssistant.Services
             {
                 if (lineMap.TryGetValue(lineIdx, out int endLine))
                 {
-                    if (endLine > lineIdx)
+                    // Decide empty vs filled from the actual buffer content rather than
+                    // from (endLine > lineIdx): PWEE does not refresh CustomLine metadata
+                    // after our Document.Insert calls, so a freshly written 1-line slot
+                    // still reports endLine == lineIdx even though the buffer has text.
+                    int embedEnd = Math.Max(endLine, lineIdx);
+                    var embedLines = new List<string>();
+                    bool hasContent = false;
+                    for (int j = lineIdx; j <= embedEnd && j < total; j++)
+                    {
+                        var seg    = getSegMethod.Invoke(document, new object[] { j });
+                        int offset = (int)GetProp(seg, "Offset");
+                        int length = (int)GetProp(seg, "Length");
+                        string line = (string)getTextMethod.Invoke(document, new object[] { offset, length });
+                        embedLines.Add(line);
+                        if (line.Trim().Length > 0) hasContent = true;
+                    }
+
+                    if (hasContent)
                     {
                         sb.AppendLine("\u00ABE:" + (lineIdx + 1) + "\u00BB");
-                        for (int j = lineIdx; j <= endLine && j < total; j++)
-                        {
-                            var seg    = getSegMethod.Invoke(document, new object[] { j });
-                            int offset = (int)GetProp(seg, "Offset");
-                            int length = (int)GetProp(seg, "Length");
-                            string line = (string)getTextMethod.Invoke(document, new object[] { offset, length });
-                            // Preserve blank lines inside embed blocks — they are intentional formatting
-                            sb.AppendLine(line.Trim().Length > 0 ? "  " + line : "");
-                        }
+                        foreach (var line in embedLines)
+                            sb.AppendLine(line);
                         sb.AppendLine("\u00AB/E:" + (lineIdx + 1) + "\u00BB");
                     }
                     else
                     {
                         sb.AppendLine("\u00ABE:" + (lineIdx + 1) + "/\u00BB");
                     }
-                    lineIdx = endLine + 1;
+                    lineIdx = embedEnd + 1;
                 }
                 else
                 {
@@ -963,6 +973,17 @@ namespace ClarionAssistant.Services
         /// Write code into the embed point identified by the 1-based line number from
         /// GetEmbeditorSource «E:N» tokens. Returns a status message including the line
         /// delta so the caller knows if subsequent token line numbers are stale.
+        ///
+        /// Implementation notes: this routes through ActiveTextAreaControl.TextArea.Document
+        /// and uses Document.Remove + Document.Insert rather than Document.Replace via the
+        /// TextEditorControl.Document path. The TextEditorControl.Document/Replace path
+        /// appears to be silently rejected on PWEE embed regions — the edit is reported as
+        /// succeeding but the document buffer is unchanged. The TextArea path is the same
+        /// one EditorService.InsertTextAtCaret uses, which is confirmed to work inside the
+        /// PWEE embeditor (it is the known-good workaround: find_embed → go_to_line →
+        /// insert_text_at_cursor). We also move the caret into the embed slot before the
+        /// edit, mirroring what the interactive path does. PweePart.Data is not touched
+        /// directly — IGeneratorDialog.TryClose reads from the document buffer on save.
         /// </summary>
         public string WriteEmbedContentByLine(int lineNumber, string code)
         {
@@ -971,11 +992,20 @@ namespace ClarionAssistant.Services
 
             try
             {
+                // Route through the TextArea (same path insert_text_at_cursor uses successfully)
                 var textControl = GetProp(editor, "TextEditorControl");
                 if (textControl == null) return "Error: TextEditorControl not found.";
 
-                var document = GetProp(textControl, "Document");
-                if (document == null) return "Error: Document not found.";
+                var tac = GetProp(textControl, "ActiveTextAreaControl");
+                if (tac == null) return "Error: ActiveTextAreaControl not found.";
+
+                var textArea = GetProp(tac, "TextArea");
+                if (textArea == null) return "Error: TextArea not found.";
+
+                var document = GetProp(textArea, "Document");
+                if (document == null) return "Error: Document not found via TextArea.";
+
+                var caret = GetProp(textArea, "Caret");
 
                 var lineManager = GetProp(document, "CustomLineManager");
                 if (lineManager == null) return "Error: Document.CustomLineManager not found.";
@@ -1006,22 +1036,19 @@ namespace ClarionAssistant.Services
                 if (pweePart.GetType().GetInterface("SoftVelocity.Generator.PWEE.IPweeEmbedPoint") == null)
                     return "Error: Line " + lineNumber + " is a read-only generated section, not an embed point.";
 
-                // Normalise line endings
+                // Normalise input to LF internally
                 code = code.Replace("\r\n", "\n").Replace("\r", "\n");
 
                 int startLine0 = (int)GetProp(customLine, "StartLineNr");
                 int endLine0   = (int)GetProp(customLine, "EndLineNr");
 
-                // Write to the underlying PWEE data store
-                var dataProp = pweePart.GetType().GetProperty("Data", AllInstance);
-                if (dataProp != null) dataProp.SetValue(pweePart, code, null);
-
-                // Calculate document offsets for the embed region
-                var getSegMethod  = document.GetType().GetMethod("GetLineSegment", AllInstance);
-                var replaceMethod = document.GetType().GetMethod("Replace", AllInstance, null,
-                    new[] { typeof(int), typeof(int), typeof(string) }, null);
+                // Resolve Insert/Remove/GetLineSegment using default binding flags (public
+                // instance only) — matches EditorService.InsertTextAtCaret/ReplaceRange
+                var getSegMethod = document.GetType().GetMethod("GetLineSegment", new[] { typeof(int) });
+                var insertMethod = document.GetType().GetMethod("Insert",         new[] { typeof(int), typeof(string) });
+                var removeMethod = document.GetType().GetMethod("Remove",         new[] { typeof(int), typeof(int) });
                 if (getSegMethod == null) return "Error: Document.GetLineSegment not found.";
-                if (replaceMethod == null) return "Error: Document.Replace not found.";
+                if (insertMethod == null) return "Error: Document.Insert not found.";
 
                 var startSeg   = getSegMethod.Invoke(document, new object[] { startLine0 });
                 var endSeg     = getSegMethod.Invoke(document, new object[] { endLine0 });
@@ -1029,7 +1056,7 @@ namespace ClarionAssistant.Services
                 int endOff     = (int)GetProp(endSeg, "Offset") + (int)GetProp(endSeg, "Length");
                 int replaceLen = endOff - startOff;
 
-                // Calculate indentation from embed point column
+                // Indentation is driven by the embed point's column position
                 var textSection = GetProp(pweePart, "Text");
                 int column = textSection != null ? Convert.ToInt32(GetProp(textSection, "Column") ?? 1) : 1;
                 string indent = column > 1 ? new string(' ', column - 1) : string.Empty;
@@ -1038,47 +1065,46 @@ namespace ClarionAssistant.Services
                 string indented = string.Join("\r\n", System.Array.ConvertAll(codeLines,
                     l => string.IsNullOrEmpty(l) ? l : indent + l));
 
-                // Count line delta before replacing
                 int oldLineCount = endLine0 - startLine0 + 1;
                 int newLineCount = 1;
                 foreach (char c in indented) if (c == '\n') newLineCount++;
                 int lineDelta = newLineCount - oldLineCount;
 
-                replaceMethod.Invoke(document, new object[] { startOff, replaceLen, indented });
+                // Move the caret into the embed slot before mutating. Interactive edits
+                // through the PWEE UI only succeed when the caret is positioned inside the
+                // slot being edited, and insert_text_at_cursor (the known-good workaround)
+                // implicitly relies on this. Doing it explicitly keeps behaviour aligned.
+                if (caret != null)
+                {
+                    var caretOffsetProp = caret.GetType().GetProperty("Offset");
+                    if (caretOffsetProp != null && caretOffsetProp.CanWrite)
+                        caretOffsetProp.SetValue(caret, startOff, null);
+                }
 
-                // Mark dirty
+                // Remove existing embed content (if any), then insert the new text.
+                // We deliberately avoid Document.Replace here — on PWEE embed regions it
+                // reports success but the buffer is unchanged, whereas Insert/Remove via
+                // this code path is the same one InsertTextAtCaret uses successfully.
+                if (replaceLen > 0 && removeMethod != null)
+                    removeMethod.Invoke(document, new object[] { startOff, replaceLen });
+
+                insertMethod.Invoke(document, new object[] { startOff, indented });
+
+                // Move caret to the end of the inserted region
+                if (caret != null)
+                {
+                    var caretOffsetProp = caret.GetType().GetProperty("Offset");
+                    if (caretOffsetProp != null && caretOffsetProp.CanWrite)
+                        caretOffsetProp.SetValue(caret, startOff + indented.Length, null);
+                }
+
+                // Mark the CustomLine and the editor view dirty so save-and-close persists the edit
                 var dirtyField = customLine.GetType().GetField("Dirty", AllInstance);
                 if (dirtyField != null) dirtyField.SetValue(customLine, true);
 
-                SetIsDirty(editor, true, new StringBuilder());
+                SetIsDirty(editor, true);
 
-                // Trigger repaint
-                try
-                {
-                    var requestUpdate = document.GetType().GetMethod("RequestUpdate", AllInstance);
-                    var commitUpdate  = document.GetType().GetMethod("CommitUpdate", AllInstance);
-                    if (requestUpdate != null && commitUpdate != null)
-                    {
-                        Type updateType = null;
-                        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-                        {
-                            updateType = asm.GetType("ICSharpCode.TextEditor.TextAreaUpdate");
-                            if (updateType != null) break;
-                        }
-                        if (updateType != null)
-                        {
-                            var updateTypeEnum = updateType.Assembly.GetType("ICSharpCode.TextEditor.TextAreaUpdateType");
-                            if (updateTypeEnum != null)
-                            {
-                                var wholeArea = Enum.Parse(updateTypeEnum, "WholeTextArea");
-                                var updateObj = Activator.CreateInstance(updateType, new object[] { wholeArea });
-                                requestUpdate.Invoke(document, new[] { updateObj });
-                            }
-                        }
-                        commitUpdate.Invoke(document, null);
-                    }
-                }
-                catch { /* repaint failure is non-fatal */ }
+                try { textArea.GetType().GetMethod("Invalidate", Type.EmptyTypes)?.Invoke(textArea, null); } catch { }
 
                 var log = new StringBuilder();
                 log.AppendLine("Wrote to embed at line " + lineNumber + ".");
@@ -1204,24 +1230,34 @@ namespace ClarionAssistant.Services
             int startLine0 = (int)GetProp(customLine, "StartLineNr");
             int endLine0   = (int)GetProp(customLine, "EndLineNr");
 
-            if (startLine0 == endLine0)
-                return "(empty embed)";
-
+            // Read the embed's line range directly from the document buffer rather than
+            // trusting (startLine0 == endLine0) as an "empty" signal: PWEE's CustomLine
+            // metadata does not get refreshed when we mutate the document via
+            // Document.Insert from WriteEmbedContentByLine, so a freshly written slot
+            // still reports start==end even though the buffer now contains text. Whether
+            // the embed is empty is decided by the actual buffer contents.
             var getSegMethod  = document.GetType().GetMethod("GetLineSegment", AllInstance);
             var getTextMethod = document.GetType().GetMethod("GetText", AllInstance, null,
                 new[] { typeof(int), typeof(int) }, null);
             if (getSegMethod == null || getTextMethod == null)
                 return "Error: GetLineSegment/GetText not found.";
 
+            int firstLine = Math.Min(startLine0, endLine0);
+            int lastLine  = Math.Max(startLine0, endLine0);
+
             var sb = new StringBuilder();
-            for (int i = startLine0; i <= endLine0; i++)
+            bool hasContent = false;
+            for (int i = firstLine; i <= lastLine; i++)
             {
                 var seg    = getSegMethod.Invoke(document, new object[] { i });
                 int offset = (int)GetProp(seg, "Offset");
                 int length = (int)GetProp(seg, "Length");
                 string line = (string)getTextMethod.Invoke(document, new object[] { offset, length });
+                if (line.Trim().Length > 0) hasContent = true;
                 sb.AppendLine(line);
             }
+
+            if (!hasContent) return "(empty embed)";
             return sb.ToString().TrimEnd();
         }
 
@@ -1545,9 +1581,9 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
-        private void SetIsDirty(object editor, bool value, StringBuilder log)
+        private void SetIsDirty(object editor, bool value)
         {
-            // IsDirty is on AbstractViewContent — walk up the inheritance chain to find it
+            // IsDirty lives on AbstractViewContent — walk the inheritance chain to find a writable property
             var t = editor.GetType();
             while (t != null)
             {
@@ -1555,7 +1591,6 @@ namespace ClarionAssistant.Services
                 if (prop != null && prop.CanWrite)
                 {
                     prop.SetValue(editor, value, null);
-                    log?.AppendLine("Set IsDirty=" + value + " on " + t.Name + ".");
                     return;
                 }
                 t = t.BaseType;
