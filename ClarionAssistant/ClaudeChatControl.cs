@@ -2337,12 +2337,48 @@ namespace ClarionAssistant
                 string scriptPath = Path.Combine(assemblyDir, "Terminal", "ca-statusline.js");
                 if (!File.Exists(scriptPath)) return;
 
+                // Resolve a concrete node.exe path. Standalone Claude Code installs bundle
+                // node at ~/.claude/local/node.exe and have no system-wide `node` on PATH,
+                // so a bare `node` command breaks the terminal for those users (issue #11).
+                string nodeExe = ResolveNodeExe();
+                if (nodeExe == null) return;
+
                 string settingsPath = Path.Combine(claudeDir, "settings.local.json");
                 string safeScript = scriptPath.Replace("\\", "/");
-                string json = "{\"statusLine\":{\"type\":\"command\",\"command\":\"node " + safeScript + "\"}}";
+                string safeNode = nodeExe.Replace("\\", "/");
+                string json = "{\"statusLine\":{\"type\":\"command\",\"command\":\"\\\"" + safeNode + "\\\" \\\"" + safeScript + "\\\"\"}}";
                 File.WriteAllText(settingsPath, json, System.Text.Encoding.UTF8);
             }
             catch { }
+        }
+
+        private static string ResolveNodeExe()
+        {
+            try
+            {
+                string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                string bundled = Path.Combine(userProfile, ".claude", "local", "node.exe");
+                if (File.Exists(bundled)) return bundled;
+            }
+            catch { }
+
+            try
+            {
+                string pathEnv = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+                foreach (string dir in pathEnv.Split(Path.PathSeparator))
+                {
+                    if (string.IsNullOrWhiteSpace(dir)) continue;
+                    try
+                    {
+                        string candidate = Path.Combine(dir.Trim(), "node.exe");
+                        if (File.Exists(candidate)) return candidate;
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+
+            return null;
         }
 
         /// <summary>
