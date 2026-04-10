@@ -3,7 +3,7 @@
 ; Supports Clarion 10, 11, 12 — user picks which version(s) to install
 
 #define MyAppName "Clarion Assistant"
-#define MyAppVersion "3.0.0"
+#define MyAppVersion "3.1.0"
 #define MyAppPublisher "ClarionLive"
 #define MyAppURL "https://clarionlive.com"
 
@@ -374,6 +374,19 @@ function IsClaudeCodeInstalled: Boolean;
 var
   ResultCode: Integer;
 begin
+  // Check npm global install
+  Result := FileExists(ExpandConstant('{userappdata}\npm\claude.cmd'));
+  if Result then Exit;
+
+  // Check standalone CLI install
+  Result := FileExists(ExpandConstant('{userprofile}\.claude\local\claude.exe'));
+  if Result then Exit;
+
+  // Check WinGet install
+  Result := FileExists(ExpandConstant('{localappdata}\Microsoft\WinGet\Links\claude.exe'));
+  if Result then Exit;
+
+  // Fallback: try PATH
   Result := Exec('cmd.exe', '/c claude --version >nul 2>&1', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Result := Result and (ResultCode = 0);
 end;
@@ -563,7 +576,8 @@ begin
 
   if not IsClaudeCodeInstalled then
     Msg := Msg + '- Claude Code CLI is required but was not detected.' + #13#10 +
-           '  Install from: https://claude.ai/download' + #13#10#13#10;
+           '  Install with:  winget install Anthropic.ClaudeCode' + #13#10 +
+           '  Or from:       https://claude.ai/download' + #13#10#13#10;
 
 
   if Msg <> '' then

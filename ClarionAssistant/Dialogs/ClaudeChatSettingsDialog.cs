@@ -171,6 +171,21 @@ namespace ClarionAssistant.Dialogs
                     case "testGitHubToken":
                         HandleTestGitHubToken(json);
                         break;
+                    case "browseClassFolder":
+                        BrowseFolder("classFolder", "Select Class Output Folder", _settings.Get("Class.OutputFolder"));
+                        break;
+                    case "editClassModel":
+                        HandleEditClassModel(json);
+                        break;
+                    case "deleteClassModel":
+                        HandleDeleteClassModel(json);
+                        break;
+                    case "openModelsFolder":
+                        HandleOpenModelsFolder();
+                        break;
+                    case "addClassModel":
+                        HandleAddClassModel();
+                        break;
                 }
             }
             catch (Exception ex)
@@ -233,6 +248,8 @@ namespace ClarionAssistant.Dialogs
                 + ",\"libStatus\":\"" + EscapeJson(libStatus) + "\""
                 + ",\"docPaths\":" + docPathsSb
                 + ",\"commands\":" + cmdsSb
+                + ",\"classOutputFolder\":\"" + EscapeJson(_settings.Get("Class.OutputFolder") ?? "") + "\""
+                + ",\"classModels\":" + BuildClassModelsJson()
                 + "}}";
             _webView.CoreWebView2.PostWebMessageAsString(json);
 
@@ -470,6 +487,11 @@ namespace ClarionAssistant.Dialogs
             _settings.Set("COM.ProjectsFolder", comFolder);
             _settings.Set("MultiTerminal.Enabled", mtEnabled.ToString().ToLower());
             _settings.Set("MultiTerminal.AgentName", agentName);
+
+            // Class output folder
+            string classOutputFolder = ExtractJsonValue(data, "classOutputFolder") ?? "";
+            if (!string.IsNullOrEmpty(classOutputFolder))
+                _settings.Set("Class.OutputFolder", classOutputFolder);
 
             // Claude commands
             string commandsJson = ExtractJsonArray(data, "commands");
@@ -963,6 +985,151 @@ namespace ClarionAssistant.Dialogs
             if (WindowState == FormWindowState.Normal)
                 _settings.Set("Settings.WindowPosition", Location.X + "," + Location.Y);
         }
+
+        #region Class Models
+
+        private static string GetClassModelsFolder()
+        {
+            string folder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "ClarionAssistant", "ClassModels");
+            if (!Directory.Exists(folder))
+            {
+                Directory.CreateDirectory(folder);
+                // Copy bundled models on first run
+                try
+                {
+                    string assemblyDir = Path.GetDirectoryName(
+                        System.Reflection.Assembly.GetExecutingAssembly().Location);
+                    string bundled = Path.Combine(assemblyDir, "Terminal", "ClassModels");
+                    if (Directory.Exists(bundled))
+                    {
+                        foreach (var f in Directory.GetFiles(bundled))
+                            File.Copy(f, Path.Combine(folder, Path.GetFileName(f)), false);
+                    }
+                }
+                catch { }
+            }
+            return folder;
+        }
+
+        private string BuildClassModelsJson()
+        {
+            var sb = new StringBuilder("[");
+            try
+            {
+                string folder = GetClassModelsFolder();
+                var incFiles = Directory.GetFiles(folder, "*.inc");
+                bool first = true;
+                foreach (var incPath in incFiles)
+                {
+                    string baseName = Path.GetFileNameWithoutExtension(incPath);
+                    string clwPath = Path.Combine(folder, baseName + ".clw");
+                    if (!File.Exists(clwPath)) continue;
+
+                    if (!first) sb.Append(",");
+                    sb.Append("{\"name\":\"" + EscapeJson(baseName)
+                        + "\",\"incFile\":\"" + EscapeJson(baseName + ".inc")
+                        + "\",\"clwFile\":\"" + EscapeJson(baseName + ".clw") + "\"}");
+                    first = false;
+                }
+            }
+            catch { }
+            sb.Append("]");
+            return sb.ToString();
+        }
+
+        private void SendClassModelsUpdate()
+        {
+            if (_webView == null || _webView.CoreWebView2 == null) return;
+            _webView.CoreWebView2.PostWebMessageAsString(
+                "{\"type\":\"setClassModels\",\"models\":" + BuildClassModelsJson() + "}");
+        }
+
+        private void HandleEditClassModel(string json)
+        {
+            try
+            {
+                string modelName = ExtractJsonValue(json, "data");
+                if (string.IsNullOrEmpty(modelName)) return;
+                string folder = GetClassModelsFolder();
+                string incPath = Path.Combine(folder, modelName + ".inc");
+                string clwPath = Path.Combine(folder, modelName + ".clw");
+                if (File.Exists(incPath))
+                    System.Diagnostics.Process.Start(incPath);
+                if (File.Exists(clwPath))
+                    System.Diagnostics.Process.Start(clwPath);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[SettingsDialog] EditClassModel error: " + ex.Message);
+            }
+        }
+
+        private void HandleDeleteClassModel(string json)
+        {
+            try
+            {
+                string modelName = ExtractJsonValue(json, "data");
+                if (string.IsNullOrEmpty(modelName)) return;
+                string folder = GetClassModelsFolder();
+                string incPath = Path.Combine(folder, modelName + ".inc");
+                string clwPath = Path.Combine(folder, modelName + ".clw");
+                if (File.Exists(incPath)) File.Delete(incPath);
+                if (File.Exists(clwPath)) File.Delete(clwPath);
+                SendClassModelsUpdate();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[SettingsDialog] DeleteClassModel error: " + ex.Message);
+            }
+        }
+
+        private void HandleOpenModelsFolder()
+        {
+            try
+            {
+                string folder = GetClassModelsFolder();
+                System.Diagnostics.Process.Start("explorer.exe", folder);
+            }
+            catch { }
+        }
+
+        private void HandleAddClassModel()
+        {
+            try
+            {
+                using (var dlg = new OpenFileDialog())
+                {
+                    dlg.Title = "Select a Class Model (.inc file)";
+                    dlg.Filter = "Clarion Include (*.inc)|*.inc";
+                    if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+                    string srcInc = dlg.FileName;
+                    string baseName = Path.GetFileNameWithoutExtension(srcInc);
+                    string srcDir = Path.GetDirectoryName(srcInc);
+                    string srcClw = Path.Combine(srcDir, baseName + ".clw");
+
+                    if (!File.Exists(srcClw))
+                    {
+                        MessageBox.Show("Matching .clw file not found:\n" + srcClw,
+                            "Missing File", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+
+                    string folder = GetClassModelsFolder();
+                    File.Copy(srcInc, Path.Combine(folder, baseName + ".inc"), true);
+                    File.Copy(srcClw, Path.Combine(folder, baseName + ".clw"), true);
+                    SendClassModelsUpdate();
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[SettingsDialog] AddClassModel error: " + ex.Message);
+            }
+        }
+
+        #endregion
 
         #region JSON Helpers
 

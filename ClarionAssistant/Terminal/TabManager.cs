@@ -70,6 +70,29 @@ namespace ClarionAssistant.Terminal
             return tab;
         }
 
+        /// <summary>Create a non-terminal content tab (starts hidden; caller must call ActivateTab).</summary>
+        public TerminalTab CreateContentTab(string name, Control content)
+        {
+            var tab = new TerminalTab
+            {
+                Name = name ?? "Content",
+                IsHome = false,
+                IsClosable = true,
+                ContentControl = content
+            };
+
+            content.Dock = DockStyle.Fill;
+            content.Visible = false;
+            _contentArea.Controls.Add(content);
+
+            _tabs.Add(tab);
+            UpdateTabStripVisibility();
+
+            System.Diagnostics.Debug.WriteLine("[TabManager] CreateContentTab: " + tab.Name + " tabs=" + _tabs.Count + " tabStrip.Visible=" + _tabStrip.Visible);
+            TabAdded?.Invoke(this, tab);
+            return tab;
+        }
+
         /// <summary>Create a new terminal tab (starts hidden; caller must call ActivateTab).</summary>
         public TerminalTab CreateTerminalTab(string name, WebViewTerminalRenderer renderer)
         {

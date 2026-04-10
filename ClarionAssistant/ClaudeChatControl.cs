@@ -36,6 +36,7 @@ namespace ClarionAssistant
         private string _mcpConfigPath;
         private bool _isDarkTheme = true;
         private System.Windows.Forms.Timer _instanceStateTimer;
+        private System.Windows.Forms.Timer _statusLineTimer;
         private string _currentSlnPath;
         private ClarionVersionInfo _versionInfo;
         private ClarionVersionConfig _currentVersionConfig;
@@ -189,6 +190,7 @@ namespace ClarionAssistant
                 case "newChat": OnNewChat(sender, EventArgs.Empty); break;
                 case "evaluateCode": OnEvaluateCode(sender, EventArgs.Empty); break;
                 case "settings": OnSettings(sender, EventArgs.Empty); break;
+                case "createClass": OnCreateClass(); break;
             }
         }
 
@@ -211,6 +213,7 @@ namespace ClarionAssistant
                 case "newChat": OnNewChat(sender, EventArgs.Empty); break;
                 case "settings": OnSettings(sender, EventArgs.Empty); break;
                 case "createCom": OnCreateCom(sender, EventArgs.Empty); break;
+                case "createClass": OnCreateClass(); break;
                 case "evaluateCode": OnEvaluateCode(sender, EventArgs.Empty); break;
                 case "refresh": DetectFromIde(); break;
                 case "browse": OnBrowseSolution(sender, EventArgs.Empty); break;
@@ -752,6 +755,30 @@ namespace ClarionAssistant
             catch { /* non-fatal */ }
         }
 
+        private string _lastStatusLineJson;
+        private string _lastStatusLineTabId;
+
+        private void PollStatusLine()
+        {
+            try
+            {
+                var tab = _tabManager?.ActiveTab;
+                if (tab == null || tab.IsHome || !tab.ClaudeLaunched || tab.Renderer == null) return;
+
+                string filePath = Path.Combine(Path.GetTempPath(), "ca-statusline-" + tab.Id + ".json");
+                if (!File.Exists(filePath)) return;
+
+                string json = File.ReadAllText(filePath);
+                // Only send if data changed or we switched tabs
+                if (json == _lastStatusLineJson && tab.Id == _lastStatusLineTabId) return;
+                _lastStatusLineJson = json;
+                _lastStatusLineTabId = tab.Id;
+
+                tab.Renderer.UpdateStatusLine(json);
+            }
+            catch { }
+        }
+
         private void OnBrowseSolution(object sender, EventArgs e)
         {
             using (var dlg = new OpenFileDialog())
@@ -878,6 +905,14 @@ namespace ClarionAssistant
                 try { _knowledgeService.EndSession(tab.SessionId, null); }
                 catch { }
             }
+
+            // Clean up status line temp file
+            try
+            {
+                string statusFile = Path.Combine(Path.GetTempPath(), "ca-statusline-" + tabId + ".json");
+                if (File.Exists(statusFile)) File.Delete(statusFile);
+            }
+            catch { }
 
             _tabManager.CloseTab(tabId);
         }
@@ -1550,6 +1585,7 @@ namespace ClarionAssistant
             {
                 if (tab.Renderer != null) tab.Renderer.SetTheme(_isDarkTheme);
                 if (tab.SchemaSourcesView != null) tab.SchemaSourcesView.SetTheme(_isDarkTheme);
+                if (tab.ContentControl is CreateClassWebView ccv) ccv.SetTheme(_isDarkTheme);
             }
             Terminal.DiffViewContent.ApplyThemeToAll(_isDarkTheme);
             _diffService?.SetTheme(_isDarkTheme);
@@ -1700,6 +1736,247 @@ namespace ClarionAssistant
 
         #endregion
 
+        #region Create Class
+
+        private void OnCreateClass()
+        {
+            var view = new CreateClassWebView { Dock = DockStyle.Fill };
+            view.SetTheme(_isDarkTheme);
+            var tab = _tabManager.CreateContentTab("Create Class", view);
+
+            view.ActionReceived += (s, e) => OnCreateClassAction(tab, view, e);
+            view.Initialized += (s, ev) => SendClassModelsToView(view);
+
+            _tabManager.ActivateTab(tab.Id);
+        }
+
+        private void SendClassModelsToView(CreateClassWebView view)
+        {
+            try
+            {
+                string folder = GetClassModelsFolder();
+                var sb = new StringBuilder("[");
+                bool first = true;
+                foreach (var incPath in Directory.GetFiles(folder, "*.inc"))
+                {
+                    string baseName = Path.GetFileNameWithoutExtension(incPath);
+                    string clwPath = Path.Combine(folder, baseName + ".clw");
+                    if (!File.Exists(clwPath)) continue;
+                    if (!first) sb.Append(",");
+                    sb.Append("{\"name\":\"").Append(JsonEscape(baseName))
+                      .Append("\",\"incFile\":\"").Append(JsonEscape(baseName + ".inc"))
+                      .Append("\",\"clwFile\":\"").Append(JsonEscape(baseName + ".clw")).Append("\"}");
+                    first = false;
+                }
+                sb.Append("]");
+
+                string outputFolder = _settings.Get("Class.OutputFolder") ?? "";
+                view.SetModels(sb.ToString(), outputFolder);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] SendClassModels error: " + ex.Message);
+            }
+        }
+
+        private void OnCreateClassAction(TerminalTab tab, CreateClassWebView view, CreateClassActionEventArgs e)
+        {
+            switch (e.Action)
+            {
+                case "createClassReady":
+                    SendClassModelsToView(view);
+                    break;
+
+                case "previewModel":
+                    HandlePreviewModel(view, e.Data);
+                    break;
+
+                case "createClass":
+                    HandleCreateClass(tab, view, e.Data);
+                    break;
+
+                case "browseOutputFolder":
+                    using (var dlg = new FolderBrowserDialog())
+                    {
+                        dlg.Description = "Select Class Output Folder";
+                        string cur = _settings.Get("Class.OutputFolder");
+                        if (!string.IsNullOrEmpty(cur) && Directory.Exists(cur))
+                            dlg.SelectedPath = cur;
+                        if (dlg.ShowDialog() == DialogResult.OK)
+                        {
+                            _settings.Set("Class.OutputFolder", dlg.SelectedPath);
+                            view.SendBrowseResult(dlg.SelectedPath);
+                        }
+                    }
+                    break;
+
+                case "cancel":
+                    _tabManager.CloseTab(tab.Id);
+                    break;
+            }
+        }
+
+        private void HandlePreviewModel(CreateClassWebView view, string modelName)
+        {
+            try
+            {
+                string folder = GetClassModelsFolder();
+                string incPath = Path.Combine(folder, modelName + ".inc");
+                string clwPath = Path.Combine(folder, modelName + ".clw");
+
+                string incContent = File.Exists(incPath) ? File.ReadAllText(incPath) : "";
+                string clwContent = File.Exists(clwPath) ? File.ReadAllText(clwPath) : "";
+
+                view.SendPreviewResult(incContent, clwContent);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] PreviewModel error: " + ex.Message);
+                view.SendPreviewResult("Error reading file: " + ex.Message, "");
+            }
+        }
+
+        private void HandleCreateClass(TerminalTab createTab, CreateClassWebView view, string dataJson)
+        {
+            try
+            {
+                // Parse JSON data
+                string modelName = ExtractJsonVal(dataJson, "modelName");
+                string newClassName = ExtractJsonVal(dataJson, "newClassName");
+                string outputFolder = ExtractJsonVal(dataJson, "outputFolder");
+
+                if (string.IsNullOrEmpty(modelName) || string.IsNullOrEmpty(newClassName) || string.IsNullOrEmpty(outputFolder))
+                {
+                    view.SendCreateResult(false, "Missing required fields.", newClassName);
+                    return;
+                }
+
+                // Ensure output folder exists
+                if (!Directory.Exists(outputFolder))
+                    Directory.CreateDirectory(outputFolder);
+
+                string modelsDir = GetClassModelsFolder();
+                string srcInc = Path.Combine(modelsDir, modelName + ".inc");
+                string srcClw = Path.Combine(modelsDir, modelName + ".clw");
+                string dstInc = Path.Combine(outputFolder, newClassName + ".inc");
+                string dstClw = Path.Combine(outputFolder, newClassName + ".clw");
+
+                // Check if files already exist
+                if (File.Exists(dstInc) || File.Exists(dstClw))
+                {
+                    view.SendCreateResult(false,
+                        "File already exists: " + (File.Exists(dstInc) ? dstInc : dstClw), newClassName);
+                    return;
+                }
+
+                // Read model files, replace class name, write new files
+                string incContent = File.ReadAllText(srcInc);
+                incContent = incContent.Replace(modelName, newClassName);
+
+                string clwContent = File.ReadAllText(srcClw);
+                clwContent = clwContent.Replace(modelName, newClassName);
+                // Also replace INCLUDE reference to .INC file
+                clwContent = clwContent.Replace(
+                    "INCLUDE('" + newClassName + ".INC')",
+                    "INCLUDE('" + newClassName + ".INC')");
+
+                File.WriteAllText(dstInc, incContent);
+                File.WriteAllText(dstClw, clwContent);
+
+                // Save output folder as default for next time
+                _settings.Set("Class.OutputFolder", outputFolder);
+
+                // Open both files in the IDE editor
+                try
+                {
+                    _editorService.NavigateToFileAndLine(dstInc, 1);
+                    _editorService.NavigateToFileAndLine(dstClw, 1);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] OpenFile error: " + ex.Message);
+                }
+
+                // Send success result to the Create Class page
+                view.SendCreateResult(true, "Class created successfully!", newClassName);
+
+                // Open a terminal tab for working with the new class
+                var renderer = new WebViewTerminalRenderer { Dock = DockStyle.Fill };
+                var termTab = _tabManager.CreateTerminalTab(newClassName, renderer);
+                termTab.WorkingDirectory = outputFolder;
+                termTab.StartupCommand = "I just created a new Clarion class " + newClassName
+                    + " (.inc and .clw are open in the editor). Help me develop it.";
+                renderer.DataReceived += data => OnTabRendererDataReceived(termTab, data);
+                renderer.TerminalResized += (s, ev) => OnTabRendererResized(termTab, ev);
+                renderer.Initialized += (s, ev) => OnTabRendererInitialized(termTab);
+                AttachSchemaSourcesView(termTab);
+                _tabManager.ActivateTab(termTab.Id);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] CreateClass error: " + ex.Message);
+                view.SendCreateResult(false, "Error: " + ex.Message, "");
+            }
+        }
+
+        private static string GetClassModelsFolder()
+        {
+            string folder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "ClarionAssistant", "ClassModels");
+            if (!Directory.Exists(folder))
+            {
+                Directory.CreateDirectory(folder);
+                try
+                {
+                    string assemblyDir = Path.GetDirectoryName(
+                        System.Reflection.Assembly.GetExecutingAssembly().Location);
+                    string bundled = Path.Combine(assemblyDir, "Terminal", "ClassModels");
+                    if (Directory.Exists(bundled))
+                    {
+                        foreach (var f in Directory.GetFiles(bundled))
+                            File.Copy(f, Path.Combine(folder, Path.GetFileName(f)), false);
+                    }
+                }
+                catch { }
+            }
+            return folder;
+        }
+
+        /// <summary>Simple JSON string escape for building messages.</summary>
+        private static string JsonEscape(string s)
+        {
+            if (s == null) return "";
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"")
+                    .Replace("\n", "\\n").Replace("\r", "\\r")
+                    .Replace("\t", "\\t");
+        }
+
+        /// <summary>Extract a string value from a simple JSON object.</summary>
+        private static string ExtractJsonVal(string json, string key)
+        {
+            if (string.IsNullOrEmpty(json)) return null;
+            string search = "\"" + key + "\":";
+            int idx = json.IndexOf(search, StringComparison.Ordinal);
+            if (idx < 0) return null;
+            idx += search.Length;
+            while (idx < json.Length && json[idx] == ' ') idx++;
+            if (idx >= json.Length || json[idx] != '"') return null;
+            idx++;
+            var sb = new StringBuilder();
+            while (idx < json.Length)
+            {
+                char c = json[idx];
+                if (c == '\\' && idx + 1 < json.Length) { sb.Append(json[idx + 1]); idx += 2; continue; }
+                if (c == '"') break;
+                sb.Append(c);
+                idx++;
+            }
+            return sb.ToString();
+        }
+
+        #endregion
+
         #region MCP Server (auto-start)
 
         private void StartMcpServer()
@@ -1768,6 +2045,11 @@ namespace ClarionAssistant
                 _instanceStateTimer.Tick += (s, ev) => { PollForSolutionChange(); UpdateInstanceState(); };
                 _instanceStateTimer.Start();
             }
+
+            // Poll for Claude Code status line data (model, context, rate limits, git)
+            _statusLineTimer = new System.Windows.Forms.Timer { Interval = 3000 };
+            _statusLineTimer.Tick += (s, ev) => PollStatusLine();
+            _statusLineTimer.Start();
         }
 
         #endregion
@@ -1872,7 +2154,17 @@ namespace ClarionAssistant
 
                 string colorfgbg = _isDarkTheme ? "$env:COLORFGBG='15;0'" : "$env:COLORFGBG='0;15'";
                 string claudeBase = _settings.GetDefaultClaudeCommand();
-                string claudeCmd = $"cd '{safeWorkDir}'; $env:CLARION_ASSISTANT_EMBEDDED='1'; {colorfgbg}; {claudeBase}{mcpArg}{pluginArg} --strict-mcp-config --allowedTools '{allowedTools}'{extraFlags}";
+                // If the command is bare "claude", resolve to full path so it works
+                // even when the CLI isn't on the inherited PATH
+                if (claudeBase == "claude")
+                {
+                    string resolved = Services.ClaudeProcessManager.FindClaudePathStatic();
+                    if (resolved != null)
+                        claudeBase = "& '" + resolved.Replace("'", "''") + "'";
+                }
+                // Set CA tab ID so the statusline script can write per-tab status
+                string tabEnv = $"$env:CLARIONASSISTANT_TAB='{tab.Id}'";
+                string claudeCmd = $"cd '{safeWorkDir}'; $env:CLARION_ASSISTANT_EMBEDDED='1'; {tabEnv}; {colorfgbg}; {claudeBase}{mcpArg}{pluginArg} --strict-mcp-config --allowedTools '{allowedTools}'{extraFlags}";
 
                 if (initialPromptFile != null)
                 {
@@ -2031,6 +2323,24 @@ namespace ClarionAssistant
                 string dest = Path.Combine(claudeDir, "CLAUDE.md");
                 // Always overwrite — the dynamic context from last session needs to be cleared
                 File.Copy(source, dest, true);
+
+                // Deploy statusLine config so Claude Code writes status data for this tab
+                DeployStatusLineConfig(claudeDir, assemblyDir);
+            }
+            catch { }
+        }
+
+        private void DeployStatusLineConfig(string claudeDir, string assemblyDir)
+        {
+            try
+            {
+                string scriptPath = Path.Combine(assemblyDir, "Terminal", "ca-statusline.js");
+                if (!File.Exists(scriptPath)) return;
+
+                string settingsPath = Path.Combine(claudeDir, "settings.local.json");
+                string safeScript = scriptPath.Replace("\\", "/");
+                string json = "{\"statusLine\":{\"type\":\"command\",\"command\":\"node " + safeScript + "\"}}";
+                File.WriteAllText(settingsPath, json, System.Text.Encoding.UTF8);
             }
             catch { }
         }
@@ -2162,6 +2472,7 @@ namespace ClarionAssistant
                 if (_mcpServer != null) _mcpServer.Dispose();
                 if (_knowledgeService != null) _knowledgeService.Dispose();
                 if (_instanceStateTimer != null) { _instanceStateTimer.Stop(); _instanceStateTimer.Dispose(); }
+                if (_statusLineTimer != null) { _statusLineTimer.Stop(); _statusLineTimer.Dispose(); }
                 if (_instanceCoord != null) _instanceCoord.Dispose();
                 if (_homeView != null) _homeView.Dispose();
                 if (_header != null) _header.Dispose();

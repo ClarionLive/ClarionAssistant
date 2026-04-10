@@ -1021,6 +1021,147 @@ namespace ClarionAssistant.Services
             }
         }
 
+        /// <summary>
+        /// List all embed sections in the active embeditor by walking the PweeEditorDetails.Parts tree.
+        /// Returns section names with filled status and nesting depth.
+        /// </summary>
+        public List<Dictionary<string, object>> ListEmbeds()
+        {
+            var editor = GetClaGenEditor();
+            if (editor == null) return null;
+
+            var pweeDetails = GetProp(editor, "PweeEditorDetails");
+            if (pweeDetails == null) return null;
+
+            var parts = GetProp(pweeDetails, "Parts") as Array;
+            if (parts == null) return null;
+
+            var results = new List<Dictionary<string, object>>();
+            WalkParts(parts, results, 0);
+            return results;
+        }
+
+        private void WalkParts(Array parts, List<Dictionary<string, object>> results, int depth)
+        {
+            if (parts == null) return;
+            foreach (var part in parts)
+            {
+                if (part == null) continue;
+                string typeName = part.GetType().Name;
+
+                if (typeName == "CPweeSection")
+                {
+                    string header = (GetProp(part, "Header") ?? "").ToString();
+                    // Parse embed name from header like: ! Start of "Local Procedures"
+                    string embedName = ParseEmbedName(header);
+                    if (!string.IsNullOrEmpty(embedName))
+                    {
+                        // Check if any child embed points have content
+                        bool hasFilled = HasFilledEmbedPoints(GetProp(part, "Parts") as Array);
+                        results.Add(new Dictionary<string, object>
+                        {
+                            { "name", embedName },
+                            { "filled", hasFilled },
+                            { "depth", depth }
+                        });
+                    }
+
+                    // Recurse into child parts
+                    var childParts = GetProp(part, "Parts") as Array;
+                    if (childParts != null)
+                        WalkParts(childParts, results, depth + 1);
+                }
+            }
+        }
+
+        private bool HasFilledEmbedPoints(Array parts)
+        {
+            if (parts == null) return false;
+            foreach (var part in parts)
+            {
+                if (part == null) continue;
+                string typeName = part.GetType().Name;
+                if (typeName == "CPweeEmbedPoint")
+                {
+                    try
+                    {
+                        var text = GetProp(part, "Text");
+                        if (text != null)
+                        {
+                            string content = (GetProp(text, "Text") ?? "").ToString().Trim();
+                            if (!string.IsNullOrEmpty(content))
+                                return true;
+                        }
+                    }
+                    catch { }
+                }
+                else if (typeName == "CPweeSection")
+                {
+                    if (HasFilledEmbedPoints(GetProp(part, "Parts") as Array))
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        private static string ParseEmbedName(string header)
+        {
+            if (string.IsNullOrEmpty(header)) return null;
+            // Format: ! Start of "Embed Name"
+            const string prefix = "! Start of \"";
+            int idx = header.IndexOf(prefix, StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) return null;
+            int start = idx + prefix.Length;
+            int end = header.IndexOf('"', start);
+            if (end < 0) return header.Substring(start);
+            return header.Substring(start, end - start);
+        }
+
+        /// <summary>
+        /// Find an embed section by name in the embeditor and navigate to it.
+        /// Searches the editor text for the section header comment and positions the cursor there.
+        /// </summary>
+        public string FindEmbed(string searchName, EditorService editorService)
+        {
+            var editor = GetClaGenEditor();
+            if (editor == null) return "Error: No embeditor is currently open.";
+
+            // Get the editor text content
+            string text = editorService.GetActiveDocumentContent();
+            if (string.IsNullOrEmpty(text))
+                return "Error: Could not read embeditor text content.";
+
+            // Search for the section header: ! Start of "NAME"
+            // Use case-insensitive contains matching on the search term
+            string[] lines = text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            string searchLower = searchName.ToLowerInvariant();
+
+            int bestLine = -1;
+            string bestName = null;
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i];
+                string embedName = ParseEmbedName(line);
+                if (embedName != null && embedName.ToLowerInvariant().Contains(searchLower))
+                {
+                    bestLine = i;
+                    bestName = embedName;
+                    break;
+                }
+            }
+
+            if (bestLine < 0)
+                return "Error: No embed section matching \"" + searchName + "\" found. Use list_embeds to see available sections.";
+
+            // Navigate to the line after the header (where the embed point is)
+            // The embed point content starts on the next line after "! Start of ..."
+            int targetLine = bestLine + 2; // +1 for 1-based, +1 to skip header line
+            editorService.GoToLine(targetLine);
+
+            return "Navigated to embed \"" + bestName + "\" at line " + targetLine + ".";
+        }
+
         private static object GetProp(object obj, string name)
         {
             if (obj == null) return null;

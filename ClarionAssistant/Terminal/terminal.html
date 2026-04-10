@@ -15,10 +15,13 @@
             width: 100%;
             height: 100%;
             overflow: hidden;
+            display: flex;
+            flex-direction: column;
         }
         #terminal-container {
             width: 100%;
-            height: 100%;
+            flex: 1;
+            min-height: 0;
         }
         /* Hide scrollbar in xterm viewport for cleaner look - scrolling still works */
         .xterm-viewport::-webkit-scrollbar {
@@ -40,9 +43,86 @@
         body.light .xterm-viewport::-webkit-scrollbar-thumb:hover {
             background: #999;
         }
+
+        /* Status line bar */
+        #status-bar {
+            display: none;
+            align-items: center;
+            gap: 10px;
+            padding: 4px 10px;
+            background: #181825;
+            border-bottom: 1px solid #313244;
+            font-family: 'Cascadia Code', 'Consolas', monospace;
+            font-size: 13px;
+            flex-shrink: 0;
+            overflow: hidden;
+            white-space: nowrap;
+        }
+        #status-bar.visible { display: flex; }
+        .sl-model {
+            background: #40a02b;
+            color: #1e1e2e;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-weight: 600;
+            font-size: 12px;
+        }
+        .sl-peak {
+            background: #313244;
+            color: #a6adc8;
+            padding: 2px 7px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+        .sl-peak.off-peak { color: #a6e3a1; }
+        .sl-quota { color: #7f849c; font-size: 12px; }
+        .sl-quota .used { color: #cdd6f4; }
+        .sl-quota .pace { color: #a6e3a1; }
+        .sl-quota .pace.warn { color: #fab387; }
+        .sl-quota .pace.danger { color: #f38ba8; }
+        .sl-context {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            color: #7f849c;
+            font-size: 12px;
+            margin-left: auto;
+        }
+        .sl-bar {
+            width: 70px;
+            height: 7px;
+            background: #313244;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .sl-fill {
+            height: 100%;
+            background: #a6e3a1;
+            border-radius: 3px;
+            transition: width 0.5s;
+        }
+        .sl-fill.warn { background: #fab387; }
+        .sl-fill.danger { background: #f38ba8; }
+
+        /* Light theme status line */
+        body.light #status-bar { background: #e6e9ef; border-bottom-color: #ccd0da; }
+        body.light .sl-model { background: #40a02b; color: #fff; }
+        body.light .sl-peak { background: #dce0e8; color: #6c6f85; }
+        body.light .sl-peak.off-peak { color: #40a02b; }
+        body.light .sl-quota { color: #8c8fa1; }
+        body.light .sl-quota .used { color: #4c4f69; }
+        body.light .sl-quota .pace { color: #40a02b; }
+        body.light .sl-quota .pace.warn { color: #fe640b; }
+        body.light .sl-quota .pace.danger { color: #d20f39; }
+        body.light .sl-context { color: #8c8fa1; }
+        body.light .sl-bar { background: #ccd0da; }
+        body.light .sl-fill { background: #40a02b; }
+        body.light .sl-fill.warn { background: #fe640b; }
+        body.light .sl-fill.danger { background: #d20f39; }
     </style>
 </head>
 <body>
+    <div id="status-bar"></div>
     <div id="terminal-container"></div>
 
     <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/lib/xterm.min.js"></script>
@@ -441,6 +521,10 @@
                             }
                             break;
 
+                        case 'statusLine':
+                            renderStatusLine(JSON.parse(data));
+                            break;
+
                         case 'sendEnter':
                             // Simulate Enter key by sending CR through the input path
                             // This goes through the same channel as physical keypresses
@@ -530,6 +614,37 @@
             return (term && term.hasSelection()) ? term.getSelection() : '';
         }
         window.terminalGetSelection = getSelectedText;
+
+        function escHtml(s) { return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
+
+        function renderStatusLine(d) {
+            var el = document.getElementById('status-bar');
+            if (!d || !d.model) { el.classList.remove('visible'); return; }
+            var h = '';
+            h += '<span class="sl-model">' + escHtml(d.model) + '</span>';
+            h += '<span class="sl-peak' + (d.isOffPeak ? ' off-peak' : '') + '">' + (d.isOffPeak ? 'Off-peak' : 'Peak') + '</span>';
+            if (d.quota5h !== null && d.quota5h !== undefined) {
+                var p5 = 'pace'; if (d.pace5h < 0) p5 += ' warn'; if (d.quota5h > 80) p5 += ' danger';
+                h += '<span class="sl-quota">5h <span class="used">' + d.quota5h + '%</span>';
+                if (d.pace5h !== null && d.pace5h !== undefined) h += ' <span class="' + p5 + '">' + (d.pace5h >= 0 ? '+' : '') + d.pace5h + '%</span>';
+                h += '</span>';
+            }
+            if (d.quota7d !== null && d.quota7d !== undefined) {
+                var p7 = 'pace'; if (d.pace7d < 0) p7 += ' warn'; if (d.quota7d > 80) p7 += ' danger';
+                h += '<span class="sl-quota">7d <span class="used">' + d.quota7d + '%</span>';
+                if (d.pace7d !== null && d.pace7d !== undefined) h += ' <span class="' + p7 + '">' + (d.pace7d >= 0 ? '+' : '') + d.pace7d + '%</span>';
+                h += '</span>';
+            }
+            if (d.contextPct !== null && d.contextPct !== undefined) {
+                var pct = Math.round(d.contextPct);
+                var fc = 'sl-fill'; if (pct > 70) fc += ' warn'; if (pct > 90) fc += ' danger';
+                h += '<span class="sl-context">Context: <span class="sl-bar"><span class="' + fc + '" style="width:' + pct + '%"></span></span> ' + pct + '%</span>';
+            }
+            el.innerHTML = h;
+            var wasVisible = el.classList.contains('visible');
+            el.classList.add('visible');
+            if (!wasVisible && fitAddon) setTimeout(function() { fitAddon.fit(); }, 50);
+        }
 
         // Listen for messages from C#
         if (window.chrome && window.chrome.webview) {

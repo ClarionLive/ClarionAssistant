@@ -286,6 +286,7 @@
     <div class="nav-item active" onclick="showPage('appearance')">Appearance</div>
     <div class="nav-item" onclick="showPage('data')">Data</div>
     <div class="nav-item" onclick="showPage('general')">General</div>
+    <div class="nav-item" onclick="showPage('classes')">Classes</div>
     <div class="nav-item" onclick="showPage('launch')">Launch</div>
     <div class="nav-item" onclick="showPage('github')">Source Control</div>
     <div class="nav-item" onclick="showPage('about')">About</div>
@@ -396,6 +397,42 @@
 
     </div>
 
+    <!-- Classes -->
+    <div class="page" id="page-classes">
+      <h2>Classes</h2>
+
+      <div class="field">
+        <div class="field-label">Class Output Folder</div>
+        <div class="input-row">
+          <input type="text" id="classOutputFolder" placeholder="Select where new classes are created...">
+          <button class="btn" onclick="send('browseClassFolder')">Browse</button>
+        </div>
+        <div class="field-desc">Where newly created class files (.inc / .clw) are saved.</div>
+      </div>
+
+      <h3>Class Models</h3>
+      <div class="field-desc" style="margin-bottom:10px">Model templates stored in %AppData%\ClarionAssistant\ClassModels. Select a model when creating a new class.</div>
+
+      <div style="border:1px solid var(--card-border);border-radius:6px;background:var(--card-bg);max-height:220px;overflow-y:auto;margin-bottom:8px">
+        <table style="width:100%;border-collapse:collapse" id="classModelTable">
+          <thead>
+            <tr>
+              <th style="text-align:left;font-size:11px;font-weight:600;color:var(--section-fg);padding:6px 10px;border-bottom:1px solid var(--card-border)">MODEL NAME</th>
+              <th style="text-align:left;font-size:11px;font-weight:600;color:var(--section-fg);padding:6px 10px;border-bottom:1px solid var(--card-border)">FILES</th>
+              <th style="width:100px;text-align:right;font-size:11px;font-weight:600;color:var(--section-fg);padding:6px 10px;border-bottom:1px solid var(--card-border)"></th>
+            </tr>
+          </thead>
+          <tbody id="classModelBody"></tbody>
+        </table>
+      </div>
+      <div id="classModelEmpty" style="color:var(--desc-fg);font-size:12px;font-style:italic;padding:4px 0;display:none">No class models found.</div>
+
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <button class="btn btn-sm" onclick="send('addClassModel')">+ Add Model</button>
+        <button class="btn btn-sm" onclick="send('openModelsFolder')">Open Models Folder</button>
+      </div>
+    </div>
+
     <!-- Launch -->
     <div class="page" id="page-launch">
       <h2>Launch</h2>
@@ -455,7 +492,7 @@
       <h2>Clarion Assistant</h2>
       <div style="display:flex;flex-direction:column;gap:16px">
         <div class="about-card">
-          <div class="about-version">Version 3.0.0</div>
+          <div class="about-version">Version 3.1.0</div>
           <div class="about-desc">AI-powered development assistant for the Clarion IDE</div>
         </div>
         <div class="about-card">
@@ -777,6 +814,37 @@
     }
   }
 
+  // ── Class Models ──────────────────────────────────
+  var _classModels = [];  // [{name:'...', incFile:'...', clwFile:'...'}]
+
+  function renderClassModels() {
+    var tbody = document.getElementById('classModelBody');
+    var empty = document.getElementById('classModelEmpty');
+    if (!_classModels || _classModels.length === 0) {
+      tbody.innerHTML = '';
+      empty.style.display = 'block';
+      return;
+    }
+    empty.style.display = 'none';
+    var html = '';
+    for (var i = 0; i < _classModels.length; i++) {
+      var m = _classModels[i];
+      html += '<tr>'
+        + '<td style="padding:5px 10px;border-bottom:1px solid var(--card-border);font-size:13px;font-weight:500">' + esc(m.name) + '</td>'
+        + '<td style="padding:5px 10px;border-bottom:1px solid var(--card-border);font-size:12px;color:var(--section-fg)">' + esc(m.incFile) + ' / ' + esc(m.clwFile) + '</td>'
+        + '<td style="padding:5px 10px;border-bottom:1px solid var(--card-border);text-align:right">'
+        + '<button class="btn btn-sm" onclick="send(\'editClassModel\',\'' + esc(m.name).replace(/'/g,"\\'") + '\')" style="margin-right:4px">Edit</button>'
+        + '<button class="btn btn-sm" onclick="confirmDeleteModel(\'' + esc(m.name).replace(/'/g,"\\'") + '\')">Delete</button>'
+        + '</td></tr>';
+    }
+    tbody.innerHTML = html;
+  }
+
+  function confirmDeleteModel(name) {
+    if (confirm('Delete class model "' + name + '"? This removes both .inc and .clw files.'))
+      send('deleteClassModel', name);
+  }
+
   // ── Claude Commands ──────────────────────────────
   var _commands = [];   // [{command:'...', isDefault:true/false}, ...]
   var _cmdSelectedIdx = -1;
@@ -988,7 +1056,8 @@
       mtEnabled: document.getElementById('mtEnabled').checked,
       agentName: document.getElementById('agentName').value,
       docPaths: currentSettings.docPaths || [],
-      commands: _commands
+      commands: _commands,
+      classOutputFolder: document.getElementById('classOutputFolder').value
     };
     send('save', data);
   }
@@ -1046,11 +1115,22 @@
       _commands = s.commands || [];
       _cmdSelectedIdx = _commands.length > 0 ? 0 : -1;
       renderCommands();
+
+      // Class Models
+      _classModels = s.classModels || [];
+      document.getElementById('classOutputFolder').value = s.classOutputFolder || '';
+      renderClassModels();
+    }
+
+    if (msg.type === 'setClassModels') {
+      _classModels = msg.models || [];
+      renderClassModels();
     }
 
     if (msg.type === 'browseResult') {
       if (msg.target === 'workingDir') document.getElementById('workingDir').value = msg.path;
       else if (msg.target === 'comFolder') document.getElementById('comFolder').value = msg.path;
+      else if (msg.target === 'classFolder') document.getElementById('classOutputFolder').value = msg.path;
       else if (msg.target === 'docPath') {
         var paths = currentSettings.docPaths || [];
         if (msg.path && paths.indexOf(msg.path) < 0) {

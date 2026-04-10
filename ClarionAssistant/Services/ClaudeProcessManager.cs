@@ -105,7 +105,7 @@ namespace ClarionAssistant.Services
 
             if (string.IsNullOrEmpty(_claudePath))
             {
-                RaiseError("Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code");
+                RaiseError("Claude CLI not found. Install with: winget install Anthropic.ClaudeCode");
                 return;
             }
 
@@ -334,15 +334,30 @@ namespace ClarionAssistant.Services
 
         #region Helpers
 
+        /// <summary>
+        /// Public static accessor for path resolution (used by terminal launch).
+        /// </summary>
+        public static string FindClaudePathStatic() => FindClaudePath();
+
         private static string FindClaudePath()
         {
-            // Check common locations
-            string npmGlobal = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "npm", "claude.cmd");
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+            // 1. npm global install (most common for CLI users)
+            string npmGlobal = Path.Combine(appData, "npm", "claude.cmd");
             if (File.Exists(npmGlobal)) return npmGlobal;
 
-            // Try PATH via where command
+            // 2. Standalone CLI install
+            string standaloneCli = Path.Combine(userProfile, ".claude", "local", "claude.exe");
+            if (File.Exists(standaloneCli)) return standaloneCli;
+
+            // 3. WinGet install
+            string wingetLink = Path.Combine(localAppData, "Microsoft", "WinGet", "Links", "claude.exe");
+            if (File.Exists(wingetLink)) return wingetLink;
+
+            // 4. Try PATH via where command (catches any install location added to PATH)
             try
             {
                 var psi = new ProcessStartInfo

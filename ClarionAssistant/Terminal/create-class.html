@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Create New Class</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #1e1e2e; --fg: #cdd6f4;
+    --sidebar-bg: #181825; --sidebar-border: #313244;
+    --input-bg: #313244; --input-fg: #cdd6f4; --input-border: #45475a;
+    --btn-bg: #313244; --btn-fg: #cdd6f4; --btn-border: #45475a;
+    --btn-hover: #45475a;
+    --accent: #89b4fa; --accent-hover: #74a8f7;
+    --ok-bg: #1e66a8; --ok-hover: #2580d4;
+    --section-fg: #a6adc8;
+    --footer-bg: #181825; --footer-border: #313244;
+    --active-bg: rgba(137,180,250,0.1);
+    --hover-bg: rgba(137,180,250,0.05);
+    --desc-fg: #6c7086;
+    --danger: #f38ba8; --danger-hover: rgba(243,139,168,0.15);
+    --success: #a6e3a1; --warning: #fab387;
+    --card-bg: #252536; --card-border: #313244;
+    --code-bg: #11111b; --code-fg: #cdd6f4;
+    --keyword: #cba6f7; --comment: #6c7086; --string: #a6e3a1; --type: #89b4fa;
+  }
+  body.light {
+    --bg: #eff1f5; --fg: #4c4f69;
+    --sidebar-bg: #dce0e8; --sidebar-border: #bcc0cc;
+    --input-bg: #ffffff; --input-fg: #4c4f69; --input-border: #bcc0cc;
+    --btn-bg: #e6e9ef; --btn-fg: #4c4f69; --btn-border: #bcc0cc;
+    --btn-hover: #ccd0da;
+    --accent: #1e66f5; --accent-hover: #3b7cf8;
+    --ok-bg: #1e66f5; --ok-hover: #3b7cf8;
+    --section-fg: #6c6f85;
+    --footer-bg: #dce0e8; --footer-border: #bcc0cc;
+    --active-bg: rgba(30,102,245,0.1);
+    --hover-bg: rgba(30,102,245,0.05);
+    --desc-fg: #8c8fa1;
+    --danger: #d20f39; --danger-hover: rgba(210,15,57,0.1);
+    --success: #40a02b; --warning: #fe640b;
+    --card-bg: #e6e9ef; --card-border: #bcc0cc;
+    --code-bg: #dce0e8; --code-fg: #4c4f69;
+    --keyword: #8839ef; --comment: #8c8fa1; --string: #40a02b; --type: #1e66f5;
+  }
+
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    font-family: 'Segoe UI', sans-serif; font-size: 13px;
+    background: var(--bg); color: var(--fg);
+  }
+
+  .layout { display: flex; flex-direction: column; height: 100%; }
+
+  /* Header */
+  .header {
+    padding: 16px 24px 12px;
+    border-bottom: 1px solid var(--card-border);
+    flex-shrink: 0;
+  }
+  .header h1 { font-size: 18px; font-weight: 600; color: var(--accent); margin-bottom: 4px; }
+  .header .subtitle { font-size: 12px; color: var(--desc-fg); }
+
+  /* Main content */
+  .main { display: flex; flex: 1; min-height: 0; }
+
+  /* Model list sidebar */
+  .model-panel {
+    width: 220px; flex-shrink: 0;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--sidebar-border);
+    display: flex; flex-direction: column;
+  }
+  .model-panel-header {
+    padding: 12px 16px;
+    font-size: 11px; font-weight: 600; color: var(--section-fg);
+    text-transform: uppercase; letter-spacing: 0.4px;
+    border-bottom: 1px solid var(--sidebar-border);
+  }
+  .model-list { flex: 1; overflow-y: auto; padding: 6px 0; }
+  .model-item {
+    padding: 10px 16px; cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: all 0.15s; user-select: none;
+    font-size: 13px; color: var(--section-fg);
+  }
+  .model-item:hover { background: var(--hover-bg); color: var(--fg); }
+  .model-item.active {
+    border-left-color: var(--accent);
+    background: var(--active-bg);
+    color: var(--fg); font-weight: 600;
+  }
+  .model-item .model-name { display: block; }
+  .model-item .model-files {
+    font-size: 10px; color: var(--desc-fg); margin-top: 2px;
+  }
+  .model-empty {
+    padding: 20px 16px; text-align: center;
+    color: var(--desc-fg); font-size: 12px; font-style: italic;
+  }
+
+  /* Preview area */
+  .preview-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+  .preview-tabs {
+    display: flex; gap: 0; padding: 0 16px;
+    border-bottom: 1px solid var(--card-border);
+    flex-shrink: 0;
+  }
+  .preview-tab {
+    padding: 10px 16px; font-size: 12px; cursor: pointer;
+    border-bottom: 2px solid transparent;
+    color: var(--section-fg); transition: all 0.15s; user-select: none;
+  }
+  .preview-tab:hover { color: var(--fg); }
+  .preview-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+  .preview-content { flex: 1; overflow: auto; padding: 0; min-height: 0; }
+  .preview-code {
+    margin: 0; padding: 16px;
+    font-family: 'Cascadia Mono', Consolas, monospace;
+    font-size: 12px; line-height: 1.6;
+    background: var(--code-bg); color: var(--code-fg);
+    white-space: pre; overflow-x: auto;
+    min-height: 100%;
+    tab-size: 4;
+  }
+  .preview-empty {
+    display: flex; align-items: center; justify-content: center;
+    height: 100%; color: var(--desc-fg); font-size: 13px;
+  }
+
+  /* Syntax highlighting classes */
+  .hl-keyword { color: var(--keyword); font-weight: 600; }
+  .hl-comment { color: var(--comment); font-style: italic; }
+  .hl-string { color: var(--string); }
+  .hl-type { color: var(--type); }
+
+  /* Footer / form area */
+  .footer-form {
+    padding: 16px 24px;
+    background: var(--footer-bg);
+    border-top: 1px solid var(--footer-border);
+    flex-shrink: 0;
+  }
+  .form-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .form-row:last-child { margin-bottom: 0; }
+  .form-label {
+    font-size: 12px; color: var(--section-fg); font-weight: 500;
+    min-width: 110px; flex-shrink: 0;
+  }
+  .form-input {
+    flex: 1; height: 34px; padding: 0 10px;
+    background: var(--input-bg); color: var(--input-fg);
+    border: 1px solid var(--input-border); border-radius: 6px;
+    font-size: 13px; font-family: inherit; outline: none;
+    transition: border-color 0.15s;
+  }
+  .form-input:focus { border-color: var(--accent); }
+  .form-input.error { border-color: var(--danger); }
+  .form-error { font-size: 11px; color: var(--danger); margin-left: 4px; display: none; }
+
+  .btn {
+    height: 34px; padding: 0 16px; border: 1px solid var(--btn-border); border-radius: 6px;
+    background: var(--btn-bg); color: var(--btn-fg); font-size: 13px; font-family: inherit;
+    cursor: pointer; transition: all 0.15s; white-space: nowrap;
+  }
+  .btn:hover { background: var(--btn-hover); }
+  .btn-primary {
+    background: var(--ok-bg); color: #fff; border-color: var(--ok-bg); font-weight: 600;
+  }
+  .btn-primary:hover { background: var(--ok-hover); border-color: var(--ok-hover); }
+  .btn-primary:disabled { opacity: 0.5; cursor: default; }
+  .btn-primary:disabled:hover { background: var(--ok-bg); }
+
+  .actions-row { display: flex; justify-content: flex-end; gap: 10px; }
+
+  /* Status message */
+  .status-msg {
+    font-size: 12px; margin-right: auto; display: flex; align-items: center; gap: 6px;
+  }
+  .status-msg.success { color: var(--success); }
+  .status-msg.error { color: var(--danger); }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--btn-border); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--section-fg); }
+</style>
+</head>
+<body>
+
+<div class="layout">
+  <div class="header">
+    <h1>Create New Class</h1>
+    <div class="subtitle">Select a model template, name your class, and generate .inc/.clw files.</div>
+  </div>
+
+  <div class="main">
+    <!-- Model list -->
+    <div class="model-panel">
+      <div class="model-panel-header">Class Models</div>
+      <div class="model-list" id="modelList">
+        <div class="model-empty">Loading models...</div>
+      </div>
+    </div>
+
+    <!-- Preview -->
+    <div class="preview-panel">
+      <div class="preview-tabs">
+        <div class="preview-tab active" id="tabInc" onclick="showPreview('inc')">.inc (Declaration)</div>
+        <div class="preview-tab" id="tabClw" onclick="showPreview('clw')">.clw (Implementation)</div>
+      </div>
+      <div class="preview-content" id="previewContent">
+        <div class="preview-empty" id="previewEmpty">Select a model to preview its files</div>
+        <pre class="preview-code" id="previewCode" style="display:none"></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Form footer -->
+  <div class="footer-form">
+    <div class="form-row">
+      <span class="form-label">New Class Name:</span>
+      <input type="text" class="form-input" id="className" placeholder="e.g. ctMyNewClass" style="max-width:300px"
+             oninput="onClassNameInput()" onkeydown="if(event.key==='Enter')doCreate()">
+      <span class="form-error" id="nameError">Class name is required</span>
+    </div>
+    <div class="form-row">
+      <span class="form-label">Output Folder:</span>
+      <input type="text" class="form-input" id="outputFolder" placeholder="Select output folder...">
+      <button class="btn" onclick="send('browseOutputFolder')">Browse...</button>
+    </div>
+    <div class="form-row actions-row">
+      <span class="status-msg" id="statusMsg"></span>
+      <button class="btn" onclick="send('cancel')">Cancel</button>
+      <button class="btn btn-primary" id="btnCreate" onclick="doCreate()" disabled>Create Class</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Apply theme from URL parameter
+  (function() {
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('theme') === 'light') document.body.classList.add('light');
+  })();
+
+  var models = [];
+  var selectedModel = null;
+  var previewInc = '';
+  var previewClw = '';
+  var activePreview = 'inc';
+
+  function send(action, data) {
+    if (window.chrome && window.chrome.webview)
+      window.chrome.webview.postMessage(JSON.stringify({ action: action, data: data || '' }));
+  }
+
+  function esc(s) {
+    if (!s) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ── Models ──
+
+  function renderModels() {
+    var el = document.getElementById('modelList');
+    if (models.length === 0) {
+      el.innerHTML = '<div class="model-empty">No class models found.<br>Add models in Settings &rarr; Classes.</div>';
+      return;
+    }
+    var html = '';
+    for (var i = 0; i < models.length; i++) {
+      var m = models[i];
+      var isActive = selectedModel && selectedModel.name === m.name;
+      html += '<div class="model-item' + (isActive ? ' active' : '') + '" onclick="selectModel(\'' + esc(m.name).replace(/'/g,"\\'") + '\')">'
+        + '<span class="model-name">' + esc(m.name) + '</span>'
+        + '<span class="model-files">' + esc(m.incFile) + ' / ' + esc(m.clwFile) + '</span>'
+        + '</div>';
+    }
+    el.innerHTML = html;
+  }
+
+  function selectModel(name) {
+    selectedModel = null;
+    for (var i = 0; i < models.length; i++) {
+      if (models[i].name === name) { selectedModel = models[i]; break; }
+    }
+    renderModels();
+    previewInc = '';
+    previewClw = '';
+    document.getElementById('previewCode').style.display = 'none';
+    document.getElementById('previewEmpty').style.display = 'flex';
+    document.getElementById('previewEmpty').textContent = 'Loading preview...';
+    updateCreateButton();
+
+    if (selectedModel) {
+      send('previewModel', name);
+      // Pre-fill class name suggestion based on model name
+      var nameInput = document.getElementById('className');
+      if (!nameInput.value) {
+        nameInput.placeholder = 'e.g. ct' + name.replace(/^ct/i, 'My');
+      }
+    }
+  }
+
+  // ── Preview ──
+
+  function showPreview(tab) {
+    activePreview = tab;
+    document.getElementById('tabInc').classList.toggle('active', tab === 'inc');
+    document.getElementById('tabClw').classList.toggle('active', tab === 'clw');
+    renderPreview();
+  }
+
+  function renderPreview() {
+    var code = activePreview === 'inc' ? previewInc : previewClw;
+    var codeEl = document.getElementById('previewCode');
+    var emptyEl = document.getElementById('previewEmpty');
+
+    if (!code) {
+      codeEl.style.display = 'none';
+      emptyEl.style.display = 'flex';
+      emptyEl.textContent = selectedModel ? 'Loading preview...' : 'Select a model to preview its files';
+      return;
+    }
+
+    emptyEl.style.display = 'none';
+    codeEl.style.display = 'block';
+    codeEl.innerHTML = highlightClarion(code);
+  }
+
+  // Simple Clarion syntax highlighting
+  function highlightClarion(code) {
+    var lines = code.split('\n');
+    var result = [];
+    var keywords = /\b(PROCEDURE|CLASS|TYPE|MODULE|LINK|DLL|MEMBER|INCLUDE|MAP|END|CODE|RETURN|IF|THEN|ELSE|ELSIF|LOOP|WHILE|UNTIL|BREAK|DO|ROUTINE|CASE|OF|OROF|BEGIN|SECTION|SELF|NEW|DISPOSE|GET|PUT|ADD|DELETE|SET|NEXT|PREVIOUS|OPEN|CLOSE|CREATE|SHARE|FREE|CLEAR|SORT|RECORDS|ERRORCODE|ERROR|MESSAGE|BEEP|CLIP|LEFT|RIGHT|FORMAT|UPPER|LOWER|LEN|SUB|INSTRING|CHOOSE|OMIT|COMPILE|EQUATE|QUEUE|GROUP|LIKE|BYTE|SHORT|USHORT|LONG|ULONG|REAL|DECIMAL|STRING|CSTRING|PSTRING|DATE|TIME|BOOL|TRUE|FALSE|NULL|NOT|AND|OR)\b/gi;
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = esc(lines[i]);
+
+      // Comment lines (starting with !)
+      if (/^\s*!/.test(lines[i])) {
+        result.push('<span class="hl-comment">' + line + '</span>');
+        continue;
+      }
+
+      // Inline comments after code
+      var commentIdx = -1;
+      var inStr = false;
+      for (var ci = 0; ci < line.length; ci++) {
+        if (line[ci] === "'") inStr = !inStr;
+        if (line[ci] === '!' && !inStr) { commentIdx = ci; break; }
+      }
+
+      var codePart = commentIdx >= 0 ? line.substring(0, commentIdx) : line;
+      var commentPart = commentIdx >= 0 ? '<span class="hl-comment">' + line.substring(commentIdx) + '</span>' : '';
+
+      // Highlight strings
+      codePart = codePart.replace(/'([^']*)'/g, '<span class="hl-string">\'$1\'</span>');
+
+      // Highlight keywords
+      codePart = codePart.replace(keywords, function(match) {
+        return '<span class="hl-keyword">' + match + '</span>';
+      });
+
+      result.push(codePart + commentPart);
+    }
+    return result.join('\n');
+  }
+
+  // ── Form ──
+
+  function onClassNameInput() {
+    var val = document.getElementById('className').value.trim();
+    document.getElementById('className').classList.remove('error');
+    document.getElementById('nameError').style.display = 'none';
+    updateCreateButton();
+  }
+
+  function updateCreateButton() {
+    var name = document.getElementById('className').value.trim();
+    var folder = document.getElementById('outputFolder').value.trim();
+    document.getElementById('btnCreate').disabled = !selectedModel || !name || !folder;
+  }
+
+  function doCreate() {
+    var name = document.getElementById('className').value.trim();
+    var folder = document.getElementById('outputFolder').value.trim();
+
+    if (!selectedModel) return;
+    if (!name) {
+      document.getElementById('className').classList.add('error');
+      document.getElementById('nameError').style.display = 'inline';
+      document.getElementById('className').focus();
+      return;
+    }
+    if (!folder) {
+      document.getElementById('outputFolder').focus();
+      return;
+    }
+
+    // Validate: no spaces or special chars in class name
+    if (/[^a-zA-Z0-9_]/.test(name)) {
+      showStatus('Class name can only contain letters, numbers, and underscores', true);
+      document.getElementById('className').focus();
+      return;
+    }
+
+    document.getElementById('btnCreate').disabled = true;
+    document.getElementById('btnCreate').textContent = 'Creating...';
+    showStatus('');
+
+    send('createClass', JSON.stringify({
+      modelName: selectedModel.name,
+      newClassName: name,
+      outputFolder: folder
+    }));
+  }
+
+  function showStatus(msg, isError) {
+    var el = document.getElementById('statusMsg');
+    el.textContent = msg;
+    el.className = 'status-msg' + (isError ? ' error' : msg ? ' success' : '');
+  }
+
+  // ── Messages from C# ──
+
+  if (window.chrome && window.chrome.webview) {
+    window.chrome.webview.addEventListener('message', function(e) {
+      var msg;
+      try { msg = JSON.parse(e.data); } catch(ex) { return; }
+
+      if (msg.type === 'setModels') {
+        models = msg.models || [];
+        document.getElementById('outputFolder').value = msg.outputFolder || '';
+        selectedModel = null;
+        renderModels();
+        renderPreview();
+        updateCreateButton();
+      }
+
+      if (msg.type === 'previewResult') {
+        previewInc = msg.inc || '';
+        previewClw = msg.clw || '';
+        renderPreview();
+      }
+
+      if (msg.type === 'createResult') {
+        document.getElementById('btnCreate').disabled = false;
+        document.getElementById('btnCreate').textContent = 'Create Class';
+        if (msg.success) {
+          showStatus('Class "' + (msg.className || '') + '" created successfully!');
+          // Clear name for next creation
+          document.getElementById('className').value = '';
+          updateCreateButton();
+        } else {
+          showStatus(msg.message || 'Failed to create class', true);
+        }
+      }
+
+      if (msg.type === 'browseResult') {
+        if (msg.folder) {
+          document.getElementById('outputFolder').value = msg.folder;
+          updateCreateButton();
+        }
+      }
+
+      if (msg.type === 'setTheme') {
+        document.body.classList.toggle('light', msg.theme === 'light');
+      }
+    });
+  }
+
+  // Signal ready
+  send('createClassReady');
+</script>
+</body>
+</html>

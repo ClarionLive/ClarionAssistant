@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/peterparker57/ClarionAssistant/releases/latest"><img src="https://img.shields.io/github/v/release/peterparker57/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
   <img src="https://img.shields.io/badge/Clarion-10%20%7C%2011%20%7C%2012-blue?style=for-the-badge" alt="Clarion 10 | 11 | 12">
-  <img src="https://img.shields.io/badge/version-3.0-green?style=for-the-badge" alt="v3.0">
+  <img src="https://img.shields.io/badge/version-3.1-green?style=for-the-badge" alt="v3.1">
 </p>
 
 ---
@@ -38,6 +38,35 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 - **Diff viewer** &mdash; Monaco-based side-by-side diffs with syntax highlighting
 - **Knowledge system** &mdash; persistent cross-session memory for decisions, patterns, and gotchas
 - **Zoom persistence** &mdash; Ctrl+mousewheel zoom is saved and restored across sessions
+
+---
+
+## What's New in v3.1
+
+### Create Class from Model Templates
+- **New "Create Class" tab** &mdash; select a model template, name your class, and generate .inc/.clw files in one step
+- **Class Models settings** &mdash; manage model templates in Settings &rarr; Classes, with Edit (opens both .inc and .clw) and Delete
+- **Class output folder** &mdash; configurable default output folder for generated class files
+- **Syntax-highlighted preview** &mdash; preview .inc and .clw content before creating, with Clarion syntax highlighting
+
+### Status Line
+- **Live status bar** on each terminal tab showing model name, usage quota, pacing, and context window fill
+- **Polls from Claude Code** via a statusLine hook script (`ca-statusline.js`) that writes JSON to a temp file
+
+### Embeditor Navigation
+- **`list_embeds`** &mdash; new MCP tool to list all embed sections in the active embeditor with filled status
+- **`find_embed`** &mdash; new MCP tool to search embed sections by partial name and navigate the cursor there
+
+### Project Info
+- **`get_ca_project_info`** &mdash; new MCP tool to look up linked GitHub account and repo name for a project folder
+
+### Claude Code Detection Improvements
+- **Standalone CLI and WinGet support** &mdash; finds `claude.exe` from standalone install (`~/.claude/local/`), WinGet (`AppData/Local/Microsoft/WinGet/Links/`), npm global, or PATH
+- **Installer detection updated** &mdash; checks all install locations before falling back to PATH; install message now suggests `winget install Anthropic.ClaudeCode`
+
+### UI Improvements
+- **Removed Settings from home page** &mdash; use the gear icon button instead
+- **Light/dark theme** correctly applied to the Create Class tab on creation
 
 ---
 
@@ -153,6 +182,8 @@ Clarion Assistant exposes **90+ MCP tools** that Claude uses to interact with th
 | `open_app` | Open a .app file in the IDE |
 | `list_procedures` | List all procedures in the open app |
 | `open_procedure_embed` | Open the embeditor for a procedure |
+| `list_embeds` | List all embed sections with filled status |
+| `find_embed` | Find and navigate to an embed section by name |
 | `export_txa` / `import_txa` | Export/import TXA files |
 
 ### Code Intelligence
@@ -189,6 +220,11 @@ Clarion Assistant exposes **90+ MCP tools** that Claude uses to interact with th
 | `generate_source` | Generate .clw/.inc source from templates |
 | `build_com_project` | Build a C# COM control via MSBuild |
 | `run_command` | Execute any command-line tool |
+
+### Project Info
+| Tool | Description |
+|---|---|
+| `get_ca_project_info` | Get linked GitHub account and repo name for a project folder |
 
 ### Knowledge & Memory
 | Tool | Description |

@@ -312,6 +312,12 @@ namespace ClarionAssistant.Terminal
                 _webView.CoreWebView2.PostWebMessageAsString("theme:" + (isDark ? "dark" : "light"));
         }
 
+        public void UpdateStatusLine(string json)
+        {
+            if (_isInitialized && _webView?.CoreWebView2 != null)
+                _webView.CoreWebView2.PostWebMessageAsString("statusLine:" + json);
+        }
+
         public void Clear()
         {
             if (_isInitialized && _webView?.CoreWebView2 != null)

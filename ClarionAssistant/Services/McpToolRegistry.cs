@@ -800,6 +800,48 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                 Handler = args => _appTree.NavigateEmbed("prev", true)
             });
 
+            Register(new McpTool
+            {
+                Name = "list_embeds",
+                Description = "List all embed sections in the active embeditor with their names and filled status. Use this to see what embed points are available before navigating.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                RequiresUiThread = true,
+                Handler = args =>
+                {
+                    var embeds = _appTree.ListEmbeds();
+                    if (embeds == null) return "Error: No embeditor is currently open or no PWEE parts found.";
+                    if (embeds.Count == 0) return "No embed sections found.";
+                    var sb = new System.Text.StringBuilder();
+                    sb.AppendLine("Embed sections (" + embeds.Count + "):");
+                    foreach (var e in embeds)
+                    {
+                        string indent = new string(' ', (int)e["depth"] * 2);
+                        string filled = (bool)e["filled"] ? " [FILLED]" : "";
+                        sb.AppendLine(indent + "- " + e["name"] + filled);
+                    }
+                    return sb.ToString();
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "find_embed",
+                Description = "Find an embed section by name and navigate the cursor there. Use a partial name like 'Local Proc' or 'Init' — matches case-insensitively.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "name", "Name or partial name of the embed section to find (e.g. 'Local Procedures', 'Init', 'Data')" }
+                    },
+                    new[] { "name" }),
+                RequiresUiThread = true,
+                Handler = args =>
+                {
+                    string name = McpJsonRpc.GetString(args, "name");
+                    if (string.IsNullOrEmpty(name)) return "Error: name is required";
+                    return _appTree.FindEmbed(name, _editorService);
+                }
+            });
+
             // === TXA Export/Import Tools ===
 
             Register(new McpTool
@@ -2986,6 +3028,168 @@ EXAMPLES:
                     return service.GetStats();
                 }
             });
+
+            // === Project Info Tool ===
+
+            Register(new McpTool
+            {
+                Name = "get_ca_project_info",
+                Description = "Get ClarionAssistant project info for a folder, including linked GitHub account and repository name. Use this to auto-populate marketplace submissions and GitHub operations instead of asking the user.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "folder", "Project folder path to look up (e.g. H:\\DevLaptop\\ClarionAssistant\\DatePickerWebviewCOM)" }
+                }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string folder = GetStringArg(args, "folder");
+                    if (string.IsNullOrEmpty(folder))
+                        return "Error: folder is required";
+
+                    // Normalize path for comparison
+                    folder = folder.TrimEnd('\\', '/');
+
+                    // Load projects from %APPDATA%\ClarionAssistant\projects.json
+                    string projectsPath = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                        "ClarionAssistant", "projects.json");
+
+                    if (!File.Exists(projectsPath))
+                        return "Error: No projects file found at " + projectsPath;
+
+                    string json = File.ReadAllText(projectsPath);
+
+                    // Find matching project by folder (case-insensitive)
+                    string matchedName = null;
+                    string matchedType = null;
+                    string matchedGhAccountId = null;
+                    string matchedRepoName = null;
+                    string matchedId = null;
+
+                    int idx = json.IndexOf('[');
+                    if (idx < 0)
+                        return "Error: Invalid projects.json format";
+                    idx++;
+                    while (idx < json.Length)
+                    {
+                        int objStart = json.IndexOf('{', idx);
+                        if (objStart < 0) break;
+                        int objEnd = FindJsonClosingBrace(json, objStart);
+                        if (objEnd < 0) break;
+                        string obj = json.Substring(objStart, objEnd - objStart + 1);
+
+                        string projFolder = ExtractJsonField(obj, "folder");
+                        if (!string.IsNullOrEmpty(projFolder) &&
+                            string.Equals(projFolder.TrimEnd('\\', '/'), folder, StringComparison.OrdinalIgnoreCase))
+                        {
+                            matchedId = ExtractJsonField(obj, "id");
+                            matchedName = ExtractJsonField(obj, "name");
+                            matchedType = ExtractJsonField(obj, "type");
+                            matchedGhAccountId = ExtractJsonField(obj, "githubAccountId");
+                            matchedRepoName = ExtractJsonField(obj, "repoName");
+                            break;
+                        }
+                        idx = objEnd + 1;
+                    }
+
+                    if (matchedName == null)
+                        return "Error: No project found for folder: " + folder;
+
+                    // Resolve GitHub account details (without exposing the token)
+                    string ghUsername = "";
+                    string ghDisplayName = "";
+                    string ghProvider = "github";
+                    string repoUrl = "";
+
+                    if (!string.IsNullOrEmpty(matchedGhAccountId))
+                    {
+                        try
+                        {
+                            var acct = SchemaGraphService.GetGitHubAccount(matchedGhAccountId);
+                            if (acct != null)
+                            {
+                                ghUsername = acct.ContainsKey("username") ? (string)acct["username"] : "";
+                                ghDisplayName = acct.ContainsKey("displayName") ? (string)acct["displayName"] : "";
+                                ghProvider = acct.ContainsKey("provider") ? (string)acct["provider"] : "github";
+                            }
+                        }
+                        catch { }
+                    }
+
+                    if (!string.IsNullOrEmpty(ghUsername) && !string.IsNullOrEmpty(matchedRepoName))
+                        repoUrl = "https://github.com/" + ghUsername + "/" + matchedRepoName;
+
+                    var result = new Dictionary<string, object>
+                    {
+                        { "projectId", matchedId ?? "" },
+                        { "name", matchedName ?? "" },
+                        { "type", matchedType ?? "" },
+                        { "folder", folder },
+                        { "repoName", matchedRepoName ?? "" },
+                        { "githubUsername", ghUsername },
+                        { "githubDisplayName", ghDisplayName },
+                        { "githubProvider", ghProvider },
+                        { "repoUrl", repoUrl }
+                    };
+
+                    return result;
+                }
+            });
+        }
+
+        /// <summary>
+        /// Find matching closing brace in JSON, handling quoted strings.
+        /// </summary>
+        private static int FindJsonClosingBrace(string json, int openPos)
+        {
+            int depth = 0;
+            bool inString = false;
+            for (int i = openPos; i < json.Length; i++)
+            {
+                char c = json[i];
+                if (inString)
+                {
+                    if (c == '\\') { i++; continue; }
+                    if (c == '"') inString = false;
+                }
+                else
+                {
+                    if (c == '"') inString = true;
+                    else if (c == '{') depth++;
+                    else if (c == '}') { depth--; if (depth == 0) return i; }
+                }
+            }
+            return -1;
+        }
+
+        /// <summary>
+        /// Extract a JSON string field value by key (simple parser, no dependencies).
+        /// </summary>
+        private static string ExtractJsonField(string json, string key)
+        {
+            string pattern = "\"" + key + "\"";
+            int idx = json.IndexOf(pattern);
+            if (idx < 0) return null;
+            idx += pattern.Length;
+            // Skip whitespace and colon
+            while (idx < json.Length && (json[idx] == ' ' || json[idx] == ':')) idx++;
+            if (idx >= json.Length || json[idx] != '"') return null;
+            idx++; // skip opening quote
+            var sb = new StringBuilder();
+            while (idx < json.Length && json[idx] != '"')
+            {
+                if (json[idx] == '\\' && idx + 1 < json.Length)
+                {
+                    idx++;
+                    sb.Append(json[idx]);
+                }
+                else
+                {
+                    sb.Append(json[idx]);
+                }
+                idx++;
+            }
+            return sb.ToString();
         }
 
         #region LSP Helpers
