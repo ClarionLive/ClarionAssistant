@@ -1422,28 +1422,22 @@ COMMON QUERIES:
                 Handler = args =>
                 {
                     var results = new List<string>();
-                    // Search common development roots and all fixed drives
-                    var searchRoots = new List<string>();
-                    foreach (var drive in DriveInfo.GetDrives())
+                    // Search from the current solution directory (if one is open)
+                    if (_chatControl != null)
                     {
-                        if (drive.DriveType == DriveType.Fixed && drive.IsReady)
+                        string slnPath = _chatControl.CurrentSolutionPath;
+                        if (!string.IsNullOrEmpty(slnPath))
                         {
-                            string dev = Path.Combine(drive.Name, "Dev");
-                            string devLaptop = Path.Combine(drive.Name, "DevLaptop");
-                            if (Directory.Exists(dev)) searchRoots.Add(dev);
-                            if (Directory.Exists(devLaptop)) searchRoots.Add(devLaptop);
-                        }
-                    }
-                    foreach (string root in searchRoots)
-                    {
-                        if (Directory.Exists(root))
-                        {
-                            try
+                            string slnDir = Path.GetDirectoryName(slnPath);
+                            if (Directory.Exists(slnDir))
                             {
-                                foreach (string file in Directory.GetFiles(root, "*.codegraph.db", SearchOption.AllDirectories))
-                                    results.Add(file);
+                                try
+                                {
+                                    foreach (string file in Directory.GetFiles(slnDir, "*.codegraph.db", SearchOption.AllDirectories))
+                                        results.Add(file);
+                                }
+                                catch { }
                             }
-                            catch { }
                         }
                     }
                     string libDb = LibraryIndexer.GetDefaultDbPath();
