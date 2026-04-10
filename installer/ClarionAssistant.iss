@@ -383,7 +383,7 @@ begin
   if Result then Exit;
 
   // Check standalone CLI install
-  Result := FileExists(ExpandConstant('{userprofile}\.claude\local\claude.exe'));
+  Result := FileExists(ExpandConstant('{%USERPROFILE}\.claude\local\claude.exe'));
   if Result then Exit;
 
   // Check WinGet install
