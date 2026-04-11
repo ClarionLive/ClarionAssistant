@@ -1144,6 +1144,15 @@ namespace ClarionAssistant.Services
                         caretOffsetProp.SetValue(caret, startOff + indented.Length, null);
                 }
 
+                // Update EndLineNr on the CustomLine to reflect the new line count.
+                // CommonGenEditor.Save() reads document content via StartLineNr..EndLineNr
+                // (not from PweePart.Data), but PWEE does not refresh these after Document.Insert.
+                // Without this fix, Save() slices only the original single-line range and the
+                // embed appears empty on next open — even though the buffer showed the correct text.
+                var endLineNrProp = customLine.GetType().GetProperty("EndLineNr", AllInstance);
+                if (endLineNrProp != null && endLineNrProp.CanWrite)
+                    endLineNrProp.SetValue(customLine, startLine0 + newLineCount - 1, null);
+
                 // Mark the CustomLine and the editor view dirty so save-and-close persists the edit
                 var dirtyField = customLine.GetType().GetField("Dirty", AllInstance);
                 if (dirtyField != null) dirtyField.SetValue(customLine, true);
