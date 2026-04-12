@@ -3825,27 +3825,13 @@ EXAMPLES:
                     if (redFile != null)
                     {
                         redirectionPaths = redFile.GetSearchPaths(".clw");
-                        libsrcPaths = redFile.GetSearchPaths(".clw", "[*.CLW]");
                     }
 
-                    // Parse project paths from .sln
-                    if (File.Exists(slnPath))
-                    {
-                        foreach (string line in File.ReadAllLines(slnPath))
-                        {
-                            if (line.TrimStart().StartsWith("Project("))
-                            {
-                                var parts = line.Split(',');
-                                if (parts.Length >= 2)
-                                {
-                                    string projRelPath = parts[1].Trim().Trim('"');
-                                    string projFullPath = Path.Combine(wsPath, projRelPath);
-                                    if (File.Exists(projFullPath))
-                                        projectPaths.Add(Path.GetDirectoryName(projFullPath));
-                                }
-                            }
-                        }
-                    }
+                    // libsrcPaths from ClarionProperties.xml <libsrc> (not the red file — see #15)
+                    libsrcPaths = versionConfig.LibSrcPaths ?? new List<string>();
+
+                    // projectPaths is just the solution directory (see #16)
+                    projectPaths.Add(wsPath);
 
                     _lspClient.SetUpdatePaths(new Dictionary<string, object>
                     {

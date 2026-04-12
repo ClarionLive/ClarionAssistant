@@ -12,6 +12,7 @@ namespace ClarionAssistant.Services
         public string BinPath { get; set; }
         public string RootPath { get; set; }
         public string RedFileName { get; set; }
+        public List<string> LibSrcPaths { get; set; }
         public Dictionary<string, string> Macros { get; set; }
 
         public string RedFilePath
@@ -239,6 +240,19 @@ namespace ClarionAssistant.Services
                         string rootValue;
                         if (config.Macros.TryGetValue("root", out rootValue))
                             config.RootPath = rootValue;
+                    }
+                }
+
+                // Parse <libsrc> paths (semicolon-separated) — used by LSP for library source resolution
+                config.LibSrcPaths = new List<string>();
+                var libsrcNode = node.SelectSingleNode("libsrc");
+                if (libsrcNode != null && libsrcNode.Attributes["value"] != null)
+                {
+                    foreach (var p in libsrcNode.Attributes["value"].Value.Split(';'))
+                    {
+                        var trimmed = p.Trim();
+                        if (!string.IsNullOrEmpty(trimmed))
+                            config.LibSrcPaths.Add(trimmed);
                     }
                 }
 
