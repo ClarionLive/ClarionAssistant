@@ -277,6 +277,9 @@
   .about-table td { padding: 6px 0; font-size: 13px; border-bottom: 1px solid var(--card-border); }
   .about-table tr:last-child td { border-bottom: none; }
   .about-label { width: 140px; font-weight: 600; color: var(--section-fg); }
+  .ack-link { color: var(--accent); text-decoration: none; }
+  .ack-link:hover { text-decoration: underline; }
+  .ack-desc { font-size: 12px; color: var(--desc-fg); margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -289,6 +292,7 @@
     <div class="nav-item" onclick="showPage('classes')">Classes</div>
     <div class="nav-item" onclick="showPage('launch')">Launch</div>
     <div class="nav-item" onclick="showPage('github')">Source Control</div>
+    <div class="nav-item" onclick="showPage('acknowledgments')">Acknowledgments</div>
     <div class="nav-item" onclick="showPage('about')">About</div>
   </nav>
 
@@ -487,12 +491,60 @@
       <!-- Add/Edit form is now in the ghFormOverlay modal -->
     </div>
 
+    <!-- Acknowledgments -->
+    <div class="page" id="page-acknowledgments">
+      <h2>Acknowledgments</h2>
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <div style="font-size:13px;color:var(--section-fg)">
+          Clarion Assistant is built with the help of these open-source projects and contributors.
+        </div>
+        <div class="about-card">
+          <h3 style="margin-top:0">Contributors</h3>
+          <table class="about-table">
+            <tr>
+              <td class="about-label"><a href="#" onclick="openUrl('https://github.com/msarson/Clarion-Extension');return false" class="ack-link">Mark Sarson</a></td>
+              <td>Clarion Language Server Protocol implementation<div class="ack-desc">LSP integration based on the Clarion Extension for VS Code</div></td>
+            </tr>
+          </table>
+        </div>
+        <div class="about-card">
+          <h3 style="margin-top:0">Open Source Libraries</h3>
+          <table class="about-table">
+            <tr>
+              <td class="about-label"><a href="#" onclick="openUrl('https://github.com/xtermjs/xterm.js');return false" class="ack-link">xterm.js</a></td>
+              <td>Terminal emulator &mdash; v6.0.0<div class="ack-desc">MIT License</div></td>
+            </tr>
+            <tr>
+              <td class="about-label"><a href="#" onclick="openUrl('https://github.com/JamesNK/Newtonsoft.Json');return false" class="ack-link">Newtonsoft.Json</a></td>
+              <td>JSON serialization &mdash; v13.0.3<div class="ack-desc">MIT License</div></td>
+            </tr>
+            <tr>
+              <td class="about-label"><a href="#" onclick="openUrl('https://system.data.sqlite.org');return false" class="ack-link">System.Data.SQLite</a></td>
+              <td>SQLite database with FTS5 full-text search<div class="ack-desc">Public Domain</div></td>
+            </tr>
+            <tr>
+              <td class="about-label"><a href="#" onclick="openUrl('https://github.com/MicrosoftEdge/WebView2Feedback');return false" class="ack-link">Microsoft WebView2</a></td>
+              <td>Embedded browser runtime<div class="ack-desc">MIT License</div></td>
+            </tr>
+            <tr>
+              <td class="about-label"><a href="#" onclick="openUrl('https://www.voidtools.com');return false" class="ack-link">Everything SDK</a></td>
+              <td>Instant file search by voidtools<div class="ack-desc">Freeware</div></td>
+            </tr>
+            <tr>
+              <td class="about-label"><a href="#" onclick="openUrl('https://github.com/kayba-ai/recursive-improve');return false" class="ack-link">recursive-improve</a></td>
+              <td>Recursive improvement pattern for code generation<div class="ack-desc">kayba-ai</div></td>
+            </tr>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- About -->
     <div class="page" id="page-about">
       <h2>Clarion Assistant</h2>
       <div style="display:flex;flex-direction:column;gap:16px">
         <div class="about-card">
-          <div class="about-version">Version 3.1.0</div>
+          <div class="about-version">Version <span id="aboutVersion"></span></div>
           <div class="about-desc">AI-powered development assistant for the Clarion IDE</div>
         </div>
         <div class="about-card">
@@ -623,6 +675,10 @@
 
   function send(action, data) {
     window.chrome.webview.postMessage(JSON.stringify({ action: action, data: data || null }));
+  }
+
+  function openUrl(url) {
+    send('openUrl', url);
   }
 
   function showPage(name) {
@@ -1070,6 +1126,9 @@
     if (msg.type === 'setSettings') {
       var s = msg.settings;
       currentSettings = s;
+
+      // Version
+      document.getElementById('aboutVersion').textContent = s.version || '';
 
       // Theme
       setThemeChoice(s.theme || 'dark');

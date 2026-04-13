@@ -320,6 +320,29 @@ cd ClarionAssistant
 
 ---
 
+## Acknowledgments
+
+Clarion Assistant is built with the help of these open-source projects and contributors:
+
+### Contributors
+
+| Name | Contribution |
+|---|---|
+| [Mark Sarson](https://github.com/msarson/Clarion-Extension) | Clarion Language Server Protocol implementation for VS Code, which the LSP integration in Clarion Assistant is based on |
+
+### Open Source Libraries
+
+| Library | Description | License |
+|---|---|---|
+| [xterm.js](https://github.com/xtermjs/xterm.js) | Terminal emulator (v6.0.0) | MIT |
+| [Newtonsoft.Json](https://github.com/JamesNK/Newtonsoft.Json) | JSON serialization (v13.0.3) | MIT |
+| [System.Data.SQLite](https://system.data.sqlite.org) | SQLite database with FTS5 full-text search | Public Domain |
+| [Microsoft WebView2](https://github.com/MicrosoftEdge/WebView2Feedback) | Embedded browser runtime | MIT |
+| [Everything SDK](https://www.voidtools.com) | Instant file search by voidtools | Freeware |
+| [recursive-improve](https://github.com/kayba-ai/recursive-improve) | Recursive improvement pattern for code generation | MIT |
+
+---
+
 ## License
 
 [MIT License](LICENSE) &mdash; &copy; 2026 ClarionLive.

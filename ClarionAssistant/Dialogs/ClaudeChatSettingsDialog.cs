@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using System.Windows.Forms;
 using ClarionAssistant.Services;
@@ -186,6 +187,11 @@ namespace ClarionAssistant.Dialogs
                     case "addClassModel":
                         HandleAddClassModel();
                         break;
+                    case "openUrl":
+                        string url = ExtractJsonValue(json, "data");
+                        if (!string.IsNullOrEmpty(url))
+                            System.Diagnostics.Process.Start(url);
+                        break;
                 }
             }
             catch (Exception ex)
@@ -235,8 +241,12 @@ namespace ClarionAssistant.Dialogs
             }
             cmdsSb.Append("]");
 
+            var ver = Assembly.GetExecutingAssembly().GetName().Version;
+            string displayVersion = ver.Major + "." + ver.Minor;
+
             string json = "{\"type\":\"setSettings\",\"settings\":{"
-                + "\"theme\":\"" + theme + "\""
+                + "\"version\":\"" + displayVersion + "\""
+                + ",\"theme\":\"" + theme + "\""
                 + ",\"fontFamily\":\"" + EscapeJson(fontFamily) + "\""
                 + ",\"fontSize\":" + fontSize
                 + ",\"model\":\"" + EscapeJson(model) + "\""
