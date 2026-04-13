@@ -165,36 +165,87 @@ Your existing Claude Code settings are preserved &mdash; the installer merges pe
 
 ## MCP Tools Reference
 
-Clarion Assistant exposes **90+ MCP tools** that Claude uses to interact with the IDE:
+Clarion Assistant exposes **108 MCP tools** that Claude uses to interact with the IDE:
 
-### IDE & Editor
+### IDE & Editor (23 tools)
 | Tool | Description |
 |---|---|
 | `get_active_file` | Get path and content of the open file |
 | `open_file` | Open a file in the editor, optionally at a line |
-| `replace_text` / `replace_range` | Find-and-replace or replace a specific code block |
-| `toggle_comment` | Toggle Clarion line comments on a range |
-| `save_file` / `undo` / `redo` | Standard editor operations |
+| `close_file` | Close the active editor tab |
+| `save_file` | Save the active file |
+| `get_open_files` | List all open editor tabs |
+| `go_to_line` | Navigate to a specific line in the open file |
+| `get_cursor_position` | Get current line, column, and total line count |
+| `get_line_text` | Get text of a specific line from the live buffer |
+| `get_lines_range` | Get a range of lines from the editor |
+| `get_selected_text` | Get the currently selected text |
+| `get_word_under_cursor` | Get the word at the cursor position |
+| `select_range` | Select/highlight a range of text in the editor |
+| `insert_text_at_cursor` | Insert text at the current cursor position |
+| `replace_text` | Find and replace all occurrences in the active editor |
+| `replace_range` | Replace text between specific line/column positions |
+| `delete_range` | Delete text between specific line/column positions |
+| `find_in_file` | Search for text in the active editor buffer |
+| `toggle_comment` | Toggle Clarion line comments on a range of lines |
+| `is_modified` | Check if the active file has unsaved changes |
+| `undo` | Undo the last edit |
+| `redo` | Redo the last undone edit |
+| `show_diff` | Show a side-by-side diff in the Monaco viewer |
+| `get_diff_result` | Get approval/notes from the diff viewer |
 
-### Application Tree
+### Application Tree & Embeditor (21 tools)
 | Tool | Description |
 |---|---|
-| `open_app` | Open a .app file in the IDE |
+| `get_app_info` | Get info about the currently open app |
 | `list_procedures` | List all procedures in the open app |
+| `get_procedure_details` | Get detailed procedure info (prototype, module, template) |
+| `select_procedure` | Select a procedure in the app tree |
 | `open_procedure_embed` | Open the embeditor for a procedure |
+| `get_embed_info` | Get info about the active embeditor |
 | `list_embeds` | List all embed sections with filled status |
 | `find_embed` | Find and navigate to an embed section by name |
-| `export_txa` / `import_txa` | Export/import TXA files |
+| `next_embed` / `prev_embed` | Navigate to the next/previous embed point |
+| `next_filled_embed` / `prev_filled_embed` | Navigate to the next/previous filled embed |
+| `get_embed_content` | Read code inside a specific embed slot |
+| `get_embeditor_source` | Get full annotated embeditor source with embed markers |
+| `search_embeditor_source` | Regex search over annotated embeditor source |
+| `open_embeditor_source` | Open the embeditor source in the editor |
+| `write_embed_content` | Write code into an embed slot by line number |
+| `save_and_close_embeditor` | Save changes and close the embeditor |
+| `cancel_embeditor` | Discard changes and close the embeditor |
+| `export_txa` | Export app or procedures to TXA format |
+| `import_txa` | Import a TXA file into the app |
 
-### Code Intelligence
+### Code Intelligence (11 tools)
 | Tool | Description |
 |---|---|
-| `query_codegraph` | SQL queries over every symbol and relationship in the solution |
+| `get_solution_info` | Get current solution, Clarion version, RED file, and CodeGraph status |
+| `index_codegraph` | Index the solution for CodeGraph queries |
+| `index_solution` | Index all projects in the solution |
+| `list_codegraph_databases` | List available indexed CodeGraph databases |
+| `query_codegraph` | SQL queries over every symbol, relationship, and call chain |
+| `get_project_source_files` | List all source files (.clw, .inc) with absolute paths |
 | `analyze_class` | Parse CLASS definitions from .inc files |
 | `sync_check` | Compare .inc declarations vs .clw implementations |
-| `generate_stubs` / `generate_clw` | Generate missing method implementations |
+| `generate_stubs` | Generate method stubs for missing implementations |
+| `generate_clw` | Generate a complete .clw implementation from a .inc file |
+| `generate_source` | Generate .clw/.inc source from templates |
 
-### Schema Intelligence
+### LSP &mdash; Language Server (9 tools)
+| Tool | Description |
+|---|---|
+| `lsp_start` | Start the Clarion Language Server |
+| `lsp_debug_status` | Check LSP server status |
+| `lsp_definition` | Go to definition of a symbol (cross-file) |
+| `lsp_references` | Find all references to a symbol across the workspace |
+| `lsp_hover` | Get type info, signature, and documentation for a symbol |
+| `lsp_document_symbols` | Get all symbols in a file |
+| `lsp_find_symbol` | Search for symbols across the workspace by name |
+| `lsp_diagnostics` | Get errors and warnings for a source file |
+| `lsp_rename` | Propose a rename of a symbol (returns edit list for approval) |
+
+### Schema Intelligence (10 tools)
 | Tool | Description |
 |---|---|
 | `search_tables` | Search database tables by name |
@@ -202,35 +253,73 @@ Clarion Assistant exposes **90+ MCP tools** that Claude uses to interact with th
 | `search_columns` | Find columns across all tables |
 | `get_relationships` | Show parent/child table relationships |
 | `query_schema` | Run SQL queries against the schema index |
+| `schema_stats` | Get schema database statistics |
 | `ingest_schema` | Index a Clarion dictionary (.dctx) |
-| `ingest_sql_database` | Index schema from SQL Server |
+| `ingest_sql_database` | Index schema from SQL Server, SQLite, or PostgreSQL |
+| `export_dctx` | Export dictionary to .dctx format |
+| `import_dctx` | Import a .dctx dictionary |
 
-### Documentation Search
+### Documentation Search (6 tools)
 | Tool | Description |
 |---|---|
 | `query_docs` | Full-text search across all indexed documentation |
-| `ingest_docs` | Index docs from your Clarion installation |
-| `list_doc_libraries` | List all indexed libraries |
+| `ingest_docs` | Index docs from a Clarion installation's accessory/Documents folder |
+| `ingest_web_docs` | Ingest documentation from web URLs |
+| `list_doc_libraries` | List all indexed libraries with chunk counts |
+| `discover_docs` | Preview discoverable doc sources without ingesting |
+| `docgraph_stats` | Get DocGraph database statistics |
 
-### Build Tools
+### Build Tools (5 tools)
 | Tool | Description |
 |---|---|
 | `build_solution` | Build the entire Clarion solution via ClarionCL.exe |
 | `build_app` | Build a single .app file (for multi-DLL solutions) |
-| `generate_source` | Generate .clw/.inc source from templates |
 | `build_com_project` | Build a C# COM control via MSBuild |
 | `run_command` | Execute any command-line tool |
+| `execute_command` | Execute a shell command |
 
-### Project Info
+### File System & Search (7 tools)
 | Tool | Description |
 |---|---|
-| `get_ca_project_info` | Get linked GitHub account and repo name for a project folder |
+| `read_file` | Read file content from disk with optional line range |
+| `write_file` | Write content to a file |
+| `append_to_file` | Append text to an existing file |
+| `list_directory` | List files in a directory with optional pattern filter |
+| `search_files` | Search for files by name |
+| `search_files_advanced` | Advanced file search with Everything integration (path, extension, size, date filters) |
+| `search_content` | Search file contents by text |
 
-### Knowledge & Memory
+### Project & IDE (4 tools)
+| Tool | Description |
+|---|---|
+| `get_ca_project_info` | Get linked GitHub/Bitbucket account and repo for a project |
+| `get_red_search_paths` | Get RED file search paths for the active solution |
+| `resolve_red_path` | Resolve a filename to an absolute path via RED search paths |
+| `inspect_ide` | Inspect Clarion IDE internal state |
+
+### Knowledge & Memory (6 tools)
 | Tool | Description |
 |---|---|
 | `add_knowledge` | Save reusable insights (decisions, patterns, gotchas) across sessions |
 | `query_knowledge` | Search past decisions and patterns |
+| `save_session_summary` | Save a session summary for next-session continuity |
+| `query_traces` | Query code generation traces |
+| `trace_stats` | Get trace database statistics |
+| `log_skill_update` | Log a skill update event |
+
+### Multi-Instance Coordination (4 tools)
+| Tool | Description |
+|---|---|
+| `list_instances` | List all running Clarion Assistant instances |
+| `get_instance_messages` | Get messages from other instances |
+| `send_to_instances` | Send a message to other instances |
+| `check_conflicts` | Check for file conflicts across instances |
+
+### Validation (2 tools)
+| Tool | Description |
+|---|---|
+| `validate_names` | Validate Clarion naming conventions |
+| `find_duplicates` | Find duplicate symbols in the solution |
 
 ---
 
