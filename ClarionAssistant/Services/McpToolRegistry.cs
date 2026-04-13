@@ -1211,6 +1211,88 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                 }
             });
 
+            Register(new McpTool
+            {
+                Name = "get_project_source_files",
+                Description = "List all source files (.clw, .inc) in the current solution with their absolute paths. " +
+                    "Returns files grouped by project. Use this to resolve procedure module names (e.g. 'Main001.clw') " +
+                    "to absolute paths for lsp_diagnostics, lsp_definition, and other LSP tools that require file_path.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string slnPath = _chatControl?.CurrentSolutionPath;
+                    if (string.IsNullOrEmpty(slnPath) || !File.Exists(slnPath))
+                        return "Error: No solution loaded.";
+
+                    var slnParser = new ClarionCodeGraph.Parsing.SolutionParser();
+                    var projParser = new ClarionCodeGraph.Parsing.ProjectParser();
+                    var resolver = new ClarionCodeGraph.Parsing.SourceResolver();
+                    var projects = slnParser.Parse(slnPath);
+
+                    // Build RED search paths for external file resolution
+                    var redSearchPaths = new List<string>();
+                    var redFile = _chatControl.RedFile;
+                    if (redFile != null)
+                    {
+                        var clwPaths = redFile.GetSearchPaths(".clw");
+                        if (clwPaths != null) redSearchPaths.AddRange(clwPaths);
+                        var incPaths = redFile.GetSearchPaths(".inc");
+                        if (incPaths != null)
+                        {
+                            foreach (var p in incPaths)
+                                if (!redSearchPaths.Contains(p)) redSearchPaths.Add(p);
+                        }
+                    }
+
+                    var result = new List<Dictionary<string, object>>();
+                    foreach (var proj in projects)
+                    {
+                        if (!File.Exists(proj.CwprojPath)) continue;
+
+                        string projectDir = Path.GetDirectoryName(proj.CwprojPath);
+                        var projResult = projParser.Parse(proj.CwprojPath);
+                        var resolved = resolver.Resolve(projectDir, projResult.SourceFiles);
+                        var files = new List<Dictionary<string, string>>();
+
+                        foreach (var rf in resolved)
+                        {
+                            string absPath = rf.FullPath;
+
+                            // If SourceResolver didn't find it, try RED search paths
+                            if (!rf.Found)
+                            {
+                                foreach (var searchDir in redSearchPaths)
+                                {
+                                    string candidate = Path.Combine(searchDir, rf.FileName);
+                                    if (File.Exists(candidate))
+                                    {
+                                        absPath = Path.GetFullPath(candidate);
+                                        break;
+                                    }
+                                }
+                            }
+
+                            files.Add(new Dictionary<string, string>
+                            {
+                                { "name", rf.FileName },
+                                { "path", absPath ?? Path.Combine(projectDir, rf.FileName) },
+                                { "exists", (absPath != null && File.Exists(absPath)).ToString().ToLower() }
+                            });
+                        }
+
+                        result.Add(new Dictionary<string, object>
+                        {
+                            { "project", proj.Name },
+                            { "cwproj", proj.CwprojPath },
+                            { "files", files }
+                        });
+                    }
+
+                    return new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(result);
+                }
+            });
+
             // === Clarion Class Intelligence Tools ===
 
             Register(new McpTool
