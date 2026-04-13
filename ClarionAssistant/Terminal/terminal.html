@@ -23,25 +23,29 @@
             flex: 1;
             min-height: 0;
         }
-        /* Hide scrollbar in xterm viewport for cleaner look - scrolling still works */
+        /* Scrollbar in xterm viewport */
         .xterm-viewport::-webkit-scrollbar {
-            width: 10px;
+            width: 8px;
         }
         .xterm-viewport::-webkit-scrollbar-track {
-            background: transparent;
+            background: rgba(255, 255, 255, 0.05);
         }
         .xterm-viewport::-webkit-scrollbar-thumb {
-            background: #555;
-            border-radius: 5px;
+            background: rgba(255, 255, 255, 0.25);
+            border-radius: 4px;
         }
         .xterm-viewport::-webkit-scrollbar-thumb:hover {
-            background: #666;
+            background: rgba(255, 255, 255, 0.4);
+        }
+        body.light .xterm-viewport::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.05);
         }
         body.light .xterm-viewport::-webkit-scrollbar-thumb {
-            background: #bbb;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 4px;
         }
         body.light .xterm-viewport::-webkit-scrollbar-thumb:hover {
-            background: #999;
+            background: rgba(0, 0, 0, 0.35);
         }
 
         /* Status line bar */
