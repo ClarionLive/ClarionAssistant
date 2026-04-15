@@ -427,7 +427,7 @@
 <header class="site-header">
   <h1>Clarion.Assistant</h1>
   <div class="subtitle">AI-Powered Development for the Clarion IDE</div>
-  <div class="version-badge">User Guide &middot; v1.0</div>
+  <div class="version-badge">User Guide &middot; v4.1</div>
 </header>
 
 <!-- ════════════════════════════════════════════════════ -->
@@ -441,43 +441,61 @@
     <a href="#getting-started">Overview</a>
     <a href="#getting-started-requirements" class="sub">System Requirements</a>
     <a href="#getting-started-installation" class="sub">Installation</a>
+    <a href="#getting-started-what-gets-installed" class="sub">What Gets Installed</a>
     <a href="#getting-started-first-launch" class="sub">First Launch</a>
     <a href="#getting-started-first-conversation" class="sub">Your First Conversation</a>
 
+    <h3>What's New</h3>
+    <a href="#whats-new-v41">v4.1</a>
+    <a href="#whats-new-v4" class="sub">v4.0</a>
+    <a href="#whats-new-v31" class="sub">v3.1</a>
+    <a href="#whats-new-v3" class="sub">v3.0</a>
+
     <h3>Claude Chat Terminal</h3>
     <a href="#claude-chat">Overview</a>
-    <a href="#claude-chat" class="sub">Solution Bar</a>
-    <a href="#claude-chat" class="sub">Terminal Toolbar</a>
-    <a href="#claude-chat" class="sub">What Claude Can Do</a>
-    <a href="#claude-chat" class="sub">Example Conversations</a>
-    <a href="#claude-chat" class="sub">Settings</a>
+    <a href="#claude-chat-solution-bar" class="sub">Solution Bar</a>
+    <a href="#claude-chat-toolbar" class="sub">Terminal Toolbar</a>
+    <a href="#claude-chat-capabilities" class="sub">What Claude Can Do</a>
+    <a href="#claude-chat-examples" class="sub">Examples</a>
+    <a href="#claude-chat-settings" class="sub">Settings</a>
 
     <h3>Class Helper</h3>
     <a href="#class-helper">Overview</a>
-    <a href="#class-helper" class="sub">Toolbar Reference</a>
-    <a href="#class-helper" class="sub">Tree Navigation</a>
-    <a href="#class-helper" class="sub">Typical Workflows</a>
+    <a href="#class-helper-toolbar" class="sub">Toolbar</a>
+    <a href="#class-helper-tree" class="sub">Tree Navigation</a>
+    <a href="#class-helper-workflows" class="sub">Workflows</a>
 
     <h3>Agent Panel &amp; Task Board</h3>
     <a href="#agent-panel">Overview</a>
     <a href="#agent-panel-overview" class="sub">Agent Panel</a>
-    <a href="#task-lifecycle-board" class="sub">Task Lifecycle Board</a>
+    <a href="#task-lifecycle-board" class="sub">Task Board</a>
     <a href="#typical-team-workflow" class="sub">Team Workflow</a>
 
     <h3>LSP Integration</h3>
     <a href="#lsp-integration">Overview</a>
-    <a href="#lsp-integration" class="sub">Capabilities</a>
-    <a href="#lsp-integration" class="sub">How It Works</a>
+    <a href="#lsp-capabilities" class="sub">Capabilities</a>
+    <a href="#lsp-how-it-works" class="sub">How It Works</a>
 
     <h3>Reference</h3>
     <a href="#mcp-tools">MCP Tools Reference</a>
-    <a href="#tools-ide-context" class="sub">IDE Context</a>
-    <a href="#tools-editor-operations" class="sub">Editor Operations</a>
-    <a href="#tools-app-tree" class="sub">Application Tree</a>
-    <a href="#tools-file-system" class="sub">File System</a>
-    <a href="#tools-class-intelligence" class="sub">Class Intelligence</a>
-    <a href="#tools-codegraph" class="sub">CodeGraph</a>
-    <a href="#tools-lsp" class="sub">Language Server</a>
+    <a href="#tools-ide-editor" class="sub">IDE &amp; Editor</a>
+    <a href="#tools-app-embeditor" class="sub">App Tree &amp; Embeditor</a>
+    <a href="#tools-code-intelligence" class="sub">Code Intelligence</a>
+    <a href="#tools-lsp" class="sub">LSP &mdash; Language Server</a>
+    <a href="#tools-schema" class="sub">Schema Intelligence</a>
+    <a href="#tools-docs" class="sub">Documentation Search</a>
+    <a href="#tools-build" class="sub">Build Tools</a>
+    <a href="#tools-filesystem" class="sub">File System &amp; Search</a>
+    <a href="#tools-project-ide" class="sub">Project &amp; IDE</a>
+    <a href="#tools-knowledge" class="sub">Knowledge &amp; Memory</a>
+    <a href="#tools-multi-instance" class="sub">Multi-Instance</a>
+    <a href="#tools-validation" class="sub">Validation</a>
+
+    <h3>Skills</h3>
+    <a href="#skills">Claude Code Skills</a>
+
+    <h3>Building from Source</h3>
+    <a href="#building-from-source">Build Guide</a>
 
     <h3>Acknowledgments</h3>
     <a href="#acknowledgments">Credits &amp; Thanks</a>
@@ -487,7 +505,7 @@
   <main class="main-content">
 
 <!-- ════════════════════════════════════════════════════ -->
-<!--  SECTION 1: GETTING STARTED                         -->
+<!--  SECTION: GETTING STARTED                           -->
 <!-- ════════════════════════════════════════════════════ -->
 <section id="getting-started" class="doc-section">
   <h2>Getting Started</h2>
@@ -565,41 +583,22 @@
     <table class="requirements-table">
       <thead>
         <tr>
-          <th>Component</th>
           <th>Requirement</th>
           <th>Notes</th>
         </tr>
       </thead>
       <tbody>
         <tr>
-          <td>Clarion IDE</td>
-          <td>Version 11 or later</td>
-          <td>Auto-detected during installation</td>
+          <td><strong>Clarion IDE</strong> (v10, v11, or v12)</td>
+          <td>Auto-detected from Windows registry</td>
         </tr>
         <tr>
-          <td>Operating System</td>
-          <td>Windows 10 or Windows 11</td>
-          <td>&mdash;</td>
+          <td><strong>Claude Code CLI</strong></td>
+          <td><a href="https://claude.ai/download" target="_blank" style="color: var(--primary-dark); font-weight: 600;">Download from Anthropic</a></td>
         </tr>
         <tr>
-          <td>WebView2 Runtime</td>
-          <td>Required</td>
-          <td>Bundled with Windows 11; download separately for Windows 10</td>
-        </tr>
-        <tr>
-          <td>PowerShell</td>
-          <td>PowerShell 7 preferred</td>
-          <td>Falls back to <code>powershell.exe</code> if <code>pwsh.exe</code> is not found</td>
-        </tr>
-        <tr>
-          <td>Claude Code CLI</td>
-          <td>Required, must be in PATH</td>
-          <td>Install via <code>npm install -g @anthropic-ai/claude</code></td>
-        </tr>
-        <tr>
-          <td>MultiTerminal</td>
-          <td>Optional</td>
-          <td>Required only for team collaboration and agent monitoring features</td>
+          <td><strong>WebView2 Runtime</strong></td>
+          <td>Pre-installed on Windows 11; <a href="https://developer.microsoft.com/en-us/microsoft-edge/webview2/" target="_blank" style="color: var(--primary-dark);">download for Windows 10</a></td>
         </tr>
       </tbody>
     </table>
@@ -607,29 +606,17 @@
 
   <div class="info-box info-box--tip">
     <strong>Tip:</strong> To verify that Claude Code is installed and accessible, open a terminal and
-    run <code>claude --version</code>. You should see a version number in the output. If not,
-    ensure Node.js is installed first, then run the npm install command above.
+    run <code>claude --version</code>. You should see a version number in the output.
   </div>
 
   <h3 id="getting-started-installation">Installation</h3>
 
-  <p>
-    Clarion.Assistant is deployed as a single file &mdash; <code>ClarionAssistant.dll</code> &mdash;
-    placed into the Clarion IDE's AddIns directory. No separate installer or configuration wizard
-    is required.
-  </p>
-
   <div class="step">
     <span class="step-number">1</span>
     <div class="step-content">
-      <h4>Deploy the DLL</h4>
+      <h4>Download the Installer</h4>
       <p>
-        Copy <code>ClarionAssistant.dll</code> to your Clarion IDE's AddIns folder. The typical
-        path is:
-      </p>
-      <pre class="code-block"><code>C:\Program Files\SoftVelocity\ClarionXX\Bin\AddIns\ClarionAssistant.dll</code></pre>
-      <p>
-        Replace <code>XX</code> with your Clarion version number (e.g., <code>Clarion11</code>).
+        <a href="https://github.com/peterparker57/ClarionAssistant/releases/latest" target="_blank" style="color: var(--primary-dark); font-weight: 600;">Download the latest installer</a> (code-signed).
       </p>
     </div>
   </div>
@@ -637,10 +624,9 @@
   <div class="step">
     <span class="step-number">2</span>
     <div class="step-content">
-      <h4>Launch the Clarion IDE</h4>
+      <h4>Close the Clarion IDE</h4>
       <p>
-        Start (or restart) the Clarion IDE. The addin is loaded automatically when the IDE
-        initializes. You will see new menu entries under the <strong>Tools</strong> menu.
+        Close all running instances of the Clarion IDE before running the installer.
       </p>
     </div>
   </div>
@@ -648,33 +634,82 @@
   <div class="step">
     <span class="step-number">3</span>
     <div class="step-content">
-      <h4>Automatic First-Run Configuration</h4>
-      <p>On first launch, Clarion.Assistant performs the following setup automatically:</p>
-      <ul>
-        <li>
-          <strong>Clarion version detection</strong> &mdash; Scans for installed Clarion versions
-          and selects the appropriate environment.
-        </li>
-        <li>
-          <strong>MCP configuration</strong> &mdash; Generates the Model Context Protocol
-          configuration file at:
-          <pre class="code-block"><code>%APPDATA%\ClarionAssistant\mcp-config.json</code></pre>
-          This file tells Claude Code how to communicate with the IDE tools.
-        </li>
-        <li>
-          <strong>Prompt file deployment</strong> &mdash; Creates a <code>.claude/</code> folder
-          in your working directory with a prompt file that configures Claude's behavior for
-          Clarion development.
-        </li>
-      </ul>
+      <h4>Run the Installer</h4>
+      <p>
+        Run the installer and select which Clarion versions to install for. The installer
+        auto-detects installed Clarion versions from the Windows registry.
+      </p>
+    </div>
+  </div>
+
+  <div class="step">
+    <span class="step-number">4</span>
+    <div class="step-content">
+      <h4>Restart the Clarion IDE</h4>
+      <p>
+        Launch (or restart) the Clarion IDE. The addin is loaded automatically when the IDE initializes.
+      </p>
     </div>
   </div>
 
   <div class="info-box">
-    <strong>Note:</strong> The auto-generated configuration files are safe to inspect and customize.
-    If you move your Clarion installation or upgrade to a new version, delete the MCP configuration
-    file and restart the IDE to trigger re-detection.
+    <strong>Note:</strong> Your existing Claude Code settings are preserved &mdash; the installer merges
+    permissions non-destructively.
   </div>
+
+  <h3 id="getting-started-what-gets-installed">What Gets Installed</h3>
+
+  <table class="feature-table">
+    <thead>
+      <tr>
+        <th>Component</th>
+        <th>Location</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Clarion Assistant addin</strong></td>
+        <td><code>{Clarion}\accessory\addins\ClarionAssistant\</code></td>
+        <td>Main addin DLL, WebView2, SQLite, HTML terminal</td>
+      </tr>
+      <tr>
+        <td><strong>COM for Clarion addin</strong></td>
+        <td><code>{Clarion}\accessory\addins\ComForClarion\</code></td>
+        <td>COM browser addin</td>
+      </tr>
+      <tr>
+        <td><strong>UltimateCOM template</strong></td>
+        <td><code>{Clarion}\accessory\template\win\</code></td>
+        <td>.tpl, .inc, .clw, and template DLLs</td>
+      </tr>
+      <tr>
+        <td><strong>Documentation</strong></td>
+        <td><code>{Clarion}\accessory\resources\ComForClarionDocumentation\</code></td>
+        <td>COM for Clarion docs</td>
+      </tr>
+      <tr>
+        <td><strong>Claude Code plugin</strong></td>
+        <td><code>%USERPROFILE%\.claude\plugins\...\clarion-assistant\</code></td>
+        <td>20+ Clarion-specific skills, hooks, and docs</td>
+      </tr>
+      <tr>
+        <td><strong>Code quality agents</strong></td>
+        <td><code>%USERPROFILE%\.claude\agents\</code></td>
+        <td>6 agents (won't overwrite existing)</td>
+      </tr>
+      <tr>
+        <td><strong>ClarionCOM tooling</strong></td>
+        <td><code>%APPDATA%\ClarionCOM\</code></td>
+        <td>Project templates and scripts</td>
+      </tr>
+      <tr>
+        <td><strong>DocGraph database</strong></td>
+        <td><code>%APPDATA%\ClarionAssistant\</code></td>
+        <td>Pre-loaded Clarion 12 documentation index</td>
+      </tr>
+    </tbody>
+  </table>
 
   <h3 id="getting-started-first-launch">First Launch</h3>
 
@@ -784,19 +819,182 @@
 </section>
 
 <!-- ════════════════════════════════════════════════════ -->
-<!--  SECTION 2: CLAUDE CHAT TERMINAL                    -->
+<!--  SECTION: WHAT'S NEW                                -->
+<!-- ════════════════════════════════════════════════════ -->
+<section id="whats-new-v41" class="doc-section">
+  <h2>What's New in v4.1</h2>
+
+  <h3>Auto-Update Claude Code</h3>
+  <ul>
+    <li><strong>New setting in Launch tab</strong> &mdash; optional toggle to run <code>claude update</code> before each terminal session starts</li>
+    <li>Ensures you're always on the latest Claude Code version without manual checks</li>
+  </ul>
+
+  <h3>DocGraph</h3>
+  <ul>
+    <li><strong>BoxSoft documentation added</strong> &mdash; BoxSoft template documentation now indexed and searchable via <code>query_docs</code></li>
+  </ul>
+
+  <h3>Bug Fixes</h3>
+  <ul>
+    <li><strong>Fixed: GitHub icon URL</strong> &mdash; header toolbar GitHub button now correctly links to the <a href="https://github.com/clarionlive/clarionassistant" target="_blank">clarionlive/clarionassistant</a> repository</li>
+  </ul>
+</section>
+
+<section id="whats-new-v4" class="doc-section">
+  <h2>What's New in v4.0</h2>
+
+  <h3>Clarion Language Server (LSP)</h3>
+  <ul>
+    <li><strong>Bundled in the installer</strong> &mdash; real-time code intelligence with zero setup</li>
+    <li><strong>9 LSP tools</strong> &mdash; go-to-definition, find references, hover info, document symbols, workspace symbol search, diagnostics, and rename support</li>
+    <li><strong>Ships with Node.js runtime</strong> and all required dependencies &mdash; no separate install needed</li>
+    <li><strong><code>/lsp-diagnostics</code> skill</strong> &mdash; run diagnostics across every source file in the open solution with navigate-to-error support</li>
+    <li><strong>LSP Status Bar</strong> &mdash; live language server status displayed on each terminal tab</li>
+  </ul>
+
+  <h3>Schema Graph Database</h3>
+  <ul>
+    <li><strong>Per-project SQLite schema index</strong> for Clarion dictionaries and SQL databases</li>
+    <li><strong>.dctx XML parser</strong> &mdash; extracts tables, columns, keys, and relationships from Clarion dictionary exports</li>
+    <li><strong>SQL Server extraction</strong> &mdash; tables, columns, keys, foreign keys, stored procedures, functions, and views</li>
+    <li><strong>Merge logic</strong> &mdash; matches SQL tables to existing dictionary tables by name, adds SQL-only tables</li>
+    <li><strong>FTS5 full-text search</strong> &mdash; fuzzy name search across tables and columns</li>
+    <li><strong>10 MCP tools</strong> &mdash; <code>ingest_schema</code>, <code>ingest_sql_database</code>, <code>search_tables</code>, <code>get_table</code>, <code>search_columns</code>, <code>get_relationships</code>, <code>query_schema</code>, <code>schema_stats</code>, <code>export_dctx</code>, <code>import_dctx</code></li>
+  </ul>
+
+  <h3>108 MCP Tools</h3>
+  <ul>
+    <li>Up from ~30 documented tools in v3.1 to <strong>108 fully documented tools</strong> across 12 categories</li>
+    <li>New categories: LSP, File System &amp; Search, Multi-Instance Coordination, Validation</li>
+  </ul>
+
+  <h3>Installer</h3>
+  <ul>
+    <li><strong>Code-signed</strong> with Sectigo EV certificate (Kennewick Computer Company)</li>
+    <li><strong>22 Clarion development skills</strong> (up from 17)</li>
+    <li><strong>LSP server</strong> distributed as an optional component for Clarion 10, 11, and 12</li>
+    <li>Updated prerequisites &mdash; optional <a href="https://www.voidtools.com" target="_blank" style="color: var(--primary-dark);">Everything</a> integration for fast file search</li>
+  </ul>
+</section>
+
+<section id="whats-new-v31" class="doc-section">
+  <h2>What's New in v3.1</h2>
+
+  <h3>Create Class from Model Templates</h3>
+  <ul>
+    <li><strong>New "Create Class" tab</strong> &mdash; select a model template, name your class, and generate .inc/.clw files in one step</li>
+    <li><strong>Class Models settings</strong> &mdash; manage model templates in Settings &rarr; Classes, with Edit (opens both .inc and .clw) and Delete</li>
+    <li><strong>Class output folder</strong> &mdash; configurable default output folder for generated class files</li>
+    <li><strong>Syntax-highlighted preview</strong> &mdash; preview .inc and .clw content before creating, with Clarion syntax highlighting</li>
+  </ul>
+
+  <h3>Status Line</h3>
+  <ul>
+    <li><strong>Live status bar</strong> on each terminal tab showing model name, usage quota, pacing, and context window fill</li>
+    <li><strong>Polls from Claude Code</strong> via a statusLine hook script (<code>ca-statusline.js</code>) that writes JSON to a temp file</li>
+  </ul>
+
+  <h3>Embeditor Navigation</h3>
+  <ul>
+    <li><strong><code>list_embeds</code></strong> &mdash; new MCP tool to list all embed sections in the active embeditor with filled status</li>
+    <li><strong><code>find_embed</code></strong> &mdash; new MCP tool to search embed sections by partial name and navigate the cursor there</li>
+  </ul>
+
+  <h3>Project Info</h3>
+  <ul>
+    <li><strong><code>get_ca_project_info</code></strong> &mdash; new MCP tool to look up linked GitHub account and repo name for a project folder</li>
+  </ul>
+
+  <h3>Claude Code Detection Improvements</h3>
+  <ul>
+    <li><strong>Standalone CLI and WinGet support</strong> &mdash; finds <code>claude.exe</code> from standalone install (<code>~/.claude/local/</code>), WinGet (<code>AppData/Local/Microsoft/WinGet/Links/</code>), npm global, or PATH</li>
+    <li><strong>Installer detection updated</strong> &mdash; checks all install locations before falling back to PATH; install message now suggests <code>winget install Anthropic.ClaudeCode</code></li>
+  </ul>
+
+  <h3>UI Improvements</h3>
+  <ul>
+    <li><strong>Removed Settings from home page</strong> &mdash; use the gear icon button instead</li>
+    <li><strong>Light/dark theme</strong> correctly applied to the Create Class tab on creation</li>
+  </ul>
+</section>
+
+<section id="whats-new-v3" class="doc-section">
+  <h2>What's New in v3.0</h2>
+
+  <h3>Schema Sources &mdash; Database Intelligence</h3>
+  <ul>
+    <li><strong>Schema Source Manager</strong> &mdash; collapsible "Solution Settings" panel above the terminal with per-solution database source linking</li>
+    <li><strong>Multi-database support</strong> &mdash; index schemas from Clarion dictionaries (.dctx), SQL Server, SQLite, and PostgreSQL</li>
+    <li><strong>Global source registry</strong> &mdash; define database sources once, link to multiple solutions</li>
+    <li><strong>DPAPI-encrypted credentials</strong> &mdash; connection info stored securely with Windows data protection</li>
+    <li><strong>Test Connection</strong> &mdash; validate database connections before indexing</li>
+    <li><strong>MCP integration</strong> &mdash; Claude automatically finds and queries your indexed schemas via <code>search_tables</code>, <code>get_table</code>, <code>get_relationships</code>, and more</li>
+  </ul>
+
+  <h3>Source Control Integration</h3>
+  <ul>
+    <li><strong>GitHub and Bitbucket</strong> accounts with encrypted token/app password storage</li>
+    <li><strong>Per-solution repo linking</strong> &mdash; assign a source control account + repo to each solution</li>
+    <li><strong>Test authentication</strong> &mdash; validates credentials against GitHub/Bitbucket APIs</li>
+  </ul>
+
+  <h3>Simplified Home Page</h3>
+  <ul>
+    <li><strong>Quick Actions</strong> &mdash; New Chat, Evaluate Code, Settings, and Work With Open Solution cards</li>
+    <li><strong>Projects table</strong> &mdash; manage COM controls, addins, and other projects with GitHub/Bitbucket repo linking</li>
+    <li><strong>Removed Solutions tab</strong> &mdash; the IDE manages solutions; Clarion Assistant auto-detects the open solution</li>
+  </ul>
+
+  <h3>Multi-Version Installer</h3>
+  <ul>
+    <li><strong>Supports Clarion 10, 11, and 12</strong> &mdash; install to one or all versions from a single installer</li>
+    <li><strong>Per-version installation</strong> &mdash; installing for one version won't affect another</li>
+    <li><strong>Auto-detection</strong> &mdash; finds Clarion installations from the Windows registry and common paths</li>
+    <li><strong>Browse buttons</strong> &mdash; pick custom Clarion paths for non-standard installations</li>
+  </ul>
+
+  <h3>Evaluate Code Improvements</h3>
+  <ul>
+    <li><strong>5 scope options</strong> &mdash; evaluate the entire app, a specific procedure, embeditor content, text editor file, or selected code</li>
+    <li><strong>Smart file detection</strong> &mdash; correctly identifies text files vs .app files in the IDE</li>
+    <li><strong>No fabricated results</strong> &mdash; always reads real code from the IDE before producing any evaluation</li>
+  </ul>
+
+  <h3>Bug Fixes</h3>
+  <ul>
+    <li><strong>Fixed: Empty 404 crashes Claude Code SDK</strong> &mdash; MCP server now returns JSON body on 404 responses during OAuth discovery</li>
+    <li><strong>Fixed: replace_text destroys embeditor content</strong> &mdash; now uses surgical <code>Document.Replace()</code> instead of full-document replacement</li>
+    <li><strong>Fixed: LSP server path hardcoded</strong> &mdash; resolved relative to assembly location with configurable override</li>
+    <li><strong>Fixed: Solution not auto-detected</strong> &mdash; 10-second polling detects solution changes in the IDE</li>
+    <li><strong>Fixed: DocGraph personal search crashes</strong> &mdash; FTS5 virtual tables can't use schema-qualified names; queries now run independently and merge results</li>
+    <li><strong>Fixed: Header/action bar text clipping</strong> &mdash; responsive flex-wrap layout</li>
+  </ul>
+
+  <h3>Other Improvements</h3>
+  <ul>
+    <li><strong>Zoom persistence</strong> across all WebView2 panels (header, home, settings, schema sources)</li>
+    <li><strong>Responsive header</strong> &mdash; text wraps instead of clipping at narrow widths</li>
+    <li><strong>Import Now button</strong> for personal DocGraph documentation with progress feedback</li>
+    <li><strong>Remove All Personal</strong> button for bulk DocGraph cleanup</li>
+    <li><strong>Delete confirmation</strong> for source control accounts</li>
+  </ul>
+</section>
+
+<!-- ════════════════════════════════════════════════════ -->
+<!--  SECTION: CLAUDE CHAT TERMINAL                      -->
 <!-- ════════════════════════════════════════════════════ -->
 <section id="claude-chat" class="doc-section">
   <h2>Claude Chat Terminal</h2>
   <p>
     The Claude Chat Terminal is the centerpiece of Clarion.Assistant. It embeds a fully functional
-    Claude Code session directly inside the Clarion IDE, connected to over 30 MCP tools that give
+    Claude Code session directly inside the Clarion IDE, connected to 108 MCP tools that give
     Claude real-time awareness of your editor, your solution, and your codebase. You can ask Claude
     to read your open file, navigate to a line, analyze a class hierarchy, or refactor code &mdash; all
     without leaving the IDE.
   </p>
 
-  <h3>Solution Bar</h3>
+  <h3 id="claude-chat-solution-bar">Solution Bar</h3>
   <p>
     The Solution Bar runs across the top of the Claude Chat panel. It controls which Clarion
     environment and solution Claude operates against.
@@ -813,7 +1011,7 @@
       <tr>
         <td><strong>Version Selector</strong></td>
         <td>
-          Dropdown listing installed Clarion versions (11, 12, etc.). Clarion.Assistant
+          Dropdown listing installed Clarion versions (10, 11, 12). Clarion.Assistant
           auto-detects which versions are present on your system.
         </td>
       </tr>
@@ -863,7 +1061,7 @@
     are only as current as the last index.
   </div>
 
-  <h3>Terminal Toolbar</h3>
+  <h3 id="claude-chat-toolbar">Terminal Toolbar</h3>
 
   <table class="feature-table">
     <thead>
@@ -922,13 +1120,13 @@
   <div class="feature-card">
     <h4>IDE-Aware MCP Tools</h4>
     <p>
-      Claude has direct access to the Clarion IDE through over 30 MCP tools. These tools let
+      Claude has direct access to the Clarion IDE through 108 MCP tools. These tools let
       Claude interact with the editor, the file system, the application tree, the CodeGraph
       database, and the Language Server.
     </p>
   </div>
 
-  <h3>What Claude Can Do</h3>
+  <h3 id="claude-chat-capabilities">What Claude Can Do</h3>
 
   <div class="feature-card">
     <h4>Editor Operations</h4>
@@ -967,10 +1165,12 @@
       <li>Go to definition for any symbol, across files and projects</li>
       <li>Find all references to a symbol across the entire workspace</li>
       <li>Get type information, signatures, and documentation via hover</li>
+      <li>Run diagnostics to check for errors and warnings</li>
+      <li>Rename symbols with cross-file refactoring support</li>
     </ul>
   </div>
 
-  <h3>Example Conversations</h3>
+  <h3 id="claude-chat-examples">Example Conversations</h3>
 
   <table class="feature-table">
     <thead>
@@ -1012,7 +1212,7 @@
     in plain language and Claude will select the right tools automatically.
   </div>
 
-  <h3>Settings Dialog</h3>
+  <h3 id="claude-chat-settings">Settings Dialog</h3>
 
   <table class="feature-table">
     <thead>
@@ -1039,7 +1239,7 @@
 </section>
 
 <!-- ════════════════════════════════════════════════════ -->
-<!--  SECTION 3: CLASS HELPER                            -->
+<!--  SECTION: CLASS HELPER                              -->
 <!-- ════════════════════════════════════════════════════ -->
 <section id="class-helper" class="doc-section">
   <h2>Class Helper</h2>
@@ -1081,7 +1281,7 @@
   </ul>
   <p>A status bar along the bottom provides brief feedback on the current operation.</p>
 
-  <h3>Toolbar Reference</h3>
+  <h3 id="class-helper-toolbar">Toolbar Reference</h3>
   <table class="feature-table">
     <thead>
       <tr>
@@ -1125,7 +1325,7 @@
     </tbody>
   </table>
 
-  <h3>Tree Navigation</h3>
+  <h3 id="class-helper-tree">Tree Navigation</h3>
   <ul>
     <li><strong>Double-click</strong> any node to jump directly to that line in the editor.</li>
     <li><strong>Class nodes</strong> display the class name and inheritance relationships.</li>
@@ -1137,7 +1337,7 @@
     <strong>Tip:</strong> After running <strong>Sync Check</strong>, the output pane lists missing and orphaned methods. Use this as a checklist to clean up your class files.
   </div>
 
-  <h3>Typical Workflows</h3>
+  <h3 id="class-helper-workflows">Typical Workflows</h3>
 
   <h4>Starting a New Class</h4>
   <div class="workflow-step">
@@ -1189,7 +1389,7 @@
 </section>
 
 <!-- ════════════════════════════════════════════════════ -->
-<!--  SECTION 4: AGENT PANEL & TASK BOARD                -->
+<!--  SECTION: AGENT PANEL & TASK BOARD                  -->
 <!-- ════════════════════════════════════════════════════ -->
 <section id="agent-panel" class="doc-section">
   <h2>Agent Panel &amp; Task Board</h2>
@@ -1360,7 +1560,7 @@
 </section>
 
 <!-- ════════════════════════════════════════════════════ -->
-<!--  SECTION 5: LSP INTEGRATION                         -->
+<!--  SECTION: LSP INTEGRATION                           -->
 <!-- ════════════════════════════════════════════════════ -->
 <section id="lsp-integration" class="doc-section">
   <h2>Language Server Integration</h2>
@@ -1382,7 +1582,7 @@
     his contributions to the Clarion developer community.
   </div>
 
-  <h3>Capabilities</h3>
+  <h3 id="lsp-capabilities">Capabilities</h3>
 
   <div class="feature-grid">
     <div class="feature-card">
@@ -1422,7 +1622,7 @@
     </div>
   </div>
 
-  <h3>How It Works</h3>
+  <h3 id="lsp-how-it-works">How It Works</h3>
 
   <p>
     The Language Server starts automatically when you select a solution in the Claude Chat panel.
@@ -1508,171 +1708,407 @@
 </section>
 
 <!-- ════════════════════════════════════════════════════ -->
-<!--  SECTION 6: MCP TOOLS REFERENCE                     -->
+<!--  SECTION: ALSO INCLUDED: COM FOR CLARION            -->
+<!-- ════════════════════════════════════════════════════ -->
+<section id="com-for-clarion" class="doc-section">
+  <h2>Also Included: COM for Clarion</h2>
+
+  <p>
+    The installer bundles <strong>COM for Clarion</strong>, a complete toolkit for creating .NET COM controls that work with Clarion:
+  </p>
+
+  <ul>
+    <li><strong>IDE addin</strong> &mdash; browse, discover, and manage COM controls from inside Clarion</li>
+    <li><strong>UltimateCOM template</strong> &mdash; Clarion template and class for embedding COM controls in your apps</li>
+    <li><strong>ClarionCOM tooling</strong> &mdash; project templates, build scripts, and deployment tools for creating your own C# COM controls</li>
+    <li><strong>COM Marketplace</strong> &mdash; access community-published controls from <a href="https://clarionlive.com" target="_blank" style="color: var(--primary-dark); font-weight: 600;">clarionlive.com</a></li>
+  </ul>
+</section>
+
+<!-- ════════════════════════════════════════════════════ -->
+<!--  SECTION: MCP TOOLS REFERENCE                       -->
 <!-- ════════════════════════════════════════════════════ -->
 <section id="mcp-tools" class="doc-section">
   <h2>MCP Tools Reference</h2>
 
   <p>
-    When Claude runs inside Clarion.Assistant, it has access to a rich set of MCP (Model Context Protocol) tools
-    that directly interact with the Clarion IDE, your source files, and solution-wide code intelligence.
+    Clarion Assistant exposes <strong>108 MCP tools</strong> that Claude uses to interact with the IDE.
     You do not need to call these tools yourself &mdash; Claude selects and invokes them automatically based on
     your questions and requests. This reference is provided so you know what capabilities are available.
   </p>
 
-  <h3 id="tools-ide-context">IDE Context (Read-Only)</h3>
-  <p>These tools let Claude observe what you are currently working on without making any changes.</p>
+  <h3 id="tools-ide-editor">IDE &amp; Editor (23 tools)</h3>
   <table class="tools-table">
     <thead><tr><th>Tool</th><th>Description</th></tr></thead>
     <tbody>
-      <tr><td><code>get_active_file</code></td><td>Get the path and full content of the file currently open in the editor.</td></tr>
-      <tr><td><code>get_selected_text</code></td><td>Get the currently selected (highlighted) text.</td></tr>
-      <tr><td><code>get_word_under_cursor</code></td><td>Get the word at the current cursor position.</td></tr>
-      <tr><td><code>get_cursor_position</code></td><td>Get the current line number, column, and total line count.</td></tr>
+      <tr><td><code>get_active_file</code></td><td>Get path and content of the open file</td></tr>
+      <tr><td><code>open_file</code></td><td>Open a file in the editor, optionally at a line</td></tr>
+      <tr><td><code>close_file</code></td><td>Close the active editor tab</td></tr>
+      <tr><td><code>save_file</code></td><td>Save the active file</td></tr>
+      <tr><td><code>get_open_files</code></td><td>List all open editor tabs</td></tr>
+      <tr><td><code>go_to_line</code></td><td>Navigate to a specific line in the open file</td></tr>
+      <tr><td><code>get_cursor_position</code></td><td>Get current line, column, and total line count</td></tr>
+      <tr><td><code>get_line_text</code></td><td>Get text of a specific line from the live buffer</td></tr>
+      <tr><td><code>get_lines_range</code></td><td>Get a range of lines from the editor</td></tr>
+      <tr><td><code>get_selected_text</code></td><td>Get the currently selected text</td></tr>
+      <tr><td><code>get_word_under_cursor</code></td><td>Get the word at the cursor position</td></tr>
+      <tr><td><code>select_range</code></td><td>Select/highlight a range of text in the editor</td></tr>
+      <tr><td><code>insert_text_at_cursor</code></td><td>Insert text at the current cursor position</td></tr>
+      <tr><td><code>replace_text</code></td><td>Find and replace all occurrences in the active editor</td></tr>
+      <tr><td><code>replace_range</code></td><td>Replace text between specific line/column positions</td></tr>
+      <tr><td><code>delete_range</code></td><td>Delete text between specific line/column positions</td></tr>
+      <tr><td><code>find_in_file</code></td><td>Search for text in the active editor buffer</td></tr>
+      <tr><td><code>toggle_comment</code></td><td>Toggle Clarion line comments on a range of lines</td></tr>
+      <tr><td><code>is_modified</code></td><td>Check if the active file has unsaved changes</td></tr>
+      <tr><td><code>undo</code></td><td>Undo the last edit</td></tr>
+      <tr><td><code>redo</code></td><td>Redo the last undone edit</td></tr>
+      <tr><td><code>show_diff</code></td><td>Show a side-by-side diff in the Monaco viewer</td></tr>
+      <tr><td><code>get_diff_result</code></td><td>Get approval/notes from the diff viewer</td></tr>
     </tbody>
   </table>
 
-  <h3 id="tools-editor-operations">Editor Operations</h3>
-  <p>These tools let Claude open files, navigate, edit code, and manage editor tabs.</p>
+  <h3 id="tools-app-embeditor">Application Tree &amp; Embeditor (21 tools)</h3>
   <table class="tools-table">
     <thead><tr><th>Tool</th><th>Description</th></tr></thead>
     <tbody>
-      <tr><td><code>open_file</code></td><td>Open a file in the editor, optionally navigating to a specific line.</td></tr>
-      <tr><td><code>go_to_line</code></td><td>Navigate to a specific line in the currently open file.</td></tr>
-      <tr><td><code>insert_text_at_cursor</code></td><td>Insert text at the current cursor position.</td></tr>
-      <tr><td><code>replace_text</code></td><td>Find and replace all occurrences in the active editor.</td></tr>
-      <tr><td><code>replace_range</code></td><td>Replace text between specific line/column positions (1-based).</td></tr>
-      <tr><td><code>select_range</code></td><td>Select and highlight a range of text (1-based line/col).</td></tr>
-      <tr><td><code>delete_range</code></td><td>Delete text between specific positions (1-based).</td></tr>
-      <tr><td><code>undo</code></td><td>Undo the last edit operation.</td></tr>
-      <tr><td><code>redo</code></td><td>Redo the last undone edit.</td></tr>
-      <tr><td><code>save_file</code></td><td>Save the active file to disk.</td></tr>
-      <tr><td><code>close_file</code></td><td>Close the active editor tab.</td></tr>
-      <tr><td><code>get_open_files</code></td><td>List all currently open editor tabs.</td></tr>
-      <tr><td><code>get_line_text</code></td><td>Get the text of a specific line (includes unsaved changes).</td></tr>
-      <tr><td><code>find_in_file</code></td><td>Search for text in the active editor buffer.</td></tr>
-      <tr><td><code>is_modified</code></td><td>Check if the active file has unsaved changes.</td></tr>
-      <tr><td><code>toggle_comment</code></td><td>Toggle Clarion line comments (<code>!</code>) on a range of lines.</td></tr>
+      <tr><td><code>get_app_info</code></td><td>Get info about the currently open app</td></tr>
+      <tr><td><code>list_procedures</code></td><td>List all procedures in the open app</td></tr>
+      <tr><td><code>get_procedure_details</code></td><td>Get detailed procedure info (prototype, module, template)</td></tr>
+      <tr><td><code>select_procedure</code></td><td>Select a procedure in the app tree</td></tr>
+      <tr><td><code>open_procedure_embed</code></td><td>Open the embeditor for a procedure</td></tr>
+      <tr><td><code>get_embed_info</code></td><td>Get info about the active embeditor</td></tr>
+      <tr><td><code>list_embeds</code></td><td>List all embed sections with filled status</td></tr>
+      <tr><td><code>find_embed</code></td><td>Find and navigate to an embed section by name</td></tr>
+      <tr><td><code>next_embed</code> / <code>prev_embed</code></td><td>Navigate to the next/previous embed point</td></tr>
+      <tr><td><code>next_filled_embed</code> / <code>prev_filled_embed</code></td><td>Navigate to the next/previous filled embed</td></tr>
+      <tr><td><code>get_embed_content</code></td><td>Read code inside a specific embed slot</td></tr>
+      <tr><td><code>get_embeditor_source</code></td><td>Get full annotated embeditor source with embed markers</td></tr>
+      <tr><td><code>search_embeditor_source</code></td><td>Regex search over annotated embeditor source</td></tr>
+      <tr><td><code>open_embeditor_source</code></td><td>Open the embeditor source in the editor</td></tr>
+      <tr><td><code>write_embed_content</code></td><td>Write code into an embed slot by line number</td></tr>
+      <tr><td><code>save_and_close_embeditor</code></td><td>Save changes and close the embeditor</td></tr>
+      <tr><td><code>cancel_embeditor</code></td><td>Discard changes and close the embeditor</td></tr>
+      <tr><td><code>export_txa</code></td><td>Export app or procedures to TXA format</td></tr>
+      <tr><td><code>import_txa</code></td><td>Import a TXA file into the app</td></tr>
     </tbody>
   </table>
 
-  <h3 id="tools-app-tree">Application Tree</h3>
-  <p>Work with Clarion <code>.app</code> files to inspect application structure and procedures.</p>
+  <h3 id="tools-code-intelligence">Code Intelligence (11 tools)</h3>
   <table class="tools-table">
     <thead><tr><th>Tool</th><th>Description</th></tr></thead>
     <tbody>
-      <tr><td><code>open_app</code></td><td>Open a <code>.app</code> file in the IDE.</td></tr>
-      <tr><td><code>get_app_info</code></td><td>Get info about the currently open app (name, file path, target type).</td></tr>
-      <tr><td><code>list_procedures</code></td><td>List all procedure names in the currently open app.</td></tr>
-      <tr><td><code>get_procedure_details</code></td><td>Get detailed procedure info including prototype, module, parent, and template.</td></tr>
-      <tr><td><code>open_procedure_embed</code></td><td>Open the embeditor for a specific procedure.</td></tr>
-      <tr><td><code>get_embed_info</code></td><td>Get info about the active embeditor.</td></tr>
+      <tr><td><code>get_solution_info</code></td><td>Get current solution, Clarion version, RED file, and CodeGraph status</td></tr>
+      <tr><td><code>index_codegraph</code></td><td>Index the solution for CodeGraph queries</td></tr>
+      <tr><td><code>index_solution</code></td><td>Index all projects in the solution</td></tr>
+      <tr><td><code>list_codegraph_databases</code></td><td>List available indexed CodeGraph databases</td></tr>
+      <tr><td><code>query_codegraph</code></td><td>SQL queries over every symbol, relationship, and call chain</td></tr>
+      <tr><td><code>get_project_source_files</code></td><td>List all source files (.clw, .inc) with absolute paths</td></tr>
+      <tr><td><code>analyze_class</code></td><td>Parse CLASS definitions from .inc files</td></tr>
+      <tr><td><code>sync_check</code></td><td>Compare .inc declarations vs .clw implementations</td></tr>
+      <tr><td><code>generate_stubs</code></td><td>Generate method stubs for missing implementations</td></tr>
+      <tr><td><code>generate_clw</code></td><td>Generate a complete .clw implementation from a .inc file</td></tr>
+      <tr><td><code>generate_source</code></td><td>Generate .clw/.inc source from templates</td></tr>
     </tbody>
   </table>
 
-  <h3 id="tools-file-system">File System</h3>
-  <p>Direct file system access independent of what is open in the editor.</p>
+  <h3 id="tools-lsp">LSP &mdash; Language Server (9 tools)</h3>
   <table class="tools-table">
     <thead><tr><th>Tool</th><th>Description</th></tr></thead>
     <tbody>
-      <tr><td><code>read_file</code></td><td>Read file content from disk. Supports <code>start_line</code> and <code>end_line</code> for specific ranges.</td></tr>
-      <tr><td><code>write_file</code></td><td>Write content to a file on disk.</td></tr>
-      <tr><td><code>append_to_file</code></td><td>Append text to an existing file.</td></tr>
-      <tr><td><code>list_directory</code></td><td>List files in a directory with an optional pattern filter.</td></tr>
+      <tr><td><code>lsp_start</code></td><td>Start the Clarion Language Server</td></tr>
+      <tr><td><code>lsp_debug_status</code></td><td>Check LSP server status</td></tr>
+      <tr><td><code>lsp_definition</code></td><td>Go to definition of a symbol (cross-file)</td></tr>
+      <tr><td><code>lsp_references</code></td><td>Find all references to a symbol across the workspace</td></tr>
+      <tr><td><code>lsp_hover</code></td><td>Get type info, signature, and documentation for a symbol</td></tr>
+      <tr><td><code>lsp_document_symbols</code></td><td>Get all symbols in a file</td></tr>
+      <tr><td><code>lsp_find_symbol</code></td><td>Search for symbols across the workspace by name</td></tr>
+      <tr><td><code>lsp_diagnostics</code></td><td>Get errors and warnings for a source file</td></tr>
+      <tr><td><code>lsp_rename</code></td><td>Propose a rename of a symbol (returns edit list for approval)</td></tr>
     </tbody>
   </table>
 
-  <h3 id="tools-class-intelligence">Clarion Class Intelligence</h3>
-  <p>Specialized tools for working with Clarion CLASS structures.</p>
+  <h3 id="tools-schema">Schema Intelligence (10 tools)</h3>
   <table class="tools-table">
     <thead><tr><th>Tool</th><th>Description</th></tr></thead>
     <tbody>
-      <tr><td><code>analyze_class</code></td><td>Parse CLASS definitions from a <code>.inc</code> file. Returns class names, methods, data members, and module references.</td></tr>
-      <tr><td><code>sync_check</code></td><td>Compare <code>.inc</code> declarations against <code>.clw</code> implementations. Reports missing and orphaned methods.</td></tr>
-      <tr><td><code>generate_stubs</code></td><td>Generate method stubs for methods declared in <code>.inc</code> but missing from <code>.clw</code>.</td></tr>
-      <tr><td><code>generate_clw</code></td><td>Generate a complete <code>.clw</code> implementation file from a <code>.inc</code> file.</td></tr>
+      <tr><td><code>search_tables</code></td><td>Search database tables by name</td></tr>
+      <tr><td><code>get_table</code></td><td>Full table detail with columns, keys, relationships</td></tr>
+      <tr><td><code>search_columns</code></td><td>Find columns across all tables</td></tr>
+      <tr><td><code>get_relationships</code></td><td>Show parent/child table relationships</td></tr>
+      <tr><td><code>query_schema</code></td><td>Run SQL queries against the schema index</td></tr>
+      <tr><td><code>schema_stats</code></td><td>Get schema database statistics</td></tr>
+      <tr><td><code>ingest_schema</code></td><td>Index a Clarion dictionary (.dctx)</td></tr>
+      <tr><td><code>ingest_sql_database</code></td><td>Index schema from SQL Server, SQLite, or PostgreSQL</td></tr>
+      <tr><td><code>export_dctx</code></td><td>Export dictionary to .dctx format</td></tr>
+      <tr><td><code>import_dctx</code></td><td>Import a .dctx dictionary</td></tr>
     </tbody>
   </table>
 
-  <h3 id="tools-codegraph">CodeGraph (Solution-Wide Intelligence)</h3>
-  <p>Indexed, queryable access to every symbol, relationship, and call chain across your entire solution.</p>
+  <h3 id="tools-docs">Documentation Search (6 tools)</h3>
   <table class="tools-table">
     <thead><tr><th>Tool</th><th>Description</th></tr></thead>
     <tbody>
-      <tr><td><code>query_codegraph</code></td><td>Run SQL queries against the indexed CodeGraph database to find symbols, trace call chains, and analyze dependencies.</td></tr>
-      <tr><td><code>list_codegraph_databases</code></td><td>Find available indexed CodeGraph databases.</td></tr>
+      <tr><td><code>query_docs</code></td><td>Full-text search across all indexed documentation</td></tr>
+      <tr><td><code>ingest_docs</code></td><td>Index docs from a Clarion installation's accessory/Documents folder</td></tr>
+      <tr><td><code>ingest_web_docs</code></td><td>Ingest documentation from web URLs</td></tr>
+      <tr><td><code>list_doc_libraries</code></td><td>List all indexed libraries with chunk counts</td></tr>
+      <tr><td><code>discover_docs</code></td><td>Preview discoverable doc sources without ingesting</td></tr>
+      <tr><td><code>docgraph_stats</code></td><td>Get DocGraph database statistics</td></tr>
     </tbody>
   </table>
 
-  <div class="info-box">
-    <strong>CodeGraph Database Schema</strong>
-    <p>The CodeGraph database contains three main tables:</p>
-    <ul>
-      <li><strong>symbols</strong> &mdash; <code>name</code>, <code>type</code> (procedure, function, class, interface, routine, variable), <code>file_path</code>, <code>line_number</code>, <code>params</code>, <code>return_type</code>, <code>parent_name</code>, <code>scope</code></li>
-      <li><strong>relationships</strong> &mdash; <code>from_id</code>, <code>to_id</code>, <code>type</code> (calls, do, inherits, implements, references), <code>file_path</code>, <code>line_number</code></li>
-      <li><strong>projects</strong> &mdash; <code>name</code>, <code>cwproj_path</code>, <code>sln_path</code></li>
-    </ul>
-    <p>Example questions: &ldquo;Who calls this procedure?&rdquo;, &ldquo;Show me dead code&rdquo;, &ldquo;What is the class hierarchy?&rdquo;, &ldquo;If I change X, what breaks?&rdquo;</p>
-  </div>
-
-  <h3 id="tools-lsp">LSP (Language Server)</h3>
-  <p>Real-time, compiler-grade analysis for precise definitions, references, and type information.</p>
+  <h3 id="tools-build">Build Tools (5 tools)</h3>
   <table class="tools-table">
     <thead><tr><th>Tool</th><th>Description</th></tr></thead>
     <tbody>
-      <tr><td><code>lsp_start</code></td><td>Start the Clarion Language Server. Auto-starts when a solution is selected.</td></tr>
-      <tr><td><code>lsp_definition</code></td><td>Go to definition: find where a symbol is defined, across files.</td></tr>
-      <tr><td><code>lsp_references</code></td><td>Find all references to a symbol across the entire workspace.</td></tr>
-      <tr><td><code>lsp_hover</code></td><td>Get type information, signature, and documentation for a symbol.</td></tr>
-      <tr><td><code>lsp_document_symbols</code></td><td>Get all symbols defined in a file (procedures, classes, variables).</td></tr>
-      <tr><td><code>lsp_find_symbol</code></td><td>Search for symbols by name across the entire workspace.</td></tr>
+      <tr><td><code>build_solution</code></td><td>Build the entire Clarion solution via ClarionCL.exe</td></tr>
+      <tr><td><code>build_app</code></td><td>Build a single .app file (for multi-DLL solutions)</td></tr>
+      <tr><td><code>build_com_project</code></td><td>Build a C# COM control via MSBuild</td></tr>
+      <tr><td><code>run_command</code></td><td>Execute any command-line tool</td></tr>
+      <tr><td><code>execute_command</code></td><td>Execute a shell command</td></tr>
     </tbody>
   </table>
 
-  <div class="info-box">
-    <strong>Note:</strong> The LSP uses 0-based line numbers internally, while IDE tools use 1-based line numbers. Claude handles this conversion automatically.
-  </div>
+  <h3 id="tools-filesystem">File System &amp; Search (7 tools)</h3>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>read_file</code></td><td>Read file content from disk with optional line range</td></tr>
+      <tr><td><code>write_file</code></td><td>Write content to a file</td></tr>
+      <tr><td><code>append_to_file</code></td><td>Append text to an existing file</td></tr>
+      <tr><td><code>list_directory</code></td><td>List files in a directory with optional pattern filter</td></tr>
+      <tr><td><code>search_files</code></td><td>Search for files by name</td></tr>
+      <tr><td><code>search_files_advanced</code></td><td>Advanced file search with Everything integration (path, extension, size, date filters)</td></tr>
+      <tr><td><code>search_content</code></td><td>Search file contents by text</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="tools-project-ide">Project &amp; IDE (4 tools)</h3>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>get_ca_project_info</code></td><td>Get linked GitHub/Bitbucket account and repo for a project</td></tr>
+      <tr><td><code>get_red_search_paths</code></td><td>Get RED file search paths for the active solution</td></tr>
+      <tr><td><code>resolve_red_path</code></td><td>Resolve a filename to an absolute path via RED search paths</td></tr>
+      <tr><td><code>inspect_ide</code></td><td>Inspect Clarion IDE internal state</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="tools-knowledge">Knowledge &amp; Memory (6 tools)</h3>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>add_knowledge</code></td><td>Save reusable insights (decisions, patterns, gotchas) across sessions</td></tr>
+      <tr><td><code>query_knowledge</code></td><td>Search past decisions and patterns</td></tr>
+      <tr><td><code>save_session_summary</code></td><td>Save a session summary for next-session continuity</td></tr>
+      <tr><td><code>query_traces</code></td><td>Query code generation traces</td></tr>
+      <tr><td><code>trace_stats</code></td><td>Get trace database statistics</td></tr>
+      <tr><td><code>log_skill_update</code></td><td>Log a skill update event</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="tools-multi-instance">Multi-Instance Coordination (4 tools)</h3>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>list_instances</code></td><td>List all running Clarion Assistant instances</td></tr>
+      <tr><td><code>get_instance_messages</code></td><td>Get messages from other instances</td></tr>
+      <tr><td><code>send_to_instances</code></td><td>Send a message to other instances</td></tr>
+      <tr><td><code>check_conflicts</code></td><td>Check for file conflicts across instances</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="tools-validation">Validation (2 tools)</h3>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>validate_names</code></td><td>Validate Clarion naming conventions</td></tr>
+      <tr><td><code>find_duplicates</code></td><td>Find duplicate symbols in the solution</td></tr>
+    </tbody>
+  </table>
 </section>
 
 <!-- ════════════════════════════════════════════════════ -->
-<!--  SECTION 7: ACKNOWLEDGMENTS                         -->
+<!--  SECTION: CLAUDE CODE SKILLS                        -->
+<!-- ════════════════════════════════════════════════════ -->
+<section id="skills" class="doc-section">
+  <h2>Claude Code Skills</h2>
+
+  <p>
+    The installer includes 22 Clarion-specific skills for Claude Code (installed as a plugin):
+  </p>
+
+  <table class="tools-table">
+    <thead><tr><th>Skill</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>clarion</code></td><td>Clarion language reference &mdash; syntax, data types, control structures, Windows API patterns</td></tr>
+      <tr><td><code>clarion-ide-addin</code></td><td>IDE addin development with SharpDevelop integration</td></tr>
+      <tr><td><code>clarion-analyze</code></td><td>Analyze Clarion code generation traces for recurring failure patterns</td></tr>
+      <tr><td><code>clarion-benchmark</code></td><td>Benchmark Clarion code generation quality</td></tr>
+      <tr><td><code>clarion-convert-driver</code></td><td>Convert Clarion dictionaries between file drivers (e.g., TopSpeed to SQLite)</td></tr>
+      <tr><td><code>evaluate-code</code></td><td>Evaluate Clarion app code for issues and improvements</td></tr>
+      <tr><td><code>jfiles</code></td><td>jFiles JSON serialization patterns for Clarion</td></tr>
+      <tr><td><code>lsp-diagnostics</code></td><td>Run LSP diagnostics across all source files in the open solution with navigate-to-error support</td></tr>
+      <tr><td><code>ClarionCOM</code></td><td>Interactive COM development assistant</td></tr>
+      <tr><td><code>clarioncom-build</code></td><td>Build COM projects with MSBuild</td></tr>
+      <tr><td><code>clarioncom-config</code></td><td>Manage ClarionCOM settings</td></tr>
+      <tr><td><code>clarioncom-control</code></td><td>Create and validate C# COM controls for Clarion</td></tr>
+      <tr><td><code>clarioncom-create</code></td><td>Create new C# COM control projects from scratch</td></tr>
+      <tr><td><code>clarioncom-deploy</code></td><td>Generate deployment artifacts</td></tr>
+      <tr><td><code>clarioncom-get</code></td><td>Download controls from the marketplace</td></tr>
+      <tr><td><code>clarioncom-github-init</code></td><td>Initialize GitHub repos for COM projects</td></tr>
+      <tr><td><code>clarioncom-marketplace-submit</code></td><td>Submit controls to the COM Marketplace</td></tr>
+      <tr><td><code>clarioncom-validate</code></td><td>Validate RegFree COM compliance</td></tr>
+      <tr><td><code>clarioncom-webview2-build</code></td><td>Build WebView2 COM control projects</td></tr>
+      <tr><td><code>clarioncom-webview2-create</code></td><td>Create WebView2-based COM controls with HTML/CSS/JS</td></tr>
+      <tr><td><code>clarioncom-webview2-deploy</code></td><td>Generate deployment artifacts for WebView2 COM controls</td></tr>
+      <tr><td><code>clarioncom-webview2-validate</code></td><td>Validate WebView2 COM controls for RegFree compliance</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ════════════════════════════════════════════════════ -->
+<!--  SECTION: BUILDING FROM SOURCE                      -->
+<!-- ════════════════════════════════════════════════════ -->
+<section id="building-from-source" class="doc-section">
+  <h2>Building from Source</h2>
+
+  <h3>Requirements</h3>
+  <ul>
+    <li>Visual Studio 2022 (Community or higher)</li>
+    <li>.NET Framework 4.8 SDK</li>
+    <li>Clarion IDE (for reference assemblies in <code>{Clarion}\bin\</code>)</li>
+    <li><a href="https://jrsoftware.org/isdownload.php" target="_blank" style="color: var(--primary-dark);">Inno Setup 6</a> (for building the installer)</li>
+  </ul>
+
+  <h3>Configuring Your Clarion Path</h3>
+
+  <p>
+    The build uses <code>Directory.Build.props</code> at the repo root to locate your Clarion installation.
+    The defaults assume a specific machine layout (<code>C:\Clarion12</code>, <code>C:\Clarion11-13372</code>, <code>C:\Clarion10</code>).
+  </p>
+
+  <p>
+    If your Clarion is installed elsewhere, create a <code>Directory.Build.props.user</code> file alongside
+    <code>Directory.Build.props</code> (it is gitignored &mdash; never commit it):
+  </p>
+
+  <pre class="code-block"><code>&lt;Project&gt;
+  &lt;!-- Replace with your actual Clarion installation path --&gt;
+  &lt;PropertyGroup&gt;
+    &lt;ClarionRoot&gt;C:\Clarion\Clarion12&lt;/ClarionRoot&gt;
+  &lt;/PropertyGroup&gt;
+&lt;/Project&gt;</code></pre>
+
+  <p>
+    The <code>.user</code> file overrides the defaults for all <code>ClarionVersion</code> values, so a single
+    path entry is enough if you only build for one version. You can still pass <code>/p:ClarionVersion=11</code>
+    on the command line to select the target version.
+  </p>
+
+  <p>
+    Alternatively, pass the path directly on the command line without creating a <code>.user</code> file:
+  </p>
+
+  <pre class="code-block"><code>msbuild ClarionAssistant.csproj /p:ClarionVersion=11 /p:ClarionRoot="C:\Clarion\Clarion11.1"</code></pre>
+
+  <h3>Build</h3>
+
+  <pre class="code-block"><code># Build for a specific version (uses Directory.Build.props.user if present)
+cd ClarionAssistant
+msbuild ClarionAssistant.csproj /p:Configuration=Debug /p:ClarionVersion=12
+
+# Build the addin for all Clarion versions via deploy script
+.\deploy.ps1 -NoBuild:$false -Version all</code></pre>
+
+  <div class="info-box info-box--warning">
+    <strong>Important:</strong> Use MSBuild directly &mdash; do <strong>not</strong> use <code>dotnet build</code>.
+    WebView2 NuGet resolution fails with the .NET CLI on this .NET Framework 4.8 project.
+  </div>
+
+  <h3>Deploy for Development</h3>
+
+  <pre class="code-block"><code># Deploy to your local Clarion IDE (builds + copies DLLs)
+cd ClarionAssistant
+.\deploy.ps1 -Version 12
+
+# Deploy without rebuilding (e.g. HTML-only changes)
+.\deploy.ps1 -Version 12 -NoBuild
+
+# Kill the IDE before deploying (when DLLs are locked)
+.\deploy.ps1 -Version 12 -Kill</code></pre>
+</section>
+
+<!-- ════════════════════════════════════════════════════ -->
+<!--  SECTION: ACKNOWLEDGMENTS                           -->
 <!-- ════════════════════════════════════════════════════ -->
 <section id="acknowledgments" class="doc-section">
   <h2>Acknowledgments</h2>
 
   <p>
-    Clarion.Assistant is built on the shoulders of the Clarion developer community and the open-source
-    ecosystem. We would like to recognize the following contributions:
+    Clarion Assistant is built with the help of these open-source projects and contributors:
   </p>
 
-  <div class="feature-card" style="border-left: 4px solid var(--primary);">
-    <h4>Mark Sarson &mdash; Clarion Extension for VS Code</h4>
-    <p>
-      Special thanks to <strong>Mark Sarson</strong> for his outstanding work on the
-      <a href="https://github.com/msarson/Clarion-Extension" target="_blank" style="color: var(--primary-dark); font-weight: 600;">Clarion Extension for Visual Studio Code</a>.
-      Mark pioneered Language Server Protocol support for the Clarion language, bringing
-      IntelliSense, go-to-definition, parameter hints, smart snippets, and code navigation
-      to Clarion developers. His extension proved that modern language intelligence features
-      could be successfully applied to Clarion development, and his work directly inspired
-      the LSP integration in Clarion.Assistant. The Clarion community is better for his
-      contributions.
-    </p>
-    <p style="margin-top: 0.75rem;">
-      <a href="https://github.com/msarson/Clarion-Extension" target="_blank" style="color: var(--primary);">
-        github.com/msarson/Clarion-Extension
-      </a>
-    </p>
-  </div>
+  <h3>Contributors</h3>
 
-  <div class="feature-card">
-    <h4>Open Source Technologies</h4>
-    <ul>
-      <li><strong>WebView2</strong> &mdash; Microsoft Edge-based browser control for terminal and board rendering</li>
-      <li><strong>xterm.js</strong> &mdash; Terminal emulation in the browser</li>
-      <li><strong>Claude Code</strong> &mdash; Anthropic's CLI for AI-assisted development</li>
-      <li><strong>SharpDevelop / ICSharpCode</strong> &mdash; The IDE platform that powers Clarion's editor</li>
-    </ul>
-  </div>
+  <table class="feature-table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Contribution</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><a href="https://github.com/msarson/Clarion-Extension" target="_blank" style="color: var(--primary-dark); font-weight: 600;">Mark Sarson</a></td>
+        <td>Clarion Language Server Protocol implementation for VS Code, which the LSP integration in Clarion Assistant is based on</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Open Source Libraries</h3>
+
+  <table class="feature-table">
+    <thead>
+      <tr>
+        <th>Library</th>
+        <th>Description</th>
+        <th>License</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><a href="https://github.com/xtermjs/xterm.js" target="_blank" style="color: var(--primary-dark);">xterm.js</a></td>
+        <td>Terminal emulator (v6.0.0)</td>
+        <td>MIT</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/JamesNK/Newtonsoft.Json" target="_blank" style="color: var(--primary-dark);">Newtonsoft.Json</a></td>
+        <td>JSON serialization (v13.0.3)</td>
+        <td>MIT</td>
+      </tr>
+      <tr>
+        <td><a href="https://system.data.sqlite.org" target="_blank" style="color: var(--primary-dark);">System.Data.SQLite</a></td>
+        <td>SQLite database with FTS5 full-text search</td>
+        <td>Public Domain</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/MicrosoftEdge/WebView2Feedback" target="_blank" style="color: var(--primary-dark);">Microsoft WebView2</a></td>
+        <td>Embedded browser runtime</td>
+        <td>MIT</td>
+      </tr>
+      <tr>
+        <td><a href="https://www.voidtools.com" target="_blank" style="color: var(--primary-dark);">Everything SDK</a></td>
+        <td>Instant file search by voidtools</td>
+        <td>Freeware</td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/kayba-ai/recursive-improve" target="_blank" style="color: var(--primary-dark);">recursive-improve</a></td>
+        <td>Recursive improvement pattern for code generation</td>
+        <td>MIT</td>
+      </tr>
+    </tbody>
+  </table>
 </section>
 
   </main>
@@ -1682,7 +2118,7 @@
 <!--  FOOTER                                             -->
 <!-- ════════════════════════════════════════════════════ -->
 <footer class="site-footer">
-  <p>Clarion.Assistant User Guide &middot; v1.0 &middot; &copy; 2025</p>
+  <p>Clarion.Assistant User Guide &middot; v4.1 &middot; &copy; 2026</p>
 </footer>
 
 <!-- Smooth scrolling -->

@@ -210,6 +210,8 @@ namespace ClarionAssistant.Dialogs
             string comFolder = _settings.Get("COM.ProjectsFolder") ?? "";
             string theme = _isDark ? "dark" : "light";
 
+            bool autoUpdate = (_settings.Get("Claude.AutoUpdate") ?? "").Equals("true", StringComparison.OrdinalIgnoreCase);
+
             bool mtAvailable = File.Exists(MultiTerminalMcpPath);
             string mtEnabled = _settings.Get("MultiTerminal.Enabled");
             bool mtOn = mtEnabled == null ? mtAvailable : mtEnabled.Equals("true", StringComparison.OrdinalIgnoreCase);
@@ -252,6 +254,7 @@ namespace ClarionAssistant.Dialogs
                 + ",\"model\":\"" + EscapeJson(model) + "\""
                 + ",\"workingDir\":\"" + EscapeJson(workingDir) + "\""
                 + ",\"comFolder\":\"" + EscapeJson(comFolder) + "\""
+                + ",\"autoUpdate\":" + (autoUpdate ? "true" : "false")
                 + ",\"mtAvailable\":" + (mtAvailable ? "true" : "false")
                 + ",\"mtEnabled\":" + (mtOn ? "true" : "false")
                 + ",\"agentName\":\"" + EscapeJson(agentName) + "\""
@@ -485,6 +488,7 @@ namespace ClarionAssistant.Dialogs
             string model = ExtractJsonValue(data, "model") ?? "sonnet";
             string workingDir = ExtractJsonValue(data, "workingDir") ?? "";
             string comFolder = ExtractJsonValue(data, "comFolder") ?? "";
+            bool autoUpdate = ExtractJsonValue(data, "autoUpdate") == "true";
             bool mtEnabled = ExtractJsonValue(data, "mtEnabled") == "true";
             string agentName = ExtractJsonValue(data, "agentName") ?? "ClarionIDE";
 
@@ -495,6 +499,7 @@ namespace ClarionAssistant.Dialogs
             _settings.Set("Claude.Model", model);
             _settings.Set("Claude.WorkingDirectory", workingDir);
             _settings.Set("COM.ProjectsFolder", comFolder);
+            _settings.Set("Claude.AutoUpdate", autoUpdate.ToString().ToLower());
             _settings.Set("MultiTerminal.Enabled", mtEnabled.ToString().ToLower());
             _settings.Set("MultiTerminal.AgentName", agentName);
 

@@ -1,6 +1,6 @@
 <AddIn name="Clarion Assistant" author="John Hickey" description="AI-powered Clarion IDE assistant: embedded Claude Code terminal, MCP tools, LSP integration, CodeGraph, and IDE automation">
   <Manifest>
-    <Identity name="ClarionAssistant" version="1.0.0"/>
+    <Identity name="ClarionAssistant" version="4.1.0"/>
   </Manifest>
   <Runtime>
     <Import assembly="ClarionAssistant.dll"/>
@@ -10,7 +10,7 @@
     <Pad id="ClassHelper" category="Tools" title="Class Helper"
          icon="PadIcons.ClassBrowser" shortcut="Control|Alt|M"
          class="ClarionAssistant.ClassHelperPad"/>
-    <Pad id="ClaudeChat" category="Tools" title="Clarion Assistant"
+    <Pad id="ClaudeChat" category="Tools" title="Clarion Assistant v4.1"
          icon="PadIcons.Output" shortcut="Control|Alt|C"
          class="ClarionAssistant.ClaudeChatPad"/>
     <Pad id="AgentPanel" category="Tools" title="Agent Panel"

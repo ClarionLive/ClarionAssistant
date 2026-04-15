@@ -105,6 +105,8 @@
     <Compile Include="Models\MultiTerminalModels.cs" />
     <Compile Include="Services\MultiTerminalApiClient.cs" />
     <Compile Include="Services\CaAgentIdentity.cs" />
+    <Compile Include="Terminal\LspStatusBar.cs" />
+    <Compile Include="Dialogs\DiagnosticsForm.cs" />
     <Compile Include="Services\ClaudeProcessManager.cs" />
     <Compile Include="TaskLifecycleBoard\TaskLifecycleBoardForm.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

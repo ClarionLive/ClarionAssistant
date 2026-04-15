@@ -234,7 +234,7 @@ namespace ClarionAssistant
         {
             try
             {
-                var psi = new System.Diagnostics.ProcessStartInfo("https://github.com/ClarionLive/ClarionAssistant")
+                var psi = new System.Diagnostics.ProcessStartInfo("https://github.com/clarionlive/clarionassistant")
                 {
                     UseShellExecute = true
                 };
@@ -2451,7 +2451,19 @@ namespace ClarionAssistant
                 string channelFlag = (_mcpServer != null && _mcpServer.IncludeMultiTerminalChannel)
                     ? " --dangerously-load-development-channels server:multiterminal-channel"
                     : "";
-                string claudeCmd = $"cd '{safeWorkDir}'; $env:CLARION_ASSISTANT_EMBEDDED='1'; {tabEnv}; {channelEnv}; {colorfgbg}; {claudeBase}{mcpArg}{pluginArg} --strict-mcp-config{channelFlag} --allowedTools '{allowedTools}'{extraFlags}";
+                // Auto-update Claude Code before launching if enabled in settings
+                string updatePrefix = "";
+                if ((_settings.Get("Claude.AutoUpdate") ?? "").Equals("true", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Resolve claude path for the update command too
+                    string updateCmd = "claude";
+                    string resolvedUpdate = Services.ClaudeProcessManager.FindClaudePathStatic();
+                    if (resolvedUpdate != null)
+                        updateCmd = "& '" + resolvedUpdate.Replace("'", "''") + "'";
+                    updatePrefix = $"Write-Host 'Checking for Claude Code updates...' -ForegroundColor Cyan; {updateCmd} update; ";
+                }
+
+                string claudeCmd = $"cd '{safeWorkDir}'; $env:CLARION_ASSISTANT_EMBEDDED='1'; {tabEnv}; {channelEnv}; {colorfgbg}; {updatePrefix}{claudeBase}{mcpArg}{pluginArg} --strict-mcp-config{channelFlag} --allowedTools '{allowedTools}'{extraFlags}";
 
                 if (initialPromptFile != null)
                 {

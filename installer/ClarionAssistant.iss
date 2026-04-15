@@ -1,9 +1,9 @@
-; Clarion Assistant v4.0 Installer
+; Clarion Assistant v4.1 Installer
 ; Inno Setup 6 Script
 ; Supports Clarion 10, 11, 12 — user picks which version(s) to install
 
 #define MyAppName "Clarion Assistant"
-#define MyAppVersion "4.0.0"
+#define MyAppVersion "4.1.0"
 #define MyAppPublisher "ClarionLive"
 #define MyAppURL "https://clarionlive.com"
 
@@ -119,6 +119,7 @@ Source: "{#SrcTerminal}\ca-statusline.js"; DestDir: "{code:GetC10Path}\accessory
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
+Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion10 and docs; Flags: ignoreversion
 ; --- Clarion 10 LSP Server ---
 Source: "{#SrcNodeExe}"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server"; Components: clarion10 and lsp; Flags: ignoreversion
 Source: "{#SrcLsp}\out\server\*"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server\out\server"; Components: clarion10 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -157,6 +158,7 @@ Source: "{#SrcTerminal}\ca-statusline.js"; DestDir: "{code:GetC11Path}\accessory
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
+Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion11 and docs; Flags: ignoreversion
 ; --- Clarion 11 LSP Server ---
 Source: "{#SrcNodeExe}"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server"; Components: clarion11 and lsp; Flags: ignoreversion
 Source: "{#SrcLsp}\out\server\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server\out\server"; Components: clarion11 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -195,6 +197,7 @@ Source: "{#SrcTerminal}\ca-statusline.js"; DestDir: "{code:GetC12Path}\accessory
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
+Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion12 and docs; Flags: ignoreversion
 ; --- Clarion 12 LSP Server ---
 Source: "{#SrcNodeExe}"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server"; Components: clarion12 and lsp; Flags: ignoreversion
 Source: "{#SrcLsp}\out\server\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\out\server"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -268,6 +271,7 @@ Source: "{#SrcPlugin}\skills\clarioncom-webview2-deploy\*"; DestDir: "{%USERPROF
 Source: "{#SrcPlugin}\skills\clarioncom-webview2-validate\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarioncom-webview2-validate"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcPlugin}\skills\evaluate-code\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\evaluate-code"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcPlugin}\skills\jfiles\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\jfiles"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SrcPlugin}\skills\lsp-diagnostics\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\lsp-diagnostics"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
 
 ; Plugin Hooks
 Source: "{#SrcPlugin}\hooks\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\hooks"; Components: plugin\hooks; Flags: ignoreversion

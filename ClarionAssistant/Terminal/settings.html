@@ -456,6 +456,13 @@
         <button class="btn btn-sm" onclick="cmdSetDefault()">Set Default</button>
       </div>
 
+      <h3>Auto-Update</h3>
+      <div class="check-row">
+        <input type="checkbox" id="autoUpdate">
+        <label for="autoUpdate">Run <code>claude update</code> before launching</label>
+      </div>
+      <div class="field-desc" style="margin-top:4px">When enabled, checks for Claude Code updates each time a new terminal session starts.</div>
+
       <h3>MultiTerminal</h3>
       <div class="check-row">
         <input type="checkbox" id="mtEnabled">
@@ -1109,6 +1116,7 @@
       model: document.getElementById('model').value,
       workingDir: document.getElementById('workingDir').value,
       comFolder: document.getElementById('comFolder').value,
+      autoUpdate: document.getElementById('autoUpdate').checked,
       mtEnabled: document.getElementById('mtEnabled').checked,
       agentName: document.getElementById('agentName').value,
       docPaths: currentSettings.docPaths || [],
@@ -1161,6 +1169,9 @@
       if (s.mtAvailable) { mtStat.textContent = 'Detected'; mtStat.className = 'status status-success'; }
       else { mtStat.textContent = 'Not installed'; mtStat.className = 'status status-warning'; }
       document.getElementById('mtEnabled').disabled = !s.mtAvailable;
+
+      // Auto-Update
+      document.getElementById('autoUpdate').checked = !!s.autoUpdate;
 
       // Lib status
       var libStat = document.getElementById('libStatus');

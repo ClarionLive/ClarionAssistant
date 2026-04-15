@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/peterparker57/ClarionAssistant/releases/latest"><img src="https://img.shields.io/github/v/release/peterparker57/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
   <img src="https://img.shields.io/badge/Clarion-10%20%7C%2011%20%7C%2012-blue?style=for-the-badge" alt="Clarion 10 | 11 | 12">
-  <img src="https://img.shields.io/badge/version-4.0-green?style=for-the-badge" alt="v4.0">
+  <img src="https://img.shields.io/badge/version-4.1-green?style=for-the-badge" alt="v4.1">
 </p>
 
 ---
@@ -39,6 +39,20 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 - **Diff viewer** &mdash; Monaco-based side-by-side diffs with syntax highlighting
 - **Knowledge system** &mdash; persistent cross-session memory for decisions, patterns, and gotchas
 - **Zoom persistence** &mdash; Ctrl+mousewheel zoom is saved and restored across sessions
+
+---
+
+## What's New in v4.1
+
+### Auto-Update Claude Code
+- **New setting in Launch tab** &mdash; optional toggle to run `claude update` before each terminal session starts
+- Ensures you're always on the latest Claude Code version without manual checks
+
+### DocGraph
+- **BoxSoft documentation added** &mdash; BoxSoft template documentation now indexed and searchable via `query_docs`
+
+### Bug Fixes
+- **Fixed: GitHub icon URL** &mdash; header toolbar GitHub button now correctly links to the [clarionlive/clarionassistant](https://github.com/clarionlive/clarionassistant) repository
 
 ---
 
