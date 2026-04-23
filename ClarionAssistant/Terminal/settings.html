@@ -280,17 +280,38 @@
   .ack-link { color: var(--accent); text-decoration: none; }
   .ack-link:hover { text-decoration: underline; }
   .ack-desc { font-size: 12px; color: var(--desc-fg); margin-top: 2px; }
+
+  /* Backend selector bar (Launch page) */
+  .backend-bar {
+    display: flex; align-items: center; gap: 14px;
+    padding: 12px 14px; margin-bottom: 14px;
+    background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px;
+  }
+  .backend-bar .bar-label { font-size: 12px; color: var(--section-fg); font-weight: 500; }
+  .backend-bar .default-label { font-size: 12px; color: var(--section-fg); }
+  .backend-bar .default-label span { color: var(--success); font-weight: 600; }
+  .backend-bar .btn:disabled { opacity: 0.5; cursor: default; }
+
+  /* Tab strip (inside Launch page) */
+  .tab-strip { display: flex; border-bottom: 1px solid var(--card-border); margin-bottom: 16px; }
+  .tab-strip .tab {
+    padding: 8px 18px; cursor: pointer; font-size: 13px; color: var(--section-fg);
+    border-bottom: 2px solid transparent; margin-bottom: -1px; user-select: none;
+  }
+  .tab-strip .tab:hover { color: var(--fg); }
+  .tab-strip .tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
 </style>
 </head>
 <body>
 
 <div class="layout">
   <nav class="sidebar">
-    <div class="nav-item active" onclick="showPage('appearance')">Appearance</div>
+    <div class="nav-item active" onclick="showPage('launch')">Launch</div>
+    <div class="nav-item" onclick="showPage('appearance')">Appearance</div>
     <div class="nav-item" onclick="showPage('data')">Data</div>
-    <div class="nav-item" onclick="showPage('general')">General</div>
     <div class="nav-item" onclick="showPage('classes')">Classes</div>
-    <div class="nav-item" onclick="showPage('launch')">Launch</div>
     <div class="nav-item" onclick="showPage('github')">Source Control</div>
     <div class="nav-item" onclick="showPage('acknowledgments')">Acknowledgments</div>
     <div class="nav-item" onclick="showPage('about')">About</div>
@@ -298,7 +319,7 @@
 
   <div class="content">
     <!-- Appearance -->
-    <div class="page active" id="page-appearance">
+    <div class="page" id="page-appearance">
       <h2>Appearance</h2>
 
       <div class="field">
@@ -367,65 +388,6 @@
       <div class="path-list" id="docPaths"></div>
     </div>
 
-    <!-- General -->
-    <div class="page" id="page-general">
-      <h2>General</h2>
-
-      <div class="field" id="claudeModelField">
-        <div class="field-label">Claude Model</div>
-        <select id="model">
-          <option value="sonnet">Sonnet</option>
-          <option value="opus">Opus</option>
-          <option value="haiku">Haiku</option>
-        </select>
-        <div class="field-desc">Model used for new Claude sessions.</div>
-      </div>
-
-      <div class="field" id="copilotModelField" style="display:none">
-        <div class="field-label">Copilot Model</div>
-        <select id="copilotModel">
-          <option value="">(default)</option>
-          <optgroup label="GPT">
-            <option value="gpt-5.4">GPT-5.4</option>
-            <option value="gpt-5.4-mini">GPT-5.4 mini</option>
-            <option value="gpt-5.3-codex">GPT-5.3 Codex</option>
-            <option value="gpt-5.2-codex">GPT-5.2 Codex</option>
-            <option value="gpt-5.2">GPT-5.2</option>
-            <option value="gpt-5-mini">GPT-5 mini</option>
-            <option value="gpt-4.1">GPT-4.1</option>
-          </optgroup>
-          <optgroup label="Claude">
-            <option value="claude-sonnet-4.6">Claude Sonnet 4.6</option>
-            <option value="claude-sonnet-4.5">Claude Sonnet 4.5</option>
-            <option value="claude-haiku-4.5">Claude Haiku 4.5</option>
-            <option value="claude-opus-4.6">Claude Opus 4.6</option>
-            <option value="claude-opus-4.5">Claude Opus 4.5</option>
-            <option value="claude-sonnet-4">Claude Sonnet 4</option>
-          </optgroup>
-        </select>
-        <div class="field-desc">Model passed via <code>--model</code> to Copilot CLI.</div>
-      </div>
-
-      <div class="field">
-        <div class="field-label">Working Directory</div>
-        <div class="input-row">
-          <input type="text" id="workingDir" placeholder="Select a directory...">
-          <button class="btn" onclick="send('browseWorkingDir')">Browse</button>
-        </div>
-        <div class="field-desc">Default directory for Claude Code sessions.</div>
-      </div>
-
-      <div class="field">
-        <div class="field-label">COM Projects Folder</div>
-        <div class="input-row">
-          <input type="text" id="comFolder" placeholder="Select a directory...">
-          <button class="btn" onclick="send('browseComFolder')">Browse</button>
-        </div>
-        <div class="field-desc">Where new COM control projects are created.</div>
-      </div>
-
-    </div>
-
     <!-- Classes -->
     <div class="page" id="page-classes">
       <h2>Classes</h2>
@@ -437,6 +399,15 @@
           <button class="btn" onclick="send('browseClassFolder')">Browse</button>
         </div>
         <div class="field-desc">Where newly created class files (.inc / .clw) are saved.</div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">COM Projects Folder</div>
+        <div class="input-row">
+          <input type="text" id="comFolder" placeholder="Select a directory...">
+          <button class="btn" onclick="send('browseComFolder')">Browse</button>
+        </div>
+        <div class="field-desc">Where new COM control projects are created.</div>
       </div>
 
       <h3>Class Models</h3>
@@ -463,67 +434,126 @@
     </div>
 
     <!-- Launch -->
-    <div class="page" id="page-launch">
+    <div class="page active" id="page-launch">
       <h2>Launch</h2>
 
+      <!-- Global launch setting (not per-backend) -->
       <div class="field">
-        <div class="field-label">Assistant Backend</div>
-        <select id="assistantBackend" onchange="onBackendChanged()" style="width:240px">
-          <option value="Claude">Claude</option>
+        <div class="field-label">Working Directory</div>
+        <div class="input-row">
+          <input type="text" id="workingDir" placeholder="Select a directory...">
+          <button class="btn" onclick="send('browseWorkingDir')">Browse</button>
+        </div>
+        <div class="field-desc">Default directory for new terminal sessions (applies to all backends).</div>
+      </div>
+
+      <!-- Backend selector bar -->
+      <div class="backend-bar">
+        <span class="bar-label">Backend:</span>
+        <select id="assistantBackend" onchange="onBackendChanged()" style="width:200px">
+          <option value="Claude">Claude Code</option>
           <option value="Copilot">Copilot</option>
         </select>
-        <div class="field-desc">Select which CLI is launched for new terminal sessions.</div>
+        <button class="btn btn-sm" id="setDefaultBtn" onclick="setAsDefault()">Set as Default</button>
+        <span class="default-label">Default: <span id="defaultBackendLabel">Claude Code</span></span>
       </div>
 
-      <h3 id="cmdTitle">Commands</h3>
-      <div class="field-desc" id="cmdDesc" style="margin-bottom:8px">Configure launch commands for terminal sessions.</div>
-      <div class="cmd-table-wrap">
-        <table class="cmd-table" id="cmdTable">
-          <thead><tr><th>Command</th><th style="text-align:center;width:60px">Default</th></tr></thead>
-          <tbody id="cmdBody"></tbody>
-        </table>
-      </div>
-      <div class="cmd-btn-row">
-        <button class="btn btn-sm" onclick="cmdAdd()">Add</button>
-        <button class="btn btn-sm" onclick="cmdEdit()">Edit</button>
-        <button class="btn btn-sm" onclick="cmdDelete()">Delete</button>
-        <button class="btn btn-sm" onclick="cmdSetDefault()">Set Default</button>
+      <!-- Tab strip -->
+      <div class="tab-strip">
+        <div class="tab active" data-tab="launch" onclick="switchLaunchTab(this)">Launch</div>
+        <div class="tab" data-tab="models" onclick="switchLaunchTab(this)">Models</div>
       </div>
 
-      <div id="claudeOnly">
-        <h3>Auto-Update</h3>
-        <div class="check-row">
-          <input type="checkbox" id="autoUpdate">
-          <label for="autoUpdate">Run <code>claude update</code> before launching</label>
+      <!-- Tab: Launch -->
+      <div class="tab-panel active" data-tab="launch">
+        <h3 id="cmdTitle">Commands</h3>
+        <div class="field-desc" id="cmdDesc" style="margin-bottom:8px">Configure launch commands for terminal sessions.</div>
+        <div class="cmd-table-wrap">
+          <table class="cmd-table" id="cmdTable">
+            <thead><tr><th>Command</th><th style="text-align:center;width:60px">Default</th></tr></thead>
+            <tbody id="cmdBody"></tbody>
+          </table>
         </div>
-        <div class="field-desc" style="margin-top:4px">When enabled, checks for Claude Code updates each time a new terminal session starts.</div>
-
-        <h3>MultiTerminal</h3>
-        <div class="check-row">
-          <input type="checkbox" id="mtEnabled">
-          <label for="mtEnabled">Enable MultiTerminal connection</label>
-          <span id="mtStatus" class="status status-success" style="margin-left:8px">Detected</span>
+        <div class="cmd-btn-row">
+          <button class="btn btn-sm" onclick="cmdAdd()">Add</button>
+          <button class="btn btn-sm" onclick="cmdEdit()">Edit</button>
+          <button class="btn btn-sm" onclick="cmdDelete()">Delete</button>
+          <button class="btn btn-sm" onclick="cmdSetDefault()">Set Default</button>
         </div>
-        <div class="field">
-          <div class="field-label">Agent Name</div>
-          <input type="text" id="agentName" value="ClarionIDE" style="width:200px">
+
+        <div id="claudeOnly">
+          <h3>Auto-Update</h3>
+          <div class="check-row">
+            <input type="checkbox" id="autoUpdate">
+            <label for="autoUpdate">Run <code>claude update</code> before launching</label>
+          </div>
+          <div class="field-desc" style="margin-top:4px">When enabled, checks for Claude Code updates each time a new terminal session starts.</div>
+
+          <h3>MultiTerminal</h3>
+          <div class="check-row">
+            <input type="checkbox" id="mtEnabled">
+            <label for="mtEnabled">Enable MultiTerminal connection</label>
+            <span id="mtStatus" class="status status-success" style="margin-left:8px">Detected</span>
+          </div>
+          <div class="field">
+            <div class="field-label">Agent Name</div>
+            <input type="text" id="agentName" value="ClarionIDE" style="width:200px">
+          </div>
+        </div>
+
+        <div id="copilotOnly" style="display:none">
+          <h3>Copilot</h3>
+          <div class="field">
+            <div class="field-label">Permission Mode</div>
+            <select id="copilotPermissionMode" style="width:240px">
+              <option value="prompt">Prompt</option>
+              <option value="allow">Allow Tools</option>
+            </select>
+            <div class="field-desc">`Prompt` asks before tool use. `Allow Tools` passes `--allow-all-tools` for automatic tool approval.</div>
+          </div>
+          <div class="field">
+            <div class="field-label">Extra Flags</div>
+            <input type="text" id="copilotExtraFlags" placeholder="e.g. --verbose">
+            <div class="field-desc">Optional additional flags appended to the Copilot command.</div>
+          </div>
         </div>
       </div>
 
-      <div id="copilotOnly" style="display:none">
-        <h3>Copilot</h3>
-        <div class="field">
-          <div class="field-label">Permission Mode</div>
-          <select id="copilotPermissionMode" style="width:240px">
-            <option value="prompt">Prompt</option>
-            <option value="allow">Allow Tools</option>
+      <!-- Tab: Models -->
+      <div class="tab-panel" data-tab="models">
+        <div class="field" id="claudeModelField">
+          <div class="field-label">Claude Model</div>
+          <select id="model">
+            <option value="sonnet">Sonnet</option>
+            <option value="opus">Opus</option>
+            <option value="haiku">Haiku</option>
           </select>
-          <div class="field-desc">`Prompt` asks before tool use. `Allow Tools` passes `--allow-all-tools` for automatic tool approval.</div>
+          <div class="field-desc">Model used for new Claude sessions.</div>
         </div>
-        <div class="field">
-          <div class="field-label">Extra Flags</div>
-          <input type="text" id="copilotExtraFlags" placeholder="e.g. --verbose">
-          <div class="field-desc">Optional additional flags appended to the Copilot command.</div>
+
+        <div class="field" id="copilotModelField" style="display:none">
+          <div class="field-label">Copilot Model</div>
+          <select id="copilotModel">
+            <option value="">(default)</option>
+            <optgroup label="GPT">
+              <option value="gpt-5.4">GPT-5.4</option>
+              <option value="gpt-5.4-mini">GPT-5.4 mini</option>
+              <option value="gpt-5.3-codex">GPT-5.3 Codex</option>
+              <option value="gpt-5.2-codex">GPT-5.2 Codex</option>
+              <option value="gpt-5.2">GPT-5.2</option>
+              <option value="gpt-5-mini">GPT-5 mini</option>
+              <option value="gpt-4.1">GPT-4.1</option>
+            </optgroup>
+            <optgroup label="Claude">
+              <option value="claude-sonnet-4.6">Claude Sonnet 4.6</option>
+              <option value="claude-sonnet-4.5">Claude Sonnet 4.5</option>
+              <option value="claude-haiku-4.5">Claude Haiku 4.5</option>
+              <option value="claude-opus-4.6">Claude Opus 4.6</option>
+              <option value="claude-opus-4.5">Claude Opus 4.5</option>
+              <option value="claude-sonnet-4">Claude Sonnet 4</option>
+            </optgroup>
+          </select>
+          <div class="field-desc">Model passed via <code>--model</code> to Copilot CLI.</div>
         </div>
       </div>
     </div>
@@ -962,40 +992,83 @@
   }
 
   // ── Commands (per backend) ───────────────────────
-  var _assistantBackend = 'Claude';
+  // _viewBackend    = which backend the dialog is currently displaying (ephemeral)
+  // _savedDefault   = which backend is persisted as Assistant.Backend in settings.txt
+  //                   (only changed by the "Set as Default" button)
+  var _viewBackend = 'Claude';
+  var _savedDefault = 'Claude';
   var _claudeCommands = [];   // [{command:'...', isDefault:true/false}, ...]
   var _copilotCommands = [];  // [{command:'...', isDefault:true/false}, ...]
-  var _commands = [];         // active pointer
+  var _commands = [];         // active pointer — which list we're rendering/editing
   var _cmdSelectedIdx = -1;
   var _cmdEditIdx = -1; // -1 = adding new, >=0 = editing existing
 
-  function onBackendChanged() {
-    setBackend(document.getElementById('assistantBackend').value);
+  function displayBackendName(b) {
+    return b === 'Claude' ? 'Claude Code' : b;
   }
 
-  function setBackend(backend) {
-    _assistantBackend = backend || 'Claude';
-    var sel = document.getElementById('assistantBackend');
-    if (sel) sel.value = _assistantBackend;
+  function onBackendChanged() {
+    setViewBackend(document.getElementById('assistantBackend').value);
+  }
 
+  function setViewBackend(backend) {
+    _viewBackend = backend || 'Claude';
+    var sel = document.getElementById('assistantBackend');
+    if (sel) sel.value = _viewBackend;
+
+    // Show the backend-specific Launch-tab blocks
     var claudeOnly = document.getElementById('claudeOnly');
     var copilotOnly = document.getElementById('copilotOnly');
-    if (claudeOnly) claudeOnly.style.display = (_assistantBackend === 'Claude') ? 'block' : 'none';
-    if (copilotOnly) copilotOnly.style.display = (_assistantBackend === 'Copilot') ? 'block' : 'none';
+    if (claudeOnly) claudeOnly.style.display = (_viewBackend === 'Claude') ? 'block' : 'none';
+    if (copilotOnly) copilotOnly.style.display = (_viewBackend === 'Copilot') ? 'block' : 'none';
 
+    // Show the backend-specific Models-tab fields
     var claudeModelField = document.getElementById('claudeModelField');
     var copilotModelField = document.getElementById('copilotModelField');
-    if (claudeModelField) claudeModelField.style.display = (_assistantBackend === 'Claude') ? 'block' : 'none';
-    if (copilotModelField) copilotModelField.style.display = (_assistantBackend === 'Copilot') ? 'block' : 'none';
+    if (claudeModelField) claudeModelField.style.display = (_viewBackend === 'Claude') ? 'block' : 'none';
+    if (copilotModelField) copilotModelField.style.display = (_viewBackend === 'Copilot') ? 'block' : 'none';
 
     var title = document.getElementById('cmdTitle');
     var desc = document.getElementById('cmdDesc');
-    if (title) title.textContent = _assistantBackend + ' Commands';
-    if (desc) desc.textContent = 'Configure launch commands for ' + _assistantBackend + ' terminal sessions.';
+    var label = displayBackendName(_viewBackend);
+    if (title) title.textContent = label + ' Commands';
+    if (desc) desc.textContent = 'Configure launch commands for ' + label + ' terminal sessions.';
 
-    _commands = (_assistantBackend === 'Copilot') ? _copilotCommands : _claudeCommands;
+    _commands = (_viewBackend === 'Copilot') ? _copilotCommands : _claudeCommands;
     _cmdSelectedIdx = _commands.length > 0 ? 0 : -1;
     renderCommands();
+    updateDefaultButton();
+  }
+
+  function setAsDefault() {
+    _savedDefault = _viewBackend;
+    updateDefaultButton();
+  }
+
+  function updateDefaultButton() {
+    var btn = document.getElementById('setDefaultBtn');
+    var lbl = document.getElementById('defaultBackendLabel');
+    if (lbl) lbl.textContent = displayBackendName(_savedDefault);
+    if (!btn) return;
+    if (_viewBackend === _savedDefault) {
+      btn.disabled = true;
+      btn.textContent = 'Current default';
+    } else {
+      btn.disabled = false;
+      btn.textContent = 'Set as Default';
+    }
+  }
+
+  function switchLaunchTab(el) {
+    var name = el.getAttribute('data-tab');
+    var container = el.parentElement.parentElement; // page-launch
+    var tabs = container.querySelectorAll('.tab-strip .tab');
+    for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('active');
+    el.classList.add('active');
+    var panels = container.querySelectorAll('.tab-panel');
+    for (var i = 0; i < panels.length; i++) {
+      panels[i].classList.toggle('active', panels[i].getAttribute('data-tab') === name);
+    }
   }
 
   function renderCommands() {
@@ -1201,7 +1274,7 @@
       model: document.getElementById('model').value,
       workingDir: document.getElementById('workingDir').value,
       comFolder: document.getElementById('comFolder').value,
-      assistantBackend: _assistantBackend,
+      assistantBackend: _savedDefault,
       autoUpdate: document.getElementById('autoUpdate').checked,
       mtEnabled: document.getElementById('mtEnabled').checked,
       agentName: document.getElementById('agentName').value,
@@ -1281,7 +1354,8 @@
         document.getElementById('copilotPermissionMode').value = s.copilotPermissionMode || 'prompt';
       if (document.getElementById('copilotExtraFlags'))
         document.getElementById('copilotExtraFlags').value = s.copilotExtraFlags || '';
-      setBackend(s.assistantBackend || 'Claude');
+      _savedDefault = s.assistantBackend || 'Claude';
+      setViewBackend(_savedDefault);
 
       // Class Models
       _classModels = s.classModels || [];
