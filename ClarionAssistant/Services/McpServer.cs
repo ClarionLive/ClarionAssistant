@@ -24,6 +24,14 @@ namespace ClarionAssistant.Services
         private McpToolRegistry _toolRegistry;
         private int _port;
 
+        // Per-session auth token — regenerated on every Start(). Embedded as
+        // `Authorization: Bearer <token>` in the MCP config file so the spawned
+        // CLI clients (Claude Code, Copilot CLI) transparently authenticate.
+        // A browser drive-by fetch from an unrelated site has no way to learn
+        // this token, so even though the server binds to loopback the tools
+        // surface is not reachable without reading settings.txt / mcp-config.json.
+        private string _sessionToken;
+
         // SSE client connections keyed by session ID
         private readonly ConcurrentDictionary<string, SseClient> _sseClients =
             new ConcurrentDictionary<string, SseClient>();
@@ -54,6 +62,8 @@ namespace ClarionAssistant.Services
             if (_running) return true;
             if (_toolRegistry == null)
                 throw new InvalidOperationException("Tool registry must be set before starting");
+
+            _sessionToken = GenerateSessionToken();
 
             for (int port = preferredPort; port < preferredPort + 10; port++)
             {
@@ -86,9 +96,103 @@ namespace ClarionAssistant.Services
             return false;
         }
 
+        private static string GenerateSessionToken()
+        {
+            // 32 bytes = 256 bits of entropy; hex-encode to 64 chars.
+            byte[] bytes = new byte[32];
+            using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create())
+                rng.GetBytes(bytes);
+            var sb = new StringBuilder(64);
+            for (int i = 0; i < bytes.Length; i++) sb.Append(bytes[i].ToString("x2"));
+            return sb.ToString();
+        }
+
+        /// <summary>Constant-time compare — avoid timing side-channels when
+        /// comparing the presented token to the expected one.</summary>
+        private static bool TokensEqual(string a, string b)
+        {
+            if (a == null || b == null) return false;
+            if (a.Length != b.Length) return false;
+            int diff = 0;
+            for (int i = 0; i < a.Length; i++) diff |= a[i] ^ b[i];
+            return diff == 0;
+        }
+
+        /// <summary>
+        /// Authenticate the request via <c>Authorization: Bearer &lt;token&gt;</c>.
+        /// Returns true on success; on failure sends 401 and returns false so the
+        /// caller should stop processing.
+        /// </summary>
+        private bool RequireAuth(HttpListenerContext context)
+        {
+            string header = context.Request.Headers["Authorization"];
+            const string prefix = "Bearer ";
+            if (string.IsNullOrEmpty(header) || !header.StartsWith(prefix, StringComparison.Ordinal)
+                || !TokensEqual(header.Substring(prefix.Length), _sessionToken ?? ""))
+            {
+                try
+                {
+                    context.Response.StatusCode = 401;
+                    context.Response.Headers.Add("WWW-Authenticate", "Bearer");
+                    byte[] buf = Encoding.UTF8.GetBytes("{\"error\":\"unauthorized\"}");
+                    context.Response.ContentType = "application/json";
+                    context.Response.ContentLength64 = buf.Length;
+                    context.Response.OutputStream.Write(buf, 0, buf.Length);
+                    context.Response.Close();
+                }
+                catch { }
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Reject requests whose Host header isn't one of our expected loopback
+        /// aliases — defends against DNS rebinding where an attacker-controlled
+        /// hostname resolves to 127.0.0.1 after the browser has already committed
+        /// to treating the origin as same-site.
+        /// </summary>
+        private bool ValidateHost(HttpListenerContext context)
+        {
+            string host = context.Request.Headers["Host"] ?? "";
+            if (string.Equals(host, "localhost:" + _port, StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(host, "127.0.0.1:" + _port, StringComparison.OrdinalIgnoreCase)) return true;
+            try
+            {
+                context.Response.StatusCode = 403;
+                context.Response.Close();
+            }
+            catch { }
+            return false;
+        }
+
+        /// <summary>
+        /// If an Origin header is present (indicating a browser request), only
+        /// allow it if it matches one of our loopback aliases. CLI clients
+        /// typically don't set Origin, so this is effectively
+        /// "block browser drive-by; let CLI clients through".
+        /// </summary>
+        private bool ValidateOrigin(HttpListenerContext context)
+        {
+            string origin = context.Request.Headers["Origin"];
+            if (string.IsNullOrEmpty(origin)) return true;
+            string expected1 = "http://localhost:" + _port;
+            string expected2 = "http://127.0.0.1:" + _port;
+            if (string.Equals(origin, expected1, StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(origin, expected2, StringComparison.OrdinalIgnoreCase)) return true;
+            try
+            {
+                context.Response.StatusCode = 403;
+                context.Response.Close();
+            }
+            catch { }
+            return false;
+        }
+
         public void Stop()
         {
             _running = false;
+            _sessionToken = null;
 
             // Close all SSE connections
             foreach (var kvp in _sseClients)
@@ -122,6 +226,14 @@ namespace ClarionAssistant.Services
 
         public string GenerateMcpConfig(McpConfigFormat format = McpConfigFormat.Claude)
         {
+            // Both Claude and Copilot MCP client configs accept a `headers` map
+            // for HTTP transport; we use it to pass our per-session bearer token.
+            // The server's RequireAuth middleware rejects any request without it.
+            var authHeaders = new Dictionary<string, object>
+            {
+                { "Authorization", "Bearer " + (_sessionToken ?? "") }
+            };
+
             var servers = new Dictionary<string, object>();
             if (format == McpConfigFormat.Copilot)
             {
@@ -131,6 +243,7 @@ namespace ClarionAssistant.Services
                 {
                     { "type", "http" },
                     { "url", string.Format("http://localhost:{0}/mcp", _port) },
+                    { "headers", authHeaders },
                     { "tools", new string[] { "*" } }
                 };
             }
@@ -147,6 +260,7 @@ namespace ClarionAssistant.Services
                 {
                     { "type", "http" },
                     { "url", string.Format("http://localhost:{0}/mcp", _port) },
+                    { "headers", authHeaders },
                     { "autoApprove", toolNames.ToArray() }
                 };
             }
@@ -273,18 +387,28 @@ namespace ClarionAssistant.Services
                 var response = context.Response;
                 string path = request.Url.AbsolutePath;
 
-                // CORS headers
-                response.Headers.Add("Access-Control-Allow-Origin", "*");
-                response.Headers.Add("Access-Control-Allow-Methods", "POST, GET, DELETE, OPTIONS");
-                response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, Mcp-Session-Id");
-                response.Headers.Add("Access-Control-Expose-Headers", "Mcp-Session-Id");
+                // Host / Origin validation run before anything else — blocks DNS
+                // rebinding and cross-origin browser drive-by. Token auth below
+                // is the primary gate; these are defense in depth.
+                if (!ValidateHost(context)) return;
+                if (!ValidateOrigin(context)) return;
 
+                // Deliberately no CORS headers. MCP CLIs (Claude Code, Copilot CLI)
+                // are not browsers and don't need CORS; leaving CORS off means any
+                // browser that somehow reaches us can't read our responses even if
+                // it could send a request. A browser preflight (OPTIONS) will fail
+                // its own CORS check when no Access-Control-Allow-Origin comes back.
                 if (request.HttpMethod == "OPTIONS")
                 {
                     response.StatusCode = 204;
                     response.Close();
                     return;
                 }
+
+                // Require a valid session token on every non-OPTIONS request.
+                // The token is embedded in the MCP config file the clients read;
+                // drive-by HTTP fetches from other processes / browsers don't have it.
+                if (!RequireAuth(context)) return;
 
                 // Streamable HTTP endpoint — JSON-RPC request/response over POST
                 if (request.HttpMethod == "POST" && path == "/mcp")
