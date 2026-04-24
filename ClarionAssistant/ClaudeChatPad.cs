@@ -9,7 +9,7 @@ namespace ClarionAssistant
     /// </summary>
     public class ClaudeChatPad : AbstractPadContent
     {
-        private ClaudeChatControl _control;
+        private AssistantChatControl _control;
 
         public override Control Control
         {
@@ -17,7 +17,7 @@ namespace ClarionAssistant
             {
                 if (_control == null)
                 {
-                    _control = new ClaudeChatControl();
+                    _control = new AssistantChatControl();
                 }
                 return _control;
             }

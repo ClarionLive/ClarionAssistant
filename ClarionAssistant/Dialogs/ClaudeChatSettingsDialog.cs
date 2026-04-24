@@ -1299,7 +1299,7 @@ namespace ClarionAssistant.Dialogs
 
         #endregion
 
-        // Static helpers used by ClaudeChatControl
+        // Static helpers used by AssistantChatControl
         public static bool IsMultiTerminalAvailable()
         {
             return File.Exists(MultiTerminalMcpPath);

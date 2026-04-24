@@ -33,11 +33,11 @@ namespace ClarionAssistant.Services
         private readonly EditorService _editorService;
         private readonly ClarionClassParser _parser;
         private readonly AppTreeService _appTree;
-        private ClaudeChatControl _chatControl;
+        private AssistantChatControl _chatControl;
         private LspClient _lspClient;
 
         /// <summary>
-        /// Exposes the LspClient so ClaudeChatControl can subscribe to its events
+        /// Exposes the LspClient so AssistantChatControl can subscribe to its events
         /// (OnLspRequest for the activity strip) and poll GetCachedDiagnostics
         /// for the header diagnostics pill. May be null if LSP hasn't started yet.
         /// </summary>
@@ -61,7 +61,7 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// Set reference to chat control for solution context and indexing.
         /// </summary>
-        public void SetChatControl(ClaudeChatControl control)
+        public void SetChatControl(AssistantChatControl control)
         {
             _chatControl = control;
         }
@@ -2413,6 +2413,47 @@ EXAMPLES:
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = false,
                 Handler = args => _docGraph.GetStats()
+            });
+
+            Register(new McpTool
+            {
+                Name = "rebuild_docgraph_fts",
+                Description = @"Rebuild the FTS5 search index for the DocGraph database(s) from the source doc_chunks table.
+Use this when query_docs returns 'database disk image is malformed' — that error usually means the FTS shadow tables are inconsistent (e.g. inserts landed during a broken FTS5 load in a prior session). Underlying chunks are not affected.
+Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    var sb = new StringBuilder();
+
+                    try
+                    {
+                        int n = _docGraph.RebuildFtsIndex();
+                        sb.AppendLine(string.Format("Bundled DocGraph rebuilt: {0} chunks indexed ({1})", n, _docGraph.DbPath));
+                    }
+                    catch (Exception ex)
+                    {
+                        sb.AppendLine("Bundled DocGraph rebuild failed: " + ex.Message);
+                    }
+
+                    string personalPath = DocGraphService.GetPersonalDbPath();
+                    if (File.Exists(personalPath))
+                    {
+                        try
+                        {
+                            var personalSvc = new DocGraphService(personalPath);
+                            int n = personalSvc.RebuildFtsIndex();
+                            sb.AppendLine(string.Format("Personal DocGraph rebuilt: {0} chunks indexed ({1})", n, personalPath));
+                        }
+                        catch (Exception ex)
+                        {
+                            sb.AppendLine("Personal DocGraph rebuild failed: " + ex.Message);
+                        }
+                    }
+
+                    return sb.ToString();
+                }
             });
 
             // === Build Tools ===

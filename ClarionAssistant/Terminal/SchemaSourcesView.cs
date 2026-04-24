@@ -103,7 +103,7 @@ namespace ClarionAssistant.Terminal
                 {
                     _collapsed = !_collapsed;
                     Height = _collapsed ? COLLAPSED_HEIGHT : EXPANDED_HEIGHT;
-                    // falls through to ActionReceived so ClaudeChatControl can persist state
+                    // falls through to ActionReceived so AssistantChatControl can persist state
                 }
 
                 // Handle modal open/close — expand height to fit form

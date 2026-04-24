@@ -167,7 +167,7 @@ Replaced the WinForms solution bar (Panel) and toolbar (ToolStrip) with a single
 - Title: "Clarion Assistant" with MCP status indicator
 - Version dropdown + refresh, Solution dropdown + browse + Full Index / Update
 - Action buttons: New Chat, Settings, Create COM
-- All button clicks route through `OnHeaderAction()` in `ClaudeChatControl.cs`
+- All button clicks route through `OnHeaderAction()` in `AssistantChatControl.cs`
 - `HeaderReady` event triggers `LoadVersions()` and `LoadSolutionHistory()` to populate dropdowns
 
 **What to test after deploy:**

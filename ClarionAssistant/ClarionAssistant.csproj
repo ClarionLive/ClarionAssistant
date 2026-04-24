@@ -71,7 +71,7 @@
     <Compile Include="ShowClassHelperCommand.cs" />
     <Compile Include="ClaudeChatPad.cs" />
     <Compile Include="ShowClaudeChatCommand.cs" />
-    <Compile Include="ClaudeChatControl.cs" />
+    <Compile Include="AssistantChatControl.cs" />
     <Compile Include="ClassHelperControl.cs">
       <SubType>UserControl</SubType>
     </Compile>

@@ -219,7 +219,7 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// True if the multiterminal-channel plugin .mjs file is present on disk.
         /// Set by GenerateMcpConfig when it successfully resolves the path.
-        /// ClaudeChatControl reads this to decide whether to grant the matching
+        /// AssistantChatControl reads this to decide whether to grant the matching
         /// tool permissions in --allowedTools.
         /// </summary>
         public bool IncludeMultiTerminalChannel { get; private set; }

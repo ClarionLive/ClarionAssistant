@@ -12,7 +12,7 @@ using ClarionAssistant.Terminal;
 
 namespace ClarionAssistant
 {
-    public class ClaudeChatControl : UserControl
+    public class AssistantChatControl : UserControl
     {
         // Tab system (MultiTerminal Panel-based pattern)
         private TabManager _tabManager;
@@ -80,7 +80,7 @@ namespace ClarionAssistant
             }
         }
 
-        public ClaudeChatControl()
+        public AssistantChatControl()
         {
             _editorService = new EditorService();
             _parser = new ClarionClassParser();
@@ -192,7 +192,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] SendDefaultProjectFolderToHome error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] SendDefaultProjectFolderToHome error: " + ex.Message);
             }
         }
 
@@ -216,7 +216,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] SendGitHubAccountsToHome error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] SendGitHubAccountsToHome error: " + ex.Message);
             }
         }
 
@@ -571,11 +571,11 @@ namespace ClarionAssistant
 
         private void OpenProjectInNewTab(ProjectEntry project)
         {
-            System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] OpenProjectInNewTab: " + project.Name + " (" + project.Type + ") -> " + project.Folder);
+            System.Diagnostics.Debug.WriteLine("[AssistantChatControl] OpenProjectInNewTab: " + project.Name + " (" + project.Type + ") -> " + project.Folder);
             string folder = project.Folder;
             if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] OpenProjectInNewTab ABORTED: folder empty or not found");
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] OpenProjectInNewTab ABORTED: folder empty or not found");
                 MessageBox.Show("Project folder not found:\n" + (folder ?? "(empty)"),
                     "Open Project", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
@@ -602,13 +602,13 @@ namespace ClarionAssistant
             renderer.DataReceived += data => OnTabRendererDataReceived(tab, data);
             renderer.TerminalResized += (s, ev) => OnTabRendererResized(tab, ev);
             renderer.Initialized += (s, ev) => OnTabRendererInitialized(tab);
-            System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] Events wired for project tab " + tab.Id + ", StartupCommand=" + (tab.StartupCommand ?? "(none)"));
+            System.Diagnostics.Debug.WriteLine("[AssistantChatControl] Events wired for project tab " + tab.Id + ", StartupCommand=" + (tab.StartupCommand ?? "(none)"));
 
             // Schema sources panel (above terminal)
             AttachSchemaSourcesView(tab);
 
             _tabManager.ActivateTab(tab.Id);
-            System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] ActivateTab completed for project tab " + tab.Id);
+            System.Diagnostics.Debug.WriteLine("[AssistantChatControl] ActivateTab completed for project tab " + tab.Id);
         }
 
         #endregion
@@ -737,7 +737,7 @@ namespace ClarionAssistant
                 if (!string.IsNullOrEmpty(slnPath) && File.Exists(slnPath) &&
                     !string.Equals(slnPath, _currentSlnPath, StringComparison.OrdinalIgnoreCase))
                 {
-                    System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] Solution changed: " + slnPath);
+                    System.Diagnostics.Debug.WriteLine("[AssistantChatControl] Solution changed: " + slnPath);
                     DetectFromIde();
                 }
             }
@@ -909,7 +909,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] PollLspUi error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] PollLspUi error: " + ex.Message);
             }
         }
 
@@ -1064,10 +1064,10 @@ namespace ClarionAssistant
 
         private void OpenSolutionInNewTab(string slnPath)
         {
-            System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] OpenSolutionInNewTab: " + slnPath);
+            System.Diagnostics.Debug.WriteLine("[AssistantChatControl] OpenSolutionInNewTab: " + slnPath);
             if (string.IsNullOrEmpty(slnPath) || !File.Exists(slnPath))
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] OpenSolutionInNewTab ABORTED: path empty or not found");
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] OpenSolutionInNewTab ABORTED: path empty or not found");
                 return;
             }
 
@@ -1087,13 +1087,13 @@ namespace ClarionAssistant
             renderer.DataReceived += data => OnTabRendererDataReceived(tab, data);
             renderer.TerminalResized += (s, ev) => OnTabRendererResized(tab, ev);
             renderer.Initialized += (s, ev) => OnTabRendererInitialized(tab);
-            System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] Events wired for tab " + tab.Id + ", calling ActivateTab");
+            System.Diagnostics.Debug.WriteLine("[AssistantChatControl] Events wired for tab " + tab.Id + ", calling ActivateTab");
 
             // Schema sources panel (above terminal)
             AttachSchemaSourcesView(tab);
 
             _tabManager.ActivateTab(tab.Id);
-            System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] ActivateTab completed for tab " + tab.Id);
+            System.Diagnostics.Debug.WriteLine("[AssistantChatControl] ActivateTab completed for tab " + tab.Id);
         }
 
         private void CloseTerminalTab(string tabId)
@@ -1212,7 +1212,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] SendSchemaSourcesForTab error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] SendSchemaSourcesForTab error: " + ex.Message);
                 tab.SchemaSourcesView.SetSources("[]");
             }
         }
@@ -1350,7 +1350,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] SendGlobalSources error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] SendGlobalSources error: " + ex.Message);
             }
         }
 
@@ -1366,7 +1366,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] AddSource error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] AddSource error: " + ex.Message);
             }
         }
 
@@ -1384,7 +1384,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] EditSource error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] EditSource error: " + ex.Message);
             }
         }
 
@@ -1398,7 +1398,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] DeleteSource error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] DeleteSource error: " + ex.Message);
             }
         }
 
@@ -1445,7 +1445,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] ApplySelection error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] ApplySelection error: " + ex.Message);
             }
         }
 
@@ -1498,7 +1498,7 @@ namespace ClarionAssistant
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] IndexSource error: " + ex.Message);
+                    System.Diagnostics.Debug.WriteLine("[AssistantChatControl] IndexSource error: " + ex.Message);
                     if (!IsDisposed && tab.SchemaSourcesView != null)
                     {
                         string sid = sourceId;
@@ -1530,7 +1530,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] SetSolutionRepo error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] SetSolutionRepo error: " + ex.Message);
             }
         }
 
@@ -1564,7 +1564,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] BrowseFile error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] BrowseFile error: " + ex.Message);
             }
         }
 
@@ -2070,7 +2070,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] SendClassModels error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] SendClassModels error: " + ex.Message);
             }
         }
 
@@ -2126,7 +2126,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] PreviewModel error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] PreviewModel error: " + ex.Message);
                 view.SendPreviewResult("Error reading file: " + ex.Message, "");
             }
         }
@@ -2189,7 +2189,7 @@ namespace ClarionAssistant
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] OpenFile error: " + ex.Message);
+                    System.Diagnostics.Debug.WriteLine("[AssistantChatControl] OpenFile error: " + ex.Message);
                 }
 
                 // Send success result to the Create Class page
@@ -2209,7 +2209,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] CreateClass error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] CreateClass error: " + ex.Message);
                 view.SendCreateResult(false, "Error: " + ex.Message, "");
             }
         }
@@ -2312,7 +2312,7 @@ namespace ClarionAssistant
 
             _mcpServer.OnError += error =>
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] MCP error: " + error);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] MCP error: " + error);
             };
 
             // Configure MultiTerminal integration
@@ -2358,10 +2358,10 @@ namespace ClarionAssistant
 
         private void OnTabRendererInitialized(TerminalTab tab)
         {
-            System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] OnTabRendererInitialized for tab " + tab.Id + " (" + tab.Name + ")");
+            System.Diagnostics.Debug.WriteLine("[AssistantChatControl] OnTabRendererInitialized for tab " + tab.Id + " (" + tab.Name + ")");
             if (tab.Renderer == null)
             {
-                System.Diagnostics.Debug.WriteLine("[ClaudeChatControl] OnTabRendererInitialized: renderer is null!");
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] OnTabRendererInitialized: renderer is null!");
                 return;
             }
             tab.Renderer.SetTheme(_isDarkTheme);
