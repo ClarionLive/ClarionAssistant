@@ -1873,9 +1873,17 @@ namespace ClarionAssistant
             return string.IsNullOrEmpty(val) ? "Cascadia Mono" : val;
         }
 
-        private string GetWorkingDirectory()
+        private string GetWorkingDirectory() => GetWorkingDirectoryFor("Claude");
+
+        private string GetWorkingDirectoryFor(string backend)
         {
-            string dir = _settings.Get("Claude.WorkingDirectory");
+            // Per-backend override wins; fall back to Claude's value (the original
+            // single-backend setting) so legacy installs don't break; last-resort is
+            // the user's profile folder.
+            string primaryKey = (backend == "Copilot" ? "Copilot" : "Claude") + ".WorkingDirectory";
+            string dir = _settings.Get(primaryKey);
+            if (string.IsNullOrEmpty(dir) && backend != "Claude")
+                dir = _settings.Get("Claude.WorkingDirectory");
             if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
                 return dir;
             return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -2558,7 +2566,7 @@ namespace ClarionAssistant
 
                 string workDir = !string.IsNullOrEmpty(tab.WorkingDirectory) && Directory.Exists(tab.WorkingDirectory)
                     ? tab.WorkingDirectory
-                    : GetWorkingDirectory();
+                    : GetWorkingDirectoryFor("Copilot");
 
                 string copilotHome = GetCopilotHomeDir();
                 string mcpConfig = null;

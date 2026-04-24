@@ -134,10 +134,15 @@ namespace ClarionAssistant.Dialogs
                         Close();
                         break;
                     case "browseWorkingDir":
-                        BrowseFolder("workingDir", "Select Working Directory", _settings.Get("Claude.WorkingDirectory"));
+                        // Per-backend field on the Models tab. Browse result is applied to
+                        // whichever backend is currently in view on the HTML side; the hint
+                        // here is just the saved default backend's value for convenience.
+                        BrowseFolder("workingDir", "Select Working Directory",
+                            _settings.Get("Claude.WorkingDirectory"));
                         break;
-                    case "browseComFolder":
-                        BrowseFolder("comFolder", "Select COM Projects Folder", _settings.Get("COM.ProjectsFolder"));
+                    case "browseProjectsDir":
+                        BrowseFolder("projectsDir", "Select Projects Directory",
+                            _settings.Get("Claude.ProjectsFolder") ?? _settings.Get("COM.ProjectsFolder"));
                         break;
                     case "browseDocPath":
                         BrowseFolder("docPath", "Select Documentation Folder", null);
@@ -205,9 +210,15 @@ namespace ClarionAssistant.Dialogs
             string fontFamily = _settings.Get("Claude.FontFamily") ?? "Cascadia Mono";
             string fontSize = _settings.Get("Claude.FontSize") ?? "14";
             string model = _settings.Get("Claude.Model") ?? "sonnet";
-            string workingDir = _settings.Get("Claude.WorkingDirectory")
+            // Per-backend paths. Legacy keys (Claude.WorkingDirectory, COM.ProjectsFolder)
+            // act as fallback so existing users don't lose their values on upgrade.
+            string legacyWorkingDir = _settings.Get("Claude.WorkingDirectory")
                 ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            string comFolder = _settings.Get("COM.ProjectsFolder") ?? "";
+            string legacyProjectsDir = _settings.Get("COM.ProjectsFolder") ?? "";
+            string claudeWorkingDir   = _settings.Get("Claude.WorkingDirectory")  ?? legacyWorkingDir;
+            string copilotWorkingDir  = _settings.Get("Copilot.WorkingDirectory") ?? legacyWorkingDir;
+            string claudeProjectsDir  = _settings.Get("Claude.ProjectsFolder")    ?? legacyProjectsDir;
+            string copilotProjectsDir = _settings.Get("Copilot.ProjectsFolder")   ?? legacyProjectsDir;
             string theme = _isDark ? "dark" : "light";
 
             bool autoUpdate = (_settings.Get("Claude.AutoUpdate") ?? "").Equals("true", StringComparison.OrdinalIgnoreCase);
@@ -268,8 +279,10 @@ namespace ClarionAssistant.Dialogs
                 + ",\"fontFamily\":\"" + EscapeJson(fontFamily) + "\""
                 + ",\"fontSize\":" + fontSize
                 + ",\"model\":\"" + EscapeJson(model) + "\""
-                + ",\"workingDir\":\"" + EscapeJson(workingDir) + "\""
-                + ",\"comFolder\":\"" + EscapeJson(comFolder) + "\""
+                + ",\"claudeWorkingDir\":\""   + EscapeJson(claudeWorkingDir)   + "\""
+                + ",\"copilotWorkingDir\":\""  + EscapeJson(copilotWorkingDir)  + "\""
+                + ",\"claudeProjectsDir\":\""  + EscapeJson(claudeProjectsDir)  + "\""
+                + ",\"copilotProjectsDir\":\"" + EscapeJson(copilotProjectsDir) + "\""
                 + ",\"assistantBackend\":\"" + EscapeJson(backend) + "\""
                 + ",\"autoUpdate\":" + (autoUpdate ? "true" : "false")
                 + ",\"mtAvailable\":" + (mtAvailable ? "true" : "false")
@@ -508,8 +521,10 @@ namespace ClarionAssistant.Dialogs
             string fontFamily = ExtractJsonValue(data, "fontFamily") ?? "Cascadia Mono";
             string fontSize = ExtractJsonValue(data, "fontSize") ?? "14";
             string model = ExtractJsonValue(data, "model") ?? "sonnet";
-            string workingDir = ExtractJsonValue(data, "workingDir") ?? "";
-            string comFolder = ExtractJsonValue(data, "comFolder") ?? "";
+            string claudeWorkingDir   = ExtractJsonValue(data, "claudeWorkingDir")   ?? "";
+            string copilotWorkingDir  = ExtractJsonValue(data, "copilotWorkingDir")  ?? "";
+            string claudeProjectsDir  = ExtractJsonValue(data, "claudeProjectsDir")  ?? "";
+            string copilotProjectsDir = ExtractJsonValue(data, "copilotProjectsDir") ?? "";
             bool autoUpdate = ExtractJsonValue(data, "autoUpdate") == "true";
             bool mtEnabled = ExtractJsonValue(data, "mtEnabled") == "true";
             string agentName = ExtractJsonValue(data, "agentName") ?? "ClarionIDE";
@@ -524,8 +539,17 @@ namespace ClarionAssistant.Dialogs
             _settings.Set("Claude.FontFamily", fontFamily);
             _settings.Set("Claude.FontSize", fontSize);
             _settings.Set("Claude.Model", model);
-            _settings.Set("Claude.WorkingDirectory", workingDir);
-            _settings.Set("COM.ProjectsFolder", comFolder);
+            _settings.Set("Claude.WorkingDirectory",  claudeWorkingDir);
+            _settings.Set("Copilot.WorkingDirectory", copilotWorkingDir);
+            _settings.Set("Claude.ProjectsFolder",    claudeProjectsDir);
+            _settings.Set("Copilot.ProjectsFolder",   copilotProjectsDir);
+            // Keep legacy COM.ProjectsFolder in sync with the saved default backend's
+            // value so home.html and the COM-project-creation flow (which still read
+            // COM.ProjectsFolder) continue to work without per-backend awareness.
+            string defaultBackendForLegacy = ExtractJsonValue(data, "assistantBackend") ?? "Claude";
+            _settings.Set("COM.ProjectsFolder",
+                string.Equals(defaultBackendForLegacy, "Copilot", StringComparison.OrdinalIgnoreCase)
+                    ? copilotProjectsDir : claudeProjectsDir);
             _settings.Set("Claude.AutoUpdate", autoUpdate.ToString().ToLower());
             _settings.Set("MultiTerminal.Enabled", mtEnabled.ToString().ToLower());
             _settings.Set("MultiTerminal.AgentName", agentName);

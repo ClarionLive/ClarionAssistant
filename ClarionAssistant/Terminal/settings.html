@@ -401,14 +401,6 @@
         <div class="field-desc">Where newly created class files (.inc / .clw) are saved.</div>
       </div>
 
-      <div class="field">
-        <div class="field-label">COM Projects Folder</div>
-        <div class="input-row">
-          <input type="text" id="comFolder" placeholder="Select a directory...">
-          <button class="btn" onclick="send('browseComFolder')">Browse</button>
-        </div>
-        <div class="field-desc">Where new COM control projects are created.</div>
-      </div>
 
       <h3>Class Models</h3>
       <div class="field-desc" style="margin-bottom:10px">Model templates stored in %AppData%\ClarionAssistant\ClassModels. Select a model when creating a new class.</div>
@@ -436,16 +428,6 @@
     <!-- Launch -->
     <div class="page active" id="page-launch">
       <h2>Launch</h2>
-
-      <!-- Global launch setting (not per-backend) -->
-      <div class="field">
-        <div class="field-label">Working Directory</div>
-        <div class="input-row">
-          <input type="text" id="workingDir" placeholder="Select a directory...">
-          <button class="btn" onclick="send('browseWorkingDir')">Browse</button>
-        </div>
-        <div class="field-desc">Default directory for new terminal sessions (applies to all backends).</div>
-      </div>
 
       <!-- Backend selector bar -->
       <div class="backend-bar">
@@ -521,6 +503,24 @@
 
       <!-- Tab: Models -->
       <div class="tab-panel" data-tab="models">
+        <div class="field">
+          <div class="field-label">Working Directory</div>
+          <div class="input-row">
+            <input type="text" id="workingDir" placeholder="Select a directory...">
+            <button class="btn" onclick="send('browseWorkingDir')">Browse</button>
+          </div>
+          <div class="field-desc">Default directory for new terminal sessions with the selected backend.</div>
+        </div>
+
+        <div class="field">
+          <div class="field-label">Projects Directory</div>
+          <div class="input-row">
+            <input type="text" id="projectsDir" placeholder="Select a directory...">
+            <button class="btn" onclick="send('browseProjectsDir')">Browse</button>
+          </div>
+          <div class="field-desc">Default directory for Clarion COM / Addin projects created via this backend.</div>
+        </div>
+
         <div class="field" id="claudeModelField">
           <div class="field-label">Claude Model</div>
           <select id="model">
@@ -991,7 +991,7 @@
       send('deleteClassModel', name);
   }
 
-  // ── Commands (per backend) ───────────────────────
+  // ── Commands + paths (per backend) ───────────────
   // _viewBackend    = which backend the dialog is currently displaying (ephemeral)
   // _savedDefault   = which backend is persisted as Assistant.Backend in settings.txt
   //                   (only changed by the "Set as Default" button)
@@ -1003,6 +1003,33 @@
   var _cmdSelectedIdx = -1;
   var _cmdEditIdx = -1; // -1 = adding new, >=0 = editing existing
 
+  // Per-backend path state. Inputs on the Models tab show the ACTIVE backend's values;
+  // on backend switch we capture the current inputs before repopulating with the other
+  // backend's values.
+  var _paths = {
+    Claude:  { workingDir: '', projectsDir: '' },
+    Copilot: { workingDir: '', projectsDir: '' }
+  };
+  // True between dialog open and the first setSettings message. During that window,
+  // capturePathsToViewBackend would overwrite _paths with empty inputs, so we skip it.
+  var _initialLoad = true;
+
+  function capturePathsToViewBackend() {
+    var wd = document.getElementById('workingDir');
+    var pd = document.getElementById('projectsDir');
+    if (!_paths[_viewBackend]) _paths[_viewBackend] = { workingDir: '', projectsDir: '' };
+    if (wd) _paths[_viewBackend].workingDir = wd.value;
+    if (pd) _paths[_viewBackend].projectsDir = pd.value;
+  }
+
+  function populatePathsFromViewBackend() {
+    var wd = document.getElementById('workingDir');
+    var pd = document.getElementById('projectsDir');
+    var p = _paths[_viewBackend] || { workingDir: '', projectsDir: '' };
+    if (wd) wd.value = p.workingDir || '';
+    if (pd) pd.value = p.projectsDir || '';
+  }
+
   function displayBackendName(b) {
     return b === 'Claude' ? 'Claude Code' : b;
   }
@@ -1012,9 +1039,16 @@
   }
 
   function setViewBackend(backend) {
+    // Before we switch, save any edits the user made to paths for the backend
+    // that was just being viewed. Skip the very first call (before any inputs
+    // have meaningful user content — _initialLoad is set from the load handler).
+    if (!_initialLoad) capturePathsToViewBackend();
+
     _viewBackend = backend || 'Claude';
     var sel = document.getElementById('assistantBackend');
     if (sel) sel.value = _viewBackend;
+
+    populatePathsFromViewBackend();
 
     // Show the backend-specific Launch-tab blocks
     var claudeOnly = document.getElementById('claudeOnly');
@@ -1267,13 +1301,17 @@
   }
 
   function saveAndClose() {
+    // Capture the currently-viewed backend's path inputs into _paths before emitting.
+    capturePathsToViewBackend();
     var data = {
       theme: currentSettings.theme || 'dark',
       fontFamily: document.getElementById('fontFamily').value,
       fontSize: document.getElementById('fontSize').value,
       model: document.getElementById('model').value,
-      workingDir: document.getElementById('workingDir').value,
-      comFolder: document.getElementById('comFolder').value,
+      claudeWorkingDir:   _paths.Claude.workingDir,
+      copilotWorkingDir:  _paths.Copilot.workingDir,
+      claudeProjectsDir:  _paths.Claude.projectsDir,
+      copilotProjectsDir: _paths.Copilot.projectsDir,
       assistantBackend: _savedDefault,
       autoUpdate: document.getElementById('autoUpdate').checked,
       mtEnabled: document.getElementById('mtEnabled').checked,
@@ -1322,9 +1360,11 @@
       // Model
       document.getElementById('model').value = s.model || 'sonnet';
 
-      // Paths
-      document.getElementById('workingDir').value = s.workingDir || '';
-      document.getElementById('comFolder').value = s.comFolder || '';
+      // Per-backend paths
+      _paths.Claude.workingDir   = s.claudeWorkingDir   || s.workingDir || '';
+      _paths.Copilot.workingDir  = s.copilotWorkingDir  || s.workingDir || '';
+      _paths.Claude.projectsDir  = s.claudeProjectsDir  || s.comFolder  || '';
+      _paths.Copilot.projectsDir = s.copilotProjectsDir || s.comFolder  || '';
 
       // MultiTerminal
       document.getElementById('mtEnabled').checked = !!s.mtEnabled;
@@ -1356,6 +1396,7 @@
         document.getElementById('copilotExtraFlags').value = s.copilotExtraFlags || '';
       _savedDefault = s.assistantBackend || 'Claude';
       setViewBackend(_savedDefault);
+      _initialLoad = false;
 
       // Class Models
       _classModels = s.classModels || [];
@@ -1370,7 +1411,7 @@
 
     if (msg.type === 'browseResult') {
       if (msg.target === 'workingDir') document.getElementById('workingDir').value = msg.path;
-      else if (msg.target === 'comFolder') document.getElementById('comFolder').value = msg.path;
+      else if (msg.target === 'projectsDir') document.getElementById('projectsDir').value = msg.path;
       else if (msg.target === 'classFolder') document.getElementById('classOutputFolder').value = msg.path;
       else if (msg.target === 'docPath') {
         var paths = currentSettings.docPaths || [];
