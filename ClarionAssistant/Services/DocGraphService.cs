@@ -2062,6 +2062,17 @@ namespace ClarionAssistant.Services
 
         #region Database Helpers
 
+        // Cached absolute path to the native SQLite.Interop.dll alongside the
+        // System.Data.SQLite managed assembly. Using an absolute path avoids the
+        // silent LoadLibrary-search-order failures that would otherwise surface
+        // as SQLITE_CORRUPT_VTAB ("database disk image is malformed") on later
+        // MATCH queries against doc_fts. Resolved once per process.
+        private static string _fts5InteropPath;
+
+        // Set after a smoke probe confirms FTS5 is actually registered on a
+        // freshly-opened connection — not just that LoadExtension didn't throw.
+        private static bool _fts5SmokeChecked;
+
         private SQLiteConnection OpenConnection(bool readOnly)
         {
             string mode = readOnly ? "Read Only=True;" : "";
@@ -2070,11 +2081,87 @@ namespace ClarionAssistant.Services
             conn.Open();
 
             // FTS5 is compiled into SQLite.Interop.dll as a loadable extension
-            // (not a built-in module). Load it on every connection.
+            // (not a built-in module). Load it on every connection — the binding
+            // keeps the extension registration per-connection, not per-process.
+            string interopPath = ResolveInteropPath();
             conn.EnableExtensions(true);
-            conn.LoadExtension("SQLite.Interop.dll", "sqlite3_fts5_init");
+            try
+            {
+                conn.LoadExtension(interopPath, "sqlite3_fts5_init");
+            }
+            catch (Exception ex)
+            {
+                try { conn.Dispose(); } catch { }
+                throw new InvalidOperationException(
+                    "DocGraph: failed to load FTS5 extension from '" + interopPath +
+                    "'. Search will not work until this is fixed. Inner: " + ex.Message, ex);
+            }
+
+            // First-use smoke test. If the load "succeeded" but the fts5 module
+            // didn't actually register (some SQLite.Interop builds), a later
+            // MATCH query returns the misleading "database disk image is
+            // malformed" — fail here with a clear error instead.
+            if (!_fts5SmokeChecked)
+            {
+                try
+                {
+                    using (var probe = new SQLiteCommand(
+                        "CREATE VIRTUAL TABLE temp.__ca_fts5_probe__ USING fts5(t); " +
+                        "DROP TABLE temp.__ca_fts5_probe__;", conn))
+                        probe.ExecuteNonQuery();
+                    _fts5SmokeChecked = true;
+                }
+                catch (Exception ex)
+                {
+                    try { conn.Dispose(); } catch { }
+                    throw new InvalidOperationException(
+                        "DocGraph: FTS5 extension loaded but the 'fts5' virtual-table " +
+                        "module did not register. MATCH queries will report " +
+                        "'database disk image is malformed' — the data is fine, the " +
+                        "extension is not. Interop: '" + interopPath +
+                        "'. Inner: " + ex.Message, ex);
+                }
+            }
 
             return conn;
+        }
+
+        private static string ResolveInteropPath()
+        {
+            if (_fts5InteropPath != null) return _fts5InteropPath;
+
+            // SQLite.Interop.dll is native; it ships next to the System.Data.SQLite
+            // managed assembly or in an arch subfolder. Prefer the absolute path
+            // so the load doesn't depend on the host process's CWD or LoadLibrary
+            // search order (the IDE addin runs under the Clarion IDE's own path).
+            string asmDir = null;
+            try
+            {
+                asmDir = Path.GetDirectoryName(typeof(SQLiteConnection).Assembly.Location);
+            }
+            catch { }
+
+            string arch = Environment.Is64BitProcess ? "x64" : "x86";
+            var candidates = new System.Collections.Generic.List<string>();
+            if (!string.IsNullOrEmpty(asmDir))
+            {
+                candidates.Add(Path.Combine(asmDir, "SQLite.Interop.dll"));
+                candidates.Add(Path.Combine(asmDir, arch, "SQLite.Interop.dll"));
+            }
+
+            foreach (string c in candidates)
+            {
+                if (!string.IsNullOrEmpty(c) && File.Exists(c))
+                {
+                    _fts5InteropPath = c;
+                    return c;
+                }
+            }
+
+            // Last-resort fallback: the original relative-name behavior. Works if
+            // the DLL is discoverable via the standard LoadLibrary search path.
+            _fts5InteropPath = "SQLite.Interop.dll";
+            return _fts5InteropPath;
         }
 
         private long EnsureLibrary(SQLiteConnection conn, DocSource source)
