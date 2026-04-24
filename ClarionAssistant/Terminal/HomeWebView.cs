@@ -13,7 +13,13 @@ namespace ClarionAssistant.Terminal
     {
         public string Action { get; private set; }
         public string Data { get; private set; }
-        public HomeActionEventArgs(string action, string data) { Action = action; Data = data; }
+        /// <summary>Optional backend override from the dashboard backend dropdown
+        /// ("Claude", "Copilot", or null when the action is not launch-flavored).</summary>
+        public string Backend { get; private set; }
+        public HomeActionEventArgs(string action, string data, string backend = null)
+        {
+            Action = action; Data = data; Backend = backend;
+        }
     }
 
     /// <summary>
@@ -110,9 +116,10 @@ namespace ClarionAssistant.Terminal
                 System.Diagnostics.Debug.WriteLine("[HomeWebView] Message: " + json);
                 string action = ExtractJsonValue(json, "action");
                 string data = ExtractJsonValue(json, "data");
-                System.Diagnostics.Debug.WriteLine("[HomeWebView] Action=" + action + ", Data=" + data);
+                string backend = ExtractJsonValue(json, "backend");
+                System.Diagnostics.Debug.WriteLine("[HomeWebView] Action=" + action + ", Data=" + data + ", Backend=" + backend);
                 if (!string.IsNullOrEmpty(action))
-                    ActionReceived?.Invoke(this, new HomeActionEventArgs(action, data));
+                    ActionReceived?.Invoke(this, new HomeActionEventArgs(action, data, backend));
             }
             catch (Exception ex)
             {
@@ -150,6 +157,13 @@ namespace ClarionAssistant.Terminal
         public void SendBrowseResult(string folder, string editId)
         {
             SendMessage("{\"type\":\"browseResult\",\"folder\":\"" + EscapeJson(folder ?? "") + "\",\"editId\":\"" + EscapeJson(editId ?? "") + "\"}");
+        }
+
+        /// <summary>Tell the home page which backend is saved as the default. The page
+        /// uses this to preselect the dropdown and label the "Default: X" hint.</summary>
+        public void SetBackend(string backend)
+        {
+            SendMessage("{\"type\":\"setBackend\",\"backend\":\"" + EscapeJson(backend ?? "Claude") + "\"}");
         }
 
         /// <summary>Switch the home page between light and dark theme.</summary>

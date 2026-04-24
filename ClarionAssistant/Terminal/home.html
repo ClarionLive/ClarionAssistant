@@ -58,6 +58,44 @@ body {
 .action-card .action-icon { font-size: 22px; margin-bottom: 6px; }
 .action-card .action-label { font-size: 12px; font-weight: 600; color: #cdd6f4; }
 .action-card .action-desc { font-size: 11px; color: #6c7086; margin-top: 2px; }
+.action-card .backend-tag {
+  position: absolute; top: 6px; right: 8px;
+  font-size: 9px; letter-spacing: 0.5px; font-weight: 600;
+  padding: 2px 6px; border-radius: 3px;
+  background: rgba(137,180,250,0.15); color: #89b4fa;
+}
+.action-card { position: relative; }
+
+/* Backend selector row */
+.backend-row {
+  display: flex; align-items: center; gap: 10px;
+  margin: 10px 0 18px; padding: 10px 14px;
+  background: #252536; border: 1px solid #313244; border-radius: 6px;
+}
+.backend-row .label { font-size: 12px; color: #a6adc8; font-weight: 500; }
+.backend-row select {
+  height: 28px; padding: 0 10px;
+  background: #313244; color: #cdd6f4;
+  border: 1px solid #45475a; border-radius: 4px;
+  font-size: 13px; font-family: inherit; cursor: pointer; outline: none;
+  min-width: 160px;
+}
+.backend-row select:focus { border-color: #89b4fa; }
+.backend-row .default-hint { font-size: 11px; color: #6c7086; font-style: italic; }
+.backend-row .default-hint .current { color: #a6e3a1; font-weight: 600; font-style: normal; }
+.backend-row .reset-link {
+  font-size: 11px; color: #89b4fa; text-decoration: none; cursor: pointer;
+  margin-left: auto;
+}
+.backend-row .reset-link:hover { text-decoration: underline; }
+.backend-row .reset-link.hidden { display: none; }
+body.light .backend-row { background: #e6e9ef; border-color: #bcc0cc; }
+body.light .backend-row .label { color: #6c6f85; }
+body.light .backend-row select { background: #fff; border-color: #bcc0cc; color: #4c4f69; }
+body.light .backend-row .default-hint { color: #8c8fa1; }
+body.light .backend-row .default-hint .current { color: #40a02b; }
+body.light .backend-row .reset-link { color: #1e66f5; }
+body.light .action-card .backend-tag { background: rgba(30,102,245,0.1); color: #1e66f5; }
 
 /* Section header */
 .section-header {
@@ -249,24 +287,39 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
     </div>
   </div>
 
+  <!-- Backend selector row -->
+  <div class="backend-row">
+    <span class="label">Launch new terminals with:</span>
+    <select id="backendSel" onchange="onBackendChange()">
+      <option value="Claude">Claude Code</option>
+      <option value="Copilot">Copilot</option>
+    </select>
+    <span class="default-hint" id="backendHint">Default: <span class="current" id="backendDefaultLabel">Claude Code</span></span>
+    <a class="reset-link hidden" id="backendResetLink" onclick="resetBackendToDefault()">Reset to default</a>
+  </div>
+
   <!-- Quick Actions -->
   <div class="quick-actions">
     <div class="action-card" onclick="send('workWithSolution')">
+      <div class="backend-tag" data-backend-tag></div>
       <div class="action-icon">&#128194;</div>
       <div class="action-label">Work With Open Solution</div>
       <div class="action-desc">Open terminal for IDE solution</div>
     </div>
     <div class="action-card" onclick="send('newChat')">
+      <div class="backend-tag" data-backend-tag></div>
       <div class="action-icon">&#128172;</div>
       <div class="action-label">New Chat</div>
       <div class="action-desc">Open a new terminal</div>
     </div>
     <div class="action-card" onclick="send('evaluateCode')">
+      <div class="backend-tag" data-backend-tag></div>
       <div class="action-icon">&#128269;</div>
       <div class="action-label">Evaluate Code</div>
       <div class="action-desc">Analyze current app</div>
     </div>
     <div class="action-card" onclick="send('createClass')">
+      <div class="backend-tag" data-backend-tag></div>
       <div class="action-icon">&#128736;</div>
       <div class="action-label">Create New Class</div>
       <div class="action-desc">Generate class from model</div>
@@ -374,9 +427,56 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
   var projSortDir = 'desc';
   var defaultProjectFolder = '';
 
+  // Dashboard backend state. _savedDefault mirrors settings.txt (Assistant.Backend);
+  // _sessionBackend is the ephemeral dropdown value used for subsequent launches.
+  // Neither is persisted from home.html — changing _sessionBackend does NOT rewrite
+  // Assistant.Backend; persistence happens only via the settings dialog.
+  var _savedDefault = 'Claude';
+  var _sessionBackend = 'Claude';
+
   function send(action, data) {
-    if (window.chrome && window.chrome.webview)
-      window.chrome.webview.postMessage(JSON.stringify({ action: action, data: data || '' }));
+    if (window.chrome && window.chrome.webview) {
+      // Every posted message carries the current session backend so the C# side
+      // can apply it to any new TerminalTab. Non-launch actions ignore the field.
+      var msg = { action: action, data: data || '', backend: _sessionBackend };
+      window.chrome.webview.postMessage(JSON.stringify(msg));
+    }
+  }
+
+  function displayBackendName(b) {
+    return b === 'Claude' ? 'Claude Code' : (b || 'Claude Code');
+  }
+
+  function onBackendChange() {
+    var sel = document.getElementById('backendSel');
+    _sessionBackend = sel ? sel.value : 'Claude';
+    renderBackendState();
+  }
+
+  function resetBackendToDefault() {
+    _sessionBackend = _savedDefault;
+    var sel = document.getElementById('backendSel');
+    if (sel) sel.value = _savedDefault;
+    renderBackendState();
+  }
+
+  function renderBackendState() {
+    var hint = document.getElementById('backendHint');
+    var link = document.getElementById('backendResetLink');
+    var lbl = document.getElementById('backendDefaultLabel');
+    if (lbl) lbl.textContent = displayBackendName(_savedDefault);
+    if (hint) {
+      if (_sessionBackend === _savedDefault) {
+        hint.innerHTML = 'Default: <span class="current" id="backendDefaultLabel">' + displayBackendName(_savedDefault) + '</span>';
+        if (link) link.classList.add('hidden');
+      } else {
+        hint.innerHTML = 'Temporary override — default is <span class="current" id="backendDefaultLabel">' + displayBackendName(_savedDefault) + '</span>';
+        if (link) link.classList.remove('hidden');
+      }
+    }
+    // Update per-card backend badges
+    var tags = document.querySelectorAll('[data-backend-tag]');
+    for (var i = 0; i < tags.length; i++) tags[i].textContent = displayBackendName(_sessionBackend).toUpperCase();
   }
 
   function esc(s) {
@@ -612,6 +712,13 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
       if (msg.type === 'setDefaultProjectFolder') {
         defaultProjectFolder = msg.folder || '';
       }
+      if (msg.type === 'setBackend') {
+        _savedDefault = msg.backend || 'Claude';
+        _sessionBackend = _savedDefault;
+        var sel = document.getElementById('backendSel');
+        if (sel) sel.value = _sessionBackend;
+        renderBackendState();
+      }
       if (msg.type === 'browseResult') {
         if (msg.folder) {
           document.getElementById('modalFolder').value = msg.folder;
@@ -624,6 +731,7 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
     if (e.key === 'Escape') closeProjectModal();
   });
 
+  renderBackendState(); // populate badges + hint before C# sends the saved default
   send('homeReady');
 </script>
 </body>

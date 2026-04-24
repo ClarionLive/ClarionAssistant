@@ -49,6 +49,14 @@ namespace ClarionAssistant.Terminal
         /// </summary>
         public string AssistantBackend { get; set; }
 
+        /// <summary>
+        /// Optional pre-launch backend override requested by the dashboard backend dropdown.
+        /// Consumed by <c>LaunchAssistantForTab</c>; null means "use saved default".
+        /// Distinct from <see cref="AssistantBackend"/> which records the backend the tab
+        /// actually launched with (set post-launch).
+        /// </summary>
+        public string RequestedBackend { get; set; }
+
         /// <summary>Skill command to auto-run after Claude starts (e.g. "/ClarionCOM").</summary>
         public string StartupCommand { get; set; }
 

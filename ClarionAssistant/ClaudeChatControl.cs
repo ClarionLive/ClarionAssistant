@@ -38,6 +38,14 @@ namespace ClarionAssistant
         private System.Windows.Forms.Timer _instanceStateTimer;
         private System.Windows.Forms.Timer _statusLineTimer;
         private string _currentSlnPath;
+
+        // Backend override captured from the dashboard dropdown on the most recent
+        // launch-flavored action. Consumed by LaunchAssistantForTab when the async
+        // renderer init completes. Not protected against a double-click race (user
+        // dispatches action A then action B before A's WebView2 renderer finishes
+        // initializing); if that becomes an issue, move consumption into the
+        // synchronous per-handler tab-creation paths.
+        private string _pendingLaunchBackend;
         private ClarionVersionInfo _versionInfo;
         private ClarionVersionConfig _currentVersionConfig;
         private RedFileService _redFileService;
@@ -167,6 +175,7 @@ namespace ClarionAssistant
         private void OnHomeReady(object sender, EventArgs e)
         {
             _homeView.SetTheme(_isDarkTheme);
+            _homeView.SetBackend(_settings.Get("Assistant.Backend") ?? "Claude");
             LoadProjects();
             SendProjectsToHome();
             SendGitHubAccountsToHome();
@@ -213,6 +222,15 @@ namespace ClarionAssistant
 
         private void OnHomeAction(object sender, HomeActionEventArgs e)
         {
+            // Capture the dashboard's backend choice for launch-flavored actions.
+            // LaunchAssistantForTab picks it up when the renderer finishes initializing.
+            // Non-launch actions (addProject, settings, etc.) leave _pendingLaunchBackend
+            // untouched since they don't result in a new terminal tab.
+            if (!string.IsNullOrEmpty(e.Backend) && IsLaunchAction(e.Action))
+            {
+                _pendingLaunchBackend = e.Backend;
+            }
+
             switch (e.Action)
             {
                 case "openFolder": OpenFolder(e.Data); break;
@@ -228,6 +246,15 @@ namespace ClarionAssistant
                 case "createClass": OnCreateClass(); break;
                 case "openGitHub": OnOpenGitHub(); break;
             }
+        }
+
+        private static bool IsLaunchAction(string action)
+        {
+            return action == "newChat"
+                || action == "workWithSolution"
+                || action == "evaluateCode"
+                || action == "createClass"
+                || action == "openProject";
         }
 
         private void OnOpenGitHub()
@@ -2352,7 +2379,22 @@ namespace ClarionAssistant
 
         private void LaunchAssistantForTab(TerminalTab tab)
         {
-            string backend = _settings.Get("Assistant.Backend") ?? "Claude";
+            // Backend selection order:
+            //   1. tab.RequestedBackend — set by dashboard dropdown at dispatch time
+            //   2. _pendingLaunchBackend — fallback path for tabs created by handlers
+            //      that don't set the tab field directly before async init (e.g. project
+            //      open flows that hand off via ActivateTab)
+            //   3. Saved default in settings (Assistant.Backend)
+            //   4. Claude (first-run fallback)
+            if (tab.RequestedBackend == null && _pendingLaunchBackend != null)
+            {
+                tab.RequestedBackend = _pendingLaunchBackend;
+            }
+            _pendingLaunchBackend = null;
+
+            string backend = tab.RequestedBackend
+                ?? _settings.Get("Assistant.Backend")
+                ?? "Claude";
             if (string.Equals(backend, "Copilot", StringComparison.OrdinalIgnoreCase))
                 LaunchCopilotForTab(tab);
             else
