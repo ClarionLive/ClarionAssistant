@@ -3078,9 +3078,14 @@ namespace ClarionAssistant
         {
             try
             {
+                // Single source of truth: clarion-assistant-prompt.md is the
+                // authoritative IDE / MCP / tool-usage instructions shared by both
+                // backends. Claude reads it directly via --append-system-prompt-file;
+                // Copilot expects an AGENTS.md file inside its instructions dir, so
+                // we copy-rename at deploy time.
                 string assemblyDir = Path.GetDirectoryName(
                     System.Reflection.Assembly.GetExecutingAssembly().Location);
-                string source = Path.Combine(assemblyDir, "Terminal", "AGENTS.md");
+                string source = Path.Combine(assemblyDir, "Terminal", "clarion-assistant-prompt.md");
                 if (!File.Exists(source)) return null;
 
                 string instrDir = Path.Combine(copilotHome, "instructions");
