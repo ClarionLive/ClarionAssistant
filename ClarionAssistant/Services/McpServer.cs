@@ -47,6 +47,22 @@ namespace ClarionAssistant.Services
         public int Port { get { return _port; } }
         public bool IsRunning { get { return _running; } }
 
+        /// <summary>
+        /// Per-session bearer token used for authenticating MCP requests.
+        /// Exposed so launchers that build their own MCP-client config (e.g.
+        /// CodexConfigService writing to <c>~/.codex/config.toml</c>) can embed
+        /// the token alongside the URL. Returns null when the server is stopped.
+        /// </summary>
+        public string SessionToken { get { return _sessionToken; } }
+
+        /// <summary>
+        /// Full MCP endpoint URL for the running server, or null if not running.
+        /// </summary>
+        public string McpUrl
+        {
+            get { return _running ? string.Format("http://localhost:{0}/mcp", _port) : null; }
+        }
+
         public McpServer(Control uiControl)
         {
             _uiControl = uiControl;

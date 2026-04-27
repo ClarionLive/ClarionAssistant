@@ -1906,8 +1906,9 @@ namespace ClarionAssistant
         {
             // Per-backend override wins; fall back to Claude's value (the original
             // single-backend setting) so legacy installs don't break; last-resort is
-            // the user's profile folder.
-            string primaryKey = (backend == "Copilot" ? "Copilot" : "Claude") + ".WorkingDirectory";
+            // the user's profile folder. Backend-keyed lookup so any new backend
+            // (Codex, future ones) is picked up automatically without editing this.
+            string primaryKey = (backend ?? "Claude") + ".WorkingDirectory";
             string dir = _settings.Get(primaryKey);
             if (string.IsNullOrEmpty(dir) && backend != "Claude")
                 dir = _settings.Get("Claude.WorkingDirectory");
@@ -2403,6 +2404,8 @@ namespace ClarionAssistant
 
             if (string.Equals(backend, "Copilot", StringComparison.OrdinalIgnoreCase))
                 LaunchCopilotForTab(tab);
+            else if (string.Equals(backend, "Codex", StringComparison.OrdinalIgnoreCase))
+                LaunchCodexForTab(tab);
             else
                 LaunchClaudeForTab(tab);
         }
@@ -2491,6 +2494,29 @@ namespace ClarionAssistant
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine("[LaunchCopilot] EXCEPTION: " + ex);
+            }
+        }
+
+        private void LaunchCodexForTab(TerminalTab tab)
+        {
+            System.Diagnostics.Debug.WriteLine("[LaunchCodex] ENTER tab=" + tab.Id + ", AssistantLaunched=" + tab.AssistantLaunched);
+            if (tab.AssistantLaunched) return;
+            tab.AssistantLaunched = true;
+            tab.AssistantBackend = "Codex";
+
+            try
+            {
+                var ctx = PrepareBackendLaunch(tab, "Codex", requirePwsh7: false);
+                if (ctx == null) return;
+
+                var built = BuildCodexCommand(tab, ctx);
+                if (built == null) return; // abort already handled inside the builder
+
+                StartTabTerminal(tab, ctx, built.Cmd, "Codex CLI running", "[LaunchCodex]");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[LaunchCodex] EXCEPTION: " + ex);
             }
         }
 
@@ -2843,19 +2869,185 @@ namespace ClarionAssistant
             return new BuiltBackendCommand { Cmd = cmd };
         }
 
-        // Build the --model flag for the Codex CLI. Mirrors the Copilot pattern at
-        // the LaunchCopilot --model line above. Today no caller exists (Codex backend
-        // is a stub); when the launcher is added, read settings via _settings.Get and
-        // pass to this helper.
+        // Build the --model flag for the Codex CLI.
         //
-        // Empty string and the literal "Auto" both mean "let the CLI choose" → no flag.
+        // Empty / "Auto" → fall back to the registry's recommended default. We
+        // pass it explicitly rather than letting Codex CLI pick, because Codex
+        // honours a top-level `model = "..."` in ~/.codex/config.toml that may
+        // pin an older version (e.g. from a previous /models switch). Without
+        // an explicit --model, our "Default" choice silently inherits that.
+        //
+        // Update CodexDefaultModelId together with the matching first entry in
+        // Terminal\models.json when the recommended default shifts (Oracle DMs
+        // John when this happens — see reference_oracle_model_watch memory).
+        private const string CodexDefaultModelId = "gpt-5.5";
+
         private static string BuildCodexModelFlag(string codexModelVal)
         {
             string val = (codexModelVal ?? "").Trim();
             if (string.IsNullOrEmpty(val) ||
                 string.Equals(val, "Auto", StringComparison.OrdinalIgnoreCase))
-                return string.Empty;
+                val = CodexDefaultModelId;
             return $" --model '{val.Replace("'", "''")}'";
+        }
+
+        /// <summary>
+        /// Codex-specific command assembly. Side effects:
+        /// <list type="bullet">
+        ///   <item>Refreshes <c>~/.codex/config.toml</c> so Codex sees CA's MCP server.</item>
+        ///   <item>Deploys AGENTS.md to the working dir from the same
+        ///         <c>clarion-assistant-prompt.md</c> source CA ships for Claude/Copilot.</item>
+        /// </list>
+        /// Returns null if the user-configured Codex command fails validation;
+        /// AbortLaunch is called in that case. MCP registration failure does NOT abort —
+        /// Codex still launches in a usable shell, just without IDE tools (we surface
+        /// a status message instead of refusing to start).
+        /// </summary>
+        private BuiltBackendCommand BuildCodexCommand(TerminalTab tab, LaunchContext ctx)
+        {
+            // MCP wiring: write CA's HTTP endpoint + bearer token into ~/.codex/config.toml.
+            // Best-effort — if the write fails or the server isn't running yet, Codex
+            // launches in a bare shell. The terminal surfaces the specific reason so
+            // the user knows whether to install mcp-remote, restart MCP, etc.
+            string codexConfigPath = null;
+            string mcpFailureReason = null;
+            try
+            {
+                if (_mcpServer != null && _mcpServer.IsRunning)
+                {
+                    codexConfigPath = Services.CodexConfigService.EnsureMcpRegistration(
+                        _mcpServer.McpUrl, _mcpServer.SessionToken, out mcpFailureReason);
+                }
+                else
+                {
+                    mcpFailureReason = "ClarionAssistant MCP server not running.";
+                }
+            }
+            catch (Exception ex)
+            {
+                mcpFailureReason = "config.toml write failed: " + ex.Message;
+                System.Diagnostics.Debug.WriteLine("[LaunchCodex] " + mcpFailureReason);
+            }
+
+            DeployCodexAgentsMd(ctx.WorkDir);
+
+            // Build the base invocation from the user-selected Codex command.
+            // For bare "codex", resolve to the full path; for anything else,
+            // tokenize and quote so shell metacharacters in settings can't
+            // chain additional commands into the pwsh -Command payload.
+            string codexCmdRaw = _settings.GetDefaultCodexCommand();
+            string codexBase;
+            if (codexCmdRaw == "codex")
+            {
+                string resolved = Services.CodexProcessManager.FindCodexPathStatic();
+                codexBase = resolved != null
+                    ? "& " + Services.PwshCommandQuoter.QuoteLiteral(resolved)
+                    : "codex";
+            }
+            else
+            {
+                try
+                {
+                    codexBase = Services.PwshCommandQuoter.BuildInvocation(codexCmdRaw);
+                }
+                catch (ArgumentException ex)
+                {
+                    UpdateStatus("Codex launch aborted: " + ex.Message);
+                    AbortLaunch(tab);
+                    return null;
+                }
+            }
+
+            string modelFlag = BuildCodexModelFlag(_settings.Get("Codex.Model"));
+
+            // Codex CLI takes -c / --config key=value pairs to override config.toml
+            // entries at launch time. We use this to pin model_reasoning_effort when
+            // the user picked one in Settings (low/medium/high). Empty / "Auto"
+            // means let Codex pick.
+            string effortVal = (_settings.Get("Codex.Effort") ?? "").Trim();
+            string effortFlag = string.Empty;
+            if (!string.IsNullOrEmpty(effortVal) &&
+                !string.Equals(effortVal, "Auto", StringComparison.OrdinalIgnoreCase))
+            {
+                string safeEffort = effortVal.Replace("'", "''");
+                effortFlag = $" -c model_reasoning_effort='{safeEffort}'";
+            }
+
+            string mcpStatusMarker;
+            if (codexConfigPath != null)
+            {
+                mcpStatusMarker = string.Empty;
+            }
+            else
+            {
+                // Sanitize the reason before splicing into a `Write-Host '...'` literal
+                // inside the outer pwsh `-Command "..."` payload. The reason can contain
+                // arbitrary text from caught exception messages (File.Replace, File.Move,
+                // Directory.CreateDirectory, etc.). Three threats to neutralize:
+                //   1. CR/LF — would break out of the single-quoted line and inject pwsh
+                //      tokens past the banner.
+                //   2. Embedded double quotes — would terminate the outer `-Command "..."`
+                //      argument at the CommandLineToArgvW boundary.
+                //   3. Single quote — handled by doubling, the standard pwsh-literal escape.
+                // Truncate to keep the banner readable when an exception message is verbose.
+                string reason = string.IsNullOrEmpty(mcpFailureReason)
+                    ? "ClarionAssistant MCP server not registered with Codex; IDE tools unavailable."
+                    : mcpFailureReason
+                        .Replace("\r", " ")
+                        .Replace("\n", " ")
+                        .Replace("\"", "'")
+                        .Replace("'", "''");
+                if (reason.Length > 240) reason = reason.Substring(0, 240) + "…";
+                mcpStatusMarker = $"Write-Host 'WARNING: {reason}' -ForegroundColor Yellow; ";
+            }
+
+            string cmd =
+                $"cd '{ctx.SafeWorkDir}'; " +
+                "$env:CLARION_ASSISTANT_EMBEDDED='1'; " +
+                mcpStatusMarker +
+                codexBase +
+                modelFlag +
+                effortFlag;
+
+            System.Diagnostics.Debug.WriteLine("[LaunchCodex] codexConfig=" + (codexConfigPath ?? "(not written)") + ", workDir=" + ctx.WorkDir);
+            return new BuiltBackendCommand { Cmd = cmd };
+        }
+
+        /// <summary>
+        /// Copies the shared CA briefing (<c>Terminal\clarion-assistant-prompt.md</c>)
+        /// into the working dir as <c>AGENTS.md</c>. Codex CLI auto-discovers AGENTS.md
+        /// in cwd — no flag needed.
+        ///
+        /// Refuses to overwrite an existing <c>AGENTS.md</c>. Codex CLI's working dir
+        /// is typically the user's open Clarion solution, which may already have a
+        /// repo-tracked AGENTS.md authoring repo-specific agent policy. Silently
+        /// clobbering that file would invert the trust boundary and could land in a
+        /// commit. If the user wants CA's briefing, they can delete their AGENTS.md
+        /// or add a managed-block convention in a future iteration.
+        ///
+        /// Best-effort otherwise; if the source is missing or the write fails, Codex
+        /// still launches but without the IDE briefing.
+        /// </summary>
+        private static void DeployCodexAgentsMd(string workDir)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(workDir) || !Directory.Exists(workDir)) return;
+                string assemblyDir = Path.GetDirectoryName(
+                    System.Reflection.Assembly.GetExecutingAssembly().Location);
+                string source = Path.Combine(assemblyDir, "Terminal", "clarion-assistant-prompt.md");
+                if (!File.Exists(source)) return;
+
+                string dest = Path.Combine(workDir, "AGENTS.md");
+                if (File.Exists(dest))
+                {
+                    System.Diagnostics.Debug.WriteLine(
+                        "[DeployCodexAgentsMd] Existing AGENTS.md preserved at " + dest);
+                    return;
+                }
+                File.Copy(source, dest, overwrite: false);
+            }
+            catch { }
         }
 
         private void OnTabRendererDataReceived(TerminalTab tab, byte[] data)
@@ -2927,9 +3119,13 @@ namespace ClarionAssistant
                 catch { }
             }
 
-            string label = string.Equals(tab.AssistantBackend, "Copilot", StringComparison.OrdinalIgnoreCase)
-                ? "Copilot CLI exited"
-                : "Claude Code exited";
+            string label;
+            if (string.Equals(tab.AssistantBackend, "Copilot", StringComparison.OrdinalIgnoreCase))
+                label = "Copilot CLI exited";
+            else if (string.Equals(tab.AssistantBackend, "Codex", StringComparison.OrdinalIgnoreCase))
+                label = "Codex CLI exited";
+            else
+                label = "Claude Code exited";
             if (InvokeRequired)
                 BeginInvoke((Action)(() => UpdateStatus(label)));
             else

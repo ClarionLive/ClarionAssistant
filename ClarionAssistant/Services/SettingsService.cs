@@ -204,6 +204,66 @@ namespace ClarionAssistant.Services
             return commands.Count > 0 ? commands[0].Key : "copilot";
         }
 
+        // ── Codex Commands ───────────────────────────────────────
+
+        /// <summary>
+        /// Returns the list of configured Codex launch commands.
+        /// Format in settings.txt: Codex.Commands = command1|0;command2|1
+        /// where |1 = default. Mirrors the Claude / Copilot pattern.
+        /// </summary>
+        public List<KeyValuePair<string, bool>> GetCodexCommands()
+        {
+            var result = new List<KeyValuePair<string, bool>>();
+            string raw = Get("Codex.Commands");
+            if (!string.IsNullOrEmpty(raw))
+            {
+                foreach (string entry in raw.Split(';'))
+                {
+                    if (string.IsNullOrWhiteSpace(entry)) continue;
+                    int pipe = entry.LastIndexOf('|');
+                    if (pipe > 0)
+                    {
+                        string cmd = entry.Substring(0, pipe);
+                        bool isDefault = entry.Substring(pipe + 1) == "1";
+                        result.Add(new KeyValuePair<string, bool>(cmd, isDefault));
+                    }
+                    else
+                    {
+                        result.Add(new KeyValuePair<string, bool>(entry.Trim(), false));
+                    }
+                }
+            }
+
+            if (result.Count == 0)
+            {
+                result.Add(new KeyValuePair<string, bool>("codex", true));
+                result.Add(new KeyValuePair<string, bool>("codex --full-auto", false));
+            }
+
+            return result;
+        }
+
+        public void SetCodexCommands(List<KeyValuePair<string, bool>> commands)
+        {
+            var sb = new StringBuilder();
+            for (int i = 0; i < commands.Count; i++)
+            {
+                if (i > 0) sb.Append(';');
+                sb.Append(commands[i].Key);
+                sb.Append('|');
+                sb.Append(commands[i].Value ? "1" : "0");
+            }
+            Set("Codex.Commands", sb.ToString());
+        }
+
+        public string GetDefaultCodexCommand()
+        {
+            var commands = GetCodexCommands();
+            foreach (var kv in commands)
+                if (kv.Value) return kv.Key;
+            return commands.Count > 0 ? commands[0].Key : "codex";
+        }
+
         // ── Backend model registry ───────────────────────────────
 
         /// <summary>

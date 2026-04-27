@@ -217,8 +217,10 @@ namespace ClarionAssistant.Dialogs
             string legacyProjectsDir = _settings.Get("COM.ProjectsFolder") ?? "";
             string claudeWorkingDir   = _settings.Get("Claude.WorkingDirectory")  ?? legacyWorkingDir;
             string copilotWorkingDir  = _settings.Get("Copilot.WorkingDirectory") ?? legacyWorkingDir;
+            string codexWorkingDir    = _settings.Get("Codex.WorkingDirectory")   ?? legacyWorkingDir;
             string claudeProjectsDir  = _settings.Get("Claude.ProjectsFolder")    ?? legacyProjectsDir;
             string copilotProjectsDir = _settings.Get("Copilot.ProjectsFolder")   ?? legacyProjectsDir;
+            string codexProjectsDir   = _settings.Get("Codex.ProjectsFolder")     ?? legacyProjectsDir;
             string theme = _isDark ? "dark" : "light";
 
             bool autoUpdate = (_settings.Get("Claude.AutoUpdate") ?? "").Equals("true", StringComparison.OrdinalIgnoreCase);
@@ -265,6 +267,17 @@ namespace ClarionAssistant.Dialogs
             }
             copSb.Append("]");
 
+            // Codex commands (mirrors the Copilot list shape).
+            var codexCommands = _settings.GetCodexCommands();
+            var codSb = new StringBuilder("[");
+            for (int ci = 0; ci < codexCommands.Count; ci++)
+            {
+                if (ci > 0) codSb.Append(",");
+                codSb.AppendFormat("{{\"command\":\"{0}\",\"isDefault\":{1}}}",
+                    EscapeJson(codexCommands[ci].Key), codexCommands[ci].Value ? "true" : "false");
+            }
+            codSb.Append("]");
+
             string backend = _settings.Get("Assistant.Backend") ?? "Claude";
             string copilotModel = _settings.Get("Copilot.Model") ?? "";
             string copilotPermMode = _settings.Get("Copilot.PermissionMode") ?? "prompt";
@@ -275,6 +288,7 @@ namespace ClarionAssistant.Dialogs
             string copilotPlan = _settings.Get("Copilot.Plan") ?? "";
             string codexPlan   = _settings.Get("Codex.Plan")   ?? "";
             string codexModel  = _settings.Get("Codex.Model")  ?? "";
+            string codexEffort = _settings.Get("Codex.Effort") ?? "";
 
             string modelRegistryJson = _settings.GetModelRegistryJson();
 
@@ -289,8 +303,10 @@ namespace ClarionAssistant.Dialogs
                 + ",\"model\":\"" + EscapeJson(model) + "\""
                 + ",\"claudeWorkingDir\":\""   + EscapeJson(claudeWorkingDir)   + "\""
                 + ",\"copilotWorkingDir\":\""  + EscapeJson(copilotWorkingDir)  + "\""
+                + ",\"codexWorkingDir\":\""    + EscapeJson(codexWorkingDir)    + "\""
                 + ",\"claudeProjectsDir\":\""  + EscapeJson(claudeProjectsDir)  + "\""
                 + ",\"copilotProjectsDir\":\"" + EscapeJson(copilotProjectsDir) + "\""
+                + ",\"codexProjectsDir\":\""   + EscapeJson(codexProjectsDir)   + "\""
                 + ",\"assistantBackend\":\"" + EscapeJson(backend) + "\""
                 + ",\"autoUpdate\":" + (autoUpdate ? "true" : "false")
                 + ",\"mtAvailable\":" + (mtAvailable ? "true" : "false")
@@ -301,9 +317,11 @@ namespace ClarionAssistant.Dialogs
                 + ",\"commands\":" + cmdsSb
                 + ",\"claudeCommands\":" + cmdsSb
                 + ",\"copilotCommands\":" + copSb
+                + ",\"codexCommands\":"   + codSb
                 + ",\"copilotModel\":\"" + EscapeJson(copilotModel) + "\""
                 + ",\"copilotPermissionMode\":\"" + EscapeJson(copilotPermMode) + "\""
                 + ",\"copilotExtraFlags\":\"" + EscapeJson(copilotExtraFlags) + "\""
+                + ",\"codexEffort\":\"" + EscapeJson(codexEffort) + "\""
                 + ",\"claudePlan\":\""  + EscapeJson(claudePlan)  + "\""
                 + ",\"copilotPlan\":\"" + EscapeJson(copilotPlan) + "\""
                 + ",\"codexPlan\":\""   + EscapeJson(codexPlan)   + "\""
@@ -536,8 +554,10 @@ namespace ClarionAssistant.Dialogs
             string model = ExtractJsonValue(data, "model") ?? "sonnet";
             string claudeWorkingDir   = ExtractJsonValue(data, "claudeWorkingDir")   ?? "";
             string copilotWorkingDir  = ExtractJsonValue(data, "copilotWorkingDir")  ?? "";
+            string codexWorkingDir    = ExtractJsonValue(data, "codexWorkingDir")    ?? "";
             string claudeProjectsDir  = ExtractJsonValue(data, "claudeProjectsDir")  ?? "";
             string copilotProjectsDir = ExtractJsonValue(data, "copilotProjectsDir") ?? "";
+            string codexProjectsDir   = ExtractJsonValue(data, "codexProjectsDir")   ?? "";
             bool autoUpdate = ExtractJsonValue(data, "autoUpdate") == "true";
             bool mtEnabled = ExtractJsonValue(data, "mtEnabled") == "true";
             string agentName = ExtractJsonValue(data, "agentName") ?? "ClarionIDE";
@@ -554,15 +574,20 @@ namespace ClarionAssistant.Dialogs
             _settings.Set("Claude.Model", model);
             _settings.Set("Claude.WorkingDirectory",  claudeWorkingDir);
             _settings.Set("Copilot.WorkingDirectory", copilotWorkingDir);
+            _settings.Set("Codex.WorkingDirectory",   codexWorkingDir);
             _settings.Set("Claude.ProjectsFolder",    claudeProjectsDir);
             _settings.Set("Copilot.ProjectsFolder",   copilotProjectsDir);
+            _settings.Set("Codex.ProjectsFolder",     codexProjectsDir);
             // Keep legacy COM.ProjectsFolder in sync with the saved default backend's
             // value so home.html and the COM-project-creation flow (which still read
             // COM.ProjectsFolder) continue to work without per-backend awareness.
             string defaultBackendForLegacy = ExtractJsonValue(data, "assistantBackend") ?? "Claude";
-            _settings.Set("COM.ProjectsFolder",
-                string.Equals(defaultBackendForLegacy, "Copilot", StringComparison.OrdinalIgnoreCase)
-                    ? copilotProjectsDir : claudeProjectsDir);
+            string legacyTarget = claudeProjectsDir;
+            if (string.Equals(defaultBackendForLegacy, "Copilot", StringComparison.OrdinalIgnoreCase))
+                legacyTarget = copilotProjectsDir;
+            else if (string.Equals(defaultBackendForLegacy, "Codex", StringComparison.OrdinalIgnoreCase))
+                legacyTarget = codexProjectsDir;
+            _settings.Set("COM.ProjectsFolder", legacyTarget);
             _settings.Set("Claude.AutoUpdate", autoUpdate.ToString().ToLower());
             _settings.Set("MultiTerminal.Enabled", mtEnabled.ToString().ToLower());
             _settings.Set("MultiTerminal.AgentName", agentName);
@@ -577,10 +602,12 @@ namespace ClarionAssistant.Dialogs
             string copilotPlan = ExtractJsonValue(data, "copilotPlan") ?? (_settings.Get("Copilot.Plan") ?? "");
             string codexPlan   = ExtractJsonValue(data, "codexPlan")   ?? (_settings.Get("Codex.Plan")   ?? "");
             string codexModel  = ExtractJsonValue(data, "codexModel")  ?? (_settings.Get("Codex.Model")  ?? "");
+            string codexEffort = ExtractJsonValue(data, "codexEffort") ?? (_settings.Get("Codex.Effort") ?? "");
             _settings.Set("Claude.Plan",  claudePlan);
             _settings.Set("Copilot.Plan", copilotPlan);
             _settings.Set("Codex.Plan",   codexPlan);
             _settings.Set("Codex.Model",  codexModel);
+            _settings.Set("Codex.Effort", codexEffort);
 
             // Class output folder
             string classOutputFolder = ExtractJsonValue(data, "classOutputFolder") ?? "";
@@ -596,6 +623,10 @@ namespace ClarionAssistant.Dialogs
             var copilotCmds = ParseCommandsArray(ExtractJsonArray(data, "copilotCommands"));
             if (copilotCmds != null && copilotCmds.Count > 0)
                 _settings.SetCopilotCommands(copilotCmds);
+
+            var codexCmds = ParseCommandsArray(ExtractJsonArray(data, "codexCommands"));
+            if (codexCmds != null && codexCmds.Count > 0)
+                _settings.SetCodexCommands(codexCmds);
 
             // Doc paths — extract JSON array, detect new paths, trigger ingestion
             string oldPathsStr = _settings.Get("DocGraph.Paths") ?? "";

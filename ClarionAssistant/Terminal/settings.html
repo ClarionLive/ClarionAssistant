@@ -507,6 +507,28 @@
             <div class="field-desc">Optional additional flags appended to the Copilot command.</div>
           </div>
         </div>
+
+        <div id="codexOnly" style="display:none">
+          <h3>Codex</h3>
+          <div class="field">
+            <div class="field-label">Reasoning Effort</div>
+            <select id="codexEffort" style="width:240px">
+              <option value="">Auto (let Codex decide)</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+            <div class="field-desc">Passed as <code>-c model_reasoning_effort=&lt;value&gt;</code>. Higher effort uses more tokens for deeper reasoning.</div>
+          </div>
+          <div class="field-desc" style="margin-top:8px">
+            Codex CLI reads MCP servers from <code>~/.codex/config.toml</code>. ClarionAssistant manages a marker-delimited block in that file at launch — the rest is preserved verbatim.
+          </div>
+          <div class="field-desc" style="margin-top:8px">
+            <b>Required one-time install:</b> the Codex backend uses an <code>mcp-remote</code> bridge (Codex CLI's native HTTP MCP transport is unreliable). Run this once in PowerShell:
+            <pre style="margin-top:4px;padding:6px 8px;background:rgba(0,0,0,0.15);border-radius:4px;font-size:11px">npm install -g mcp-remote@0.1.38</pre>
+            CA refuses to wire MCP if the bridge isn't pre-installed (avoids fetching code from the npm registry at launch with the live MCP token).
+          </div>
+        </div>
       </div>
 
       <!-- Tab: Models -->
@@ -982,6 +1004,7 @@
   var _savedDefault = 'Claude';
   var _claudeCommands = [];   // [{command:'...', isDefault:true/false}, ...]
   var _copilotCommands = [];  // [{command:'...', isDefault:true/false}, ...]
+  var _codexCommands = [];    // [{command:'...', isDefault:true/false}, ...]
   var _commands = [];         // active pointer — which list we're rendering/editing
   var _cmdSelectedIdx = -1;
   var _cmdEditIdx = -1; // -1 = adding new, >=0 = editing existing
@@ -1043,11 +1066,13 @@
 
     populatePathsFromViewBackend();
 
-    // Show the backend-specific Launch-tab blocks (Codex has no special block today)
+    // Show the backend-specific Launch-tab blocks
     var claudeOnly = document.getElementById('claudeOnly');
     var copilotOnly = document.getElementById('copilotOnly');
+    var codexOnly = document.getElementById('codexOnly');
     if (claudeOnly) claudeOnly.style.display = (_viewBackend === 'Claude') ? 'block' : 'none';
     if (copilotOnly) copilotOnly.style.display = (_viewBackend === 'Copilot') ? 'block' : 'none';
+    if (codexOnly) codexOnly.style.display = (_viewBackend === 'Codex') ? 'block' : 'none';
 
     // Render Plan + Model dropdowns from the registry for this backend
     renderPlanOptions(_viewBackend);
@@ -1060,7 +1085,7 @@
     if (desc) desc.textContent = 'Configure launch commands for ' + label + ' terminal sessions.';
 
     _commands = (_viewBackend === 'Copilot') ? _copilotCommands
-              : (_viewBackend === 'Codex')   ? []
+              : (_viewBackend === 'Codex')   ? _codexCommands
               : _claudeCommands;
     _cmdSelectedIdx = _commands.length > 0 ? 0 : -1;
     renderCommands();
@@ -1437,8 +1462,10 @@
       model: _modelByBackend.Claude || 'sonnet',
       claudeWorkingDir:   _paths.Claude.workingDir,
       copilotWorkingDir:  _paths.Copilot.workingDir,
+      codexWorkingDir:    _paths.Codex.workingDir,
       claudeProjectsDir:  _paths.Claude.projectsDir,
       copilotProjectsDir: _paths.Copilot.projectsDir,
+      codexProjectsDir:   _paths.Codex.projectsDir,
       assistantBackend: _savedDefault,
       autoUpdate: document.getElementById('autoUpdate').checked,
       mtEnabled: document.getElementById('mtEnabled').checked,
@@ -1447,9 +1474,11 @@
       commands: _claudeCommands,
       claudeCommands: _claudeCommands,
       copilotCommands: _copilotCommands,
+      codexCommands: _codexCommands,
       copilotModel: _modelByBackend.Copilot || '',
       copilotPermissionMode: (document.getElementById('copilotPermissionMode') || {}).value || 'prompt',
       copilotExtraFlags: (document.getElementById('copilotExtraFlags') || {}).value || '',
+      codexEffort: (document.getElementById('codexEffort') || {}).value || '',
       claudePlan:  _planByBackend.Claude  || '',
       copilotPlan: _planByBackend.Copilot || '',
       codexPlan:   _planByBackend.Codex   || '',
@@ -1527,10 +1556,13 @@
       // Backend + commands
       _claudeCommands = s.claudeCommands || s.commands || [];
       _copilotCommands = s.copilotCommands || [];
+      _codexCommands = s.codexCommands || [];
       if (document.getElementById('copilotPermissionMode'))
         document.getElementById('copilotPermissionMode').value = s.copilotPermissionMode || 'prompt';
       if (document.getElementById('copilotExtraFlags'))
         document.getElementById('copilotExtraFlags').value = s.copilotExtraFlags || '';
+      if (document.getElementById('codexEffort'))
+        document.getElementById('codexEffort').value = s.codexEffort || '';
       _savedDefault = s.assistantBackend || 'Claude';
       setViewBackend(_savedDefault);
       _initialLoad = false;

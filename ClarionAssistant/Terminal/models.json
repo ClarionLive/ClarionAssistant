@@ -56,7 +56,11 @@
       ],
       "defaultPlan": "Plus",
       "models": [
-        { "id": "", "label": "Default (recommended)", "plans": ["Plus", "Pro", "Business", "Edu", "Enterprise"] }
+        { "id": "gpt-5.5",       "label": "GPT-5.5 (Default)", "group": "Frontier", "tags": ["recommended"], "plans": ["Plus", "Pro", "Business", "Edu", "Enterprise"] },
+        { "id": "gpt-5.4",       "label": "GPT-5.4",           "group": "General",                           "plans": ["Plus", "Pro", "Business", "Edu", "Enterprise"] },
+        { "id": "gpt-5.4-mini",  "label": "GPT-5.4 mini",      "group": "General",                           "plans": ["Plus", "Pro", "Business", "Edu", "Enterprise"] },
+        { "id": "gpt-5.3-codex", "label": "GPT-5.3 Codex",     "group": "Codex",    "tags": ["coding-tuned"], "plans": ["Plus", "Pro", "Business", "Edu", "Enterprise"] },
+        { "id": "gpt-5.2",       "label": "GPT-5.2",           "group": "Agents",   "tags": ["long-running"], "plans": ["Plus", "Pro", "Business", "Edu", "Enterprise"] }
       ]
     }
   }
