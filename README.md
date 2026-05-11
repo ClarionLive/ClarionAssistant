@@ -57,6 +57,15 @@ Users can now expose their own MCP servers to the in-IDE Claude tabs without mod
 
 Smoke-tested end-to-end with `@modelcontextprotocol/server-everything` against all four corners: happy path, collision, malformed JSON, missing file.
 
+### Codex config self-heal
+
+Fixes a corruption mode where launching a Codex tab would error with `duplicate key [mcp_servers.clarion-assistant]` and refuse to start.
+
+Codex CLI's TOML serializer silently drops trailing comments when it appends state tables (e.g. `[tui.model_availability_nux]`), which removed our `<<< end >>>` marker. The next CA launch then saw a begin marker with no matching end and appended a second managed block, producing duplicate `[mcp_servers.clarion-assistant]` tables.
+
+- **Self-healing rewrite** &mdash; on every Codex launch CA now strips all CA markers (paired or orphan) and all `[mcp_servers.clarion-assistant.*]` sections anywhere in the file, lifts foreign tables out of any broken managed region, and appends one fresh canonical block. Even a config that's already broken (two begin markers, one end, duplicate tables) is cleaned up automatically on the next launch.
+- **No user action required** &mdash; just relaunch a Codex tab and the file is repaired in place.
+
 ---
 
 ## What's New in v4.5
