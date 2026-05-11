@@ -1,9 +1,9 @@
-; Clarion Assistant v4.5 Installer
+; Clarion Assistant v4.6 Installer
 ; Inno Setup 6 Script
 ; Supports Clarion 10, 11, 12 — user picks which version(s) to install
 
 #define MyAppName "Clarion Assistant"
-#define MyAppVersion "4.5.0"
+#define MyAppVersion "4.6.0"
 #define MyAppPublisher "ClarionLive"
 #define MyAppURL "https://clarionlive.com"
 

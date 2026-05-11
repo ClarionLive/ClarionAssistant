@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/peterparker57/ClarionAssistant/releases/latest"><img src="https://img.shields.io/github/v/release/peterparker57/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
   <img src="https://img.shields.io/badge/Clarion-10%20%7C%2011%20%7C%2012-blue?style=for-the-badge" alt="Clarion 10 | 11 | 12">
-  <img src="https://img.shields.io/badge/version-4.5-green?style=for-the-badge" alt="v4.5">
+  <img src="https://img.shields.io/badge/version-4.6-green?style=for-the-badge" alt="v4.6">
 </p>
 
 ---
@@ -39,6 +39,23 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 - **Diff viewer** &mdash; Monaco-based side-by-side diffs with syntax highlighting
 - **Knowledge system** &mdash; persistent cross-session memory for decisions, patterns, and gotchas
 - **Zoom persistence** &mdash; Ctrl+mousewheel zoom is saved and restored across sessions
+
+---
+
+## What's New in v4.6
+
+### Custom MCP servers in the IDE pane (issue #26)
+
+Users can now expose their own MCP servers to the in-IDE Claude tabs without modifying the addin, alongside the three built-ins (clarion-assistant, project-hub, browser).
+
+- **`%APPDATA%\ClarionAssistant\mcp-extra.json` sidecar** &mdash; standard `mcpServers` JSON. Entries are merged into the generated mcp-config.json each time a Claude tab launches, so edits take effect on the *next* tab spawn without restarting the IDE.
+- **Settings &rarr; MCP page** has a new "Custom MCP Servers in the IDE Pane" section with an **Open** button that creates the file from a commented template if missing, then shell-opens it. Always visible regardless of the External Access toggle.
+- **Auto-approve** &mdash; `mcp__<server>__*` is appended to `--allowedTools` for every sidecar entry, so user tools don't trigger permission prompts inside the IDE pane.
+- **Reserved-key protection** &mdash; an mcp-extra.json entry that collides with a built-in key (`clarion-assistant`, `project-hub`, `browser`) is silently skipped; the addin's real entry always wins.
+- **Malformed-JSON resilience** &mdash; a corrupted sidecar (trailing comma, stray brace, etc.) is logged and ignored. The tab still launches with the three built-ins.
+- **Empty-state safe** &mdash; if the file doesn't exist, behavior is identical to v4.5: just the three built-ins, no errors.
+
+Smoke-tested end-to-end with `@modelcontextprotocol/server-everything` against all four corners: happy path, collision, malformed JSON, missing file.
 
 ---
 
