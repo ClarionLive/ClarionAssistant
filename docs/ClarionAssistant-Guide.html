@@ -427,7 +427,7 @@
 <header class="site-header">
   <h1>Clarion.Assistant</h1>
   <div class="subtitle">AI-Powered Development for the Clarion IDE</div>
-  <div class="version-badge">User Guide &middot; v1.1</div>
+  <div class="version-badge">User Guide &middot; v1.2 &middot; for Clarion.Assistant 4.6</div>
 </header>
 
 <!-- ════════════════════════════════════════════════════ -->
@@ -437,6 +437,12 @@
 
   <!-- ── Sidebar Navigation ── -->
   <nav class="sidebar">
+    <h3>What's New</h3>
+    <a href="#whats-new">v4.6 Release Notes</a>
+    <a href="#whats-new-sidecar" class="sub">Custom MCP Servers</a>
+    <a href="#whats-new-codex" class="sub">Codex Backend</a>
+    <a href="#whats-new-selfheal" class="sub">Codex Config Self-Heal</a>
+
     <h3>Getting Started</h3>
     <a href="#getting-started">Overview</a>
     <a href="#getting-started-requirements" class="sub">System Requirements</a>
@@ -500,6 +506,146 @@
 
   <!-- ── Main Content ── -->
   <main class="main-content">
+
+<!-- ════════════════════════════════════════════════════ -->
+<!--  SECTION 0: WHAT'S NEW IN v4.6                       -->
+<!-- ════════════════════════════════════════════════════ -->
+<section id="whats-new" class="doc-section">
+  <h2>What's New in v4.6</h2>
+
+  <div class="section-intro">
+    <p>
+      v4.6 focuses on extensibility and reliability around the Model Context Protocol (MCP) plumbing:
+      you can now plug your own MCP servers into the in-IDE Claude tabs, and the Codex backend's
+      config file is now self-healing against an upstream Codex CLI bug that produced duplicate-key
+      crashes.
+    </p>
+  </div>
+
+  <h3 id="whats-new-sidecar">Custom MCP Servers in the IDE Pane <span style="font-weight:400;font-size:0.85em;color:var(--text-light)">(issue #26)</span></h3>
+
+  <p>
+    You can now expose your own MCP servers to the in-IDE Claude tabs without modifying the addin,
+    alongside the three built-ins (<code>clarion-assistant</code>, <code>project-hub</code>,
+    <code>browser</code>).
+  </p>
+
+  <ul>
+    <li>
+      <strong>Sidecar file:</strong>
+      <code>%APPDATA%\ClarionAssistant\mcp-extra.json</code> &mdash; a standard
+      <code>mcpServers</code> JSON object. Entries are merged into the generated
+      <code>mcp-config.json</code> every time a Claude tab launches, so edits take effect on the
+      <em>next</em> tab spawn without restarting the IDE.
+    </li>
+    <li>
+      <strong>Settings &rarr; MCP Server page</strong> has a "Custom MCP Servers in the IDE Pane"
+      section with an <strong>Open</strong> button that creates the file from a commented template
+      if missing, then shell-opens it. The section is always visible regardless of whether the
+      External MCP Access toggle is enabled.
+    </li>
+    <li>
+      <strong>Auto-approve</strong> &mdash; <code>mcp__&lt;server&gt;__*</code> is appended to
+      <code>--allowedTools</code> for every sidecar entry, so user tools don't trigger permission
+      prompts inside the IDE pane.
+    </li>
+    <li>
+      <strong>Reserved-key protection</strong> &mdash; an <code>mcp-extra.json</code> entry whose
+      key collides with a built-in (<code>clarion-assistant</code>, <code>project-hub</code>,
+      <code>browser</code>) is silently skipped; the addin's real entry always wins.
+    </li>
+    <li>
+      <strong>Malformed-JSON resilience</strong> &mdash; a corrupted sidecar (trailing comma, stray
+      brace, etc.) is logged and ignored. The tab still launches with the three built-ins.
+    </li>
+    <li>
+      <strong>Empty-state safe</strong> &mdash; if the file doesn't exist, behavior is identical to
+      v4.5: just the three built-ins, no errors.
+    </li>
+  </ul>
+
+  <p>
+    Example <code>mcp-extra.json</code>:
+  </p>
+
+  <pre><code>{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\MyProject"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "ghp_..." }
+    }
+  }
+}</code></pre>
+
+  <h3 id="whats-new-codex">Codex CLI as a Third Backend</h3>
+
+  <p>
+    OpenAI's <strong>Codex CLI</strong> is now a launchable terminal backend alongside Claude Code
+    and Copilot. Pick it from the backend dropdown on the home tab; tabs labelled <strong>CO</strong>
+    use Codex.
+  </p>
+
+  <ul>
+    <li>
+      <strong>MCP wiring via <code>mcp-remote</code> stdio bridge</strong> &mdash; Codex CLI's
+      native HTTP transport is unreliable against CA's Streamable-HTTP MCP endpoint, so CA writes
+      a marker-delimited managed block in <code>~/.codex/config.toml</code> that points Codex at
+      a locally-installed <code>mcp-remote</code> shim. The shim then talks to CA's MCP server
+      over HTTP with the live bearer token.
+    </li>
+    <li>
+      <strong>Pre-install required (fail-closed):</strong> CA refuses to launch a Codex tab unless
+      <code>mcp-remote</code> is installed at the expected npm-global location and matches the
+      pinned version. The terminal banner shows the exact <code>npm install -g mcp-remote@&lt;version&gt;</code>
+      command if it isn't. This closes a supply-chain risk where <code>npx -y mcp-remote</code> would
+      auto-fetch from the public registry at launch and hand the live bearer token to whatever it
+      pulled.
+    </li>
+    <li>
+      <strong>Codex settings panel</strong> &mdash; reasoning effort dropdown (Auto / low / medium /
+      high), the one-time install instruction for <code>mcp-remote</code>, and the available models
+      list (GPT-5.5 default, plus GPT-5.4 / 5.4-mini / 5.3-codex / 5.2).
+    </li>
+    <li>
+      <strong>IDE briefing</strong> &mdash; CA deploys an <code>AGENTS.md</code> into the working
+      directory on launch describing the available MCP tools, so Codex understands the IDE
+      context it's running in.
+    </li>
+  </ul>
+
+  <p>
+    The Codex backend originally shipped in v4.4; v4.6 adds the supply-chain pin, fail-closed
+    install check, and the self-heal described below.
+  </p>
+
+  <h3 id="whats-new-selfheal">Codex Config Self-Heal</h3>
+
+  <p>
+    Fixes a corruption mode where launching a Codex tab would error with
+    <code>duplicate key [mcp_servers.clarion-assistant]</code> and refuse to start.
+  </p>
+
+  <p>
+    Codex CLI's own TOML serializer silently drops trailing comments when it appends state tables
+    (e.g. <code>[tui.model_availability_nux]</code>), which removed the addin's end-marker comment.
+    The next CA launch then saw a begin marker with no matching end and appended a second managed
+    block, producing duplicate <code>[mcp_servers.clarion-assistant]</code> tables.
+  </p>
+
+  <p>
+    The fix is automatic: on every Codex launch, CA now strips all CA markers (paired or orphan)
+    and all <code>[mcp_servers.clarion-assistant.*]</code> sections anywhere in the file, lifts
+    foreign tables out of any broken managed region, and appends one fresh canonical block. Even
+    a config that's already broken (two begin markers, one end, duplicate tables) is repaired
+    automatically on the next launch &mdash; no user action required.
+  </p>
+
+</section>
 
 <!-- ════════════════════════════════════════════════════ -->
 <!--  SECTION 1: GETTING STARTED                         -->
