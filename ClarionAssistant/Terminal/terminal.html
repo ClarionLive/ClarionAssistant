@@ -349,10 +349,12 @@
             term.attachCustomKeyEventHandler((event) => {
                 // CTRL+C: Copy if text selected, otherwise let it pass as interrupt
                 if (event.ctrlKey && event.key === 'c' && event.type === 'keydown') {
-                    const selection = term.getSelection();
-                    if (selection && selection.length > 0) {
-                        navigator.clipboard.writeText(selection);
-                        return false; // Prevent default (don't send to terminal)
+                    if (term.hasSelection()) {
+                        const clean = smartGetSelection(term, 'flowed');
+                        if (clean && clean.length > 0) {
+                            navigator.clipboard.writeText(clean);
+                            return false; // Prevent default (don't send to terminal)
+                        }
                     }
                     // No selection - let CTRL+C pass through as interrupt
                     return true;
@@ -426,14 +428,78 @@
             // Handle right-click for context menu
             container.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
-                const selectedText = (term && term.hasSelection()) ? term.getSelection() : '';
+                const hasSel = !!(term && term.hasSelection());
+                const selectedText = hasSel ? smartGetSelection(term, 'flowed') : '';
+                const selectedTextRaw = hasSel ? smartGetSelection(term, 'raw') : '';
                 sendToHost({
                     type: 'contextmenu',
                     x: e.clientX,
                     y: e.clientY,
-                    selectedText: selectedText
+                    selectedText: selectedText,
+                    selectedTextRaw: selectedTextRaw
                 });
             });
+
+            // Reconstruct the selection from the live buffer.
+            // Two modes:
+            //   "raw":    one logical line per visual row, only trailing
+            //             cell-padding stripped. Use for code blocks / tables.
+            //   "flowed": prose-friendly. Rows that start with whitespace are
+            //             treated as continuations of the previous paragraph
+            //             and joined (the leading indent is what Ink-based
+            //             TUIs like Claude Code emit on wraps). Blank rows
+            //             become paragraph breaks.
+            // Default is "flowed" — Ctrl+C and right-click Copy use it.
+            // The context menu also exposes a "Copy raw" item.
+            function smartGetSelection(term, mode) {
+                if (!term || !term.hasSelection()) return '';
+                const sel = term.getSelectionPosition();
+                if (!sel) return term.getSelection() || '';
+
+                const buf = term.buffer.active;
+                const startY = sel.start.y;
+                const endY = sel.end.y;
+
+                // Pull each selected row as its own trimmed-right string.
+                const rows = [];
+                for (let y = startY; y <= endY; y++) {
+                    const line = buf.getLine(y);
+                    if (!line) { rows.push(''); continue; }
+                    const sx = (y === startY) ? sel.start.x : 0;
+                    const ex = (y === endY) ? sel.end.x : undefined;
+                    let text = line.translateToString(false, sx, ex);
+                    text = text.replace(/[ \t]+$/, '');
+                    rows.push(text);
+                }
+
+                if (mode === 'raw') {
+                    return rows.join('\n');
+                }
+
+                // Flowed mode: join wrapped-continuation rows.
+                let out = '';
+                let state = 'init'; // 'init' | 'in_para' | 'between'
+                for (let i = 0; i < rows.length; i++) {
+                    const text = rows[i];
+                    if (text.length === 0) {
+                        if (state === 'in_para') { out += '\n\n'; state = 'between'; }
+                        continue;
+                    }
+                    const startsWithWS = /^[ \t]/.test(text);
+                    const stripped = text.replace(/^[ \t]+/, '');
+                    if (state === 'in_para' && startsWithWS) {
+                        // Continuation of the current paragraph.
+                        if (out.length > 0 && !/\s$/.test(out)) out += ' ';
+                        out += stripped;
+                    } else {
+                        // First row, post-blank row, or a hard-left row that
+                        // starts a new logical line (list item, code, etc.).
+                        out += (state === 'in_para' ? '\n' : '') + (startsWithWS ? stripped : text);
+                        state = 'in_para';
+                    }
+                }
+                return out;
+            }
 
             // Notify C# when terminal is clicked (for dropdown close)
             container.addEventListener('mousedown', () => {

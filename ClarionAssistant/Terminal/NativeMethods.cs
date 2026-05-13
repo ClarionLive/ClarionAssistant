@@ -99,6 +99,11 @@ namespace ClarionAssistant.Terminal
 
         internal const uint HANDLE_FLAG_INHERIT = 0x00000001;
 
+        // 8.3 short path resolution — used to sidestep spaces in user-profile paths
+        // when injecting "@<file>" references into Claude Code's prompt parser.
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        internal static extern uint GetShortPathName(string lpszLongPath, System.Text.StringBuilder lpszShortPath, uint cchBuffer);
+
         #region Job Object API
 
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
