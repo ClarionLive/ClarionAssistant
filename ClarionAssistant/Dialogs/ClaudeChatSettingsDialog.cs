@@ -213,6 +213,9 @@ namespace ClarionAssistant.Dialogs
                     case "addToClaudeDesktop":
                         HandleAddToClaudeDesktop();
                         break;
+                    case "openMcpExtraConfig":
+                        HandleOpenMcpExtraConfig();
+                        break;
                 }
             }
             catch (Exception ex)
@@ -1029,6 +1032,51 @@ namespace ClarionAssistant.Dialogs
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine("[SettingsDialog] generateMcpExternalToken post failed: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Open the user-owned mcp-extra.json sidecar in the default editor for .json.
+        /// Creates the file with a commented template if missing. Issue #26.
+        /// </summary>
+        private void HandleOpenMcpExtraConfig()
+        {
+            string path = Services.McpServer.GetMcpExtraConfigPath();
+            try
+            {
+                string dir = System.IO.Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(dir) && !System.IO.Directory.Exists(dir))
+                    System.IO.Directory.CreateDirectory(dir);
+
+                if (!System.IO.File.Exists(path))
+                {
+                    string template = "{\r\n"
+                        + "  \"_comment\": \"Add MCP servers here that should load in Clarion Assistant's IDE-pane Claude session. Format matches Claude Desktop's mcpServers schema. Restart the IDE pane (or open a new tab) for changes to take effect. Addin-supplied servers (clarion-assistant, multiterminal, multiterminal-channel) cannot be overridden — those keys are reserved.\",\r\n"
+                        + "  \"mcpServers\": {\r\n"
+                        + "    \"_example_stdio\": {\r\n"
+                        + "      \"type\": \"stdio\",\r\n"
+                        + "      \"command\": \"C:\\\\Path\\\\To\\\\YourMcp.exe\",\r\n"
+                        + "      \"args\": []\r\n"
+                        + "    }\r\n"
+                        + "  }\r\n"
+                        + "}\r\n";
+                    System.IO.File.WriteAllText(path, template);
+                }
+
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = path,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[SettingsDialog] openMcpExtraConfig failed: " + ex.Message);
+                System.Windows.Forms.MessageBox.Show(
+                    "Could not open " + path + "\r\n\r\n" + ex.Message,
+                    "Open mcp-extra.json",
+                    System.Windows.Forms.MessageBoxButtons.OK,
+                    System.Windows.Forms.MessageBoxIcon.Warning);
             }
         }
 

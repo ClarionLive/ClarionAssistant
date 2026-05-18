@@ -2616,6 +2616,20 @@ namespace ClarionAssistant
         /// </summary>
         private BuiltBackendCommand BuildClaudeCommand(TerminalTab tab, LaunchContext ctx)
         {
+            // Issue #26: regenerate mcp-config.json at every tab launch so edits to the
+            // user's mcp-extra.json sidecar take effect on the next tab without an IDE
+            // restart. The original WriteMcpConfigFile() call in McpServer.Start runs
+            // exactly once at IDE startup; without this regen, sidecar edits wouldn't
+            // pick up until the IDE itself restarted.
+            if (_mcpServer != null && _mcpServer.IsRunning)
+            {
+                try { _mcpConfigPath = _mcpServer.WriteMcpConfigFile(); }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine("[LaunchClaude] mcp-config regen failed: " + ex.Message);
+                }
+            }
+
             string mcpArg = "";
             if (!string.IsNullOrEmpty(_mcpConfigPath) && File.Exists(_mcpConfigPath))
             {

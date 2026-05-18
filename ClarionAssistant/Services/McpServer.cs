@@ -286,6 +286,21 @@ namespace ClarionAssistant.Services
         /// </summary>
         public List<string> ExtraMcpServerNames { get; private set; } = new List<string>();
 
+        /// <summary>
+        /// Path to the optional user-owned sidecar that lets developers add MCP servers to
+        /// the IDE-pane Claude session without losing them on every regen of mcp-config.json.
+        /// Format: { "mcpServers": { "&lt;name&gt;": { ...standard MCP server entry... } } }
+        /// Addin-supplied servers (clarion-assistant, multiterminal, multiterminal-channel) win
+        /// on key collision.
+        /// </summary>
+        public static string GetMcpExtraConfigPath()
+        {
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "ClarionAssistant",
+                "mcp-extra.json");
+        }
+
         public string GenerateMcpConfig(McpConfigFormat format = McpConfigFormat.Claude)
         {
             // Both Claude and Copilot MCP client configs accept a `headers` map
@@ -379,9 +394,7 @@ namespace ClarionAssistant.Services
             {
                 try
                 {
-                    string sidecar = Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                        "ClarionAssistant", "mcp-extra.json");
+                    string sidecar = GetMcpExtraConfigPath();
                     if (File.Exists(sidecar))
                     {
                         string raw = File.ReadAllText(sidecar);
