@@ -277,6 +277,15 @@ namespace ClarionAssistant.Services
         /// </summary>
         public bool IncludeMultiTerminalChannel { get; private set; }
 
+        /// <summary>
+        /// Names of user-supplied MCP servers merged in from
+        /// <c>%APPDATA%\ClarionAssistant\mcp-extra.json</c> by the last
+        /// GenerateMcpConfig call (Claude format). AssistantChatControl reads
+        /// this to append <c>mcp__&lt;name&gt;__*</c> patterns to --allowedTools
+        /// so the user's servers auto-approve like the built-ins.
+        /// </summary>
+        public List<string> ExtraMcpServerNames { get; private set; } = new List<string>();
+
         public string GenerateMcpConfig(McpConfigFormat format = McpConfigFormat.Claude)
         {
             // Both Claude and Copilot MCP client configs accept a `headers` map
@@ -360,6 +369,52 @@ namespace ClarionAssistant.Services
             else
             {
                 IncludeMultiTerminalChannel = false;
+            }
+
+            // Merge user-supplied MCP servers from
+            // %APPDATA%\ClarionAssistant\mcp-extra.json. Claude format only —
+            // Copilot's schema differs and needs separate handling.
+            ExtraMcpServerNames = new List<string>();
+            if (format == McpConfigFormat.Claude)
+            {
+                try
+                {
+                    string sidecar = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                        "ClarionAssistant", "mcp-extra.json");
+                    if (File.Exists(sidecar))
+                    {
+                        string raw = File.ReadAllText(sidecar);
+                        var parsed = McpJsonRpc.Deserialize(raw);
+                        object entriesObj;
+                        if (parsed != null && parsed.TryGetValue("mcpServers", out entriesObj))
+                        {
+                            var entries = entriesObj as Dictionary<string, object>;
+                            if (entries != null)
+                            {
+                                foreach (var kv in entries)
+                                {
+                                    if (string.IsNullOrEmpty(kv.Key)) continue;
+                                    if (servers.ContainsKey(kv.Key))
+                                    {
+                                        System.Diagnostics.Debug.WriteLine(
+                                            "[McpServer] mcp-extra.json: skipping reserved key '" + kv.Key + "'");
+                                        continue;
+                                    }
+                                    servers[kv.Key] = kv.Value;
+                                    ExtraMcpServerNames.Add(kv.Key);
+                                    System.Diagnostics.Debug.WriteLine(
+                                        "[McpServer] mcp-extra.json: merged server '" + kv.Key + "'");
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine(
+                        "[McpServer] mcp-extra.json merge failed (ignored): " + ex.Message);
+                }
             }
 
             return McpJsonRpc.Serialize(new Dictionary<string, object>

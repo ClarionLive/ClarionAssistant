@@ -2666,6 +2666,15 @@ namespace ClarionAssistant
             // via mcp-config — prefix is different than when loaded as a plugin.
             if (_mcpServer != null && _mcpServer.IncludeMultiTerminalChannel)
                 allowedTools += ",mcp__multiterminal-channel__*";
+            // Auto-approve user-supplied MCP servers merged in from mcp-extra.json
+            if (_mcpServer != null && _mcpServer.ExtraMcpServerNames != null)
+            {
+                foreach (var name in _mcpServer.ExtraMcpServerNames)
+                {
+                    if (!string.IsNullOrEmpty(name))
+                        allowedTools += ",mcp__" + name + "__*";
+                }
+            }
 
             string pluginArg = "";
             string pluginDir = GetClarionAssistantPluginPath();
