@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/peterparker57/ClarionAssistant/releases/latest"><img src="https://img.shields.io/github/v/release/peterparker57/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
   <img src="https://img.shields.io/badge/Clarion-10%20%7C%2011%20%7C%2012-blue?style=for-the-badge" alt="Clarion 10 | 11 | 12">
-  <img src="https://img.shields.io/badge/version-4.6-green?style=for-the-badge" alt="v4.6">
+  <img src="https://img.shields.io/badge/version-4.6.1-green?style=for-the-badge" alt="v4.6.1">
 </p>
 
 ---
