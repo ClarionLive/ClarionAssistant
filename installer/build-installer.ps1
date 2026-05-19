@@ -37,6 +37,14 @@ $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Filter '
     Sort-Object { $_.Directory.Name } -Descending |
     Select-Object -First 1 -ExpandProperty FullName
 
+# Sectigo EV cert: "Kennewick Computer Company". Target it explicitly by SHA1
+# thumbprint — `signtool /a` would silently fall back to a self-signed cert
+# in CurrentUser\My if the EV dongle is unplugged, producing an "Unknown
+# Publisher" installer. If the cert expires or is reissued, look up the new
+# thumbprint with:
+#   Get-ChildItem Cert:\CurrentUser\My | Where Subject -like '*Kennewick*' | Select Thumbprint
+$signCertThumbprint = '85C3D22C215029A9F59EFF775720446F3B12FE3A'
+
 Write-Host "=== Clarion Assistant Installer Build ===" -ForegroundColor Cyan
 Write-Host "MSBuild:    $msbuild"
 Write-Host "Inno Setup: $innoSetup"
@@ -81,7 +89,7 @@ if ($Sign -and $signtool) {
     foreach ($f in $filesToSign) {
         if (Test-Path $f) {
             Write-Host "  Signing $([IO.Path]::GetFileName($f))..."
-            & $signtool sign /fd sha256 /tr http://timestamp.sectigo.com /td sha256 /a /d "Clarion Assistant" $f
+            & $signtool sign /sha1 $signCertThumbprint /fd sha256 /tr http://timestamp.sectigo.com /td sha256 /d "Clarion Assistant" $f
             if ($LASTEXITCODE -ne 0) { Write-Warning "Failed to sign $f" }
         }
     }
@@ -140,9 +148,25 @@ if (Test-Path (Join-Path $scriptDir 'ClarionAssistant.iss.tmp')) {
 $installerExe = Get-ChildItem $outputDir -Filter '*.exe' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if ($Sign -and $signtool -and $installerExe) {
     Write-Host "`nSigning installer..." -ForegroundColor Yellow
-    & $signtool sign /fd sha256 /tr http://timestamp.sectigo.com /td sha256 /a /d "Clarion Assistant Installer" $installerExe.FullName
-    if ($LASTEXITCODE -ne 0) { Write-Warning "Failed to sign installer" }
-    else { Write-Host "  OK" -ForegroundColor Green }
+    & $signtool sign /sha1 $signCertThumbprint /fd sha256 /tr http://timestamp.sectigo.com /td sha256 /d "Clarion Assistant Installer" $installerExe.FullName
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to sign installer"
+        exit 1
+    }
+
+    # Verify the signature came from the right cert. signtool /a used to silently
+    # fall back to a self-signed test cert when the EV dongle was unplugged, so
+    # check the subject matches before we ever distribute. Don't use
+    # `signtool verify /pa` — its LocalMachine root store can lack AAA
+    # Certificate Services and report false negatives.
+    $sig = Get-AuthenticodeSignature $installerExe.FullName
+    if ($sig.SignerCertificate -and $sig.SignerCertificate.Subject -like '*Kennewick Computer Company*') {
+        Write-Host "  OK (signed by $($sig.SignerCertificate.Subject.Split(',')[0]))" -ForegroundColor Green
+    } else {
+        $actual = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { '(no signer cert)' }
+        Write-Error "Installer signed with WRONG certificate: $actual. Expected Kennewick Computer Company. Plug in the Sectigo EV dongle and rebuild."
+        exit 1
+    }
 }
 
 Write-Host "`n=== Build Complete ===" -ForegroundColor Green
