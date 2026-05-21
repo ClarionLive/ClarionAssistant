@@ -427,7 +427,7 @@
 <header class="site-header">
   <h1>Clarion.Assistant</h1>
   <div class="subtitle">AI-Powered Development for the Clarion IDE</div>
-  <div class="version-badge">User Guide &middot; v1.2 &middot; for Clarion.Assistant 4.6</div>
+  <div class="version-badge">User Guide &middot; v1.3 &middot; for Clarion.Assistant 4.6.2</div>
 </header>
 
 <!-- ════════════════════════════════════════════════════ -->
@@ -438,10 +438,12 @@
   <!-- ── Sidebar Navigation ── -->
   <nav class="sidebar">
     <h3>What's New</h3>
-    <a href="#whats-new">v4.6 Release Notes</a>
+    <a href="#whats-new">v4.6.x Release Notes</a>
     <a href="#whats-new-sidecar" class="sub">Custom MCP Servers</a>
     <a href="#whats-new-codex" class="sub">Codex Backend</a>
     <a href="#whats-new-selfheal" class="sub">Codex Config Self-Heal</a>
+    <a href="#whats-new-461" class="sub">v4.6.1 &mdash; Polish &amp; Persistence</a>
+    <a href="#whats-new-462" class="sub">v4.6.2 &mdash; LSP CodeGraph Reliability</a>
 
     <h3>Getting Started</h3>
     <a href="#getting-started">Overview</a>
@@ -511,14 +513,18 @@
 <!--  SECTION 0: WHAT'S NEW IN v4.6                       -->
 <!-- ════════════════════════════════════════════════════ -->
 <section id="whats-new" class="doc-section">
-  <h2>What's New in v4.6</h2>
+  <h2>What's New in v4.6.x</h2>
 
   <div class="section-intro">
     <p>
-      v4.6 focuses on extensibility and reliability around the Model Context Protocol (MCP) plumbing:
-      you can now plug your own MCP servers into the in-IDE Claude tabs, and the Codex backend's
-      config file is now self-healing against an upstream Codex CLI bug that produced duplicate-key
-      crashes.
+      The v4.6 line focuses on extensibility and reliability around the Model Context Protocol (MCP)
+      plumbing: you can now plug your own MCP servers into the in-IDE Claude tabs, and the Codex
+      backend's config file is now self-healing against an upstream Codex CLI bug that produced
+      duplicate-key crashes. Two patch releases followed &mdash;
+      <a href="#whats-new-461">v4.6.1</a> rounded out the sidecar UI and added a couple of Settings
+      ergonomics fixes, and <a href="#whats-new-462">v4.6.2</a> bundles the
+      <code>better-sqlite3</code> native module with the LSP so CodeGraph navigation works on
+      end-user installs without a separate <code>npm install</code> step.
     </p>
   </div>
 
@@ -644,6 +650,63 @@
     a config that's already broken (two begin markers, one end, duplicate tables) is repaired
     automatically on the next launch &mdash; no user action required.
   </p>
+
+  <h3 id="whats-new-461">v4.6.1 &mdash; Polish &amp; Persistence <span style="font-weight:400;font-size:0.85em;color:var(--text-light)">(2026-05-18)</span></h3>
+
+  <p>
+    First patch release in the project. Completes the v4.6 sidecar-merge feature delivery and lands
+    two Settings ergonomics fixes raised after the 4.6.0 ship.
+  </p>
+
+  <ul>
+    <li>
+      <strong>Sidecar UI follow-up (PR #28 / issue #26):</strong> the Settings &rarr; MCP Server
+      page UI for the sidecar landed in 4.6.1, and per-tab <code>mcp-config.json</code> regeneration
+      was added so sidecar edits made mid-session take effect on the <em>next</em> tab spawn without
+      an IDE restart. (The sidecar merge logic itself shipped in 4.6.0; 4.6.1 closed out the
+      Settings surface and the regen timing fix.)
+    </li>
+    <li>
+      <strong>Issue #32 &mdash; Version dropdown persistence:</strong> the Clarion version selector
+      on the home tab now persists the user's selection across IDE reload, instead of resetting to
+      the default on every launch.
+    </li>
+    <li>
+      <strong>Issue #31 &mdash; Settings Launch tab alignment:</strong> the Plan label and dropdown
+      on the Launch tab are now aligned with the Backend row above them, fixing a visual stutter
+      introduced by the v4.6 Settings redesign.
+    </li>
+  </ul>
+
+  <h3 id="whats-new-462">v4.6.2 &mdash; LSP CodeGraph Reliability <span style="font-weight:400;font-size:0.85em;color:var(--text-light)">(2026-05-19)</span></h3>
+
+  <p>
+    Fixes a silent-failure mode where the LSP CodeGraphBridge was self-disabling on end-user installs
+    (issue #33). The bridge needs <code>better-sqlite3</code> to read the <code>.codegraph.db</code>
+    file, but the bundled <code>node_modules</code> shipped with the addin was missing the module
+    and its native bindings &mdash; so the bridge would silently fall back to the disabled state,
+    and cross-file CodeGraph navigation (Go-To-Definition across projects, "Who calls X?", etc.)
+    didn't work outside of developer machines that happened to have <code>better-sqlite3</code>
+    installed globally.
+  </p>
+
+  <ul>
+    <li>
+      <strong>Shipped modules:</strong> <code>better-sqlite3</code>, <code>bindings</code>, and
+      <code>file-uri-to-path</code> are now included in both the <code>deploy.ps1</code> dev-deploy
+      path and the per-Clarion-version <code>node_modules</code> blocks in the installer.
+    </li>
+    <li>
+      <strong>Verified:</strong> cold-loading the deployed install with the bundled
+      <code>node.exe</code> resolves the require, loads the prebuilt native binding without ABI
+      mismatch, and round-trips an in-memory database read &mdash; so the bridge stays enabled and
+      CodeGraph navigation works on the first launch after install.
+    </li>
+    <li>
+      <strong>No action required:</strong> the fix is purely an install-time bundling change.
+      Existing 4.6.0/4.6.1 installs get repaired by upgrading to 4.6.2.
+    </li>
+  </ul>
 
 </section>
 
