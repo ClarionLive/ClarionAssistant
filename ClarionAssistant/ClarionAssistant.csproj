@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Single source of truth for version (Major.Minor.Build) -->
+  <Import Project="$(MSBuildThisFileDirectory)Version.props" />
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
@@ -124,6 +126,7 @@
     <Compile Include="Services\PwshCommandQuoter.cs" />
     <Compile Include="TaskLifecycleBoard\TaskLifecycleBoardForm.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Properties\AssemblyVersion.cs" />
     <!-- CodeGraph engine (self-contained, no external dependencies) -->
     <Compile Include="CodeGraph\Graph\CodeGraphDatabase.cs" />
     <Compile Include="CodeGraph\Graph\CodeGraphIndexer.cs" />
@@ -199,6 +202,28 @@
       <GeneratePathProperty>true</GeneratePathProperty>
     </PackageReference>
   </ItemGroup>
+  <!--
+    PrebuildVersion: runs Update-Version.ps1 before compile. Increments VersionBuild in
+    Version.props and regenerates Properties\AssemblyVersion.cs and ClarionAssistant.addin
+    from Version.props + ClarionAssistant.addin.template. Skipped for design-time/restore-only
+    builds (no Configuration set) so editing inside IDEs doesn't spin the build counter.
+  -->
+  <Target Name="PrebuildVersion" BeforeTargets="CoreCompile" Condition="'$(Configuration)' != '' and '$(DesignTimeBuild)' != 'true' and '$(BuildingInsideVisualStudio)' != 'true'">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)Update-Version.ps1&quot;"
+          WorkingDirectory="$(MSBuildThisFileDirectory)" />
+  </Target>
+
+  <!--
+    EnsureVersionFiles: cheap safety net for fresh checkouts. If AssemblyVersion.cs or
+    ClarionAssistant.addin are missing (gitignored, never built locally), generate them
+    WITHOUT incrementing the build counter so the compile can resolve them.
+  -->
+  <Target Name="EnsureVersionFiles" BeforeTargets="PrebuildVersion;ValidateClarionReferences"
+          Condition="!Exists('$(MSBuildThisFileDirectory)Properties\AssemblyVersion.cs') Or !Exists('$(MSBuildThisFileDirectory)ClarionAssistant.addin')">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)Update-Version.ps1&quot; -NoIncrement"
+          WorkingDirectory="$(MSBuildThisFileDirectory)" />
+  </Target>
+
   <Target Name="ValidateClarionReferences" BeforeTargets="ResolveReferences">
     <Error Condition="'$(ClarionRoot)' == ''"
            Text="ClarionRoot is not set. Create Directory.Build.props.user or pass /p:ClarionRoot=C:\Path\To\Clarion." />

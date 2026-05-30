@@ -14,5 +14,5 @@ using System.Runtime.InteropServices;
 
 [assembly: Guid("73e24177-7d34-4839-b805-d9492e7f8c21")]
 
-[assembly: AssemblyVersion("4.6.2.0")]
-[assembly: AssemblyFileVersion("4.6.2.0")]
+// AssemblyVersion / AssemblyFileVersion are emitted by Properties\AssemblyVersion.cs,
+// which is regenerated from Version.props by Update-Version.ps1 (PrebuildVersion target).

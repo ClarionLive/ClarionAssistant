@@ -1,0 +1,17 @@
+<Project>
+  <!--
+    Single source of truth for ClarionAssistant version.
+
+    VersionBuild auto-increments on every MSBuild compile (see PrebuildVersion target in csproj).
+    To bump VersionMajor or VersionMinor (or set VersionBuild manually), run:
+        .\Bump-Version.ps1 -Major 4 -Minor 7
+        .\Bump-Version.ps1 -Build 12345
+  -->
+  <PropertyGroup>
+    <VersionMajor>4</VersionMajor>
+    <VersionMinor>6</VersionMinor>
+    <VersionBuild>15</VersionBuild>
+    <FullVersion>4.6.15</FullVersion>
+    <AssemblyFullVersion>4.6.15.0</AssemblyFullVersion>
+  </PropertyGroup>
+</Project>
