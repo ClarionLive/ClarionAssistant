@@ -194,6 +194,104 @@ namespace ClarionAssistant.Services
             return outp;
         }
 
+        /// <summary>Collect the procedure's ROUTINE names from its source (the "&lt;name&gt; ROUTINE" lines).</summary>
+        public static List<string> ParseRoutines(string source, string procName)
+        {
+            var outp = new List<string>();
+            if (string.IsNullOrEmpty(source)) return outp;
+            var lines = source.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+
+            int start = 0;
+            if (!string.IsNullOrEmpty(procName))
+            {
+                var rx = new Regex(@"^\s*" + Regex.Escape(procName) + @"\s+(PROCEDURE|FUNCTION)\b", RegexOptions.IgnoreCase);
+                for (int i = 0; i < lines.Length; i++)
+                    if (rx.IsMatch(lines[i])) { start = i + 1; break; }
+            }
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = start; i < lines.Length; i++)
+            {
+                string label, rest;
+                SplitLabelRest(StripComment(lines[i]), out label, out rest);
+                if (label == null) continue;
+                if (rest.ToUpperInvariant().StartsWith("ROUTINE") && IsIdent(label) && seen.Add(label))
+                    outp.Add(label);
+            }
+            return outp;
+        }
+
+        /// <summary>
+        /// Parse global variable declarations from the generated &lt;app&gt;.clw — the top-level "Label TYPE"
+        /// items after the global MAP and outside FILE/structure blocks (those are shown as Tables).
+        /// </summary>
+        public static List<FieldDef> ParseGlobalData(string clwPath)
+        {
+            var outp = new List<FieldDef>();
+            string[] lines;
+            try { lines = File.ReadAllLines(clwPath); }
+            catch { return outp; }
+
+            // Skip the global MAP block (MAP ... nested MODULE...END ... END).
+            int i = 0;
+            bool mapSeen = false;
+            int mapDepth = 0;
+            for (; i < lines.Length; i++)
+            {
+                string label, rest;
+                SplitLabelRest(StripComment(lines[i]), out label, out rest);
+                if (label == null) continue;
+                string lu = label.ToUpperInvariant();
+                if (!mapSeen)
+                {
+                    if (lu == "MAP") { mapSeen = true; mapDepth = 1; }
+                    continue;
+                }
+                if (lu.StartsWith("MODULE") || lu == "MAP") mapDepth++;
+                else if (lu == "END") { mapDepth--; if (mapDepth <= 0) { i++; break; } }
+            }
+            if (!mapSeen) i = 0;
+
+            int depth = 0;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (; i < lines.Length && outp.Count < 2000; i++)
+            {
+                string label, rest;
+                SplitLabelRest(StripComment(lines[i]), out label, out rest);
+                if (label == null) continue;
+                string restU = rest.ToUpperInvariant();
+                string labelU = label.ToUpperInvariant();
+
+                if (depth > 0)
+                {
+                    if (restU.StartsWith("FILE") || StructOpener.IsMatch(restU)) depth++;
+                    else if (labelU == "END" && rest.Length == 0) depth--;
+                    continue;
+                }
+
+                if (labelU == "CODE") break;            // program code begins
+                if (labelU == "END") continue;
+                if (restU.StartsWith("FILE")) { depth = 1; continue; }   // a table — shown in the Tables scope
+                if (StructOpener.IsMatch(restU))
+                {
+                    if (IsIdent(label) && seen.Add(label)) outp.Add(new FieldDef { Name = label, Type = FirstWord(rest) });
+                    depth = 1;
+                    continue;
+                }
+                if (StatementKeywords.Contains(labelU)) continue;
+                if (rest.Length > 0 && IsIdent(label) && seen.Add(label))
+                    outp.Add(new FieldDef { Name = label, Type = rest });
+            }
+            return outp;
+        }
+
+        private static void SplitLabelRest(string line, out string label, out string rest)
+        {
+            label = null; rest = "";
+            var m = Regex.Match(line ?? "", @"^(\s*)(\S+)\s*(.*)$");
+            if (m.Success) { label = m.Groups[2].Value; rest = m.Groups[3].Value.Trim(); }
+        }
+
         private static bool IsIdent(string s)
         {
             return !string.IsNullOrEmpty(s) && Regex.IsMatch(s, @"^[A-Za-z_][A-Za-z0-9_]*$");

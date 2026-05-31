@@ -41,7 +41,10 @@
 <script>
     var locals = [];
     var tables = [];
-    var collapsed = {}; // tableName -> true when collapsed
+    var routines = [];
+    var globals = [];
+    var collapsed = {};        // tableName -> true when a table's columns are collapsed
+    var sectionCollapsed = {}; // section key -> true when a whole section is collapsed
 
     // LSP SymbolKind -> short label
     function kindLabel(k) {
@@ -77,29 +80,36 @@
         var list = document.getElementById('list');
         list.innerHTML = '';
 
-        // ----- Tables (used by this procedure) -----
-        var shownTables = tables.filter(function (t) {
-            if (match(t.name)) return true;
-            return (t.columns || []).some(function (c) { return match(c.name); });
-        });
-        if (shownTables.length) {
-            var sec = document.createElement('div'); sec.className = 'section'; sec.textContent = 'Tables';
+        function sectionHeader(key, label, count) {
+            var open = !sectionCollapsed[key] || !!f; // force-open while filtering
+            var sec = document.createElement('div');
+            sec.className = 'section';
+            sec.style.cursor = 'pointer';
+            sec.textContent = (open ? '▾ ' : '▸ ') + label + '  (' + count + ')';
+            sec.addEventListener('click', function () { sectionCollapsed[key] = !sectionCollapsed[key]; render(); });
             list.appendChild(sec);
+            return open;
+        }
+
+        // ----- Tables (used by this procedure), each expandable to columns + keys -----
+        var shownTables = tables.filter(function (t) {
+            return match(t.name) || (t.columns || []).some(function (c) { return match(c.name); });
+        });
+        if (shownTables.length && sectionHeader('tables', 'Tables', shownTables.length)) {
             shownTables.forEach(function (t) {
-                var isCollapsed = !!collapsed[t.name] && !f; // expand all while filtering
+                var tOpen = !collapsed[t.name] || !!f;
                 var hdr = makeRow('table-hdr', null, t.name, t.prefix ? t.prefix + ':' : '',
                     t.name + (t.prefix ? '  (' + t.prefix + ':)' : ''), t.name);
-                var tw = document.createElement('span'); tw.className = 'twisty'; tw.textContent = isCollapsed ? '▸' : '▾';
+                var tw = document.createElement('span'); tw.className = 'twisty'; tw.textContent = tOpen ? '▾' : '▸';
                 hdr.insertBefore(tw, hdr.firstChild);
                 hdr.addEventListener('click', function (e) {
                     if (e.detail > 1) return; // ignore the click half of a double-click
                     collapsed[t.name] = !collapsed[t.name]; render();
                 });
                 list.appendChild(hdr);
-                if (!isCollapsed) {
+                if (tOpen) {
                     (t.keys || []).forEach(function (k) {
-                        if (!match(k)) return;
-                        list.appendChild(makeRow('col-row', 'key', k, '', 'key ' + k, k));
+                        if (match(k)) list.appendChild(makeRow('col-row', 'key', k, '', 'key ' + k, k));
                     });
                     (t.columns || []).forEach(function (c) {
                         if (!match(c.name)) return;
@@ -110,19 +120,23 @@
             });
         }
 
-        // ----- Local data (LSP symbols) -----
-        var shownLocals = locals.filter(function (it) { return match(it.name); });
-        if (shownLocals.length) {
-            var sec2 = document.createElement('div'); sec2.className = 'section'; sec2.textContent = 'Local Data';
-            list.appendChild(sec2);
-            shownLocals.forEach(function (it) {
+        // ----- Flat scopes -----
+        function flatSection(key, label, items) {
+            var shown = items.filter(function (it) { return match(it.name); });
+            if (!shown.length) return;
+            if (!sectionHeader(key, label, shown.length)) return;
+            shown.forEach(function (it) {
                 list.appendChild(makeRow(null, null, it.name, it.type || '',
                     it.name + (it.type ? '  ' + it.type : ''), it.name));
             });
         }
 
+        flatSection('locals', 'Local Data', locals);
+        flatSection('routines', 'Routines', routines);
+        flatSection('globals', 'Global Data', globals);
+
         if (!list.childNodes.length) {
-            list.innerHTML = '<div class="empty">No tables or data. Open a procedure in the Modern Embeditor and Refresh. (Tables come from the generated &lt;app&gt;.clw; locals need the LSP running.)</div>';
+            list.innerHTML = '<div class="empty">No data. Open a procedure in the Modern Embeditor and Refresh. (Tables/Global Data come from the generated &lt;app&gt;.clw; the app must be generated.)</div>';
         }
     }
 
@@ -137,6 +151,8 @@
                 document.getElementById('title').textContent = msg.title || 'Data';
                 var byName = function (a, b) { return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase()); };
                 locals = (msg.locals || []).slice().sort(byName);
+                routines = (msg.routines || []).slice().sort(byName);
+                globals = (msg.globals || []).slice().sort(byName);
                 tables = (msg.tables || []).slice().sort(byName);
                 tables.forEach(function (t) { if (t.columns) t.columns = t.columns.slice().sort(byName); });
                 render();

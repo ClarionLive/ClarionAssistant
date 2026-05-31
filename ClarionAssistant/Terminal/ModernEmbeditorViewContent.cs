@@ -134,17 +134,29 @@ namespace ClarionAssistant.Terminal
         public Dictionary<string, object> GetPadData()
         {
             var locals = new List<Dictionary<string, object>>();
+            var routines = new List<Dictionary<string, object>>();
+            var globals = new List<Dictionary<string, object>>();
             try
             {
                 foreach (var d in ClarionAppDataReader.ParseLocalData(_sourceText, _procedureName))
                     locals.Add(new Dictionary<string, object> { { "name", d.Name }, { "type", d.Type } });
+
+                foreach (var r in ClarionAppDataReader.ParseRoutines(_sourceText, _procedureName))
+                    routines.Add(new Dictionary<string, object> { { "name", r }, { "type", "ROUTINE" } });
+
+                string appClw = ClarionAppDataReader.FindAppClwPath();
+                if (appClw != null)
+                    foreach (var g in ClarionAppDataReader.ParseGlobalData(appClw))
+                        globals.Add(new Dictionary<string, object> { { "name", g.Name }, { "type", g.Type } });
             }
-            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] ParseLocalData: " + ex.Message); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] GetPadData parse: " + ex.Message); }
 
             var data = new Dictionary<string, object>
             {
                 { "procedure", _procedureName ?? "" },
                 { "locals", locals },
+                { "routines", routines },
+                { "globals", globals },
                 { "tables", GetUsedTables() }
             };
             return data;
