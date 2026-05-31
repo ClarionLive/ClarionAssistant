@@ -528,6 +528,70 @@ namespace ClarionAssistant.Services
         /// Reflection-based locate of the embeditor's ICSharpCode TextEditorControl,
         /// then a typed cast. Mirrors AppTreeService.GetClaGenEditor()'s search.
         /// </summary>
+        /// <summary>
+        /// Path B (M1): returns the live assembled source of the active ClaGenEditor plus the map of
+        /// editable embed-slot line ranges. Returns false if no embeditor is open (<paramref name="error"/>
+        /// then carries the reason). <paramref name="text"/> is the full generated buffer (read-only zones
+        /// and embed slots together). <paramref name="editableRanges"/> holds 1-based, inclusive
+        /// [startLine, endLine] pairs for the writable embed slots, aligned to <paramref name="text"/> —
+        /// everything outside them is generated/read-only. Mirrors the CustomLines walk in
+        /// AppTreeService.GetEmbeditorSource; reuses the same embeditor-discovery as completion.
+        /// </summary>
+        public static bool TryGetActiveEmbeditorSource(out string title, out string text,
+            out List<int[]> editableRanges, out string error)
+        {
+            title = null;
+            text = null;
+            editableRanges = new List<int[]>();
+            error = null;
+
+            var sb = new StringBuilder();
+            var control = GetActiveEmbeditorControl(sb);
+            if (control == null)
+            {
+                error = sb.ToString().Trim();
+                if (string.IsNullOrEmpty(error)) error = "No embeditor is currently open.";
+                return false;
+            }
+            var doc = control.Document;
+            if (doc == null) { error = "Embeditor control has no document."; return false; }
+            try { title = Path.GetFileName(control.FileName); } catch { }
+            if (string.IsNullOrEmpty(title)) title = "Embeditor";
+            text = doc.TextContent;
+
+            // Editable embed slots: walk PweeLineManager.CustomLines. Each CustomPweeLine exposes
+            // ReadOnly / StartLineNr / EndLineNr as FIELDS (not properties). Editable slot ⟺
+            // ReadOnly == false (PweeLineManager enforces read-only on generated lines). Collect the
+            // 0-based [Start,End] of every editable line, then merge adjacent/overlapping into clean
+            // 1-based inclusive ranges. Non-fatal on failure (view still renders).
+            try
+            {
+                var lineManager = GetProp(doc, "CustomLineManager");
+                var customLines = (lineManager != null) ? GetProp(lineManager, "CustomLines") as IEnumerable : null;
+                if (customLines != null)
+                {
+                    var raw = new List<int[]>();
+                    foreach (var cl in customLines)
+                    {
+                        if (cl == null) continue;
+                        if (!(GetField(cl, "ReadOnly") is bool ro) || ro) continue; // editable = not read-only
+                        if (!(GetField(cl, "StartLineNr") is int s)) continue;
+                        if (!(GetField(cl, "EndLineNr") is int e)) continue;
+                        if (e < s) e = s;
+                        raw.Add(new[] { s, e }); // 0-based inclusive
+                    }
+                    editableRanges = MergeRanges(raw); // → 1-based inclusive, merged
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    "[EmbeditorCompletion] editable-range extraction failed: " + ex.Message);
+            }
+
+            return true;
+        }
+
         private static TextEditorControl GetActiveEmbeditorControl(StringBuilder sb)
         {
             var workbench = WorkbenchSingleton.Workbench;
@@ -573,6 +637,34 @@ namespace ClarionAssistant.Services
                 sb.AppendLine("ClaGenEditor.TextEditorControl was not a TextEditorControl (got: "
                               + (GetProp(editor, "TextEditorControl")?.GetType().FullName ?? "null") + ").");
             return tec;
+        }
+
+        /// <summary>Reads an instance field by name (CustomPweeLine exposes ReadOnly/StartLineNr/EndLineNr as fields).</summary>
+        private static object GetField(object obj, string name)
+        {
+            if (obj == null) return null;
+            try { var f = obj.GetType().GetField(name, AllInstance); return f != null ? f.GetValue(obj) : null; }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Sorts and merges 0-based inclusive [start,end] line ranges (merging when adjacent or
+        /// overlapping), returning 1-based inclusive ranges suitable for Monaco line decorations.
+        /// </summary>
+        private static List<int[]> MergeRanges(List<int[]> raw)
+        {
+            var result = new List<int[]>();
+            if (raw == null || raw.Count == 0) return result;
+            raw.Sort((a, b) => a[0] != b[0] ? a[0].CompareTo(b[0]) : a[1].CompareTo(b[1]));
+            int curS = raw[0][0], curE = raw[0][1];
+            for (int i = 1; i < raw.Count; i++)
+            {
+                int s = raw[i][0], e = raw[i][1];
+                if (s <= curE + 1) { if (e > curE) curE = e; }   // adjacent or overlapping → extend
+                else { result.Add(new[] { curS + 1, curE + 1 }); curS = s; curE = e; }
+            }
+            result.Add(new[] { curS + 1, curE + 1 });
+            return result;
         }
 
         private static object GetProp(object obj, string name)

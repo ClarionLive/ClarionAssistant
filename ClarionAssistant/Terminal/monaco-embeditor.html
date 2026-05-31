@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Modern Embeditor</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    /* ---------- Theme variables (Catppuccin Mocha / Latte) ---------- */
+    :root {
+        --bg: #1e1e2e; --fg: #cdd6f4;
+        --toolbar-bg: #181825; --toolbar-border: #313244;
+        --title-color: #a6adc8; --title-accent: #cdd6f4;
+        --loading-color: #6c7086;
+    }
+    body.light {
+        --bg: #eff1f5; --fg: #4c4f69;
+        --toolbar-bg: #dce0e8; --toolbar-border: #bcc0cc;
+        --title-color: #6c6f85; --title-accent: #4c4f69;
+        --loading-color: #8c8fa1;
+    }
+
+    html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', Tahoma, sans-serif; background: var(--bg); color: var(--fg); }
+
+    #toolbar {
+        display: flex; align-items: center; gap: 8px;
+        padding: 6px 12px; background: var(--toolbar-bg); border-bottom: 1px solid var(--toolbar-border);
+        height: 38px; flex-shrink: 0;
+    }
+    #toolbar .title { font-size: 13px; color: var(--title-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #toolbar .title span { color: var(--title-accent); font-weight: 600; }
+    #toolbar .spacer { flex: 1; }
+    #toolbar button {
+        padding: 3px 12px; border: 1px solid var(--toolbar-border); border-radius: 4px;
+        font-size: 12px; cursor: pointer; font-family: inherit;
+        background: transparent; color: var(--title-accent);
+    }
+    #toolbar button:hover { background: rgba(127,127,127,0.18); }
+
+    #toast {
+        position: absolute; right: 14px; bottom: 14px; z-index: 20;
+        max-width: 60%; padding: 8px 14px; border-radius: 6px;
+        background: #313244; color: #cdd6f4; font-size: 12px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+        opacity: 0; transform: translateY(8px); transition: opacity .15s, transform .15s;
+        pointer-events: none; white-space: pre-wrap;
+    }
+    #toast.show { opacity: 1; transform: translateY(0); }
+    #toast.err { background: #f38ba8; color: #1e1e2e; }
+
+    #editor { position: absolute; top: 38px; left: 0; right: 0; bottom: 0; }
+
+    #loading {
+        position: absolute; top: 38px; left: 0; right: 0; bottom: 0;
+        display: flex; align-items: center; justify-content: center;
+        color: var(--loading-color); font-size: 13px; background: var(--bg);
+        z-index: 10;
+    }
+    #loading.hidden { display: none; }
+
+    /* Classic Clarion look: generated/read-only lines = grey, editable embed slots = white.
+       Editable lines keep the editor's default (white) background; the .embed-editable-line class
+       is retained (invisible) so the read-only guard can query live decoration ranges. */
+    .embed-readonly-line { background: rgba(0, 0, 0, 0.06); }
+    body:not(.light) .embed-readonly-line { background: rgba(255, 255, 255, 0.05); }
+</style>
+</head>
+<body>
+    <div id="toolbar">
+        <div class="title">Modern Embeditor — <span id="titleText">(no procedure)</span></div>
+        <div class="spacer"></div>
+        <button id="saveBtn" title="Save changes (Ctrl+S)">Save</button>
+    </div>
+    <div id="editor"></div>
+    <div id="loading">Loading editor…</div>
+    <div id="toast"></div>
+
+<script>
+    // ----- Constants (must match ModernEmbeditorViewContent.cs) -----
+    var MONACO_VERSION = "0.52.2";
+    var MONACO_BASE = "https://cdn.jsdelivr.net/npm/monaco-editor@" + MONACO_VERSION + "/min/";
+
+    var editor = null;
+    var ready = false;
+    var pending = null;        // a setSource message that arrived before Monaco finished loading
+    var embedRanges = [];         // 1-based inclusive [start,end] editable embed-slot ranges
+    var embedDecorations = [];    // decoration ids for editable regions (invisible; the guard tracks them)
+    var readonlyDecorations = []; // decoration ids for the grey read-only (generated) lines
+    var guarding = false;         // re-entrancy/suppression flag for the read-only guard
+    var saveEnabled = false;      // true when opened from the picker (bound to a procedure)
+    var toastTimer = null;
+    var saveSafetyTimer = null;   // ensures the "Saving…" toast can never hang forever
+
+    function postToHost(obj) {
+        try { window.chrome.webview.postMessage(JSON.stringify(obj)); } catch (e) { /* not in webview */ }
+    }
+
+    function setTheme(isDark) {
+        document.body.classList.toggle('light', !isDark);
+        if (window.monaco && monaco.editor) {
+            monaco.editor.setTheme(isDark ? 'vs-dark' : 'vs');
+        }
+    }
+
+    // Cross-origin web-worker shim: Monaco workers can't load directly from a
+    // different origin, so proxy through a data: URL that importScripts the CDN worker.
+    window.MonacoEnvironment = {
+        getWorkerUrl: function () {
+            return "data:text/javascript;charset=utf-8," + encodeURIComponent(
+                "self.MonacoEnvironment={baseUrl:'" + MONACO_BASE + "'};" +
+                "importScripts('" + MONACO_BASE + "vs/base/worker/workerMain.js');"
+            );
+        }
+    };
+
+    function bootMonaco() {
+        var loader = document.createElement('script');
+        loader.src = MONACO_BASE + "vs/loader.js";
+        loader.onload = function () {
+            require.config({ paths: { vs: MONACO_BASE + "vs" } });
+            require(['vs/editor/editor.main'], function () {
+                if (!monaco.languages.getLanguages().some(function (l) { return l.id === 'clarion'; })) {
+                    monaco.languages.register({ id: 'clarion' });
+                    registerClarionLanguage();
+                    registerClarionFolding();
+                }
+                editor = monaco.editor.create(document.getElementById('editor'), {
+                    value: '',
+                    language: 'clarion',
+                    theme: document.body.classList.contains('light') ? 'vs' : 'vs-dark',
+                    readOnly: false,
+                    automaticLayout: true,
+                    minimap: { enabled: true },
+                    fontSize: 13,
+                    mouseWheelZoom: true,   // Ctrl+wheel zooms the editor font (native Monaco)
+                    renderWhitespace: 'selection',
+                    scrollBeyondLastLine: false,
+                    // No completion in M1 (real LSP/CodeGraph completion is M3). Disable Monaco's
+                    // built-in word suggestions so nothing pops up — especially over read-only code.
+                    quickSuggestions: false,
+                    suggestOnTriggerCharacters: false,
+                    wordBasedSuggestions: 'off',
+                    parameterHints: { enabled: false },
+                    tabCompletion: 'off',
+                    folding: true,
+                    showFoldingControls: 'always'
+                });
+                installReadOnlyGuard();
+                editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, doSave);
+                document.getElementById('saveBtn').addEventListener('click', doSave);
+                ready = true;
+                document.getElementById('loading').classList.add('hidden');
+                if (pending) { applySource(pending); pending = null; }
+                postToHost({ action: 'ready' });
+            });
+        };
+        loader.onerror = function () {
+            document.getElementById('loading').textContent =
+                'Failed to load Monaco from CDN — check network access.';
+        };
+        document.head.appendChild(loader);
+    }
+
+    function applySource(msg) {
+        embedRanges = msg.editableRanges || [];
+        saveEnabled = !!msg.saveEnabled;
+        var sb = document.getElementById('saveBtn');
+        if (sb) sb.style.display = saveEnabled ? '' : 'none';
+        document.getElementById('titleText').textContent =
+            (msg.title || '(no procedure)') + '  ·  ' + embedRanges.length + ' editable slot(s)';
+        if (typeof msg.isDark === 'boolean') setTheme(msg.isDark);
+        // Source is transferred via the virtual-host URL to avoid huge postMessage payloads.
+        fetch(msg.sourceUrl, { cache: 'no-store' })
+            .then(function (r) { return r.text(); })
+            .then(function (text) {
+                var model = editor.getModel();
+                guarding = true;            // programmatic load — don't let the guard revert it
+                model.setValue(text);
+                applyEmbedDecorations();
+                guarding = false;
+                editor.revealLine(1);
+            })
+            .catch(function (err) {
+                editor.setValue('// Failed to load embeditor source: ' + err);
+            });
+    }
+
+    // Paint the classic Clarion scheme: editable slots stay white (default), generated lines grey.
+    // Editable decorations are kept (invisible) so the read-only guard can query their live ranges.
+    function applyEmbedDecorations() {
+        if (!editor) return;
+        var model = editor.getModel();
+        var lineCount = model.getLineCount();
+
+        var editDecos = (embedRanges || []).map(function (r) {
+            return {
+                range: new monaco.Range(r[0], 1, r[1], 1),
+                options: {
+                    isWholeLine: true,
+                    className: 'embed-editable-line',
+                    // Editable regions absorb edits made at their edges, so adding lines inside a
+                    // slot grows the region rather than spilling into a read-only line.
+                    stickiness: monaco.editor.TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges
+                }
+            };
+        });
+        embedDecorations = editor.deltaDecorations(embedDecorations, editDecos);
+
+        var roDecos = computeReadonlyRanges(embedRanges || [], lineCount).map(function (r) {
+            return {
+                range: new monaco.Range(r[0], 1, r[1], 1),
+                options: { isWholeLine: true, className: 'embed-readonly-line' }
+            };
+        });
+        readonlyDecorations = editor.deltaDecorations(readonlyDecorations, roDecos);
+    }
+
+    // The read-only (generated) ranges are the complement of the editable ranges over [1, lineCount].
+    // Assumes editableRanges is sorted & merged (C# MergeRanges guarantees this).
+    function computeReadonlyRanges(editable, lineCount) {
+        var res = [];
+        var cursor = 1;
+        for (var i = 0; i < editable.length; i++) {
+            var s = editable[i][0], e = editable[i][1];
+            if (s > cursor) res.push([cursor, s - 1]);
+            if (e + 1 > cursor) cursor = e + 1;
+        }
+        if (cursor <= lineCount) res.push([cursor, lineCount]);
+        return res;
+    }
+
+    // ----- Save -----
+    // Gather each editable slot's CURRENT full-line text from its live (decoration-tracked) range,
+    // in the same order as the C# editable ranges, and hand them to the host to persist.
+    function gatherSlots() {
+        var model = editor.getModel();
+        return embedDecorations.map(function (id) {
+            var r = model.getDecorationRange(id);
+            if (!r) return '';
+            var full = new monaco.Range(r.startLineNumber, 1, r.endLineNumber, model.getLineMaxColumn(r.endLineNumber));
+            return model.getValueInRange(full);
+        });
+    }
+
+    function doSave() {
+        if (!saveEnabled) { showToast('Save not available (mirror mode)', false); return; }
+        postToHost({ action: 'save', slots: gatherSlots() });
+        // Persist the "Saving…" toast (the save re-opens the embeditor for a few seconds) until the
+        // host replies with the result — otherwise it can fade before the result arrives.
+        showToast('Saving… (re-opening the embeditor)', true, true);
+        // Safety net: never leave "Saving…" up forever if the result message is lost.
+        if (saveSafetyTimer) clearTimeout(saveSafetyTimer);
+        saveSafetyTimer = setTimeout(function () {
+            showToast('Save sent, but no confirmation came back. The edit may have saved — reopen the procedure to verify.', false);
+        }, 90000);
+    }
+
+    function showToast(message, ok, persist) {
+        var t = document.getElementById('toast');
+        if (!t) return;
+        t.textContent = message;
+        t.className = 'show' + (ok === false ? ' err' : '');
+        if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+        if (!persist)
+            toastTimer = setTimeout(function () { t.className = ''; }, ok === false ? 8000 : 6000);
+    }
+
+    // ----- Read-only guard -----
+    // Monaco has no per-range readOnly. We mark editable slots as decorations (which track their
+    // own position as the doc changes) and revert any edit whose location is not inside a live
+    // editable decoration. Generated lines carry no editable decoration, so edits there are undone.
+    function isEditableRange(range) {
+        if (!editor) return false;
+        var model = editor.getModel();
+        for (var i = 0; i < embedDecorations.length; i++) {
+            var dr = model.getDecorationRange(embedDecorations[i]);
+            if (!dr) continue;
+            if (range.startLineNumber >= dr.startLineNumber && range.endLineNumber <= dr.endLineNumber)
+                return true;
+        }
+        return false;
+    }
+
+    function installReadOnlyGuard() {
+        editor.onDidChangeModelContent(function (e) {
+            if (guarding) return;
+            var illegal = false;
+            for (var i = 0; i < e.changes.length; i++) {
+                if (!isEditableRange(e.changes[i].range)) { illegal = true; break; }
+            }
+            if (illegal) {
+                guarding = true;
+                editor.trigger('readonly-guard', 'undo', null);
+                guarding = false;
+            }
+        });
+    }
+
+    // Clarion code folding: data/control structures close with END (or a lone '.'); PROCEDURE and
+    // ROUTINE have no END, so they fold to the next ROUTINE/PROCEDURE boundary (or end of buffer).
+    function registerClarionFolding() {
+        var STRUCT = /\b(GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|TOOLBAR|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE)\b/;
+        monaco.languages.registerFoldingRangeProvider('clarion', {
+            provideFoldingRanges: function (model) {
+                var ranges = [];
+                var stack = [];
+                var n = model.getLineCount();
+                var lastProc = -1, lastRoutine = -1;
+                for (var i = 1; i <= n; i++) {
+                    var code = model.getLineContent(i).replace(/!.*$/, '').trim(); // strip line comment
+                    if (code === '') continue;
+                    var u = code.toUpperCase();
+
+                    if (/^END\b/.test(u) || u === '.') {            // close most-recent structure
+                        if (stack.length) {
+                            var open = stack.pop();
+                            if (i > open) ranges.push({ start: open, end: i });
+                        }
+                        continue;
+                    }
+                    if (/(^|\s)PROCEDURE\b/.test(u)) {              // procedure boundary
+                        if (lastRoutine !== -1) { if (i - 1 > lastRoutine) ranges.push({ start: lastRoutine, end: i - 1 }); lastRoutine = -1; }
+                        if (lastProc !== -1 && i - 1 > lastProc) ranges.push({ start: lastProc, end: i - 1 });
+                        lastProc = i;
+                        continue;
+                    }
+                    if (/(^|\s)ROUTINE\b/.test(u)) {               // routine boundary
+                        if (lastRoutine !== -1 && i - 1 > lastRoutine) ranges.push({ start: lastRoutine, end: i - 1 });
+                        lastRoutine = i;
+                        continue;
+                    }
+                    if (STRUCT.test(u)) { stack.push(i); continue; } // GROUP/QUEUE/LOOP/CASE/...
+                    if (/^IF\b/.test(u)) {                          // block IF only (skip one-liners)
+                        var thenIdx = u.indexOf(' THEN');
+                        var afterThen = thenIdx >= 0 ? code.substring(thenIdx + 5).trim() : '';
+                        var oneLiner = afterThen.length > 0 || /\.\s*$/.test(code);
+                        if (!oneLiner) stack.push(i);
+                        continue;
+                    }
+                }
+                if (lastRoutine !== -1 && n > lastRoutine) ranges.push({ start: lastRoutine, end: n });
+                if (lastProc !== -1 && n > lastProc) ranges.push({ start: lastProc, end: n });
+                return ranges;
+            }
+        });
+    }
+
+    // Basic Clarion syntax highlighting (Monarch). Keyword set is intentionally compact for M1.
+    function registerClarionLanguage() {
+        monaco.languages.setLanguageConfiguration('clarion', {
+            comments: { lineComment: '!' },
+            brackets: [['(', ')'], ['[', ']'], ['{', '}']]
+        });
+        monaco.languages.setMonarchTokensProvider('clarion', {
+            ignoreCase: true,
+            keywords: [
+                'PROGRAM', 'MEMBER', 'MAP', 'MODULE', 'CLASS', 'INTERFACE', 'PROCEDURE', 'FUNCTION',
+                'ROUTINE', 'CODE', 'DATA', 'END', 'RETURN', 'EXIT', 'IF', 'THEN', 'ELSE', 'ELSIF',
+                'CASE', 'OF', 'OROF', 'LOOP', 'WHILE', 'UNTIL', 'BREAK', 'CYCLE', 'DO', 'BEGIN',
+                'EXECUTE', 'GROUP', 'QUEUE', 'RECORD', 'FILE', 'VIEW', 'WINDOW', 'REPORT', 'MENU',
+                'MENUBAR', 'TOOLBAR', 'SHEET', 'TAB', 'OPTION', 'APPLICATION', 'DETAIL', 'HEADER',
+                'FOOTER', 'BREAK', 'FORM', 'SELF', 'PARENT', 'NEW', 'DISPOSE', 'THREAD', 'NULL',
+                'TRUE', 'FALSE', 'AND', 'OR', 'XOR', 'NOT', 'CHOOSE', 'OMIT', 'COMPILE', 'INCLUDE',
+                'EQUATE', 'ITEMIZE', 'TYPE', 'LIKE', 'DIM', 'OVER', 'NAME', 'PRE', 'STATIC', 'THREAD'
+            ],
+            types: [
+                'LONG', 'ULONG', 'SHORT', 'USHORT', 'BYTE', 'SIGNED', 'UNSIGNED', 'REAL', 'SREAL',
+                'DECIMAL', 'PDECIMAL', 'BFLOAT4', 'BFLOAT8', 'STRING', 'CSTRING', 'PSTRING', 'ASTRING',
+                'MEMO', 'BLOB', 'DATE', 'TIME', 'BOOL', 'ANY', 'LONGLONG', 'BIGINT', 'GROUP', 'QUEUE'
+            ],
+            tokenizer: {
+                root: [
+                    [/!.*$/, 'comment'],
+                    [/'(?:[^']|'')*'/, 'string'],
+                    [/\b\d+(?:\.\d+)?\b/, 'number'],
+                    [/\b[0-9A-Fa-f]+[Hh]\b/, 'number.hex'],
+                    [/[A-Za-z_][A-Za-z0-9_]*:/, 'type.identifier'],
+                    [/[A-Za-z_][A-Za-z0-9_]*/, {
+                        cases: {
+                            '@keywords': 'keyword',
+                            '@types': 'type',
+                            '@default': 'identifier'
+                        }
+                    }]
+                ]
+            }
+        });
+    }
+
+    // ----- Messages from C# host -----
+    if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.addEventListener('message', function (e) {
+            // PostWebMessageAsJson delivers e.data as an already-parsed object;
+            // only JSON.parse when it arrives as a string (matches diff.html).
+            var msg = e.data;
+            if (typeof msg === 'string') {
+                try { msg = JSON.parse(msg); } catch (ex) { return; }
+            }
+            if (msg.type === 'setSource') {
+                if (ready) applySource(msg); else pending = msg;
+            } else if (msg.type === 'applyTheme') {
+                setTheme(!!msg.isDark);
+            } else if (msg.type === 'saveResult') {
+                if (saveSafetyTimer) { clearTimeout(saveSafetyTimer); saveSafetyTimer = null; }
+                showToast(msg.message, msg.ok);
+            }
+        });
+    }
+
+    bootMonaco();
+</script>
+</body>
+</html>

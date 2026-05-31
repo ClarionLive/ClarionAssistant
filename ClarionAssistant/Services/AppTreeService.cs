@@ -99,6 +99,12 @@ namespace ClarionAssistant.Services
         /// Find the ViewContent for an open .app file. Checks active window first,
         /// then searches all open windows so it works regardless of which tab is focused.
         /// </summary>
+        /// <summary>
+        /// Locate the application (.app) ViewContent regardless of which tab is currently active.
+        /// A collection entry may be an IWorkbenchWindow (has .ViewContent) OR an IViewContent directly
+        /// (has .App) — we check both, across several possible collection property names. This is what
+        /// lets save/open work when a Modern Embeditor tab (not the app) is the active document.
+        /// </summary>
         private object FindAppViewContent()
         {
             try
@@ -106,30 +112,31 @@ namespace ClarionAssistant.Services
                 var workbench = WorkbenchSingleton.Workbench;
                 if (workbench == null) return null;
 
-                // Try active window first (fast path)
-                var activeWindow = GetProp(workbench, "ActiveWorkbenchWindow");
-                if (activeWindow != null)
+                // From a candidate (window or view content), return an app-bearing view content.
+                Func<object, object> appFrom = obj =>
                 {
-                    var vc = GetProp(activeWindow, "ViewContent")
-                          ?? GetProp(activeWindow, "ActiveViewContent");
-                    if (vc != null && GetProp(vc, "App") != null)
-                        return vc;
-                }
+                    if (obj == null) return null;
+                    if (GetProp(obj, "App") != null) return obj;                 // the item IS the app view
+                    var vc = GetProp(obj, "ViewContent") ?? GetProp(obj, "ActiveViewContent");
+                    if (vc != null && GetProp(vc, "App") != null) return vc;     // item is a window hosting it
+                    return null;
+                };
 
-                // Search all open windows for an app ViewContent
-                var windows = GetProp(workbench, "WorkbenchWindowCollection")
-                           ?? GetProp(workbench, "ViewContentCollection");
-                if (windows is System.Collections.IEnumerable enumerable)
+                var fast = appFrom(GetProp(workbench, "ActiveWorkbenchWindow"));
+                if (fast != null) return fast;
+
+                string[] collNames = { "WorkbenchWindowCollection", "ViewContentCollection",
+                                       "PrimaryViewContents", "Windows" };
+                foreach (var cn in collNames)
                 {
-                    foreach (var win in enumerable)
+                    var coll = GetProp(workbench, cn) as System.Collections.IEnumerable;
+                    if (coll == null) continue;
+                    foreach (var item in coll)
                     {
-                        var vc = GetProp(win, "ViewContent")
-                              ?? GetProp(win, "ActiveViewContent");
-                        if (vc != null && GetProp(vc, "App") != null)
-                            return vc;
+                        var found = appFrom(item);
+                        if (found != null) return found;
                     }
                 }
-
                 return null;
             }
             catch { return null; }
@@ -140,6 +147,31 @@ namespace ClarionAssistant.Services
             var viewContent = FindAppViewContent();
             if (viewContent == null) return null;
             return GetProp(viewContent, "App");
+        }
+
+        /// <summary>
+        /// Bring the application (.app) view to the foreground so embeditor automation has the app tree
+        /// to drive. OpenProcedureEmbed manipulates the native ClaList in the app window; if a different
+        /// tab (e.g. a Modern Embeditor view) is active, the open silently fails. Call this first.
+        /// Returns true if an app view was found and selected.
+        /// </summary>
+        public bool ActivateAppView()
+        {
+            try
+            {
+                var vc = FindAppViewContent();
+                if (vc == null) return false;
+                var window = GetProp(vc, "WorkbenchWindow");
+                if (window == null) return false;
+                var select = window.GetType().GetMethod("SelectWindow", Type.EmptyTypes);
+                if (select == null) return false;
+                select.Invoke(window, null);
+                Application.DoEvents();
+                System.Threading.Thread.Sleep(150);
+                Application.DoEvents();
+                return true;
+            }
+            catch { return false; }
         }
 
         /// <summary>
@@ -1031,7 +1063,15 @@ namespace ClarionAssistant.Services
         /// edit, mirroring what the interactive path does. PweePart.Data is not touched
         /// directly — IGeneratorDialog.TryClose reads from the document buffer on save.
         /// </summary>
-        public string WriteEmbedContentByLine(int lineNumber, string code)
+        public string WriteEmbedContentByLine(int lineNumber, string code) { return WriteEmbedContentByLine(lineNumber, code, true); }
+
+        /// <summary>
+        /// Writes code into the embed point at the given 1-based line number. When
+        /// <paramref name="reindent"/> is true (default, MCP behaviour) each line is prefixed with the
+        /// embed point's column indent. When false (Modern Embeditor save), the code is written verbatim —
+        /// the caller already supplies buffer-form (indented) lines, so re-indenting would double them.
+        /// </summary>
+        public string WriteEmbedContentByLine(int lineNumber, string code, bool reindent)
         {
             var editor = GetClaGenEditor();
             if (editor == null) return "Error: No embeditor is currently open.";
@@ -1102,14 +1142,23 @@ namespace ClarionAssistant.Services
                 int endOff     = (int)GetProp(endSeg, "Offset") + (int)GetProp(endSeg, "Length");
                 int replaceLen = endOff - startOff;
 
-                // Indentation is driven by the embed point's column position
-                var textSection = GetProp(pweePart, "Text");
-                int column = textSection != null ? Convert.ToInt32(GetProp(textSection, "Column") ?? 1) : 1;
-                string indent = column > 1 ? new string(' ', column - 1) : string.Empty;
+                string indented;
+                if (reindent)
+                {
+                    // Indentation is driven by the embed point's column position
+                    var textSection = GetProp(pweePart, "Text");
+                    int column = textSection != null ? Convert.ToInt32(GetProp(textSection, "Column") ?? 1) : 1;
+                    string indent = column > 1 ? new string(' ', column - 1) : string.Empty;
 
-                string[] codeLines = code.Split(new[] { "\n" }, StringSplitOptions.None);
-                string indented = string.Join("\r\n", System.Array.ConvertAll(codeLines,
-                    l => string.IsNullOrEmpty(l) ? l : indent + l));
+                    string[] codeLines = code.Split(new[] { "\n" }, StringSplitOptions.None);
+                    indented = string.Join("\r\n", System.Array.ConvertAll(codeLines,
+                        l => string.IsNullOrEmpty(l) ? l : indent + l));
+                }
+                else
+                {
+                    // Verbatim: caller supplies buffer-form lines already; just use CRLF endings.
+                    indented = code.Replace("\n", "\r\n");
+                }
 
                 int oldLineCount = endLine0 - startLine0 + 1;
                 int newLineCount = 1;
