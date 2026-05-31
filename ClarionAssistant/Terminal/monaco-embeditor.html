@@ -328,6 +328,23 @@
         }
     }
 
+    // Navigate to a ROUTINE's declaration (Modern Data pad "go to routine" button).
+    function gotoRoutine(name) {
+        if (!editor || !name) return;
+        var model = editor.getModel();
+        var esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        var re = new RegExp('^\\s*' + esc + '\\s+ROUTINE\\b', 'i');
+        for (var ln = 1; ln <= model.getLineCount(); ln++) {
+            if (re.test(model.getLineContent(ln))) {
+                editor.revealLineInCenter(ln);
+                editor.setPosition({ lineNumber: ln, column: 1 });
+                editor.focus();
+                return;
+            }
+        }
+        showToast('Routine "' + name + '" not found', false);
+    }
+
     // Insert text at the cursor (Modern Data pad double-click). Only inside an editable slot.
     function insertTextAtCursor(text) {
         if (!editor || !text) return;
@@ -508,6 +525,8 @@
                 if (resolver) { delete pendingRequests[msg.reqId]; resolver(msg.data); }
             } else if (msg.type === 'insertText') {
                 insertTextAtCursor(msg.text);
+            } else if (msg.type === 'gotoRoutine') {
+                gotoRoutine(msg.name);
             }
         });
     }

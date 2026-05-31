@@ -51,6 +51,9 @@ namespace ClarionAssistant.Terminal
 
         public override Control Control { get { return _panel; } }
 
+        /// <summary>The procedure this tab represents (null/empty in mirror mode).</summary>
+        public string ProcedureName { get { return _procedureName; } }
+
         /// <summary>The Modern Embeditor tab that's currently the active document, or null.</summary>
         public static ModernEmbeditorViewContent ActiveModernView()
         {
@@ -151,15 +154,70 @@ namespace ClarionAssistant.Terminal
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] GetPadData parse: " + ex.Message); }
 
+            var moduleData = new List<Dictionary<string, object>>();
+            try
+            {
+                string modClw = ClarionAppDataReader.FindModuleClwForProcedure(_procedureName);
+                foreach (var d in ClarionAppDataReader.ParseModuleData(modClw))
+                    moduleData.Add(new Dictionary<string, object> { { "name", d.Name }, { "type", d.Type } });
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] ParseModuleData: " + ex.Message); }
+
+            var procedures = new List<Dictionary<string, object>>();
+            try
+            {
+                foreach (var p in new AppTreeService().GetProcedureDetails())
+                {
+                    string n = (p != null && p.ContainsKey("name")) ? p["name"]?.ToString() : null;
+                    if (!string.IsNullOrWhiteSpace(n))
+                        procedures.Add(new Dictionary<string, object> { { "name", n } });
+                }
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] procedures: " + ex.Message); }
+
             var data = new Dictionary<string, object>
             {
                 { "procedure", _procedureName ?? "" },
                 { "locals", locals },
                 { "routines", routines },
+                { "moduleData", moduleData },
                 { "globals", globals },
-                { "tables", GetUsedTables() }
+                { "tables", GetUsedTables() },
+                { "procedures", procedures }
             };
             return data;
+        }
+
+        /// <summary>Navigate this editor to a ROUTINE's declaration (Modern Data pad "go to routine" button).</summary>
+        public void GotoRoutine(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return;
+            Action post = () =>
+            {
+                if (_webView == null || _webView.CoreWebView2 == null) return;
+                try { _webView.CoreWebView2.PostWebMessageAsJson("{\"type\":\"gotoRoutine\",\"name\":" + JsonString(name) + "}"); }
+                catch { }
+            };
+            try { if (_panel != null && _panel.InvokeRequired) _panel.BeginInvoke(post); else post(); }
+            catch { }
+        }
+
+        /// <summary>If a Modern Embeditor tab for this procedure is already open, focus it. Returns true if found.</summary>
+        public static bool TryFocusExisting(string procName)
+        {
+            if (string.IsNullOrWhiteSpace(procName)) return false;
+            lock (_instances)
+            {
+                foreach (var inst in _instances)
+                {
+                    if (string.Equals(inst._procedureName, procName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        inst.BringToFront();
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
 
         private List<Dictionary<string, object>> GetUsedTables()

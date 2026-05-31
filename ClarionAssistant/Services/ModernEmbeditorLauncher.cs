@@ -26,21 +26,26 @@ namespace ClarionAssistant.Services
         public static string OpenProcedure(string procName, bool isDark)
         {
             if (string.IsNullOrWhiteSpace(procName)) return "No procedure specified.";
-            var appTree = new AppTreeService();
+            EnterBusy();
+            try
+            {
+                var appTree = new AppTreeService();
 
-            string source, error;
-            List<int[]> ranges;
-            if (!OpenAndMirror(appTree, procName, out source, out ranges, out error))
-                return error;
+                string source, error;
+                List<int[]> ranges;
+                if (!OpenAndMirror(appTree, procName, out source, out ranges, out error))
+                    return error;
 
-            // OpenAndMirror leaves the embeditor open; we made no edits, so discard/close to free the lock.
-            try { appTree.CancelEmbeditor(); } catch { }
-            WaitForEmbedClosed(appTree, 3000);
+                // OpenAndMirror leaves the embeditor open; we made no edits, so discard/close to free the lock.
+                try { appTree.CancelEmbeditor(); } catch { }
+                WaitForEmbedClosed(appTree, 3000);
 
-            // Title the tab with the procedure name; passing procName also enables the save round-trip.
-            var view = new ModernEmbeditorViewContent(procName, source, ranges, "clarion", isDark, procName);
-            WorkbenchSingleton.Workbench.ShowView(view);
-            return null;
+                // Title the tab with the procedure name; passing procName also enables the save round-trip.
+                var view = new ModernEmbeditorViewContent(procName, source, ranges, "clarion", isDark, procName);
+                WorkbenchSingleton.Workbench.ShowView(view);
+                return null;
+            }
+            finally { LeaveBusy(); }
         }
 
         // Locator typing speed (ms/char): a quick first pass, then a slower, very reliable retry.
@@ -55,10 +60,19 @@ namespace ClarionAssistant.Services
         /// Verifies the opened source actually belongs to the procedure, so we never proceed on a mis-selected
         /// one. UI thread only.
         /// </summary>
+        /// <summary>&gt;0 while an embeditor open/save is driving the IDE — pads should not auto-refresh then.</summary>
+        private static int _busyCount;
+        public static bool IsBusy { get { return _busyCount > 0; } }
+        internal static void EnterBusy() { System.Threading.Interlocked.Increment(ref _busyCount); }
+        internal static void LeaveBusy() { System.Threading.Interlocked.Decrement(ref _busyCount); }
+
         internal static bool OpenAndMirror(AppTreeService appTree, string procName,
             out string source, out List<int[]> ranges, out string error)
         {
             source = null; ranges = null; error = null;
+            EnterBusy();
+            try
+            {
             for (int attempt = 0; attempt < CharDelaysMs.Length; attempt++)
             {
                 if (!WaitForEmbedClosed(appTree, 3000))
@@ -94,6 +108,8 @@ namespace ClarionAssistant.Services
                 source = null; ranges = null;
             }
             return false;
+            }
+            finally { LeaveBusy(); }
         }
 
         /// <summary>

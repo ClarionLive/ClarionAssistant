@@ -23,6 +23,8 @@
     .row .kind { font-size: 10px; color: #8839ef; min-width: 56px; }
     .row .name { color: #4c4f69; }
     .row .type { font-size: 10px; color: #8c8fa1; margin-left: auto; }
+    .row .act { color: #1e66f5; cursor: pointer; min-width: 14px; text-align: center; opacity: 0.55; }
+    .row .act:hover { opacity: 1; }
     .table-hdr { font-weight: 600; color: #1e66f5; }
     .table-hdr .twisty { color: #6c6f85; min-width: 12px; }
     .col-row { padding-left: 26px; }
@@ -42,7 +44,9 @@
     var locals = [];
     var tables = [];
     var routines = [];
+    var moduleData = [];
     var globals = [];
+    var procedures = [];
     var collapsed = {};        // tableName -> true when a table's columns are collapsed
     var sectionCollapsed = {}; // section key -> true when a whole section is collapsed
 
@@ -63,10 +67,19 @@
 
     function insert(name) { postToHost({ action: 'insert', name: name }); }
 
-    function makeRow(cls, kindText, nameText, typeText, title, insertText) {
+    function makeRow(cls, kindText, nameText, typeText, title, insertText, action) {
         var row = document.createElement('div');
         row.className = 'row' + (cls ? ' ' + cls : '');
         row.title = title || nameText;
+        if (action) {
+            var a = document.createElement('span');
+            a.className = 'act'; a.textContent = action.icon; a.title = action.title;
+            a.addEventListener('click', function (e) {
+                e.stopPropagation();
+                postToHost({ action: action.type, name: nameText });
+            });
+            row.appendChild(a);
+        }
         if (kindText !== null) { var k = document.createElement('span'); k.className = 'kind'; k.textContent = kindText; row.appendChild(k); }
         var n = document.createElement('span'); n.className = 'name'; n.textContent = nameText; row.appendChild(n);
         if (typeText) { var t = document.createElement('span'); t.className = 'type'; t.textContent = typeText; row.appendChild(t); }
@@ -121,19 +134,21 @@
         }
 
         // ----- Flat scopes -----
-        function flatSection(key, label, items) {
+        function flatSection(key, label, items, action) {
             var shown = items.filter(function (it) { return match(it.name); });
             if (!shown.length) return;
             if (!sectionHeader(key, label, shown.length)) return;
             shown.forEach(function (it) {
                 list.appendChild(makeRow(null, null, it.name, it.type || '',
-                    it.name + (it.type ? '  ' + it.type : ''), it.name));
+                    it.name + (it.type ? '  ' + it.type : ''), it.name, action));
             });
         }
 
         flatSection('locals', 'Local Data', locals);
-        flatSection('routines', 'Routines', routines);
+        flatSection('routines', 'Routines', routines, { type: 'goto', icon: '→', title: 'Go to routine' });
+        flatSection('moduleData', 'Module Data', moduleData);
         flatSection('globals', 'Global Data', globals);
+        flatSection('procedures', 'Procedures', procedures, { type: 'open', icon: '↗', title: 'Open in Modern Embeditor' });
 
         if (!list.childNodes.length) {
             list.innerHTML = '<div class="empty">No data. Open a procedure in the Modern Embeditor and Refresh. (Tables/Global Data come from the generated &lt;app&gt;.clw; the app must be generated.)</div>';
@@ -152,7 +167,9 @@
                 var byName = function (a, b) { return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase()); };
                 locals = (msg.locals || []).slice().sort(byName);
                 routines = (msg.routines || []).slice().sort(byName);
+                moduleData = (msg.moduleData || []).slice().sort(byName);
                 globals = (msg.globals || []).slice().sort(byName);
+                procedures = (msg.procedures || []).slice().sort(byName);
                 tables = (msg.tables || []).slice().sort(byName);
                 tables.forEach(function (t) { if (t.columns) t.columns = t.columns.slice().sort(byName); });
                 render();

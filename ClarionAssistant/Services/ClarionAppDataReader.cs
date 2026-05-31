@@ -232,26 +232,7 @@ namespace ClarionAssistant.Services
             try { lines = File.ReadAllLines(clwPath); }
             catch { return outp; }
 
-            // Skip the global MAP block (MAP ... nested MODULE...END ... END).
-            int i = 0;
-            bool mapSeen = false;
-            int mapDepth = 0;
-            for (; i < lines.Length; i++)
-            {
-                string label, rest;
-                SplitLabelRest(StripComment(lines[i]), out label, out rest);
-                if (label == null) continue;
-                string lu = label.ToUpperInvariant();
-                if (!mapSeen)
-                {
-                    if (lu == "MAP") { mapSeen = true; mapDepth = 1; }
-                    continue;
-                }
-                if (lu.StartsWith("MODULE") || lu == "MAP") mapDepth++;
-                else if (lu == "END") { mapDepth--; if (mapDepth <= 0) { i++; break; } }
-            }
-            if (!mapSeen) i = 0;
-
+            int i = SkipMapBlock(lines);
             int depth = 0;
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             for (; i < lines.Length && outp.Count < 2000; i++)
@@ -283,6 +264,116 @@ namespace ClarionAssistant.Services
                     outp.Add(new FieldDef { Name = label, Type = rest });
             }
             return outp;
+        }
+
+        /// <summary>Find the generated module .clw that contains a procedure (via the &lt;app&gt;.clw MAP).</summary>
+        public static string FindModuleClwForProcedure(string procName)
+        {
+            if (string.IsNullOrWhiteSpace(procName)) return null;
+            string appClw = FindAppClwPath();
+            if (appClw == null) return null;
+            string[] lines;
+            try { lines = File.ReadAllLines(appClw); } catch { return null; }
+
+            string dir = Path.GetDirectoryName(appClw);
+            var moduleRx = new Regex(@"MODULE\(\s*'([^']+)'\s*\)", RegexOptions.IgnoreCase);
+            string currentModule = null;
+            foreach (var raw in lines)
+            {
+                string line = StripComment(raw);
+                var mm = moduleRx.Match(line);
+                if (mm.Success) { currentModule = mm.Groups[1].Value; continue; }
+                string label, rest;
+                SplitLabelRest(line, out label, out rest);
+                if (label != null && currentModule != null &&
+                    string.Equals(label, procName, StringComparison.OrdinalIgnoreCase))
+                    return ResolveClwByName(currentModule, dir);
+            }
+            return null;
+        }
+
+        /// <summary>Parse module-scope data declarations from a module .clw (after the MAP, before the first PROCEDURE).</summary>
+        public static List<FieldDef> ParseModuleData(string clwPath)
+        {
+            var outp = new List<FieldDef>();
+            if (string.IsNullOrEmpty(clwPath)) return outp;
+            string[] lines;
+            try { lines = File.ReadAllLines(clwPath); } catch { return outp; }
+
+            int i = SkipMapBlock(lines);
+            int depth = 0;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (; i < lines.Length && outp.Count < 2000; i++)
+            {
+                string label, rest;
+                SplitLabelRest(StripComment(lines[i]), out label, out rest);
+                if (label == null) continue;
+                string restU = rest.ToUpperInvariant();
+                string labelU = label.ToUpperInvariant();
+
+                if (depth > 0)
+                {
+                    if (restU.StartsWith("FILE") || StructOpener.IsMatch(restU)) depth++;
+                    else if (labelU == "END" && rest.Length == 0) depth--;
+                    continue;
+                }
+
+                if (restU.StartsWith("PROCEDURE") || restU.StartsWith("FUNCTION")) break; // procedures begin
+                if (labelU == "CODE") break;
+                if (labelU == "END") continue;
+                if (restU.StartsWith("FILE")) { depth = 1; continue; }
+                if (StructOpener.IsMatch(restU))
+                {
+                    if (IsIdent(label) && seen.Add(label)) outp.Add(new FieldDef { Name = label, Type = FirstWord(rest) });
+                    depth = 1;
+                    continue;
+                }
+                if (StatementKeywords.Contains(labelU)) continue;
+                if (rest.Length > 0 && IsIdent(label) && seen.Add(label))
+                    outp.Add(new FieldDef { Name = label, Type = rest });
+            }
+            return outp;
+        }
+
+        private static string ResolveClwByName(string clwName, string fallbackDir)
+        {
+            if (string.IsNullOrEmpty(clwName)) return null;
+            if (!clwName.EndsWith(".clw", StringComparison.OrdinalIgnoreCase)) clwName += ".clw";
+            var red = RedFileService.Active;
+            if (red != null)
+            {
+                string viaRed = red.Resolve(clwName, "Debug", "Release", "Common") ?? red.Resolve(clwName);
+                if (!string.IsNullOrEmpty(viaRed) && File.Exists(viaRed)) return viaRed;
+            }
+            if (!string.IsNullOrEmpty(fallbackDir))
+            {
+                string c = Path.Combine(fallbackDir, clwName);
+                if (File.Exists(c)) return c;
+            }
+            return null;
+        }
+
+        /// <summary>Return the line index just past the global/module MAP block (MAP … MODULE…END … END).</summary>
+        private static int SkipMapBlock(string[] lines)
+        {
+            int i = 0;
+            bool mapSeen = false;
+            int mapDepth = 0;
+            for (; i < lines.Length; i++)
+            {
+                string label, rest;
+                SplitLabelRest(StripComment(lines[i]), out label, out rest);
+                if (label == null) continue;
+                string lu = label.ToUpperInvariant();
+                if (!mapSeen)
+                {
+                    if (lu == "MAP") { mapSeen = true; mapDepth = 1; }
+                    continue;
+                }
+                if (lu.StartsWith("MODULE") || lu == "MAP") mapDepth++;
+                else if (lu == "END") { mapDepth--; if (mapDepth <= 0) return i + 1; }
+            }
+            return mapSeen ? lines.Length : 0;
         }
 
         private static void SplitLabelRest(string line, out string label, out string rest)
