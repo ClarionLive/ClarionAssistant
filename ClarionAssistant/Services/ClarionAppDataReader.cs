@@ -118,6 +118,21 @@ namespace ClarionAssistant.Services
                                 candidates.Add(f);
                     }
                     catch { }
+
+                    // Resilience fallback: when redirection didn't resolve (RED not loaded yet, or an
+                    // out-of-tree layout no .red entry covers) the generated module can live in a SIBLING
+                    // folder of the app dir — HowToClarion examples generate to ..\v8Source. Scan the
+                    // parent's immediate subdirectories for <base>.clw; ClwHasFileDeclarations below still
+                    // prefers the real module over any empty stub. This makes Declared Tables independent
+                    // of RED-load timing (the cause of the intermittent empty-tables race).
+                    try
+                    {
+                        string parent = Path.GetDirectoryName(dir);
+                        if (!string.IsNullOrEmpty(parent) && Directory.Exists(parent))
+                            foreach (var sub in Directory.GetDirectories(parent))
+                                candidates.Add(Path.Combine(sub, clwName));
+                    }
+                    catch { }
                 }
 
                 string firstExisting = null;
