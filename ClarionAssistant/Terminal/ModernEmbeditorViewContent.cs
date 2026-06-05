@@ -410,7 +410,7 @@ namespace ClarionAssistant.Terminal
                     locals.Add(FieldToDict(d));
 
                 foreach (var r in ClarionAppDataReader.ParseRoutines(_sourceText, _procedureName))
-                    routines.Add(new Dictionary<string, object> { { "name", r }, { "type", "ROUTINE" } });
+                    routines.Add(new Dictionary<string, object> { { "name", r.Name }, { "line", r.Line } });
 
                 // Global Data: prefer the .txa [PROGRAM][DATA] — the developer-registered globals ONLY
                 // (nested + pictures, matching Clarion's pad). When the .txa is cached it's authoritative
@@ -451,8 +451,9 @@ namespace ClarionAssistant.Terminal
                 foreach (var p in new AppTreeService().GetProcedureDetails())
                 {
                     string n = (p != null && p.ContainsKey("name")) ? p["name"]?.ToString() : null;
-                    if (!string.IsNullOrWhiteSpace(n))
-                        procedures.Add(new Dictionary<string, object> { { "name", n } });
+                    if (string.IsNullOrWhiteSpace(n)) continue;
+                    string proto = p.ContainsKey("prototype") ? p["prototype"]?.ToString() : null;
+                    procedures.Add(new Dictionary<string, object> { { "name", n }, { "params", ExtractParamList(proto) } });
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] procedures: " + ex.Message); }
@@ -469,6 +470,24 @@ namespace ClarionAssistant.Terminal
                 { "procedures", procedures }
             };
             return data;
+        }
+
+        /// <summary>
+        /// Pull the parameter list "(...)" out of a Clarion prototype so the Procedures pad can show it
+        /// (e.g. "PROCEDURE(LONG id),LONG" -> "(LONG id)"). Returns "" when the prototype has no parens.
+        /// </summary>
+        private static string ExtractParamList(string prototype)
+        {
+            if (string.IsNullOrEmpty(prototype)) return "";
+            int open = prototype.IndexOf('(');
+            if (open < 0) return "";
+            int depth = 0;
+            for (int i = open; i < prototype.Length; i++)
+            {
+                if (prototype[i] == '(') depth++;
+                else if (prototype[i] == ')') { depth--; if (depth == 0) return prototype.Substring(open, i - open + 1); }
+            }
+            return prototype.Substring(open); // unbalanced — take the rest
         }
 
         /// <summary>Navigate this editor to a ROUTINE's declaration (Modern Data pad "go to routine" button).</summary>

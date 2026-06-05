@@ -99,7 +99,7 @@ namespace ClarionAssistant.Services
             {
                 routines = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var parsed = ClarionAppDataReader.ParseRoutines(buffer, procedureName);
-                if (parsed != null) foreach (var r in parsed) routines.Add(r);
+                if (parsed != null) foreach (var r in parsed) routines.Add(r.Name);
             }
             catch { routines = new HashSet<string>(StringComparer.OrdinalIgnoreCase); }
 

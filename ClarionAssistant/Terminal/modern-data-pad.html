@@ -61,6 +61,11 @@
     .comp-row .name { color: #1f1f1f; }
     .row .act { color: #0a5dc2; cursor: pointer; min-width: 14px; text-align: center; opacity: 0.6; }
     .row .act:hover { opacity: 1; }
+    .row .lineno { font-size: 10px; color: #0a5dc2; text-decoration: underline; cursor: pointer;
+                   margin-left: auto; font-family: Consolas, 'Courier New', monospace; padding: 0 2px; }
+    .row .lineno:hover { color: #1e66f5; background: #dbe6f5; }
+    .row .params { font-size: 10px; color: #5a5a5a; margin-left: 6px; font-family: Consolas, 'Courier New', monospace; }
+    .row.selected, .row.selected:hover { background: #cfe0f7; }
     .twisty { color: #555; min-width: 12px; display: inline-block; text-align: center; }
     .table-hdr { font-weight: 600; color: #0a5dc2; }
     .table-hdr .twisty { color: #555; min-width: 12px; }
@@ -85,6 +90,7 @@
     var moduleData = [];
     var globals = [];
     var procedures = [];
+    var selectedProc = null;   // Procedures section: the row the user single-clicked (header "Open" target)
     var collapsed = {};        // tableName -> true when a table's columns are collapsed
     var sectionCollapsed = {}; // section key -> true when a whole section is collapsed
     var localCollapsed = {};   // local-tree node path -> true when a QUEUE/GROUP node is collapsed
@@ -155,7 +161,9 @@
 
         // allCtl (optional): {kind:'tree'|'file', items:[...]} — when present (and the section is open), a
         // Collapse-All / Expand-All pair is shown at the far right that folds/unfolds everything in the section.
-        function sectionHeader(key, label, count, allCtl) {
+        // extraBtns (optional): [{label, title, onClick}] — custom header buttons on the far right (e.g.
+        // Procedures' "Open"). Shown left of the Collapse/Expand-all pair when the section is open.
+        function sectionHeader(key, label, count, allCtl, extraBtns) {
             var open = !sectionCollapsed[key] || !!f; // force-open while filtering
             var sec = document.createElement('div');
             sec.className = 'section';
@@ -165,15 +173,23 @@
             lbl.textContent = (open ? '▾ ' : '▸ ') + label + '  (' + count + ')';
             lbl.addEventListener('click', function () { sectionCollapsed[key] = !sectionCollapsed[key]; render(); });
             sec.appendChild(lbl);
-            if (allCtl && open) {
+            if (open && (allCtl || (extraBtns && extraBtns.length))) {
                 var ctl = document.createElement('span'); ctl.className = 'sec-ctl';
-                var cAll = document.createElement('span'); cAll.className = 'sec-btn';
-                cAll.textContent = '⊟'; cAll.title = 'Collapse all';
-                cAll.addEventListener('click', function (e) { e.stopPropagation(); setAllInSection(key, allCtl, true); });
-                var eAll = document.createElement('span'); eAll.className = 'sec-btn';
-                eAll.textContent = '⊞'; eAll.title = 'Expand all';
-                eAll.addEventListener('click', function (e) { e.stopPropagation(); setAllInSection(key, allCtl, false); });
-                ctl.appendChild(cAll); ctl.appendChild(eAll);
+                (extraBtns || []).forEach(function (b) {
+                    var btn = document.createElement('span'); btn.className = 'sec-btn';
+                    btn.textContent = b.label; btn.title = b.title;
+                    btn.addEventListener('click', function (e) { e.stopPropagation(); b.onClick(); });
+                    ctl.appendChild(btn);
+                });
+                if (allCtl) {
+                    var cAll = document.createElement('span'); cAll.className = 'sec-btn';
+                    cAll.textContent = '⊟'; cAll.title = 'Collapse all';
+                    cAll.addEventListener('click', function (e) { e.stopPropagation(); setAllInSection(key, allCtl, true); });
+                    var eAll = document.createElement('span'); eAll.className = 'sec-btn';
+                    eAll.textContent = '⊞'; eAll.title = 'Expand all';
+                    eAll.addEventListener('click', function (e) { e.stopPropagation(); setAllInSection(key, allCtl, false); });
+                    ctl.appendChild(cAll); ctl.appendChild(eAll);
+                }
                 sec.appendChild(ctl);
             }
             list.appendChild(sec);
@@ -454,6 +470,49 @@
             });
         }
 
+        // Routines: name + an underlined, clickable LINE NUMBER (click -> go to its declaration). The line#
+        // is the only click target (single-click on the row is inert — reserved for future drag & drop, and
+        // avoids the "too-slow double-click loses your place" trap). Double-click pastes "DO <name>".
+        function routineSection(items) {
+            var shown = items.filter(function (it) { return match(it.name); });
+            if (!shown.length) return;
+            if (!sectionHeader('routines', 'Routines', shown.length)) return;
+            shown.forEach(function (it) {
+                var row = document.createElement('div');
+                row.className = 'row';
+                row.title = it.name + '  ROUTINE' + (it.line ? '  (line ' + it.line + ')' : '');
+                var n = document.createElement('span'); n.className = 'name'; n.textContent = it.name; row.appendChild(n);
+                if (it.line) {
+                    var ln = document.createElement('span'); ln.className = 'lineno';
+                    ln.textContent = it.line; ln.title = 'Go to line ' + it.line;
+                    ln.addEventListener('click', function (e) { e.stopPropagation(); postToHost({ action: 'goto', name: it.name }); });
+                    row.appendChild(ln);
+                }
+                row.addEventListener('dblclick', function () { insert('DO ' + it.name); });
+                list.appendChild(row);
+            });
+        }
+
+        // Procedures: name + parameter list. Single-click SELECTS a row (highlight); the header "Open" button
+        // opens the selected procedure in a new CA Embeditor. Double-click pastes "<name>()" at the cursor.
+        function procedureSection(items) {
+            var shown = items.filter(function (it) { return match(it.name) || match(it.params); });
+            if (!shown.length) return;
+            var openSel = function () { if (selectedProc) postToHost({ action: 'open', name: selectedProc }); };
+            if (!sectionHeader('procedures', 'Procedures', shown.length, null,
+                [{ label: '↗ Open', title: 'Open selected Procedure in CA Embeditor', onClick: openSel }])) return;
+            shown.forEach(function (it) {
+                var row = document.createElement('div');
+                row.className = 'row' + (selectedProc === it.name ? ' selected' : '');
+                row.title = it.name + (it.params || '');
+                var n = document.createElement('span'); n.className = 'name'; n.textContent = it.name; row.appendChild(n);
+                if (it.params) { var p = document.createElement('span'); p.className = 'params'; p.textContent = it.params; row.appendChild(p); }
+                row.addEventListener('click', function (e) { if (e.detail > 1) return; selectedProc = it.name; render(); });
+                row.addEventListener('dblclick', function () { insert(it.name + '()'); });
+                list.appendChild(row);
+            });
+        }
+
         // ----- Tree scope: declaration order, QUEUE/GROUP expandable to nested members, picture column.
         //       Used by both Local Data and Global Data (the .txa gives both the same shape). -----
         function treeSection(key, label, items) {
@@ -526,10 +585,10 @@
 
         treeSection('locals', 'Local Data', locals);
 
-        flatSection('routines', 'Routines', routines, { type: 'goto', icon: '→', title: 'Go to routine' });
+        routineSection(routines);
         flatSection('moduleData', 'Module Data', moduleData);
         treeSection('globals', 'Global Data', globals);
-        flatSection('procedures', 'Procedures', procedures, { type: 'open', icon: '↗', title: 'Open in CA Embeditor' });
+        procedureSection(procedures);
 
         if (!list.childNodes.length) {
             list.innerHTML = '<div class="empty">No data. Open a procedure in the CA Embeditor and Refresh. (Declared Tables come from the generated &lt;app&gt;.clw with live-dictionary schema; Other Files from the .txa; Local/Global Data from the app .txa.)</div>';

@@ -643,10 +643,13 @@ namespace ClarionAssistant.Services
             return outp;
         }
 
-        /// <summary>Collect the procedure's ROUTINE names from its source (the "&lt;name&gt; ROUTINE" lines).</summary>
-        public static List<string> ParseRoutines(string source, string procName)
+        /// <summary>A ROUTINE declaration: its label and the 1-based source line it's declared on.</summary>
+        public class RoutineDef { public string Name; public int Line; }
+
+        /// <summary>Collect the procedure's ROUTINEs from its source (the "&lt;name&gt; ROUTINE" lines), with line numbers.</summary>
+        public static List<RoutineDef> ParseRoutines(string source, string procName)
         {
-            var outp = new List<string>();
+            var outp = new List<RoutineDef>();
             if (string.IsNullOrEmpty(source)) return outp;
             var lines = source.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
 
@@ -665,7 +668,7 @@ namespace ClarionAssistant.Services
                 SplitLabelRest(StripComment(lines[i]), out label, out rest);
                 if (label == null) continue;
                 if (rest.ToUpperInvariant().StartsWith("ROUTINE") && IsIdent(label) && seen.Add(label))
-                    outp.Add(label);
+                    outp.Add(new RoutineDef { Name = label, Line = i + 1 });
             }
             return outp;
         }
