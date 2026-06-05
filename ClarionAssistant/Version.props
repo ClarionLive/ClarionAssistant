@@ -8,10 +8,10 @@
         .\Bump-Version.ps1 -Build 12345
   -->
   <PropertyGroup>
-    <VersionMajor>4</VersionMajor>
-    <VersionMinor>6</VersionMinor>
-    <VersionBuild>210</VersionBuild>
-    <FullVersion>4.6.210</FullVersion>
-    <AssemblyFullVersion>4.6.210.0</AssemblyFullVersion>
+    <VersionMajor>5</VersionMajor>
+    <VersionMinor>0</VersionMinor>
+    <VersionBuild>213</VersionBuild>
+    <FullVersion>5.0.213</FullVersion>
+    <AssemblyFullVersion>5.0.213.0</AssemblyFullVersion>
   </PropertyGroup>
 </Project>

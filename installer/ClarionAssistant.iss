@@ -1,9 +1,10 @@
-; Clarion Assistant v4.6.2 Installer
+; Clarion Assistant v5.0 (Preview) Installer
 ; Inno Setup 6 Script
 ; Supports Clarion 10, 11, 12 — user picks which version(s) to install
 
 #define MyAppName "Clarion Assistant"
-#define MyAppVersion "4.6.2"
+#define MyAppVersion "5.0"
+#define MyAppEdition "Preview"
 #define MyAppPublisher "ClarionLive"
 #define MyAppURL "https://clarionlive.com"
 
@@ -35,7 +36,7 @@
 AppId={{B7E2F4A1-8C3D-4E5F-9A1B-2C3D4E5F6A7B}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppVerName={#MyAppName} {#MyAppVersion}
+AppVerName={#MyAppName} {#MyAppVersion} {#MyAppEdition}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 DefaultDirName={autopf}\ClarionAssistant
@@ -43,7 +44,7 @@ DefaultGroupName={#MyAppName}
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 OutputDir=output
-OutputBaseFilename=ClarionAssistant-{#MyAppVersion}-Setup
+OutputBaseFilename=ClarionAssistant-{#MyAppVersion}-{#MyAppEdition}-Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -116,6 +117,8 @@ Source: "{#SrcTerminal}\schema-sources.html"; DestDir: "{code:GetC10Path}\access
 Source: "{#SrcTerminal}\settings.html"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcTerminal}\cheatsheet.html"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcTerminal}\diff.html"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion10; Flags: ignoreversion
+Source: "{#SrcTerminal}\monaco-embeditor.html"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion10; Flags: ignoreversion
+Source: "{#SrcTerminal}\modern-data-pad.html"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcTerminal}\clarion-assistant-prompt.md"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcTerminal}\create-class.html"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcTerminal}\ca-statusline.js"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion10; Flags: ignoreversion
@@ -160,6 +163,8 @@ Source: "{#SrcTerminal}\schema-sources.html"; DestDir: "{code:GetC11Path}\access
 Source: "{#SrcTerminal}\settings.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcTerminal}\cheatsheet.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcTerminal}\diff.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion11; Flags: ignoreversion
+Source: "{#SrcTerminal}\monaco-embeditor.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion11; Flags: ignoreversion
+Source: "{#SrcTerminal}\modern-data-pad.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcTerminal}\clarion-assistant-prompt.md"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcTerminal}\create-class.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcTerminal}\ca-statusline.js"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion11; Flags: ignoreversion
@@ -204,6 +209,8 @@ Source: "{#SrcTerminal}\schema-sources.html"; DestDir: "{code:GetC12Path}\access
 Source: "{#SrcTerminal}\settings.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcTerminal}\cheatsheet.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcTerminal}\diff.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion12; Flags: ignoreversion
+Source: "{#SrcTerminal}\monaco-embeditor.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion12; Flags: ignoreversion
+Source: "{#SrcTerminal}\modern-data-pad.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcTerminal}\clarion-assistant-prompt.md"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcTerminal}\create-class.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcTerminal}\ca-statusline.js"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion12; Flags: ignoreversion

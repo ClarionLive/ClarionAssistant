@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/peterparker57/ClarionAssistant/releases/latest"><img src="https://img.shields.io/github/v/release/peterparker57/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
   <img src="https://img.shields.io/badge/Clarion-10%20%7C%2011%20%7C%2012-blue?style=for-the-badge" alt="Clarion 10 | 11 | 12">
-  <img src="https://img.shields.io/badge/version-4.6.2-green?style=for-the-badge" alt="v4.6.2">
+  <img src="https://img.shields.io/badge/version-5.0%20Preview-orange?style=for-the-badge" alt="v5.0 Preview">
 </p>
 
 ---
@@ -35,10 +35,40 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 - **Build tools** &mdash; build solutions, individual apps, or C# COM controls without leaving the chat
 - **Class intelligence** &mdash; parse CLASS definitions, sync .inc/.clw, generate method stubs
 - **Application tree** &mdash; open .app files, list procedures, navigate the embeditor
+- **CA Embeditor** &mdash; right-click any procedure in the app tree to open its embed code directly in a fast Monaco/WebView2 editor; open multiple procedures as tabs
+- **CA Data Pad** &mdash; docked pad showing the active CA Embeditor tab's Local, Module &amp; Global Data, Declared Tables, Other Files, and their Keys, Columns, and Relations
 - **Evaluate Code** &mdash; interactive code review for entire apps, procedures, open files, or selected code
 - **Diff viewer** &mdash; Monaco-based side-by-side diffs with syntax highlighting
 - **Knowledge system** &mdash; persistent cross-session memory for decisions, patterns, and gotchas
 - **Zoom persistence** &mdash; Ctrl+mousewheel zoom is saved and restored across sessions
+
+---
+
+## What's New in v5.0 (Preview)
+
+> **Preview edition.** v5.0 is an early look for developers to test &mdash; the headline features below are working but not yet feature-complete. Feedback welcome.
+
+The headline of v5.0 is the **CA Embeditor** and its companion **CA Data Pad**: open any procedure's embed code in a fast modern editor straight from the application tree, with its data in a docked pad alongside.
+
+### CA Embeditor &mdash; right-click a procedure to open it instantly
+
+Opening a procedure's embed code is now a single right-click. In the Clarion application tree, right-click any procedure and choose **Open in CA Embeditor** &mdash; the procedure opens directly in a fast Monaco/WebView2 editor, with no Tools-menu or picker round-trip.
+
+- **One-click from the app tree** &mdash; right-click the procedure &rarr; **Open in CA Embeditor**. The procedure you clicked is the one that opens.
+- **Multiple procedures as tabs** &mdash; open several procedures side by side; each gets its own CA Embeditor tab.
+- **Still available the classic ways** &mdash; **Tools &rarr; CA Embeditor (open procedures)&hellip;** and the **CA Embeditor** button on the embeditor toolbar continue to work.
+
+### CA Data Pad
+
+A docked pad that shows the data behind the procedure you're editing. Open it from **Tools &rarr; CA Data Pad** or with **Ctrl+Alt+D** (its docked title bar reads **CA Data**); it follows the active CA Embeditor tab.
+
+- **Local, Module &amp; Global Data** &mdash; the variables in scope for the active procedure.
+- **Declared Tables &amp; Other Files** &mdash; with their **Keys**, **Columns**, and **Relations**.
+- **Follows the active tab** &mdash; switch CA Embeditor tabs and the pad updates to match.
+
+### Renamed: "Modern Embeditor / Modern Data" &rarr; "CA Embeditor / CA Data"
+
+The feature previously shown as *Modern Embeditor* and *Modern Data* is now **CA Embeditor** and **CA Data** (Clarion Assistant) across the menus and UI. Same feature, clearer name.
 
 ---
 

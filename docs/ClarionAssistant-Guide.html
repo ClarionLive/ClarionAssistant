@@ -427,7 +427,7 @@
 <header class="site-header">
   <h1>Clarion.Assistant</h1>
   <div class="subtitle">AI-Powered Development for the Clarion IDE</div>
-  <div class="version-badge">User Guide &middot; v1.3 &middot; for Clarion.Assistant 4.6.2</div>
+  <div class="version-badge">User Guide &middot; v1.4 &middot; for Clarion.Assistant 5.0 (Preview)</div>
 </header>
 
 <!-- ════════════════════════════════════════════════════ -->
@@ -438,7 +438,8 @@
   <!-- ── Sidebar Navigation ── -->
   <nav class="sidebar">
     <h3>What's New</h3>
-    <a href="#whats-new">v4.6.x Release Notes</a>
+    <a href="#whats-new">Release Notes</a>
+    <a href="#whats-new-50" class="sub">v5.0 (Preview)</a>
     <a href="#whats-new-sidecar" class="sub">Custom MCP Servers</a>
     <a href="#whats-new-codex" class="sub">Codex Backend</a>
     <a href="#whats-new-selfheal" class="sub">Codex Config Self-Heal</a>
@@ -461,6 +462,11 @@
     <a href="#claude-chat-capabilities" class="sub">What Claude Can Do</a>
     <a href="#claude-chat-examples" class="sub">Example Conversations</a>
     <a href="#claude-chat-settings" class="sub">Settings</a>
+
+    <h3>CA Embeditor &amp; Data Pad</h3>
+    <a href="#ca-embeditor">Overview</a>
+    <a href="#ca-embeditor-open" class="sub">Opening a Procedure</a>
+    <a href="#ca-data-pad" class="sub">CA Data Pad</a>
 
     <h3>Class Helper</h3>
     <a href="#class-helper">Overview</a>
@@ -513,7 +519,19 @@
 <!--  SECTION 0: WHAT'S NEW IN v4.6                       -->
 <!-- ════════════════════════════════════════════════════ -->
 <section id="whats-new" class="doc-section">
-  <h2>What's New in v4.6.x</h2>
+  <h2>What's New</h2>
+
+  <h3 id="whats-new-50">v5.0 &mdash; CA Embeditor &amp; CA Data Pad <span style="font-weight:400;font-size:0.85em;color:var(--text-light)">(Preview)</span></h3>
+
+  <p>
+    v5.0 introduces the <a href="#ca-embeditor"><strong>CA Embeditor</strong></a> and its companion
+    <strong>CA Data Pad</strong>. Right-click any procedure in the application tree and choose
+    <strong>Open in CA Embeditor</strong> to open its embed code in a fast Monaco/WebView2 editor,
+    with the procedure's Local, Module &amp; Global Data, Declared Tables and Other Files (and their
+    Keys, Columns &amp; Relations) shown in a docked pad alongside. This is an early preview for
+    developers to test &mdash; see <a href="#ca-embeditor">CA Embeditor &amp; CA Data Pad</a> for the
+    full walkthrough.
+  </p>
 
   <div class="section-intro">
     <p>
@@ -1371,6 +1389,79 @@
       </tr>
     </tbody>
   </table>
+</section>
+
+<!-- ════════════════════════════════════════════════════ -->
+<!--  SECTION: CA EMBEDITOR & CA DATA PAD                -->
+<!-- ════════════════════════════════════════════════════ -->
+<section id="ca-embeditor" class="doc-section">
+  <h2>CA Embeditor &amp; CA Data Pad <span style="font-weight:400;font-size:0.85em;color:var(--text-light)">(v5.0 Preview)</span></h2>
+
+  <div class="section-intro">
+    <p>
+      The <strong>CA Embeditor</strong> opens a procedure's embed code in a fast Monaco/WebView2
+      editor right inside the IDE, and the <strong>CA Data Pad</strong> shows the data behind the
+      procedure you're editing. Together they give you a modern, keyboard-friendly way to read and
+      edit embeds without leaving Clarion Assistant.
+    </p>
+    <p>
+      <em>New in v5.0 (Preview):</em> you can now open a procedure straight from the application
+      tree with a single right-click. This is an early preview for developers to test &mdash; the
+      core flow works, with more polish to come.
+    </p>
+  </div>
+
+  <h3 id="ca-embeditor-open">Opening a Procedure</h3>
+
+  <p>
+    The fastest way is a right-click in the Clarion application tree:
+  </p>
+
+  <ul>
+    <li>
+      <strong>Right-click &rarr; Open in CA Embeditor</strong> &mdash; right-click any procedure in
+      the application tree and choose <strong>Open in CA Embeditor</strong>. The procedure you
+      clicked opens directly in a CA Embeditor tab &mdash; no Tools-menu or picker step in between.
+    </li>
+    <li>
+      <strong>Multiple procedures as tabs</strong> &mdash; open as many procedures as you like; each
+      opens in its own CA Embeditor tab, so you can move between them while you work.
+    </li>
+    <li>
+      <strong>Other ways to open</strong> &mdash; <strong>Tools &rarr; CA Embeditor (open
+      procedures)&hellip;</strong> opens a picker, and the <strong>CA Embeditor</strong> button on
+      the embeditor toolbar opens the currently selected procedure. The right-click is simply the
+      shortcut for the common case.
+    </li>
+  </ul>
+
+  <h3 id="ca-data-pad">CA Data Pad</h3>
+
+  <p>
+    Open the docked <strong>CA Data Pad</strong> from <strong>Tools &rarr; CA Data Pad</strong> or
+    with <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>D</kbd> (its title bar reads <strong>CA Data</strong>
+    when docked). It follows the active CA Embeditor tab, so it always shows the data for the
+    procedure you're currently editing:
+  </p>
+
+  <ul>
+    <li>
+      <strong>Local, Module &amp; Global Data</strong> &mdash; the variables in scope for the active
+      procedure.
+    </li>
+    <li>
+      <strong>Declared Tables &amp; Other Files</strong> &mdash; the tables and files the procedure
+      works with.
+    </li>
+    <li>
+      <strong>Keys, Columns &amp; Relations</strong> &mdash; expand a table to see its keys, its
+      columns, and its relationships to other tables.
+    </li>
+    <li>
+      <strong>Follows the active tab</strong> &mdash; switch CA Embeditor tabs and the pad updates
+      to match the procedure you switched to.
+    </li>
+  </ul>
 </section>
 
 <!-- ════════════════════════════════════════════════════ -->
