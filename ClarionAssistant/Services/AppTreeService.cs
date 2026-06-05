@@ -824,56 +824,10 @@ namespace ClarionAssistant.Services
                 }
 
                 // ================================================================
-                // PHASE 3: Open embeditor — find and click the Embeditor button
+                // PHASE 3: Open embeditor — find and click the Embeditor button (shared helper)
                 // ================================================================
-                log.AppendLine("\n--- Phase 3: Click Embeditor button ---");
-
-                IntPtr embeditorBtn = IntPtr.Zero;
-                foreach (var (hwnd, cls, vis) in children)
-                {
-                    if (cls.Contains("ClaButton") && vis)
-                    {
-                        // Try GetWindowText first
-                        var textBuf = new StringBuilder(256);
-                        GetWindowText(hwnd, textBuf, 256);
-                        string btnText = textBuf.ToString();
-
-                        // If empty, try WM_GETTEXT (custom controls may not respond to GetWindowText)
-                        if (string.IsNullOrEmpty(btnText))
-                        {
-                            int textLen = (int)SendMessage(hwnd, WM_GETTEXTLENGTH, IntPtr.Zero, IntPtr.Zero);
-                            if (textLen > 0)
-                            {
-                                textBuf = new StringBuilder(textLen + 1);
-                                SendMessage(hwnd, WM_GETTEXT, (IntPtr)(textLen + 1), textBuf);
-                                btnText = textBuf.ToString();
-                            }
-                        }
-
-                        log.AppendLine("  ClaButton: 0x" + hwnd.ToString("X") + " text='" + btnText + "'");
-
-                        if (btnText.IndexOf("beditor", StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            embeditorBtn = hwnd;
-                            log.AppendLine("  ^ MATCH — this is the Embeditor button");
-                        }
-                    }
-                }
-
-                if (embeditorBtn == IntPtr.Zero)
-                {
-                    log.AppendLine("Embeditor button NOT FOUND among ClaButtons");
+                if (!ClickEmbeditorButton(children, log))
                     return log.ToString();
-                }
-
-                // Send BM_CLICK to the Embeditor button. One DoEvents dispatches the posted click; we do NOT
-                // sleep here — the caller (OpenAndMirror) immediately runs WaitForEmbedOpen, which polls
-                // GetEmbedInfo() while pumping DoEvents until the embed actually opens. The old fixed
-                // Sleep(500) was therefore pure dead latency the poll already covers (~500ms off every open). [perf]
-                SendMessage(embeditorBtn, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
-                Application.DoEvents();
-
-                log.AppendLine("BM_CLICK sent to Embeditor button");
 
                 log.AppendLine("\nEmbeditor opened for " + procedureName);
                 return log.ToString();
@@ -888,6 +842,120 @@ namespace ClarionAssistant.Services
                 // attach and a manual detach) poisons the NEXT Modern open's WebView2 init and can hang the IDE.
                 if (attached) AttachThreadInput(curThreadId, listThreadId, false);
             }
+        }
+
+        /// <summary>
+        /// PHASE 3 (ticket 4b82f1de) — open the embeditor for the procedure ALREADY selected in the app tree.
+        /// The proc-tree right-click commits the selection to the clicked row (F3), so unlike
+        /// <see cref="OpenProcedureEmbed(string,int)"/> there is no name to type: skip Phase 1 (focus) and
+        /// Phase 2 (locator typing) entirely and go straight to Phase 3 — find the native app window's
+        /// ClaButtons and BM_CLICK the Embeditor button on the current selection (shared
+        /// <see cref="ClickEmbeditorButton"/>). UI thread only. Returns a diagnostic log; the caller's
+        /// WaitForEmbedOpen poll is the real success signal (an early "Error:" string means we couldn't
+        /// reach the app window / Embeditor button at all).
+        /// </summary>
+        public string OpenProcedureEmbedCurrentSelection()
+        {
+            try
+            {
+                // Already-open guard — same contract as OpenProcedureEmbed.
+                var embedInfo = GetEmbedInfo();
+                if (embedInfo != null)
+                {
+                    var openFile = (embedInfo["fileName"] ?? "").ToString();
+                    return "Error: An embeditor is already open (" + openFile + "). Please close it before opening another procedure.";
+                }
+
+                var log = new StringBuilder();
+                log.AppendLine("=== OpenProcedureEmbedCurrentSelection (committed selection) ===");
+
+                var viewContent = FindAppViewContent();
+                if (viewContent == null) return "Error: no ViewContent — is an .app file open?";
+
+                var container = GetProp(viewContent, "_Container")
+                             ?? GetProp(viewContent, "ApplicationContainer");
+                if (!(container is Control containerCtrl) || containerCtrl.Controls.Count == 0)
+                    return "Error: cannot access ApplicationContainer";
+
+                var mainCtrl = containerCtrl.Controls[0] as Control;
+                if (mainCtrl == null || !mainCtrl.IsHandleCreated)
+                    return "Error: ApplicationMainWindowControl has no handle";
+
+                var children = GetChildWindows(mainCtrl.Handle);
+
+                // NO Phase 1 (focus) / NO Phase 2 (select): the right-click already committed + highlighted
+                // the row. Straight to Phase 3 — click the Embeditor button on the current selection.
+                if (!ClickEmbeditorButton(children, log))
+                    return log.ToString();
+
+                log.AppendLine("\nEmbeditor opened for the committed selection");
+                return log.ToString();
+            }
+            catch (Exception ex)
+            {
+                return "Error: " + (ex.InnerException?.Message ?? ex.Message) + "\n" + ex.StackTrace;
+            }
+        }
+
+        /// <summary>
+        /// PHASE 3 (shared) — locate the Embeditor button among the app-window ClaButtons (matched by
+        /// "beditor" in its caption) and BM_CLICK it to open the embeditor for the CURRENTLY selected
+        /// procedure. Called by both <see cref="OpenProcedureEmbed(string,int)"/> (after type-to-select)
+        /// and <see cref="OpenProcedureEmbedCurrentSelection"/> (selection already committed by right-click).
+        /// Returns true if the click was sent; false (with diagnostics appended to <paramref name="log"/>)
+        /// when the button isn't found.
+        /// </summary>
+        private bool ClickEmbeditorButton(List<(IntPtr hwnd, string className, bool visible)> children, StringBuilder log)
+        {
+            log.AppendLine("\n--- Phase 3: Click Embeditor button ---");
+
+            IntPtr embeditorBtn = IntPtr.Zero;
+            foreach (var (hwnd, cls, vis) in children)
+            {
+                if (cls.Contains("ClaButton") && vis)
+                {
+                    // Try GetWindowText first
+                    var textBuf = new StringBuilder(256);
+                    GetWindowText(hwnd, textBuf, 256);
+                    string btnText = textBuf.ToString();
+
+                    // If empty, try WM_GETTEXT (custom controls may not respond to GetWindowText)
+                    if (string.IsNullOrEmpty(btnText))
+                    {
+                        int textLen = (int)SendMessage(hwnd, WM_GETTEXTLENGTH, IntPtr.Zero, IntPtr.Zero);
+                        if (textLen > 0)
+                        {
+                            textBuf = new StringBuilder(textLen + 1);
+                            SendMessage(hwnd, WM_GETTEXT, (IntPtr)(textLen + 1), textBuf);
+                            btnText = textBuf.ToString();
+                        }
+                    }
+
+                    log.AppendLine("  ClaButton: 0x" + hwnd.ToString("X") + " text='" + btnText + "'");
+
+                    if (btnText.IndexOf("beditor", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        embeditorBtn = hwnd;
+                        log.AppendLine("  ^ MATCH — this is the Embeditor button");
+                    }
+                }
+            }
+
+            if (embeditorBtn == IntPtr.Zero)
+            {
+                log.AppendLine("Embeditor button NOT FOUND among ClaButtons");
+                return false;
+            }
+
+            // Send BM_CLICK to the Embeditor button. One DoEvents dispatches the posted click; we do NOT
+            // sleep here — the caller (OpenAndMirror) immediately runs WaitForEmbedOpen, which polls
+            // GetEmbedInfo() while pumping DoEvents until the embed actually opens. The old fixed
+            // Sleep(500) was therefore pure dead latency the poll already covers (~500ms off every open). [perf]
+            SendMessage(embeditorBtn, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
+            Application.DoEvents();
+
+            log.AppendLine("BM_CLICK sent to Embeditor button");
+            return true;
         }
 
         /// <summary>

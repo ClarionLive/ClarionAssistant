@@ -9,6 +9,13 @@
   <!-- Start the Clarion LSP early and independent of any pad (see LspAutostartCommand). -->
   <Path name="/Workspace/Autostart">
     <Class id="ClarionAssistantStartLsp" class="ClarionAssistant.LspAutostartCommand"/>
+    <!-- Right-click proc -> "Open in Modern Embeditor" native hook (ticket 4b82f1de, see RightClickHookService). -->
+    <Class id="ClarionAssistantStartRightClickHook" class="ClarionAssistant.RightClickHookAutostartCommand"/>
+  </Path>
+
+  <!-- Tear the right-click native hook down cleanly at shutdown (unhook all roster pairs). -->
+  <Path name="/Workspace/Terminate">
+    <Class id="ClarionAssistantTerminateRightClickHook" class="ClarionAssistant.RightClickHookTerminateCommand"/>
   </Path>
 
   <Path name="/SharpDevelop/Workbench/Pads">
@@ -21,7 +28,7 @@
     <Pad id="AgentPanel" category="Tools" title="Agent Panel"
          icon="PadIcons.TaskList" shortcut="Control|Alt|A"
          class="ClarionAssistant.AgentPanelPad"/>
-    <Pad id="ModernData" category="Tools" title="Modern Data"
+    <Pad id="ModernData" category="Tools" title="CA Data"
          icon="PadIcons.Output" shortcut="Control|Alt|D"
          class="ClarionAssistant.ModernDataPad"/>
   </Path>
@@ -33,9 +40,9 @@
               class="ClarionAssistant.ShowClaudeChatCommand"/>
     <MenuItem id="ShowAgentPanel" label="Agent Panel"
               class="ClarionAssistant.ShowAgentPanelCommand"/>
-    <MenuItem id="OpenModernEmbeditorPicker" label="Modern Embeditor (open procedures)..."
+    <MenuItem id="OpenModernEmbeditorPicker" label="CA Embeditor (open procedures)..."
               class="ClarionAssistant.OpenModernEmbeditorPickerCommand"/>
-    <MenuItem id="ShowModernDataPad" label="Modern Data pad"
+    <MenuItem id="ShowModernDataPad" label="CA Data Pad"
               class="ClarionAssistant.ShowModernDataPadCommand"/>
   </Path>
 
@@ -44,7 +51,7 @@
     <ToolbarItem id="EmbeditorCompletionTest" label="Completion Test"
                  tooltip="Modern Embeditor POC: pop an ICSharpCode completion window with our own items"
                  class="ClarionAssistant.EmbeditorCompletionTestCommand"/>
-    <ToolbarItem id="ShowModernEmbeditor" label="Modern Embeditor"
+    <ToolbarItem id="ShowModernEmbeditor" label="CA Embeditor"
                  tooltip="Path B: open the assembled embeditor source in a modern Monaco editor (read-only render)"
                  class="ClarionAssistant.ShowModernEmbeditorCommand"/>
   </Path>

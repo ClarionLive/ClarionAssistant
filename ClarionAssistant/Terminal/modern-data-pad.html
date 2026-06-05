@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Modern Data</title>
+<title>CA Data</title>
 <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { height: 100%; font-family: 'Segoe UI', Tahoma, sans-serif; font-size: 12px;
@@ -72,10 +72,10 @@
 <body>
     <div id="bar">
         <span class="title" id="title">Data</span>
-        <button id="refreshBtn" title="Refresh from the active Modern Embeditor">Refresh</button>
+        <button id="refreshBtn" title="Refresh from the active CA Embeditor">Refresh</button>
     </div>
     <input id="filter" placeholder="Filter…" />
-    <div id="list"><div class="empty">Open a procedure in the Modern Embeditor, then Refresh.</div></div>
+    <div id="list"><div class="empty">Open a procedure in the CA Embeditor, then Refresh.</div></div>
 
 <script>
     var locals = [];
@@ -529,10 +529,10 @@
         flatSection('routines', 'Routines', routines, { type: 'goto', icon: '→', title: 'Go to routine' });
         flatSection('moduleData', 'Module Data', moduleData);
         treeSection('globals', 'Global Data', globals);
-        flatSection('procedures', 'Procedures', procedures, { type: 'open', icon: '↗', title: 'Open in Modern Embeditor' });
+        flatSection('procedures', 'Procedures', procedures, { type: 'open', icon: '↗', title: 'Open in CA Embeditor' });
 
         if (!list.childNodes.length) {
-            list.innerHTML = '<div class="empty">No data. Open a procedure in the Modern Embeditor and Refresh. (Declared Tables come from the generated &lt;app&gt;.clw with live-dictionary schema; Other Files from the .txa; Local/Global Data from the app .txa.)</div>';
+            list.innerHTML = '<div class="empty">No data. Open a procedure in the CA Embeditor and Refresh. (Declared Tables come from the generated &lt;app&gt;.clw with live-dictionary schema; Other Files from the .txa; Local/Global Data from the app .txa.)</div>';
         }
         scheduleSaveUiState();
     }

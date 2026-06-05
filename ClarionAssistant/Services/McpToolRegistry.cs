@@ -496,7 +496,17 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                         case "embed_details": return IdeReflectionService.InspectEmbedDetails();
                         case "types": return IdeReflectionService.DiscoverAutomationTypes();
                         case "assemblies": return IdeReflectionService.ListLoadedAssemblies();
+                        // --- TRANSIENT diagnostic (ticket 4b82f1de, right-click hook spike, phase 1 / 1.5) ---
+                        case "probe_native_chain":     return NativeProbeService.DumpNativeChain();
+                        case "probe_clalist_read":     return NativeProbeService.ProbeClaListRead();
+                        case "probe_enum_lists":       return NativeProbeService.EnumClaLists();
+                        case "probe_popup_arm":        return NativeProbeService.PopupArm();
+                        case "probe_popup_arm_inject": return NativeProbeService.PopupArmInject();
+                        case "probe_popup_report":     return NativeProbeService.PopupReport();
                         default:
+                            // probe_mark[:label] — Tier-0 trace separator between right-clicks (ticket 4b82f1de).
+                            if (command.StartsWith("probe_mark"))
+                                return NativeProbeService.PopupMark(command.Length > 11 && command[10] == ':' ? command.Substring(11) : "");
                             if (command.StartsWith("path:"))
                                 return IdeReflectionService.InspectPath(command.Substring(5));
                             return "Unknown command: " + command + ". Use: active_view, editor_text, all_windows, all_pads, app_details, embed_details, path:<dotpath>, types, assemblies";

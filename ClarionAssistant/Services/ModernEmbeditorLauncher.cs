@@ -75,6 +75,94 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// PHASE 3 (ticket 4b82f1de) — open the procedure CURRENTLY committed in the app tree (selected by
+        /// the proc-tree right-click, F3) as a Monaco snapshot tab, with NO proc name supplied up front.
+        /// Flow: open+mirror the committed selection (no locator typing → no type-miss → no retry) → derive
+        /// the authoritative name via source-regex (cardinal rule #7 — NOT the temp pwee FileName/caption) →
+        /// CancelEmbeditor → deferred ShowView (the SAME freeze-safe tail as <see cref="OpenProcedure"/>).
+        /// Returns null on success, else an error string. MUST run on the managed UI thread.
+        ///
+        /// Guards: E3 (already-open Monaco tab for this proc → focus it, no duplicate); E6 (name
+        /// unrecoverable from source → CancelEmbeditor + NO tab + return error; never a blank/wrong proc).
+        /// </summary>
+        public static string OpenCommittedSelection(bool isDark)
+        {
+            EnterBusy();
+            try
+            {
+                var appTree = new AppTreeService();
+
+                string source, error;
+                List<int[]> ranges;
+                if (!OpenAndMirrorCurrentSelection(appTree, out source, out ranges, out error))
+                    return error;
+
+                // E6 — authoritative name from the mirrored SOURCE (cardinal rule #7), never the temp pwee
+                // FileName/caption. Iterate the col-0 "Name PROCEDURE" declarations and take the first that is a
+                // KNOWN top-level procedure (validates the regex pick against App.ProcedureNames).
+                List<string> knownProcs = null;
+                try { knownProcs = appTree.GetProcedureNames(); } catch { }
+                string procName = ProcNameFromSource(source, knownProcs);
+                if (string.IsNullOrWhiteSpace(procName))
+                {
+                    // E6: no confident identity → abort cleanly, no tab.
+                    try { appTree.CancelEmbeditor(); } catch { }
+                    WaitForEmbedClosed(appTree, 3000);
+                    return "Could not determine the procedure name from the embed source — no tab opened.";
+                }
+
+                // Dup-name limitation (Eve #5): if the app declares the same proc name in more than one module,
+                // source-regex has no module context to disambiguate → the tab may reflect the wrong module's
+                // proc. Acceptable for v1; log it so it's diagnosable (future fix = embeditor window caption).
+                if (CountIgnoreCase(knownProcs, procName) > 1)
+                    System.Diagnostics.Debug.WriteLine(
+                        "[ModernEmbeditorLauncher] '" + procName + "' is a duplicate proc name across modules — "
+                        + "source-regex cannot disambiguate the module; may open the wrong module's tab.");
+
+                // E3 — a Monaco tab for this proc is already open: focus it, discard the redundant native
+                // open, and do NOT open a duplicate. (h2: the ~2.6s open is unavoidable here — no name to
+                // dedup on before opening — so we eat it once and log nothing user-facing.)
+                if (ModernEmbeditorViewContent.TryFocusExisting(procName))
+                {
+                    try { appTree.CancelEmbeditor(); } catch { }
+                    WaitForEmbedClosed(appTree, 3000);
+                    System.Diagnostics.Debug.WriteLine(
+                        "[ModernEmbeditorLauncher] '" + procName + "' already open — focused existing tab (redundant ~2.6s open).");
+                    return null;
+                }
+
+                // ABC is loaded now (the native open triggered the lazy load). Warm the LSP HERE so its
+                // background solution parse overlaps the WebView2/Monaco load below. Idempotent, fire-and-forget.
+                try { EmbeditorCompletionService.LspStarter?.Invoke(); } catch { }
+
+                // We made no edits — discard/close to free the native single-embeditor lock.
+                try { appTree.CancelEmbeditor(); } catch { }
+                WaitForEmbedClosed(appTree, 3000);
+
+                // CRITICAL freeze-safe tail — identical to OpenProcedure: do NOT create the WebView2 view on
+                // THIS call stack (still unwinding the native open's nested DoEvents pumps). Post ShowView so
+                // the stack unwinds and the message/input state drains first, or WebView2's async init can't
+                // progress and the IDE hard-hangs.
+                var ctx = WindowsFormsSynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+                string capProc = procName; string capSrc = source; List<int[]> capRanges = ranges; bool capDark = isDark;
+                ctx.Post(_ =>
+                {
+                    try
+                    {
+                        var view = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc);
+                        WorkbenchSingleton.Workbench.ShowView(view);
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine("[ModernEmbeditorLauncher] deferred ShowView (committed) failed: " + ex.Message);
+                    }
+                }, null);
+                return null;
+            }
+            finally { LeaveBusy(); }
+        }
+
+        /// <summary>
         /// Force the IDE's lazy ABC class load to happen NOW (in isolation) so the user's first Modern
         /// Embeditor open doesn't pay it concurrently with the WebView2 open — the conflict that freezes
         /// Clarion. Reuses the proven open/cancel pattern: open the first procedure's native embeditor
@@ -178,6 +266,111 @@ namespace ClarionAssistant.Services
             return false;
             }
             finally { LeaveBusy(); }
+        }
+
+        /// <summary>
+        /// PHASE 3 variant of <see cref="OpenAndMirror"/>: open the embeditor for the ALREADY-committed
+        /// app-tree selection (the right-click selected the row, F3 — no name to type) and mirror its source
+        /// + editable-range map, leaving the embeditor OPEN on success. Because nothing is typed there is no
+        /// type-miss failure mode, so there is NO retry loop and NO SourceMentionsProcedure verify (there's
+        /// no name to verify against — the committed selection is ground truth; the caller derives the name
+        /// from the mirrored source). UI thread only.
+        /// </summary>
+        internal static bool OpenAndMirrorCurrentSelection(AppTreeService appTree,
+            out string source, out List<int[]> ranges, out string error)
+        {
+            source = null; ranges = null; error = null;
+            EnterBusy();
+            try
+            {
+                if (!WaitForEmbedClosed(appTree, 3000))
+                { error = "An embeditor is still open; close it and try again."; return false; }
+
+                // Bring the app tree to the front so the native automation works even when a Modern
+                // Embeditor tab is the active document.
+                appTree.ActivateAppView();
+                appTree.OpenProcedureEmbedCurrentSelection();
+
+                // First open loads the ABC libraries and can take many seconds; wait generously.
+                if (!WaitForEmbedOpen(appTree, 45000))
+                {
+                    try { appTree.CancelEmbeditor(); } catch { }
+                    error = "Embeditor did not open for the committed selection within 45s.";
+                    return false;
+                }
+
+                string title, ferr;
+                if (!EmbeditorCompletionService.TryGetActiveEmbeditorSource(out title, out source, out ranges, out ferr))
+                {
+                    try { appTree.CancelEmbeditor(); } catch { }
+                    error = "Could not read embed source for the committed selection: " + ferr;
+                    source = null; ranges = null;
+                    return false;
+                }
+                return true; // leave the embeditor open — caller mirrors then closes
+            }
+            finally { LeaveBusy(); }
+        }
+
+        /// <summary>
+        /// Extract the authoritative procedure name from generated embed source (cardinal rule #7 — name from
+        /// source, NEVER the temp pwee FileName/caption). MIRROR SCOPE IS SINGLE-PROC: the embeditor buffer is
+        /// one procedure's assembled source (verified live — BrowseAuthors' buffer contained only its own
+        /// "BrowseAuthors PROCEDURE" col-0 declaration), so the proc's own entry is the relevant declaration.
+        ///
+        /// Hardening (Eve): the regex is COLUMN-0 anchored with a BARE name — Clarion proc DEFINITIONS sit at
+        /// column 1, while MAP prototypes, local-MAP helper prototypes, and ABC dotted method labels
+        /// (ThisWindow.Init PROCEDURE — <c>\w+</c> stops at the dot) are indented and/or dotted, so they're all
+        /// excluded. We then ITERATE matches and return the first that is a KNOWN top-level proc
+        /// (<paramref name="knownProcs"/> = App.ProcedureNames) — turning the fragile "first match" into a
+        /// validated pick that rejects stray tokens / class names / local procs. If a known-proc list is
+        /// supplied and NOTHING validates → returns null → caller treats as E6 (abort, no tab). With no list
+        /// (degraded), falls back to the first col-0 match. Returns null when no declaration is found at all.
+        ///
+        /// KNOWN LIMITATION (v1): source-regex carries no module context, so it CANNOT disambiguate duplicate
+        /// proc names across modules (two "Process" procs → possible wrong-module tab). The embeditor WINDOW
+        /// caption 'Proc - Embeditor - (module.clw)' is the documented future fix. Caller logs dup-name hits.
+        /// </summary>
+        internal static string ProcNameFromSource(string source, ICollection<string> knownProcs)
+        {
+            if (string.IsNullOrEmpty(source)) return null;
+            try
+            {
+                var matches = System.Text.RegularExpressions.Regex.Matches(
+                    source, @"(?m)^([A-Za-z_][A-Za-z0-9_]*)[ \t]+PROCEDURE\b",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                string firstRaw = null;
+                foreach (System.Text.RegularExpressions.Match m in matches)
+                {
+                    string name = m.Groups[1].Value;
+                    if (firstRaw == null) firstRaw = name;
+                    if (knownProcs != null && ContainsIgnoreCase(knownProcs, name))
+                        return name;   // first match that IS a real top-level procedure — reliable pick
+                }
+
+                // No validated match: degrade to the first col-0 match ONLY when we had no list to validate
+                // against; if we DID have the list and nothing matched, that's E6 (return null → abort).
+                return (knownProcs == null || knownProcs.Count == 0) ? firstRaw : null;
+            }
+            catch { return null; }
+        }
+
+        private static bool ContainsIgnoreCase(ICollection<string> names, string name)
+        {
+            if (names == null) return false;
+            foreach (var n in names)
+                if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        private static int CountIgnoreCase(ICollection<string> names, string name)
+        {
+            if (names == null) return 0;
+            int c = 0;
+            foreach (var n in names)
+                if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) c++;
+            return c;
         }
 
         /// <summary>

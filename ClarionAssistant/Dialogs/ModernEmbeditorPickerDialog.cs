@@ -26,7 +26,7 @@ namespace ClarionAssistant.Dialogs
                 .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            Text = "Open Procedures in Modern Embeditor";
+            Text = "Open Procedures in CA Embeditor";
             ClientSize = new Size(420, 500);
             StartPosition = FormStartPosition.CenterParent;
             MinimizeBox = false;

@@ -8,7 +8,7 @@ using ClarionAssistant.Terminal;
 namespace ClarionAssistant
 {
     /// <summary>
-    /// Path B — Modern Embeditor (M1). Opens the active embeditor's assembled source in a
+    /// Path B — CA Embeditor (M1). Opens the active embeditor's assembled source in a
     /// Monaco/WebView2 view alongside Clarion's own ICSharpCode editor (mirror model — Clarion
     /// keeps generation + parse-back + persistence; this is a parallel surface).
     ///
@@ -35,9 +35,9 @@ namespace ClarionAssistant
                 if (!ok)
                 {
                     MessageBox.Show(
-                        "Could not open the Modern Embeditor:\r\n\r\n" + (error ?? "No embeditor is open.") +
+                        "Could not open the CA Embeditor:\r\n\r\n" + (error ?? "No embeditor is open.") +
                         "\r\n\r\nOpen a procedure embeditor first, then try again.",
-                        "Modern Embeditor",
+                        "CA Embeditor",
                         MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
@@ -49,8 +49,8 @@ namespace ClarionAssistant
             catch (Exception ex)
             {
                 MessageBox.Show(
-                    "Modern Embeditor failed to open: " + ex.Message,
-                    "Modern Embeditor",
+                    "CA Embeditor failed to open: " + ex.Message,
+                    "CA Embeditor",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }

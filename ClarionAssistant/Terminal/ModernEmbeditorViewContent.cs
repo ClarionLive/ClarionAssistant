@@ -571,7 +571,7 @@ namespace ClarionAssistant.Terminal
             _saveEnabled = !string.IsNullOrWhiteSpace(procedureName);
             _originalSlotTexts = ModernEmbeditorSaver.ExtractSlotTexts(_sourceText, _editableRanges);
             _lspFileName = MakeLspFileName(procedureName);
-            TitleName = "Modern: " + _title;
+            TitleName = "CA: " + _title;
 
             _panel = new Panel { Dock = DockStyle.Fill, BackColor = isDark ? Color.FromArgb(30, 30, 46) : Color.FromArgb(239, 241, 245) };
             // Plain WebView2 — Monaco's native mouseWheelZoom handles Ctrl+wheel inside the
@@ -1174,7 +1174,7 @@ namespace ClarionAssistant.Terminal
             _title = title ?? _title;
             _sourceText = sourceText ?? "";
             if (language != null) _language = language;
-            TitleName = "Modern: " + _title;
+            TitleName = "CA: " + _title;
 
             if (_isInitialized)
                 SendSource();

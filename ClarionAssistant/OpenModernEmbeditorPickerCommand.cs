@@ -38,7 +38,7 @@ namespace ClarionAssistant
                         "No procedures found.\r\n\r\nMake sure an application (.app) tab is open AND selected, " +
                         "then try again. Clarion only populates the procedure list once the app tab has been " +
                         "activated.",
-                        "Modern Embeditor", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        "CA Embeditor", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
 
@@ -65,14 +65,14 @@ namespace ClarionAssistant
                     MessageBox.Show(
                         "Opened " + (selected.Count - errors.Count) + " of " + selected.Count +
                         " procedure(s). Issues:\r\n\r\n" + string.Join("\r\n", errors),
-                        "Modern Embeditor", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        "CA Embeditor", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
             }
             catch (Exception ex)
             {
                 MessageBox.Show(
-                    "Modern Embeditor picker failed: " + ex.Message,
-                    "Modern Embeditor", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    "CA Embeditor picker failed: " + ex.Message,
+                    "CA Embeditor", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 

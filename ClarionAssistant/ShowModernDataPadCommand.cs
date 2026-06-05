@@ -19,7 +19,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Windows.Forms.MessageBox.Show("Error showing Modern Data pad: " + ex.Message,
+                System.Windows.Forms.MessageBox.Show("Error showing CA Data Pad: " + ex.Message,
                     "Clarion Assistant", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Error);
             }
         }
