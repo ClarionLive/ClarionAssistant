@@ -1769,23 +1769,52 @@ COMMON QUERIES:
                     if (_chatControl == null)
                         return "Error: chat control not initialized";
 
-                    var red = _chatControl.RedFile;
-                    if (red == null || red.RedFilePath == null)
-                        return "Error: no .red file loaded. Select a version and solution first.";
-
                     string fileName = McpJsonRpc.GetString(args, "filename", "");
-                    string section = McpJsonRpc.GetString(args, "section", "Common");
-
                     if (string.IsNullOrEmpty(fileName))
                         return "Error: filename is required";
 
+                    // Prefer the language server's config-aware resolver: it merges the active
+                    // configuration section with Common (and falls back to libsrc), the way the
+                    // compiler does. The local RedFileService only knows the Common section, so it
+                    // misses config-specific paths like .\genfiles\src. Fall back to RedFileService
+                    // only when the LSP is down or the server-side solution hasn't loaded yet.
+                    EnsureLspRunning();
+                    if (_lspClient != null && _lspClient.IsRunning)
+                    {
+                        var hit = _lspClient.FindFile(fileName);
+                        if (hit != null)
+                        {
+                            object p; hit.TryGetValue("path", out p);
+                            string resolvedPath = p as string;
+                            if (!string.IsNullOrEmpty(resolvedPath))
+                            {
+                                object src; hit.TryGetValue("source", out src);
+                                return new Dictionary<string, object>
+                                {
+                                    { "filename", fileName },
+                                    { "resolvedPath", resolvedPath },
+                                    { "found", true },
+                                    { "source", (src as string) ?? "lsp" },
+                                    { "resolver", "lsp" }
+                                };
+                            }
+                        }
+                    }
+
+                    // Fallback: local RedFileService (Common section only).
+                    var red = _chatControl.RedFile;
+                    if (red == null || red.RedFilePath == null)
+                        return "Error: no .red file loaded and LSP unavailable. Select a version and solution first.";
+
+                    string section = McpJsonRpc.GetString(args, "section", "Common");
                     string resolved = red.Resolve(fileName, section);
                     if (resolved != null)
                         return new Dictionary<string, object>
                         {
                             { "filename", fileName },
                             { "resolvedPath", resolved },
-                            { "found", true }
+                            { "found", true },
+                            { "resolver", "redfile-fallback" }
                         };
 
                     // Not found - return the search paths so the user knows where we looked
@@ -1795,7 +1824,8 @@ COMMON QUERIES:
                     {
                         { "filename", fileName },
                         { "found", false },
-                        { "searchedPaths", searchPaths }
+                        { "searchedPaths", searchPaths },
+                        { "resolver", "redfile-fallback" }
                     };
                 }
             });
@@ -1803,12 +1833,16 @@ COMMON QUERIES:
             Register(new McpTool
             {
                 Name = "get_red_search_paths",
-                Description = "Get all search directories for a file extension from the .red file. Useful for discovering where Clarion source files, includes, and libraries are located.",
+                Description = "Get all search directories for a file extension from the .red file. "
+                    + "When 'project_name' is supplied and the language server is running, results are "
+                    + "config-aware (active configuration section merged with Common, the way the compiler "
+                    + "resolves). Without a project_name, falls back to the local Common-section-only lookup.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
                         { "extension", "File extension to look up (e.g. 'clw', 'inc', 'lib', 'dll')" },
-                        { "section", "Red file section (default: 'Common')" }
+                        { "section", "Red file section for the local fallback (default: 'Common'). Ignored when project_name drives the config-aware LSP lookup." },
+                        { "project_name", "Project name for config-aware resolution via the language server. When set and the LSP is running, returns active-config + Common search paths." }
                     },
                     new[] { "extension" }),
                 RequiresUiThread = false,
@@ -1817,22 +1851,44 @@ COMMON QUERIES:
                     if (_chatControl == null)
                         return "Error: chat control not initialized";
 
-                    var red = _chatControl.RedFile;
-                    if (red == null || red.RedFilePath == null)
-                        return "Error: no .red file loaded. Select a version and solution first.";
-
                     string ext = McpJsonRpc.GetString(args, "extension", "");
-                    string section = McpJsonRpc.GetString(args, "section", "Common");
-
                     if (string.IsNullOrEmpty(ext))
                         return "Error: extension is required";
 
+                    string projectName = McpJsonRpc.GetString(args, "project_name", "");
+
+                    // Config-aware path: delegate to the server when we have a project to scope it to.
+                    if (!string.IsNullOrEmpty(projectName))
+                    {
+                        EnsureLspRunning();
+                        if (_lspClient != null && _lspClient.IsRunning)
+                        {
+                            string normalizedExt = ext.StartsWith(".") ? ext : "." + ext;
+                            var serverPaths = _lspClient.GetServerSearchPaths(projectName, normalizedExt);
+                            if (serverPaths != null && serverPaths.Count > 0)
+                                return new Dictionary<string, object>
+                                {
+                                    { "extension", ext },
+                                    { "projectName", projectName },
+                                    { "searchPaths", serverPaths },
+                                    { "resolver", "lsp" }
+                                };
+                        }
+                    }
+
+                    // Fallback: local RedFileService (single section, default Common).
+                    var red = _chatControl.RedFile;
+                    if (red == null || red.RedFilePath == null)
+                        return "Error: no .red file loaded and LSP unavailable. Select a version and solution first.";
+
+                    string section = McpJsonRpc.GetString(args, "section", "Common");
                     return new Dictionary<string, object>
                     {
                         { "extension", ext },
                         { "section", section },
                         { "searchPaths", red.GetSearchPaths(ext, section) },
-                        { "redFile", red.RedFilePath }
+                        { "redFile", red.RedFilePath },
+                        { "resolver", "redfile-fallback" }
                     };
                 }
             });

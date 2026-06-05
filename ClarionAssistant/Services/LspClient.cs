@@ -493,6 +493,84 @@ namespace ClarionAssistant.Services
             return items;
         }
 
+        /// <summary>
+        /// clarion/findFile — ask the server to resolve a filename to its absolute path using
+        /// the server's full, config-aware redirection logic (active configuration section +
+        /// Common, with libsrc fallback). This is the authoritative resolver: prefer it over any
+        /// local Common-only redirection lookup, which misses config-specific paths like
+        /// .\genfiles\src.
+        ///
+        /// Returns the inner { path, source } result dictionary, or null when the server is down,
+        /// no solution is loaded server-side, or the file isn't found.
+        /// </summary>
+        public Dictionary<string, object> FindFile(string filename, string sourceUri = null)
+        {
+            if (!IsRunning || string.IsNullOrEmpty(filename)) return null;
+            TrackRequest("findFile", filename);
+
+            var parms = new Dictionary<string, object> { { "filename", filename } };
+            if (!string.IsNullOrEmpty(sourceUri)) parms["sourceUri"] = sourceUri;
+
+            var response = SendRequest("clarion/findFile", parms);
+            var result = ExtractResultObject(response) as Dictionary<string, object>;
+            if (result == null) return null;
+
+            // The server returns { path: "", source: "" } on a miss — normalize that to null.
+            object pathObj;
+            if (!result.TryGetValue("path", out pathObj) || string.IsNullOrEmpty(pathObj as string))
+                return null;
+
+            return result;
+        }
+
+        /// <summary>
+        /// clarion/getSearchPaths — config-aware search directories for a project + extension
+        /// (merges the active configuration section with Common, the way the compiler does).
+        /// Requires the server-side solution to be loaded and a valid projectName. Returns an
+        /// empty list when the server is down or the project isn't found.
+        /// </summary>
+        public List<string> GetServerSearchPaths(string projectName, string extension)
+        {
+            var paths = new List<string>();
+            if (!IsRunning || string.IsNullOrEmpty(projectName) || string.IsNullOrEmpty(extension))
+                return paths;
+
+            TrackRequest("getSearchPaths", projectName);
+            var parms = new Dictionary<string, object>
+            {
+                { "projectName", projectName },
+                { "extension", extension }
+            };
+
+            var response = SendRequest("clarion/getSearchPaths", parms);
+            var resultObj = ExtractResultObject(response);
+
+            // JavaScriptSerializer deserializes a JSON array to ArrayList/object[] — both are
+            // IEnumerable. Guard against a string (also IEnumerable) just in case.
+            if (resultObj is System.Collections.IEnumerable && !(resultObj is string))
+            {
+                foreach (var item in (System.Collections.IEnumerable)resultObj)
+                {
+                    string s = item as string;
+                    if (!string.IsNullOrEmpty(s)) paths.Add(s);
+                }
+            }
+
+            return paths;
+        }
+
+        /// <summary>
+        /// Pulls the JSON-RPC "result" payload out of a SendRequest response. Returns null if the
+        /// response is null, carried an "error", or had no "result".
+        /// </summary>
+        private static object ExtractResultObject(Dictionary<string, object> response)
+        {
+            if (response == null) return null;
+            if (response.ContainsKey("error")) return null;
+            object result;
+            return response.TryGetValue("result", out result) ? result : null;
+        }
+
         private void TrackRequest(string tool, string target)
         {
             if (!string.IsNullOrEmpty(target))

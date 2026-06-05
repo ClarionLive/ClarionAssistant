@@ -58,7 +58,6 @@ namespace ClarionAssistant.Services
                     // Resolve version config + redirection file ourselves (pane-independent).
                     // Either may be null — the LSP still starts; only cross-file features degrade.
                     ClarionVersionConfig versionConfig = null;
-                    RedFileService redFile = null;
                     try
                     {
                         var versionInfo = ClarionVersionService.Detect();
@@ -78,12 +77,6 @@ namespace ClarionAssistant.Services
                             }
                             catch { }
                         }
-
-                        if (versionConfig != null)
-                        {
-                            redFile = new RedFileService();
-                            redFile.LoadForProject(wsPath, versionConfig);
-                        }
                     }
                     catch (Exception ex)
                     {
@@ -93,30 +86,49 @@ namespace ClarionAssistant.Services
                     if (_client != null) _client.Dispose();
                     _client = new LspClient();
 
-                    // Build clarion/updatePaths EXACTLY like McpToolRegistry.EnsureLspRunning did.
-                    // If versionConfig/redFile are null we SKIP updatePaths — the LSP still starts;
+                    // Build clarion/updatePaths in the exact shape the Clarion language server
+                    // expects (handshake contract from PR #37 — the redirection-file fix).
+                    //
+                    // Critical contract — the server resolves the effective .red with
+                    // path.join(projectPath, redirectionFile) and path.join(redirectionPaths[0],
+                    // redirectionFile). Therefore:
+                    //   • redirectionFile MUST be a bare filename ("Clarion100.red"), NOT an
+                    //     absolute path — an absolute path makes path.join produce a non-existent
+                    //     target and the server floods "No valid redirection file found".
+                    //   • redirectionPaths[0] MUST be the reddir DIRECTORY (global .red location).
+                    //     The per-project .red is discovered via projectPaths[0] (the solution dir).
+                    //
+                    // If versionConfig is null we SKIP updatePaths — the LSP still starts;
                     // completion + in-buffer hover/diagnostics are context-free, only cross-file degrades.
                     try
                     {
                         if (versionConfig != null)
                         {
-                            var redirectionPaths = new List<string>();
-                            var libsrcPaths = new List<string>();
-                            var projectPaths = new List<string>();
+                            // redirectionFile: bare filename only (server path.join()s it).
+                            string redirectionFileName = versionConfig.RedFileName ?? "";
 
-                            if (redFile != null)
-                                redirectionPaths = redFile.GetSearchPaths(".clw");
+                            // redirectionPaths[0]: the reddir directory. Prefer the `reddir` macro
+                            // (matches the VS Code client); fall back to the install red's own dir.
+                            string reddir = null;
+                            if (versionConfig.Macros != null)
+                                versionConfig.Macros.TryGetValue("reddir", out reddir);
+                            if (string.IsNullOrEmpty(reddir) && !string.IsNullOrEmpty(versionConfig.RedFilePath))
+                                reddir = Path.GetDirectoryName(versionConfig.RedFilePath);
+
+                            var redirectionPaths = new List<string>();
+                            if (!string.IsNullOrEmpty(reddir))
+                                redirectionPaths.Add(reddir);
 
                             // libsrcPaths from ClarionProperties.xml <libsrc> (not the red file).
-                            libsrcPaths = versionConfig.LibSrcPaths ?? new List<string>();
+                            var libsrcPaths = versionConfig.LibSrcPaths ?? new List<string>();
 
-                            // projectPaths is just the solution directory.
-                            projectPaths.Add(wsPath);
+                            // projectPaths[0] is the solution directory (project-local .red anchor).
+                            var projectPaths = new List<string> { wsPath };
 
                             _client.SetUpdatePaths(new Dictionary<string, object>
                             {
-                                { "solutionFilePath", slnPath },
-                                { "redirectionFile", versionConfig.RedFilePath ?? "" },
+                                { "solutionFilePath", slnPath ?? "" },
+                                { "redirectionFile", redirectionFileName },
                                 { "clarionVersion", versionConfig.Name ?? "" },
                                 { "configuration", "Debug" },
                                 { "macros", versionConfig.Macros ?? new Dictionary<string, string>() },
