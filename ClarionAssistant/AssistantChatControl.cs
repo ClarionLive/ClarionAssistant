@@ -2409,6 +2409,11 @@ namespace ClarionAssistant
             _mcpServer.IncludeMultiTerminal = mtEnabled;
             _mcpServer.MultiTerminalMcpPath = Dialogs.ClaudeChatSettingsDialog.GetMultiTerminalMcpPath();
 
+            // Register with the ordered shutdown hook so it can stop the MCP server (and wire the
+            // ApplicationExit backstop) independent of this pad's Dispose ordering — part of the addin
+            // shutdown hardening that lets Clarion close cleanly.
+            Services.ShutdownService.RegisterMcpServer(_mcpServer);
+
             if (_mcpServer.Start())
             {
                 _mcpConfigPath = _mcpServer.WriteMcpConfigFile();

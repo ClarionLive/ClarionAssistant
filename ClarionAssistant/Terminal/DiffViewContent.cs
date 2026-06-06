@@ -639,6 +639,18 @@ namespace ClarionAssistant.Terminal
             base.Dispose();
         }
 
+        /// <summary>Shutdown hook: dispose every open diff viewer's WebView2 on the UI thread, before native
+        /// IDE teardown, to avoid the WebView2 &lt;-&gt; native focus deadlock. Idempotent + best-effort.</summary>
+        public static void DisposeAllForShutdown()
+        {
+            List<DiffViewContent> snapshot;
+            lock (_instances) { snapshot = new List<DiffViewContent>(_instances); }
+            foreach (var inst in snapshot)
+            {
+                try { inst.Dispose(); } catch { }
+            }
+        }
+
         /// <summary>
         /// WebView2 subclass that intercepts Ctrl+MouseWheel at the Win32 message level
         /// and forwards it to JavaScript for font size changes.

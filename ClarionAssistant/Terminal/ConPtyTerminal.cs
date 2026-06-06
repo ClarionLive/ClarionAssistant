@@ -28,6 +28,12 @@ namespace ClarionAssistant.Terminal
         private bool _isDisposed;
         private bool _isRunning;
 
+        // Static registry of LIVE terminals so the addin shutdown hook can fast-kill every child-process
+        // tree (pwsh -> claude/node -> conhost) BEFORE native IDE teardown — the prime cause of Clarion
+        // hanging on close. See ShutdownService.Terminate() / KillAllForShutdown().
+        private static readonly object _liveLock = new object();
+        private static readonly List<ConPtyTerminal> _live = new List<ConPtyTerminal>();
+
         private readonly ConcurrentQueue<byte[]> _outputQueue = new ConcurrentQueue<byte[]>();
         private Timer _outputTimer;
         private const int OUTPUT_INTERVAL_MS = 16;
@@ -65,6 +71,7 @@ namespace ClarionAssistant.Terminal
                 _outputWriteSide = null;
 
                 _isRunning = true;
+                lock (_liveLock) { if (!_live.Contains(this)) _live.Add(this); }
                 _outputTimer = new Timer(FlushOutputQueue, null, 0, OUTPUT_INTERVAL_MS);
                 StartReading();
                 StartProcessWait();
@@ -305,48 +312,78 @@ namespace ClarionAssistant.Terminal
             Cleanup();
         }
 
+        /// <summary>
+        /// Tear down the terminal WITHOUT ever hanging the caller. KILL the child-process tree first
+        /// (fast, kernel-level), then run the parts that can deadlock (ClosePseudoConsole, pipe Dispose,
+        /// the INFINITE process-wait thread join) on a background worker bounded by a short Join. If the
+        /// worker overruns, abandon it — the process is already dead, so the leaked handles are reclaimed
+        /// when the host process exits. This is why Clarion no longer stalls on close.
+        /// </summary>
         private void Cleanup()
         {
             _isRunning = false;
+            lock (_liveLock) { _live.Remove(this); }
             try { _outputTimer?.Dispose(); } catch { }
 
-            if (_jobHandle != IntPtr.Zero)
-                NativeMethods.TerminateJobObject(_jobHandle, 0);
-            else if (_processHandle != IntPtr.Zero)
+            KillProcessTree();   // kill FIRST so nothing below can block waiting on live children
+
+            var worker = new Thread(CleanupCore) { IsBackground = true, Name = "ConPTY-Cleanup" };
+            worker.Start();
+            worker.Join(1500);   // bounded — if the native closes deadlock, abandon (process already killed)
+        }
+
+        /// <summary>Fast, idempotent kill of the whole child-process tree (the job object kills pwsh + descendants).</summary>
+        private void KillProcessTree()
+        {
+            try
             {
-                uint exitCode;
-                if (NativeMethods.GetExitCodeProcess(_processHandle, out exitCode) && exitCode == NativeMethods.STILL_ACTIVE)
-                    NativeMethods.TerminateProcess(_processHandle, 0);
+                if (_jobHandle != IntPtr.Zero)
+                    NativeMethods.TerminateJobObject(_jobHandle, 0);
+                if (_processHandle != IntPtr.Zero)
+                {
+                    uint exitCode;
+                    if (NativeMethods.GetExitCodeProcess(_processHandle, out exitCode) && exitCode == NativeMethods.STILL_ACTIVE)
+                        NativeMethods.TerminateProcess(_processHandle, 0);
+                }
             }
+            catch { }
+        }
 
-            if (_processWaitThread != null && _processWaitThread.IsAlive)
-                _processWaitThread.Join(2000);
-
-            if (_pseudoConsoleHandle != IntPtr.Zero)
+        /// <summary>The potentially-blocking native teardown — always run on a bounded background worker.</summary>
+        private void CleanupCore()
+        {
+            try
             {
-                NativeMethods.ClosePseudoConsole(_pseudoConsoleHandle);
-                _pseudoConsoleHandle = IntPtr.Zero;
+                if (_processWaitThread != null && _processWaitThread.IsAlive)
+                    _processWaitThread.Join(800);
+
+                if (_pseudoConsoleHandle != IntPtr.Zero)
+                {
+                    NativeMethods.ClosePseudoConsole(_pseudoConsoleHandle);
+                    _pseudoConsoleHandle = IntPtr.Zero;
+                }
+
+                try { _inputWriter?.Dispose(); } catch { }
+                try { _outputReader?.Dispose(); } catch { }
+                try { _inputReadSide?.Dispose(); } catch { }
+                try { _inputWriteSide?.Dispose(); } catch { }
+                try { _outputReadSide?.Dispose(); } catch { }
+                try { _outputWriteSide?.Dispose(); } catch { }
+
+                if (_processHandle != IntPtr.Zero) { NativeMethods.CloseHandle(_processHandle); _processHandle = IntPtr.Zero; }
+                if (_threadHandle != IntPtr.Zero) { NativeMethods.CloseHandle(_threadHandle); _threadHandle = IntPtr.Zero; }
+                if (_jobHandle != IntPtr.Zero) { NativeMethods.CloseHandle(_jobHandle); _jobHandle = IntPtr.Zero; }
+                if (_attributeList != IntPtr.Zero)
+                {
+                    NativeMethods.DeleteProcThreadAttributeList(_attributeList);
+                    Marshal.FreeHGlobal(_attributeList);
+                    _attributeList = IntPtr.Zero;
+                }
+
+                if (_readThread != null && _readThread.IsAlive)
+                    _readThread.Join(800);
             }
-
-            try { _inputWriter?.Dispose(); } catch { }
-            try { _outputReader?.Dispose(); } catch { }
-            try { _inputReadSide?.Dispose(); } catch { }
-            try { _inputWriteSide?.Dispose(); } catch { }
-            try { _outputReadSide?.Dispose(); } catch { }
-            try { _outputWriteSide?.Dispose(); } catch { }
-
-            if (_processHandle != IntPtr.Zero) { NativeMethods.CloseHandle(_processHandle); _processHandle = IntPtr.Zero; }
-            if (_threadHandle != IntPtr.Zero) { NativeMethods.CloseHandle(_threadHandle); _threadHandle = IntPtr.Zero; }
-            if (_jobHandle != IntPtr.Zero) { NativeMethods.CloseHandle(_jobHandle); _jobHandle = IntPtr.Zero; }
-            if (_attributeList != IntPtr.Zero)
-            {
-                NativeMethods.DeleteProcThreadAttributeList(_attributeList);
-                Marshal.FreeHGlobal(_attributeList);
-                _attributeList = IntPtr.Zero;
-            }
-
-            if (_readThread != null && _readThread.IsAlive)
-                _readThread.Join(1000);
+            catch { }
         }
 
         public void Dispose()
@@ -354,6 +391,32 @@ namespace ClarionAssistant.Terminal
             if (_isDisposed) return;
             _isDisposed = true;
             Cleanup();
+        }
+
+        /// <summary>
+        /// Shutdown-only fast path: kill the child-process tree immediately and DON'T wait on any native
+        /// close. Called by ShutdownService for every live terminal before the IDE tears down natively.
+        /// Skipping ClosePseudoConsole / pipe disposes is deliberate — they can block, and the OS reclaims
+        /// those handles when Clarion exits. Getting the processes dead is what lets the IDE close.
+        /// </summary>
+        public void ForceKillForShutdown()
+        {
+            _isRunning = false;
+            _isDisposed = true;
+            lock (_liveLock) { _live.Remove(this); }
+            try { _outputTimer?.Dispose(); } catch { }
+            KillProcessTree();
+        }
+
+        /// <summary>Kill every live terminal's child-process tree. Best-effort, never throws.</summary>
+        public static void KillAllForShutdown()
+        {
+            List<ConPtyTerminal> snapshot;
+            lock (_liveLock) { snapshot = new List<ConPtyTerminal>(_live); }
+            foreach (var t in snapshot)
+            {
+                try { t.ForceKillForShutdown(); } catch { }
+            }
         }
     }
 }

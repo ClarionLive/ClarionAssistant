@@ -13,8 +13,10 @@
     <Class id="ClarionAssistantStartRightClickHook" class="ClarionAssistant.RightClickHookAutostartCommand"/>
   </Path>
 
-  <!-- Tear the right-click native hook down cleanly at shutdown (unhook all roster pairs). -->
+  <!-- Ordered addin teardown at shutdown. Our heavy teardown (stop MCP, kill ConPty child trees, dispose
+       WebView2 on the UI thread) runs FIRST so Clarion can close cleanly; then the right-click hook unhooks. -->
   <Path name="/Workspace/Terminate">
+    <Class id="ClarionAssistantTerminateShutdown" class="ClarionAssistant.ShutdownTerminateCommand"/>
     <Class id="ClarionAssistantTerminateRightClickHook" class="ClarionAssistant.RightClickHookTerminateCommand"/>
   </Path>
 

@@ -763,6 +763,17 @@ namespace ClarionAssistant.TaskLifecycleBoard
             }
         }
 
+        /// <summary>Shutdown hook: close every open task-board window on the UI thread (each OnFormClosed
+        /// disposes its WebView2) before native IDE teardown. Best-effort, never throws.</summary>
+        public static void DisposeAllForShutdown()
+        {
+            var snapshot = new List<TaskLifecycleBoardForm>(_openWindows.Values);
+            foreach (var form in snapshot)
+            {
+                try { if (form != null && !form.IsDisposed) form.Close(); } catch { }
+            }
+        }
+
         // ── Cleanup ─────────────────────────────────────────
 
         protected override void OnFormClosed(FormClosedEventArgs e)

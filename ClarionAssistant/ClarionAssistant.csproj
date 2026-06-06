@@ -92,6 +92,7 @@
     <Compile Include="Services\McpToolRegistry.cs" />
     <Compile Include="Services\NativeProbeService.cs" />
     <Compile Include="Services\RightClickHookService.cs" />
+    <Compile Include="Services\ShutdownService.cs" />
     <Compile Include="Services\KnowledgeService.cs" />
     <Compile Include="Services\ClarionVersionService.cs" />
     <Compile Include="Services\RedFileService.cs" />
@@ -105,6 +106,7 @@
     <Compile Include="ShowModernEmbeditorCommand.cs" />
     <Compile Include="LspAutostartCommand.cs" />
     <Compile Include="RightClickHookAutostartCommand.cs" />
+    <Compile Include="ShutdownTerminateCommand.cs" />
     <Compile Include="OpenModernEmbeditorPickerCommand.cs" />
     <Compile Include="ShowModernDataPadCommand.cs" />
     <Compile Include="Terminal\ModernDataPad.cs" />
