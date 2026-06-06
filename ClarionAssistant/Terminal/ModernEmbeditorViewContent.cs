@@ -85,6 +85,25 @@ namespace ClarionAssistant.Terminal
             catch { return null; }
         }
 
+        /// <summary>
+        /// The Modern Embeditor view that is the FOCUSED active document, or null. Unlike ActiveModernView() this
+        /// does NOT fall back to the lone open tab: the Data pad routes by focus, so a Modern tab sitting unfocused
+        /// in the background must resolve to null (no editor) rather than silently becoming the action target.
+        /// </summary>
+        public static ModernEmbeditorViewContent FocusedModernView()
+        {
+            try
+            {
+                var wb = WorkbenchSingleton.Workbench;
+                if (wb == null) return null;
+                var aw = GetProp(wb, "ActiveWorkbenchWindow");
+                if (aw == null) return null;
+                var vc = GetProp(aw, "ActiveViewContent") ?? GetProp(aw, "ViewContent");
+                return vc as ModernEmbeditorViewContent;
+            }
+            catch { return null; }
+        }
+
         private static object GetProp(object obj, string name)
         {
             if (obj == null) return null;
@@ -332,13 +351,13 @@ namespace ClarionAssistant.Terminal
         /// with their schema (columns w/ pictures + GROUP nesting, keys) from the dictionary .dcv export.
         /// If the .dcv isn't available, the files are still listed by name so the section appears.
         /// </summary>
-        private List<Dictionary<string, object>> GetOtherFiles(string txa)
+        private static List<Dictionary<string, object>> GetOtherFiles(string txa, string procedureName)
         {
             var outp = new List<Dictionary<string, object>>();
             try
             {
-                if (string.IsNullOrEmpty(txa) || string.IsNullOrEmpty(_procedureName)) return outp;
-                var names = ClarionAppDataReader.ParseTxaOtherFiles(txa, _procedureName);
+                if (string.IsNullOrEmpty(txa) || string.IsNullOrEmpty(procedureName)) return outp;
+                var names = ClarionAppDataReader.ParseTxaOtherFiles(txa, procedureName);
                 if (names.Count == 0) return outp;
 
                 // Schema source: prefer the LIVE dictionary snapshot (always current, no file dependency);
@@ -387,13 +406,13 @@ namespace ClarionAssistant.Terminal
         /// dictionary, carrying the browse KEY. Returns 0 or 1 entries (a list keeps the frontend renderer
         /// uniform with Other Files / Declared Tables).
         /// </summary>
-        private List<Dictionary<string, object>> GetBrowseFiles(string txa)
+        private static List<Dictionary<string, object>> GetBrowseFiles(string txa, string procedureName)
         {
             var outp = new List<Dictionary<string, object>>();
             try
             {
-                if (string.IsNullOrEmpty(txa) || string.IsNullOrEmpty(_procedureName)) return outp;
-                var pf = ClarionAppDataReader.ParseTxaPrimaryFile(txa, _procedureName);
+                if (string.IsNullOrEmpty(txa) || string.IsNullOrEmpty(procedureName)) return outp;
+                var pf = ClarionAppDataReader.ParseTxaPrimaryFile(txa, procedureName);
                 if (pf == null || string.IsNullOrEmpty(pf.File)) return outp;
 
                 Dictionary<string, ClarionAppDataReader.TableDef> live;
@@ -435,6 +454,19 @@ namespace ClarionAssistant.Terminal
         /// </summary>
         public Dictionary<string, object> GetPadData()
         {
+            return BuildPadData(_procedureName, _sourceText);
+        }
+
+        /// <summary>
+        /// Procedure-name-keyed Data pad payload: builds the same data as the instance GetPadData()
+        /// from a procedure name + source text, with NO Modern view instance — this is what lets the pad
+        /// serve the native (PWEE) embeditor too. Sources: the static whole-app .txa cache (RefreshPadSources)
+        /// + the live dictionary snapshot + AppTreeService. <paramref name="sourceText"/> feeds the Routines
+        /// list and the Local Data fallback (used only when the .txa isn't cached yet); pass the focused
+        /// editor's buffer (the Modern mirror, or the native embeditor source).
+        /// </summary>
+        public static Dictionary<string, object> BuildPadData(string procedureName, string sourceText)
+        {
             var locals = new List<Dictionary<string, object>>();
             var routines = new List<Dictionary<string, object>>();
             var globals = new List<Dictionary<string, object>>();
@@ -446,18 +478,18 @@ namespace ClarionAssistant.Terminal
                 // set). Falls back to the embeditor-source parse when the whole-app .txa isn't cached yet.
                 List<ClarionAppDataReader.FieldDef> localDefs = null;
                 string txa; lock (_txaLock) { txa = _wholeAppTxa; }
-                if (!string.IsNullOrEmpty(txa) && !string.IsNullOrEmpty(_procedureName))
+                if (!string.IsNullOrEmpty(txa) && !string.IsNullOrEmpty(procedureName))
                 {
-                    var fromTxa = ClarionAppDataReader.ParseTxaProcedureData(txa, _procedureName);
+                    var fromTxa = ClarionAppDataReader.ParseTxaProcedureData(txa, procedureName);
                     if (fromTxa.Count > 0) localDefs = fromTxa;
                 }
                 if (localDefs == null)
-                    localDefs = ClarionAppDataReader.ParseLocalData(_sourceText, _procedureName);
+                    localDefs = ClarionAppDataReader.ParseLocalData(sourceText, procedureName);
 
                 foreach (var d in localDefs)
                     locals.Add(FieldToDict(d));
 
-                foreach (var r in ClarionAppDataReader.ParseRoutines(_sourceText, _procedureName))
+                foreach (var r in ClarionAppDataReader.ParseRoutines(sourceText, procedureName))
                     routines.Add(new Dictionary<string, object> { { "name", r.Name }, { "line", r.Line } });
 
                 // Global Data: prefer the .txa [PROGRAM][DATA] — the developer-registered globals ONLY
@@ -480,16 +512,16 @@ namespace ClarionAssistant.Terminal
                     globals.Add(FieldToDict(g));
 
                 // Other Files: the proc's [FILES][OTHERS] names paired with dictionary (.dcv) schema.
-                otherFiles = GetOtherFiles(txa);
+                otherFiles = GetOtherFiles(txa, procedureName);
                 // File-Browsing List Box: the proc's [FILES][PRIMARY] file + [KEY], dict-enriched.
-                browseFiles = GetBrowseFiles(txa);
+                browseFiles = GetBrowseFiles(txa, procedureName);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] GetPadData parse: " + ex.Message); }
 
             var moduleData = new List<Dictionary<string, object>>();
             try
             {
-                string modClw = ClarionAppDataReader.FindModuleClwForProcedure(_procedureName);
+                string modClw = ClarionAppDataReader.FindModuleClwForProcedure(procedureName);
                 foreach (var d in ClarionAppDataReader.ParseModuleData(modClw))
                     moduleData.Add(new Dictionary<string, object> { { "name", d.Name }, { "type", d.Type } });
             }
@@ -510,7 +542,7 @@ namespace ClarionAssistant.Terminal
 
             var data = new Dictionary<string, object>
             {
-                { "procedure", _procedureName ?? "" },
+                { "procedure", procedureName ?? "" },
                 { "locals", locals },
                 { "routines", routines },
                 { "moduleData", moduleData },
@@ -578,7 +610,7 @@ namespace ClarionAssistant.Terminal
         // fuzzy text scan); the SCHEMA is enriched from the LIVE dictionary snapshot (pictures, GROUP
         // nesting, full keys), matched by name, falling back to the <app>.clw-parsed schema when the live
         // snapshot lacks an entry. A standalone whole-dictionary browser is a separate, future addin.
-        private List<Dictionary<string, object>> GetDeclaredTables()
+        private static List<Dictionary<string, object>> GetDeclaredTables()
         {
             var outp = new List<Dictionary<string, object>>();
             try

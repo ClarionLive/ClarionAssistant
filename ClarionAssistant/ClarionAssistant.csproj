@@ -85,6 +85,7 @@
       <DependentUpon>ClassHelperControl.cs</DependentUpon>
     </Compile>
     <Compile Include="Services\ClarionClassParser.cs" />
+    <Compile Include="Services\ActiveProcedureContext.cs" />
     <Compile Include="Services\EditorService.cs" />
     <Compile Include="Services\SettingsService.cs" />
     <Compile Include="Services\McpServer.cs" />

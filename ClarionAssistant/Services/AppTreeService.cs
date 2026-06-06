@@ -313,6 +313,93 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
+        /// <summary>
+        /// The native ClaGenEditor IFF its text area is the currently-focused editor surface, else null.
+        /// "Existence ≠ focus": GetClaGenEditor() returns the editor even when it persists hidden in
+        /// SecondaryViewContents, so we prove focus by object identity — the active text surface must BE
+        /// this editor's own text area. A focused Modern (WebView2) tab or proc tree yields no text area
+        /// (so this returns null); a focused plain .clw editor yields a DIFFERENT text area (also null).
+        /// </summary>
+        public object GetFocusedClaGenEditor()
+        {
+            try
+            {
+                var editor = GetClaGenEditor();
+                if (editor == null) return null;
+                var tec = GetProp(editor, "TextEditorControl");
+                var tac = GetProp(tec, "ActiveTextAreaControl");
+                var ta = GetProp(tac, "TextArea");
+                if (ta == null) return null;
+                return new EditorService().IsActiveTextArea(ta) ? editor : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>True when the native (PWEE) embeditor is the focused editor surface.</summary>
+        public bool IsNativeEmbeditorFocused()
+        {
+            return GetFocusedClaGenEditor() != null;
+        }
+
+        /// <summary>
+        /// The focused native embeditor's ICSharpCode text area (for direct, focus-independent insert/goto),
+        /// or null when the native embeditor isn't the focused surface. The resolver captures this while the
+        /// embeditor is focused and reuses it after the Data pad takes focus.
+        /// </summary>
+        public object GetFocusedNativeTextArea()
+        {
+            try
+            {
+                var editor = GetFocusedClaGenEditor();
+                if (editor == null) return null;
+                var tec = GetProp(editor, "TextEditorControl");
+                var tac = GetProp(tec, "ActiveTextAreaControl");
+                return GetProp(tac, "TextArea");
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// If the native (PWEE) embeditor is the FOCUSED editor, return its procedure name; else null.
+        /// Primary source is the ClaGenEditor view header "&lt;Proc&gt; - Embeditor - (&lt;module&gt;.clw)"
+        /// (carries proc + module, no buffer parse), validated against App.ProcedureNames. Falls back to a
+        /// validated col-0 "Name PROCEDURE" scan of the live buffer (ProcNameFromSource).
+        /// </summary>
+        public string GetFocusedNativeEmbeditorProcName()
+        {
+            try
+            {
+                var editor = GetFocusedClaGenEditor();
+                if (editor == null) return null;
+
+                var known = GetProcedureNames();
+                string fromHeader = ProcFromHeaderTitle(
+                    (GetProp(editor, "HeaderTitle") ?? GetProp(editor, "TitleName") ?? GetProp(editor, "TabPageText")) as string);
+                if (!string.IsNullOrEmpty(fromHeader) && (known.Count == 0 || ContainsIgnoreCase(known, fromHeader)))
+                    return fromHeader;
+
+                // Fallback: validated col-0 regex over the live (raw) buffer.
+                return ModernEmbeditorLauncher.ProcNameFromSource(new EditorService().GetActiveDocumentContent(), known);
+            }
+            catch { return null; }
+        }
+
+        // "Main - Embeditor - (clbrws002.clw)" -> "Main". Null if the " - Embeditor" marker is absent.
+        private static string ProcFromHeaderTitle(string header)
+        {
+            if (string.IsNullOrEmpty(header)) return null;
+            int i = header.IndexOf(" - Embeditor", StringComparison.OrdinalIgnoreCase);
+            return i > 0 ? header.Substring(0, i).Trim() : null;
+        }
+
+        private static bool ContainsIgnoreCase(ICollection<string> names, string name)
+        {
+            if (names == null || name == null) return false;
+            foreach (var n in names)
+                if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
         #region P/Invoke declarations
 
         [DllImport("user32.dll")]

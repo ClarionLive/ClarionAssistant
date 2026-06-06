@@ -40,16 +40,31 @@ namespace ClarionAssistant.Services
             catch { return false; }
         }
 
+        /// <summary>
+        /// True if <paramref name="textArea"/> is the ICSharpCode text area currently focused/active.
+        /// Used by the procedure-context resolver to prove (by object identity) that the native PWEE
+        /// embeditor's own text surface — not some other open editor — is the focused one.
+        /// </summary>
+        public bool IsActiveTextArea(object textArea)
+        {
+            try { return textArea != null && ReferenceEquals(GetActiveTextArea(), textArea); }
+            catch { return false; }
+        }
+
         public string GetActiveDocumentContent()
+        {
+            return GetDocumentContent(GetActiveTextArea());
+        }
+
+        /// <summary>Full document text of a SPECIFIC text area (used to read the captured native embeditor
+        /// buffer for the Data pad's routine list + goto, independent of current focus).</summary>
+        public string GetDocumentContent(object textArea)
         {
             try
             {
-                var textArea = GetActiveTextArea();
                 if (textArea == null) return null;
-
                 var document = GetProperty(textArea, "Document");
                 if (document == null) return null;
-
                 return (GetProperty(document, "TextContent") ?? GetProperty(document, "Text")) as string;
             }
             catch { return null; }
@@ -104,9 +119,19 @@ namespace ClarionAssistant.Services
 
         public InsertResult InsertTextAtCaret(string text)
         {
+            return InsertTextAtCaret(GetActiveTextArea(), text);
+        }
+
+        /// <summary>
+        /// Insert text at the caret of a SPECIFIC text area (not necessarily the focused one). The procedure-
+        /// context resolver captures the native embeditor's text area while it's focused, then inserts into it
+        /// after the Data pad has taken keyboard focus — so the insert must target the captured surface, not
+        /// whatever is "active" at click time.
+        /// </summary>
+        public InsertResult InsertTextAtCaret(object textArea, string text)
+        {
             try
             {
-                var textArea = GetActiveTextArea();
                 if (textArea == null) return InsertResult.Failed("No active text editor");
 
                 var document = GetProperty(textArea, "Document");
@@ -117,13 +142,33 @@ namespace ClarionAssistant.Services
                 var insertMethod = document.GetType().GetMethod("Insert", new[] { typeof(int), typeof(string) });
                 if (insertMethod == null) return InsertResult.Failed("Insert method not found");
 
-                insertMethod.Invoke(document, new object[] { offset, NormalizeCrLf(text) });
-                SetProperty(caret, "Offset", offset + text.Length);
+                var norm = NormalizeCrLf(text);
+                insertMethod.Invoke(document, new object[] { offset, norm });
+                // Move the caret to the END of the inserted text. ICSharpCode Caret.Offset is READ-ONLY — set
+                // Caret.Position (via Document.OffsetToPosition) instead, or the caret stays at the insert point.
+                MoveCaretToOffset(textArea, document, caret, offset + norm.Length);
 
                 try { textArea.GetType().GetMethod("Invalidate", Type.EmptyTypes)?.Invoke(textArea, null); } catch { }
                 return InsertResult.Succeeded();
             }
             catch (Exception ex) { return InsertResult.Failed(ex.Message); }
+        }
+
+        // Set a text area's caret to an absolute offset via Caret.Position (ICSharpCode Caret.Offset has no
+        // setter). Falls back to Offset if OffsetToPosition isn't found. Best-effort.
+        private void MoveCaretToOffset(object textArea, object document, object caret, int offset)
+        {
+            try
+            {
+                if (offset < 0 || caret == null) return;
+                if (document == null) document = GetProperty(textArea, "Document");
+                var otp = document?.GetType().GetMethod("OffsetToPosition", new[] { typeof(int) });
+                if (otp != null) SetProperty(caret, "Position", otp.Invoke(document, new object[] { offset }));
+                else SetProperty(caret, "Offset", offset);
+                try { caret.GetType().GetMethod("UpdateCaretPosition", Type.EmptyTypes)?.Invoke(caret, null); } catch { }
+                try { textArea.GetType().GetMethod("ScrollToCaret", Type.EmptyTypes)?.Invoke(textArea, null); } catch { }
+            }
+            catch { }
         }
 
         /// <summary>
@@ -455,9 +500,63 @@ namespace ClarionAssistant.Services
         /// </summary>
         public bool GoToLine(int lineNumber)
         {
+            return GoToLine(GetActiveTextArea(), lineNumber);
+        }
+
+        /// <summary>
+        /// Move keyboard focus to a SPECIFIC text area (the native embeditor surface), bringing the IDE main
+        /// window forward first. Called after a Data-pad insert/goto so the developer can keep typing — the
+        /// pad's WebView2 had focus. Moving focus AWAY from the WebView2 is the safe direction (the known
+        /// deadlock is the embeditor CLOSE while a WebView2 holds focus, which this does not do).
+        /// </summary>
+        public void FocusTextArea(object textArea)
+        {
             try
             {
-                var textArea = GetActiveTextArea();
+                var ctrl = textArea as Control;
+                if (ctrl == null) return;
+                var form = WorkbenchSingleton.Workbench as Form;
+                if (form != null) form.Activate();
+                ctrl.Focus();
+            }
+            catch { }
+        }
+
+        /// <summary>Current caret offset of a SPECIFIC text area, or -1.</summary>
+        public int GetCaretOffset(object textArea)
+        {
+            try
+            {
+                var caret = GetProperty(textArea, "Caret");
+                return caret != null ? (int)GetProperty(caret, "Offset") : -1;
+            }
+            catch { return -1; }
+        }
+
+        /// <summary>
+        /// Place the caret of a SPECIFIC text area at an offset and bring it into view. Used to re-assert the
+        /// post-insert caret AFTER FocusTextArea() — focusing the control can reset the visual caret, so we
+        /// capture the end-of-insert offset, focus, then restore it here so the developer continues typing
+        /// right after the pasted text.
+        /// </summary>
+        public void SetCaretOffset(object textArea, int offset)
+        {
+            try
+            {
+                if (offset < 0) return;
+                var caret = GetProperty(textArea, "Caret");
+                if (caret == null) return;
+                MoveCaretToOffset(textArea, GetProperty(textArea, "Document"), caret, offset);
+                try { textArea.GetType().GetMethod("Invalidate", Type.EmptyTypes)?.Invoke(textArea, null); } catch { }
+            }
+            catch { }
+        }
+
+        /// <summary>Navigate a SPECIFIC text area to a 1-based line (used for native-embeditor routine goto).</summary>
+        public bool GoToLine(object textArea, int lineNumber)
+        {
+            try
+            {
                 if (textArea == null) return false;
 
                 var caret = GetProperty(textArea, "Caret");
