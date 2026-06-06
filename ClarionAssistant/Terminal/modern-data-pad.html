@@ -144,6 +144,7 @@
     var otherFiles = [];
     var browseFiles = [];      // File-Browsing List Box: the proc's PRIMARY file + browse key
     var routines = [];
+    var localProcedures = [];   // the proc's LOCAL procedures (col-0 "Name PROCEDURE" bodies), with line numbers
     var moduleData = [];
     var globals = [];
     var procedures = [];
@@ -696,6 +697,32 @@
             });
         }
 
+        // Local Procedures: the current procedure's LOCAL procedures, laid out exactly like Routines — name +
+        // an underlined, clickable LINE NUMBER (click -> go to its declaration). Double-click pastes the
+        // procedure name (a call). Reuses the 'goto' action; the host resolves the name to a routine OR a
+        // local procedure.
+        function localProcedureSection(items) {
+            var shown = items.filter(function (it) { return match(it.name); });
+            if (!shown.length) return;
+            if (!sectionHeader('localProcedures', 'Local Procedures', shown.length)) return;
+            shown.forEach(function (it) {
+                var row = document.createElement('div');
+                row.className = 'row';
+                row.title = it.name + '  PROCEDURE' + (it.line ? '  (line ' + it.line + ')' : '');
+                row.style.paddingLeft = '46px';
+                var n = document.createElement('span'); n.className = 'name'; n.textContent = it.name; row.appendChild(n);
+                if (it.line) {
+                    var ln = document.createElement('span'); ln.className = 'lineno';
+                    ln.textContent = it.line; ln.title = 'Go to line ' + it.line;
+                    ln.addEventListener('click', function (e) { e.stopPropagation(); postToHost({ action: 'goto', name: it.name }); });
+                    row.appendChild(ln);
+                }
+                row.addEventListener('dblclick', function () { insert(it.name); });
+                makeDraggable(row, it.name);
+                list.appendChild(row);
+            });
+        }
+
         // Procedures: name + parameter list. Single-click SELECTS a row (highlight); the header "Open" button
         // opens the selected procedure in a new CA Embeditor. Double-click pastes "<name>()" at the cursor.
         function procedureSection(items) {
@@ -819,6 +846,7 @@
         treeSection('locals', 'Local Data', locals);
 
         routineSection(routines);
+        localProcedureSection(localProcedures);
         flatSection('moduleData', 'Module Data', moduleData);
         treeSection('globals', 'Global Data', globals);
         procedureSection(procedures);
@@ -881,6 +909,7 @@
                 locals = (msg.locals || []).slice(); // declaration order — matches Clarion's native Data pad; do NOT sort
                 otherFiles = (msg.otherFiles || []).slice().sort(byName); // Clarion lists Other Files alphabetically
                 routines = (msg.routines || []).slice().sort(byName);
+                localProcedures = (msg.localProcedures || []).slice().sort(byName);
                 moduleData = (msg.moduleData || []).slice().sort(byName);
                 globals = (msg.globals || []).slice(); // declaration order from the .txa [PROGRAM][DATA]; do NOT sort
                 procedures = (msg.procedures || []).slice().sort(byName);

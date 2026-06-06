@@ -1240,21 +1240,36 @@
         updateNavUI();
     }
 
-    // Navigate to a ROUTINE's declaration (Modern Data pad "go to routine" button).
+    // Navigate to a ROUTINE or LOCAL PROCEDURE declaration (Modern Data pad "go to" button). Prefer a COLUMN-0
+    // match (the routine label / local-procedure implementation body) over an indented one (a local-MAP
+    // prototype), so the jump lands on the body rather than the prototype.
     function gotoRoutine(name) {
         if (!editor || !name) return;
         var ed = activeEd(), model = ed.getModel();
         var esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        var re = new RegExp('^\\s*' + esc + '\\s+ROUTINE\\b', 'i');
+        var re = new RegExp('^(\\s*)' + esc + '\\s+(ROUTINE|PROCEDURE|FUNCTION)\\b', 'i');
+        var firstAny = -1, mapDepth = 0;
         for (var ln = 1; ln <= model.getLineCount(); ln++) {
-            if (re.test(model.getLineContent(ln))) {
-                ed.revealLineInCenter(ln);
-                ed.setPosition({ lineNumber: ln, column: 1 });
-                ed.focus();
-                return;
+            var line = model.getLineContent(ln);
+            var u = line.replace(/!.*$/, '');                 // strip trailing comment for keyword checks
+            if (mapDepth > 0) {                               // inside a MAP/MODULE block: prototypes, skip them
+                if (/^\s*(MAP|MODULE)\b/i.test(u)) mapDepth++;
+                else if (/^\s*END\b/i.test(u)) mapDepth--;
+                continue;
             }
+            if (/^\s*MAP\b/i.test(u)) { mapDepth++; continue; }
+            var m = re.exec(line);
+            if (!m) continue;
+            if (firstAny < 0) firstAny = ln;
+            if (m[1].length === 0) { firstAny = ln; break; }   // column-0 body outside any MAP; take it
         }
-        showToast('Routine "' + name + '" not found', false);
+        if (firstAny > 0) {
+            ed.revealLineInCenter(firstAny);
+            ed.setPosition({ lineNumber: firstAny, column: 1 });
+            ed.focus();
+            return;
+        }
+        showToast('"' + name + '" not found', false);
     }
 
     // Insert text at the cursor (Modern Data pad double-click). Only inside an editable slot.

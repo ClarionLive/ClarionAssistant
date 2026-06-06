@@ -93,7 +93,7 @@ namespace ClarionAssistant.Services
                         // snapshot goes stale as the user edits the same procedure (the tick only re-snapshots on a
                         // procedure change), which made goto land a few lines off after inserts. Live read = exact.
                         string live = editor.GetDocumentContent(textArea) ?? nativeSource;
-                        int line = FindRoutineLine(live, proc, name);
+                        int line = FindDeclLine(live, proc, name);
                         if (line > 0) { editor.GoToLine(textArea, line); editor.FocusTextArea(textArea); }
                     });
             }
@@ -133,16 +133,20 @@ namespace ClarionAssistant.Services
             return null;
         }
 
-        // Line of a ROUTINE's declaration in the (raw) buffer — matches the editor's own line numbering so
-        // GoToLine lands correctly. Uses the same ParseRoutines the Modern pad uses for its routine list.
-        private static int FindRoutineLine(string source, string procName, string routineName)
+        // Line of a ROUTINE or LOCAL PROCEDURE declaration in the (raw) buffer — matches the editor's own line
+        // numbering so GoToLine lands correctly. The pad's Routines and Local Procedures sections both post a
+        // 'goto' with the name, so this resolves either kind (routines first, then local procedures).
+        private static int FindDeclLine(string source, string procName, string name)
         {
-            if (string.IsNullOrEmpty(source) || string.IsNullOrWhiteSpace(routineName)) return -1;
+            if (string.IsNullOrEmpty(source) || string.IsNullOrWhiteSpace(name)) return -1;
             try
             {
                 foreach (var r in ClarionAppDataReader.ParseRoutines(source, procName))
-                    if (string.Equals(r.Name, routineName, StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase))
                         return r.Line;
+                foreach (var p in ClarionAppDataReader.ParseLocalProcedures(source, procName))
+                    if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
+                        return p.Line;
             }
             catch { }
             return -1;

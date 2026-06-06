@@ -751,6 +751,58 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// Collect the procedure's LOCAL procedures and the line of each one's BODY (where "go to" should land).
+        /// A "&lt;Name&gt; PROCEDURE|FUNCTION" line is a PROTOTYPE when it sits inside a MAP…END block and the actual
+        /// procedure when it's at column 0 OUTSIDE any MAP — so we track MAP/MODULE nesting and only collect the
+        /// column-0 declarations at depth 0. Dotted ABC class-method bodies (ThisWindow.Init …) are excluded
+        /// (IsIdent rejects the dot); the main procedure is skipped.
+        /// </summary>
+        public static List<RoutineDef> ParseLocalProcedures(string source, string procName)
+        {
+            var outp = new List<RoutineDef>();
+            if (string.IsNullOrEmpty(source)) return outp;
+            var lines = source.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+
+            int start = 0;
+            if (!string.IsNullOrEmpty(procName))
+            {
+                var rxStart = new Regex(@"^\s*" + Regex.Escape(procName) + @"\s+(PROCEDURE|FUNCTION)\b", RegexOptions.IgnoreCase);
+                for (int i = 0; i < lines.Length; i++)
+                    if (rxStart.IsMatch(lines[i])) { start = i + 1; break; }
+            }
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int mapDepth = 0;   // > 0 ⇒ inside a MAP/MODULE block ⇒ these PROCEDURE lines are PROTOTYPES, skip them
+            for (int i = start; i < lines.Length; i++)
+            {
+                string raw = StripComment(lines[i]);
+                string label, rest;
+                SplitLabelRest(raw, out label, out rest);
+                if (label == null) continue;
+                string labelU = label.ToUpperInvariant();
+                string restU = rest.ToUpperInvariant();
+
+                if (mapDepth > 0)
+                {
+                    if (labelU == "MAP" || restU.StartsWith("MAP") || labelU == "MODULE" || restU.StartsWith("MODULE"))
+                        mapDepth++;
+                    else if (labelU == "END" || restU == "END")
+                        mapDepth--;
+                    continue;   // skip everything (incl. prototypes) inside the MAP
+                }
+
+                if (labelU == "MAP" || restU.StartsWith("MAP")) { mapDepth++; continue; }
+
+                // Column-0 "Name PROCEDURE|FUNCTION" OUTSIDE any MAP = the local procedure's BODY (the goto target).
+                bool col0 = raw.Length > 0 && !char.IsWhiteSpace(raw[0]);
+                if (col0 && (restU.StartsWith("PROCEDURE") || restU.StartsWith("FUNCTION")) && IsIdent(label)
+                    && !string.Equals(label, procName, StringComparison.OrdinalIgnoreCase) && seen.Add(label))
+                    outp.Add(new RoutineDef { Name = label, Line = i + 1 });
+            }
+            return outp;
+        }
+
+        /// <summary>
         /// Parse global variable declarations from the generated &lt;app&gt;.clw — the top-level "Label TYPE"
         /// items after the global MAP and outside FILE/structure blocks (those are shown as Tables).
         /// </summary>

@@ -469,6 +469,7 @@ namespace ClarionAssistant.Terminal
         {
             var locals = new List<Dictionary<string, object>>();
             var routines = new List<Dictionary<string, object>>();
+            var localProcedures = new List<Dictionary<string, object>>();
             var globals = new List<Dictionary<string, object>>();
             var otherFiles = new List<Dictionary<string, object>>();
             var browseFiles = new List<Dictionary<string, object>>();
@@ -491,6 +492,9 @@ namespace ClarionAssistant.Terminal
 
                 foreach (var r in ClarionAppDataReader.ParseRoutines(sourceText, procedureName))
                     routines.Add(new Dictionary<string, object> { { "name", r.Name }, { "line", r.Line } });
+
+                foreach (var p in ClarionAppDataReader.ParseLocalProcedures(sourceText, procedureName))
+                    localProcedures.Add(new Dictionary<string, object> { { "name", p.Name }, { "line", p.Line } });
 
                 // Global Data: prefer the .txa [PROGRAM][DATA] — the developer-registered globals ONLY
                 // (nested + pictures, matching Clarion's pad). When the .txa is cached it's authoritative
@@ -545,6 +549,7 @@ namespace ClarionAssistant.Terminal
                 { "procedure", procedureName ?? "" },
                 { "locals", locals },
                 { "routines", routines },
+                { "localProcedures", localProcedures },
                 { "moduleData", moduleData },
                 { "globals", globals },
                 { "otherFiles", otherFiles },
