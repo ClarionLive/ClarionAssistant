@@ -11,6 +11,8 @@
     <Class id="ClarionAssistantStartLsp" class="ClarionAssistant.LspAutostartCommand"/>
     <!-- Right-click proc -> "Open in Modern Embeditor" native hook (ticket 4b82f1de, see RightClickHookService). -->
     <Class id="ClarionAssistantStartRightClickHook" class="ClarionAssistant.RightClickHookAutostartCommand"/>
+    <!-- Arm the ApplicationExit shutdown backstop unconditionally (not gated on the chat MCP server). -->
+    <Class id="ClarionAssistantArmShutdown" class="ClarionAssistant.ShutdownAutostartCommand"/>
   </Path>
 
   <!-- Ordered addin teardown at shutdown. Our heavy teardown (stop MCP, kill ConPty child trees, dispose

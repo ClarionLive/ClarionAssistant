@@ -29,21 +29,27 @@ namespace ClarionAssistant.Services
         private static McpServer _mcpServer;
         private static EventHandler _appExitHandler;
 
-        /// <summary>Called once at startup so the shutdown hook can stop the MCP server without depending on
-        /// the chat pad's Dispose ordering. Also wires the ApplicationExit backstop (idempotent).</summary>
+        /// <summary>Wire the ApplicationExit backstop ONCE, unconditionally. Called from addin autostart
+        /// (ShutdownAutostartCommand) so the backstop exists even in sessions that never start the chat MCP
+        /// server — the /Workspace/Terminate command is the primary hook, this is the fallback. Idempotent.</summary>
+        public static void ArmBackstop()
+        {
+            if (_appExitHandler != null) return;
+            _appExitHandler = (s, e) =>
+            {
+                try { Terminate(); }
+                catch (Exception ex) { Debug.WriteLine("[Shutdown] appExit: " + ex.Message); }
+            };
+            try { Application.ApplicationExit += _appExitHandler; }
+            catch (Exception ex) { Debug.WriteLine("[Shutdown] appExit subscribe: " + ex.Message); }
+        }
+
+        /// <summary>Record the MCP server so Terminate() can stop it (independent of the chat pad's Dispose
+        /// ordering). Also arms the backstop as belt-and-suspenders in case autostart didn't run.</summary>
         public static void RegisterMcpServer(McpServer server)
         {
             _mcpServer = server;
-            if (_appExitHandler == null)
-            {
-                _appExitHandler = (s, e) =>
-                {
-                    try { Terminate(); }
-                    catch (Exception ex) { Debug.WriteLine("[Shutdown] appExit: " + ex.Message); }
-                };
-                try { Application.ApplicationExit += _appExitHandler; }
-                catch (Exception ex) { Debug.WriteLine("[Shutdown] appExit subscribe: " + ex.Message); }
-            }
+            ArmBackstop();
         }
 
         /// <summary>The ordered teardown. Idempotent (first call wins). Each step is guarded so one failure

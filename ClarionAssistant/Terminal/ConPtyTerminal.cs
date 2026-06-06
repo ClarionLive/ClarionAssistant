@@ -25,8 +25,9 @@ namespace ClarionAssistant.Terminal
         private Thread _readThread;
         private Thread _processWaitThread;
 
-        private bool _isDisposed;
-        private bool _isRunning;
+        private volatile bool _isDisposed;
+        private volatile bool _isRunning;
+        private int _cleanupStarted;   // CAS guard: teardown (CleanupCore worker) runs at most once across Stop/Dispose/ForceKill
 
         // Static registry of LIVE terminals so the addin shutdown hook can fast-kill every child-process
         // tree (pwsh -> claude/node -> conhost) BEFORE native IDE teardown — the prime cause of Clarion
@@ -217,11 +218,10 @@ namespace ClarionAssistant.Terminal
                 try
                 {
                     NativeMethods.WaitForSingleObject(_processHandle, NativeMethods.INFINITE);
-                    if (!_isDisposed && _pseudoConsoleHandle != IntPtr.Zero)
-                    {
-                        NativeMethods.ClosePseudoConsole(_pseudoConsoleHandle);
-                        _pseudoConsoleHandle = IntPtr.Zero;
-                    }
+                    // Single-owner close: whoever atomically claims the handle closes it exactly once
+                    // (this wait thread vs. CleanupCore). Prevents the double-close race on shutdown.
+                    var hpc = Interlocked.Exchange(ref _pseudoConsoleHandle, IntPtr.Zero);
+                    if (hpc != IntPtr.Zero) NativeMethods.ClosePseudoConsole(hpc);
                 }
                 catch { }
             })
@@ -309,6 +309,7 @@ namespace ClarionAssistant.Terminal
         public void Stop()
         {
             if (_isDisposed || !_isRunning) return;
+            _isDisposed = true;   // close the wait-thread's !_isDisposed guard + make any follow-up Dispose() a true no-op
             Cleanup();
         }
 
@@ -321,7 +322,9 @@ namespace ClarionAssistant.Terminal
         /// </summary>
         private void Cleanup()
         {
+            if (Interlocked.Exchange(ref _cleanupStarted, 1) != 0) return;   // run teardown at most once — no racing CleanupCore workers
             _isRunning = false;
+            _isDisposed = true;
             lock (_liveLock) { _live.Remove(this); }
             try { _outputTimer?.Dispose(); } catch { }
 
@@ -354,14 +357,15 @@ namespace ClarionAssistant.Terminal
         {
             try
             {
+                // KillProcessTree() already terminated the process, so the wait thread's WaitForSingleObject
+                // returns promptly and this join almost always succeeds. Capture whether it DID exit.
+                bool waiterExited = true;
                 if (_processWaitThread != null && _processWaitThread.IsAlive)
-                    _processWaitThread.Join(800);
+                    waiterExited = _processWaitThread.Join(800);
 
-                if (_pseudoConsoleHandle != IntPtr.Zero)
-                {
-                    NativeMethods.ClosePseudoConsole(_pseudoConsoleHandle);
-                    _pseudoConsoleHandle = IntPtr.Zero;
-                }
+                // Single-owner close (atomic claim) — see the wait thread; only one of the two closes it.
+                var hpc = Interlocked.Exchange(ref _pseudoConsoleHandle, IntPtr.Zero);
+                if (hpc != IntPtr.Zero) NativeMethods.ClosePseudoConsole(hpc);
 
                 try { _inputWriter?.Dispose(); } catch { }
                 try { _outputReader?.Dispose(); } catch { }
@@ -370,7 +374,11 @@ namespace ClarionAssistant.Terminal
                 try { _outputReadSide?.Dispose(); } catch { }
                 try { _outputWriteSide?.Dispose(); } catch { }
 
-                if (_processHandle != IntPtr.Zero) { NativeMethods.CloseHandle(_processHandle); _processHandle = IntPtr.Zero; }
+                // Only close _processHandle once the wait thread has DEFINITELY exited — it blocks on
+                // WaitForSingleObject(_processHandle); closing a handle another thread is waiting on is
+                // undefined. If the join overran, LEAK the handle (the OS reclaims it at process exit)
+                // rather than close it out from under the waiter.
+                if (waiterExited && _processHandle != IntPtr.Zero) { NativeMethods.CloseHandle(_processHandle); _processHandle = IntPtr.Zero; }
                 if (_threadHandle != IntPtr.Zero) { NativeMethods.CloseHandle(_threadHandle); _threadHandle = IntPtr.Zero; }
                 if (_jobHandle != IntPtr.Zero) { NativeMethods.CloseHandle(_jobHandle); _jobHandle = IntPtr.Zero; }
                 if (_attributeList != IntPtr.Zero)
@@ -401,8 +409,9 @@ namespace ClarionAssistant.Terminal
         /// </summary>
         public void ForceKillForShutdown()
         {
-            _isRunning = false;
             _isDisposed = true;
+            if (Interlocked.Exchange(ref _cleanupStarted, 1) != 0) return;   // teardown already ran/running — don't double-kill
+            _isRunning = false;
             lock (_liveLock) { _live.Remove(this); }
             try { _outputTimer?.Dispose(); } catch { }
             KillProcessTree();

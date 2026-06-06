@@ -18,7 +18,8 @@
     #list { position: absolute; top: 56px; left: 0; right: 0; bottom: 0; overflow-y: auto; background: #ffffff; }
     .section { font-weight: 600; color: #3a3a3a; background: #eef1f4; padding: 4px 10px;
         border-top: 1px solid #d4d4d4; border-bottom: 1px solid #d4d4d4;
-        display: flex; align-items: center; gap: 6px; }
+        display: flex; align-items: center; gap: 6px;
+        position: sticky; top: 0; z-index: 2; }   /* stick to the top while scrolling a long list */
     .section .sec-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .section .sec-ctl { display: flex; gap: 2px; flex: none; }
     .section .sec-btn { font-size: 12px; font-weight: 400; color: #5a5a5a; padding: 0 5px;
@@ -75,14 +76,66 @@
     .col-row { padding-left: 26px; }
     .col-row .name { color: #b0152e; }
     .empty { padding: 14px; color: #777777; }
+    #bar .counts { font-size: 11px; color: #5a5a5a; white-space: nowrap; flex: none; }
+    #bar button.icon { padding: 2px 6px; }
+    /* Filter clear (×) overlaid at the right of the full-width filter input — no layout shift. */
+    #filterClear { position: absolute; right: 8px; top: 33px; z-index: 3; cursor: pointer; display: none;
+        color: #8a8a8a; font-size: 14px; line-height: 1; padding: 2px 4px; user-select: none; }
+    #filterClear:hover { color: #1f1f1f; }
+
+    /* ===================== Dark theme (body.dark) — mirrors the editor's dark look ===================== */
+    body.dark { background: #1e1e2e; color: #d4d4d4; }
+    body.dark #bar { background: #252535; border-bottom-color: #3a3a4a; }
+    body.dark #bar .title { color: #e6e6e6; }
+    body.dark #bar .counts { color: #9a9ab0; }
+    body.dark #bar button { border-color: #45455a; color: #6cb6ff; }
+    body.dark #bar button:hover { background: #33334a; }
+    body.dark #filter { background: #1e1e2e; color: #d4d4d4; border-bottom-color: #3a3a4a; }
+    body.dark #filterClear { color: #8a8aa0; }
+    body.dark #filterClear:hover { color: #e6e6e6; }
+    body.dark #list { background: #1e1e2e; }
+    body.dark .section { background: #2a2a3c; color: #c8c8d8; border-top-color: #3a3a4a; border-bottom-color: #3a3a4a; }
+    body.dark .section .sec-btn { color: #9a9ab0; }
+    body.dark .section .sec-btn:hover { background: #3a3a52; color: #e6e6e6; }
+    body.dark .row:hover { background: #2d2d44; }
+    body.dark .row .name { color: #e0e0e0; }
+    body.dark .row .kind { color: #c08cf0; }
+    body.dark .row .type { color: #9a9ab0; }
+    body.dark .row .picture { color: #5fd38a; }
+    body.dark .row .pre { color: #888; }
+    body.dark .row.trow .type, body.dark .row.frow .type { color: #9a9ab0; }
+    body.dark .row.trow .picture, body.dark .row.frow .picture { color: #5fd38a; }
+    body.dark .row.selected, body.dark .row.selected:hover { background: #2f4a6b; }
+    body.dark .row.multisel, body.dark .row.multisel:hover { background: #234063; box-shadow: inset 3px 0 0 #4a9eff; }
+    body.dark .twisty, body.dark .table-hdr .twisty { color: #9a9ab0; }
+    body.dark .table-hdr { color: #6cb6ff; }
+    body.dark .col-row .name { color: #ff8095; }
+    body.dark .detail-tog { color: #6cb6ff; }
+    body.dark .detail-tog:hover { color: #9accff; }
+    body.dark .detail { color: #b0b0c0; background: #26263a; border-left-color: #3a4a5a; }
+    body.dark .detail .attr { color: #c8c8d8; }
+    body.dark .detail .cmt { color: #5fd38a; }
+    body.dark .comp-row { background: #26263a; }
+    body.dark .comp-row .name { color: #e0e0e0; }
+    body.dark .row .lineno { color: #6cb6ff; }
+    body.dark .row .lineno:hover { color: #9accff; background: #2d3f5a; }
+    body.dark .row .params { color: #9a9ab0; }
+    body.dark .badge.pk { background: #5a4a1a; color: #ffd479; }
+    body.dark .badge.uniq { background: #1f3a5a; color: #9accff; }
+    body.dark .empty { color: #9a9ab0; }
 </style>
 </head>
 <body>
     <div id="bar">
         <span class="title" id="title">Data</span>
+        <span class="counts" id="counts"></span>
+        <button id="fontDec" class="icon" title="Smaller font">A−</button>
+        <button id="fontInc" class="icon" title="Larger font">A+</button>
+        <button id="themeBtn" class="icon" title="Toggle dark mode">🌙</button>
         <button id="refreshBtn" title="Refresh from the active CA Embeditor">Refresh</button>
     </div>
     <input id="filter" placeholder="Filter…" />
+    <span id="filterClear" title="Clear filter (Esc)">×</span>
     <div id="list"><div class="empty">Open a procedure in the CA Embeditor, then Refresh.</div></div>
 
 <script>
@@ -105,6 +158,10 @@
     var selOrder = [];         // [{key,text}] in the LAST render order — shift-range anchor + block order
     var lastSel = null;        // selkey of the last Ctrl/Shift-clicked row (the shift-range anchor)
     var _selOcc = {};          // render-scoped: text -> occurrence count, so duplicate names get stable keys
+    // UI-polish state (all persisted in the same UI-state blob as the collapse maps).
+    var darkMode = false;      // pad dark theme
+    var fontScale = 1;         // pad font-size multiplier (base 12px)
+    var _totalShown = 0;       // unfiltered insertable-row count, for the "N / M" filter readout
 
     // LSP SymbolKind -> short label
     function kindLabel(k) {
@@ -131,6 +188,7 @@
             var e = selOrder[i];
             if (e.el) e.el.classList.toggle('multisel', selSet[e.key] !== undefined);
         }
+        updateCounts();
     }
 
     // A draggable + multi-selectable list row carrying its compilable (prefixed) insert text as text/plain.
@@ -204,6 +262,27 @@
         for (i = lo; i <= hi; i++) selSet[selOrder[i].key] = selOrder[i].text;
     }
 
+    // ---- UI polish: dark theme, font scale, and the bar counts readout ----
+    function applyTheme() {
+        document.body.classList.toggle('dark', !!darkMode);
+        var b = document.getElementById('themeBtn');
+        if (b) { b.textContent = darkMode ? '☀' : '🌙'; b.title = darkMode ? 'Switch to light mode' : 'Switch to dark mode'; }
+    }
+    function applyFont() {
+        if (fontScale < 0.7) fontScale = 0.7;
+        if (fontScale > 1.8) fontScale = 1.8;
+        document.body.style.fontSize = (12 * fontScale).toFixed(2) + 'px';
+    }
+    function updateCounts() {
+        var c = document.getElementById('counts'); if (!c) return;
+        var f = (document.getElementById('filter').value || '').trim();
+        var selN = Object.keys(selSet).length;
+        var parts = [];
+        if (selN) parts.push(selN + ' selected');
+        if (f) parts.push(selOrder.length + ' / ' + _totalShown);
+        c.textContent = parts.join('  ·  ');
+    }
+
     // Persist the collapse/expand UI state (debounced) so it survives the embeditor closing/reopening. The
     // host stores it as an opaque blob; the font zoom is persisted separately (WebView2 ZoomFactor).
     var _saveTimer = null;
@@ -216,7 +295,8 @@
                     action: 'saveUiState',
                     state: JSON.stringify({
                         sectionCollapsed: sectionCollapsed, localCollapsed: localCollapsed,
-                        relExpanded: relExpanded, detailOpen: detailOpen
+                        relExpanded: relExpanded, detailOpen: detailOpen,
+                        dark: darkMode, fontScale: fontScale
                     })
                 });
             } catch (e) {}
@@ -602,6 +682,7 @@
                 var row = document.createElement('div');
                 row.className = 'row';
                 row.title = it.name + '  ROUTINE' + (it.line ? '  (line ' + it.line + ')' : '');
+                row.style.paddingLeft = '46px';   // align name with the tree-section names (past chevron + "+" columns)
                 var n = document.createElement('span'); n.className = 'name'; n.textContent = it.name; row.appendChild(n);
                 if (it.line) {
                     var ln = document.createElement('span'); ln.className = 'lineno';
@@ -627,6 +708,7 @@
                 var row = document.createElement('div');
                 row.className = 'row' + (selectedProc === it.name ? ' selected' : '');
                 row.title = it.name + (it.params || '');
+                row.style.paddingLeft = '46px';   // align name with the tree-section names (past chevron + "+" columns)
                 var n = document.createElement('span'); n.className = 'name'; n.textContent = it.name; row.appendChild(n);
                 if (it.params) { var p = document.createElement('span'); p.className = 'params'; p.textContent = it.params; row.appendChild(p); }
                 row.addEventListener('click', function (e) { if (e.detail > 1 || e.ctrlKey || e.metaKey || e.shiftKey) return; selSet = {}; selectedProc = it.name; render(); });
@@ -744,18 +826,29 @@
         if (!list.childNodes.length) {
             list.innerHTML = '<div class="empty">No data. Open a procedure in the CA Embeditor and Refresh. (Declared Tables come from the generated &lt;app&gt;.clw with live-dictionary schema; Other Files from the .txa; Local/Global Data from the app .txa.)</div>';
         }
+        if (!f) _totalShown = selOrder.length;          // remember the unfiltered count for the "N / M" readout
+        document.getElementById('filterClear').style.display = f ? 'block' : 'none';
+        updateCounts();
         scheduleSaveUiState();
     }
 
     document.getElementById('refreshBtn').addEventListener('click', function () { postToHost({ action: 'refresh' }); });
     document.getElementById('filter').addEventListener('input', render);
-    // Escape clears the multi-selection (unless the filter box has focus / text — let it clear the filter there).
-    document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape' && Object.keys(selSet).length) {
-            var inFilter = document.activeElement === document.getElementById('filter');
-            if (!inFilter) { e.preventDefault(); selSet = {}; lastSel = null; applySel(); }
-        }
+    document.getElementById('filterClear').addEventListener('click', function () {
+        var fi = document.getElementById('filter'); fi.value = ''; fi.focus(); render();
     });
+    document.getElementById('fontDec').addEventListener('click', function () { fontScale -= 0.1; applyFont(); scheduleSaveUiState(); });
+    document.getElementById('fontInc').addEventListener('click', function () { fontScale += 0.1; applyFont(); scheduleSaveUiState(); });
+    document.getElementById('themeBtn').addEventListener('click', function () { darkMode = !darkMode; applyTheme(); scheduleSaveUiState(); });
+    // Escape: if the filter box has text, clear it; otherwise clear the multi-selection.
+    document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') return;
+        var fi = document.getElementById('filter');
+        var inFilter = document.activeElement === fi;
+        if (inFilter && fi.value) { e.preventDefault(); fi.value = ''; render(); return; }
+        if (Object.keys(selSet).length) { e.preventDefault(); selSet = {}; lastSel = null; applySel(); }
+    });
+    applyTheme(); applyFont();   // sane defaults before the persisted UI-state restore message arrives
 
     if (window.chrome && window.chrome.webview) {
         window.chrome.webview.addEventListener('message', function (e) {
@@ -771,11 +864,18 @@
                         if (st.localCollapsed) localCollapsed = st.localCollapsed;
                         if (st.relExpanded) relExpanded = st.relExpanded;
                         if (st.detailOpen) detailOpen = st.detailOpen;
+                        if (typeof st.dark === 'boolean') darkMode = st.dark;
+                        if (typeof st.fontScale === 'number') fontScale = st.fontScale;
+                        applyTheme(); applyFont();
                     }
                 } catch (ex) {}
                 return;
             }
             if (msg.type === 'setSymbols') {
+                // New data set: drop any prior multi-selection. Selection keys are render-order-scoped
+                // (text + occurrence), so a stale key could silently point at a DIFFERENT row after a
+                // refresh/data change — clear it rather than risk inserting the wrong field.
+                selSet = {}; lastSel = null;
                 document.getElementById('title').textContent = msg.title || 'Data';
                 var byName = function (a, b) { return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase()); };
                 locals = (msg.locals || []).slice(); // declaration order — matches Clarion's native Data pad; do NOT sort
