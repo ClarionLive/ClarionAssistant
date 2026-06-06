@@ -108,13 +108,17 @@ namespace ClarionAssistant
                 else if (action == "insert")
                 {
                     string name = ExtractJsonValue(json, "name");
-                    var view = Terminal.ModernEmbeditorViewContent.ActiveModernView();
-                    if (view != null && !string.IsNullOrEmpty(name)) view.InsertAtCursor(name);
-                    // [19] Also place the same compilable (prefixed) text on the Windows clipboard
-                    // so it can be pasted elsewhere. We're on the UI/STA thread here; guard against
-                    // the clipboard being transiently locked by another process.
                     if (!string.IsNullOrEmpty(name))
                     {
+                        // Act on the SAME context that rendered the displayed pad data (captured at the last
+                        // Refresh), NOT a fresh Resolve(): by click time the WebView2 pad holds focus, so a
+                        // re-resolve could fail the native-focus probe and fall back to an unfocused Modern tab,
+                        // writing into the wrong editor. _renderCtx matches what the developer is looking at.
+                        var ctx = _renderCtx;
+                        if (ctx != null) ctx.Insert(name);
+                        // [19] Also place the same compilable (prefixed) text on the Windows clipboard
+                        // so it can be pasted elsewhere. We're on the UI/STA thread here; guard against
+                        // the clipboard being transiently locked by another process.
                         try { System.Windows.Forms.Clipboard.SetText(name); }
                         catch (Exception cex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] clipboard: " + cex.Message); }
                     }
@@ -142,48 +146,96 @@ namespace ClarionAssistant
                                     Services.ModernEmbeditorLauncher.OpenProcedure(name, false);
                             }
                             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] open: " + ex.Message); }
-                            _lastShownProc = name; // about to show this proc; don't double-refresh on the next tick
-                            Refresh();
+                            // Do NOT pre-seed _lastShownProc/_lastShownNative or Refresh() here: OpenProcedure()
+                            // defers ShowView to a later UI turn, so the target tab isn't the active document yet.
+                            // Pre-seeding the change-detector would suppress the corrective tick-refresh once it
+                            // IS active, leaving _renderCtx bound to the pre-open editor. Let OnAutoRefreshTick
+                            // detect the newly-focused tab and refresh then.
                         }));
                     }
                 }
                 else if (action == "goto")
                 {
                     string name = ExtractJsonValue(json, "name");
-                    var view = Terminal.ModernEmbeditorViewContent.ActiveModernView();
-                    if (view != null && !string.IsNullOrEmpty(name)) view.GotoRoutine(name);
+                    if (!string.IsNullOrEmpty(name))
+                    {
+                        // Same rendered-context rule as 'insert': navigate via the context that produced the
+                        // displayed routine list, so the line matches and we never re-resolve to a different
+                        // editor after the pad took focus.
+                        var ctx = _renderCtx;
+                        if (ctx != null) ctx.GotoRoutine(name);
+                    }
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] Message error: " + ex.Message); }
         }
 
-        /// <summary>Pull the active Modern Embeditor tab's data (locals + used tables) off the UI thread.</summary>
+        /// <summary>
+        /// Pull the focused procedure editor's data (locals + used tables) off the UI thread. The active editor
+        /// is whichever the resolver picks — the native (PWEE) embeditor when focused, else the Modern view.
+        /// Resolve() runs HERE on the UI thread (it snapshots the native buffer); GetPadData() runs on the task.
+        /// </summary>
         public void Refresh()
         {
-            var view = Terminal.ModernEmbeditorViewContent.ActiveModernView();
-            if (view == null)
+            ++_refreshGen;   // supersede any in-flight parse (incl. this no-editor transition)
+            var ctx = Services.ActiveProcedureContext.Resolve();
+            if (ctx == null)
             {
+                _renderCtx = null;   // nothing focused — stale insert/goto can't fire
+                _pendingCtx = null;
                 Post(new Dictionary<string, object>
                 {
-                    { "title", "(no Modern Embeditor active)" },
+                    { "title", "(no procedure editor active)" },
                     { "locals", new List<object>() }, { "tables", new List<object>() }
                 });
                 return;
             }
-            if (_refreshing) return; // coalesce — don't pile up overlapping parses
+            // Latest-wins: record the desired context; a running pump picks it up when it finishes. We do NOT
+            // touch _renderCtx here — it is committed together with the payload that actually renders (see
+            // PumpRefresh), so the displayed data and the insert/goto target can never diverge under a refresh
+            // race (proc A still parsing while the user switches to B).
+            _pendingCtx = ctx;
+            if (_refreshing) return;
             _refreshing = true;
+            PumpRefresh();
+        }
+
+        /// <summary>
+        /// Parse the latest pending context off the UI thread, then on the UI thread commit _renderCtx and post
+        /// its payload TOGETHER — so insert/goto are always bound to the procedure currently displayed — and loop
+        /// if a newer context arrived mid-parse. Guarantees the latest switch always renders (no dropped refresh).
+        /// </summary>
+        private void PumpRefresh()
+        {
+            var ctx = _pendingCtx;   // UI thread
+            _pendingCtx = null;
+            int gen = _refreshGen;   // the generation this parse belongs to
             Task.Run(() =>
             {
-                try
+                Dictionary<string, object> data;
+                try { data = ctx.GetPadData(); }
+                catch { data = null; }
+                if (data == null)
+                    data = new Dictionary<string, object> { { "locals", new List<object>() }, { "tables", new List<object>() } };
+                object proc; data.TryGetValue("procedure", out proc);
+                data["title"] = string.IsNullOrEmpty(proc as string) ? "Data" : (string)proc;
+
+                Action commit = () =>
                 {
-                    Dictionary<string, object> data;
-                    try { data = view.GetPadData(); }
-                    catch { data = new Dictionary<string, object> { { "locals", new List<object>() }, { "tables", new List<object>() } }; }
-                    object proc; data.TryGetValue("procedure", out proc);
-                    data["title"] = string.IsNullOrEmpty(proc as string) ? "Data" : (string)proc;
+                    // Drop if a newer Refresh (including a no-editor transition that cleared _renderCtx) superseded
+                    // this parse — never resurrect stale data or rebind _renderCtx behind a newer state.
+                    if (gen != _refreshGen)
+                    {
+                        if (_pendingCtx != null) PumpRefresh(); else _refreshing = false;
+                        return;
+                    }
+                    _renderCtx = ctx;          // bind actions to the context that produced THIS payload (UI thread)
                     Post(data);
-                }
-                finally { _refreshing = false; }
+                    if (_pendingCtx != null) PumpRefresh();   // a newer switch arrived during parse → render it next
+                    else _refreshing = false;
+                };
+                try { if (_panel != null && _panel.InvokeRequired) _panel.BeginInvoke(commit); else commit(); }
+                catch { _refreshing = false; }
             });
         }
 
@@ -216,6 +268,30 @@ namespace ClarionAssistant
 
         private volatile bool _refreshing;
         private Timer _autoTimer;
+
+        // The procedure-editor context that produced the CURRENTLY displayed pad data. insert/goto act on THIS
+        // (set on the UI thread in Refresh) instead of re-resolving at click time — by click time the WebView2
+        // pad holds focus, and a fresh Resolve() could fail the native-focus probe and fall back to an unfocused
+        // Modern tab, writing into the wrong editor. Acting on the rendered context = act on what's displayed.
+        private Services.ActiveProcedureContext _renderCtx;
+
+        // The most recently requested context awaiting a parse. Latest-wins: while a parse runs, a newer Refresh
+        // overwrites this and the running pump picks it up on completion, so the displayed payload and _renderCtx
+        // are always committed together for the SAME context (UI thread only).
+        private Services.ActiveProcedureContext _pendingCtx;
+
+        // Monotonic refresh generation, bumped on EVERY Refresh() — including the no-editor (Resolve()==null)
+        // transition. A pump commit whose captured generation is stale is dropped, so an in-flight parse can
+        // never resurrect _renderCtx / repost old data after focus has moved away (UI thread only).
+        private int _refreshGen;
+
+        // Re-entrancy guard for the native-activation whole-app .txa export (RefreshPadSources on the UI thread).
+        private bool _nativeSourcesRefreshing;
+
+        // Editor KIND of the last shown procedure. Change detection keys on (proc name + kind): a switch from
+        // Modern "Foo" to native "Foo" (same name, different editor) must still refresh, or _renderCtx would stay
+        // bound to the previous editor and insert/goto would target it.
+        private bool _lastShownNative;
         private string _lastShownProc = " "; // sentinel so the first tick always refreshes
 
         /// <summary>
@@ -235,16 +311,35 @@ namespace ClarionAssistant
         {
             if (Services.ModernEmbeditorLauncher.IsBusy) return;  // never touch the IDE mid open/save
             string proc;
+            bool isNative = false;
             try
             {
-                var view = Terminal.ModernEmbeditorViewContent.ActiveModernView();
-                proc = view != null ? (view.ProcedureName ?? "") : null;
+                // Lightweight peek (native embeditor preferred, else Modern view) — no buffer snapshot per tick.
+                // This is the pad's "active-document-changed" detector; we poll on a timer rather than subscribe
+                // to workbench events because the event approach re-entered the native close and deadlocked.
+                proc = Services.ActiveProcedureContext.PeekActiveProcedure(out isNative);
             }
             catch { return; }
-            // Refresh only when the active Modern procedure actually changed (or went away).
-            if (!string.Equals(proc, _lastShownProc, StringComparison.OrdinalIgnoreCase))
+            // Refresh when the active procedure OR its editor kind changed (or it went away). Keying on kind too
+            // catches a Modern->native (or native->Modern) switch at the same procedure name.
+            if (!string.Equals(proc, _lastShownProc, StringComparison.OrdinalIgnoreCase) || isNative != _lastShownNative)
             {
                 _lastShownProc = proc;
+                _lastShownNative = isNative;
+                // Switching to a NATIVE procedure: refresh the whole-app .txa + live-dict snapshot first. The
+                // native path has no open/save hook to populate them, so without this a native-only session would
+                // show empty Local/Global/Tables data. (Modern proc-switches reuse the cache the open/save hooks
+                // already maintain.) RefreshPadSources is UI-thread + best-effort (keeps the prior cache on error).
+                if (isNative && !string.IsNullOrEmpty(proc) && !_nativeSourcesRefreshing)
+                {
+                    // Re-entrancy guard: RefreshPadSources runs a silent whole-app .txa export on the UI thread;
+                    // if it pumps messages, a re-entrant timer tick must not stack a second export. (Only fires on
+                    // proc CHANGE, so it's already debounced to native-activation events, not every 750ms tick.)
+                    _nativeSourcesRefreshing = true;
+                    try { Terminal.ModernEmbeditorViewContent.RefreshPadSources(); }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] native RefreshPadSources: " + ex.Message); }
+                    finally { _nativeSourcesRefreshing = false; }
+                }
                 Refresh();
             }
         }
