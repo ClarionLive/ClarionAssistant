@@ -622,6 +622,9 @@ namespace ClarionAssistant.Terminal
                 {
                     string json = "{\"type\":\"insertText\",\"text\":" + JsonString(text) + "}";
                     _webView.CoreWebView2.PostWebMessageAsJson(json);
+                    // Bring THIS editor tab to the front so the developer can start typing immediately after a
+                    // Data-pad double-click insert (the editor JS already does ed.focus() to place the caret).
+                    BringToFront();
                 }
                 catch { }
             };
@@ -728,6 +731,8 @@ namespace ClarionAssistant.Terminal
                     HandleSaveCursor(json);
                 else if (action == "saveBookmarks")
                     HandleSaveBookmarks(json);
+                else if (action == "focusEditor")
+                    BringToFront();   // drag-drop from the Data pad: activate this tab so the dev can type immediately
             }
             catch (Exception ex)
             {
@@ -1432,6 +1437,18 @@ namespace ClarionAssistant.Terminal
             }
             CleanupTempDir();
             base.Dispose();
+        }
+
+        /// <summary>Shutdown hook: dispose every open Modern Embeditor's WebView2 on the UI thread, before
+        /// native IDE teardown, to avoid the WebView2 &lt;-&gt; native focus deadlock. Idempotent + best-effort.</summary>
+        public static void DisposeAllForShutdown()
+        {
+            List<ModernEmbeditorViewContent> snapshot;
+            lock (_instances) { snapshot = new List<ModernEmbeditorViewContent>(_instances); }
+            foreach (var inst in snapshot)
+            {
+                try { inst.Dispose(); } catch { }
+            }
         }
 
         private void CleanupTempDir()

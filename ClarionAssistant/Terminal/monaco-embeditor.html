@@ -459,9 +459,13 @@
                     glyphMargin: true,              // bookmark markers (Ctrl+F2) live here
                     // Clarion prefix ':' must NOT be a word separator, so double-click (and Ctrl+Arrow)
                     // treat Add:AddressID as ONE word — Monaco's default wordSeparators minus ':'.
-                    wordSeparators: "`~!@#$%^&*()-=+[{]}\\|;'\",.<>/?"
+                    wordSeparators: "`~!@#$%^&*()-=+[{]}\\|;'\",.<>/?",
+                    // We handle Data-pad drops ourselves (see installDropInsert) — Monaco's built-in
+                    // dropIntoEditor snippet-expands the text and leaves "$0" artifacts.
+                    dropIntoEditor: { enabled: false }
                 });
                 installReadOnlyGuard();
+                installDropInsert(editor);     // accept Data-pad drops (plain text, at the drop point)
                 activeEditor = editor;         // commands target the focused pane; primary by default (#15)
                 editor.onDidFocusEditorText(function () { activeEditor = editor; });
                 editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, doSave);
@@ -497,8 +501,7 @@
         saveEnabled = !!msg.saveEnabled;
         var sb = document.getElementById('saveBtn');
         if (sb) sb.style.display = saveEnabled ? '' : 'none';
-        document.getElementById('titleText').textContent =
-            (msg.title || '(no procedure)') + '  ·  ' + embedRanges.length + ' editable slot(s)';
+        document.getElementById('titleText').textContent = (msg.title || '(no procedure)');
         setTheme(themePrefDark);   // honor the user's persisted light/dark choice over the host's IDE theme
         if (msg.settings) { applyEditorSettings(msg.settings); populateSettingsPanel(msg.settings); }
         if (msg.findHistory) replaceArray(findHistory, msg.findHistory);
@@ -1070,7 +1073,8 @@
             glyphMargin: true,
             wordWrap: s.wordWrap ? 'on' : 'off',
             autoIndent: s.autoIndent ? 'full' : 'keep',
-            wordSeparators: "`~!@#$%^&*()-=+[{]}\\|;'\",.<>/?" // see primary editor: keep ':' in-word
+            wordSeparators: "`~!@#$%^&*()-=+[{]}\\|;'\",.<>/?", // see primary editor: keep ':' in-word
+            dropIntoEditor: { enabled: false }                  // split pane: custom drop handler (installDropInsert)
         };
     }
 
@@ -1083,6 +1087,7 @@
         document.body.classList.add('split');
         editor2 = monaco.editor.create(document.getElementById('editor2'), editorOptionsForSplit());
         editor2.onDidFocusEditorText(function () { activeEditor = editor2; });
+        installDropInsert(editor2);    // accept Data-pad drops in the split pane too
         wireGlyphBookmark(editor2);
         installNavTracking(editor2);   // cursor jumps in the split pane feed the shared history (#14)
         var ebottom = document.getElementById('editor').style.bottom;   // match the Find-panel clearance
@@ -1261,6 +1266,40 @@
         if (!isEditableRange(range)) { showToast('Put the cursor in an editable slot to insert', false); return; }
         ed.executeEdits('data-insert', [{ range: range, text: text, forceMoveMarkers: true }]);
         ed.focus();
+    }
+
+    // Native OS drop from the Data pad. We do NOT use Monaco's dropIntoEditor (it snippet-expands the
+    // dropped text → "$0" artifacts). Insert plain text at the DROP POINT via the same executeEdits path
+    // as the double-click insert, validated against the editable-slot guard.
+    function installDropInsert(ed) {
+        if (!ed) return;
+        var node = ed.getDomNode();
+        if (!node) return;
+        node.addEventListener('dragover', function (e) {
+            e.preventDefault();
+            try { e.dataTransfer.dropEffect = 'copy'; } catch (ex) {}
+        }, true);
+        node.addEventListener('drop', function (e) {
+            var text = '';
+            try { text = e.dataTransfer.getData('text/plain'); } catch (ex) {}
+            if (!text) return;                       // foreign drag — leave it alone
+            e.preventDefault(); e.stopPropagation();
+            var tgt = ed.getTargetAtClientPoint(e.clientX, e.clientY);
+            var pos = (tgt && tgt.position) ? tgt.position : ed.getPosition();
+            var range = new monaco.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column);
+            if (!isEditableRange(range)) { showToast('Drop inside an editable slot to insert', false); return; }
+            ed.executeEdits('data-drop', [{ range: range, text: text, forceMoveMarkers: true }]);
+            // Land the cursor at the end of the inserted block (handles multi-line block drops too).
+            var lines = text.split('\n');
+            if (lines.length > 1) ed.setPosition({ lineNumber: pos.lineNumber + lines.length - 1, column: lines[lines.length - 1].length + 1 });
+            else ed.setPosition({ lineNumber: pos.lineNumber, column: pos.column + text.length });
+            // The drag started in the Data pad (a separate WebView2), so OS focus stays there after the drop.
+            // Try to pull it here from JS (window.focus), and ask the host to activate this tab (BringToFront)
+            // — the reliable path, mirroring the double-click insert.
+            try { window.focus(); } catch (ex2) {}
+            ed.focus();
+            postToHost({ action: 'focusEditor' });
+        }, true);
     }
 
     // ----- Read-only guard -----

@@ -67,6 +67,8 @@
     .row .lineno:hover { color: #1e66f5; background: #dbe6f5; }
     .row .params { font-size: 10px; color: #5a5a5a; margin-left: 6px; font-family: Consolas, 'Courier New', monospace; }
     .row.selected, .row.selected:hover { background: #cfe0f7; }
+    /* Multi-select (Ctrl/Shift-click) — distinct from the proc single-select: stronger blue + left accent. */
+    .row.multisel, .row.multisel:hover { background: #b9d4f5; box-shadow: inset 3px 0 0 #1e66f5; }
     .twisty { color: #555; min-width: 12px; display: inline-block; text-align: center; }
     .table-hdr { font-weight: 600; color: #0a5dc2; }
     .table-hdr .twisty { color: #555; min-width: 12px; }
@@ -98,6 +100,11 @@
     var localCollapsed = {};   // local-tree node path -> true when a QUEUE/GROUP node is collapsed
     var detailOpen = {};       // node path -> true when an Other Files "+" detail panel is expanded
     var relExpanded = {};      // relations-folder path -> true when expanded (DEFAULT collapsed, unlike Keys/Columns)
+    // Multi-select (drag a block of items): Ctrl/Cmd-click toggles a row, Shift-click selects a range.
+    var selSet = {};           // selkey -> insert text (the current multi-selection)
+    var selOrder = [];         // [{key,text}] in the LAST render order — shift-range anchor + block order
+    var lastSel = null;        // selkey of the last Ctrl/Shift-clicked row (the shift-range anchor)
+    var _selOcc = {};          // render-scoped: text -> occurrence count, so duplicate names get stable keys
 
     // LSP SymbolKind -> short label
     function kindLabel(k) {
@@ -115,6 +122,87 @@
     }
 
     function insert(name) { postToHost({ action: 'insert', name: name }); }
+
+    // Repaint the multi-select highlight from selSet WITHOUT a full render() — keeps row elements alive so a
+    // double-click (insert) still fires after the selecting single-clicks. Valid until the next render()
+    // (which rebuilds selOrder with fresh element refs and re-applies the class during construction).
+    function applySel() {
+        for (var i = 0; i < selOrder.length; i++) {
+            var e = selOrder[i];
+            if (e.el) e.el.classList.toggle('multisel', selSet[e.key] !== undefined);
+        }
+    }
+
+    // A draggable + multi-selectable list row carrying its compilable (prefixed) insert text as text/plain.
+    // The drop lands in the Modern Embeditor's Monaco webview (a SEPARATE WebView2); our installDropInsert
+    // inserts it at the drop point and the readOnly guard gates it to editable slots. Windows-standard select:
+    //   - Plain click  → select just this row, clearing others, and set the Shift anchor.
+    //   - Ctrl/Cmd-click → toggle this row, keeping the rest.
+    //   - Shift-click  → select the range from the anchor to this row (in list order).
+    //   - Dragging a SELECTED row drops the WHOLE selection as a block (one item per line, list order);
+    //     dragging an UNSELECTED row drops just this row.
+    // pass plainSelect=false for rows that own a competing plain-click action (Procedures: select-for-Open).
+    function makeDraggable(row, text, plainSelect) {
+        if (!text) return;
+        if (plainSelect === undefined) plainSelect = true;
+        // Stable selection key: text + per-render occurrence index (handles duplicate names across tables).
+        var occ = (_selOcc[text] || 0); _selOcc[text] = occ + 1;
+        var key = text + '#' + occ;
+        selOrder.push({ key: key, text: text, el: row });
+        if (selSet[key] !== undefined) row.classList.add('multisel');
+
+        row.addEventListener('mousedown', function (e) {
+            if (e.shiftKey || e.ctrlKey || e.metaKey) { e.preventDefault(); e.stopPropagation(); }
+        }, true);
+        row.addEventListener('click', function (e) {
+            // Clicks on the chevron / "+" detail / action / line-number children do their own thing — never select.
+            var t = e.target;
+            if (t && t !== row && (t.classList.contains('twisty') || t.classList.contains('detail-tog')
+                || t.classList.contains('act') || t.classList.contains('lineno'))) return;
+            if (e.shiftKey) {
+                e.preventDefault(); e.stopPropagation();
+                selectRangeTo(key); applySel();
+            } else if (e.ctrlKey || e.metaKey) {
+                e.preventDefault(); e.stopPropagation();
+                if (selSet[key] !== undefined) delete selSet[key]; else selSet[key] = text;
+                lastSel = key; applySel();
+            } else if (plainSelect) {
+                selSet = {}; selSet[key] = text; lastSel = key; applySel();
+            }
+        }, true);
+
+        row.draggable = true;
+        row.addEventListener('dragstart', function (e) {
+            var payload = text;
+            if (selSet[key] !== undefined) {
+                var parts = [];
+                for (var i = 0; i < selOrder.length; i++)
+                    if (selSet[selOrder[i].key] !== undefined) parts.push(selOrder[i].text);
+                if (parts.length) payload = parts.join('\n');
+            }
+            try { e.dataTransfer.setData('text/plain', payload); e.dataTransfer.effectAllowed = 'copy'; }
+            catch (ex) {}
+        });
+        row.addEventListener('dragend', function (e) {
+            try { if (e.dataTransfer && e.dataTransfer.dropEffect && e.dataTransfer.dropEffect !== 'none') { selSet = {}; applySel(); } }
+            catch (ex) {}
+        });
+    }
+
+    // Shift-click: select every row between the anchor (lastSel) and the clicked key inclusive, in current
+    // render order. With no anchor yet, behaves like a single select.
+    function selectRangeTo(key) {
+        var idx = -1, anchor = -1, i;
+        for (i = 0; i < selOrder.length; i++) {
+            if (selOrder[i].key === key) idx = i;
+            if (selOrder[i].key === lastSel) anchor = i;
+        }
+        if (idx < 0) return;
+        selSet = {};   // Windows-standard: Shift-click replaces the selection with the anchor→target range.
+        if (anchor < 0) { selSet[key] = selOrder[idx].text; lastSel = key; return; }
+        var lo = Math.min(idx, anchor), hi = Math.max(idx, anchor);
+        for (i = lo; i <= hi; i++) selSet[selOrder[i].key] = selOrder[i].text;
+    }
 
     // Persist the collapse/expand UI state (debounced) so it survives the embeditor closing/reopening. The
     // host stores it as an opaque blob; the font zoom is persisted separately (WebView2 ZoomFactor).
@@ -151,11 +239,13 @@
         if (kindText !== null) { var k = document.createElement('span'); k.className = 'kind'; k.textContent = kindText; row.appendChild(k); }
         var n = document.createElement('span'); n.className = 'name'; n.textContent = nameText; row.appendChild(n);
         if (typeText) { var t = document.createElement('span'); t.className = 'type'; t.textContent = typeText; row.appendChild(t); }
-        if (insertText) row.addEventListener('dblclick', function () { insert(insertText); });
+        if (insertText) { row.addEventListener('dblclick', function () { insert(insertText); }); makeDraggable(row, insertText); }
         return row;
     }
 
     function render() {
+        // Reset the per-render multi-select trackers BEFORE any makeDraggable() call rebuilds the rows.
+        selOrder = []; _selOcc = {};
         var f = (document.getElementById('filter').value || '').trim().toLowerCase();
         var match = function (s) { return !f || (s && s.toLowerCase().indexOf(f) >= 0); };
         // [11] Smarter filter: match against ANY of several text fields (descriptions / prompts / headers /
@@ -295,7 +385,8 @@
                 tw.textContent = hasTwisty ? (open ? '▾' : '▸') : '';
                 row.insertBefore(tw, row.firstChild);
                 if (hasTwisty && twistyToggle) {
-                    row.addEventListener('click', function (e) { if (e.detail > 1) return; twistyToggle(); });
+                    tw.style.cursor = 'pointer';   // chevron-only expand/collapse (row body is for selection)
+                    tw.addEventListener('click', function (e) { e.stopPropagation(); twistyToggle(); });
                 }
                 list.appendChild(row);
                 return row;
@@ -312,7 +403,7 @@
                 var fkey = key + '/' + ff.name;
                 var fOpen = !localCollapsed[fkey] || !!f;
                 var fDet = !!(ff.attributes || ff.description);
-                var hdr = gutterRow('table-hdr', ff.name, '', null, 10, true, fOpen,
+                var hdr = gutterRow('table-hdr', ff.name, '', ff.name, 10, true, fOpen,
                     function () { localCollapsed[fkey] = !localCollapsed[fkey]; render(); },
                     fDet ? ('d:' + fkey) : null);
                 if (ff.prefix) {
@@ -426,9 +517,13 @@
                                 row.appendChild(pc);
 
                                 row.addEventListener('dblclick', function () { insert(ins); });
-                                if (hasKids) row.addEventListener('click', function (e) {
-                                    if (e.detail > 1) return; localCollapsed[nkey] = !localCollapsed[nkey]; render();
-                                });
+                                makeDraggable(row, ins);
+                                if (hasKids) {
+                                    tw.style.cursor = 'pointer';   // chevron-only expand/collapse
+                                    tw.addEventListener('click', function (e) {
+                                        e.stopPropagation(); localCollapsed[nkey] = !localCollapsed[nkey]; render();
+                                    });
+                                }
                                 cgrid.appendChild(row);
 
                                 if (hasCDet && detailOpen[cdkey]) {
@@ -515,6 +610,7 @@
                     row.appendChild(ln);
                 }
                 row.addEventListener('dblclick', function () { insert('DO ' + it.name); });
+                makeDraggable(row, 'DO ' + it.name);
                 list.appendChild(row);
             });
         }
@@ -533,8 +629,9 @@
                 row.title = it.name + (it.params || '');
                 var n = document.createElement('span'); n.className = 'name'; n.textContent = it.name; row.appendChild(n);
                 if (it.params) { var p = document.createElement('span'); p.className = 'params'; p.textContent = it.params; row.appendChild(p); }
-                row.addEventListener('click', function (e) { if (e.detail > 1) return; selectedProc = it.name; render(); });
+                row.addEventListener('click', function (e) { if (e.detail > 1 || e.ctrlKey || e.metaKey || e.shiftKey) return; selSet = {}; selectedProc = it.name; render(); });
                 row.addEventListener('dblclick', function () { insert(it.name + '()'); });
+                makeDraggable(row, it.name + '()', false);   // plain click = select-for-Open (handled above), not multi-select
                 list.appendChild(row);
             });
         }
@@ -611,11 +708,11 @@
                     pc.className = 'picture'; pc.textContent = it.picture || '';
                     row.appendChild(pc);
 
-                    if (it.name) row.addEventListener('dblclick', function () { insert(it.name); });
+                    if (it.name) { row.addEventListener('dblclick', function () { insert(it.name); }); makeDraggable(row, it.name); }
                     if (hasKids) {
-                        row.addEventListener('click', function (e) {
-                            if (e.detail > 1) return; // ignore the click half of a double-click
-                            localCollapsed[nkey] = !localCollapsed[nkey]; render();
+                        tw.style.cursor = 'pointer';   // chevron-only expand/collapse
+                        tw.addEventListener('click', function (e) {
+                            e.stopPropagation(); localCollapsed[nkey] = !localCollapsed[nkey]; render();
                         });
                     }
                     grid.appendChild(row);
@@ -652,6 +749,13 @@
 
     document.getElementById('refreshBtn').addEventListener('click', function () { postToHost({ action: 'refresh' }); });
     document.getElementById('filter').addEventListener('input', render);
+    // Escape clears the multi-selection (unless the filter box has focus / text — let it clear the filter there).
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && Object.keys(selSet).length) {
+            var inFilter = document.activeElement === document.getElementById('filter');
+            if (!inFilter) { e.preventDefault(); selSet = {}; lastSel = null; applySel(); }
+        }
+    });
 
     if (window.chrome && window.chrome.webview) {
         window.chrome.webview.addEventListener('message', function (e) {
