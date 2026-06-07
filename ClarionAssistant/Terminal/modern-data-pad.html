@@ -652,6 +652,18 @@
             return open;
         }
 
+        // "＋ Add" header button for the Local/Global Data sections — asks the host to drive Clarion's own
+        // add-variable form for that scope (current procedure for Local). Returns null for other sections.
+        function addVarBtns(key) {
+            if (key !== 'locals' && key !== 'globals') return null;
+            var scope = (key === 'locals') ? 'local' : 'global';
+            return [{
+                label: '＋ Add',
+                title: 'Add a ' + scope + ' variable (opens Clarion’s field form)',
+                onClick: function () { postToHost({ action: 'addVariable', scope: scope }); }
+            }];
+        }
+
         // Collapse-All / Expand-All for one section. `collapse` true folds everything; false unfolds it.
         // Keys mirror exactly what the renderers use (localCollapsed default-open, relExpanded default-closed).
         function setAllInSection(key, ctl, collapse) {
@@ -1026,7 +1038,7 @@
             };
             var shown = items.filter(function (it) { return matchAny(it.name, it.prompt, it.header) || anyMatch(it.children); });
             if (!shown.length) return;
-            if (!sectionHeader(key, label, countAll(items), { kind: 'tree', items: items })) return;
+            if (!sectionHeader(key, label, countAll(items), { kind: 'tree', items: items }, addVarBtns(key))) return;
 
             // Per-section grid: subgrid rows share its max-content columns, so name/type/picture form real
             // LEFT-aligned columns (type starts past the longest name, picture past the longest type).
@@ -1134,7 +1146,7 @@
             if (sectionHidden[id]) return;
             if (sectionCount(id) === 0) {
                 if (hideEmptySections || f) return;
-                sectionHeader(id, SECTION_LABELS[id], 0);
+                sectionHeader(id, SECTION_LABELS[id], 0, null, addVarBtns(id));
                 return;
             }
             buildSection(id);

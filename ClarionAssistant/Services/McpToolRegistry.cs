@@ -478,7 +478,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
-                        { "command", "Inspection command: active_view, editor_text, all_windows, all_pads, app_details, embed_details, path:<dotpath>, types, assemblies" }
+                        { "command", "Inspection command: active_view, editor_text, all_windows, all_pads, app_details, embed_details, path:<dotpath>, types, assemblies. SPIKE 30bb3125 (add-variable): probe_fileschema_resolve (read-only), probe_fileschema_select:global|local (sets SelectedNode, verifies AddParent tracks), probe_fileschema_add:global|local (GATED — fires Clarion's add-variable form; backed-up app only)" }
                     },
                     new[] { "command" }),
                 RequiresUiThread = true,
@@ -503,7 +503,15 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                         case "probe_popup_arm":        return NativeProbeService.PopupArm();
                         case "probe_popup_arm_inject": return NativeProbeService.PopupArmInject();
                         case "probe_popup_report":     return NativeProbeService.PopupReport();
+                        // --- SPIKE (ticket 30bb3125): add Local/Global variable via managed FileSchemaTree "Add Column" ---
+                        case "probe_fileschema_resolve": return FileSchemaProbeService.Resolve(); // READ-ONLY
                         default:
+                            // probe_fileschema_select:global|local — set SelectedNode programmatically, verify AddParent tracks (selection-only mutation).
+                            if (command.StartsWith("probe_fileschema_select", StringComparison.OrdinalIgnoreCase))
+                                return FileSchemaProbeService.SelectScope(command.Contains(":") ? command.Substring(command.IndexOf(':') + 1) : "");
+                            // probe_fileschema_add:global|local — GATED: fires Clarion's add-variable FieldForm. Backed-up app + approval only.
+                            if (command.StartsWith("probe_fileschema_add", StringComparison.OrdinalIgnoreCase))
+                                return FileSchemaProbeService.InvokeAdd(command.Contains(":") ? command.Substring(command.IndexOf(':') + 1) : "");
                             // probe_mark[:label] — Tier-0 trace separator between right-clicks (ticket 4b82f1de).
                             if (command.StartsWith("probe_mark"))
                                 return NativeProbeService.PopupMark(command.Length > 11 && command[10] == ':' ? command.Substring(11) : "");

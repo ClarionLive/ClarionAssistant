@@ -173,6 +173,47 @@ namespace ClarionAssistant
                         if (ctx != null) ctx.GotoRoutine(name);
                     }
                 }
+                else if (action == "addVariable")
+                {
+                    // "＋ Add" on the Local/Global section: drive Clarion's OWN add-variable flow on the native
+                    // Data/Tables pad (managed FileSchemaTree → AddItemEventHandler → FieldForm). Clarion enters
+                    // + persists the variable; we just refresh. Deferred OUT of the WebView2 callback (the
+                    // FieldForm is modal) and we move focus to the main IDE first — same re-entrancy/native-focus
+                    // rule as 'open'/'refresh'. Scope = "local" (current procedure) | "global".
+                    string scope = ExtractJsonValue(json, "scope");
+                    if (_panel != null)
+                    {
+                        _panel.BeginInvoke((Action)(() =>
+                        {
+                            try
+                            {
+                                var mainForm = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
+                                if (mainForm != null) { mainForm.Activate(); Application.DoEvents(); }
+                            }
+                            catch { }
+
+                            Services.FileSchemaVariableInserter.Result r;
+                            try { r = Services.FileSchemaVariableInserter.AddVariable(scope); }
+                            catch (Exception ex) { r = Services.FileSchemaVariableInserter.Result.Fail(ex.Message); }
+
+                            // On failure, tell the developer why nothing happened (pad closed, read-only, etc.).
+                            // On success the FieldForm itself was the feedback.
+                            if (r != null && !r.Ok)
+                            {
+                                try { MessageBox.Show(r.Message, "Add Variable", MessageBoxButtons.OK, MessageBoxIcon.Information); }
+                                catch { }
+                            }
+
+                            // Re-export the whole-app .txa + re-parse so the newly-added Local/Global var shows in
+                            // our pad without a manual Refresh. Must be DEFERRED: calling RefreshPadSources()
+                            // synchronously here (right after the modal FieldForm's ShowDialog unwinds) exports a
+                            // .txa that doesn't yet reflect the just-committed field — Clarion finalizes it a turn
+                            // later (which is why the manual Refresh button, on its own settled turn, worked). Run
+                            // it on later turns, twice, to absorb variable settle time on larger apps.
+                            ScheduleAddRefresh();
+                        }));
+                    }
+                }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] Message error: " + ex.Message); }
         }
@@ -244,6 +285,30 @@ namespace ClarionAssistant
                 try { if (_panel != null && _panel.InvokeRequired) _panel.BeginInvoke(commit); else commit(); }
                 catch { _refreshing = false; }
             });
+        }
+
+        /// <summary>
+        /// After a "＋ Add" commits a variable through Clarion's FieldForm, re-export the whole-app .txa and
+        /// re-render — on LATER UI turns (Clarion finalizes the new field a turn after the modal closes, so an
+        /// immediate export misses it). Fires twice (short + longer) to absorb settle time on larger apps; each
+        /// pass is a one-shot WinForms Timer so it runs on a clean, non-reentrant message-loop turn.
+        /// </summary>
+        private void ScheduleAddRefresh()
+        {
+            DeferRefresh(500);
+            DeferRefresh(1500);
+        }
+
+        private void DeferRefresh(int ms)
+        {
+            var t = new Timer { Interval = ms };
+            t.Tick += (s, e) =>
+            {
+                t.Stop(); t.Dispose();
+                try { Terminal.ModernEmbeditorViewContent.RefreshPadSources(); } catch { }
+                Refresh();
+            };
+            t.Start();
         }
 
         // The floating native settings window (null when closed). Reused/activated if already open.
