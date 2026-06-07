@@ -173,6 +173,62 @@ namespace ClarionAssistant
                         if (ctx != null) ctx.GotoRoutine(name);
                     }
                 }
+                else if (action == "addVariable")
+                {
+                    // "＋ Add" on the Local/Global section: drive Clarion's OWN add-variable flow on the native
+                    // Data/Tables pad (managed FileSchemaTree → AddItemEventHandler → FieldForm). Clarion enters
+                    // + persists the variable; we just refresh. Deferred OUT of the WebView2 callback (the
+                    // FieldForm is modal) and we move focus to the main IDE first — same re-entrancy/native-focus
+                    // rule as 'open'/'refresh'. Scope = "local" (current procedure) | "global".
+                    string scope = ExtractJsonValue(json, "scope");
+                    // The procedure the WebView actually had ON SCREEN at click time (the JS sends what it last
+                    // rendered). We validate the Local add against THIS — not the host's _renderCtx, which flips to
+                    // a new procedure a tick before the WebView visibly renders it, leaving a sub-render-tick race.
+                    string clickedProc = ExtractJsonValue(json, "procedure");
+                    // Single-flight: ignore a re-entrant ＋Add while one is already running. The same flag also
+                    // suppresses the 750ms auto-tick while Clarion's modal FieldForm is open (see OnAutoRefreshTick)
+                    // so a background .txa export can't churn the FileSchema tree the modal is editing.
+                    if (_panel != null && !_addVarInProgress)
+                    {
+                        _addVarInProgress = true;
+                        _panel.BeginInvoke((Action)(() =>
+                        {
+                            Services.FileSchemaVariableInserter.Result r = null;
+                            try
+                            {
+                                try
+                                {
+                                    var mainForm = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
+                                    if (mainForm != null) { mainForm.Activate(); Application.DoEvents(); }
+                                }
+                                catch { }
+
+                                // A LOCAL add is validated against the on-screen procedure the JS reported
+                                // (clickedProc): if a rapid proc switch is mid-render, clickedProc still reflects
+                                // what the user saw, and the inserter fails closed when the native tree is on a
+                                // different procedure (or when clickedProc is empty — no rendered procedure).
+                                try { r = Services.FileSchemaVariableInserter.AddVariable(scope, clickedProc); }
+                                catch (Exception ex) { r = Services.FileSchemaVariableInserter.Result.Fail(ex.Message); }
+
+                                // On failure, tell the developer why nothing happened (pad closed, read-only,
+                                // wrong-procedure, etc.). On success the FieldForm itself was the feedback.
+                                if (r != null && !r.Ok)
+                                {
+                                    try { MessageBox.Show(r.Message, "Add Variable", MessageBoxButtons.OK, MessageBoxIcon.Information); }
+                                    catch { }
+                                }
+                            }
+                            finally { _addVarInProgress = false; }
+
+                            // Re-export the whole-app .txa + re-parse so the newly-added var shows in our pad
+                            // without a manual Refresh — ONLY after a confirmed successful add (skip on
+                            // failure/cancel). Deferred because calling RefreshPadSources() synchronously right
+                            // after the modal unwinds exports a .txa that doesn't yet reflect the just-committed
+                            // field (Clarion finalizes it a turn later). Coalesced + lifecycle-tracked.
+                            if (r != null && r.Ok) ScheduleAddRefresh();
+                        }));
+                    }
+                }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] Message error: " + ex.Message); }
         }
@@ -244,6 +300,47 @@ namespace ClarionAssistant
                 try { if (_panel != null && _panel.InvokeRequired) _panel.BeginInvoke(commit); else commit(); }
                 catch { _refreshing = false; }
             });
+        }
+
+        // Outstanding deferred add-refresh timers, tracked so Dispose() can stop them and so repeated ＋Add
+        // clicks coalesce (a new schedule drops the previous passes) instead of stacking whole-app exports.
+        private readonly System.Collections.Generic.List<Timer> _addRefreshTimers = new System.Collections.Generic.List<Timer>();
+
+        // Single-flight guard for ＋Add (UI thread only): true from the moment a ＋Add is accepted until its
+        // flow (incl. the modal FieldForm) completes. Blocks re-entrant adds AND the auto-refresh tick.
+        private volatile bool _addVarInProgress;
+
+        /// <summary>
+        /// After a "＋ Add" commits a variable through Clarion's FieldForm, re-export the whole-app .txa and
+        /// re-render — on LATER UI turns (Clarion finalizes the new field a turn after the modal closes, so an
+        /// immediate export misses it). Two passes (short + longer) absorb settle time on larger apps. Coalesces:
+        /// any pending passes from a prior add are cancelled first, so rapid adds don't stack exports.
+        /// </summary>
+        private void ScheduleAddRefresh()
+        {
+            ClearAddRefreshTimers();
+            DeferRefresh(500);
+            DeferRefresh(1500);
+        }
+
+        private void ClearAddRefreshTimers()
+        {
+            foreach (var t in _addRefreshTimers) { try { t.Stop(); t.Dispose(); } catch { } }
+            _addRefreshTimers.Clear();
+        }
+
+        private void DeferRefresh(int ms)
+        {
+            var t = new Timer { Interval = ms };
+            t.Tick += (s, e) =>
+            {
+                try { t.Stop(); _addRefreshTimers.Remove(t); t.Dispose(); } catch { }
+                if (_panel == null || _panel.IsDisposed) return;   // pad torn down — don't touch the IDE
+                try { Terminal.ModernEmbeditorViewContent.RefreshPadSources(); } catch { }
+                Refresh();
+            };
+            _addRefreshTimers.Add(t);
+            t.Start();
         }
 
         // The floating native settings window (null when closed). Reused/activated if already open.
@@ -349,6 +446,7 @@ namespace ClarionAssistant
         private void OnAutoRefreshTick(object sender, EventArgs e)
         {
             if (Services.ModernEmbeditorLauncher.IsBusy) return;  // never touch the IDE mid open/save
+            if (_addVarInProgress) return;  // never run a .txa export while Clarion's add-variable modal is open
             string proc;
             bool isNative = false;
             try
@@ -387,6 +485,7 @@ namespace ClarionAssistant
 
         public override void Dispose()
         {
+            ClearAddRefreshTimers();
             if (_settingsWindow != null && !_settingsWindow.IsDisposed) { try { _settingsWindow.Close(); } catch { } _settingsWindow = null; }
             if (_autoTimer != null) { _autoTimer.Stop(); _autoTimer.Dispose(); _autoTimer = null; }
             if (_webView != null) { _webView.Dispose(); _webView = null; }
