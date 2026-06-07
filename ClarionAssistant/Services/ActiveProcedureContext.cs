@@ -110,6 +110,24 @@ namespace ClarionAssistant.Services
                     gotoRoutine: name => mv.GotoRoutine(name));
             }
 
+            // 3. No embeditor focused — fall back to the APP-TREE SELECTION (populate-only). FOCUS-WINS: this is
+            // reached only after the focused native/Modern checks above fail. The selected proc name comes from
+            // the app ViewContent's FileSchema (pointer-free, updates live on single-click, no embeditor open).
+            // Data is built off the whole-app .txa (sourceText="" → .txa path for locals/globals/tables). insert
+            // and goto are no-ops because there is no focused editor surface to paste into / navigate. Variable
+            // add/edit/delete still work: they drive Clarion's own FileSchemaTree on the docked Data pad (which
+            // tracks the SAME app-tree selection), and FileSchemaVariableInserter fails closed on a procedure
+            // mismatch, so a tree-selected procedure's variables can be edited without opening its embeditor.
+            string selProc = appTree.GetAppTreeSelectedProcedureName();
+            if (!string.IsNullOrEmpty(selProc))
+            {
+                string proc = selProc;
+                return new ActiveProcedureContext(proc, false,
+                    getPadData: () => ModernEmbeditorViewContent.BuildPadData(proc, ""),
+                    insert: _ => { },
+                    gotoRoutine: _ => { });
+            }
+
             return null;
         }
 
@@ -118,16 +136,22 @@ namespace ClarionAssistant.Services
         /// procedure name (native preferred, then Modern) and whether it's native, WITHOUT snapshotting the
         /// buffer. Resolve() does the heavier full build only when an actual change is detected.
         /// </summary>
-        public static string PeekActiveProcedure(out bool isNative)
+        public static string PeekActiveProcedure(out bool isNative, out bool isSelection)
         {
             isNative = false;
+            isSelection = false;
             try
             {
-                string nativeProc = new AppTreeService().GetFocusedNativeEmbeditorProcName();
+                var appTree = new AppTreeService();
+                string nativeProc = appTree.GetFocusedNativeEmbeditorProcName();
                 if (!string.IsNullOrEmpty(nativeProc)) { isNative = true; return nativeProc; }
 
                 var mv = ModernEmbeditorViewContent.FocusedModernView();
                 if (mv != null && !string.IsNullOrEmpty(mv.ProcedureName)) return mv.ProcedureName;
+
+                // No embeditor focused → app-tree SELECTION (populate-only; FOCUS-WINS handled by the checks above).
+                string selProc = appTree.GetAppTreeSelectedProcedureName();
+                if (!string.IsNullOrEmpty(selProc)) { isSelection = true; return selProc; }
             }
             catch { }
             return null;

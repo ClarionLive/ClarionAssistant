@@ -454,6 +454,7 @@ namespace ClarionAssistant
         // Modern "Foo" to native "Foo" (same name, different editor) must still refresh, or _renderCtx would stay
         // bound to the previous editor and insert/goto would target it.
         private bool _lastShownNative;
+        private bool _lastShownSelection;    // last shown proc came from app-tree selection, not a focused editor
         private string _lastShownProc = " "; // sentinel so the first tick always refreshes
 
         /// <summary>
@@ -474,33 +475,37 @@ namespace ClarionAssistant
             if (Services.ModernEmbeditorLauncher.IsBusy) return;  // never touch the IDE mid open/save
             if (_varCrudInProgress) return;  // never run a .txa export while Clarion's add/edit/delete modal is open
             string proc;
-            bool isNative = false;
+            bool isNative = false, isSelection = false;
             try
             {
                 // Lightweight peek (native embeditor preferred, else Modern view) — no buffer snapshot per tick.
                 // This is the pad's "active-document-changed" detector; we poll on a timer rather than subscribe
                 // to workbench events because the event approach re-entered the native close and deadlocked.
-                proc = Services.ActiveProcedureContext.PeekActiveProcedure(out isNative);
+                proc = Services.ActiveProcedureContext.PeekActiveProcedure(out isNative, out isSelection);
             }
             catch { return; }
             // Refresh when the active procedure OR its editor kind changed (or it went away). Keying on kind too
             // catches a Modern->native (or native->Modern) switch at the same procedure name.
-            if (!string.Equals(proc, _lastShownProc, StringComparison.OrdinalIgnoreCase) || isNative != _lastShownNative)
+            if (!string.Equals(proc, _lastShownProc, StringComparison.OrdinalIgnoreCase) || isNative != _lastShownNative || isSelection != _lastShownSelection)
             {
                 _lastShownProc = proc;
                 _lastShownNative = isNative;
+                _lastShownSelection = isSelection;
                 // Switching to a NATIVE procedure: refresh the whole-app .txa + live-dict snapshot first. The
                 // native path has no open/save hook to populate them, so without this a native-only session would
                 // show empty Local/Global/Tables data. (Modern proc-switches reuse the cache the open/save hooks
                 // already maintain.) RefreshPadSources is UI-thread + best-effort (keeps the prior cache on error).
-                if (isNative && !string.IsNullOrEmpty(proc) && !_nativeSourcesRefreshing)
+                // App-tree SELECTION has the same gap (no open/save hook), so it also needs the caches loaded —
+                // but only ONCE: the whole-app .txa carries every proc, so EnsurePadSourcesLoaded exports on the
+                // first selection and reuses the cache on subsequent clicks (no per-click full export).
+                if ((isNative || isSelection) && !string.IsNullOrEmpty(proc) && !_nativeSourcesRefreshing)
                 {
                     // Re-entrancy guard: RefreshPadSources runs a silent whole-app .txa export on the UI thread;
                     // if it pumps messages, a re-entrant timer tick must not stack a second export. (Only fires on
                     // proc CHANGE, so it's already debounced to native-activation events, not every 750ms tick.)
                     _nativeSourcesRefreshing = true;
-                    try { Terminal.ModernEmbeditorViewContent.RefreshPadSources(); }
-                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] native RefreshPadSources: " + ex.Message); }
+                    try { if (isNative) Terminal.ModernEmbeditorViewContent.RefreshPadSources(); else Terminal.ModernEmbeditorViewContent.EnsurePadSourcesLoaded(); }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] pad sources refresh: " + ex.Message); }
                     finally { _nativeSourcesRefreshing = false; }
                 }
                 Refresh();

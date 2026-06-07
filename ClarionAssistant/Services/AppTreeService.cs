@@ -224,6 +224,88 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// The procedure currently SELECTED in the app tree (single left-click), read from the app
+        /// ViewContent's FileSchema provider — the same managed surface that drives Clarion's own
+        /// "Data / Tables" pad. Updates live on selection change with NO embeditor open. Pure managed
+        /// reflection (never reinterprets native pointers). Returns null when no .app view is present
+        /// or nothing is selected.
+        ///
+        /// FOCUS-AGNOSTIC by design: returns the tree selection regardless of which tab is focused.
+        /// The Data pad enforces FOCUS-WINS precedence by checking the focused embeditor FIRST
+        /// (ActiveProcedureContext.PeekActiveProcedure) and only falling back to this when none is.
+        /// FileSchema.ProcedureName is the generated-module proc name and matches App.ProcedureNames.
+        /// </summary>
+        public string GetAppTreeSelectedProcedureName()
+        {
+            try
+            {
+                // MULTI-APP AMBIGUITY GUARD (fail-closed): selection lookup AND the pad's .txa/dict caches all
+                // resolve "the app" via FindAppViewContent, which is unambiguous only with exactly ONE app open.
+                // FindAppViewContent must stay loose (it has to find the app view even while an embeditor is the
+                // active document — the native/Modern paths depend on that), so with 2+ apps open and no embeditor
+                // focused it could bind the wrong app and the pad would show plausible-but-WRONG data. Rather than
+                // guess, fail closed: return null so the pad shows nothing in selection mode while multiple apps
+                // are open. Focus mode (open the procedure in an embeditor) is per-editor and stays unambiguous,
+                // so multi-app users still get pad data by opening the procedure.
+                if (CountOpenAppViews() != 1) return null;
+                var vc = FindAppViewContent();               // ApplicationMainWindowControl_ViewContent — has .App and .FileSchema
+                if (vc == null) return null;
+                var fileSchema = GetProp(vc, "FileSchema");  // SoftVelocity.DataDictionary.Schema.FileSchema, repopulated on selection
+                if (fileSchema == null) return null;
+                var name = GetProp(fileSchema, "ProcedureName") as string;
+                return string.IsNullOrWhiteSpace(name) ? null : name.Trim();
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Number of DISTINCT open application (.app) views in the workbench. Used by the Data pad's app-tree
+        /// SELECTION path to detect ambiguity: with more than one app open, the loose FindAppViewContent resolver
+        /// can't tell which app a tree selection belongs to, so the selection path fails closed. Counts distinct
+        /// App objects across the same workbench collections FindAppViewContent searches. Pure managed reflection.
+        /// </summary>
+        public int CountOpenAppViews()
+        {
+            var apps = new HashSet<object>();
+            try
+            {
+                var workbench = WorkbenchSingleton.Workbench;
+                if (workbench == null) return 0;
+
+                Func<object, object> appFrom = obj =>
+                {
+                    if (obj == null) return null;
+                    var a = GetProp(obj, "App");
+                    if (a != null) return a;
+                    var vc = GetProp(obj, "ViewContent") ?? GetProp(obj, "ActiveViewContent");
+                    return vc != null ? GetProp(vc, "App") : null;
+                };
+
+                // UNION across ALL collections (do NOT break on the first non-empty one): a single collection can
+                // expose only a subset of open apps (the workbench properties are alternate heuristics, not one
+                // canonical list). Undercounting here would let the guard read "1" while 2 apps are open and
+                // re-enable ambiguous binding — the exact failure this guard prevents. The HashSet dedups the same
+                // App object appearing across multiple collections (App is a reference-stable model object), so the
+                // union counts DISTINCT apps. Strictly more conservative than first-collection-wins (fails closed
+                // more readily), which is the safe direction for an ambiguity guard.
+                string[] collNames = { "WorkbenchWindowCollection", "ViewContentCollection",
+                                       "PrimaryViewContents", "Windows" };
+                foreach (var cn in collNames)
+                {
+                    var coll = GetProp(workbench, cn) as System.Collections.IEnumerable;
+                    if (coll == null) continue;
+                    foreach (var item in coll)
+                    {
+                        var app = appFrom(item);
+                        if (app != null) apps.Add(app);
+                    }
+                }
+            }
+            catch { }
+            return apps.Count;
+        }
+
+        /// <summary>
         /// Get detailed info about procedures in the app (name, type, prototype, module).
         /// </summary>
         public List<Dictionary<string, object>> GetProcedureDetails()

@@ -222,6 +222,82 @@ namespace ClarionAssistant.Terminal
             catch { /* keep prior dict cache; GetOtherFiles falls back to the .dcv */ }
         }
 
+        // Identity (.app file path) of the app the pad-source caches were last loaded FOR, via the SELECTION
+        // path. The caches (_wholeAppTxa/_liveTables) are process-wide static and BuildPadData consumes them by
+        // procedure name only — so switching .app must force a re-export, otherwise a same-named proc in the new
+        // app would render the previous app's Local/Global/Tables data. Guarded by _txaLock.
+        private static string _padSourcesAppKey;
+
+        /// <summary>
+        /// Ensure the pad's IDE-sourced caches (whole-app .txa + live dict snapshot) are loaded for the CURRENT
+        /// app, re-exporting only when (a) nothing is cached yet, or (b) the active .app changed since the last
+        /// selection load. The whole-app .txa carries EVERY procedure, so within one app a selection switch to
+        /// any proc reads straight from cache — no per-click export. Used by the app-tree SELECTION path, which
+        /// has no open/save hook to populate the caches. UI thread (delegates to RefreshPadSources).
+        ///
+        /// "Loaded" is keyed on the .txa being present + the app identity — NOT on dictionary non-emptiness: a
+        /// dictionary-less app legitimately yields an empty _liveTables, and gating on that would re-export the
+        /// whole app on every single click (a multi-second UI stall). The dictionary, when present, is loaded as
+        /// a side effect of the same RefreshPadSources call.
+        /// </summary>
+        public static void EnsurePadSourcesLoaded()
+        {
+            string appKey = TryGetCurrentAppKey();
+            bool appChanged, needLoad;
+            lock (_txaLock)
+            {
+                appChanged = !string.Equals(_padSourcesAppKey, appKey, StringComparison.OrdinalIgnoreCase);
+                needLoad = string.IsNullOrEmpty(_wholeAppTxa) || appChanged;
+            }
+            if (!needLoad) return;
+
+            // APP SWITCH: drop the prior app's caches BEFORE refreshing so a failed OR empty refresh can never
+            // serve the previous app's .txa or dictionary tables under the new app's procedure names (cross-app
+            // isolation). RefreshPadSources is best-effort (keeps prior cache on error) and only overwrites
+            // _liveTables when the dict read returns >0 rows — so without this clear, a failed export or a
+            // dictionary-less new app would leave stale data behind. Within the SAME app we keep the prior cache
+            // (no clear) so a transient export hiccup falls back gracefully.
+            if (appChanged)
+            {
+                lock (_txaLock) { _wholeAppTxa = null; }
+                lock (_liveLock) { _liveTables = null; }
+            }
+
+            RefreshPadSources();
+
+            // Commit the app key ONLY when the .txa actually loaded for this app. If the export failed (txa still
+            // empty), leave the key stale so the next tick retries — and since we cleared the caches above on an
+            // app change, BuildPadData has no prior-app data to fall back on (it shows empty, not wrong-app data).
+            //
+            // FRESHNESS CONTRACT (selection/populate-only mode): the whole-app .txa + dict snapshot are exported
+            // ONCE per app and reused across selection clicks. They are kept fresh by the existing open/save hooks,
+            // native proc-change refresh, and the pad's own variable add/edit/delete (ScheduleAddRefresh). Edits
+            // made through OTHER IDE surfaces (e.g. Clarion's native dictionary editor) while ONLY browsing tree
+            // selections are not reflected until one of those events fires — an accepted trade-off for a read-only
+            // quick-view that avoids a multi-second whole-app export on every click.
+            lock (_txaLock) { _padSourcesAppKey = string.IsNullOrEmpty(_wholeAppTxa) ? null : appKey; }
+        }
+
+        // Current open .app identity (file path, else name) via pure managed reflection; null when no app open.
+        private static string TryGetCurrentAppKey()
+        {
+            try
+            {
+                var info = new AppTreeService().GetAppInfo();
+                if (info != null)
+                {
+                    object fn;
+                    if (info.TryGetValue("fileName", out fn) && fn != null && !string.IsNullOrEmpty(fn.ToString()))
+                        return fn.ToString();
+                    object nm;
+                    if (info.TryGetValue("name", out nm) && nm != null && !string.IsNullOrEmpty(nm.ToString()))
+                        return nm.ToString();
+                }
+            }
+            catch { }
+            return null;
+        }
+
         // Parsed dictionary (.dcv) tables, cached by path + mtime so we re-parse only when Clarion's
         // Auto Export/Import rewrites the .dcv. Parsing is pure file I/O + XML (safe on the bg thread).
         private static readonly object _dcvLock = new object();
