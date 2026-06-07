@@ -181,6 +181,10 @@ namespace ClarionAssistant
                     // FieldForm is modal) and we move focus to the main IDE first — same re-entrancy/native-focus
                     // rule as 'open'/'refresh'. Scope = "local" (current procedure) | "global".
                     string scope = ExtractJsonValue(json, "scope");
+                    // The procedure the WebView actually had ON SCREEN at click time (the JS sends what it last
+                    // rendered). We validate the Local add against THIS — not the host's _renderCtx, which flips to
+                    // a new procedure a tick before the WebView visibly renders it, leaving a sub-render-tick race.
+                    string clickedProc = ExtractJsonValue(json, "procedure");
                     // Single-flight: ignore a re-entrant ＋Add while one is already running. The same flag also
                     // suppresses the 750ms auto-tick while Clarion's modal FieldForm is open (see OnAutoRefreshTick)
                     // so a background .txa export can't churn the FileSchema tree the modal is editing.
@@ -199,13 +203,11 @@ namespace ClarionAssistant
                                 }
                                 catch { }
 
-                                // Pass the procedure bound to the data CURRENTLY RENDERED in the pad (_renderCtx is
-                                // committed together with the displayed payload) — NOT the timer-peek _lastShownProc,
-                                // which can momentarily lead the rendered view during a switch. A LOCAL add fails
-                                // closed when this is empty or when the native tree is on a different procedure.
-                                var rc = _renderCtx;
-                                string renderedProc = rc != null ? rc.ProcedureName : null;
-                                try { r = Services.FileSchemaVariableInserter.AddVariable(scope, renderedProc); }
+                                // A LOCAL add is validated against the on-screen procedure the JS reported
+                                // (clickedProc): if a rapid proc switch is mid-render, clickedProc still reflects
+                                // what the user saw, and the inserter fails closed when the native tree is on a
+                                // different procedure (or when clickedProc is empty — no rendered procedure).
+                                try { r = Services.FileSchemaVariableInserter.AddVariable(scope, clickedProc); }
                                 catch (Exception ex) { r = Services.FileSchemaVariableInserter.Result.Fail(ex.Message); }
 
                                 // On failure, tell the developer why nothing happened (pad closed, read-only,

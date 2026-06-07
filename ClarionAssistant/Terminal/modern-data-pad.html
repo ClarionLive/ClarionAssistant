@@ -229,6 +229,7 @@
     var moduleData = [];
     var globals = [];
     var procedures = [];
+    var renderedProcedure = '';  // the procedure the current payload is for — sent with ＋Add so the host validates against the on-screen procedure
     var selectedProc = null;   // Procedures section: the row the user single-clicked (header "Open" target)
     var collapsed = {};        // tableName -> true when a table's columns are collapsed
     var sectionCollapsed = {}; // section key -> true when a whole section is collapsed
@@ -660,7 +661,7 @@
             return [{
                 label: '＋ Add',
                 title: 'Add a ' + scope + ' variable (opens Clarion’s field form)',
-                onClick: function () { postToHost({ action: 'addVariable', scope: scope }); }
+                onClick: function () { postToHost({ action: 'addVariable', scope: scope, procedure: renderedProcedure }); }
             }];
         }
 
@@ -1270,6 +1271,9 @@
                 // (text + occurrence), so a stale key could silently point at a DIFFERENT row after a
                 // refresh/data change — clear it rather than risk inserting the wrong field.
                 selSet = {}; lastSel = null;
+                // The procedure this payload is for — sent back with a ＋Add click so the host validates the add
+                // against what's actually ON SCREEN now (avoids a wrong-procedure add during a rapid proc switch).
+                renderedProcedure = msg.procedure || '';
                 document.getElementById('title').textContent = msg.title || 'Data';
                 var byName = function (a, b) { return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase()); };
                 locals = (msg.locals || []).slice(); // declaration order — matches Clarion's native Data pad; do NOT sort
