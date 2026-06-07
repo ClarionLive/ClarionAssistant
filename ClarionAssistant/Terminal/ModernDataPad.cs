@@ -199,9 +199,13 @@ namespace ClarionAssistant
                                 }
                                 catch { }
 
-                                // Pass the procedure our pad is currently showing so a LOCAL add fails closed if
-                                // the native Data/Tables tree is on a different procedure (wrong-procedure guard).
-                                try { r = Services.FileSchemaVariableInserter.AddVariable(scope, _lastShownProc); }
+                                // Pass the procedure bound to the data CURRENTLY RENDERED in the pad (_renderCtx is
+                                // committed together with the displayed payload) — NOT the timer-peek _lastShownProc,
+                                // which can momentarily lead the rendered view during a switch. A LOCAL add fails
+                                // closed when this is empty or when the native tree is on a different procedure.
+                                var rc = _renderCtx;
+                                string renderedProc = rc != null ? rc.ProcedureName : null;
+                                try { r = Services.FileSchemaVariableInserter.AddVariable(scope, renderedProc); }
                                 catch (Exception ex) { r = Services.FileSchemaVariableInserter.Result.Fail(ex.Message); }
 
                                 // On failure, tell the developer why nothing happened (pad closed, read-only,

@@ -68,9 +68,13 @@ namespace ClarionAssistant.Services
 
                 // FAIL CLOSED on procedure mismatch for LOCAL: the native tree's Local Data node belongs to one
                 // procedure, which may differ from the one our pad is showing (native + Modern focus diverge).
-                // Adding blindly would land the variable in the WRONG procedure with no warning.
-                if (wantLocal && !string.IsNullOrEmpty(expectedProcedure))
+                // Adding blindly would land the variable in the WRONG procedure with no warning. We also fail
+                // closed when the caller can't tell us which procedure it's showing (empty expectedProcedure) —
+                // without that anchor we can't prove the target, so refuse rather than risk a wrong-procedure add.
+                if (wantLocal)
                 {
+                    if (string.IsNullOrEmpty(expectedProcedure))
+                        return Result.Fail("No active procedure to add a Local variable to — open or focus a procedure first.");
                     string nodeProc = LocalNodeProcedure(node);
                     if (!string.Equals(nodeProc, expectedProcedure, StringComparison.OrdinalIgnoreCase))
                         return Result.Fail("Clarion's Data pad is showing Local Data for '" + (nodeProc ?? "?")
@@ -210,17 +214,18 @@ namespace ClarionAssistant.Services
             return (GetProp(node, "Children") as IEnumerable) ?? (GetProp(node, "Nodes") as IEnumerable) ?? new object[0];
         }
 
-        // A Local Data node's Tag carries Label = "Local Data &lt;procedure&gt;". Extract &lt;procedure&gt; so the
-        // caller can confirm the native tree is showing the same procedure our pad is.
+        // A Local Data node's Tag carries Label = "Local Data &lt;procedure&gt;" (English; the leading text is a
+        // localizable caption). Clarion procedure names are single-token identifiers with no spaces and Clarion
+        // appends the name last, so we take the TRAILING whitespace-delimited token as the procedure — robust to
+        // a different/localized caption rather than depending on the exact English "Local Data " prefix. The
+        // caller compares this to the rendered procedure and fails closed on mismatch, so a parse miss is safe.
         private static string LocalNodeProcedure(object node)
         {
             var tag = GetProp(node, "Tag");
             var label = GetProp(tag, "Label")?.ToString();
             if (string.IsNullOrEmpty(label)) return null;
-            const string prefix = "Local Data ";
-            return label.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
-                ? label.Substring(prefix.Length).Trim()
-                : label.Trim();
+            var parts = label.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            return parts.Length == 0 ? null : parts[parts.Length - 1];
         }
 
         private static ToolStripItem FindAddMenuItem(object tree)
