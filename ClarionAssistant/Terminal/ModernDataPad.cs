@@ -175,59 +175,34 @@ namespace ClarionAssistant
                 }
                 else if (action == "addVariable")
                 {
-                    // "＋ Add" on the Local/Global section: drive Clarion's OWN add-variable flow on the native
-                    // Data/Tables pad (managed FileSchemaTree → AddItemEventHandler → FieldForm). Clarion enters
-                    // + persists the variable; we just refresh. Deferred OUT of the WebView2 callback (the
-                    // FieldForm is modal) and we move focus to the main IDE first — same re-entrancy/native-focus
-                    // rule as 'open'/'refresh'. Scope = "local" (current procedure) | "global".
+                    // "＋ Add" on the Local/Global section: drive Clarion's OWN add-variable flow (managed
+                    // FileSchemaTree → AddItemEventHandler → FieldForm). Scope = "local" (current procedure) |
+                    // "global". 'procedure' is what the WebView had ON SCREEN at click time — a LOCAL op validates
+                    // against THIS (not _renderCtx, which flips a tick before the WebView visibly renders the
+                    // switch, leaving a sub-render-tick race); the inserter fails closed on a procedure mismatch.
                     string scope = ExtractJsonValue(json, "scope");
-                    // The procedure the WebView actually had ON SCREEN at click time (the JS sends what it last
-                    // rendered). We validate the Local add against THIS — not the host's _renderCtx, which flips to
-                    // a new procedure a tick before the WebView visibly renders it, leaving a sub-render-tick race.
                     string clickedProc = ExtractJsonValue(json, "procedure");
-                    // Single-flight: ignore a re-entrant ＋Add while one is already running. The same flag also
-                    // suppresses the 750ms auto-tick while Clarion's modal FieldForm is open (see OnAutoRefreshTick)
-                    // so a background .txa export can't churn the FileSchema tree the modal is editing.
-                    if (_panel != null && !_addVarInProgress)
-                    {
-                        _addVarInProgress = true;
-                        _panel.BeginInvoke((Action)(() =>
-                        {
-                            Services.FileSchemaVariableInserter.Result r = null;
-                            try
-                            {
-                                try
-                                {
-                                    var mainForm = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
-                                    if (mainForm != null) { mainForm.Activate(); Application.DoEvents(); }
-                                }
-                                catch { }
-
-                                // A LOCAL add is validated against the on-screen procedure the JS reported
-                                // (clickedProc): if a rapid proc switch is mid-render, clickedProc still reflects
-                                // what the user saw, and the inserter fails closed when the native tree is on a
-                                // different procedure (or when clickedProc is empty — no rendered procedure).
-                                try { r = Services.FileSchemaVariableInserter.AddVariable(scope, clickedProc); }
-                                catch (Exception ex) { r = Services.FileSchemaVariableInserter.Result.Fail(ex.Message); }
-
-                                // On failure, tell the developer why nothing happened (pad closed, read-only,
-                                // wrong-procedure, etc.). On success the FieldForm itself was the feedback.
-                                if (r != null && !r.Ok)
-                                {
-                                    try { MessageBox.Show(r.Message, "Add Variable", MessageBoxButtons.OK, MessageBoxIcon.Information); }
-                                    catch { }
-                                }
-                            }
-                            finally { _addVarInProgress = false; }
-
-                            // Re-export the whole-app .txa + re-parse so the newly-added var shows in our pad
-                            // without a manual Refresh — ONLY after a confirmed successful add (skip on
-                            // failure/cancel). Deferred because calling RefreshPadSources() synchronously right
-                            // after the modal unwinds exports a .txa that doesn't yet reflect the just-committed
-                            // field (Clarion finalizes it a turn later). Coalesced + lifecycle-tracked.
-                            if (r != null && r.Ok) ScheduleAddRefresh();
-                        }));
-                    }
+                    RunVariableCrud("Add Variable", () => Services.FileSchemaVariableInserter.AddVariable(scope, clickedProc));
+                }
+                else if (action == "editVariable")
+                {
+                    // ✎ on a Local/Global row: open Clarion's FieldForm for the named field. Clarion picks
+                    // editable (ChangeRecord) vs read-only (ViewRecord) by the field's DataStorageLocation.
+                    string scope = ExtractJsonValue(json, "scope");
+                    string name = ExtractJsonValue(json, "name");
+                    string clickedProc = ExtractJsonValue(json, "procedure");
+                    if (!string.IsNullOrEmpty(name))
+                        RunVariableCrud("Edit Variable", () => Services.FileSchemaVariableInserter.EditVariable(scope, name, clickedProc));
+                }
+                else if (action == "deleteVariable")
+                {
+                    // 🗑 on a Local/Global row: invoke Clarion's delete for the named field (Clarion pops its own
+                    // ConfirmDeletionForm / Yes-No, so no extra JS confirm).
+                    string scope = ExtractJsonValue(json, "scope");
+                    string name = ExtractJsonValue(json, "name");
+                    string clickedProc = ExtractJsonValue(json, "procedure");
+                    if (!string.IsNullOrEmpty(name))
+                        RunVariableCrud("Delete Variable", () => Services.FileSchemaVariableInserter.DeleteVariable(scope, name, clickedProc));
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] Message error: " + ex.Message); }
@@ -306,9 +281,51 @@ namespace ClarionAssistant
         // clicks coalesce (a new schedule drops the previous passes) instead of stacking whole-app exports.
         private readonly System.Collections.Generic.List<Timer> _addRefreshTimers = new System.Collections.Generic.List<Timer>();
 
-        // Single-flight guard for ＋Add (UI thread only): true from the moment a ＋Add is accepted until its
-        // flow (incl. the modal FieldForm) completes. Blocks re-entrant adds AND the auto-refresh tick.
-        private volatile bool _addVarInProgress;
+        // Single-flight guard for variable add/edit/delete (UI thread only): true from the moment a CRUD op is
+        // accepted until its flow (incl. the modal FieldForm / delete confirmation) completes. Blocks re-entrant
+        // ops AND the 750ms auto-refresh tick so a background .txa export can't churn the tree the modal is editing.
+        private volatile bool _varCrudInProgress;
+
+        /// <summary>
+        /// Run a Local/Global variable CRUD op (add / edit / delete) off the WebView2 message callback. All three
+        /// share the same machinery: single-flight (also suppresses the auto-tick so a .txa export can't churn the
+        /// tree mid-modal), defer onto the next UI turn (the FieldForm / delete-confirm is modal), move focus to the
+        /// main IDE first (a WebView2 holding focus can deadlock native modals — same rule as 'open'/'refresh'),
+        /// invoke the inserter, surface failures via MessageBox, and refresh our pad on success via ScheduleAddRefresh
+        /// (the deferred whole-app .txa re-export — Clarion finalizes the mutation a turn after the modal unwinds).
+        /// </summary>
+        private void RunVariableCrud(string title, Func<Services.FileSchemaVariableInserter.Result> op)
+        {
+            if (_panel == null || _varCrudInProgress) return;
+            _varCrudInProgress = true;
+            _panel.BeginInvoke((Action)(() =>
+            {
+                Services.FileSchemaVariableInserter.Result r = null;
+                try
+                {
+                    try
+                    {
+                        var mainForm = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
+                        if (mainForm != null) { mainForm.Activate(); Application.DoEvents(); }
+                    }
+                    catch { }
+
+                    try { r = op(); }
+                    catch (Exception ex) { r = Services.FileSchemaVariableInserter.Result.Fail(ex.Message); }
+
+                    // On failure tell the developer why nothing happened (pad closed, read-only, wrong-procedure,
+                    // not found, can't-delete). On success Clarion's own form/confirm was the feedback.
+                    if (r != null && !r.Ok)
+                    {
+                        try { MessageBox.Show(r.Message, title, MessageBoxButtons.OK, MessageBoxIcon.Information); }
+                        catch { }
+                    }
+                }
+                finally { _varCrudInProgress = false; }
+
+                if (r != null && r.Ok) ScheduleAddRefresh();
+            }));
+        }
 
         /// <summary>
         /// After a "＋ Add" commits a variable through Clarion's FieldForm, re-export the whole-app .txa and
@@ -446,7 +463,7 @@ namespace ClarionAssistant
         private void OnAutoRefreshTick(object sender, EventArgs e)
         {
             if (Services.ModernEmbeditorLauncher.IsBusy) return;  // never touch the IDE mid open/save
-            if (_addVarInProgress) return;  // never run a .txa export while Clarion's add-variable modal is open
+            if (_varCrudInProgress) return;  // never run a .txa export while Clarion's add-variable modal is open
             string proc;
             bool isNative = false;
             try

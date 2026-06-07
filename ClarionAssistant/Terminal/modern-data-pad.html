@@ -34,6 +34,10 @@
     .row.trow .type { font-size: 10px; color: #5a5a5a; margin-left: 0; white-space: nowrap; padding-right: 20px; }
     .row.trow .picture { font-size: 10px; color: #0a7d3a; font-family: Consolas, 'Courier New', monospace;
         min-width: 0; text-align: left; white-space: nowrap; }
+    /* Per-row edit/delete actions for Local/Global variables. visibility (not display) reserves the space so
+       the max-content name column doesn't reflow on hover; the buttons are only revealed when the row is hovered. */
+    .row.trow .acts { display: inline-flex; gap: 2px; margin-left: 6px; visibility: hidden; }
+    .row.trow:hover .acts { visibility: visible; }
     /* Same left-aligned columns for the Other Files / Declared Tables COLUMN lists. The gutter (twisty +
        "+" detail toggle) lives inside the name cell so cols 2/3 stay aligned; detail panels span all tracks. */
     .fgrid { display: grid; grid-template-columns: max-content max-content 1fr; }
@@ -1028,6 +1032,8 @@
         // ----- Tree scope: declaration order, QUEUE/GROUP expandable to nested members, picture column.
         //       Used by both Local Data and Global Data (the .txa gives both the same shape). -----
         function treeSection(key, label, items) {
+            // Scope for this section's per-row edit/delete actions (Local Data -> local, Global Data -> global).
+            var rowScope = (key === 'locals') ? 'local' : 'global';
             var esc = function (s) {
                 return (s == null ? '' : String(s)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             };
@@ -1087,6 +1093,29 @@
                     var nm = document.createElement('span');
                     nm.className = 'name'; nm.textContent = it.name;
                     namecell.appendChild(nm);
+
+                    // Per-row edit/delete (hover-revealed). The host drives Clarion's own FieldForm / delete
+                    // confirmation; for Local scope it validates against the on-screen procedure (renderedProcedure).
+                    if (it.name) {
+                        var acts = document.createElement('span');
+                        acts.className = 'acts';
+                        var edBtn = document.createElement('span');
+                        edBtn.className = 'act'; edBtn.textContent = '✎';
+                        edBtn.title = 'Edit ' + it.name + ' (opens Clarion’s field form)';
+                        edBtn.addEventListener('click', function (e) {
+                            e.stopPropagation();
+                            postToHost({ action: 'editVariable', scope: rowScope, name: it.name, procedure: renderedProcedure });
+                        });
+                        var delBtn = document.createElement('span');
+                        delBtn.className = 'act'; delBtn.textContent = '🗑';
+                        delBtn.title = 'Delete ' + it.name;
+                        delBtn.addEventListener('click', function (e) {
+                            e.stopPropagation();
+                            postToHost({ action: 'deleteVariable', scope: rowScope, name: it.name, procedure: renderedProcedure });
+                        });
+                        acts.appendChild(edBtn); acts.appendChild(delBtn);
+                        namecell.appendChild(acts);
+                    }
                     row.appendChild(namecell);
 
                     // Column 2: type. Column 3: picture (empty cell keeps the 3-track grid consistent).
