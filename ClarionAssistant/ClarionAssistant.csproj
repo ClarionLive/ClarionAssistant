@@ -92,7 +92,6 @@
     <Compile Include="Services\McpJsonRpc.cs" />
     <Compile Include="Services\McpToolRegistry.cs" />
     <Compile Include="Services\NativeProbeService.cs" />
-    <Compile Include="Services\FileSchemaProbeService.cs" />
     <Compile Include="Services\FileSchemaVariableInserter.cs" />
     <Compile Include="Services\RightClickHookService.cs" />
     <Compile Include="Services\ShutdownService.cs" />

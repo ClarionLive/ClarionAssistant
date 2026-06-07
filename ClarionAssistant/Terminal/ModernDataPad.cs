@@ -78,6 +78,11 @@ namespace ClarionAssistant
         {
             try
             {
+                // Trust boundary: only honor messages from our OWN bundled page. If the WebView is ever navigated
+                // to other content (or a message is posted from an unexpected source), ignore it — this gates the
+                // mutating actions (add/edit/deleteVariable) so a hijacked document can't drive live IDE edits.
+                if (!IsTrustedSource(e.Source)) return;
+
                 string json = e.TryGetWebMessageAsString();
                 string action = ExtractJsonValue(json, "action");
                 if (action == "ready")
@@ -186,23 +191,24 @@ namespace ClarionAssistant
                 }
                 else if (action == "editVariable")
                 {
-                    // ✎ on a Local/Global row: open Clarion's FieldForm for the named field. Clarion picks
-                    // editable (ChangeRecord) vs read-only (ViewRecord) by the field's DataStorageLocation.
+                    // ✎ on a Local/Global row: open Clarion's FieldForm for the field at this structural path.
+                    // Clarion picks editable (ChangeRecord) vs read-only (ViewRecord) by the field's
+                    // DataStorageLocation. 'path' (Group/Member) resolves nested members unambiguously.
                     string scope = ExtractJsonValue(json, "scope");
-                    string name = ExtractJsonValue(json, "name");
+                    string path = ExtractJsonValue(json, "path");
                     string clickedProc = ExtractJsonValue(json, "procedure");
-                    if (!string.IsNullOrEmpty(name))
-                        RunVariableCrud("Edit Variable", () => Services.FileSchemaVariableInserter.EditVariable(scope, name, clickedProc));
+                    if (!string.IsNullOrEmpty(path))
+                        RunVariableCrud("Edit Variable", () => Services.FileSchemaVariableInserter.EditVariable(scope, path, clickedProc));
                 }
                 else if (action == "deleteVariable")
                 {
-                    // 🗑 on a Local/Global row: invoke Clarion's delete for the named field (Clarion pops its own
-                    // ConfirmDeletionForm / Yes-No, so no extra JS confirm).
+                    // 🗑 on a Local/Global row: invoke Clarion's delete for the field at this structural path
+                    // (Clarion pops its own ConfirmDeletionForm / Yes-No, so no extra JS confirm).
                     string scope = ExtractJsonValue(json, "scope");
-                    string name = ExtractJsonValue(json, "name");
+                    string path = ExtractJsonValue(json, "path");
                     string clickedProc = ExtractJsonValue(json, "procedure");
-                    if (!string.IsNullOrEmpty(name))
-                        RunVariableCrud("Delete Variable", () => Services.FileSchemaVariableInserter.DeleteVariable(scope, name, clickedProc));
+                    if (!string.IsNullOrEmpty(path))
+                        RunVariableCrud("Delete Variable", () => Services.FileSchemaVariableInserter.DeleteVariable(scope, path, clickedProc));
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] Message error: " + ex.Message); }
@@ -463,7 +469,7 @@ namespace ClarionAssistant
         private void OnAutoRefreshTick(object sender, EventArgs e)
         {
             if (Services.ModernEmbeditorLauncher.IsBusy) return;  // never touch the IDE mid open/save
-            if (_varCrudInProgress) return;  // never run a .txa export while Clarion's add-variable modal is open
+            if (_varCrudInProgress) return;  // never run a .txa export while Clarion's add/edit/delete modal is open
             string proc;
             bool isNative = false;
             try
@@ -515,6 +521,22 @@ namespace ClarionAssistant
             string dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
             string path = Path.Combine(dir, "Terminal", "modern-data-pad.html");
             return File.Exists(path) ? path : Path.Combine(dir, "modern-data-pad.html");
+        }
+
+        // True only when a WebView2 message came from our OWN bundled page (the file URI of GetHtmlPath, ignoring
+        // the ?v= cache-buster query). This is the trust gate for all host actions — especially the mutating
+        // add/edit/deleteVariable — so a document hijack / unexpected navigation can't drive live IDE edits.
+        private static bool IsTrustedSource(string source)
+        {
+            if (string.IsNullOrEmpty(source)) return false;
+            try
+            {
+                string expected = new Uri(GetHtmlPath()).AbsoluteUri;   // file:///.../modern-data-pad.html
+                int q = source.IndexOf('?');
+                string src = q >= 0 ? source.Substring(0, q) : source;
+                return string.Equals(src, expected, StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
         }
 
         private static string ExtractJsonValue(string json, string key)

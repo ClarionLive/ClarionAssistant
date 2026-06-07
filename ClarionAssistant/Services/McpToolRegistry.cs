@@ -503,20 +503,10 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                         case "probe_popup_arm":        return NativeProbeService.PopupArm();
                         case "probe_popup_arm_inject": return NativeProbeService.PopupArmInject();
                         case "probe_popup_report":     return NativeProbeService.PopupReport();
-                        // --- SPIKE (ticket 0aa0ec42, edit/delete variable CRUD) — gated, backed-up app only ---
-                        case "probe_fileschema_resolve": return FileSchemaProbeService.Resolve();
                         default:
                             // probe_mark[:label] — Tier-0 trace separator between right-clicks (ticket 4b82f1de).
                             if (command.StartsWith("probe_mark"))
                                 return NativeProbeService.PopupMark(command.Length > 11 && command[10] == ':' ? command.Substring(11) : "");
-                            // probe_fileschema_edit:<scope>:<FieldName> — GATED: select the named field, invoke
-                            // tree.ShowCurrentItem(false) so Clarion's FieldForm pops (ChangeRecord/ViewRecord).
-                            if (command.StartsWith("probe_fileschema_edit", StringComparison.OrdinalIgnoreCase))
-                                return FileSchemaProbeService.EditField(command.Contains(":") ? command.Substring(command.IndexOf(':') + 1) : "");
-                            // probe_fileschema_delete:<scope>:<FieldName> — GATED: select the named field, invoke
-                            // tree.Delete() so Clarion's delete confirmation pops, then removes the field.
-                            if (command.StartsWith("probe_fileschema_delete", StringComparison.OrdinalIgnoreCase))
-                                return FileSchemaProbeService.DeleteField(command.Contains(":") ? command.Substring(command.IndexOf(':') + 1) : "");
                             if (command.StartsWith("path:"))
                                 return IdeReflectionService.InspectPath(command.Substring(5));
                             return "Unknown command: " + command + ". Use: active_view, editor_text, all_windows, all_pads, app_details, embed_details, path:<dotpath>, types, assemblies";

@@ -144,12 +144,15 @@ namespace ClarionAssistant.Services
         /// the passupItemChosen guard so it always opens the form rather than navigating. Mutation only - the caller
         /// (Modern Data pad) refreshes via ScheduleAddRefresh, exactly like Add. UI thread (FieldForm is modal).
         /// </summary>
-        public static Result EditVariable(string scope, string name, string expectedProcedure = null)
+        /// <param name="path">Structural path to the field through the scope's FieldList ("/"-delimited:
+        /// "Member" for a top-level var, "Group/Member" for a nested one). Resolved unambiguously by descending
+        /// one container per segment (sibling names are unique); fails closed on a zero/ambiguous match.</param>
+        public static Result EditVariable(string scope, string path, string expectedProcedure = null)
         {
             try
             {
                 object tree, ddField; Result error;
-                if (!ResolveTargetField(scope, name, expectedProcedure, out tree, out ddField, out error)) return error;
+                if (!ResolveTargetField(scope, path, expectedProcedure, out tree, out ddField, out error)) return error;
 
                 // tree.ShowCurrentItem(ddField, indirect:true): 2 params, 2nd bool, 1st accepts the DDField.
                 var show = FindMethodArgs(tree, "ShowCurrentItem",
@@ -157,7 +160,7 @@ namespace ClarionAssistant.Services
                 if (show == null) return Result.Fail("Couldn't find Clarion's edit-field command.");
 
                 show.Invoke(tree, new object[] { ddField, true });   // modal FieldForm; Clarion persists on OK
-                return Result.Done("Opened " + name + " for editing.");
+                return Result.Done("Opened " + LeafName(path) + " for editing.");
             }
             catch (Exception ex)
             {
@@ -173,32 +176,39 @@ namespace ClarionAssistant.Services
         /// ddField and refuse on mismatch, so a wrong resolution can never delete the wrong field. Mutation only -
         /// the caller refreshes via ScheduleAddRefresh. UI thread (the confirm dialog is modal).
         /// </summary>
-        public static Result DeleteVariable(string scope, string name, string expectedProcedure = null)
+        /// <param name="path">Structural path to the field (see EditVariable) — resolved unambiguously, fail
+        /// closed on a zero/ambiguous match so a duplicate label inside a GROUP/QUEUE can't delete the wrong field.</param>
+        public static Result DeleteVariable(string scope, string path, string expectedProcedure = null)
         {
             try
             {
                 object tree, ddField; Result error;
-                if (!ResolveTargetField(scope, name, expectedProcedure, out tree, out ddField, out error)) return error;
+                if (!ResolveTargetField(scope, path, expectedProcedure, out tree, out ddField, out error)) return error;
 
                 // tree.GetDetails(DataDictionaryItem): the 1-arg overload that accepts the DDField (the other 1-arg
                 // overload takes a TreeNodeAdv, which a DDField is NOT an instance of).
                 var getDetails = FindMethodArgs(tree, "GetDetails",
                     p => p.Length == 1 && p[0].ParameterType.IsInstanceOfType(ddField));
-                if (getDetails == null) return Result.Fail("Couldn't resolve the field editor context for " + name + ".");
+                if (getDetails == null) return Result.Fail("Couldn't resolve the field editor context for " + LeafName(path) + ".");
                 var details = getDetails.Invoke(tree, new object[] { ddField });
-                if (details == null) return Result.Fail("Couldn't resolve the field editor context for " + name + ".");
+                if (details == null) return Result.Fail("Couldn't resolve the field editor context for " + LeafName(path) + ".");
 
                 // HARD guard: only delete when the resolved details actually targets our field.
                 if (!ReferenceEquals(GetProp(details, "Item"), ddField))
-                    return Result.Fail("Internal mismatch resolving '" + name + "' - delete refused to avoid removing the wrong field.");
+                    return Result.Fail("Internal mismatch resolving '" + LeafName(path) + "' - delete refused to avoid removing the wrong field.");
                 if ((GetProp(details, "CanHaveDelete") as bool?) == false)
-                    return Result.Fail("'" + name + "' can't be deleted.");
+                    return Result.Fail("'" + LeafName(path) + "' can't be deleted.");
 
                 var deleteItem = FindMethodArgs(details, "DeleteItem", p => p.Length == 0);
                 if (deleteItem == null) return Result.Fail("Couldn't find Clarion's delete-field command.");
 
+                // DeleteItem() returns whether or not the user confirmed Clarion's modal, so the honest signal is
+                // "did the field actually leave its parent?". Snapshot the parent, invoke, then check membership.
+                object parent = GetProp(ddField, "Parent");
                 deleteItem.Invoke(details, null);   // modal confirm dialog; Clarion removes on confirm
-                return Result.Done("Deleted " + name + ".");
+                bool removed = parent == null || !ContainsField(parent, ddField);
+                return removed ? Result.Done("Deleted " + LeafName(path) + ".")
+                               : Result.Done("Delete cancelled for " + LeafName(path) + ".");
             }
             catch (Exception ex)
             {
@@ -211,7 +221,7 @@ namespace ClarionAssistant.Services
         /// wrong-procedure fail-closed guard (same as AddVariable), warm CurrentDetails by selecting the scope
         /// node, reject a read-only app, then resolve the named DDField from the scope's FieldList (the live model).
         /// </summary>
-        private static bool ResolveTargetField(string scope, string name, string expectedProcedure,
+        private static bool ResolveTargetField(string scope, string path, string expectedProcedure,
             out object tree, out object ddField, out Result error)
         {
             tree = null; ddField = null; error = null;
@@ -220,8 +230,8 @@ namespace ClarionAssistant.Services
             if (s != "local" && s != "global") { error = Result.Fail("Unknown variable scope '" + scope + "'."); return false; }
             bool wantLocal = s == "local";
             string scopeName = wantLocal ? "Local" : "Global";
-            if (string.IsNullOrWhiteSpace(name)) { error = Result.Fail("No variable name supplied."); return false; }
-            name = name.Trim();
+            var segments = SplitPath(path);
+            if (segments.Length == 0) { error = Result.Fail("No variable supplied."); return false; }
 
             var pad = FindFileSchemaPad();
             if (pad == null) { error = Result.Fail("Clarion's Data / Tables pad isn't available. Open an application first."); return false; }
@@ -259,37 +269,65 @@ namespace ClarionAssistant.Services
             if (dd != null && (GetProp(dd, "ReadOnly") as bool?) == true)
             { error = Result.Fail("The application/dictionary is read-only."); return false; }
 
-            ddField = FindField(list, name);
+            ddField = FindFieldByPath(list, segments);
             if (ddField == null)
-            { error = Result.Fail("Couldn't find variable '" + name + "' in " + scopeName + " data."); return false; }
+            { error = Result.Fail("Couldn't uniquely resolve '" + path + "' in " + scopeName + " data (not found, or an ambiguous name)."); return false; }
             return true;
         }
 
-        // Find a DDField in the FieldList (recursing into GROUP/QUEUE containers) by Name/CodeName. Clarion
-        // requires unique field labels within a scope, so a name match is unambiguous.
-        private static object FindField(object fieldList, string name)
+        // Resolve a DDField by its STRUCTURAL PATH through the FieldList, descending one container per segment.
+        // Names are unique among SIBLINGS within a Clarion structure (the compiler enforces it), so each step is
+        // unambiguous; we FAIL CLOSED (return null) on a zero or multiple match at any level rather than guessing —
+        // critical for the destructive delete path. A flat name match across nested GROUP/QUEUE members would NOT
+        // be safe, because members in *different* containers can share a label.
+        private static object FindFieldByPath(object fieldList, string[] segments)
         {
-            foreach (var f in EnumerateFields(fieldList))
+            object container = fieldList;
+            for (int i = 0; i < segments.Length; i++)
             {
-                if (string.Equals(GetProp(f, "Name")?.ToString(), name, StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(GetProp(f, "CodeName")?.ToString(), name, StringComparison.OrdinalIgnoreCase))
-                    return f;
+                var fields = GetProp(container, "Fields") as IEnumerable;
+                if (fields == null) return null;
+                object match = null; int count = 0;
+                foreach (var f in fields)
+                {
+                    if (f == null) continue;
+                    if (NameMatches(f, segments[i])) { match = f; count++; }
+                }
+                if (count != 1) return null;                  // 0 or ambiguous → fail closed
+                if (i == segments.Length - 1) return match;   // last segment = the target field
+                container = match;                            // descend into the container
             }
             return null;
         }
 
-        private static IEnumerable<object> EnumerateFields(object fieldListOrContainer)
+        private static bool NameMatches(object field, string name)
         {
-            var fields = GetProp(fieldListOrContainer, "Fields") as IEnumerable;
-            if (fields == null) yield break;
-            foreach (var f in fields)
-            {
-                if (f == null) continue;
-                yield return f;
-                if (GetProp(f, "Fields") as IEnumerable != null)   // GROUP/QUEUE container - recurse
-                    foreach (var c in EnumerateFields(f))
-                        yield return c;
-            }
+            return string.Equals(GetProp(field, "Name")?.ToString(), name, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(GetProp(field, "CodeName")?.ToString(), name, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool ContainsField(object container, object field)
+        {
+            var fields = GetProp(container, "Fields") as IEnumerable;
+            if (fields == null) return false;
+            foreach (var f in fields) if (ReferenceEquals(f, field)) return true;
+            return false;
+        }
+
+        // Split a "/"-delimited structural path ("Group/Member") into trimmed, non-empty segments. Clarion
+        // identifiers contain no "/", so the delimiter is unambiguous.
+        private static string[] SplitPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return new string[0];
+            var list = new List<string>();
+            foreach (var r in path.Split('/')) { var t = (r ?? "").Trim(); if (t.Length > 0) list.Add(t); }
+            return list.ToArray();
+        }
+
+        private static string LeafName(string path)
+        {
+            var segs = SplitPath(path);
+            return segs.Length == 0 ? "(variable)" : segs[segs.Length - 1];
         }
 
         // Find a method by name whose parameter list satisfies 'match' (lets us bind to ShowCurrentItem(item,bool)
