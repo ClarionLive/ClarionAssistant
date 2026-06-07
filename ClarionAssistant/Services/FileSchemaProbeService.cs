@@ -90,11 +90,16 @@ namespace ClarionAssistant.Services
                 object tree, ddField;
                 if (!ResolveField(arg, "edit", sb, out tree, out ddField)) return sb.ToString();
 
+                // Clarion's mode is numeric: BaseFileSchemaTree does Location != 0 ? ViewRecord : ChangeRecord.
+                // DataStorageLocation enum = { Application=0, Dictionary=1, Template=2 }, so app-declared vars
+                // (Application=0) open EDITABLE (ChangeRecord); only dict/template-derived fields (1/2) are read-only.
                 object locBefore = GetProp(ddField, "Location");
+                long locNum = EnumToLong(locBefore);
+                bool readOnly = locNum > 0;
+                string nameBefore = Describe(GetProp(ddField, "Name"));
                 string typeBefore = Describe(GetProp(ddField, "Type"));
-                bool readOnly = !IsZero(locBefore);
                 sb.AppendLine();
-                sb.AppendLine("Field BEFORE: " + DescribeField(ddField) + " Location=" + Describe(locBefore)
+                sb.AppendLine("Field BEFORE: " + DescribeField(ddField) + " Location=" + Describe(locBefore) + "(" + locNum + ")"
                     + "  => expected form mode: " + (readOnly ? "ViewRecord (READ-ONLY, Location!=0)" : "ChangeRecord (editable)"));
 
                 // tree.ShowCurrentItem(ddField, indirect:true): 2 params, 2nd is bool, 1st accepts the DDField.
@@ -110,11 +115,21 @@ namespace ClarionAssistant.Services
                     + (readOnly ? "ViewRecord/read-only" : "ChangeRecord/editable") + "). Change something and OK, or Cancel.");
                 show.Invoke(tree, new object[] { ddField, true });
 
+                // Compare BOTH Name and Type (an edit can change either - e.g. a rename leaves Type unchanged).
+                string nameAfter = Describe(GetProp(ddField, "Name"));
                 string typeAfter = Describe(GetProp(ddField, "Type"));
+                bool changed = nameAfter != nameBefore || typeAfter != typeBefore;
                 sb.AppendLine("<<< Returned from the form.");
-                sb.AppendLine("Field AFTER:  " + DescribeField(ddField)
-                    + (typeAfter != typeBefore ? "  (TYPE CHANGED " + typeBefore + " -> " + typeAfter + ")" : "  (unchanged - Cancelled, or no edit made)"));
+                sb.AppendLine("Field AFTER:  " + DescribeField(ddField));
+                if (changed)
+                {
+                    if (nameAfter != nameBefore) sb.AppendLine("  NAME CHANGED: " + nameBefore + " -> " + nameAfter);
+                    if (typeAfter != typeBefore) sb.AppendLine("  TYPE CHANGED: " + typeBefore + " -> " + typeAfter);
+                }
+                else sb.AppendLine("  (unchanged - Cancelled, or no edit made)");
                 sb.AppendLine();
+                sb.AppendLine("NOTE: production must refresh after the edit - ShowCurrentItem only auto-refreshes when the");
+                sb.AppendLine("      item OBJECT is replaced, so an in-place rename/retype won't repaint without tree.Refresh(parent).");
                 sb.AppendLine("VERDICT: if the FieldForm appeared above, the edit path is proven (invoke-by-item, no tree node).");
             }
             catch (Exception ex) { AppendException(sb, ex); }
@@ -379,11 +394,12 @@ namespace ClarionAssistant.Services
         // ---------------------------------------------------------------------------------------------
         private static string Describe(object v) { return v == null ? "null" : v.ToString(); }
 
-        private static bool IsZero(object v)
+        // Underlying numeric value of an enum (or number); -1 when null/non-convertible. Used to replicate
+        // Clarion's numeric "Location != 0" test rather than comparing the enum's ToString().
+        private static long EnumToLong(object v)
         {
-            if (v == null) return true;
-            string s = v.ToString();
-            return string.IsNullOrEmpty(s) || s == "0";
+            if (v == null) return -1;
+            try { return Convert.ToInt64(v); } catch { return -1; }
         }
 
         private static bool IsLocal(string scope, StringBuilder sb)
