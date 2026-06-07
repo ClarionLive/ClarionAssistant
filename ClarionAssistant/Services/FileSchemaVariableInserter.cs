@@ -32,9 +32,14 @@ namespace ClarionAssistant.Services
         public sealed class Result
         {
             public bool Ok;
+            // True when the operation actually mutated the app (so the caller should refresh). Defaults true so
+            // Add/Edit keep their proven refresh-on-return behavior; only a no-op (e.g. a cancelled delete) sets
+            // it false so the host skips the whole-app .txa export on an operation that changed nothing.
+            public bool Committed = true;
             public string Message;
             public static Result Fail(string m) { return new Result { Ok = false, Message = m }; }
             public static Result Done(string m) { return new Result { Ok = true, Message = m }; }
+            public static Result NoOp(string m) { return new Result { Ok = true, Committed = false, Message = m }; }
         }
 
         /// <param name="scope">"local" (current procedure) or "global". Validated — anything else fails closed.</param>
@@ -152,7 +157,7 @@ namespace ClarionAssistant.Services
             try
             {
                 object tree, ddField; Result error;
-                if (!ResolveTargetField(scope, path, expectedProcedure, out tree, out ddField, out error)) return error;
+                if (!ResolveTargetField(scope, path, expectedProcedure, out tree, out ddField, out _, out error)) return error;
 
                 // tree.ShowCurrentItem(ddField, indirect:true): 2 params, 2nd bool, 1st accepts the DDField.
                 var show = FindMethodArgs(tree, "ShowCurrentItem",
@@ -182,8 +187,8 @@ namespace ClarionAssistant.Services
         {
             try
             {
-                object tree, ddField; Result error;
-                if (!ResolveTargetField(scope, path, expectedProcedure, out tree, out ddField, out error)) return error;
+                object tree, ddField, fieldList; Result error;
+                if (!ResolveTargetField(scope, path, expectedProcedure, out tree, out ddField, out fieldList, out error)) return error;
 
                 // tree.GetDetails(DataDictionaryItem): the 1-arg overload that accepts the DDField (the other 1-arg
                 // overload takes a TreeNodeAdv, which a DDField is NOT an instance of).
@@ -202,13 +207,14 @@ namespace ClarionAssistant.Services
                 var deleteItem = FindMethodArgs(details, "DeleteItem", p => p.Length == 0);
                 if (deleteItem == null) return Result.Fail("Couldn't find Clarion's delete-field command.");
 
-                // DeleteItem() returns whether or not the user confirmed Clarion's modal, so the honest signal is
-                // "did the field actually leave its parent?". Snapshot the parent, invoke, then check membership.
-                object parent = GetProp(ddField, "Parent");
                 deleteItem.Invoke(details, null);   // modal confirm dialog; Clarion removes on confirm
-                bool removed = parent == null || !ContainsField(parent, ddField);
+
+                // Honest postcondition: DeleteItem() returns whether or not the user confirmed Clarion's modal, so
+                // re-resolve the same path against the live model — no longer resolvable == actually deleted. This
+                // avoids depending on whether a removed field's Parent is nulled (which we can't assume).
+                bool removed = FindFieldByPath(fieldList, SplitPath(path)) == null;
                 return removed ? Result.Done("Deleted " + LeafName(path) + ".")
-                               : Result.Done("Delete cancelled for " + LeafName(path) + ".");
+                               : Result.NoOp("Delete cancelled for " + LeafName(path) + ".");   // no mutation → no refresh
             }
             catch (Exception ex)
             {
@@ -222,9 +228,9 @@ namespace ClarionAssistant.Services
         /// node, reject a read-only app, then resolve the named DDField from the scope's FieldList (the live model).
         /// </summary>
         private static bool ResolveTargetField(string scope, string path, string expectedProcedure,
-            out object tree, out object ddField, out Result error)
+            out object tree, out object ddField, out object fieldList, out Result error)
         {
-            tree = null; ddField = null; error = null;
+            tree = null; ddField = null; fieldList = null; error = null;
 
             string s = (scope ?? "").Trim().ToLowerInvariant();
             if (s != "local" && s != "global") { error = Result.Fail("Unknown variable scope '" + scope + "'."); return false; }
@@ -263,6 +269,7 @@ namespace ClarionAssistant.Services
 
             var list = GetProp(GetProp(node, "Tag"), "List");
             if (list == null) { error = Result.Fail("Couldn't read the " + scopeName + " data fields."); return false; }
+            fieldList = list;
 
             // Guard: read-only dictionary/app.
             var dd = GetProp(list, "DataDictionary");
@@ -304,14 +311,6 @@ namespace ClarionAssistant.Services
         {
             return string.Equals(GetProp(field, "Name")?.ToString(), name, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(GetProp(field, "CodeName")?.ToString(), name, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static bool ContainsField(object container, object field)
-        {
-            var fields = GetProp(container, "Fields") as IEnumerable;
-            if (fields == null) return false;
-            foreach (var f in fields) if (ReferenceEquals(f, field)) return true;
-            return false;
         }
 
         // Split a "/"-delimited structural path ("Group/Member") into trimmed, non-empty segments. Clarion

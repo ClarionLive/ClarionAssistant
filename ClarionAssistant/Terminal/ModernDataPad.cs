@@ -329,7 +329,10 @@ namespace ClarionAssistant
                 }
                 finally { _varCrudInProgress = false; }
 
-                if (r != null && r.Ok) ScheduleAddRefresh();
+                // Refresh only after an actual committed mutation. A cancelled delete returns Ok with Committed=false
+                // so we skip the whole-app .txa export on a no-op. (Add/edit are Committed by design — a single
+                // user-initiated op's refresh is cheap, and edit no-op detection isn't reliable.)
+                if (r != null && r.Ok && r.Committed) ScheduleAddRefresh();
             }));
         }
 
