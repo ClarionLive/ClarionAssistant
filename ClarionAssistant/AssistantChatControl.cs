@@ -3187,6 +3187,36 @@ namespace ClarionAssistant
                 tab.Terminal.Write(data);
         }
 
+        // Matches ANSI/VT escape sequences (CSI, OSC, charset selects, etc.) so they can be stripped
+        // before substring-matching a TUI prompt whose text is interleaved with color/box-drawing codes.
+        private static readonly System.Text.RegularExpressions.Regex AnsiEscapeRegex =
+            new System.Text.RegularExpressions.Regex(
+                @"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        /// <summary>
+        /// Normalize terminal output for robust substring matching: strip ANSI escapes, fold every
+        /// non-alphanumeric char to a single space, lowercase, and collapse runs of spaces. This makes
+        /// a plain Contains() survive box-drawing characters, embedded color codes, and odd spacing in
+        /// CC's TUI warning prompt.
+        /// </summary>
+        private static string NormalizeForMatch(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return string.Empty;
+            string noAnsi = AnsiEscapeRegex.Replace(s, string.Empty);
+            var sb = new StringBuilder(noAnsi.Length);
+            foreach (char c in noAnsi)
+                sb.Append(char.IsLetterOrDigit(c) ? char.ToLowerInvariant(c) : ' ');
+            return System.Text.RegularExpressions.Regex.Replace(sb.ToString(), " +", " ");
+        }
+
+        /// <summary>Escape control chars so a raw terminal buffer is readable in a single Debug trace line.</summary>
+        private static string EscapeForLog(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return string.Empty;
+            return s.Replace("\x1b", "\\x1b").Replace("\r", "\\r").Replace("\n", "\\n").Replace("\t", "\\t");
+        }
+
         private static int _dataRecvCount;
         private void OnTabTerminalDataReceived(TerminalTab tab, byte[] data)
         {
@@ -3196,6 +3226,58 @@ namespace ClarionAssistant
             var renderer = tab.Renderer;
             if (renderer != null && !renderer.IsDisposed)
                 renderer.WriteToTerminal(data);
+
+            // ── Auto-dismiss Claude Code's --dangerously-load-development-channels warning ──
+            // CC 2.1.168 renders this warning as a colored, box-wrapped TUI. The text is interleaved
+            // with ANSI escapes and arrives split across ~16ms ConPTY flush batches, so a literal
+            // Contains() on a single chunk never matches. We therefore: accumulate every chunk into a
+            // capped per-tab buffer, strip ANSI + normalize, substring-match the prompt anchors, then
+            // inject the digit '1' (option "I am using this for local development") with NO newline —
+            // a bare Enter gets dropped before CC's raw-mode prompt is ready. Fires at most once per tab.
+            // Only relevant to Claude (Copilot/Codex never emit this), so skip those backends.
+            if (!tab.DevChannelWarningHandled
+                && tab.AssistantBackend != "Copilot" && tab.AssistantBackend != "Codex"
+                && tab.Terminal != null && tab.Terminal.IsRunning)
+            {
+                try
+                {
+                    tab.DevChannelBuffer.Append(Encoding.UTF8.GetString(data));
+                    if (tab.DevChannelBuffer.Length > 2000)
+                        tab.DevChannelBuffer.Remove(0, tab.DevChannelBuffer.Length - 1000);
+
+                    string normalized = NormalizeForMatch(tab.DevChannelBuffer.ToString());
+
+                    // One-time ground-truth dump: if CC changes the wording on a future version, this
+                    // trace gives the exact bytes to re-anchor against instead of guessing.
+                    if (!tab.DevChannelRawDumped && normalized.Contains("development"))
+                    {
+                        tab.DevChannelRawDumped = true;
+                        System.Diagnostics.Debug.WriteLine("[DevChannel] RAW: " + EscapeForLog(tab.DevChannelBuffer.ToString()));
+                        System.Diagnostics.Debug.WriteLine("[DevChannel] NORM: " + normalized);
+                    }
+
+                    if (normalized.Contains("for local development")
+                        || normalized.Contains("loading development channels")
+                        || normalized.Contains("development channels")
+                        || normalized.Contains("enter to confirm"))
+                    {
+                        tab.DevChannelWarningHandled = true;
+                        var devTab = tab;
+                        // ~400ms settle so the box is fully rendered + raw mode is ready, then send '1'
+                        // with no CR/LF — Write() does not append a line ending.
+                        System.Threading.Tasks.Task.Delay(400).ContinueWith(_ =>
+                        {
+                            try
+                            {
+                                if (devTab.Terminal != null && devTab.Terminal.IsRunning)
+                                    devTab.Terminal.Write("1");
+                            }
+                            catch { }
+                        });
+                    }
+                }
+                catch { }
+            }
 
             // Auto-send startup command once Claude is ready for human input.
             // Detection: look for the prompt character (> or ❯) at a line boundary,
