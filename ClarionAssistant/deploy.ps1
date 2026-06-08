@@ -11,9 +11,32 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Locate MSBuild.exe without hardcoding a Visual Studio version/edition.
+# Order: vswhere (covers VS 2019/2022/18+, any edition) -> common install paths.
+function Resolve-MSBuild {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vswhere) {
+        $found = & $vswhere -latest -requires Microsoft.Component.MSBuild `
+                            -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
+        if ($found -and (Test-Path $found)) { return $found }
+    }
+
+    # Fallback: scan known roots if vswhere is unavailable.
+    foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if (-not $root) { continue }
+        $candidate = Get-ChildItem -Path (Join-Path $root "Microsoft Visual Studio") `
+                        -Filter MSBuild.exe -Recurse -ErrorAction SilentlyContinue |
+                        Where-Object { $_.FullName -match "\\Current\\Bin\\MSBuild\.exe$" } |
+                        Select-Object -First 1
+        if ($candidate) { return $candidate.FullName }
+    }
+
+    throw "MSBuild.exe not found. Install Visual Studio with the MSBuild component, or set `$MSBuild manually."
+}
+
 $ProjectDir  = $PSScriptRoot
 $ProjectFile = Join-Path $ProjectDir "ClarionAssistant.csproj"
-$MSBuild     = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
+$MSBuild     = Resolve-MSBuild
 
 # Indexer build output (separate project, shares source files with ClarionCodeGraph)
 $IndexerDir    = "H:\DevLaptop\ClarionLSP\indexer"
