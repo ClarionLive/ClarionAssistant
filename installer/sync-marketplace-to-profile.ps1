@@ -26,7 +26,10 @@ if ($PSCmdlet.ShouldProcess($Dest, "Mirror from $Source")) {
     # /MIR mirrors (adds, updates, and prunes profile-only files so it matches the repo).
     # /XD .git guards against ever copying a VCS dir if one exists under Source.
     & robocopy $Source $Dest /MIR /XD '.git' /NFL /NDL /NJH /NJS /NP | Out-Null
-    # robocopy exit codes 0-7 are success (8+ is a real error).
-    if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
-    Write-Host "Done (robocopy exit $LASTEXITCODE)." -ForegroundColor Green
+    # robocopy exit codes 0-7 are success (bit 0=copied, 1=extra, 2=mismatch, 3=changed); 8+ is a real error.
+    $rc = $LASTEXITCODE
+    if ($rc -ge 8) { throw "robocopy failed with exit code $rc" }
+    Write-Host "Done (robocopy exit $rc = success)." -ForegroundColor Green
+    # Don't let robocopy's non-zero success codes propagate as a failure to the caller.
+    exit 0
 }
