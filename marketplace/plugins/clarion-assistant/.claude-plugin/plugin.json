@@ -1,0 +1,9 @@
+{
+  "name": "clarion-assistant",
+  "description": "Clarion language development tools for Claude Code. Skills for Clarion syntax, COM controls, WebView2 components, jFiles JSON, code analysis, and IDE addin development.",
+  "version": "1.0.0",
+  "author": {
+    "name": "John Hickey",
+    "email": "noreply@multiterminal.dev"
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "description": "Clarion Assistant safety hooks — blocks dangerous commands, protects secrets and credentials",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "$sln = Get-ChildItem -Filter '*.sln' -ErrorAction SilentlyContinue; if ($sln) { if (-not (Test-Path '.git')) { Write-Output '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"Clarion solution detected but no git repo found in this directory. Use AskUserQuestion to ask if they want to initialize git for code safety. Options: (1) Yes, initialize git with a baseline commit (Recommended) (2) Skip for now. If they choose yes: (1) Create a .gitignore for Clarion projects (ignore *.exe, *.dll, *.obj, *.lib, *.exp, *.pdb, *.map, *.res, *.o, bin/, obj/, Debug/, Release/, *.log, *.bak, *.~*, ~*, *.tmp, *.sdf, *.suo, .vs/) (2) Run git init (3) Stage files by name - do NOT use git add . or git add -A, instead add specific file extensions like *.sln *.cwproj *.clw *.inc *.equ *.int *.trn *.app *.dct *.txa *.gitignore (4) Create baseline commit.\"}}' } }",
+            "timeout": 5,
+            "statusMessage": "Checking project setup..."
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "$sln = Get-ChildItem -Filter '*.sln' -ErrorAction SilentlyContinue; if ($sln) { $db = Get-ChildItem -Filter '*.codegraph.db' -ErrorAction SilentlyContinue; if (-not $db) { Write-Output ('{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"SLN found: ' + $sln.Name + ' but no .codegraph.db found in this directory. Use AskUserQuestion to ask: Would you like to index this solution for code intelligence? Options: (1) Yes, index the solution (Recommended) - enables cross-file symbol search, who-calls-who, impact analysis (2) Skip for now. If they choose yes, call index_solution.\"}}') } }",
+            "timeout": 5,
+            "statusMessage": "Checking code index..."
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/safety-hook.js\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/safety-hook.js\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/safety-hook.js\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__sqlite__write_query|mcp__mssql__query",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/safety-hook.js\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

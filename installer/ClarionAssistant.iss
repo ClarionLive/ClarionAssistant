@@ -15,7 +15,9 @@
 #define SrcC12 SrcBase + "\bin\Debug-C12"
 #define SrcClarionIndexer "H:\DevLaptop\ClarionLSP\indexer\bin\Debug"
 #define SrcComForClarion "H:\DevLaptop\ClarionIdeCOMPane\ClarionCOMBrowser\bin\Debug"
-#define SrcMarketplace "C:\Users\John Hickey\.claude\plugins\marketplaces\clarionassistant-marketplace"
+; Marketplace skills source of truth is now version-controlled in the repo
+; (was the live profile folder, which drifted from the installer — see marketplace/README.md).
+#define SrcMarketplace "H:\DevLaptop\ClarionAssistant\marketplace"
 #define SrcPlugin SrcMarketplace + "\plugins\clarion-assistant"
 #define SrcAgents "C:\Users\John Hickey\.claude\agents"
 #define SrcBlankDct "C:\Users\John Hickey\AppData\Roaming\clarionassistant"
@@ -273,29 +275,11 @@ Source: "{#SrcMarketplace}\.claude-plugin\marketplace.json"; DestDir: "{%USERPRO
 Source: "{#SrcPlugin}\.claude-plugin\plugin.json"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\.claude-plugin"; Components: plugin; Flags: ignoreversion
 Source: "{#SrcPlugin}\CLAUDE.md"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant"; Components: plugin; Flags: ignoreversion
 
-; Plugin Skills
-Source: "{#SrcPlugin}\skills\clarion\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarion"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\clarion-analyze\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarion-analyze"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\clarion-benchmark\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarion-benchmark"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\clarion-convert-driver\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarion-convert-driver"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\clarion-ide-addin\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarion-ide-addin"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\ClarionCOM\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\ClarionCOM"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\clarioncom-build\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarioncom-build"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\clarioncom-config\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarioncom-config"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\clarioncom-control\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarioncom-control"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\clarioncom-create\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarioncom-create"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\clarioncom-deploy\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarioncom-deploy"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\clarioncom-get\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarioncom-get"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\clarioncom-github-init\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarioncom-github-init"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\clarioncom-marketplace-submit\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarioncom-marketplace-submit"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\clarioncom-validate\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarioncom-validate"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\clarioncom-webview2-build\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarioncom-webview2-build"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\clarioncom-webview2-create\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarioncom-webview2-create"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\clarioncom-webview2-deploy\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarioncom-webview2-deploy"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\clarioncom-webview2-validate\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\clarioncom-webview2-validate"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\evaluate-code\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\evaluate-code"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\jfiles\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\jfiles"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcPlugin}\skills\lsp-diagnostics\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills\lsp-diagnostics"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
+; Plugin Skills — single recursive copy from the repo source of truth.
+; Every skill folder under marketplace\plugins\clarion-assistant\skills ships
+; automatically; no per-skill line to forget (that is how stringtheory got
+; dropped before — see marketplace/README.md).
+Source: "{#SrcPlugin}\skills\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
 
 ; Plugin Hooks
 Source: "{#SrcPlugin}\hooks\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\hooks"; Components: plugin\hooks; Flags: ignoreversion

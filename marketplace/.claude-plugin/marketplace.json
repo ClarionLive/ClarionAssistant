@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "clarionassistant-marketplace",
+  "description": "Clarion language development plugins for Claude Code",
+  "owner": {
+    "name": "John Hickey"
+  },
+  "plugins": [
+    {
+      "name": "clarion-assistant",
+      "description": "Clarion language development tools for Claude Code. Skills for Clarion syntax, COM controls, WebView2 components, jFiles JSON, code analysis, and IDE addin development.",
+      "source": "./plugins/clarion-assistant",
+      "category": "languages"
+    }
+  ]
+}
