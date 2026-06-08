@@ -1218,8 +1218,12 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                     string dir = Path.GetDirectoryName(path);
                     if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                         Directory.CreateDirectory(dir);
-                    File.WriteAllText(path, content);
-                    return "File written: " + path + " (" + content.Length + " chars)";
+                    // Clarion source (.clw/.inc/.equ/.tpw/.tpl) is forced to CRLF +
+                    // UTF-8-no-BOM here so LF-only / BOM content can't reach the
+                    // Clarion compiler regardless of what the caller passed (issue #34).
+                    ClarionSourceText.WriteFile(path, content);
+                    string crlfNote = ClarionSourceText.IsClarionSource(path) ? ", CRLF/no-BOM" : "";
+                    return "File written: " + path + " (" + content.Length + " chars" + crlfNote + ")";
                 }
             });
 
@@ -1241,6 +1245,9 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                     string text = McpJsonRpc.GetString(args, "text", "");
                     if (!File.Exists(path))
                         return "Error: file not found: " + path;
+                    // Normalize appended Clarion source to CRLF (issue #34). The
+                    // existing file's encoding is left untouched on append.
+                    text = ClarionSourceText.NormalizeIfClarion(path, text);
                     var result = _editorService.AppendTextToFile(path, text);
                     return result.Success ? "Text appended to " + path : "Error: " + result.ErrorMessage;
                 }
