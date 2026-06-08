@@ -259,6 +259,26 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// The app view's live FileSchema model (SoftVelocity.DataDictionary.Schema.FileSchema) for the procedure
+        /// the app tree is CURRENTLY showing, or null. This is the per-procedure schema that backs Clarion's own
+        /// "Data / Tables" pad — it exposes <c>ProcedureName</c> plus the per-template-instance <c>Templates</c>
+        /// (File-Browsing List Box / Update Record on Disk / Relation Tree ...), <c>OtherFiles</c>, and the
+        /// Local/Global/Module FieldLists. Repopulated on app-tree selection. Pure managed reflection — NEVER
+        /// reinterprets native pointers. Unlike <see cref="GetAppTreeSelectedProcedureName"/> this does NOT impose
+        /// the single-app guard: callers gate on the returned <c>ProcedureName</c> instead (an exact proc match is
+        /// a stronger correctness check than app-count), so it still serves multi-app users.
+        /// </summary>
+        public object GetAppFileSchema()
+        {
+            try
+            {
+                var vc = FindAppViewContent();
+                return vc == null ? null : GetProp(vc, "FileSchema");
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
         /// Number of DISTINCT open application (.app) views in the workbench. Used by the Data pad's app-tree
         /// SELECTION path to detect ambiguity: with more than one app open, the loose FindAppViewContent resolver
         /// can't tell which app a tree selection belongs to, so the selection path fails closed. Counts distinct

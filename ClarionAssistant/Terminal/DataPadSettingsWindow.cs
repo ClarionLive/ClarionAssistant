@@ -135,7 +135,16 @@ namespace ClarionAssistant.Terminal
             Uri u;
             if (!Uri.TryCreate(uriString, UriKind.Absolute, out u)) return false;
             if (!u.IsFile) return false;
-            return string.Equals(u.LocalPath, _expectedLocalPath, StringComparison.OrdinalIgnoreCase);
+            // .NET Framework does NOT split the query off a file:// URI: Uri.Query is empty and the
+            // "?mode=settings&v=..." stays glued onto LocalPath (e.g. "…\modern-data-pad.html?mode=settings&v=1").
+            // A raw LocalPath compare against the bare page path therefore ALWAYS failed once we navigated with a
+            // query — cancelling the navigation AND dropping every inbound web message, leaving the settings
+            // window blank. Strip at the first '?' ('?' is illegal in Windows file paths, so this is unambiguous)
+            // before the exact-path compare; the pinning is just as strict, only query-tolerant.
+            string localPath = u.LocalPath;
+            int q = localPath.IndexOf('?');
+            if (q >= 0) localPath = localPath.Substring(0, q);
+            return string.Equals(localPath, _expectedLocalPath, StringComparison.OrdinalIgnoreCase);
         }
 
         private void Post(Dictionary<string, object> data)

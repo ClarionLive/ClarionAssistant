@@ -219,6 +219,19 @@
     </div>
 
 <script>
+    // Surface any uncaught JS error as a visible banner instead of a silent blank pane (a blank settings window
+    // with no error text is undebuggable). Inserted FIRST so it also catches errors thrown during startup.
+    window.onerror = function (msg, src, line, col) {
+        try {
+            var b = document.createElement('div');
+            b.style.cssText = 'position:fixed;left:0;top:0;right:0;z-index:99999;background:#a00;color:#fff;'
+                + 'font:12px/1.4 monospace;padding:6px 8px;white-space:pre-wrap;';
+            b.textContent = 'Data pad error: ' + msg + '  (' + (src || '') + ':' + line + ':' + col + ')';
+            (document.body || document.documentElement).appendChild(b);
+        } catch (e) {}
+        return false;
+    };
+
     // When loaded as ?mode=settings the SAME page renders ONLY the settings card UI (pad chrome hidden) for
     // the floating native settings window. It edits + persists the layout state and posts changes to its host,
     // which pushes them live to the docked pad. This reuses the exact UI with no duplication.
@@ -227,7 +240,8 @@
     var locals = [];
     var tables = [];
     var otherFiles = [];
-    var browseFiles = [];      // File-Browsing List Box: the proc's PRIMARY file + browse key
+    var browseFiles = [];      // .txa fallback only (File-Browsing List Box primary + key); folded into fileScopes
+    var fileScopes = [];       // per-template-instance file groups from the live FileSchemaTree (the native pad's grouping)
     var routines = [];
     var localProcedures = [];   // the proc's LOCAL procedures (col-0 "Name PROCEDURE" bodies), with line numbers
     var moduleData = [];
@@ -265,17 +279,17 @@
 
     // Canonical order MUST match the historical render order (rich file sections first, then the
     // flat/tree scopes) so the default layout is unchanged for anyone without saved settings.
-    var DEFAULT_SECTION_ORDER = ['browseFiles', 'tables', 'otherFiles', 'locals',
+    var DEFAULT_SECTION_ORDER = ['fileScopes', 'tables', 'otherFiles', 'locals',
         'routines', 'localProcedures', 'moduleData', 'globals', 'procedures'];
     var SECTION_LABELS = {
-        browseFiles: 'File-Browsing List Box', tables: 'Declared Tables', otherFiles: 'Other Files',
+        fileScopes: 'File Schematic', tables: 'Declared Tables', otherFiles: 'Other Files',
         locals: 'Local Data', routines: 'Routines', localProcedures: 'Local Procedures',
         moduleData: 'Module Data', globals: 'Global Data', procedures: 'Procedures'
     };
     // Raw data count per section (independent of the active filter) — drives "hide empty sections".
     function sectionCount(id) {
         switch (id) {
-            case 'browseFiles': return browseFiles.length;
+            case 'fileScopes': return fileScopes.reduce(function (n, s) { return n + ((s.files && s.files.length) || 0); }, 0);
             case 'tables': return tables.length;
             case 'otherFiles': return otherFiles.length;
             case 'locals': return locals.length;
@@ -292,6 +306,7 @@
     function effectiveOrder() {
         var seen = {}, order = [];
         (sectionOrder || []).forEach(function (id) {
+            if (id === 'browseFiles') id = 'fileScopes';   // migrate: the live grouped File Schematic replaces the old flat browse section, IN PLACE
             if (SECTION_LABELS[id] && !seen[id]) { seen[id] = true; order.push(id); }
         });
         DEFAULT_SECTION_ORDER.forEach(function (id) { if (!seen[id]) { seen[id] = true; order.push(id); } });
@@ -734,6 +749,12 @@
             if (!items.filter(fileMatch).length) return;
             if (!sectionHeader(key, label, items.length, { kind: 'file', items: items })) return;
 
+            // All per-file rows are appended to `host`, which is `list` for top-level files and a margin-left
+            // wrapper for related files (relation-tree depth > 0) so Publishers→Titles→Sales staircase exactly
+            // like Clarion's native pad. Reassigned per file in the items.forEach below; the gutterRow/detailPanel
+            // closures read it at call time.
+            var host = list;
+
             // Fixed left gutter so twisty + "+" align across rows. `hasTwisty`/`open` drive the twisty glyph;
             // `dkey` (when set) wires the "+" detail toggle. Returns the created row (already appended).
             function gutterRow(cls, name, type, insertText, padPx, hasTwisty, open, twistyToggle, dkey) {
@@ -759,18 +780,28 @@
                     tw.style.cursor = 'pointer';   // chevron-only expand/collapse (row body is for selection)
                     tw.addEventListener('click', function (e) { e.stopPropagation(); twistyToggle(); });
                 }
-                list.appendChild(row);
+                host.appendChild(row);
                 return row;
             }
             function detailPanel(padPx, html) {
                 var d = document.createElement('div');
                 d.className = 'detail'; d.style.paddingLeft = padPx + 'px';
                 d.innerHTML = html;
-                list.appendChild(d);
+                host.appendChild(d);
             }
 
             items.forEach(function (ff) {
                 if (!fileMatch(ff)) return;
+                // Indent related files by their relation-tree depth (primary = 0). A margin-left wrapper shifts the
+                // whole table block (header + Keys/Columns/Relations) together, preserving each table's internal
+                // column alignment (every table has its own .fgrid subgrid).
+                var fdepth = ff.depth || 0;
+                host = list;
+                if (fdepth > 0) {
+                    host = document.createElement('div');
+                    host.style.marginLeft = (fdepth * 16) + 'px';
+                    list.appendChild(host);
+                }
                 var fkey = key + '/' + ff.name;
                 var fOpen = !localCollapsed[fkey] || !!f;
                 var fDet = !!(ff.attributes || ff.description);
@@ -827,7 +858,7 @@
                                     var cp = document.createElement('span');
                                     cp.className = 'picture'; cp.textContent = comp.picture; crow.appendChild(cp);
                                 }
-                                list.appendChild(crow);
+                                host.appendChild(crow);
                             });
                         }
                     });
@@ -845,7 +876,7 @@
                     if (cOpen) {
                         var cgrid = document.createElement('div');
                         cgrid.className = 'fgrid';
-                        list.appendChild(cgrid);
+                        host.appendChild(cgrid);
                         var walk = function (arr, depth) {
                             arr.forEach(function (c) {
                                 if (!colMatch(c)) return;
@@ -937,7 +968,7 @@
                                 var mrow = makeRow('comp-row', null,
                                     (m.from || '?') + '  →  ' + (m.to || '?'), '', 'column mapping', null);
                                 mrow.style.paddingLeft = '92px';
-                                list.appendChild(mrow);
+                                host.appendChild(mrow);
                             });
                         }
                     });
@@ -1157,12 +1188,24 @@
             walk(items, 0, key);
         }
 
+        // File Schematic: the per-template-instance file groups the native Data/Tables pad shows. Each scope
+        // ("File-Browsing List Box", "Update Record on Disk", "Relation Tree Viewing List Box", ...) renders as
+        // its OWN collapsible rich-file group via richFileSection, keyed by the stable instance name so the
+        // collapse/detail state sticks across refreshes. A scope whose files are all filtered out self-hides
+        // (richFileSection early-returns), matching every other rich file section.
+        function fileScopesSection(scopes) {
+            (scopes || []).forEach(function (sc, i) {
+                var key = 'fileScope/' + (sc.instance || sc.label || i);
+                richFileSection(key, sc.label || 'File Scope', sc.files || []);
+            });
+        }
+
         // Dispatch one section by id to its builder. Defined here (inside render) because the
         // builders above are render-scoped. Rich file sections, tree scopes, and flat scopes all
         // already early-return when the active filter hides every item.
         function buildSection(id) {
             switch (id) {
-                case 'browseFiles': richFileSection('browseFiles', 'File-Browsing List Box', browseFiles); break;
+                case 'fileScopes': fileScopesSection(fileScopes); break;
                 case 'tables': richFileSection('tables', 'Declared Tables', tables); break;
                 case 'otherFiles': richFileSection('otherFiles', 'Other Files', otherFiles); break;
                 case 'locals': treeSection('locals', 'Local Data', locals); break;
@@ -1249,6 +1292,12 @@
     if (SETTINGS_MODE) document.body.classList.add('settings-mode');   // hide pad chrome; show only the card UI
     applyTheme(); applyFont();   // sane defaults before the persisted UI-state restore message arrives
 
+    // Settings window: open the card UI IMMEDIATELY with current defaults so the window is NEVER blank — even if
+    // the host's restoreUiState message is dropped/delayed. The restoreUiState handler also opens it and will
+    // re-render with the persisted layout when it arrives. (Previously the panel opened ONLY inside that handler,
+    // so a missed message left the whole window blank, since settings-mode hides all other chrome.)
+    if (SETTINGS_MODE) { try { openSettings(); } catch (ex) {} }
+
     if (window.chrome && window.chrome.webview) {
         window.chrome.webview.addEventListener('message', function (e) {
             var msg = e.data;
@@ -1318,7 +1367,13 @@
                 globals = (msg.globals || []).slice(); // declaration order from the .txa [PROGRAM][DATA]; do NOT sort
                 procedures = (msg.procedures || []).slice().sort(byName);
                 tables = (msg.tables || []).slice().sort(byName); // alphabetical, like Other Files; keep dict column order
-                browseFiles = (msg.browseFiles || []).slice(); // 0..1 primary browse file; keep as-is
+                // File Schematic: prefer the live per-instance scopes; if the host couldn't read the live tree
+                // (it sends none), fall back to the flat .txa browse file folded into a single scope so the
+                // section still shows the File-Browsing List Box. One canonical section either way.
+                fileScopes = (msg.fileScopes || []).slice();
+                browseFiles = (msg.browseFiles || []).slice();
+                if (!fileScopes.length && browseFiles.length)
+                    fileScopes = [{ label: 'File-Browsing List Box', instance: 'browse', files: browseFiles }];
                 render();
             }
         });
