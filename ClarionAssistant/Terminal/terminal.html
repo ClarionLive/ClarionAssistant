@@ -71,14 +71,6 @@
             font-weight: 600;
             font-size: 12px;
         }
-        .sl-peak {
-            background: #313244;
-            color: #a6adc8;
-            padding: 2px 7px;
-            border-radius: 3px;
-            font-size: 12px;
-        }
-        .sl-peak.off-peak { color: #a6e3a1; }
         .sl-quota { color: #7f849c; font-size: 12px; }
         .sl-quota .used { color: #cdd6f4; }
         .sl-quota .pace { color: #a6e3a1; }
@@ -111,8 +103,6 @@
         /* Light theme status line */
         body.light #status-bar { background: #e6e9ef; border-bottom-color: #ccd0da; }
         body.light .sl-model { background: #40a02b; color: #fff; }
-        body.light .sl-peak { background: #dce0e8; color: #6c6f85; }
-        body.light .sl-peak.off-peak { color: #40a02b; }
         body.light .sl-quota { color: #8c8fa1; }
         body.light .sl-quota .used { color: #4c4f69; }
         body.light .sl-quota .pace { color: #40a02b; }
@@ -702,7 +692,6 @@
             if (!d || !d.model) { el.classList.remove('visible'); return; }
             var h = '';
             h += '<span class="sl-model">' + escHtml(d.model) + '</span>';
-            h += '<span class="sl-peak' + (d.isOffPeak ? ' off-peak' : '') + '">' + (d.isOffPeak ? 'Off-peak' : 'Peak') + '</span>';
             if (d.quota5h !== null && d.quota5h !== undefined) {
                 var p5 = 'pace'; if (d.pace5h < 0) p5 += ' warn'; if (d.quota5h > 80) p5 += ' danger';
                 h += '<span class="sl-quota">5h <span class="used">' + d.quota5h + '%</span>';

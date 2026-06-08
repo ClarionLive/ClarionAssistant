@@ -58,7 +58,6 @@ process.stdin.on('end', () => {
             }
         }
 
-        const isOffPeak = getIsOffPeak();
         const git = getGitInfo(cwd);
 
         const output = {
@@ -72,7 +71,6 @@ process.stdin.on('end', () => {
             pace5h,
             pace7d,
             resetIn5h,
-            isOffPeak,
             gitBranch: git.branch,
             gitStatus: git.status,
             gitDirty: git.dirty,
@@ -92,14 +90,6 @@ function normalizeModel(model) {
     name = name.replace(/^claude-/, '').replace(/-\d{8}$/, '');
     if (name.length > 16) name = name.substring(0, 16);
     return name;
-}
-
-function getIsOffPeak() {
-    const now = new Date();
-    const day = now.getUTCDay();
-    if (day === 0 || day === 6) return true;
-    const hour = now.getUTCHours();
-    return hour < 12 || hour >= 18;
 }
 
 function getGitInfo(cwd) {
