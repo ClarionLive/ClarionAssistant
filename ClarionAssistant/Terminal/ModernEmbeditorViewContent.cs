@@ -525,6 +525,58 @@ namespace ClarionAssistant.Terminal
         }
 
         /// <summary>
+        /// The procedure's per-template-instance FILE SCOPES exactly as Clarion's native Data/Tables pad groups
+        /// them ("File-Browsing List Box", "Update Record on Disk", "Relation Tree Viewing List Box", ...), read
+        /// LIVE from the FileSchemaTree (see <see cref="FileSchemaScopeReader"/>). Each scope's attached file(s)
+        /// are enriched with full dictionary schema (columns w/ pictures + GROUP nesting, keys, relations) from
+        /// the live snapshot, so each renders identically to Other Files / Declared Tables.
+        ///
+        /// Returns an empty list when the live tree isn't reachable OR is showing a different procedure than
+        /// <paramref name="procedureName"/> (the reader fails closed) — the caller then falls back to the flat
+        /// .txa browse/other parsing. Only files that resolve in the live dictionary are emitted (a scope whose
+        /// files all fail to resolve is dropped), so a stray non-file node never produces an empty table card.
+        /// </summary>
+        private static List<Dictionary<string, object>> GetFileScopes(string procedureName)
+        {
+            var outp = new List<Dictionary<string, object>>();
+            try
+            {
+                var scopes = FileSchemaScopeReader.ReadFileScopes(procedureName);
+                if (scopes == null || scopes.Count == 0) return outp;
+
+                Dictionary<string, ClarionAppDataReader.TableDef> live;
+                lock (_liveLock) { live = _liveTables; }
+                if (live == null) return outp;   // no schema to enrich with → let the txa fallback render instead
+
+                foreach (var sc in scopes)
+                {
+                    var files = new List<object>();
+                    foreach (var fr in sc.Files)
+                    {
+                        ClarionAppDataReader.TableDef t;
+                        if (fr == null || string.IsNullOrEmpty(fr.Name) || !live.TryGetValue(fr.Name, out t) || t == null) continue;
+                        var cols = new List<object>();
+                        foreach (var f in t.Fields) cols.Add(ColToDict(f));
+                        files.Add(new Dictionary<string, object>
+                        {
+                            { "name", t.Name }, { "prefix", t.Prefix },
+                            { "attributes", BuildTableAttributes(t) }, { "description", t.Description ?? "" },
+                            { "columns", cols }, { "keys", KeysToDicts(t) }, { "relations", RelationsToDicts(t) },
+                            { "depth", fr.Depth }   // relation-tree nesting depth → indented rendering in the File Schematic
+                        });
+                    }
+                    if (files.Count == 0) continue;   // no resolvable file → drop the scope (don't show an empty card)
+                    outp.Add(new Dictionary<string, object>
+                    {
+                        { "label", sc.Label }, { "instance", sc.Instance }, { "files", files }
+                    });
+                }
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] GetFileScopes: " + ex.Message); }
+            return outp;
+        }
+
+        /// <summary>
         /// Combined data payload for the Modern Data pad: the procedure's local symbols (LSP) plus the
         /// dictionary tables it references (parsed from the generated &lt;app&gt;.clw, filtered to used ones).
         /// </summary>
@@ -549,6 +601,7 @@ namespace ClarionAssistant.Terminal
             var globals = new List<Dictionary<string, object>>();
             var otherFiles = new List<Dictionary<string, object>>();
             var browseFiles = new List<Dictionary<string, object>>();
+            var fileScopes = new List<Dictionary<string, object>>();
             try
             {
                 // Prefer the AUTHORITATIVE .txa source (declaration order + pictures + exact Clarion item
@@ -593,8 +646,19 @@ namespace ClarionAssistant.Terminal
 
                 // Other Files: the proc's [FILES][OTHERS] names paired with dictionary (.dcv) schema.
                 otherFiles = GetOtherFiles(txa, procedureName);
-                // File-Browsing List Box: the proc's [FILES][PRIMARY] file + [KEY], dict-enriched.
-                browseFiles = GetBrowseFiles(txa, procedureName);
+
+                // File scopes: ALL per-template-instance file groups the native Data/Tables pad shows ("File-
+                // Browsing List Box", "Update Record on Disk", "Relation Tree...", ...), read LIVE from the
+                // FileSchemaTree. When this resolves it SUPERSEDES the flat .txa browse parse below — the browse
+                // is itself one of these instance scopes, so emitting both would double-list it. The reader fails
+                // closed (empty) when the docked tree isn't reachable or is showing a different procedure, in
+                // which case we keep the .txa browse fallback so the section still renders something.
+                fileScopes = GetFileScopes(procedureName);
+                if (fileScopes.Count == 0)
+                {
+                    // File-Browsing List Box: the proc's [FILES][PRIMARY] file + [KEY], dict-enriched.
+                    browseFiles = GetBrowseFiles(txa, procedureName);
+                }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] GetPadData parse: " + ex.Message); }
 
@@ -630,6 +694,7 @@ namespace ClarionAssistant.Terminal
                 { "globals", globals },
                 { "otherFiles", otherFiles },
                 { "browseFiles", browseFiles },
+                { "fileScopes", fileScopes },
                 { "tables", GetDeclaredTables() },
                 { "procedures", procedures }
             };
