@@ -173,6 +173,9 @@ namespace ClarionAssistant.Terminal
                     case "paste":
                         OnPasteRequested();
                         break;
+                    case "contextmenu":
+                        OnContextMenuRequested(message.X, message.Y, message.SelectedText, message.SelectedTextRaw);
+                        break;
                     case "fontSizeChanged":
                         float newSize;
                         if (float.TryParse(message.Data, out newSize))
@@ -229,12 +232,184 @@ namespace ClarionAssistant.Terminal
 
         private void OnPasteRequested()
         {
-            if (Clipboard.ContainsText())
+            if (!Clipboard.ContainsText()) return;
+            string text = Clipboard.GetText();
+            if (string.IsNullOrEmpty(text)) return;
+
+            // Claude Code's prompt UI caps at ~5-6 visible rows; pasting a long
+            // blob makes the prompt unreadable and unscrollable. For pastes over
+            // the threshold, write to a temp file and inject "@<short-path> "
+            // instead — Claude reads the file on submit and the prompt stays
+            // visually compact.
+            if (IsLargePaste(text))
             {
-                string text = Clipboard.GetText();
-                if (!string.IsNullOrEmpty(text))
-                    DataReceived?.Invoke(Encoding.UTF8.GetBytes(text));
+                string cached = WritePasteCacheFile(text);
+                if (cached != null)
+                {
+                    InjectAtReference(cached);
+                    return;
+                }
+                // Cache write failed — fall through to raw paste so the user
+                // doesn't silently lose their clipboard.
             }
+            DataReceived?.Invoke(Encoding.UTF8.GetBytes(text));
+        }
+
+        private void OnContextMenuRequested(int clientX, int clientY, string selectedText, string selectedTextRaw)
+        {
+            try
+            {
+                if (_webView == null || _webView.IsDisposed) return;
+
+                var menu = new ContextMenuStrip();
+
+                var copyItem = new ToolStripMenuItem("Copy");
+                copyItem.Enabled = !string.IsNullOrEmpty(selectedText);
+                copyItem.Click += (s, e) =>
+                {
+                    try { if (!string.IsNullOrEmpty(selectedText)) Clipboard.SetText(selectedText); }
+                    catch { }
+                };
+                menu.Items.Add(copyItem);
+
+                // "Copy raw" — only when raw differs from flowed (otherwise it'd
+                // be a confusing duplicate). Useful for code blocks, tables,
+                // and any structured output that should NOT have continuation
+                // rows joined into paragraphs.
+                if (!string.IsNullOrEmpty(selectedTextRaw) && selectedTextRaw != selectedText)
+                {
+                    var copyRawItem = new ToolStripMenuItem("Copy raw (no paragraph join)");
+                    copyRawItem.Click += (s, e) =>
+                    {
+                        try { Clipboard.SetText(selectedTextRaw); }
+                        catch { }
+                    };
+                    menu.Items.Add(copyRawItem);
+                }
+
+                var pasteItem = new ToolStripMenuItem("Paste");
+                pasteItem.Enabled = Clipboard.ContainsText();
+                pasteItem.Click += (s, e) => OnPasteRequested();
+                menu.Items.Add(pasteItem);
+
+                menu.Items.Add(new ToolStripSeparator());
+
+                var pasteFromFileItem = new ToolStripMenuItem("Paste from file…");
+                pasteFromFileItem.Click += (s, e) => PasteFromFileDialog();
+                menu.Items.Add(pasteFromFileItem);
+
+                // Only surface the "large clipboard as file" item when it would
+                // actually do something different from regular Paste.
+                bool hasLargeClip = false;
+                try
+                {
+                    if (Clipboard.ContainsText())
+                    {
+                        string clip = Clipboard.GetText();
+                        hasLargeClip = !string.IsNullOrEmpty(clip) && IsLargePaste(clip);
+                    }
+                }
+                catch { }
+                if (hasLargeClip)
+                {
+                    var pasteLargeItem = new ToolStripMenuItem("Paste large clipboard as file");
+                    pasteLargeItem.Click += (s, e) =>
+                    {
+                        try
+                        {
+                            string clip = Clipboard.GetText();
+                            if (string.IsNullOrEmpty(clip)) return;
+                            string cached = WritePasteCacheFile(clip);
+                            if (cached != null) InjectAtReference(cached);
+                        }
+                        catch { }
+                    };
+                    menu.Items.Add(pasteLargeItem);
+                }
+
+                Point screen = _webView.PointToScreen(new Point(clientX, clientY));
+                menu.Show(screen);
+            }
+            catch { }
+        }
+
+        private static bool IsLargePaste(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return false;
+            if (text.Length > 1000) return true;
+            int newlines = 0;
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (text[i] == '\n') { newlines++; if (newlines > 4) return true; }
+            }
+            return false;
+        }
+
+        private void PasteFromFileDialog()
+        {
+            try
+            {
+                using (var dlg = new OpenFileDialog())
+                {
+                    dlg.Title = "Paste file as @reference";
+                    dlg.Filter = "Text files (*.txt;*.md;*.log;*.json;*.xml;*.clw;*.inc)|*.txt;*.md;*.log;*.json;*.xml;*.clw;*.inc|All files (*.*)|*.*";
+                    dlg.CheckFileExists = true;
+                    if (dlg.ShowDialog() == DialogResult.OK && !string.IsNullOrEmpty(dlg.FileName))
+                        InjectAtReference(dlg.FileName);
+                }
+            }
+            catch { }
+        }
+
+        private string WritePasteCacheFile(string text)
+        {
+            try
+            {
+                string baseDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "ClarionAssistant", "paste-cache");
+                if (!Directory.Exists(baseDir)) Directory.CreateDirectory(baseDir);
+
+                // Prune entries older than 24h to keep the cache from accumulating.
+                try
+                {
+                    DateTime cutoff = DateTime.UtcNow.AddHours(-24);
+                    foreach (var f in Directory.GetFiles(baseDir, "paste-*.txt"))
+                    {
+                        try { if (File.GetLastWriteTimeUtc(f) < cutoff) File.Delete(f); } catch { }
+                    }
+                }
+                catch { }
+
+                string name = "paste-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff") + ".txt";
+                string full = Path.Combine(baseDir, name);
+                File.WriteAllText(full, text, new UTF8Encoding(false));
+                return full;
+            }
+            catch { return null; }
+        }
+
+        private void InjectAtReference(string fullPath)
+        {
+            if (string.IsNullOrEmpty(fullPath)) return;
+            string injected = ToShortPathIfPossible(fullPath);
+            // Trailing space terminates the @reference for Claude Code's parser
+            // and leaves the cursor positioned for the user's question.
+            DataReceived?.Invoke(Encoding.UTF8.GetBytes("@" + injected + " "));
+        }
+
+        private static string ToShortPathIfPossible(string longPath)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(longPath)) return longPath;
+                if (longPath.IndexOf(' ') < 0) return longPath;
+                var sb = new StringBuilder(longPath.Length + 260);
+                uint n = NativeMethods.GetShortPathName(longPath, sb, (uint)sb.Capacity);
+                if (n > 0 && n <= sb.Capacity) return sb.ToString();
+            }
+            catch { }
+            return longPath;
         }
 
         public void WriteToTerminal(byte[] data)
@@ -354,6 +529,10 @@ namespace ClarionAssistant.Terminal
             public string Data { get; set; }
             public int Cols { get; set; }
             public int Rows { get; set; }
+            public int X { get; set; }
+            public int Y { get; set; }
+            public string SelectedText { get; set; }
+            public string SelectedTextRaw { get; set; }
         }
 
         private TerminalMessage ParseJsonMessage(string json)
@@ -381,6 +560,8 @@ namespace ClarionAssistant.Terminal
                     string value = ParseJsonString(json, ref pos);
                     if (key == "type") msg.Type = value;
                     else if (key == "data") msg.Data = value;
+                    else if (key == "selectedText") msg.SelectedText = value;
+                    else if (key == "selectedTextRaw") msg.SelectedTextRaw = value;
                 }
                 else
                 {
@@ -395,6 +576,8 @@ namespace ClarionAssistant.Terminal
                             if (key == "cols") msg.Cols = num;
                             else if (key == "rows") msg.Rows = num;
                             else if (key == "fontSize") msg.Data = numStr;
+                            else if (key == "x") msg.X = num;
+                            else if (key == "y") msg.Y = num;
                         }
                     }
                 }
