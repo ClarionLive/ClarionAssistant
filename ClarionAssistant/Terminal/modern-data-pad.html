@@ -148,6 +148,8 @@
     .scard { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid #d0d0d0;
         border-radius: 5px; background: #f7f8fa; }
     .scard.drop-target { border-color: #0a5dc2; box-shadow: 0 0 0 1px #0a5dc2 inset; }
+    /* A Local/Global section header lit up as a paste / drag-drop target for variable definitions. */
+    .section.drop-target { outline: 2px dashed #0a5dc2; outline-offset: -2px; background: rgba(10,93,194,0.08); }
     .scard .handle { cursor: grab; color: #999; user-select: none; }
     .scard .slabel { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .scard .sbtn { cursor: pointer; color: #5a5a5a; padding: 0 5px; border-radius: 3px;
@@ -248,6 +250,11 @@
     var globals = [];
     var procedures = [];
     var renderedProcedure = '';  // the procedure the current payload is for — sent with ＋Add so the host validates against the on-screen procedure
+    var hoverScope = null;       // 'local'|'global' when the pointer is over that section header — arms Ctrl+V paste
+    // Per-session random token stamped into every in-pad column drag (application/x-ca-column). The drop handler
+    // only honors column drags carrying THIS token — an external drag source can set the MIME but can't know it,
+    // so foreign drags can't drive the lossless column-copy path.
+    var DRAG_NONCE = 'ca' + Math.random().toString(36).slice(2) + Date.now().toString(36);
     var selectedProc = null;   // Procedures section: the row the user single-clicked (header "Open" target)
     var collapsed = {};        // tableName -> true when a table's columns are collapsed
     var sectionCollapsed = {}; // section key -> true when a whole section is collapsed
@@ -482,13 +489,16 @@
     //   - Dragging a SELECTED row drops the WHOLE selection as a block (one item per line, list order);
     //     dragging an UNSELECTED row drops just this row.
     // pass plainSelect=false for rows that own a competing plain-click action (Procedures: select-for-Open).
-    function makeDraggable(row, text, plainSelect) {
+    // dragMeta (optional): {table, column} for a dictionary-COLUMN row, so a drop on a Local/Global section can
+    // do a lossless field copy. Carried alongside text/plain — the drop handler prefers it (text/plain for a
+    // column is the compilable reference like "PRE:Name", which is NOT a parseable declaration).
+    function makeDraggable(row, text, plainSelect, dragMeta) {
         if (!text) return;
         if (plainSelect === undefined) plainSelect = true;
         // Stable selection key: text + per-render occurrence index (handles duplicate names across tables).
         var occ = (_selOcc[text] || 0); _selOcc[text] = occ + 1;
         var key = text + '#' + occ;
-        selOrder.push({ key: key, text: text, el: row });
+        selOrder.push({ key: key, text: text, el: row, meta: dragMeta || null });
         if (selSet[key] !== undefined) row.classList.add('multisel');
 
         row.addEventListener('mousedown', function (e) {
@@ -522,6 +532,16 @@
             }
             try { e.dataTransfer.setData('text/plain', payload); e.dataTransfer.effectAllowed = 'copy'; }
             catch (ex) {}
+            // Column rows also carry structured {table,column} (this row, or every selected column row) so a drop
+            // on a Local/Global section copies the real dictionary field(s) rather than parsing "PRE:Name" as text.
+            try {
+                var metas = [];
+                if (selSet[key] !== undefined) {
+                    for (var j = 0; j < selOrder.length; j++)
+                        if (selSet[selOrder[j].key] !== undefined && selOrder[j].meta) metas.push(selOrder[j].meta);
+                } else if (dragMeta) { metas.push(dragMeta); }
+                if (metas.length) e.dataTransfer.setData('application/x-ca-column', JSON.stringify({ n: DRAG_NONCE, cols: metas }));
+            } catch (ex2) {}
         });
         row.addEventListener('dragend', function (e) {
             try { if (e.dataTransfer && e.dataTransfer.dropEffect && e.dataTransfer.dropEffect !== 'none') { selSet = {}; applySel(); } }
@@ -620,6 +640,10 @@
     function render() {
         // Reset the per-render multi-select trackers BEFORE any makeDraggable() call rebuilds the rows.
         selOrder = []; _selOcc = {};
+        // render() rebuilds the section DOM, so the old header's mouseleave never fires — clear hoverScope to
+        // avoid a stale value (a later Ctrl+V would otherwise target a scope no longer under the cursor). It
+        // re-arms on the next mouseenter once the pointer moves over a Local/Global header.
+        hoverScope = null;
         var f = (document.getElementById('filter').value || '').trim().toLowerCase();
         var match = function (s) { return !f || (s && s.toLowerCase().indexOf(f) >= 0); };
         // [11] Smarter filter: match against ANY of several text fields (descriptions / prompts / headers /
@@ -639,7 +663,7 @@
         // Collapse-All / Expand-All pair is shown at the far right that folds/unfolds everything in the section.
         // extraBtns (optional): [{label, title, onClick}] — custom header buttons on the far right (e.g.
         // Procedures' "Open"). Shown left of the Collapse/Expand-all pair when the section is open.
-        function sectionHeader(key, label, count, allCtl, extraBtns) {
+        function sectionHeader(key, label, count, allCtl, extraBtns, dropScope) {
             var open = !sectionCollapsed[key] || !!f; // force-open while filtering
             var sec = document.createElement('div');
             sec.className = 'section';
@@ -649,6 +673,10 @@
             lbl.textContent = (open ? '▾ ' : '▸ ') + label + '  (' + count + ')';
             lbl.addEventListener('click', function () { sectionCollapsed[key] = !sectionCollapsed[key]; render(); });
             sec.appendChild(lbl);
+            // Local/Global headers are paste/drag-drop targets: drop Clarion declaration TEXT (from Monaco/another
+            // app) → parse + create; drop in-pad COLUMN row(s) (application/x-ca-column) → lossless field copy.
+            // Hovering also arms Ctrl+V for this scope (see the document keydown handler).
+            if (dropScope) wireScopeDrop(sec, dropScope);
             if (open && (allCtl || (extraBtns && extraBtns.length))) {
                 var ctl = document.createElement('span'); ctl.className = 'sec-ctl';
                 (extraBtns || []).forEach(function (b) {
@@ -681,7 +709,68 @@
                 label: '＋ Add',
                 title: 'Add a ' + scope + ' variable (opens Clarion’s field form)',
                 onClick: function () { postToHost({ action: 'addVariable', scope: scope, procedure: renderedProcedure }); }
+            }, {
+                // 📋 Paste: the host reads the Windows clipboard and parses Clarion declaration text (e.g.
+                // "Cust:Name STRING(30)") into new variable(s) — no inline text, so the host-clipboard path runs.
+                label: '📋 Paste',
+                title: 'Paste ' + scope + ' variable definition(s) from the clipboard (Clarion declaration text)',
+                onClick: function () { postToHost({ action: 'pasteVariables', scope: scope, procedure: renderedProcedure }); }
             }];
+        }
+
+        // Map a section key to its variable scope (for paste/drop targets); null for non-variable sections.
+        function scopeForKey(key) { return key === 'locals' ? 'local' : (key === 'globals' ? 'global' : null); }
+
+        // DataTransfer.types can be a DOMStringList (not an Array) — membership test without Array.indexOf.
+        function hasType(types, t) {
+            if (!types) return false;
+            for (var i = 0; i < types.length; i++) if (types[i] === t) return true;
+            return false;
+        }
+
+        // Make a Local/Global section header a paste/drag-drop target for variable definitions, and track hover
+        // so Ctrl+V knows which scope to paste into. A COLUMN drag (application/x-ca-column) → lossless field copy;
+        // any other text/plain → declaration text the host parses. Column data is preferred over text (a column's
+        // text/plain is its compilable reference, not a parseable declaration).
+        function wireScopeDrop(sec, scope) {
+            sec.addEventListener('mouseenter', function () { hoverScope = scope; });
+            sec.addEventListener('mouseleave', function () { if (hoverScope === scope) hoverScope = null; });
+            sec.addEventListener('dragover', function (e) {
+                var types = e.dataTransfer ? e.dataTransfer.types : null;
+                if (!hasType(types, 'application/x-ca-column') && !hasType(types, 'text/plain')) return;
+                e.preventDefault();
+                try { e.dataTransfer.dropEffect = 'copy'; } catch (ex) {}
+                sec.classList.add('drop-target');
+            });
+            sec.addEventListener('dragleave', function () { sec.classList.remove('drop-target'); });
+            sec.addEventListener('drop', function (e) {
+                e.preventDefault();
+                sec.classList.remove('drop-target');
+                var colRaw = '';
+                try { colRaw = e.dataTransfer.getData('application/x-ca-column'); } catch (ex) {}
+                if (colRaw) {
+                    // In-pad column drag only: the payload must carry this page's session nonce. A foreign drag
+                    // source can set the MIME but not the nonce, so it's dropped (never parsed as declaration text).
+                    // Reject an oversized custom-MIME payload BEFORE JSON.parse so a hostile external drag can't
+                    // force a multi-megabyte parse in the renderer (a real in-pad column payload is tiny).
+                    if (colRaw.length > 256 * 1024) return;
+                    var parsed = null;
+                    try { parsed = JSON.parse(colRaw); } catch (ex3) {}
+                    if (parsed && parsed.n === DRAG_NONCE && parsed.cols && parsed.cols.length)
+                        postToHost({ action: 'copyColumns', scope: scope, cols: JSON.stringify(parsed.cols), procedure: renderedProcedure });
+                    return;
+                }
+                var text = '';
+                try { text = e.dataTransfer.getData('text/plain'); } catch (ex2) {}
+                if (text) {
+                    // Reject an oversized drop HERE, before it crosses to the host (mirrors the host's 256KB paste
+                    // cap) so a multi-megabyte external text drop can't force a big message allocation + UI-thread
+                    // scan on the host side. A real variable-declaration paste is tiny.
+                    if (text.length > 256 * 1024) return;
+                    text = text.replace(/\r\n?/g, '\n');   // normalize so the host JSON reader round-trips multi-line cleanly
+                    postToHost({ action: 'pasteVariables', scope: scope, text: text, procedure: renderedProcedure });
+                }
+            });
         }
 
         // Collapse-All / Expand-All for one section. `collapse` true folds everything; false unfolds it.
@@ -919,7 +1008,7 @@
                                 row.appendChild(pc);
 
                                 row.addEventListener('dblclick', function () { insert(ins); });
-                                makeDraggable(row, ins);
+                                makeDraggable(row, ins, true, { table: ff.name, column: c.name });
                                 if (hasKids) {
                                     tw.style.cursor = 'pointer';   // chevron-only expand/collapse
                                     tw.addEventListener('click', function (e) {
@@ -1076,7 +1165,7 @@
             };
             var shown = items.filter(function (it) { return matchAny(it.name, it.prompt, it.header) || anyMatch(it.children); });
             if (!shown.length) return;
-            if (!sectionHeader(key, label, countAll(items), { kind: 'tree', items: items }, addVarBtns(key))) return;
+            if (!sectionHeader(key, label, countAll(items), { kind: 'tree', items: items }, addVarBtns(key), scopeForKey(key))) return;
 
             // Per-section grid: subgrid rows share its max-content columns, so name/type/picture form real
             // LEFT-aligned columns (type starts past the longest name, picture past the longest type).
@@ -1224,7 +1313,7 @@
             if (sectionHidden[id]) return;
             if (sectionCount(id) === 0) {
                 if (hideEmptySections || f) return;
-                sectionHeader(id, SECTION_LABELS[id], 0, null, addVarBtns(id));
+                sectionHeader(id, SECTION_LABELS[id], 0, null, addVarBtns(id), scopeForKey(id));
                 return;
             }
             buildSection(id);
@@ -1378,6 +1467,15 @@
             }
         });
     }
+
+    // Ctrl/Cmd+V while hovering a Local/Global section header pastes clipboard declaration text into that scope
+    // (the host reads the OS clipboard). Gated on hoverScope so the target is unambiguous; ignored otherwise.
+    document.addEventListener('keydown', function (e) {
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'v' || e.key === 'V') && hoverScope) {
+            e.preventDefault();
+            postToHost({ action: 'pasteVariables', scope: hoverScope, procedure: renderedProcedure });
+        }
+    });
 
     postToHost({ action: 'ready' });
 </script>

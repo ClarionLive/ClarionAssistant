@@ -84,6 +84,10 @@ namespace ClarionAssistant
                 if (!IsTrustedSource(e.Source)) return;
 
                 string json = e.TryGetWebMessageAsString();
+                // Bound an oversized incoming message before any scanning — defense-in-depth against a huge dropped
+                // payload (the page already caps drops at 256KB; this guards the host side too). Real pad messages
+                // are small; the only large one is a paste, capped well under this.
+                if (json != null && json.Length > 1024 * 1024) return;
                 string action = ExtractJsonValue(json, "action");
                 if (action == "ready")
                 {
@@ -210,6 +214,39 @@ namespace ClarionAssistant
                     if (!string.IsNullOrEmpty(path))
                         RunVariableCrud("Delete Variable", () => Services.FileSchemaVariableInserter.DeleteVariable(scope, path, clickedProc));
                 }
+                else if (action == "pasteVariables")
+                {
+                    // 📋 Paste / declaration-text drop on a Local/Global section: parse the Clarion declaration
+                    // text and create the field(s) WITHOUT the native FieldForm. 'text' is present for a DROP
+                    // (the dropped declaration text); ABSENT for the Paste button / Ctrl+V, in which case the
+                    // HOST reads the Windows clipboard (we're on the STA UI thread inside RunVariableCrud).
+                    // showSuccess: there's no native form here, so the added/skipped summary is the only feedback.
+                    string scope = ExtractJsonValue(json, "scope");
+                    string clickedProc = ExtractJsonValue(json, "procedure");
+                    string droppedText = ExtractJsonValue(json, "text");
+                    RunVariableCrud("Paste Variables", () =>
+                    {
+                        string decl = droppedText;
+                        if (string.IsNullOrEmpty(decl))
+                        {
+                            try { decl = System.Windows.Forms.Clipboard.GetText(); }
+                            catch (Exception cex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] clipboard read: " + cex.Message); decl = null; }
+                        }
+                        return Services.FileSchemaVariableInserter.PasteVariableDefinitions(scope, decl, clickedProc);
+                    }, showSuccessInfo: true);
+                }
+                else if (action == "copyColumns")
+                {
+                    // In-pad column drag dropped on a Local/Global section: lossless copy of one or more existing
+                    // dictionary columns into Local/Global data (true DDField copy via Clarion's native paste flow).
+                    // 'cols' is a JSON array string [{table,column},...] (supports a multi-row column drag); the
+                    // whole loop runs inside ONE RunVariableCrud op so single-flight doesn't drop later columns.
+                    string scope = ExtractJsonValue(json, "scope");
+                    string clickedProc = ExtractJsonValue(json, "procedure");
+                    string colsJson = ExtractJsonValue(json, "cols");
+                    if (!string.IsNullOrEmpty(colsJson))
+                        RunVariableCrud("Copy Column", () => CopyColumns(scope, colsJson, clickedProc), showSuccessInfo: true);
+                }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] Message error: " + ex.Message); }
         }
@@ -300,7 +337,7 @@ namespace ClarionAssistant
         /// invoke the inserter, surface failures via MessageBox, and refresh our pad on success via ScheduleAddRefresh
         /// (the deferred whole-app .txa re-export — Clarion finalizes the mutation a turn after the modal unwinds).
         /// </summary>
-        private void RunVariableCrud(string title, Func<Services.FileSchemaVariableInserter.Result> op)
+        private void RunVariableCrud(string title, Func<Services.FileSchemaVariableInserter.Result> op, bool showSuccessInfo = false)
         {
             if (_panel == null || _varCrudInProgress) return;
             _varCrudInProgress = true;
@@ -320,8 +357,15 @@ namespace ClarionAssistant
                     catch (Exception ex) { r = Services.FileSchemaVariableInserter.Result.Fail(ex.Message); }
 
                     // On failure tell the developer why nothing happened (pad closed, read-only, wrong-procedure,
-                    // not found, can't-delete). On success Clarion's own form/confirm was the feedback.
+                    // not found, can't-delete). On success Clarion's own form/confirm is normally the feedback —
+                    // but the form-less paste/copy path has no native dialog, so showSuccessInfo surfaces its
+                    // added/skipped summary (and Clarion's own form still appears for native Add/Edit/Delete).
                     if (r != null && !r.Ok)
+                    {
+                        try { MessageBox.Show(r.Message, title, MessageBoxButtons.OK, MessageBoxIcon.Information); }
+                        catch { }
+                    }
+                    else if (r != null && r.Ok && r.Committed && showSuccessInfo && !string.IsNullOrEmpty(r.Message))
                     {
                         try { MessageBox.Show(r.Message, title, MessageBoxButtons.OK, MessageBoxIcon.Information); }
                         catch { }
@@ -334,6 +378,39 @@ namespace ClarionAssistant
                 // user-initiated op's refresh is cheap, and edit no-op detection isn't reliable.)
                 if (r != null && r.Ok && r.Committed) ScheduleAddRefresh();
             }));
+        }
+
+        /// <summary>
+        /// Parse the JSON array of {table,column} and copy them into the scope in ONE ordered inserter call
+        /// (CopyColumnsToScope resolves the add target once and pastes in drag order). UI thread, inside one
+        /// RunVariableCrud op.
+        /// </summary>
+        private static Services.FileSchemaVariableInserter.Result CopyColumns(string scope, string colsJson, string clickedProc)
+        {
+            // Bound the untrusted drag payload before deserializing (a hostile/oversized application/x-ca-column
+            // could otherwise allocate hugely on the UI thread). The per-op column-count cap lives in the inserter.
+            if (string.IsNullOrEmpty(colsJson) || colsJson.Length > 256 * 1024)
+                return Services.FileSchemaVariableInserter.Result.Fail("No columns to copy (or the drop payload was too large).");
+
+            System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>> cols = null;
+            try
+            {
+                var ser = new JavaScriptSerializer { MaxJsonLength = 256 * 1024 };
+                cols = ser.Deserialize<System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>>>(colsJson);
+            }
+            catch { }
+            if (cols == null || cols.Count == 0)
+                return Services.FileSchemaVariableInserter.Result.Fail("No columns to copy.");
+
+            var list = new System.Collections.Generic.List<string[]>();
+            foreach (var c in cols)
+            {
+                object t, col;
+                c.TryGetValue("table", out t);
+                c.TryGetValue("column", out col);
+                list.Add(new[] { t as string, col as string });
+            }
+            return Services.FileSchemaVariableInserter.CopyColumnsToScope(scope, list, clickedProc);
         }
 
         /// <summary>
@@ -567,6 +644,7 @@ namespace ClarionAssistant
                     if (n == '"') { sb.Append('"'); idx += 2; continue; }
                     if (n == '\\') { sb.Append('\\'); idx += 2; continue; }
                     if (n == 'n') { sb.Append('\n'); idx += 2; continue; }
+                    if (n == 'r') { sb.Append('\r'); idx += 2; continue; }
                     if (n == 't') { sb.Append('\t'); idx += 2; continue; }
                     sb.Append(c); idx++; continue;
                 }
