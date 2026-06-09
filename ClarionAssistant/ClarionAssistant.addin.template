@@ -35,6 +35,9 @@
     <Pad id="ModernData" category="Tools" title="CA Data"
          icon="PadIcons.Output" shortcut="Control|Alt|D"
          class="ClarionAssistant.ModernDataPad"/>
+    <Pad id="ClarionDebugger" category="Tools" title="CA Debugger"
+         icon="PadIcons.Output" shortcut="Control|Alt|G"
+         class="ClarionAssistant.ClarionDebuggerPad"/>
   </Path>
 
   <Path name="/Workspace/Tools">
@@ -48,6 +51,8 @@
               class="ClarionAssistant.OpenModernEmbeditorPickerCommand"/>
     <MenuItem id="ShowModernDataPad" label="CA Data Pad"
               class="ClarionAssistant.ShowModernDataPadCommand"/>
+    <MenuItem id="ShowClarionDebugger" label="CA Debugger"
+              class="ClarionAssistant.ShowClarionDebuggerCommand"/>
   </Path>
 
   <!-- Modern Embeditor (Path A) POC: completion-test button on the embeditor toolbar. -->
