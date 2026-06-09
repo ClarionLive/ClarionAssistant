@@ -115,6 +115,7 @@
     <Compile Include="OpenModernEmbeditorPickerCommand.cs" />
     <Compile Include="ShowModernDataPadCommand.cs" />
     <Compile Include="Services\ClarionDebuggerService.cs" />
+    <Compile Include="Services\EditorBreakpointService.cs" />
     <Compile Include="ClarionDebuggerControl.cs" />
     <Compile Include="ClarionDebuggerPad.cs" />
     <Compile Include="ShowClarionDebuggerCommand.cs" />

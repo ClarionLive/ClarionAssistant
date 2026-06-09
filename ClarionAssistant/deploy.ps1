@@ -274,7 +274,7 @@ foreach ($ver in $TargetVersions) {
         }
 
         # --- Deploy Clarion debugger engine (launched by the CA Debugger pad) ---
-        $DebuggerItems = @("ClarionDbg.exe", "ClarionDbg.Core.dll")
+        $DebuggerItems = @("ClarionDbg.exe", "ClarionDbg.pdb", "ClarionDbg.Core.dll", "ClarionDbg.Core.pdb")
         if (Test-Path $DebuggerEngineOutput) {
             foreach ($item in $DebuggerItems) {
                 $src = Join-Path $DebuggerEngineOutput $item
