@@ -43,10 +43,6 @@ $IndexerDir    = "H:\DevLaptop\ClarionLSP\indexer"
 $IndexerFile   = "$IndexerDir\ClarionIndexer.csproj"
 $IndexerOutput = "$IndexerDir\bin\Debug"
 
-# Clarion debugger engine (separate project: standalone x86 TSWD debug engine launched by the CA Debugger pad)
-$DebuggerEngineProj   = "H:\DevLaptop\Projects\ClarionDebugger\src\ClarionDbg.Cli\ClarionDbg.Cli.csproj"
-$DebuggerEngineOutput = "H:\DevLaptop\Projects\ClarionDebugger\src\ClarionDbg.Cli\bin\Debug\net48"
-
 # Version-specific config
 $Versions = @{
     "12" = @{ Root = "C:\Clarion12";                           Output = "bin\Debug-C12" }
@@ -133,17 +129,6 @@ if (-not $NoBuild) {
     } else {
         Write-Host ""
         Write-Host "Skipping indexer build (project not found: $IndexerFile)" -ForegroundColor Yellow
-    }
-
-    if (Test-Path $DebuggerEngineProj) {
-        Write-Host ""
-        Write-Host "Building Clarion debugger engine..." -ForegroundColor Cyan
-        & $MSBuild $DebuggerEngineProj /t:Build /restore /p:Configuration=Debug /v:minimal
-        if ($LASTEXITCODE -ne 0) { Write-Host "Debugger engine build failed." -ForegroundColor Red; exit 1 }
-        Write-Host "Debugger engine build succeeded." -ForegroundColor Green
-    } else {
-        Write-Host ""
-        Write-Host "Skipping debugger engine build (project not found: $DebuggerEngineProj)" -ForegroundColor Yellow
     }
 }
 
@@ -271,29 +256,6 @@ foreach ($ver in $TargetVersions) {
             } else {
                 Write-Host "  SKIP  $name (not found in lib/sqlite-fts5)" -ForegroundColor DarkGray
             }
-        }
-
-        # --- Deploy Clarion debugger engine (launched by the CA Debugger pad) ---
-        $DebuggerItems = @("ClarionDbg.exe", "ClarionDbg.pdb", "ClarionDbg.Core.dll", "ClarionDbg.Core.pdb")
-        if (Test-Path $DebuggerEngineOutput) {
-            foreach ($item in $DebuggerItems) {
-                $src = Join-Path $DebuggerEngineOutput $item
-                if (-not (Test-Path $src)) {
-                    Write-Host "  SKIP  $item (not found in debugger engine output)" -ForegroundColor DarkGray
-                    continue
-                }
-                try {
-                    Copy-Item $src (Join-Path $DeployDir $item) -Force
-                    Write-Host "  OK    $item (debugger engine)" -ForegroundColor Green
-                    $copied++
-                }
-                catch {
-                    Write-Host "  FAIL  $item - $($_.Exception.Message)" -ForegroundColor Red
-                    $failed++
-                }
-            }
-        } else {
-            Write-Host "  SKIP  debugger engine (not found: $DebuggerEngineOutput)" -ForegroundColor DarkGray
         }
 
         # --- Deploy LSP Server ---
