@@ -144,6 +144,29 @@ namespace ClarionAssistant.Services
 
             Register(new McpTool
             {
+                Name = "embeditor_get_selection",
+                Description = "Get the text currently highlighted in the CA Embeditor (the Modern Monaco/WebView2 editor), with its 1-based line/column range. This is SEPARATE from get_selected_text, which reads only the NATIVE Clarion editor. Use this to see what the developer has selected in the CA Embeditor. The result includes a 'truncated' flag — when true, the selection was clipped (very large) and 'text' is only the first ~10K chars.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                RequiresUiThread = true,
+                Handler = args =>
+                {
+                    var sel = ClarionAssistant.Terminal.ModernEmbeditorViewContent.GetFocusedSelection();
+                    if (sel == null)
+                        return "(no CA Embeditor open or focused)";
+                    bool has = sel.ContainsKey("hasSelection") && sel["hasSelection"] is bool && (bool)sel["hasSelection"];
+                    if (!has)
+                    {
+                        string proc = sel.ContainsKey("procedure") ? sel["procedure"] as string : null;
+                        return string.IsNullOrEmpty(proc)
+                            ? "(no selection in CA Embeditor)"
+                            : "(no selection in CA Embeditor — procedure: " + proc + ")";
+                    }
+                    return sel;
+                }
+            });
+
+            Register(new McpTool
+            {
                 Name = "get_word_under_cursor",
                 Description = "Get the word at the current cursor position in the editor. Useful for identifying what symbol the developer is looking at.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),

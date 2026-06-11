@@ -8,7 +8,8 @@ You have MCP tools that directly control the IDE the developer is using. ALWAYS 
 
 ### IDE Context (read what's happening in the editor)
 - `get_active_file` -Get the path and full content of the file currently open in the editor
-- `get_selected_text` -Get the currently selected text
+- `get_selected_text` -Get the currently selected text (NATIVE Clarion editor only)
+- `embeditor_get_selection` -Get the text highlighted in the **CA Embeditor** (Monaco/WebView2), with its 1-based line/column range. SEPARATE from `get_selected_text` — use this for "what have I got selected in the CA Embeditor?"
 - `get_word_under_cursor` -Get the word at the cursor position
 - `get_cursor_position` -Get current line number, column, and total line count
 
