@@ -1131,11 +1131,46 @@
     var NAV_JUMP_MIN = 6;      // a move >= this many lines from the anchor counts as a recordable jump
     var NAV_CAP = 30;
 
+    // ----- CA Embeditor selection push (read-side bridge for Claude) -----
+    // Mirror the saveCursor/saveBookmarks push model: Monaco proactively reports the current selection,
+    // C# caches it, and the embeditor_get_selection MCP tool reads the cached snapshot. No async
+    // request/response round-trip → no WebView2 message-loop re-entrancy. Lightly debounced so a
+    // click-drag doesn't flood the bridge. Text is capped low enough that even an all-escaped selection
+    // (worst case ~6 JSON chars each) stays under the C# 64 KB (char) ParseBoundedBridgeJson cap, so the
+    // message is never silently dropped — and `truncated` tells the consumer when it was clipped.
+    var SELECTION_TEXT_CAP = 10000;
+    var _selPushTimer = null;
+    function scheduleSelectionPush(ed) {
+        if (_selPushTimer) clearTimeout(_selPushTimer);
+        _selPushTimer = setTimeout(function () { pushSelection(ed); }, 80);
+    }
+    function pushSelection(ed) {
+        try {
+            var e = ed || activeEd();
+            if (!e) return;
+            var model = e.getModel();
+            var sel = e.getSelection();
+            if (!model || !sel) return;
+            var text = model.getValueInRange(sel) || '';
+            var truncated = false;
+            if (text.length > SELECTION_TEXT_CAP) { text = text.slice(0, SELECTION_TEXT_CAP); truncated = true; }
+            postToHost({
+                action: 'selectionChanged',
+                text: text,
+                truncated: truncated,
+                startLine: sel.startLineNumber, startColumn: sel.startColumn,
+                endLine: sel.endLineNumber, endColumn: sel.endColumn
+            });
+        } catch (err) { }
+    }
+
     function installNavTracking(ed) {
         ed.onDidChangeCursorPosition(function () {
             if (navSuppress) return;
             scheduleNavRecord();
         });
+        // Report selection changes (and click-away → empty selection) for the read-side bridge.
+        ed.onDidChangeCursorSelection(function () { scheduleSelectionPush(ed); });
     }
     function scheduleNavRecord() {
         if (_navRecordTimer) clearTimeout(_navRecordTimer);

@@ -53,6 +53,19 @@ namespace ClarionAssistant.Terminal
         private string _histProcKey;
         private bool _histScopeResolved;
 
+        // CA Embeditor selection snapshot — pushed by Monaco (onDidChangeCursorSelection), read by the
+        // embeditor_get_selection MCP tool. Follows the saveCursor/saveBookmarks push model (no async
+        // round-trip → no WebView2 re-entrancy). Written + read on the UI thread for the instance path.
+        private string _selText = "";
+        private int _selStartLine, _selStartCol, _selEndLine, _selEndCol;
+        private bool _selHasSelection;
+        private bool _selTruncated;   // JS clipped the text at the cap — surface it so a consumer never treats a partial selection as whole
+
+        // Last selection reported by whichever tab pushed most recently. Lets the read survive a moment of
+        // ambiguous focus resolution. Guarded because GetFocusedSelection() may run before focus settles.
+        private static readonly object _selSnapLock = new object();
+        private static Dictionary<string, object> _lastFocusedSelection;
+
         private static readonly List<ModernEmbeditorViewContent> _instances = new List<ModernEmbeditorViewContent>();
 
         public override Control Control { get { return _panel; } }
@@ -909,6 +922,8 @@ namespace ClarionAssistant.Terminal
                     HandleSaveCursor(json);
                 else if (action == "saveBookmarks")
                     HandleSaveBookmarks(json);
+                else if (action == "selectionChanged")
+                    HandleSelectionChanged(json);
                 else if (action == "focusEditor")
                     BringToFront();   // drag-drop from the Data pad: activate this tab so the dev can type immediately
             }
@@ -1256,6 +1271,76 @@ namespace ClarionAssistant.Terminal
                 ModernEmbeditorState.SaveBookmarks(_histSolutionPath, _histProcKey, lines);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] saveBookmarks: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// Cache the Monaco selection pushed by the page (onDidChangeCursorSelection). Mirrors the
+        /// saveCursor/saveBookmarks push model — read by the embeditor_get_selection MCP tool, no round-trip.
+        /// The JS side caps the text at 10 KB chars, so even an all-escaped selection stays under
+        /// MaxBridgeJsonBytes (64 KB) and the message is never dropped; `truncated` flags any clipping.
+        /// </summary>
+        private void HandleSelectionChanged(string json)
+        {
+            try
+            {
+                var data = ParseBoundedBridgeJson(json);
+                if (data == null) return;
+                string text = data.ContainsKey("text") ? (data["text"] as string ?? "") : "";
+                bool truncated = data.ContainsKey("truncated") && data["truncated"] is bool && (bool)data["truncated"];
+                int sl = data.ContainsKey("startLine") ? Convert.ToInt32(data["startLine"]) : 0;
+                int sc = data.ContainsKey("startColumn") ? Convert.ToInt32(data["startColumn"]) : 0;
+                int el = data.ContainsKey("endLine") ? Convert.ToInt32(data["endLine"]) : 0;
+                int ec = data.ContainsKey("endColumn") ? Convert.ToInt32(data["endColumn"]) : 0;
+                // A real selection has a non-empty range. An empty range (click/caret move) reports
+                // hasSelection=false so the tool can say "nothing highlighted" on click-away.
+                bool has = sl > 0 && (sl != el || sc != ec);
+
+                _selText = has ? text : "";
+                _selStartLine = sl; _selStartCol = sc; _selEndLine = el; _selEndCol = ec;
+                _selHasSelection = has;
+                _selTruncated = has && truncated;   // no selection ⇒ nothing to truncate
+
+                var snap = BuildSelectionDict();
+                lock (_selSnapLock) { _lastFocusedSelection = snap; }
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] selectionChanged: " + ex.Message); }
+        }
+
+        private Dictionary<string, object> BuildSelectionDict()
+        {
+            return new Dictionary<string, object>
+            {
+                { "procedure", _procedureName ?? "" },
+                { "hasSelection", _selHasSelection },
+                { "truncated", _selTruncated },
+                { "text", _selText ?? "" },
+                { "startLine", _selStartLine },
+                { "startColumn", _selStartCol },
+                { "endLine", _selEndLine },
+                { "endColumn", _selEndCol }
+            };
+        }
+
+        /// <summary>This tab's current Monaco selection snapshot (procedure, text, range, hasSelection).</summary>
+        public Dictionary<string, object> GetSelectionSnapshot()
+        {
+            return BuildSelectionDict();
+        }
+
+        /// <summary>
+        /// The selection from the FOCUSED Modern Embeditor; if focus is momentarily ambiguous, the last
+        /// snapshot any tab reported; null only when no Modern Embeditor has ever reported one. Read by the
+        /// embeditor_get_selection MCP tool on the UI thread.
+        /// </summary>
+        public static Dictionary<string, object> GetFocusedSelection()
+        {
+            var view = FocusedModernView();
+            if (view != null) return view.GetSelectionSnapshot();
+            // Fall back to the last snapshot ONLY while a Monaco CA Embeditor is genuinely still open but
+            // unfocused (ambiguous-focus case). If no Modern tab is open, there is no CA Embeditor — return
+            // null so the tool says so, instead of serving a stale snapshot left behind by a closed tab.
+            lock (_instances) { if (_instances.Count == 0) return null; }
+            lock (_selSnapLock) { return _lastFocusedSelection; }
         }
 
         /// <summary>
