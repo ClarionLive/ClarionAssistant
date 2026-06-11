@@ -2439,24 +2439,15 @@ namespace ClarionAssistant
             _statusLineTimer.Tick += (s, ev) => PollStatusLine();
             _statusLineTimer.Start();
 
-            // Poll LSP diagnostics for the header pill (2s interval, cache-only reads)
+            // Poll LSP diagnostics for the header pill (2s interval, cache-only reads).
+            // The native Clarion embeditor uses its OWN built-in completion/tooltips — we no
+            // longer inject LSP completion, hover, or diagnostic squiggles into it. The LSP
+            // still backs the chat MCP tools and the (separate) CA/Modern Embeditor.
             _lspUiTimer = new System.Windows.Forms.Timer { Interval = 2000 };
-            _lspUiTimer.Tick += (s, ev) =>
-            {
-                PollLspUi();
-                // Arm LSP hover tooltips on the active embeditor (idempotent; no single
-                // embeditor-open event, so we attach opportunistically on the timer).
-                Services.EmbeditorCompletionService.EnsureHoverHandlerAttached();
-                // Sync the embeditor buffer + render LSP diagnostics as squiggles.
-                Services.EmbeditorCompletionService.EnsureDiagnosticsRendered();
-            };
+            _lspUiTimer.Tick += (s, ev) => PollLspUi();
             _lspUiTimer.Start();
 
-            // Install the app-wide Ctrl+Space embeditor-completion trigger (UI thread).
-            try { Services.EmbeditorCompletionService.InstallCtrlSpaceTrigger(); }
-            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[AssistantChatControl] Ctrl+Space trigger install failed: " + ex.Message); }
-
-            // Self-heal hook: if embeditor completion finds no active LSP, it kicks off a
+            // Self-heal hook: if the CA/Modern Embeditor finds no active LSP, it kicks off a
             // background start so the next invocation is fully populated.
             Services.EmbeditorCompletionService.LspStarter = () => _toolRegistry?.EnsureLspRunningInBackground();
         }

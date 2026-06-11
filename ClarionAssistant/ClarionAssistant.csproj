@@ -107,7 +107,6 @@
     <Compile Include="Services\AppTreeService.cs" />
     <Compile Include="Services\IdeReflectionService.cs" />
     <Compile Include="Services\EmbeditorCompletionService.cs" />
-    <Compile Include="EmbeditorCompletionTestCommand.cs" />
     <Compile Include="ShowModernEmbeditorCommand.cs" />
     <Compile Include="LspAutostartCommand.cs" />
     <Compile Include="RightClickHookAutostartCommand.cs" />

@@ -50,11 +50,8 @@
               class="ClarionAssistant.ShowModernDataPadCommand"/>
   </Path>
 
-  <!-- Modern Embeditor (Path A) POC: completion-test button on the embeditor toolbar. -->
+  <!-- CA Embeditor button on the native embeditor toolbar. -->
   <Path name="/SoftVelocity/Clarion/ToolBar/EmbedEditor">
-    <ToolbarItem id="EmbeditorCompletionTest" label="Completion Test"
-                 tooltip="Modern Embeditor POC: pop an ICSharpCode completion window with our own items"
-                 class="ClarionAssistant.EmbeditorCompletionTestCommand"/>
     <ToolbarItem id="ShowModernEmbeditor" label="CA Embeditor"
                  tooltip="Path B: open the assembled embeditor source in a modern Monaco editor (read-only render)"
                  class="ClarionAssistant.ShowModernEmbeditorCommand"/>
