@@ -122,6 +122,7 @@
     <Compile Include="Services\ModernEmbeditorSettings.cs" />
     <Compile Include="Services\ModernEmbeditorState.cs" />
     <Compile Include="Services\ClarionAppDataReader.cs" />
+    <Compile Include="Services\StructureDesignerService.cs" />
     <Compile Include="Dialogs\ModernEmbeditorPickerDialog.cs" />
     <Compile Include="Dialogs\ClaudeChatSettingsDialog.cs" />
     <Compile Include="Dialogs\CheatSheetDialog.cs" />

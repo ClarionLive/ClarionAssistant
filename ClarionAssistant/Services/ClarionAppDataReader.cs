@@ -453,6 +453,98 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// The WINDOW or REPORT structure that encloses a caret line — the designable structure the
+        /// native Clarion structure designer would open. <see cref="Found"/> is false when the line is
+        /// not inside any WINDOW/REPORT.
+        /// </summary>
+        public sealed class StructureHit
+        {
+            public bool Found;
+            public string Type;     // "WINDOW" or "REPORT"
+            public string Name;     // structure label, or "" if anonymous
+            public int StartLine;   // 1-based line of the structure opener
+            public int EndLine;     // 1-based line of the structure's closing END (last source line if unterminated)
+        }
+
+        /// <summary>
+        /// Locate the WINDOW or REPORT structure that encloses <paramref name="line1"/> (1-based) in
+        /// <paramref name="source"/>. Walks the structure-nesting stack (every structure opener pushes,
+        /// every bare END pops) and returns the OUTERMOST enclosing WINDOW/REPORT — the structure the
+        /// Clarion designer designs. A caret on the opener line or on the closing END line still counts
+        /// as inside. Used by the CA Embeditor Ctrl+D handler to (a) toast when the caret is not in a
+        /// designable structure and (b) pick the line to place the native ClarionEditor caret on before
+        /// RunDesigner.ShowDesigner.
+        ///
+        /// Detection is END-based (matching the rest of this reader); period-terminated structures are a
+        /// known limitation. RunDesigner.CanShowStructureDesigner is the authoritative caret gate on the
+        /// native side, so a miss here only affects the friendly pre-check, never the open's correctness.
+        /// </summary>
+        public static StructureHit FindStructureAtLine(string source, int line1)
+        {
+            var miss = new StructureHit { Found = false };
+            if (string.IsNullOrEmpty(source) || line1 < 1) return miss;
+            var lines = source.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+            if (line1 > lines.Length) return miss;
+
+            // Stack of currently-open structures: (keyword, label, 1-based opener line).
+            var stack = new List<(string Kw, string Label, int Start)>();
+
+            // Set at the target line; the scan then continues until the chosen structure's depth pops,
+            // which is the matching END — that gives EndLine (needed to extract the structure text and
+            // to define the designer's splice-back range).
+            StructureHit hit = null;
+            int hitDepth = -1;
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = StripComment(lines[i]);
+                string label = null, rest = "";
+                if (line.Trim().Length > 0)
+                {
+                    var m = Regex.Match(line, @"^(\s*)(\S+)\s*(.*)$");
+                    if (m.Success) { label = m.Groups[2].Value; rest = m.Groups[3].Value.Trim(); }
+                }
+                string labelU = label?.ToUpperInvariant() ?? "";
+
+                bool isEnd = labelU == "END" && rest.Length == 0;
+
+                // Structure opener: named ("Label WINDOW…") or anonymous bare ("REPORT", "QUEUE,…").
+                string kw = StructKw(rest.ToUpperInvariant());
+                bool anon = false;
+                if (kw == null && IsStructKw(labelU)) { kw = labelU; anon = true; }
+
+                // Open BEFORE the target-line capture so a caret ON the opener line counts as inside.
+                if (kw != null && !isEnd)
+                    stack.Add((kw, anon ? "" : label, i + 1));
+
+                // Capture at the target line — after this line's open, before its close.
+                if (hit == null && i + 1 == line1)
+                {
+                    for (int s = 0; s < stack.Count; s++)
+                        if (stack[s].Kw == "WINDOW" || stack[s].Kw == "REPORT")
+                        {
+                            hit = new StructureHit { Found = true, Type = stack[s].Kw, Name = stack[s].Label ?? "", StartLine = stack[s].Start, EndLine = lines.Length };
+                            hitDepth = s;
+                            break;
+                        }
+                    if (hit == null) return miss;
+                }
+
+                // Close AFTER the capture so a caret on the END line still counts as inside.
+                if (isEnd && stack.Count > 0)
+                {
+                    stack.RemoveAt(stack.Count - 1);
+                    if (hit != null && stack.Count == hitDepth)   // the chosen structure just closed
+                    {
+                        hit.EndLine = i + 1;
+                        return hit;
+                    }
+                }
+            }
+            return hit ?? miss;   // unterminated structure: EndLine = last source line
+        }
+
+        /// <summary>
         /// Parse a procedure's Local Data from a whole-app TXA export's [DATA] section — the AUTHORITATIVE
         /// source (matches Clarion's native Data pad by construction: [DATA] lists only the procedure's
         /// registered data items, excluding embed-injected locals). Unlike the embeditor-source parse,

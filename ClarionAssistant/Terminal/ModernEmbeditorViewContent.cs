@@ -926,6 +926,10 @@ namespace ClarionAssistant.Terminal
                     HandleSelectionChanged(json);
                 else if (action == "focusEditor")
                     BringToFront();   // drag-drop from the Data pad: activate this tab so the dev can type immediately
+                else if (action == "openDesigner")
+                    HandleOpenDesigner(json);
+                else if (action == "activateDesigner")
+                    StructureDesignerService.ActivateCurrent(_panel);   // 'Show designer' on the modal lock overlay
             }
             catch (Exception ex)
             {
@@ -1154,6 +1158,144 @@ namespace ClarionAssistant.Terminal
                 return true;
             }
             catch { return false; }
+        }
+
+        /// <summary>
+        /// Ctrl+D from Monaco — open the NATIVE structure designer for the WINDOW/REPORT at the caret
+        /// (task 0a2ac0cb, literal-source mode). Validates here (structure detection + editable-slot
+        /// guard + edit-vs-create mode), responds immediately so Monaco can arm its tracked splice
+        /// target, then defers the designer open off this reentrant WebView2 stack (same rule as save).
+        /// The designer's merges stream back as 'designerSplice' messages; tab close ends the session
+        /// with 'designerClosed'.
+        /// </summary>
+        private void HandleOpenDesigner(string json)
+        {
+            int reqId = 0, line = 0;
+            string buffer = null;
+            List<int[]> ranges = null;
+            try
+            {
+                var data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(json) as Dictionary<string, object>;
+                if (data == null) return;
+                if (data.ContainsKey("reqId")) reqId = Convert.ToInt32(data["reqId"]);
+                if (data.ContainsKey("line")) line = Convert.ToInt32(data["line"]);
+                if (data.ContainsKey("buffer")) buffer = data["buffer"] as string;
+                if (data.ContainsKey("ranges"))
+                {
+                    var arr = data["ranges"] as object[];
+                    if (arr != null)
+                    {
+                        ranges = new List<int[]>();
+                        foreach (var item in arr)
+                        {
+                            var pair = item as object[];
+                            if (pair != null && pair.Length >= 2)
+                                ranges.Add(new[] { Convert.ToInt32(pair[0]), Convert.ToInt32(pair[1]) });
+                        }
+                    }
+                }
+            }
+            catch { return; }
+            if (buffer == null || ranges == null) { PostDesignerRefusal(reqId, "Designer request was malformed."); return; }
+
+            if (StructureDesignerService.IsActive)
+            {
+                StructureDesignerService.ActivateCurrent(_panel);
+                PostDesignerRefusal(reqId, "A structure designer is already open — close its tab first.");
+                return;
+            }
+
+            Func<int, int, bool> editable = (s, e2) =>
+            {
+                foreach (var r in ranges) if (s >= r[0] && e2 <= r[1]) return true;
+                return false;
+            };
+
+            var hit = ClarionAppDataReader.FindStructureAtLine(buffer, line);
+            var lines = buffer.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+            string structureText, label;
+            bool isWindow;
+            int startLine, endLine;
+
+            if (hit.Found)
+            {
+                if (!editable(hit.StartLine, hit.EndLine))
+                {
+                    PostDesignerRefusal(reqId, "This " + hit.Type + " is in generated code — the designer only works on editable embed code.");
+                    return;
+                }
+                startLine = hit.StartLine; endLine = hit.EndLine;
+                structureText = string.Join("\n", lines.Skip(startLine - 1).Take(endLine - startLine + 1));
+                label = string.IsNullOrEmpty(hit.Name) ? "CAWindow" : hit.Name;
+                isWindow = hit.Type == "WINDOW";
+            }
+            else
+            {
+                // Create-new mode: a BLANK editable line becomes a fresh WINDOW.
+                bool lineEditable = editable(line, line);
+                bool lineBlank = line >= 1 && line <= lines.Length && lines[line - 1].Trim().Length == 0;
+                if (!lineEditable || !lineBlank)
+                {
+                    PostDesignerRefusal(reqId, lineEditable
+                        ? "Put the caret inside a WINDOW/REPORT, or on a blank line to create a new window."
+                        : "The designer only works in editable embed code.");
+                    return;
+                }
+                startLine = line; endLine = line;
+                label = "NewWindow";
+                isWindow = true;
+                structureText = "NewWindow WINDOW('New Window'),AT(,,200,120),GRAY,SYSTEM\n" +
+                                "         \n" +
+                                "       END";
+            }
+
+            // Tell Monaco we're going ahead — it arms a decoration-tracked splice target for [start..end].
+            PostResponse(reqId, new Dictionary<string, object>
+            {
+                { "ok", true }, { "mode", hit.Found ? "edit" : "insert" },
+                { "startLine", startLine }, { "endLine", endLine }, { "type", isWindow ? "WINDOW" : "REPORT" }
+            });
+
+            // Defer the open off this reentrant WebView2 message-handler stack (save's hard-won rule).
+            Action open = () =>
+            {
+                string err = StructureDesignerService.Open(structureText, label, isWindow, _panel,
+                    onBufferChanged: text => PostDesignerMessage("designerSplice", text, null),
+                    onClosed: finalText =>
+                    {
+                        PostDesignerMessage("designerClosed", finalText, null);
+                        BringToFront();   // the scratch tab auto-closed after the merge — hand focus back here
+                    });
+                if (err != null) PostDesignerMessage("designerClosed", null, err);
+            };
+            if (_panel != null && _panel.IsHandleCreated) _panel.BeginInvoke(open);
+            else open();
+        }
+
+        private void PostDesignerRefusal(int reqId, string message)
+        {
+            PostResponse(reqId, new Dictionary<string, object> { { "ok", false }, { "message", message } });
+        }
+
+        /// <summary>Push a designer-session event to Monaco (UI-thread marshalled, same as ApplySettings).</summary>
+        private void PostDesignerMessage(string type, string text, string message)
+        {
+            string json;
+            try
+            {
+                var d = new Dictionary<string, object> { { "type", type } };
+                if (text != null) d["text"] = text;
+                if (message != null) d["message"] = message;
+                json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(d);
+            }
+            catch { return; }
+            Action post = () =>
+            {
+                if (_webView == null || _webView.CoreWebView2 == null) return;
+                try { _webView.CoreWebView2.PostWebMessageAsJson(json); } catch { }
+            };
+            try { if (_panel != null && _panel.InvokeRequired) _panel.BeginInvoke(post); else post(); }
+            catch { }
         }
 
         /// <summary>

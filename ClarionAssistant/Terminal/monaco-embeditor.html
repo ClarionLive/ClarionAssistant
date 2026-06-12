@@ -735,7 +735,7 @@
         { id: 'upperCase',         label: 'Uppercase Selection',  def: 'Ctrl+Shift+U', run: cmdUpperCase },
         { id: 'lowerCase',         label: 'Lowercase Selection',  def: 'Ctrl+Shift+L', run: cmdLowerCase },
         { id: 'invertCase',        label: 'Invert Case',          def: 'Ctrl+\\',      run: cmdInvertCase },
-        { id: 'structureDesigner', label: 'Structure Designer',   def: 'Ctrl+D',       run: cmdNoop },
+        { id: 'structureDesigner', label: 'Structure Designer',   def: 'Ctrl+D',       run: cmdStructureDesigner },
         { id: 'toggleBookmark',    label: 'Toggle Bookmark',      def: 'Ctrl+F2',      run: cmdToggleBookmark },
         { id: 'nextBookmark',      label: 'Next Bookmark',        def: 'F2',           run: cmdNextBookmark },
         { id: 'prevBookmark',      label: 'Previous Bookmark',    def: 'Shift+F2',     run: cmdPrevBookmark },
@@ -929,9 +929,111 @@
         });
     }
 
-    // Ctrl+D — Structure/Window Designer. Not built yet; this is a deliberate no-op that still swallows
-    // the keystroke so Monaco's default Ctrl+D (add-next-occurrence to selection) doesn't fire.
+    // Deferred commands (e.g. Format Line) bind to this so the chord is still swallowed.
     function cmdNoop() { }
+
+    // ----- Ctrl+D — NATIVE Structure/Window Designer (task 0a2ac0cb, literal-source mode) -----
+    // The C# host validates (WINDOW/REPORT at caret? editable? blank line = create new), opens the native
+    // designer on a scratch .clw (the spike-proven recipe), and streams every designer merge back as a
+    // 'designerSplice' message. We track the splice target with a Monaco decoration so edits elsewhere in
+    // the buffer don't break the write-back; 'designerClosed' ends the session.
+    var designerSession = null;   // { decoId } — null when no designer is open
+
+    function cmdStructureDesigner() {
+        if (designerSession) { showToast('A designer session is already open — close its tab first', false); return; }
+        var ed = activeEd();
+        var pos = ed.getPosition();
+        if (!pos) return;
+        requestFromHost('openDesigner', {
+            line: pos.lineNumber, column: pos.column,
+            buffer: ed.getModel().getValue(), ranges: liveEditableRanges()
+        }).then(function (resp) {
+            if (!resp) { showToast('Designer request timed out', false); return; }
+            if (!resp.ok) { showToast(resp.message || 'Cannot open the designer here', false); return; }
+            beginDesignerSession(resp.startLine, resp.endLine);
+            showToast('Opening the ' + (resp.type === 'REPORT' ? 'report' : 'window') + ' designer — edits sync back here', true);
+        });
+    }
+
+    function beginDesignerSession(startLine, endLine) {
+        var model = editor.getModel();
+        var rg = new monaco.Range(startLine, 1, endLine, model.getLineMaxColumn(endLine));
+        var ids = model.deltaDecorations([], [{
+            range: rg,
+            options: { stickiness: monaco.editor.TrackedRangeStickiness.GrowsOnlyWhenTypingAtEdges }
+        }]);
+        designerSession = { decoId: ids[0] };
+        setDesignerLock(true);
+    }
+
+    function endDesignerSession() {
+        setDesignerLock(false);
+        if (!designerSession) return;
+        try { editor.getModel().deltaDecorations([designerSession.decoId], []); } catch (e) { }
+        designerSession = null;
+    }
+
+    // Native-embeditor parity: while the designer is open the Monaco editor is MODAL-LOCKED — panes go
+    // read-only and a full-page overlay blocks interaction until the designer saves/closes (designerClosed
+    // unlocks). 'Show designer' re-activates the scratch tab; 'Unlock anyway' is the escape hatch if the
+    // session ever wedges (it abandons the splice target — later merges are ignored).
+    function setPanesReadOnly(on) {
+        try { editor.updateOptions({ readOnly: on }); } catch (e) { }
+        try { if (editor2) editor2.updateOptions({ readOnly: on }); } catch (e) { }
+    }
+
+    function setDesignerLock(on) {
+        setPanesReadOnly(on);
+        var ov = document.getElementById('designerLock');
+        if (on) {
+            if (!ov) {
+                ov = document.createElement('div');
+                ov.id = 'designerLock';
+                ov.style.cssText = 'position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;';
+                ov.innerHTML =
+                    '<div style="background:#2d2d30;color:#eee;padding:18px 26px;border-radius:8px;font-family:Segoe UI,sans-serif;font-size:13px;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.5);">' +
+                    '<div style="font-size:14px;margin-bottom:10px;">Window designer is open</div>' +
+                    '<div style="opacity:.8;margin-bottom:14px;">Save in the designer to bring your changes back here.</div>' +
+                    '<button id="dlShow" style="margin-right:8px;padding:5px 14px;cursor:pointer;">Show designer</button>' +
+                    '<button id="dlUnlock" style="padding:5px 14px;cursor:pointer;">Unlock anyway</button></div>';
+                document.body.appendChild(ov);
+                document.getElementById('dlShow').onclick = function () { postToHost({ action: 'activateDesigner' }); };
+                document.getElementById('dlUnlock').onclick = function () { endDesignerSession(); };
+            }
+            ov.style.display = 'flex';
+        } else if (ov) {
+            ov.style.display = 'none';
+        }
+    }
+
+    // A designer merge arrived — replace the tracked target lines with the designed structure.
+    function applyDesignerSplice(text) {
+        if (!designerSession || text == null) return;
+        var model = editor.getModel();
+        var rg = model.getDecorationRange(designerSession.decoId);
+        if (!rg) { showToast('Designer target lost — changes NOT applied', false); return; }
+        var newText = String(text).replace(/\r\n/g, '\n').replace(/\n+$/, '');
+        var range = new monaco.Range(rg.startLineNumber, 1, rg.endLineNumber, model.getLineMaxColumn(rg.endLineNumber));
+        if (!isEditableRange(range)) { showToast('Designer target is no longer editable — changes NOT applied', false); return; }
+        setPanesReadOnly(false);   // the modal lock blocks executeEdits too — lift for the splice
+        applyGuardedEdits([{ range: range, text: newText }]);
+        if (designerSession) setPanesReadOnly(true);
+        // Re-track the (possibly resized) span so the next merge replaces the right lines.
+        var lineCount = newText.split('\n').length;
+        var newEnd = rg.startLineNumber + lineCount - 1;
+        var newRange = new monaco.Range(rg.startLineNumber, 1, newEnd, model.getLineMaxColumn(newEnd));
+        designerSession.decoId = model.deltaDecorations([designerSession.decoId], [{
+            range: newRange,
+            options: { stickiness: monaco.editor.TrackedRangeStickiness.GrowsOnlyWhenTypingAtEdges }
+        }])[0];
+        showToast('Designer changes applied', true);
+    }
+
+    function onDesignerClosed(msg) {
+        if (msg && msg.text != null) applyDesignerSplice(msg.text);   // final merge delivered with the close
+        endDesignerSession();
+        if (msg && msg.message) showToast(msg.message, false);
+    }
 
     // ----- Bookmarks (Ctrl+F2 toggle, F2 / Shift+F2 navigate) -----
     // Session-scoped. Stored as decoration ids so Monaco keeps their line numbers correct across edits;
@@ -2500,6 +2602,10 @@
             } else if (msg.type === 'applySettings') {
                 applyEditorSettings(msg.settings);
                 populateSettingsPanel(msg.settings);
+            } else if (msg.type === 'designerSplice') {
+                applyDesignerSplice(msg.text);
+            } else if (msg.type === 'designerClosed') {
+                onDesignerClosed(msg);
             } else if (msg.type === 'applyHistory') {
                 if (msg.find) replaceArray(findHistory, msg.find);
                 if (msg.replace) replaceArray(replHistory, msg.replace);
