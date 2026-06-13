@@ -503,7 +503,11 @@ namespace ClarionAssistant.Services
                 case "warning": case "warn": return 2;
                 case "information": case "info": return 3;
                 case "hint": return 4;
-                default: return 1;
+                default:
+                    // Mark's server defaults null/unknown to "Error" on its side, so this is belt-and-
+                    // suspenders — but log so a future non-spec severity string is visible, not silent.
+                    Debug.WriteLine("[SharedLspBridge] unmapped diagnostic severity '" + severity + "' -> Error(1)");
+                    return 1;
             }
         }
 
@@ -513,7 +517,7 @@ namespace ClarionAssistant.Services
         {
             if (string.IsNullOrEmpty(kind)) return 0;
             int n;
-            if (int.TryParse(kind, out n)) return n;
+            if (int.TryParse(kind, out n)) return (n >= 1 && n <= 25) ? n : 0;
             switch (kind.Trim().ToLowerInvariant())
             {
                 case "text": return 1;
@@ -541,7 +545,9 @@ namespace ClarionAssistant.Services
                 case "event": return 23;
                 case "operator": return 24;
                 case "typeparameter": return 25;
-                default: return 0;
+                default:
+                    Debug.WriteLine("[SharedLspBridge] unmapped completion kind '" + kind + "' -> 0 (Monaco default icon)");
+                    return 0;
             }
         }
 
@@ -550,7 +556,7 @@ namespace ClarionAssistant.Services
         {
             if (string.IsNullOrEmpty(kind)) return 0;
             int n;
-            if (int.TryParse(kind, out n)) return n;
+            if (int.TryParse(kind, out n)) return (n >= 1 && n <= 26) ? n : 0;
             switch (kind.Trim().ToLowerInvariant())
             {
                 case "file": return 1;
@@ -568,6 +574,12 @@ namespace ClarionAssistant.Services
                 case "variable": return 13;
                 case "constant": return 14;
                 case "string": return 15;
+                // Mark's shared server collapses SymbolKind 16..26 to the literal "Symbol", and maps
+                // null to "Unknown" (ClarionLspService SymbolKindName) — both are expected sentinels
+                // with no valid LSP int, so map them to 0 explicitly rather than via the default.
+                case "unknown": case "symbol": return 0;
+                // The 16..26 names below are defensive only: the shared server never emits them (it
+                // sends "Symbol"); retained for a future server that doesn't collapse the high kinds.
                 case "number": return 16;
                 case "boolean": return 17;
                 case "array": return 18;
@@ -579,7 +591,9 @@ namespace ClarionAssistant.Services
                 case "event": return 24;
                 case "operator": return 25;
                 case "typeparameter": return 26;
-                default: return 0;
+                default:
+                    Debug.WriteLine("[SharedLspBridge] unmapped symbol kind '" + kind + "' -> 0");
+                    return 0;
             }
         }
 
