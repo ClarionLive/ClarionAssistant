@@ -1973,6 +1973,12 @@ COMMON QUERIES:
                     if (string.IsNullOrEmpty(wsPath) || !Directory.Exists(wsPath))
                         return "Error: workspace_path required (directory containing .sln)";
 
+                    // Single-process (#17): if the shared ClarionLsp addin is the active server, we
+                    // don't start (or need) our bundled server — all LSP calls route through it.
+                    if (SharedLspBridge.IsSharedActive)
+                        return "LSP ready via the shared ClarionLsp addin (resolver=shared). "
+                            + "The bundled server is not started while ClarionLsp is active.";
+
                     // Resolve up front for a precise error if nothing is installed.
                     string resolveSource;
                     string serverJs = LspService.ResolveServerPath(out resolveSource);
@@ -2023,14 +2029,14 @@ COMMON QUERIES:
                 Handler = args =>
                 {
                     EnsureLspRunning();
-                    if (_lspClient == null || !_lspClient.IsRunning)
+                    if (!SharedLspBridge.IsRunning)
                         return "Error: LSP not running. Call lsp_start first or set a solution.";
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     int line = McpJsonRpc.GetInt(args, "line");
                     int character = McpJsonRpc.GetInt(args, "character");
 
-                    var result = _lspClient.GetDefinition(filePath, line, character);
+                    var result = SharedLspBridge.GetDefinition(filePath, line, character);
                     return FormatLspResult(result);
                 }
             });
@@ -2051,14 +2057,14 @@ COMMON QUERIES:
                 Handler = args =>
                 {
                     EnsureLspRunning();
-                    if (_lspClient == null || !_lspClient.IsRunning)
+                    if (!SharedLspBridge.IsRunning)
                         return "Error: LSP not running.";
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     int line = McpJsonRpc.GetInt(args, "line");
                     int character = McpJsonRpc.GetInt(args, "character");
 
-                    var result = _lspClient.GetReferences(filePath, line, character);
+                    var result = SharedLspBridge.GetReferences(filePath, line, character);
                     return FormatLspResult(result);
                 }
             });
@@ -2079,14 +2085,14 @@ COMMON QUERIES:
                 Handler = args =>
                 {
                     EnsureLspRunning();
-                    if (_lspClient == null || !_lspClient.IsRunning)
+                    if (!SharedLspBridge.IsRunning)
                         return "Error: LSP not running.";
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     int line = McpJsonRpc.GetInt(args, "line");
                     int character = McpJsonRpc.GetInt(args, "character");
 
-                    var result = _lspClient.GetHover(filePath, line, character);
+                    var result = SharedLspBridge.GetHover(filePath, line, character);
                     return FormatLspResult(result);
                 }
             });
@@ -2105,11 +2111,11 @@ COMMON QUERIES:
                 Handler = args =>
                 {
                     EnsureLspRunning();
-                    if (_lspClient == null || !_lspClient.IsRunning)
+                    if (!SharedLspBridge.IsRunning)
                         return "Error: LSP not running.";
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
-                    var result = _lspClient.GetDocumentSymbols(filePath);
+                    var result = SharedLspBridge.GetDocumentSymbols(filePath);
                     return FormatLspResult(result);
                 }
             });
@@ -2128,11 +2134,11 @@ COMMON QUERIES:
                 Handler = args =>
                 {
                     EnsureLspRunning();
-                    if (_lspClient == null || !_lspClient.IsRunning)
+                    if (!SharedLspBridge.IsRunning)
                         return "Error: LSP not running.";
 
                     string query = McpJsonRpc.GetString(args, "query");
-                    var result = _lspClient.FindWorkspaceSymbol(query);
+                    var result = SharedLspBridge.FindWorkspaceSymbol(query);
                     return FormatLspResult(result);
                 }
             });
@@ -2157,7 +2163,7 @@ COMMON QUERIES:
                 Handler = args =>
                 {
                     EnsureLspRunning();
-                    if (_lspClient == null || !_lspClient.IsRunning)
+                    if (!SharedLspBridge.IsRunning)
                         return "Error: LSP not running. Start it with lsp_start or check Lsp.ServerPath.";
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
@@ -2166,7 +2172,7 @@ COMMON QUERIES:
                     if (!File.Exists(filePath))
                         return "Error: File not found: " + filePath;
 
-                    var result = _lspClient.GetDiagnostics(filePath, 3000);
+                    var result = SharedLspBridge.GetDiagnostics(filePath, 3000);
 
                     var response = new Dictionary<string, object>
                     {
@@ -2228,7 +2234,7 @@ COMMON QUERIES:
                 Handler = args =>
                 {
                     EnsureLspRunning();
-                    if (_lspClient == null || !_lspClient.IsRunning)
+                    if (!SharedLspBridge.IsRunning)
                         return "Error: LSP not running. Start it with lsp_start or check Lsp.ServerPath.";
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
@@ -2244,7 +2250,7 @@ COMMON QUERIES:
                     Dictionary<string, object> rawResult;
                     try
                     {
-                        rawResult = _lspClient.Rename(filePath, line, character, newName);
+                        rawResult = SharedLspBridge.Rename(filePath, line, character, newName);
                     }
                     catch (Exception ex)
                     {
@@ -2295,6 +2301,15 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
+                    if (SharedLspBridge.IsSharedActive)
+                        return new JavaScriptSerializer().Serialize(new Dictionary<string, object>
+                        {
+                            { "mode", "shared" },
+                            { "resolver", SharedLspBridge.Resolver },
+                            { "note", "The shared ClarionLsp addin is the active server. Bundled-client debug "
+                                + "telemetry (stderr, notification counts, open documents) is not available on the shared path." }
+                        });
+
                     if (_lspClient == null)
                         return new JavaScriptSerializer().Serialize(new Dictionary<string, object>
                         {

@@ -10,8 +10,8 @@
   <PropertyGroup>
     <VersionMajor>5</VersionMajor>
     <VersionMinor>0</VersionMinor>
-    <VersionBuild>383</VersionBuild>
-    <FullVersion>5.0.383</FullVersion>
-    <AssemblyFullVersion>5.0.383.0</AssemblyFullVersion>
+    <VersionBuild>386</VersionBuild>
+    <FullVersion>5.0.386</FullVersion>
+    <AssemblyFullVersion>5.0.386.0</AssemblyFullVersion>
   </PropertyGroup>
 </Project>
