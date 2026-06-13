@@ -2326,8 +2326,9 @@ COMMON QUERIES:
                         { "original_end_line", "Last line to include from original_file (1-based, default: end of file)" },
                         { "modified_start_line", "First line to include from modified_file (1-based, default: 1)" },
                         { "modified_end_line", "Last line to include from modified_file (1-based, default: end of file)" },
-                        { "ignore_whitespace", "Set to 'true' to ignore leading/trailing whitespace differences (default: false)" },
-                        { "language", "Syntax highlighting language (default: clarion). Options: clarion, csharp, javascript, html, css, xml, json, plaintext" }
+                        { "ignore_whitespace", "Set to 'true' to ignore leading/trailing whitespace differences (default: false; defaults to true when renderer='monaco')" },
+                        { "language", "Syntax highlighting language (default: clarion). Options: clarion, csharp, javascript, html, css, xml, json, plaintext" },
+                        { "renderer", "Diff renderer: 'classic' (default — unified diff + inline review notes) or 'monaco' (side-by-side/inline Monaco editor with Clarion syntax in both panes). Monaco has no notes workflow." }
                     },
                     new[] { "title" }),
                 RequiresUiThread = true,
@@ -2338,7 +2339,13 @@ COMMON QUERIES:
 
                     string title = McpJsonRpc.GetString(args, "title");
                     string language = McpJsonRpc.GetString(args, "language") ?? "clarion";
+                    bool useMonaco = McpJsonRpc.GetString(args, "renderer") == "monaco";
+
+                    // ignore_whitespace defaults false for the classic renderer, but ON for Monaco (John's
+                    // standing preference for diff viewers) unless the caller explicitly passes it.
+                    bool wsProvided = args.ContainsKey("ignore_whitespace");
                     bool ignoreWs = McpJsonRpc.GetString(args, "ignore_whitespace") == "true";
+                    if (useMonaco && !wsProvided) ignoreWs = true;
 
                     string originalFile = McpJsonRpc.GetString(args, "original_file");
                     string modifiedFile = McpJsonRpc.GetString(args, "modified_file");
@@ -2351,7 +2358,7 @@ COMMON QUERIES:
                         int modStart = McpJsonRpc.GetInt(args, "modified_start_line", 1);
                         int modEnd = McpJsonRpc.GetInt(args, "modified_end_line", -1);
                         return _diffService.ShowDiffFromFiles(title, originalFile, origStart, origEnd,
-                            modifiedFile, modStart, modEnd, language, ignoreWs);
+                            modifiedFile, modStart, modEnd, language, ignoreWs, useMonaco);
                     }
 
                     // Original from file, modified from text parameter
@@ -2360,13 +2367,13 @@ COMMON QUERIES:
                         string modified = McpJsonRpc.GetString(args, "modified_text") ?? "";
                         int startLine = McpJsonRpc.GetInt(args, "original_start_line", 1);
                         int endLine = McpJsonRpc.GetInt(args, "original_end_line", -1);
-                        return _diffService.ShowDiffFromFile(title, originalFile, startLine, endLine, modified, language, ignoreWs);
+                        return _diffService.ShowDiffFromFile(title, originalFile, startLine, endLine, modified, language, ignoreWs, useMonaco);
                     }
 
                     // Both from text parameters
                     string original = McpJsonRpc.GetString(args, "original_text") ?? "";
                     string modifiedText = McpJsonRpc.GetString(args, "modified_text") ?? "";
-                    return _diffService.ShowDiff(title, original, modifiedText, language, ignoreWs);
+                    return _diffService.ShowDiff(title, original, modifiedText, language, ignoreWs, useMonaco);
                 }
             });
 
