@@ -74,6 +74,8 @@ namespace ClarionAssistant.Services
             catch (Exception ex) { Debug.WriteLine("[Shutdown] embeditor dispose: " + ex.Message); }
             try { DiffViewContent.DisposeAllForShutdown(); }
             catch (Exception ex) { Debug.WriteLine("[Shutdown] diff dispose: " + ex.Message); }
+            try { MonacoDiffViewContent.DisposeAllForShutdown(); }
+            catch (Exception ex) { Debug.WriteLine("[Shutdown] monaco diff dispose: " + ex.Message); }
             try { TaskLifecycleBoardForm.DisposeAllForShutdown(); }
             catch (Exception ex) { Debug.WriteLine("[Shutdown] board dispose: " + ex.Message); }
         }

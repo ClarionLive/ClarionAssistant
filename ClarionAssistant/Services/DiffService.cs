@@ -14,7 +14,9 @@ namespace ClarionAssistant.Services
     /// </summary>
     public class DiffService
     {
-        private DiffViewContent _currentDiff;
+        // Tracked as the base type so either the classic (DiffViewContent) or the Monaco
+        // (MonacoDiffViewContent) renderer can occupy the single "current diff" slot.
+        private AbstractViewContent _currentDiff;
         private string _lastResult;
         private string _lastNotes;
         private string _lastAction; // "apply", "cancel", "notes", or null (pending)
@@ -27,7 +29,7 @@ namespace ClarionAssistant.Services
         /// The result is available later via GetResult().
         /// </summary>
         public string ShowDiff(string title, string originalText, string modifiedText, string language = "clarion",
-            bool ignoreWhitespace = false)
+            bool ignoreWhitespace = false, bool useMonaco = false)
         {
             // Reset state
             _lastResult = null;
@@ -48,11 +50,24 @@ namespace ClarionAssistant.Services
                     _currentDiff = null;
                 }
 
-                _currentDiff = new DiffViewContent(title, originalText, modifiedText, language, ignoreWhitespace, _isDark);
-
-                _currentDiff.Applied += OnApplied;
-                _currentDiff.Cancelled += OnCancelled;
-                _currentDiff.NotesSubmitted += OnNotesSubmitted;
+                if (useMonaco)
+                {
+                    // Monaco renderer: native side-by-side/inline + ignore-whitespace; ignore_whitespace
+                    // defaults ON here (John's standing pref) when the caller didn't opt out.
+                    var monaco = new MonacoDiffViewContent(title, originalText, modifiedText, language, ignoreWhitespace, _isDark);
+                    monaco.Applied += OnApplied;
+                    monaco.Cancelled += OnCancelled;
+                    // NOTE: the Monaco view has no notes workflow yet (deferred to a follow-up ticket).
+                    _currentDiff = monaco;
+                }
+                else
+                {
+                    var classic = new DiffViewContent(title, originalText, modifiedText, language, ignoreWhitespace, _isDark);
+                    classic.Applied += OnApplied;
+                    classic.Cancelled += OnCancelled;
+                    classic.NotesSubmitted += OnNotesSubmitted;
+                    _currentDiff = classic;
+                }
 
                 WorkbenchSingleton.Workbench.ShowView(_currentDiff);
                 return "Diff viewer opened: " + title;
@@ -67,7 +82,7 @@ namespace ClarionAssistant.Services
         /// Show a diff where the original is loaded from a file (with optional line range).
         /// </summary>
         public string ShowDiffFromFile(string title, string originalFile, int startLine, int endLine,
-            string modifiedText, string language = "clarion", bool ignoreWhitespace = false)
+            string modifiedText, string language = "clarion", bool ignoreWhitespace = false, bool useMonaco = false)
         {
             try
             {
@@ -87,7 +102,7 @@ namespace ClarionAssistant.Services
                 Array.Copy(allLines, startLine - 1, lines, 0, lines.Length);
                 string originalText = string.Join("\n", lines);
 
-                return ShowDiff(title, originalText, modifiedText, language, ignoreWhitespace);
+                return ShowDiff(title, originalText, modifiedText, language, ignoreWhitespace, useMonaco);
             }
             catch (Exception ex)
             {
@@ -100,7 +115,8 @@ namespace ClarionAssistant.Services
         /// Avoids MCP text transport encoding issues for large files.
         /// </summary>
         public string ShowDiffFromFiles(string title, string originalFile, int origStartLine, int origEndLine,
-            string modifiedFile, int modStartLine, int modEndLine, string language = "clarion", bool ignoreWhitespace = false)
+            string modifiedFile, int modStartLine, int modEndLine, string language = "clarion", bool ignoreWhitespace = false,
+            bool useMonaco = false)
         {
             try
             {
@@ -112,7 +128,7 @@ namespace ClarionAssistant.Services
                 string originalText = ReadFileRange(originalFile, origStartLine, origEndLine);
                 string modifiedText = ReadFileRange(modifiedFile, modStartLine, modEndLine);
 
-                return ShowDiff(title, originalText, modifiedText, language, ignoreWhitespace);
+                return ShowDiff(title, originalText, modifiedText, language, ignoreWhitespace, useMonaco);
             }
             catch (Exception ex)
             {

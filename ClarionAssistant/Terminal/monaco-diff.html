@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Monaco Diff Viewer</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    /* ---------- Theme variables (Catppuccin Mocha / Latte) — chrome only; Monaco themes itself ---------- */
+    :root {
+        --bg: #1e1e2e; --fg: #cdd6f4;
+        --toolbar-bg: #181825; --toolbar-border: #313244;
+        --title-color: #a6adc8; --title-accent: #cdd6f4;
+        --btn-border: #45475a; --btn-hover: #313244;
+        --nav-color: #89b4fa; --counter-color: #a6adc8;
+        --accent: #89b4fa; --border-color: #313244;
+        --btn-active-bg: rgba(137,180,250,0.18); --btn-active-fg: #89b4fa;
+    }
+    body.light {
+        --bg: #eff1f5; --fg: #4c4f69;
+        --toolbar-bg: #dce0e8; --toolbar-border: #bcc0cc;
+        --title-color: #6c6f85; --title-accent: #4c4f69;
+        --btn-border: #acb0be; --btn-hover: #ccd0da;
+        --nav-color: #1e66f5; --counter-color: #6c6f85;
+        --accent: #1e66f5; --border-color: #bcc0cc;
+        --btn-active-bg: rgba(30,102,245,0.16); --btn-active-fg: #1e66f5;
+    }
+
+    html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', Tahoma, sans-serif; background: var(--bg); color: var(--fg); }
+
+    /* ---------- Toolbar ---------- */
+    #toolbar {
+        display: flex; align-items: center; gap: 8px;
+        padding: 6px 12px; background: var(--toolbar-bg); border-bottom: 1px solid var(--toolbar-border);
+        height: 38px; flex-shrink: 0;
+    }
+    #toolbar .title { font-size: 13px; color: var(--title-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
+    #toolbar .title span { color: var(--title-accent); font-weight: 600; }
+    #toolbar .spacer { flex: 1; }
+    #toolbar .sep { color: var(--toolbar-border); user-select: none; }
+    #toolbar button {
+        padding: 3px 10px; border: 1px solid var(--btn-border); border-radius: 4px;
+        font-size: 11px; cursor: pointer; font-family: inherit;
+        background: transparent; color: var(--nav-color);
+    }
+    #toolbar button:hover { background: var(--btn-hover); }
+    #toolbar button.toggle.active { background: var(--btn-active-bg); color: var(--btn-active-fg); border-color: var(--accent); }
+    #diff-counter { font-size: 11px; color: var(--counter-color); min-width: 64px; text-align: center; user-select: none; }
+    #font-family-select {
+        padding: 2px 4px; border: 1px solid var(--btn-border); border-radius: 4px;
+        background: var(--toolbar-bg); color: var(--fg); font-size: 11px; cursor: pointer; max-width: 130px;
+    }
+    #font-size-input {
+        width: 44px; padding: 2px 4px; border: 1px solid var(--btn-border); border-radius: 4px;
+        background: transparent; color: var(--fg); font-size: 11px; text-align: center;
+        -moz-appearance: textfield;
+    }
+    #font-size-input::-webkit-inner-spin-button,
+    #font-size-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    .font-label { font-size: 11px; color: var(--counter-color); user-select: none; }
+    #btn-theme { min-width: 28px; padding: 3px 8px; font-size: 14px; line-height: 1; }
+
+    /* ---------- Editor area ---------- */
+    #diff-editor { width: 100%; height: calc(100% - 38px - 44px); }
+    #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: var(--counter-color); font-size: 14px; }
+
+    /* ---------- Bottom action bar ---------- */
+    #bottom { display: flex; align-items: center; gap: 8px; height: 44px; flex-shrink: 0;
+        padding: 0 12px; border-top: 1px solid var(--border-color); background: var(--toolbar-bg); }
+    #bottom .hint { font-size: 11px; color: var(--counter-color); }
+    #bottom .spacer { flex: 1; }
+    .cr-btn { padding: 6px 16px; border-radius: 4px; border: none; cursor: pointer; font-size: 12px; font-weight: 600; }
+    .cr-btn.pass { background: #a6e3a1; color: #1e1e2e; }
+    .cr-btn.pass:hover { background: #94e2d5; }
+    .cr-btn.cancel-btn { background: transparent; color: var(--fg); border: 1px solid var(--btn-border); }
+    .cr-btn.cancel-btn:hover { background: var(--btn-hover); }
+</style>
+</head>
+<body>
+<!-- Toolbar -->
+<div id="toolbar">
+    <div class="title">Diff: <span id="diff-title">…</span></div>
+    <div class="spacer"></div>
+    <button onclick="goPrev()" title="Previous change (Shift+F7)">&#x25B2; Prev</button>
+    <span id="diff-counter">--</span>
+    <button onclick="goNext()" title="Next change (F7)">Next &#x25BC;</button>
+    <span class="sep">|</span>
+    <button id="btn-layout" class="toggle" onclick="toggleLayout()" title="Toggle side-by-side / inline">Inline</button>
+    <button id="btn-ws" class="toggle active" onclick="toggleWhitespace()" title="Ignore whitespace changes">Ignore WS</button>
+    <span class="sep">|</span>
+    <select id="font-family-select" onchange="applyFontFamily(this.value)" title="Font family">
+        <option value="'Cascadia Code','Consolas',monospace">Cascadia Code</option>
+        <option value="'Consolas',monospace">Consolas</option>
+        <option value="'Courier New',monospace">Courier New</option>
+        <option value="'Fira Code',monospace">Fira Code</option>
+        <option value="monospace">Monospace</option>
+    </select>
+    <input id="font-size-input" type="number" min="8" max="40" value="13" onchange="applyFontSize(parseInt(this.value))" title="Font size (px)">
+    <span class="font-label">px</span>
+    <button id="btn-theme" onclick="toggleTheme()" title="Toggle light/dark theme">&#x263E;</button>
+</div>
+
+<!-- Monaco diff editor mounts here -->
+<div id="diff-editor"></div>
+<div id="loading">Loading Monaco…</div>
+
+<!-- Bottom action bar (preserves the show_diff Approve/Cancel result contract) -->
+<div id="bottom">
+    <span class="hint">Read-only diff. Approve to apply the modified text, or Cancel to dismiss.</span>
+    <div class="spacer"></div>
+    <button class="cr-btn pass" onclick="onApprove()">Approve</button>
+    <button class="cr-btn cancel-btn" onclick="onCancel()">Cancel</button>
+</div>
+
+<script>
+    // ----- Constants (must match ModernEmbeditorViewContent.cs / monaco-embeditor.html) -----
+    var MONACO_VERSION = "0.52.2";
+    var MONACO_BASE = "https://cdn.jsdelivr.net/npm/monaco-editor@" + MONACO_VERSION + "/min/";
+
+    // ----- State -----
+    var diffEditor = null;
+    var originalModel = null;
+    var modifiedModel = null;
+    var ready = false;
+    var pending = null;             // a setDiff message that arrived before Monaco finished loading
+    var changes = [];               // line-change ranges from getLineChanges()
+    var currentChangeIndex = -1;
+    var renderSideBySide = true;    // side-by-side vs inline
+    var ignoreTrimWhitespace = true;// John's standing default: ignore whitespace
+    // Globals named to match the C# ZoomableWebView2 Ctrl+wheel bridge ("applyFontSize(savedFontSize+(N))").
+    var savedFontSize = parseInt(localStorage.getItem('diffFontSize') || '13');
+    var savedFontFamily = localStorage.getItem('diffFontFamily') || "'Cascadia Code','Consolas',monospace";
+    var themeDark = (localStorage.getItem('diffTheme') !== 'light');
+
+    function postMsg(obj) {
+        try { if (window.chrome && window.chrome.webview) window.chrome.webview.postMessage(JSON.stringify(obj)); } catch (e) { }
+    }
+
+    // ===== Font controls =====
+    function applyFontSize(size) {
+        size = Math.max(8, Math.min(40, size || 13));
+        savedFontSize = size;
+        localStorage.setItem('diffFontSize', size);
+        if (diffEditor) diffEditor.updateOptions({ fontSize: size });
+        var input = document.getElementById('font-size-input');
+        if (input) input.value = size;
+    }
+    function applyFontFamily(family) {
+        savedFontFamily = family;
+        localStorage.setItem('diffFontFamily', family);
+        if (diffEditor) diffEditor.updateOptions({ fontFamily: family });
+        var sel = document.getElementById('font-family-select');
+        if (sel) sel.value = family;
+    }
+
+    // ===== Theme =====
+    function setTheme(isDark) {
+        themeDark = isDark;
+        document.body.classList.toggle('light', !isDark);
+        if (window.monaco && monaco.editor) monaco.editor.setTheme(isDark ? 'vs-dark' : 'vs');
+        var btn = document.getElementById('btn-theme');
+        if (btn) btn.innerHTML = isDark ? '☾' : '☀';
+        localStorage.setItem('diffTheme', isDark ? 'dark' : 'light');
+    }
+    function toggleTheme() { setTheme(!themeDark); }
+
+    // ===== Layout / whitespace toggles =====
+    function toggleLayout() {
+        renderSideBySide = !renderSideBySide;
+        if (diffEditor) diffEditor.updateOptions({ renderSideBySide: renderSideBySide });
+        var btn = document.getElementById('btn-layout');
+        if (btn) { btn.textContent = renderSideBySide ? 'Inline' : 'Side-by-side'; btn.classList.toggle('active', !renderSideBySide); }
+    }
+    function toggleWhitespace() {
+        ignoreTrimWhitespace = !ignoreTrimWhitespace;
+        if (diffEditor) diffEditor.updateOptions({ ignoreTrimWhitespace: ignoreTrimWhitespace });
+        var btn = document.getElementById('btn-ws');
+        if (btn) btn.classList.toggle('active', ignoreTrimWhitespace);
+    }
+
+    // ===== Change navigation (self-rolled over getLineChanges — stable across Monaco versions) =====
+    function refreshChanges() {
+        try { changes = (diffEditor && diffEditor.getLineChanges()) || []; }
+        catch (e) { changes = []; }
+        updateCounter();
+    }
+    function updateCounter() {
+        var el = document.getElementById('diff-counter');
+        if (!el) return;
+        if (!changes.length) { el.textContent = 'No changes'; return; }
+        if (currentChangeIndex < 0) el.textContent = changes.length + (changes.length === 1 ? ' change' : ' changes');
+        else el.textContent = (currentChangeIndex + 1) + ' of ' + changes.length;
+    }
+    function revealChange(i) {
+        if (!changes.length || !diffEditor) return;
+        currentChangeIndex = (i + changes.length) % changes.length;
+        var c = changes[currentChangeIndex];
+        // Prefer the modified side; fall back to original for pure deletions.
+        var line = c.modifiedStartLineNumber > 0 ? c.modifiedStartLineNumber : c.modifiedEndLineNumber;
+        var ed = diffEditor.getModifiedEditor();
+        if (!line || line < 1) { line = c.originalStartLineNumber || 1; ed = diffEditor.getOriginalEditor(); }
+        ed.revealLineInCenter(line);
+        ed.setPosition({ lineNumber: line, column: 1 });
+        ed.focus();
+        updateCounter();
+    }
+    function goNext() { if (changes.length) revealChange(currentChangeIndex + 1); }
+    function goPrev() { if (changes.length) revealChange(currentChangeIndex - 1); }
+
+    // ===== Monaco worker shim (cross-origin CDN workers can't load directly) =====
+    window.MonacoEnvironment = {
+        getWorkerUrl: function () {
+            return "data:text/javascript;charset=utf-8," + encodeURIComponent(
+                "self.MonacoEnvironment={baseUrl:'" + MONACO_BASE + "'};" +
+                "importScripts('" + MONACO_BASE + "vs/base/worker/workerMain.js');"
+            );
+        }
+    };
+
+    function bootMonaco() {
+        var loader = document.createElement('script');
+        loader.src = MONACO_BASE + "vs/loader.js";
+        loader.onload = function () {
+            require.config({ paths: { vs: MONACO_BASE + "vs" } });
+            require(['vs/editor/editor.main'], function () {
+                if (!monaco.languages.getLanguages().some(function (l) { return l.id === 'clarion'; })) {
+                    monaco.languages.register({ id: 'clarion' });
+                    registerClarionLanguage();
+                }
+                diffEditor = monaco.editor.createDiffEditor(document.getElementById('diff-editor'), {
+                    automaticLayout: true,
+                    readOnly: true,
+                    originalEditable: false,
+                    enableSplitViewResizing: true,
+                    renderSideBySide: renderSideBySide,
+                    ignoreTrimWhitespace: ignoreTrimWhitespace,
+                    renderIndicators: true,
+                    fontSize: savedFontSize,
+                    fontFamily: savedFontFamily,
+                    minimap: { enabled: true },
+                    scrollBeyondLastLine: false,
+                    theme: themeDark ? 'vs-dark' : 'vs'
+                });
+                diffEditor.onDidUpdateDiff(function () {
+                    refreshChanges();
+                    if (changes.length && currentChangeIndex < 0) { currentChangeIndex = 0; updateCounter(); }
+                });
+                ready = true;
+                var loadingEl = document.getElementById('loading');
+                if (loadingEl) loadingEl.style.display = 'none';
+                setTheme(themeDark);
+                if (pending) { var p = pending; pending = null; applyDiff(p); }
+                postMsg({ action: 'ready' });
+            });
+        };
+        loader.onerror = function () {
+            var el = document.getElementById('loading');
+            if (el) el.textContent = 'Failed to load Monaco from CDN. Check network connectivity.';
+        };
+        document.head.appendChild(loader);
+    }
+
+    // ===== Clarion syntax (copied from monaco-embeditor.html so both panes highlight identically) =====
+    function registerClarionLanguage() {
+        monaco.languages.setLanguageConfiguration('clarion', {
+            comments: { lineComment: '!' },
+            brackets: [['(', ')'], ['[', ']'], ['{', '}']],
+            wordPattern: /(-?\d*\.\d\w*)|([^\`~!@#%^&*()\-=+\[{\]}\\|;'",.<>\/?\s]+)/g
+        });
+        monaco.languages.setMonarchTokensProvider('clarion', {
+            ignoreCase: true,
+            keywords: [
+                'PROGRAM', 'MEMBER', 'MAP', 'MODULE', 'CLASS', 'INTERFACE', 'PROCEDURE', 'FUNCTION',
+                'ROUTINE', 'CODE', 'DATA', 'END', 'RETURN', 'EXIT', 'IF', 'THEN', 'ELSE', 'ELSIF',
+                'CASE', 'OF', 'OROF', 'LOOP', 'WHILE', 'UNTIL', 'BREAK', 'CYCLE', 'DO', 'BEGIN',
+                'EXECUTE', 'GROUP', 'QUEUE', 'RECORD', 'FILE', 'VIEW', 'WINDOW', 'REPORT', 'MENU',
+                'MENUBAR', 'TOOLBAR', 'SHEET', 'TAB', 'OPTION', 'APPLICATION', 'DETAIL', 'HEADER',
+                'FOOTER', 'BREAK', 'FORM', 'SELF', 'PARENT', 'NEW', 'DISPOSE', 'THREAD', 'NULL',
+                'TRUE', 'FALSE', 'AND', 'OR', 'XOR', 'NOT', 'CHOOSE', 'OMIT', 'COMPILE', 'INCLUDE',
+                'EQUATE', 'ITEMIZE', 'TYPE', 'LIKE', 'DIM', 'OVER', 'NAME', 'PRE', 'STATIC', 'THREAD'
+            ],
+            types: [
+                'LONG', 'ULONG', 'SHORT', 'USHORT', 'BYTE', 'SIGNED', 'UNSIGNED', 'REAL', 'SREAL',
+                'DECIMAL', 'PDECIMAL', 'BFLOAT4', 'BFLOAT8', 'STRING', 'CSTRING', 'PSTRING', 'ASTRING',
+                'MEMO', 'BLOB', 'DATE', 'TIME', 'BOOL', 'ANY', 'LONGLONG', 'BIGINT', 'GROUP', 'QUEUE'
+            ],
+            tokenizer: {
+                root: [
+                    [/!.*$/, 'comment'],
+                    [/'(?:[^']|'')*'/, 'string'],
+                    [/\b\d+(?:\.\d+)?\b/, 'number'],
+                    [/\b[0-9A-Fa-f]+[Hh]\b/, 'number.hex'],
+                    [/[A-Za-z_][A-Za-z0-9_]*:/, 'type.identifier'],
+                    [/[A-Za-z_][A-Za-z0-9_]*/, {
+                        cases: {
+                            '@keywords': 'keyword',
+                            '@types': 'type',
+                            '@default': 'identifier'
+                        }
+                    }]
+                ]
+            }
+        });
+    }
+
+    // ===== Apply incoming diff data =====
+    // Host sends raw original + modified text via virtual-host files; Monaco computes the diff.
+    function applyDiff(msg) {
+        document.getElementById('diff-title').textContent = msg.title || 'Untitled';
+        var lang = msg.language || 'clarion';
+
+        // Theme from message is authoritative, else fall back to persisted preference.
+        if (typeof msg.isDark === 'boolean') setTheme(msg.isDark);
+
+        if (typeof msg.ignoreWhitespace === 'boolean') {
+            ignoreTrimWhitespace = msg.ignoreWhitespace;
+            var wsBtn = document.getElementById('btn-ws');
+            if (wsBtn) wsBtn.classList.toggle('active', ignoreTrimWhitespace);
+            if (diffEditor) diffEditor.updateOptions({ ignoreTrimWhitespace: ignoreTrimWhitespace });
+        }
+
+        // Fetch both sides (URLs point at the WebView2 virtual host). Fall back to inline text fields.
+        var pOrig = msg.originalUrl ? fetch(msg.originalUrl).then(function (r) { return r.text(); })
+                                    : Promise.resolve(msg.originalText || '');
+        var pMod  = msg.modifiedUrl ? fetch(msg.modifiedUrl).then(function (r) { return r.text(); })
+                                    : Promise.resolve(msg.modifiedText || '');
+        Promise.all([pOrig, pMod]).then(function (texts) {
+            // Dispose previous models so repeated setDiff calls don't leak.
+            if (originalModel) { try { originalModel.dispose(); } catch (e) { } }
+            if (modifiedModel) { try { modifiedModel.dispose(); } catch (e) { } }
+            originalModel = monaco.editor.createModel(texts[0] || '', lang);
+            modifiedModel = monaco.editor.createModel(texts[1] || '', lang);
+            currentChangeIndex = -1;
+            diffEditor.setModel({ original: originalModel, modified: modifiedModel });
+            applyFontSize(savedFontSize);
+            applyFontFamily(savedFontFamily);
+        }).catch(function (err) {
+            var el = document.getElementById('loading');
+            if (el) { el.style.display = 'block'; el.textContent = 'Error loading diff: ' + (err && err.message ? err.message : String(err)); }
+        });
+    }
+
+    // ===== Actions (mirror diff.html's host contract) =====
+    function onApprove() { postMsg({ action: 'approve' }); }
+    function onCancel() { postMsg({ action: 'cancel' }); }
+
+    // ===== Keyboard shortcuts (F7 / Shift+F7 nav, Esc = cancel) =====
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'F7' && e.shiftKey) { goPrev(); e.preventDefault(); }
+        else if (e.key === 'F7') { goNext(); e.preventDefault(); }
+        else if (e.key === 'Escape') { onCancel(); }
+    });
+
+    // ===== Host message handler =====
+    if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.addEventListener('message', function (event) {
+            var msg = event.data;
+            if (typeof msg === 'string') { try { msg = JSON.parse(msg); } catch (e) { return; } }
+            if (msg.type === 'applyTheme') { setTheme(msg.isDark !== false); return; }
+            if (msg.type === 'setDiff') {
+                if (!ready) { pending = msg; return; }
+                applyDiff(msg);
+            }
+        });
+    }
+
+    bootMonaco();
+</script>
+</body>
+</html>

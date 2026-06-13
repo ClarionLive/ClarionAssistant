@@ -138,6 +138,7 @@
     <Compile Include="Terminal\TerminalTab.cs" />
     <Compile Include="Terminal\TabManager.cs" />
     <Compile Include="Terminal\DiffViewContent.cs" />
+    <Compile Include="Terminal\MonacoDiffViewContent.cs" />
     <Compile Include="Terminal\NativeDiffViewContent.cs" />
     <Compile Include="Terminal\ModernEmbeditorViewContent.cs" />
     <Compile Include="Services\DiffService.cs" />
@@ -192,6 +193,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Terminal\diff.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Terminal\monaco-diff.html">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Terminal\monaco-embeditor.html">
