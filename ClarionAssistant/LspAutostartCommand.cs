@@ -121,6 +121,22 @@ namespace ClarionAssistant
             {
                 try
                 {
+                    // Single-process reconciliation: if the shared ClarionLsp server is now active
+                    // (it may have loaded AFTER us and we started our bundled server in the start
+                    // race — we no longer have a manifest load-order dependency), stop our redundant
+                    // bundled server so only one LSP process runs. All bridge calls already route to
+                    // the shared client, so ours is dead weight at this point.
+                    if (SharedLspBridge.IsSharedActive)
+                    {
+                        var ours = LspClient.Active;
+                        if (ours != null && ours.IsRunning)
+                        {
+                            Debug.WriteLine("[LspAutostart] Shared ClarionLsp active — stopping redundant bundled LSP server.");
+                            try { ours.Stop(); } catch (Exception ex) { Debug.WriteLine("[LspAutostart] stop redundant server failed: " + ex.Message); }
+                        }
+                        return;
+                    }
+
                     if (LspClient.Active != null && LspClient.Active.IsRunning) return; // idempotent no-op
                     if (string.IsNullOrEmpty(EditorService.GetOpenSolutionPath())) return;
                     LspService.EnsureRunningInBackground();

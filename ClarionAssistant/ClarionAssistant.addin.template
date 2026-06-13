@@ -1,11 +1,13 @@
 <AddIn name="Clarion Assistant" author="John Hickey" description="AI-powered Clarion IDE assistant: embedded Claude Code terminal, MCP tools, LSP integration, CodeGraph, and IDE automation">
   <Manifest>
     <Identity name="ClarionAssistant" version="@VERSION@"/>
-    <!-- Soft dependency on the shared ClarionLsp addin (msarson/clarion-lsp). coerced="true"
-         makes it OPTIONAL: we still load if ClarionLsp is absent (our bundled LspClient is the
-         fallback), but when present we load AFTER it so ClarionLspLocator.Current is populated
-         before our /Workspace/Autostart commands run. -->
-    <Dependency addin="ClarionLsp" version="1.0" coerced="true"/>
+    <!-- NO manifest <Dependency> on ClarionLsp. On this SharpDevelop/Clarion build a declared
+         <Dependency> is enforced as HARD-REQUIRED — the addin fails to load entirely when ClarionLsp
+         is absent ("requires ClarionLsp, version 1.0") — even with coerced="true". We therefore
+         consume the shared addin PURELY AT RUNTIME via ClarionLspLocator.Current (see SharedLspBridge),
+         which resolves per-call and falls back to the bundled LspClient when ClarionLsp isn't present.
+         Load order is not guaranteed; LspAutostartCommand's fallback timer reconciles the start race
+         (it stops our bundled server if the shared one appears after we started ours). -->
   </Manifest>
   <Runtime>
     <Import assembly="ClarionAssistant.dll"/>
