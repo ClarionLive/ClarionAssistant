@@ -62,9 +62,17 @@ namespace ClarionAssistant.Services
         /// Build the marker list. <paramref name="ranges"/> are 1-based inclusive [start,end] editable
         /// slot ranges (live — passed from Monaco's tracked decorations so they reflect edits that grew
         /// a slot). Returns an empty list in mirror mode (no editable slots).
+        ///
+        /// <paramref name="embedSlotChecks"/>: when false (plain-source FILE MODE — ticket 564aa142),
+        /// only Pass 1 (the real Clarion LSP, spanning the whole file) runs. The per-slot structure-balance
+        /// heuristic (Passes 2 &amp; 3) is designed for tiny embed fragments and mis-reads a full class/.inc:
+        /// it matches FILE/GROUP/QUEUE/etc. used as PARAMETER TYPES (e.g. <c>Procedure(*File pTable)</c>)
+        /// or labels as if a structure opened, producing bogus "FILE is not terminated with END" errors.
+        /// The LSP/compiler does real whole-file structure validation, so the heuristic adds only noise.
         /// </summary>
         public static List<Dictionary<string, object>> Compute(
-            string lspFileName, string buffer, List<int[]> ranges, string procedureName)
+            string lspFileName, string buffer, List<int[]> ranges, string procedureName,
+            bool embedSlotChecks = true)
         {
             var markers = new List<Dictionary<string, object>>();
             if (string.IsNullOrEmpty(buffer) || ranges == null || ranges.Count == 0) return markers;
@@ -99,6 +107,10 @@ namespace ClarionAssistant.Services
             {
                 System.Diagnostics.Debug.WriteLine("[ModernEmbeditorDiagnostics] LSP pass: " + ex.Message);
             }
+
+            // File mode (whole-source): stop here. The LSP pass above already covers the whole file;
+            // the per-slot heuristics below mis-fire on declaration files (FILE/GROUP/... as param types).
+            if (!embedSlotChecks) return markers;
 
             // Routine set for the undefined-routine check (only flag when we actually parsed routines,
             // so a parse failure never produces false positives).

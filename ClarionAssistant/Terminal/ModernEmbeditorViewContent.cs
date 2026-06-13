@@ -1294,7 +1294,8 @@ namespace ClarionAssistant.Terminal
                         _lspFileName,
                         buffer ?? _sourceText,
                         (ranges != null && ranges.Count > 0) ? ranges : _editableRanges,
-                        _procedureName);
+                        _procedureName,
+                        embedSlotChecks: !_fileMode);   // file mode: LSP only, skip embed-slot heuristics
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] diagnostics: " + ex.Message); }
                 PostResponse(reqId, new Dictionary<string, object> { { "markers", markers } });
