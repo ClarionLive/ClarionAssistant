@@ -82,15 +82,15 @@ namespace ClarionAssistant.Services
             // ---- Pass 1: LSP structural diagnostics, clamped to editable slots ----
             try
             {
-                var lsp = LspClient.Active;
-                if (lsp != null && lsp.IsRunning && !string.IsNullOrEmpty(lspFileName))
+                // Route through SharedLspBridge: shared ClarionLsp when active, else the bundled LspClient.
+                if (SharedLspBridge.IsRunning && !string.IsNullOrEmpty(lspFileName))
                 {
-                    lsp.EnsureBufferSynced(lspFileName, buffer);
-                    var wait = lsp.WaitForDiagnostics(lspFileName, 1500, true);
+                    SharedLspBridge.EnsureBufferSynced(lspFileName, buffer);
+                    var wait = SharedLspBridge.WaitForDiagnostics(lspFileName, 1500, true);
                     List<LspClient.DiagnosticEntry> entries =
                         (wait != null && !wait.Pending && wait.Entries != null)
                             ? wait.Entries
-                            : (lsp.GetCachedDiagnostics(lspFileName) ?? new List<LspClient.DiagnosticEntry>());
+                            : (SharedLspBridge.GetCachedDiagnostics(lspFileName) ?? new List<LspClient.DiagnosticEntry>());
 
                     foreach (var d in entries)
                     {

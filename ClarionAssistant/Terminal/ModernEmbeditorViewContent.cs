@@ -1204,8 +1204,11 @@ namespace ClarionAssistant.Terminal
         {
             try
             {
-                var lsp = LspClient.Active;
-                if (lsp == null || !lsp.IsRunning)
+                // Only kick the bundled-server self-heal when NO LSP is available at all. When the shared
+                // ClarionLsp addin is active, SharedLspBridge.IsRunning is already true and the bundled
+                // starter is a deliberate no-op — checking LspClient.Active alone would loop forever
+                // ("server starting…") because we intentionally never start the bundled server in that case.
+                if (!SharedLspBridge.IsRunning)
                     EmbeditorCompletionService.LspStarter?.Invoke();
             }
             catch { }
@@ -1222,13 +1225,12 @@ namespace ClarionAssistant.Terminal
                 try
                 {
                     EnsureLspStarted();
-                    var lsp = LspClient.Active;
-                    if (lsp == null) lspStatus = "not started";
-                    else if (!lsp.IsRunning) lspStatus = "starting";
+                    // Route through SharedLspBridge: shared ClarionLsp when active, else bundled LspClient.
+                    if (!SharedLspBridge.IsRunning) lspStatus = "starting";
                     else
                     {
                         // Context-free: pass no buffer; the server returns the language item set.
-                        var comps = lsp.GetCompletion(_lspFileName, Math.Max(0, line - 1), Math.Max(0, column - 1), 2500, null);
+                        var comps = SharedLspBridge.GetCompletion(_lspFileName, Math.Max(0, line - 1), Math.Max(0, column - 1), 2500, null);
                         if (comps != null)
                             foreach (var c in comps)
                                 items.Add(new Dictionary<string, object>
@@ -1239,7 +1241,10 @@ namespace ClarionAssistant.Terminal
                                     { "documentation", c.Documentation },
                                     { "insertText", c.InsertText }
                                 });
-                        lspStatus = string.IsNullOrEmpty(lsp.LastCompletionDiagnostic) ? "ok" : lsp.LastCompletionDiagnostic;
+                        // LastCompletionDiagnostic is bundled-only; surface it on the local path, else "ok".
+                        var local = LspClient.Active;
+                        lspStatus = (local != null && !string.IsNullOrEmpty(local.LastCompletionDiagnostic))
+                            ? local.LastCompletionDiagnostic : "ok";
                     }
                 }
                 catch (Exception ex)
@@ -1262,10 +1267,9 @@ namespace ClarionAssistant.Terminal
                 try
                 {
                     EnsureLspStarted();
-                    var lsp = LspClient.Active;
-                    if (lsp != null && lsp.IsRunning)
+                    if (SharedLspBridge.IsRunning)
                     {
-                        var resp = lsp.GetHover(_lspFileName, Math.Max(0, line - 1), Math.Max(0, column - 1), buffer);
+                        var resp = SharedLspBridge.GetHover(_lspFileName, Math.Max(0, line - 1), Math.Max(0, column - 1), buffer);
                         contents = ExtractHoverString(resp);
                     }
                 }
