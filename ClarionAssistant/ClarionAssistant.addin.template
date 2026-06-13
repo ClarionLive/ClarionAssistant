@@ -1,6 +1,11 @@
 <AddIn name="Clarion Assistant" author="John Hickey" description="AI-powered Clarion IDE assistant: embedded Claude Code terminal, MCP tools, LSP integration, CodeGraph, and IDE automation">
   <Manifest>
     <Identity name="ClarionAssistant" version="@VERSION@"/>
+    <!-- Soft dependency on the shared ClarionLsp addin (msarson/clarion-lsp). coerced="true"
+         makes it OPTIONAL: we still load if ClarionLsp is absent (our bundled LspClient is the
+         fallback), but when present we load AFTER it so ClarionLspLocator.Current is populated
+         before our /Workspace/Autostart commands run. -->
+    <Dependency addin="ClarionLsp" version="1.0" coerced="true"/>
   </Manifest>
   <Runtime>
     <Import assembly="ClarionAssistant.dll"/>

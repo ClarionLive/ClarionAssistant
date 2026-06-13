@@ -38,6 +38,17 @@ namespace ClarionAssistant.Services
         {
             try
             {
+                // Phase 4 (#17 — single process): when the shared ClarionLsp addin is the active,
+                // capability-verified server, do NOT spawn our bundled node server. All consumers route
+                // through SharedLspBridge, which talks to the shared client. This is the one chokepoint
+                // every start path funnels through (autostart command, MCP EnsureLspRunning, embeditor
+                // self-heal LspStarter), so gating here covers them all.
+                if (SharedLspBridge.IsSharedActive)
+                {
+                    Debug.WriteLine("[LspService] Shared ClarionLsp addin active — not starting the bundled LSP server.");
+                    return;
+                }
+
                 // Fast pre-check against the process-wide Active client (set by LspClient.Start).
                 if (LspClient.Active != null && LspClient.Active.IsRunning) return;
 
@@ -163,6 +174,8 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static void EnsureRunningInBackground()
         {
+            // Single-process: shared addin active → never start our bundled server (see EnsureRunning).
+            if (SharedLspBridge.IsSharedActive) return;
             if (LspClient.Active != null && LspClient.Active.IsRunning) return;
             // Only one background start at a time — the self-heal path can call this on
             // every completion attempt, and EnsureRunning isn't safe to run concurrently.
