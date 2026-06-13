@@ -346,6 +346,22 @@
     var fileMode = false;         // true when the tab edits a plain source FILE — whole buffer editable,
                                   // no slot guard/decorations, save posts full text, embed nav disabled
     var reloadArmed = false;      // two-click confirm for Reload (discards edits)
+    var isDirty = false;          // unsaved-changes flag — drives the ● indicator in the title banner
+    var baseTitle = '(no procedure)';   // filename/procedure name without the dirty marker
+
+    // Render the title banner with a leading ● when there are unsaved edits (the Clarion IDE tab
+    // can't be reliably decorated, so the page owns the dirty indicator). John's test feedback.
+    function renderTitle() {
+        var el = document.getElementById('titleText');
+        if (!el) return;
+        el.textContent = (isDirty ? '● ' : '') + baseTitle;
+        el.title = isDirty ? 'Unsaved changes — Ctrl+S to save' : baseTitle;
+    }
+    function setDirty(d) {
+        if (isDirty === d) return;
+        isDirty = d;
+        renderTitle();
+    }
     var toastTimer = null;
     var saveSafetyTimer = null;   // ensures the "Saving…" toast can never hang forever
     var pendingRequests = {};     // reqId -> resolver, for async LSP completion/hover round-trips
@@ -468,7 +484,7 @@
                     // dropIntoEditor snippet-expands the text and leaves "$0" artifacts.
                     dropIntoEditor: { enabled: false }
                 });
-                installReadOnlyGuard();
+                installReadOnlyGuard();        // also marks the buffer dirty on each legal edit
                 installDropInsert(editor);     // accept Data-pad drops (plain text, at the drop point)
                 activeEditor = editor;         // commands target the focused pane; primary by default (#15)
                 editor.onDidFocusEditorText(function () { activeEditor = editor; });
@@ -527,7 +543,9 @@
             var b = document.getElementById(id);
             if (b) b.style.display = fileMode ? 'none' : '';
         });
-        document.getElementById('titleText').textContent = (msg.title || '(no procedure)');
+        baseTitle = msg.title || '(no procedure)';
+        isDirty = false;            // a fresh load (or reload) starts clean
+        renderTitle();
         setTheme(themePrefDark);   // honor the user's persisted light/dark choice over the host's IDE theme
         if (msg.settings) { applyEditorSettings(msg.settings); populateSettingsPanel(msg.settings); }
         if (msg.findHistory) replaceArray(findHistory, msg.findHistory);
@@ -1627,6 +1645,9 @@
                 guarding = false;
                 return;
             }
+            // A legal user edit happened (this handler returned early for programmatic loads via
+            // `guarding` and for reverted illegal edits) — mark the buffer dirty for the ● indicator.
+            setDirty(true);
             // Legal edit — fold its line delta into embedRanges, re-render decorations if the spans
             // moved, then refresh squiggles (debounced).
             if (applyChangesToRanges(e.changes)) {
@@ -2709,6 +2730,7 @@
                 setTheme(themePrefDark);   // user preference wins over IDE theme changes
             } else if (msg.type === 'saveResult') {
                 if (saveSafetyTimer) { clearTimeout(saveSafetyTimer); saveSafetyTimer = null; }
+                if (msg.ok) setDirty(false);   // only a SUCCESSFUL save clears the dirty marker
                 showToast(msg.message, msg.ok);
             } else if (msg.type === 'response' && msg.reqId != null) {
                 var resolver = pendingRequests[msg.reqId];
