@@ -57,18 +57,33 @@ namespace ClarionAssistant
 
                 _webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
 
-                // Drag-drop: WebView2 hides a dropped file's real path from the page (File.path is empty), so
-                // we handle EXTERNAL file drops at the host (WinForms) level — DataFormats.FileDrop carries the
-                // real full paths. This is scoped to the Files tab: on the Data tab the page keeps AllowExternalDrop
-                // so its variable-declaration text-drop still works (see SetFilesDropMode). Default = Data tab.
-                // WebView2.AllowDrop is read-only (the control owns it via AllowExternalDrop). With
-                // AllowExternalDrop=false the OS drop falls through to the parent panel, where we CAN set
-                // AllowDrop and handle DragDrop. Default = Data tab: page handles external drops.
+                // Drag-drop: WebView2 hides a dropped file's real path from the page (File.path is empty), AND an
+                // external OLE drop does NOT bubble through WebView2's Chromium child HWNDs to the parent panel —
+                // so neither the page nor a panel-level handler can read dropped paths (a panel handler just yields
+                // a no-drop cursor). The fix is a real WinForms control that owns its OWN region: _dropStrip, docked
+                // at the bottom of the Files tab, ON TOP of the WebView2. It receives DataFormats.FileDrop with the
+                // real full paths. Page external-drop stays ON for the Data tab's variable-declaration text-drop and
+                // is turned OFF on the Files tab (see SetFilesDropMode) so the page area shows no-drop, steering the
+                // user to the strip. Default = Data tab.
                 _webView.AllowExternalDrop = true;
-                _panel.AllowDrop = false;
-                _panel.DragEnter += OnWebViewDragEnter;
-                _panel.DragOver += OnWebViewDragEnter;
-                _panel.DragDrop += OnWebViewDragDrop;
+                _dropStrip = new Label
+                {
+                    Dock = DockStyle.Bottom,
+                    Height = 56,
+                    AllowDrop = true,
+                    TextAlign = ContentAlignment.MiddleCenter,
+                    Text = "⬇  Drop files here to open them in Monaco",
+                    Font = new Font("Segoe UI", 9F),
+                    Visible = false
+                };
+                _dropStrip.DragEnter += OnDropStripDragEnter;
+                _dropStrip.DragOver += OnDropStripDragEnter;
+                _dropStrip.DragLeave += (s2, e2) => ApplyDropStripTheme(false);
+                _dropStrip.DragDrop += OnDropStripDragDrop;
+                _panel.Controls.Add(_dropStrip);   // added after _webView (Fill) → _dropStrip docks first, reserving
+                                                   // the bottom edge; the WebView2 fills the region above it (the two
+                                                   // never overlap, so the strip's drop region is clean).
+                ApplyDropStripTheme(false);
 
                 // Restore the ctrl-mousewheel font zoom (WebView2's built-in ZoomFactor) and keep it saved.
                 _webView.ZoomFactor = Terminal.WebViewZoomHelper.GetZoom("modernDataPad");
@@ -107,6 +122,7 @@ namespace ClarionAssistant
                     _isInitialized = true;
                     PostRestoreUiState(); // send saved collapse/expand state BEFORE the first data render
                     SniffTheme(Terminal.ModernDataPadState.Load()); // learn dark/light for files opened from the Files tab
+                    PostVersionInfo(); // populate the version/solution banner under the title
                     Refresh();
                 }
                 else if (action == "saveUiState")
@@ -687,40 +703,72 @@ namespace ClarionAssistant
             try { return new Uri(path).IsUnc; } catch { return false; }
         }
 
-        // True while the Files tab is showing — gates host-level external file drops.
+        // True while the Files tab is showing — gates the native drop strip's visibility / page external-drop.
         private bool _filesTabActive;
 
+        // The native WinForms drop target for the Files tab. Docked at the bottom of _panel, ON TOP of the WebView2
+        // (in its own region), so it receives external OLE file drops with REAL full paths — which the page and a
+        // panel-level handler cannot (WebView2's Chromium child HWNDs swallow the drop and it doesn't bubble up).
+        private Label _dropStrip;
+
         /// <summary>
-        /// Switch external-drop ownership with the active tab. On the FILES tab the host (WinForms) handles
-        /// external drops so it can read the real file paths (DataFormats.FileDrop) that WebView2 hides from the
-        /// page. On the DATA tab the page keeps AllowExternalDrop so its variable-declaration text-drop (which
-        /// needs in-page element targeting) keeps working. UI thread.
+        /// Switch drop ownership with the active tab. On the FILES tab the native _dropStrip is shown (it reads the
+        /// real DataFormats.FileDrop paths) and the page's external-drop is turned OFF so the WebView2 area shows a
+        /// no-drop cursor, steering the user to the strip. On the DATA tab the strip is hidden and the page keeps
+        /// AllowExternalDrop so its variable-declaration text-drop (which needs in-page element targeting) works. UI thread.
         /// </summary>
         private void SetFilesDropMode(bool filesActive)
         {
             _filesTabActive = filesActive;
             try
             {
-                if (_webView != null) _webView.AllowExternalDrop = !filesActive; // page handles drops on Data; host on Files
-                if (_panel != null) _panel.AllowDrop = filesActive;              // enable WinForms DnD on the parent panel
+                if (_webView != null) _webView.AllowExternalDrop = !filesActive; // page text-drop on Data; off on Files
+                if (_dropStrip != null)
+                {
+                    _dropStrip.Visible = filesActive;
+                    if (filesActive) _dropStrip.BringToFront();
+                    ApplyDropStripTheme(false);
+                }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] SetFilesDropMode: " + ex.Message); }
         }
 
-        /// <summary>Allow the Copy drop effect for a file drop while the Files tab is active; else reject.</summary>
-        private void OnWebViewDragEnter(object sender, DragEventArgs e)
+        /// <summary>Paint the drop strip for the current theme; <paramref name="active"/> = a valid drag is hovering.</summary>
+        private void ApplyDropStripTheme(bool active)
         {
-            e.Effect = (_filesTabActive && e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop))
-                ? DragDropEffects.Copy : DragDropEffects.None;
+            if (_dropStrip == null) return;
+            try
+            {
+                if (_isDark)
+                {
+                    _dropStrip.BackColor = active ? Color.FromArgb(40, 60, 90) : Color.FromArgb(37, 37, 53);
+                    _dropStrip.ForeColor = active ? Color.FromArgb(137, 180, 250) : Color.FromArgb(150, 150, 170);
+                }
+                else
+                {
+                    _dropStrip.BackColor = active ? Color.FromArgb(225, 238, 252) : Color.FromArgb(244, 246, 248);
+                    _dropStrip.ForeColor = active ? Color.FromArgb(10, 93, 194) : Color.FromArgb(90, 90, 100);
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>Allow the Copy drop effect for a file drop; highlight the strip. Else reject.</summary>
+        private void OnDropStripDragEnter(object sender, DragEventArgs e)
+        {
+            bool ok = e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop);
+            e.Effect = ok ? DragDropEffects.Copy : DragDropEffects.None;
+            ApplyDropStripTheme(ok);
         }
 
         /// <summary>
-        /// Host-level file drop (Files tab): read the REAL full paths from DataFormats.FileDrop, validate the same
-        /// way as the JS drop path (rooted, non-UNC, allowed source extension), then open each via the choke point.
+        /// Native file drop (Files tab): read the REAL full paths from DataFormats.FileDrop, validate the same way as
+        /// the JS drop path (rooted, non-UNC, allowed source extension), then open each via the choke point.
         /// </summary>
-        private void OnWebViewDragDrop(object sender, DragEventArgs e)
+        private void OnDropStripDragDrop(object sender, DragEventArgs e)
         {
-            if (!_filesTabActive || e.Data == null || !e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+            ApplyDropStripTheme(false);
+            if (e.Data == null || !e.Data.GetDataPresent(DataFormats.FileDrop)) return;
             string[] files;
             try { files = e.Data.GetData(DataFormats.FileDrop) as string[]; }
             catch { files = null; }
@@ -746,10 +794,17 @@ namespace ClarionAssistant
         {
             try
             {
+                string sol = null;
+                try { sol = Services.EditorService.GetOpenSolutionPath(); } catch { }
                 var vm = Services.ExplorerFileClassifier.BuildViewModel(true);
                 Post(new Dictionary<string, object>
                 {
                     { "type", "setExplorerData" },
+                    // Carry the active bucket so the page's banner can self-correct: the pad may post once at IDE
+                    // startup before the solution has loaded (NoSolution); a later post (Files activation / mutation /
+                    // solution-change tick) lands the real solution and refreshes the banner.
+                    { "versionTag", Services.ModernEmbeditorHistory.VersionTag() },
+                    { "solutionTag", Services.ModernEmbeditorHistory.SolutionTag(sol) },
                     { "lastFolder", vm.lastFolder ?? "" },
                     { "quickLocations", vm.quickLocations },
                     { "pinnedFolders", vm.pinnedFolders },
@@ -759,6 +814,27 @@ namespace ClarionAssistant
                 });
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] PostExplorerData: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// Push the active Clarion-version + solution tags to the page's banner. Recents/pins are bucketed by
+        /// (version, solution) in <see cref="Services.ExplorerRecentsStore"/>, so surfacing the active bucket makes
+        /// it obvious why switching the selected Clarion version shows a different recents list. UI thread.
+        /// </summary>
+        private void PostVersionInfo()
+        {
+            try
+            {
+                string sol = null;
+                try { sol = Services.EditorService.GetOpenSolutionPath(); } catch { }
+                Post(new Dictionary<string, object>
+                {
+                    { "type", "setVersionInfo" },
+                    { "versionTag", Services.ModernEmbeditorHistory.VersionTag() },
+                    { "solutionTag", Services.ModernEmbeditorHistory.SolutionTag(sol) }
+                });
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] PostVersionInfo: " + ex.Message); }
         }
 
         /// <summary>
@@ -919,6 +995,7 @@ namespace ClarionAssistant
         // bound to the previous editor and insert/goto would target it.
         private bool _lastShownNative;
         private bool _lastShownSelection;    // last shown proc came from app-tree selection, not a focused editor
+        private string _lastSolutionTag = "\0"; // last resolved solution tag; sentinel so the first tick posts the banner
         private string _lastShownProc = " "; // sentinel so the first tick always refreshes
 
         /// <summary>
@@ -938,6 +1015,20 @@ namespace ClarionAssistant
         {
             if (Services.ModernEmbeditorLauncher.IsBusy) return;  // never touch the IDE mid open/save
             if (_varCrudInProgress) return;  // never run a .txa export while Clarion's add/edit/delete modal is open
+
+            // Solution-change watcher: the pad is a restored dock that can init (and post its version banner /
+            // explorer recents) at IDE startup BEFORE a solution finishes loading — bucketing to "NoSolution" with an
+            // empty recents list. When the resolved solution later changes, re-post the banner and (if the Files tab
+            // is showing) the recents so both reflect the now-open solution. Cheap in-memory read; only acts on change.
+            string solTag = null;
+            try { solTag = Services.ModernEmbeditorHistory.SolutionTag(Services.EditorService.GetOpenSolutionPath()); } catch { }
+            if (!string.Equals(solTag, _lastSolutionTag, StringComparison.OrdinalIgnoreCase))
+            {
+                _lastSolutionTag = solTag;
+                PostVersionInfo();
+                if (_filesTabActive) PostExplorerData();
+            }
+
             string proc;
             bool isNative = false, isSelection = false;
             try

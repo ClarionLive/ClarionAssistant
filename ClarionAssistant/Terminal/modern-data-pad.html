@@ -93,6 +93,16 @@
         color: #8a8a8a; font-size: 14px; line-height: 1; padding: 2px 4px; user-select: none; }
     #filterClear:hover { color: #1f1f1f; }
 
+    /* ===================== Version/solution banner (under #bar) ===================== */
+    .ver-banner { display: flex; align-items: center; gap: 6px; flex: none;
+        padding: 3px 10px; font-size: 11px; color: #5a5a64;
+        background: #eef1f5; border-bottom: 1px solid #dfe3e8; white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis; }
+    .ver-banner .vb-ico { font-size: 12px; }
+    #verText { font-weight: 600; color: #0a5dc2; }
+    body.dark .ver-banner { color: #9a9ab0; background: #21212e; border-bottom-color: #33333f; }
+    body.dark #verText { color: #89b4fa; }
+
     /* ===================== Tab strip (Data | Files) — adapted from header.html .tab-bar/.tab ===================== */
     .tab-bar { display: flex; align-items: flex-end; gap: 2px; padding: 4px 8px 0 8px;
         background: #f3f3f3; border-bottom: 1px solid #d4d4d4; flex: none; }
@@ -354,6 +364,13 @@
         <button id="settingsBtn" class="icon" title="Customize sections (reorder, hide, expand)">⚙</button>
     </div>
 
+    <!-- Version/solution banner: recents & pinned folders are saved PER Clarion version + solution
+         (see ExplorerRecentsStore). Showing the active bucket makes a version switch obvious — i.e. why a
+         different Clarion version shows different recents. Populated by the host's setVersionInfo message. -->
+    <div id="verBanner" class="ver-banner" title="Recent files and pinned folders are saved per Clarion version and solution. This shows the active bucket.">
+        <span class="vb-ico">📦</span><span id="verText">—</span>
+    </div>
+
     <!-- Tab strip: Data (the original Data Pad) | Files (Monaco file loader). pick() toggles .active. -->
     <div class="tab-bar">
         <div class="tab active" data-tab="data" onclick="pick('data')"><span class="dot">📊</span>Data</div>
@@ -388,7 +405,9 @@
         <!-- Scrollable region: quick chips + pinned + grouped recents + drop zone (built in JS). -->
         <div id="filesScroll" style="flex:1; min-height:0; overflow:auto;">
             <div id="filesBody"></div>
-            <div class="drophint" id="dropZone">⬇ <b>Drop files here</b> to open them in Monaco</div>
+            <!-- In-page drop hint is hidden: WebView2 strips real file paths from page drops, so external file
+                 drops are handled by the host's native drop strip (docked below the WebView2 on the Files tab). -->
+            <div class="drophint" id="dropZone" style="display:none;">⬇ <b>Drop files here</b> to open them in Monaco</div>
         </div>
     </div>
 
@@ -657,12 +676,21 @@
         try { window.chrome.webview.postMessage(JSON.stringify(obj)); } catch (e) {}
     }
 
+    // Update the version/solution banner under the title. Source of truth = the host (setVersionInfo and the
+    // setExplorerData payload both call this), so the banner self-corrects once the solution is loaded.
+    function setVerBanner(versionTag, solutionTag) {
+        var vt = document.getElementById('verText');
+        if (!vt) return;
+        var sol = (solutionTag && solutionTag !== 'NoSolution') ? solutionTag : 'no solution';
+        vt.textContent = (versionTag || '?') + '   ·   ' + sol;
+    }
+
     function insert(name) { postToHost({ action: 'insert', name: name }); }
 
     // ---- Tab switching (Data | Files). Called from the inline onclick handlers, so it must be global.
-    // Toggles .active on the matching .tab + .tabpanel. On first switch to Files, ask the host for data
-    // (cheap no-op if already populated; the host re-posts setExplorerData on demand). -----
-    var _explorerRequested = false;
+    // Toggles .active on the matching .tab + .tabpanel. On EVERY switch to Files, ask the host for fresh data:
+    // the first request can land before the solution finished loading (empty), so re-requesting on each activation
+    // guarantees the recents show once a solution is open. The host classifier caches by mtime, so re-posts are cheap.
     function pick(which) {
         var tabs = document.querySelectorAll('.tab-bar .tab');
         for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle('active', tabs[i].getAttribute('data-tab') === which);
@@ -673,7 +701,7 @@
         // Tell the host which tab is active so it can switch external-drop ownership: on Files the host handles
         // OS file drops (to recover real paths WebView2 hides from JS); on Data the page keeps its text-drop.
         postToHost({ action: 'tabChanged', tab: which });
-        if (which === 'files' && !_explorerRequested) { _explorerRequested = true; postToHost({ action: 'requestExplorerData' }); }
+        if (which === 'files') postToHost({ action: 'requestExplorerData' });
     }
 
     // Repaint the multi-select highlight from selSet WITHOUT a full render() — keeps row elements alive so a
@@ -1679,11 +1707,20 @@
             if (msg.type === 'setExplorerData') {
                 // Files tab payload (host -> JS). Store and render the Files panel. See renderExplorer().
                 explorerData = msg;
+                // The payload also carries the active bucket — refresh the banner so it self-corrects if the first
+                // setVersionInfo (posted at startup) captured "no solution" before the solution finished loading.
+                if (msg.versionTag) setVerBanner(msg.versionTag, msg.solutionTag);
                 if (msg.uiState && msg.uiState.collapsed) {
                     explorerCollapsed = {};
                     (msg.uiState.collapsed || []).forEach(function (g) { explorerCollapsed[g] = true; });
                 }
                 renderExplorer();
+            }
+            if (msg.type === 'setVersionInfo') {
+                // Banner under the title: which Clarion-version + solution bucket the recents/pins come from
+                // (saved per version + solution — see ExplorerRecentsStore). Makes a version switch obvious.
+                setVerBanner(msg.versionTag, msg.solutionTag);
+                return;
             }
         });
     }
