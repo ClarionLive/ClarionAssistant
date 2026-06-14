@@ -58,6 +58,19 @@
       <HintPath>$(ClarionRoot)\bin\ICSharpCode.TextEditor.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <!-- SoftVelocity-internal Clarion editor + designer classes. Needed to SUBCLASS
+         CWBinding.ClarionEditor.ClarionEditor (Monaco-default-editor spike, task cc8b092f):
+         the structure designer's Ctrl+D gate requires an is-a TextEditorDisplayBindingWrapper
+         + IStructureDesignerCompatible, which only a ClarionEditor subclass satisfies. These
+         are version-brittle internals -> resolved per Clarion version via $(ClarionRoot). -->
+    <Reference Include="CWBinding">
+      <HintPath>$(ClarionRoot)\bin\Addins\BackendBindings\ClarionBinding\ClarionWin\CWBinding.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="CommonSources">
+      <HintPath>$(ClarionRoot)\bin\Addins\BackendBindings\ClarionBinding\Common\CommonSources.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <!-- Old-style csproj + PackageReference is inconsistent under dotnet/msbuild for this project.
          Add explicit WebView2 references so compile-time assemblies are always resolved after restore. -->
     <Reference Include="Microsoft.Web.WebView2.Core">
@@ -78,6 +91,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="MonacoClarionSourceEditor.cs" />
     <Compile Include="AgentPanelPad.cs" />
     <Compile Include="AgentPanelControl.cs" />
     <Compile Include="ShowAgentPanelCommand.cs" />

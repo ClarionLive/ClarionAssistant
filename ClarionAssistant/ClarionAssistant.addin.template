@@ -65,4 +65,17 @@
                  tooltip="Path B: open the assembled embeditor source in a modern Monaco editor (read-only render)"
                  class="ClarionAssistant.ShowModernEmbeditorCommand"/>
   </Path>
+
+  <!-- SPIKE (task cc8b092f): make our ClarionEditor subclass the DEFAULT editor for Clarion
+       source files, winning the binding race ahead of the stock ClarionWinEditor via insertbefore.
+       Mirrors the stock primary binding exactly (same supportedformats, no fileNamePattern); the
+       real gate is the inherited CanCreateContentForFile (Clarion source extensions). Phase 0 is
+       behaviorally IDENTICAL to the stock editor (subclass only logs + returns a real ClarionEditor),
+       so this is safe to ship; Phase 1 adds the Monaco overlay. To disable: remove this Path. -->
+  <Path name="/SharpDevelop/Workbench/DisplayBindings">
+    <DisplayBinding id="MonacoClarionEditor"
+                    insertbefore="ClarionWinEditor"
+                    supportedformats="Text Files,Source Files"
+                    class="ClarionAssistant.MonacoClarionEditorDisplayBinding"/>
+  </Path>
 </AddIn>
