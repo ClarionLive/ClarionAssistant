@@ -77,6 +77,12 @@ $Items = @(
     "ClarionAssistant.dll"
     "ClarionAssistant.pdb"
     "ClarionAssistant.addin"
+    # Shared ClarionLsp contract assembly — our addin references IClarionLanguageClient /
+    # ClarionLspLocator (SharedLspBridge) so this DLL MUST ship in our addin folder, or the
+    # CLR can't resolve the type and the ENTIRE addin silently fails to load (Tools menu empty).
+    # SharpDevelop does NOT resolve it from ClarionLsp's own folder into ours. Required for BOTH
+    # the shared path AND the no-ClarionLsp fallback (the assembly is absent otherwise).
+    "ClarionLsp.Contracts.dll"
     "Microsoft.Web.WebView2.Core.dll"
     "Microsoft.Web.WebView2.WinForms.dll"
     "Microsoft.Web.WebView2.Wpf.dll"

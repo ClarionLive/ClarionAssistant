@@ -1,6 +1,13 @@
 <AddIn name="Clarion Assistant" author="John Hickey" description="AI-powered Clarion IDE assistant: embedded Claude Code terminal, MCP tools, LSP integration, CodeGraph, and IDE automation">
   <Manifest>
     <Identity name="ClarionAssistant" version="@VERSION@"/>
+    <!-- NO manifest <Dependency> on ClarionLsp. On this SharpDevelop/Clarion build a declared
+         <Dependency> is enforced as HARD-REQUIRED — the addin fails to load entirely when ClarionLsp
+         is absent ("requires ClarionLsp, version 1.0") — even with coerced="true". We therefore
+         consume the shared addin PURELY AT RUNTIME via ClarionLspLocator.Current (see SharedLspBridge),
+         which resolves per-call and falls back to the bundled LspClient when ClarionLsp isn't present.
+         Load order is not guaranteed; LspAutostartCommand's fallback timer reconciles the start race
+         (it stops our bundled server if the shared one appears after we started ours). -->
   </Manifest>
   <Runtime>
     <Import assembly="ClarionAssistant.dll"/>
@@ -46,6 +53,8 @@
               class="ClarionAssistant.ShowAgentPanelCommand"/>
     <MenuItem id="OpenModernEmbeditorPicker" label="CA Embeditor (open procedures)..."
               class="ClarionAssistant.OpenModernEmbeditorPickerCommand"/>
+    <MenuItem id="OpenSourceFileInCaEditor" label="CA Editor (open source file)..."
+              class="ClarionAssistant.OpenSourceFileInCaEditorCommand"/>
     <MenuItem id="ShowModernDataPad" label="CA Data Pad"
               class="ClarionAssistant.ShowModernDataPadCommand"/>
   </Path>

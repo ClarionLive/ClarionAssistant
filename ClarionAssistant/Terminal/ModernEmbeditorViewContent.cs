@@ -44,6 +44,22 @@ namespace ClarionAssistant.Terminal
         private readonly bool _saveEnabled;
         private readonly string _lspFileName;        // synthetic .clw URI for LSP completion/hover requests
 
+        // File mode (ticket 564aa142): the tab edits a plain source file on disk (.clw/.inc/...) instead of
+        // an embeditor snapshot. Save = encoding-preserving file write; no slot machinery, no Data pad refresh,
+        // no designer. _lspFileName is the REAL path so the LSP resolves includes/symbols against the file.
+        private readonly string _filePath;
+        private string _fileIdentity;                // true file-ID (vol serial + file index) for tab DEDUP; resolves all aliases incl. hard links (item 3)
+        private readonly bool _fileMode;
+        private Encoding _fileEncoding;              // detected at open, RE-DETECTED on reload (pipeline item 4)
+        private string _fileEol = "\r\n";            // detected dominant EOL at open; non-Clarion files keep their style (item 5)
+        private string _fileDiskSig;                 // disk fingerprint (mtimeTicks:length) for changed-on-disk detection (item 2)
+        private string _fileOverwriteArmedSig;       // the EXACT disk version the user was warned about; null = not armed (item 2)
+        // Host mirror of the page's live file-mode buffer + dirty flag, so a tab close can save WITHOUT an async
+        // round-trip into the WebView2 (pipeline CRITICAL — silent data loss on close).
+        private string _fileLiveText;
+        private bool _fileDirty;
+        private bool _disposed;
+
         private string _tempDir;
         private const string VIRTUAL_HOST = "clarion-embeditor-data";
 
@@ -67,6 +83,9 @@ namespace ClarionAssistant.Terminal
         private static Dictionary<string, object> _lastFocusedSelection;
 
         private static readonly List<ModernEmbeditorViewContent> _instances = new List<ModernEmbeditorViewContent>();
+        // Set during IDE shutdown (DisposeAllForShutdown) so per-tab Dispose takes a NONINTERACTIVE recovery path —
+        // no modal prompt per dirty tab (avoids a shutdown modal storm). (pipeline Run-3 adversary)
+        private static volatile bool _shuttingDown;
 
         public override Control Control { get { return _panel; } }
 
@@ -847,6 +866,144 @@ namespace ClarionAssistant.Terminal
             _panel.HandleCreated += OnHandleCreated;
         }
 
+        /// <summary>
+        /// File mode — open a plain source file (.clw/.inc/.equ/...) for whole-buffer editing.
+        /// Same Monaco page and language services as the embeditor, but save writes the file
+        /// (encoding-preserving) and all embed/slot machinery is bypassed.
+        /// </summary>
+        public ModernEmbeditorViewContent(string filePath, bool isDark)
+        {
+            _filePath = Path.GetFullPath(filePath);
+            _fileMode = true;
+            _title = Path.GetFileName(_filePath);
+            _fileIdentity = CanonicalFileId(_filePath);   // stable identity for dedup/state, survives path aliasing (item 3)
+            _fileEncoding = DetectFileEncoding(_filePath);
+            _sourceText = File.ReadAllText(_filePath, _fileEncoding);
+            _fileEol = DetectEol(_sourceText);
+            _fileDiskSig = ReadFileSignature(_filePath);
+            _fileLiveText = _sourceText;
+            _editableRanges = new List<int[]>();
+            _language = LanguageForFile(_filePath);
+            _isDark = isDark;
+            _procedureName = null;
+            _saveEnabled = true;
+            _originalSlotTexts = new List<string>();
+            _lspFileName = _filePath;     // real path → LSP sees the actual file
+            TitleName = "CA: " + _title;
+
+            _panel = new Panel { Dock = DockStyle.Fill, BackColor = isDark ? Color.FromArgb(30, 30, 46) : Color.FromArgb(239, 241, 245) };
+            _webView = new WebView2 { Dock = DockStyle.Fill };
+            _panel.Controls.Add(_webView);
+
+            lock (_instances) { _instances.Add(this); }
+            _panel.HandleCreated += OnHandleCreated;
+        }
+
+        /// <summary>The file this tab edits (file mode), else null.</summary>
+        public string FilePath { get { return _filePath; } }
+
+        /// <summary>Find the open file-mode tab for a path, or null. Used by the open command to dedup so the same
+        /// file doesn't open in two tabs (→ last-save-wins). Matches on the UNION of two identities:
+        ///  • the canonical file ID (vol serial + file index) — collapses path aliases AND hard links;
+        ///  • the normalized full path — collapses same-path reopens even when the file ID CHURNS between opens
+        ///    (external delete/recreate, atomic replace, branch switch, or an id:↔path: fallback transition).
+        /// Either match reuses the existing tab. This covers the realistic cases, NOT every possible one: a reopen
+        /// that changes BOTH the path alias AND the file ID at once (external replace + reopen via a different
+        /// alias) still escapes dedup — tracked as follow-up 8348435a. (pipeline item 3 + Run-6/7 adversary)</summary>
+        public static ModernEmbeditorViewContent FindByFilePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return null;
+            string id = CanonicalFileId(path);
+            string full = null;
+            try { full = Path.GetFullPath(path); } catch { }
+            lock (_instances)
+            {
+                foreach (var inst in _instances)
+                {
+                    if (!inst._fileMode) continue;
+                    if (string.Equals(inst._fileIdentity, id, StringComparison.OrdinalIgnoreCase)
+                        || (full != null && string.Equals(inst._filePath, full, StringComparison.OrdinalIgnoreCase)))
+                        return inst;
+                }
+            }
+            return null;
+        }
+
+        /// <summary>Resolve a path to a STABLE physical-file identity so the same file opened via ANY alias —
+        /// 8.3 short name, junction/symlink, subst/mapped-drive vs UNC, OR an NTFS HARD LINK — dedups to one tab
+        /// (→ no last-save-wins). PRIMARY: the handle's volume serial + file index (a true file ID; the only thing
+        /// that collapses hard links, which are distinct directory entries for one file record with no common
+        /// pathname). FALLBACK when the file ID is unavailable: the normalized final path, then the plain full path.
+        /// The "id:"/"path:" prefixes keep a file-ID identity and a path fallback from ever colliding. (item 3)</summary>
+        private static string CanonicalFileId(string path)
+        {
+            try
+            {
+                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    IntPtr h = fs.SafeFileHandle.DangerousGetHandle();
+                    NativeMethods.BY_HANDLE_FILE_INFORMATION info;
+                    // A 0 file index means the filesystem didn't supply a real per-file ID (some network/virtual FS) —
+                    // do NOT use it, or every such file would collapse to one "id:…:0" identity → wrong-file dedup.
+                    // Fall through to the path identity instead.
+                    if (NativeMethods.GetFileInformationByHandle(h, out info) && (info.FileIndexHigh != 0 || info.FileIndexLow != 0))
+                        return "id:" + info.VolumeSerialNumber.ToString("x8") + ":" +
+                               info.FileIndexHigh.ToString("x8") + info.FileIndexLow.ToString("x8");
+                    // File ID unavailable — fall back to the normalized final path (resolves path aliases, not hard links).
+                    var sb = new StringBuilder(512);
+                    uint len = NativeMethods.GetFinalPathNameByHandle(h, sb, (uint)sb.Capacity, 0);   // 0 = VOLUME_NAME_DOS | FILE_NAME_NORMALIZED
+                    if (len > sb.Capacity) { sb.EnsureCapacity((int)len + 1); len = NativeMethods.GetFinalPathNameByHandle(h, sb, (uint)sb.Capacity, 0); }
+                    if (len > 0)
+                    {
+                        string p = sb.ToString();
+                        if (p.StartsWith(@"\\?\UNC\")) p = @"\\" + p.Substring(8);   // \\?\UNC\server\share → \\server\share
+                        else if (p.StartsWith(@"\\?\")) p = p.Substring(4);          // \\?\C:\... → C:\...
+                        return "path:" + p.ToLowerInvariant();
+                    }
+                }
+            }
+            catch { }
+            try { return "path:" + Path.GetFullPath(path).ToLowerInvariant(); } catch { return "path:" + path.ToLowerInvariant(); }
+        }
+
+        /// <summary>Activate this tab (public wrapper over the deferred SelectWindow used elsewhere).</summary>
+        public void ActivateTab() { BringToFront(); }
+
+        /// <summary>
+        /// BOM-detect, else ANSI. Clarion source is traditionally Windows-ANSI; decoding it as UTF-8
+        /// would mangle high-bit characters and a save would then write the mangled text back. ReadAllText
+        /// honors a BOM when present, so only the no-BOM default differs from stock behavior.
+        /// </summary>
+        private static Encoding DetectFileEncoding(string path)
+        {
+            try
+            {
+                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    var bom = new byte[4];
+                    int n = fs.Read(bom, 0, 4);
+                    if (n >= 3 && bom[0] == 0xEF && bom[1] == 0xBB && bom[2] == 0xBF) return new UTF8Encoding(true);
+                    if (n >= 2 && bom[0] == 0xFF && bom[1] == 0xFE) return Encoding.Unicode;
+                    if (n >= 2 && bom[0] == 0xFE && bom[1] == 0xFF) return Encoding.BigEndianUnicode;
+                }
+            }
+            catch { }
+            return Encoding.Default;
+        }
+
+        private static string LanguageForFile(string path)
+        {
+            string ext = (Path.GetExtension(path) ?? "").ToLowerInvariant();
+            switch (ext)
+            {
+                case ".clw": case ".inc": case ".equ": case ".int":
+                case ".tpl": case ".tpw": case ".trn": case ".pr":
+                    return "clarion";
+                default:
+                    return "plaintext";
+            }
+        }
+
         private async void OnHandleCreated(object sender, EventArgs e)
         {
             if (_isInitializing || _isInitialized) return;
@@ -879,8 +1036,9 @@ namespace ClarionAssistant.Terminal
                     _webView.CoreWebView2.Navigate(new Uri(htmlPath).AbsoluteUri + "?v=" + File.GetLastWriteTimeUtc(htmlPath).Ticks);
 
                 // On open (UI thread): refresh the pad's IDE-sourced caches (whole-app .txa for Local/Global
-                // Data; live dictionary snapshot for Other Files). Silent.
-                RefreshPadSources();
+                // Data; live dictionary snapshot for Other Files). Silent. File mode has no app context —
+                // the refresh would just churn the IDE for nothing (and there may be no .app open at all).
+                if (!_fileMode) RefreshPadSources();
             }
             catch (Exception ex)
             {
@@ -926,12 +1084,22 @@ namespace ClarionAssistant.Terminal
                     HandleSelectionChanged(json);
                 else if (action == "focusEditor")
                     BringToFront();   // drag-drop from the Data pad: activate this tab so the dev can type immediately
+                else if (action == "reload")
+                    HandleReload();                   // file mode: re-read from disk, discard edits
+                else if (action == "fileState")
+                    HandleFileState(json);            // file mode: page mirrors its live buffer + dirty flag to the host
                 else if (action == "openDesigner")
-                    HandleOpenDesigner(json);
+                {
+                    if (!_fileMode) HandleOpenDesigner(json);   // designer needs an embeditor-backed procedure
+                }
                 else if (action == "openDesignerCreate")
-                    HandleOpenDesignerCreate(json);   // template picker's choice (task 1f10aa51)
+                {
+                    if (!_fileMode) HandleOpenDesignerCreate(json);   // template picker's choice (task 1f10aa51)
+                }
                 else if (action == "activateDesigner")
-                    StructureDesignerService.ActivateCurrent(_panel);   // 'Show designer' on the modal lock overlay
+                {
+                    if (!_fileMode) StructureDesignerService.ActivateCurrent(_panel);   // 'Show designer' on the modal lock overlay
+                }
             }
             catch (Exception ex)
             {
@@ -942,6 +1110,8 @@ namespace ClarionAssistant.Terminal
         /// <summary>Persist the user's edits: parse the per-slot payload and run the save round-trip.</summary>
         private void HandleSave(string json)
         {
+            if (_fileMode) { HandleFileSave(json); return; }
+
             if (!_saveEnabled || string.IsNullOrWhiteSpace(_procedureName))
             {
                 PostSaveResult(false, "Save isn't available — this tab was opened in mirror mode, not from the procedure picker.");
@@ -973,6 +1143,232 @@ namespace ClarionAssistant.Terminal
                 _panel.BeginInvoke((Action)(() => RunSaveRoundTrip(captured)));
             else
                 RunSaveRoundTrip(captured);
+        }
+
+        /// <summary>
+        /// File-mode save: write the whole buffer back to disk, preserving the encoding detected at open and
+        /// normalizing line endings per language (CRLF for Clarion, else the file's own detected style). Overwrite
+        /// consent is bound to the specific on-disk version the user was warned about: if the file changed on disk
+        /// it reports the conflict, and a retry overwrites only that same version — if it changed AGAIN since the
+        /// warning, it re-warns rather than clobbering a version the user never saw.
+        /// Plain file I/O — safe on this stack, no native embeditor round-trip involved.
+        /// </summary>
+        private void HandleFileSave(string json)
+        {
+            string text; long seq = 0;
+            try
+            {
+                var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                var data = ser.DeserializeObject(json) as Dictionary<string, object>;
+                text = (data != null && data.ContainsKey("text")) ? data["text"] as string : null;
+                if (data != null && data.ContainsKey("seq")) long.TryParse(Convert.ToString(data["seq"]), out seq);
+                if (text == null) { PostSaveResult(false, "Save failed: malformed payload (no text)."); return; }
+            }
+            catch (Exception ex)
+            {
+                PostSaveResult(false, "Save failed parsing the editor payload: " + ex.Message);
+                return;
+            }
+
+            try
+            {
+                // Changed-on-disk guard. The signature (mtime+length) fingerprints the EXACT on-disk version.
+                // Overwrite consent is bound to one specific version: a prior arm is honored only if the disk is
+                // STILL at the version we warned about — if it changed AGAIN, re-warn (never clobber a version the
+                // user never saw). (pipeline item 2 — debugger + adversary + security)
+                string diskSig = ReadFileSignature(_filePath);
+                if (diskSig != _fileDiskSig)
+                {
+                    if (_fileOverwriteArmedSig == null || _fileOverwriteArmedSig != diskSig)
+                    {
+                        _fileOverwriteArmedSig = diskSig;
+                        PostSaveResult(false, _title + " changed on disk since it was opened/last saved. Save again to overwrite THIS disk version, or use Reload to discard your edits and pick up the disk version.");
+                        return;
+                    }
+                    // armed for exactly this version — fall through and overwrite.
+                }
+                _fileOverwriteArmedSig = null;
+
+                // Normalize EOL (Clarion=CRLF, else the file's detected style) + atomic write, bound to the disk
+                // version validated above. Shared with the close-save path so the policy lives in one place. (items 2, 5)
+                string outText = WriteFileMode(text, diskSig);
+
+                _fileDiskSig = ReadFileSignature(_filePath);
+                _sourceText = outText;
+                _fileLiveText = outText;
+                _fileDirty = false;
+                TrySetHostDirty(false);
+                PostSaveResult(true, "Saved " + _title, seq);
+            }
+            catch (Exception ex)
+            {
+                PostSaveResult(false, "Save failed: " + ex.Message);
+            }
+        }
+
+        /// <summary>File mode: the page mirrors its live buffer + dirty flag here on each legal edit (and on blur),
+        /// so a tab close can offer to save WITHOUT an async round-trip into the WebView2. (pipeline CRITICAL)</summary>
+        private void HandleFileState(string json)
+        {
+            if (!_fileMode) return;
+            try
+            {
+                var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                var data = ser.DeserializeObject(json) as Dictionary<string, object>;
+                if (data == null) return;
+                if (data.ContainsKey("text") && data["text"] is string) _fileLiveText = (string)data["text"];
+                if (data.ContainsKey("dirty")) _fileDirty = Convert.ToBoolean(data["dirty"]);
+                TrySetHostDirty(_fileDirty);
+            }
+            catch { }
+        }
+
+        /// <summary>Intentionally a NO-OP. We do NOT reflect dirty state onto AbstractViewContent.IsDirty.
+        /// LIVE-IDE FINDING (John's test, 2026-06-13): setting IsDirty=true makes SharpDevelop's workbench run its
+        /// OWN save-on-close path on tab close — but this WebView2 view has no real file binding, so the framework
+        /// treats it as an untitled doc, pops a bogus "Save As" dialog (defaulting to ...\libsrc\win), then calls
+        /// AbstractViewContent.Save(fileName) which we don't implement → System.NotImplementedException.
+        /// Unsaved-edits-on-close is handled entirely by OUR Dispose() confirm (+ host buffer mirror), which writes
+        /// the file directly and never touches the framework save machinery. Kept as a no-op so call sites are stable.</summary>
+        private void TrySetHostDirty(bool dirty)
+        {
+            // deliberately empty — see summary (framework Save(fileName) is NotImplemented for this view)
+        }
+
+        /// <summary>A cheap disk-version fingerprint (last-write UTC ticks + byte length) that distinguishes the
+        /// exact on-disk version. Returns null when the file is missing — so a delete/recreate reads as a change.</summary>
+        private static string ReadFileSignature(string path)
+        {
+            try { var fi = new FileInfo(path); return fi.Exists ? fi.LastWriteTimeUtc.Ticks + ":" + fi.Length : null; }
+            catch { return null; }
+        }
+
+        /// <summary>Detect the file's dominant EOL so non-Clarion files round-trip their own style instead of being
+        /// force-converted to CRLF (which would mark every line changed). (pipeline item 5)</summary>
+        private static string DetectEol(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return "\r\n";
+            int crlf = 0, lf = 0;
+            for (int i = 0; i < text.Length; i++)
+                if (text[i] == '\n') { if (i > 0 && text[i - 1] == '\r') crlf++; else lf++; }
+            return lf > crlf ? "\n" : "\r\n";
+        }
+
+        /// <summary>Normalize every EOL to <paramref name="eol"/>. Collapse CRLF and lone CR to LF first (so a
+        /// classic-Mac \r isn't left dangling), then expand to the target.</summary>
+        private static string NormalizeEol(string text, string eol)
+        {
+            if (text == null) return "";
+            string s = text.Replace("\r\n", "\n").Replace("\r", "\n");
+            return eol == "\n" ? s : s.Replace("\n", "\r\n");
+        }
+
+        /// <summary>Write atomically: encode to a temp file in the same directory, then replace the target, so a
+        /// crash/lock mid-write can't truncate the real file. Re-checks the disk signature immediately before the
+        /// replace and throws if the file changed AGAIN since the caller validated it (shrinks TOCTOU; fails closed).
+        /// <paramref name="expectedSig"/> is the signature the caller approved (null = brand-new file).</summary>
+        private static void WriteFileAtomic(string path, string text, Encoding enc, string expectedSig)
+        {
+            string dir = Path.GetDirectoryName(path);
+            string tmp = Path.Combine(dir, "." + Path.GetFileName(path) + "." + Guid.NewGuid().ToString("N") + ".tmp");
+            File.WriteAllText(tmp, text, enc);
+            try
+            {
+                if (ReadFileSignature(path) != expectedSig)
+                    throw new IOException("File changed on disk again during save.");
+                if (File.Exists(path)) File.Replace(tmp, path, null);   // atomic on the same volume; preserves the original's ACLs
+                else File.Move(tmp, path);                              // brand-new file
+                tmp = null;
+            }
+            finally { if (tmp != null) { try { File.Delete(tmp); } catch { } } }
+        }
+
+        /// <summary>The EOL this file is written with: CRLF for Clarion (tooling expects it), else the file's own
+        /// detected style. Single home for the language→EOL policy used by every write path.</summary>
+        private string TargetEol { get { return _language == "clarion" ? "\r\n" : _fileEol; } }
+
+        /// <summary>Shared file-mode write: normalize EOL per language (Clarion = CRLF, else the file's detected
+        /// style) then atomically write, requiring the on-disk version to still match <paramref name="expectedSig"/>.
+        /// Returns the normalized text actually written. Single home for the write policy used by BOTH the
+        /// interactive save and the close-save path. (pipeline Run-2 dedup)</summary>
+        private string WriteFileMode(string text, string expectedSig)
+        {
+            string outText = NormalizeEol(text, TargetEol);
+            WriteFileAtomic(_filePath, outText, _fileEncoding, expectedSig);
+            return outText;
+        }
+
+        /// <summary>Write the unsaved buffer to a UNIQUE recovery file next to the original, created EXCLUSIVELY
+        /// (CreateNew) so it can neither overwrite a real sibling nor stomp an earlier recovery copy. Returns the
+        /// path written. (pipeline Run-3: security + adversary flagged the old fixed ".unsaved.bak" name.)</summary>
+        private string WriteRecoveryBackup(string text)
+        {
+            string baseName = _filePath + ".unsaved";
+            for (int i = 0; ; i++)
+            {
+                string candidate = baseName + (i == 0 ? "" : "." + i) + ".bak";
+                try
+                {
+                    using (var fs = new FileStream(candidate, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    using (var sw = new StreamWriter(fs, _fileEncoding))
+                        sw.Write(text);
+                    return candidate;
+                }
+                catch (IOException) when (i < 1000 && File.Exists(candidate))
+                {
+                    // name already taken — try the next index
+                }
+            }
+        }
+
+        /// <summary>Close-time save (best-effort, no async round-trip) of the host-mirrored buffer. Uses the SAME
+        /// changed-on-disk consent as the interactive save — <see cref="_fileDiskSig"/>, the version the user last
+        /// saw — so it never silently clobbers an externally-changed file. On conflict OR write failure it does NOT
+        /// drop the edits: it writes a sidecar backup next to the file and tells the user where it went.
+        /// (pipeline Run-2: debugger + both Codex gates converged on the old silent-clobber/swallow path.)</summary>
+        private void SaveOnClose()
+        {
+            try
+            {
+                WriteFileMode(_fileLiveText, _fileDiskSig);   // guarded: throws if the disk moved since the user last saw it
+            }
+            catch
+            {
+                // Conflict or write failure — preserve the edits WITHOUT overwriting the external change, to a
+                // UNIQUE recovery file (never stomps a sibling or an earlier recovery copy).
+                try
+                {
+                    string backup = WriteRecoveryBackup(NormalizeEol(_fileLiveText, TargetEol));
+                    MessageBox.Show(_title + " changed on disk (or could not be written), so your unsaved edits were NOT applied to it.\n\nThey were saved to:\n" + backup,
+                        "CA Editor — saved to backup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                catch { /* last-ditch at teardown; nothing more we can safely do */ }
+            }
+        }
+
+        /// <summary>File-mode reload: re-read the file from disk and push it to the page (discards edits).</summary>
+        private void HandleReload()
+        {
+            if (!_fileMode) return;
+            try
+            {
+                // Re-detect encoding + EOL: the file may have been externally rewritten in a different encoding
+                // since open. Reusing the stale open-time encoding would misdecode and a later save would write the
+                // corrupted text back. (pipeline item 4 — adversary)
+                _fileEncoding = DetectFileEncoding(_filePath);
+                _sourceText = File.ReadAllText(_filePath, _fileEncoding);
+                _fileEol = DetectEol(_sourceText);
+                _fileDiskSig = ReadFileSignature(_filePath);
+                _fileOverwriteArmedSig = null;
+                _fileLiveText = _sourceText;
+                _fileDirty = false;
+                TrySetHostDirty(false);
+                SendSource();
+            }
+            catch (Exception ex)
+            {
+                PostSaveResult(false, "Reload failed: " + ex.Message);
+            }
         }
 
         // The actual save round-trip — re-open native embed, write slots, save+close. Runs deferred (off the
@@ -1035,8 +1431,11 @@ namespace ClarionAssistant.Terminal
         {
             try
             {
-                var lsp = LspClient.Active;
-                if (lsp == null || !lsp.IsRunning)
+                // Only kick the bundled-server self-heal when NO LSP is available at all. When the shared
+                // ClarionLsp addin is active, SharedLspBridge.IsRunning is already true and the bundled
+                // starter is a deliberate no-op — checking LspClient.Active alone would loop forever
+                // ("server starting…") because we intentionally never start the bundled server in that case.
+                if (!SharedLspBridge.IsRunning)
                     EmbeditorCompletionService.LspStarter?.Invoke();
             }
             catch { }
@@ -1044,8 +1443,8 @@ namespace ClarionAssistant.Terminal
 
         private void HandleCompletion(string json)
         {
-            int reqId, line, column;
-            if (!ParseRequest(json, out reqId, out line, out column, out _)) return;
+            int reqId, line, column; string buffer;
+            if (!ParseRequest(json, out reqId, out line, out column, out buffer)) return;
             Task.Run(() =>
             {
                 var items = new List<Dictionary<string, object>>();
@@ -1053,13 +1452,13 @@ namespace ClarionAssistant.Terminal
                 try
                 {
                     EnsureLspStarted();
-                    var lsp = LspClient.Active;
-                    if (lsp == null) lspStatus = "not started";
-                    else if (!lsp.IsRunning) lspStatus = "starting";
+                    // Route through SharedLspBridge: shared ClarionLsp when active, else bundled LspClient.
+                    if (!SharedLspBridge.IsRunning) lspStatus = "starting";
                     else
                     {
-                        // Context-free: pass no buffer; the server returns the language item set.
-                        var comps = lsp.GetCompletion(_lspFileName, Math.Max(0, line - 1), Math.Max(0, column - 1), 2500, null);
+                        // Pass the LIVE buffer (mirror HandleHover). Passing null made the shared server complete
+                        // against an empty document → always "no suggestions" (John's test; root-caused with Bob).
+                        var comps = SharedLspBridge.GetCompletion(_lspFileName, Math.Max(0, line - 1), Math.Max(0, column - 1), 2500, buffer);
                         if (comps != null)
                             foreach (var c in comps)
                                 items.Add(new Dictionary<string, object>
@@ -1070,7 +1469,10 @@ namespace ClarionAssistant.Terminal
                                     { "documentation", c.Documentation },
                                     { "insertText", c.InsertText }
                                 });
-                        lspStatus = string.IsNullOrEmpty(lsp.LastCompletionDiagnostic) ? "ok" : lsp.LastCompletionDiagnostic;
+                        // LastCompletionDiagnostic is bundled-only; surface it on the local path, else "ok".
+                        var local = LspClient.Active;
+                        lspStatus = (local != null && !string.IsNullOrEmpty(local.LastCompletionDiagnostic))
+                            ? local.LastCompletionDiagnostic : "ok";
                     }
                 }
                 catch (Exception ex)
@@ -1093,10 +1495,9 @@ namespace ClarionAssistant.Terminal
                 try
                 {
                     EnsureLspStarted();
-                    var lsp = LspClient.Active;
-                    if (lsp != null && lsp.IsRunning)
+                    if (SharedLspBridge.IsRunning)
                     {
-                        var resp = lsp.GetHover(_lspFileName, Math.Max(0, line - 1), Math.Max(0, column - 1), buffer);
+                        var resp = SharedLspBridge.GetHover(_lspFileName, Math.Max(0, line - 1), Math.Max(0, column - 1), buffer);
                         contents = ExtractHoverString(resp);
                     }
                 }
@@ -1125,7 +1526,8 @@ namespace ClarionAssistant.Terminal
                         _lspFileName,
                         buffer ?? _sourceText,
                         (ranges != null && ranges.Count > 0) ? ranges : _editableRanges,
-                        _procedureName);
+                        _procedureName,
+                        embedSlotChecks: !_fileMode);   // file mode: LSP only, skip embed-slot heuristics
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] diagnostics: " + ex.Message); }
                 PostResponse(reqId, new Dictionary<string, object> { { "markers", markers } });
@@ -1567,6 +1969,15 @@ namespace ClarionAssistant.Terminal
             if (_histScopeResolved) return;
             _histScopeResolved = true;
             try { _histSolutionPath = EditorService.GetOpenSolutionPath(); } catch { _histSolutionPath = null; }
+            if (_fileMode)
+            {
+                // File tabs scope history/cursor/bookmarks by path — no app::procedure identity exists.
+                // State (cursor/bookmarks/history) stays keyed on the PATH, not the file-ID dedup identity: a path
+                // key is stable across external delete/recreate (a file-ID changes then, orphaning state) AND it
+                // matches the key used before item 3, so existing users' saved state is NOT stranded on upgrade.
+                _histProcKey = "file::" + _filePath.ToLowerInvariant();
+                return;
+            }
             string appName = null;
             try
             {
@@ -1704,19 +2115,26 @@ namespace ClarionAssistant.Terminal
             }
         }
 
-        private void PostSaveResult(bool ok, string message)
+        private void PostSaveResult(bool ok, string message) { PostSaveResult(ok, message, 0); }
+
+        private void PostSaveResult(bool ok, string message, long savedSeq)
         {
-            PostSaveResultOnce(ok, message);
-            // Backup re-post on the next message-loop turn — delivery of the first post can race with
-            // the embeditor open/close churn that just happened during the save.
-            try { _panel?.BeginInvoke((Action)(() => PostSaveResultOnce(ok, message))); }
-            catch { }
+            PostSaveResultOnce(ok, message, savedSeq);
+            // Backup re-post ONLY in embed mode — the embeditor open/close churn during a slot save can drop the
+            // first post. A file save has no such churn, so the double-post is suppressed here: it widened the
+            // dirty-clear race (a clean saveResult could land after an edit and wrongly clear the ●). (pipeline item 6)
+            if (!_fileMode)
+            {
+                try { _panel?.BeginInvoke((Action)(() => PostSaveResultOnce(ok, message, savedSeq))); }
+                catch { }
+            }
         }
 
-        private void PostSaveResultOnce(bool ok, string message)
+        private void PostSaveResultOnce(bool ok, string message, long savedSeq)
         {
             if (_webView == null || _webView.CoreWebView2 == null) return;
             string json = "{\"type\":\"saveResult\",\"ok\":" + (ok ? "true" : "false") +
+                          ",\"savedSeq\":" + savedSeq +
                           ",\"message\":" + JsonString(message) + "}";
             try { _webView.CoreWebView2.PostWebMessageAsJson(json); } catch { }
         }
@@ -1772,6 +2190,8 @@ namespace ClarionAssistant.Terminal
                     "\"title\":" + JsonString(_title) + "," +
                     "\"language\":" + JsonString(_language) + "," +
                     "\"isDark\":" + (_isDark ? "true" : "false") + "," +
+                    "\"fileMode\":" + (_fileMode ? "true" : "false") + "," +
+                    "\"filePath\":" + JsonString(_filePath ?? "") + "," +
                     "\"saveEnabled\":" + (_saveEnabled ? "true" : "false") + "," +
                     "\"editableRanges\":" + RangesJson() + "," +
                     "\"settings\":" + settingsJson + "," +
@@ -1902,12 +2322,43 @@ namespace ClarionAssistant.Terminal
 
         public override void Dispose()
         {
+            // CRITICAL (pipeline): file mode edits a REAL file on disk. If the tab is closing with unsaved edits,
+            // offer to save before teardown — otherwise the buffer is silently lost (the IDE tab close does not
+            // prompt for our WebView2-hosted view). We hold the live buffer (_fileLiveText, mirrored from the page),
+            // so the save is a synchronous file write — no async round-trip. Dispose the WebView2 FIRST so the
+            // confirm MessageBox can't get stuck behind the live WebView2 (the documented native<->WebView2 deadlock).
+            bool promptSave = _fileMode && _fileDirty && _fileLiveText != null && !_disposed;
+            _disposed = true;
+
             lock (_instances) { _instances.Remove(this); }
             if (_webView != null)
             {
                 _webView.Dispose();
                 _webView = null;
             }
+
+            if (promptSave)
+            {
+                try
+                {
+                    if (_shuttingDown)
+                    {
+                        // IDE shutdown: NO modal prompt (a Yes/No per dirty tab = modal storm). Preserve the edits to
+                        // a unique recovery file without overwriting the real file unprompted; the user recovers on
+                        // next open. This also backstops the residual close-race on the shutdown path. (Run-3 adversary)
+                        WriteRecoveryBackup(NormalizeEol(_fileLiveText, TargetEol));
+                    }
+                    else
+                    {
+                        var r = MessageBox.Show("Save changes to " + _title + " before closing?",
+                            "CA Editor — unsaved changes", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                        if (r == DialogResult.Yes)
+                            SaveOnClose();   // guarded by _fileDiskSig; recovery-preserves on conflict (never silent-clobbers)
+                    }
+                }
+                catch { /* best-effort save-on-close; the tab is closing regardless */ }
+            }
+
             if (_panel != null)
             {
                 _panel.Dispose();
@@ -1921,6 +2372,7 @@ namespace ClarionAssistant.Terminal
         /// native IDE teardown, to avoid the WebView2 &lt;-&gt; native focus deadlock. Idempotent + best-effort.</summary>
         public static void DisposeAllForShutdown()
         {
+            _shuttingDown = true;   // per-tab Dispose takes the noninteractive recovery path (no modal storm)
             List<ModernEmbeditorViewContent> snapshot;
             lock (_instances) { snapshot = new List<ModernEmbeditorViewContent>(_instances); }
             foreach (var inst in snapshot)

@@ -238,7 +238,7 @@
 </head>
 <body>
     <div id="toolbar">
-        <div class="title">CA Embeditor — <span id="titleText">(no procedure)</span></div>
+        <div class="title"><span id="titlePrefix">CA Embeditor</span> — <span id="titleText">(no procedure)</span></div>
         <div class="spacer"></div>
         <button id="prevEmbedBtn" class="embed-nav" title="Previous Embed">&#8593;</button>
         <button id="nextEmbedBtn" class="embed-nav" title="Next Embed">&#8595;</button>
@@ -253,6 +253,7 @@
         <button id="themeBtn" title="Toggle light/dark background">&#127769;</button>
         <button id="splitBtn" title="Split editor — two panes of the same file (compare/copy between areas)">&#9707;</button>
         <button id="settingsBtn" title="Editor settings">&#9881;</button>
+        <button id="reloadBtn" style="display:none" title="Reload from disk (discards your edits — click twice to confirm)">&#10227; Reload</button>
         <button id="saveBtn" title="Save changes (Ctrl+S)">Save</button>
     </div>
     <div id="settingsPanel" class="hidden">
@@ -342,6 +343,36 @@
     var readonlyDecorations = []; // decoration ids for the grey read-only (generated) lines
     var guarding = false;         // re-entrancy/suppression flag for the read-only guard
     var saveEnabled = false;      // true when opened from the picker (bound to a procedure)
+    var fileMode = false;         // true when the tab edits a plain source FILE — whole buffer editable,
+                                  // no slot guard/decorations, save posts full text, embed nav disabled
+    var reloadArmed = false;      // two-click confirm for Reload (discards edits)
+    var isDirty = false;          // unsaved-changes flag — drives the ● indicator in the title banner
+    var baseTitle = '(no procedure)';   // filename/procedure name without the dirty marker
+    var editSeq = 0;              // increments on each legal edit; echoed by saveResult so the ● clears ONLY
+                                  // if no edit happened during the save round-trip (pipeline item 6)
+
+    // Render the title banner with a leading ● when there are unsaved edits (the Clarion IDE tab
+    // can't be reliably decorated, so the page owns the dirty indicator). John's test feedback.
+    function renderTitle() {
+        var el = document.getElementById('titleText');
+        if (!el) return;
+        el.textContent = (isDirty ? '● ' : '') + baseTitle;
+        el.title = isDirty ? 'Unsaved changes — Ctrl+S to save' : baseTitle;
+    }
+    function setDirty(d) {
+        if (isDirty === d) return;
+        isDirty = d;
+        renderTitle();
+    }
+    // File mode only: mirror the live buffer + dirty flag to the host so a tab close can save from the host's
+    // copy WITHOUT an async round-trip into this page. (pipeline CRITICAL — data loss on close)
+    // This is SYNCHRONOUS on every legal edit (NOT debounced): Run-2 found a debounce left _fileLiveText/_fileDirty
+    // stale when a tab closes within the window with no blur (esp. IDE shutdown / Ctrl+F4) → lost edits. The buffer
+    // is modest (hand-coded Clarion source) so a per-edit postMessage is cheap.
+    function pushFileState() {
+        if (!fileMode || !editor) return;
+        postToHost({ action: 'fileState', dirty: isDirty, seq: editSeq, text: editor.getModel().getValue() });
+    }
     var toastTimer = null;
     var saveSafetyTimer = null;   // ensures the "Saving…" toast can never hang forever
     var pendingRequests = {};     // reqId -> resolver, for async LSP completion/hover round-trips
@@ -464,16 +495,31 @@
                     // dropIntoEditor snippet-expands the text and leaves "$0" artifacts.
                     dropIntoEditor: { enabled: false }
                 });
-                installReadOnlyGuard();
+                installReadOnlyGuard();        // also marks the buffer dirty on each legal edit
                 installDropInsert(editor);     // accept Data-pad drops (plain text, at the drop point)
                 activeEditor = editor;         // commands target the focused pane; primary by default (#15)
                 editor.onDidFocusEditorText(function () { activeEditor = editor; });
+                // Flush the live buffer to the host immediately on blur (file mode), so the host's close-time copy
+                // is current even if the user clicks the tab's X before the 600ms debounce fires. (pipeline CRIT)
+                editor.onDidBlurEditorText(function () { if (fileMode && isDirty) pushFileState(); });
                 editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, doSave);
                 installFindKeyInterceptor();   // capture-phase Ctrl+F/Ctrl+H/F3 — beats Monaco's stock widgets
                 rebuildChordMap();             // seed the binding map from defaults (settings refine it later)
                 installKeyBindings();          // capture-phase dispatcher for all rebindable Clarion editor keys
                 installGlyphBookmarkClick();   // far-left margin click toggles a bookmark (#16)
                 document.getElementById('saveBtn').addEventListener('click', doSave);
+                // Reload (file mode): discards edits, so require a second click within 4s to confirm.
+                document.getElementById('reloadBtn').addEventListener('click', function () {
+                    if (!fileMode) return;
+                    if (!reloadArmed) {
+                        reloadArmed = true;
+                        showToast('Reload discards your edits — click Reload again to confirm', false);
+                        setTimeout(function () { reloadArmed = false; }, 4000);
+                        return;
+                    }
+                    reloadArmed = false;
+                    postToHost({ action: 'reload' });
+                });
                 var splitBtn = document.getElementById('splitBtn');
                 if (splitBtn) splitBtn.addEventListener('click', toggleSplit);   // split toggle (#15)
                 installNavTracking(editor);    // record cursor jumps for Back/Forward (#14)
@@ -499,9 +545,22 @@
     function applySource(msg) {
         embedRanges = msg.editableRanges || [];
         saveEnabled = !!msg.saveEnabled;
+        fileMode = !!msg.fileMode;
         var sb = document.getElementById('saveBtn');
         if (sb) sb.style.display = saveEnabled ? '' : 'none';
-        document.getElementById('titleText').textContent = (msg.title || '(no procedure)');
+        // File mode: relabel, show Reload, hide the embed-slot navigation (no slots exist).
+        var tp = document.getElementById('titlePrefix');
+        if (tp) tp.textContent = fileMode ? 'CA Editor' : 'CA Embeditor';
+        var rb = document.getElementById('reloadBtn');
+        if (rb) rb.style.display = fileMode ? '' : 'none';
+        ['prevEmbedBtn', 'nextEmbedBtn', 'prevFilledBtn', 'nextFilledBtn'].forEach(function (id) {
+            var b = document.getElementById(id);
+            if (b) b.style.display = fileMode ? 'none' : '';
+        });
+        baseTitle = msg.title || '(no procedure)';
+        isDirty = false;            // a fresh load (or reload) starts clean
+        editSeq = 0;                // reset the edit sequence — the host's mirror is clean after a load/reload
+        renderTitle();
         setTheme(themePrefDark);   // honor the user's persisted light/dark choice over the host's IDE theme
         if (msg.settings) { applyEditorSettings(msg.settings); populateSettingsPanel(msg.settings); }
         if (msg.findHistory) replaceArray(findHistory, msg.findHistory);
@@ -514,6 +573,8 @@
                 var model = editor.getModel();
                 guarding = true;            // programmatic load — don't let the guard revert it
                 model.setValue(text);
+                // Honor the host's language choice (file mode can open non-Clarion files as plaintext).
+                try { if (msg.language) monaco.editor.setModelLanguage(model, msg.language); } catch (e) { }
                 applyEmbedDecorations();
                 guarding = false;
                 restoreEmbedState(msg);     // bookmarks + cursor (once per tab); else reveal line 1
@@ -529,6 +590,12 @@
     function applyEmbedDecorations() {
         if (!editor) return;
         var model = editor.getModel();
+        if (fileMode) {
+            // Whole buffer is editable — clear any slot/readonly paint and skip the machinery.
+            embedDecorations = model.deltaDecorations(embedDecorations, []);
+            readonlyDecorations = model.deltaDecorations(readonlyDecorations, []);
+            return;
+        }
         var lineCount = model.getLineCount();
 
         var editDecos = (embedRanges || []).map(function (r) {
@@ -632,10 +699,17 @@
         // timer would have fired. (Security + adversary finding.)
         if (_bookmarkPersistTimer) { clearTimeout(_bookmarkPersistTimer); _bookmarkPersistTimer = null; }
         postToHost({ action: 'saveBookmarks', bookmarks: bookmarkLines() });
-        postToHost({ action: 'save', slots: gatherSlots() });
-        // Persist the "Saving…" toast (the save re-opens the embeditor for a few seconds) until the
-        // host replies with the result — otherwise it can fade before the result arrives.
-        showToast('Saving… (re-opening the embeditor)', true, true);
+        if (fileMode) {
+            // Plain file: hand the host the whole buffer; it writes the file directly (fast, no embeditor).
+            // Stamp it with editSeq so the host echoes it back — we clear the ● only if no edit happened since.
+            postToHost({ action: 'save', text: editor.getModel().getValue(), seq: editSeq });
+            showToast('Saving…', true, true);
+        } else {
+            postToHost({ action: 'save', slots: gatherSlots() });
+            // Persist the "Saving…" toast (the save re-opens the embeditor for a few seconds) until the
+            // host replies with the result — otherwise it can fade before the result arrives.
+            showToast('Saving… (re-opening the embeditor)', true, true);
+        }
         // Safety net: never leave "Saving…" up forever if the result message is lost.
         if (saveSafetyTimer) clearTimeout(saveSafetyTimer);
         saveSafetyTimer = setTimeout(function () {
@@ -940,6 +1014,7 @@
     var designerSession = null;   // { decoId } — null when no designer is open
 
     function cmdStructureDesigner() {
+        if (fileMode) { showToast('The structure designer needs an embeditor-backed procedure — not available for plain files', false); return; }
         if (designerSession) { showToast('A designer session is already open — close its tab first', false); return; }
         var ed = activeEd();
         var pos = ed.getPosition();
@@ -1536,6 +1611,7 @@
     // decoration-edge scheme failed to grow onto a freshly-created trailing line — a single-line/empty
     // slot couldn't gain a second line at all.)
     function isEditableRange(range) {
+        if (fileMode) return true;   // plain file: everything is editable
         if (!range) return false;
         for (var i = 0; i < embedRanges.length; i++) {
             if (range.startLineNumber >= embedRanges[i][0] && range.endLineNumber <= embedRanges[i][1])
@@ -1585,6 +1661,12 @@
                 guarding = false;
                 return;
             }
+            // A legal user edit happened (this handler returned early for programmatic loads via
+            // `guarding` and for reverted illegal edits) — mark the buffer dirty for the ● indicator.
+            setDirty(true);
+            // File mode: advance the edit sequence (lets saveResult detect edits-during-save) and mirror the
+            // live buffer to the host (debounced) so a close can save it. (pipeline items 1 + 6)
+            if (fileMode) { editSeq++; pushFileState(); }   // synchronous mirror — no debounce (close-safety, Run-2)
             // Legal edit — fold its line delta into embedRanges, re-render decorations if the spans
             // moved, then refresh squiggles (debounced).
             if (applyChangesToRanges(e.changes)) {
@@ -1607,6 +1689,8 @@
     var diagTimer = null;
 
     function liveEditableRanges() {
+        // File mode: the whole buffer is one "slot" — diagnostics clamp to it, i.e. the entire file.
+        if (fileMode && editor) return [[1, editor.getModel().getLineCount()]];
         // embedRanges is the source of truth (kept in sync by the read-only guard).
         return embedRanges.map(function (r) { return [r[0], r[1]]; });
     }
@@ -1690,7 +1774,7 @@
             provideCompletionItems: function (model, position) {
                 var word = model.getWordUntilPosition(position);
                 var range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
-                return requestFromHost('completion', { line: position.lineNumber, column: position.column })
+                return requestFromHost('completion', { line: position.lineNumber, column: position.column, buffer: model.getValue() })
                     .then(function (resp) {
                         var items = (resp && resp.items) || [];
                         if (!items.length) maybeReportLsp(resp && resp.lsp);
@@ -2006,6 +2090,7 @@
 
     function navEmbed(dir, filledOnly) {
         if (!editor) return;
+        if (fileMode) { showToast('No embed slots — this is a plain source file', false); return; }
         var ed = activeEd();   // operate on the focused split pane, not always the primary (#15)
         var starts = embedStarts(filledOnly);
         if (!starts.length) { showToast(filledOnly ? 'No filled embed slots' : 'No embed slots', false); return; }
@@ -2664,6 +2749,12 @@
                 setTheme(themePrefDark);   // user preference wins over IDE theme changes
             } else if (msg.type === 'saveResult') {
                 if (saveSafetyTimer) { clearTimeout(saveSafetyTimer); saveSafetyTimer = null; }
+                if (msg.ok) {
+                    // Clear the ● ONLY if the buffer hasn't changed since the snapshot we saved — otherwise edits
+                    // made during the save round-trip would be falsely marked clean. (pipeline item 6)
+                    if (msg.savedSeq == null || msg.savedSeq === editSeq) setDirty(false);
+                    if (fileMode) pushFileState();   // keep the host's mirror in sync with the post-save dirty state
+                }
                 showToast(msg.message, msg.ok);
             } else if (msg.type === 'response' && msg.reqId != null) {
                 var resolver = pendingRequests[msg.reqId];

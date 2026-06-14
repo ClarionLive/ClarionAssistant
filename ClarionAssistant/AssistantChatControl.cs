@@ -1959,6 +1959,7 @@ namespace ClarionAssistant
                 if (tab.ContentControl is CreateClassWebView ccv) ccv.SetTheme(_isDarkTheme);
             }
             Terminal.DiffViewContent.ApplyThemeToAll(_isDarkTheme);
+            Terminal.MonacoDiffViewContent.ApplyThemeToAll(_isDarkTheme);
             _diffService?.SetTheme(_isDarkTheme);
         }
 

@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.Win32.SafeHandles;
 
 namespace ClarionAssistant.Terminal
@@ -146,6 +147,35 @@ namespace ClarionAssistant.Terminal
             public IO_COUNTERS IoInfo;
             public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed;
         }
+
+        #endregion
+
+        #region File identity (CA Editor file-mode dedup — pipeline item 3)
+
+        // True physical-file identity (volume serial + file index) so the same file opened via ANY alias —
+        // 8.3 short name, junction/symlink, subst/mapped-drive vs UNC, or an NTFS HARD LINK — dedups to one tab.
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct BY_HANDLE_FILE_INFORMATION
+        {
+            public uint FileAttributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+            public uint VolumeSerialNumber;
+            public uint FileSizeHigh;
+            public uint FileSizeLow;
+            public uint NumberOfLinks;
+            public uint FileIndexHigh;
+            public uint FileIndexLow;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        internal static extern bool GetFileInformationByHandle(IntPtr hFile, out BY_HANDLE_FILE_INFORMATION lpFileInformation);
+
+        // Normalized final path (resolves symlinks/junctions/8.3) — used as the fallback identity when a file ID
+        // can't be obtained. Does NOT collapse hard links (use GetFileInformationByHandle for that).
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        internal static extern uint GetFinalPathNameByHandle(IntPtr hFile, StringBuilder lpszFilePath, uint cchFilePath, uint dwFlags);
 
         #endregion
     }

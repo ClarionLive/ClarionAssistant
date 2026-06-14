@@ -68,6 +68,14 @@
       <HintPath>$(PkgMicrosoft_Web_WebView2)\lib\net462\Microsoft.Web.WebView2.WinForms.dll</HintPath>
       <Private>True</Private>
     </Reference>
+    <!-- Shared Clarion LSP contract (msarson/clarion-lsp v1.1.0). We ship our own copy of
+         the contract DLL (Private=True) and consume the live IClarionLanguageClient through
+         ClarionLspLocator.Current when the ClarionLsp addin is installed; otherwise we fall
+         back to our bundled LspClient. The .addin declares a soft (coerced) dependency on it. -->
+    <Reference Include="ClarionLsp.Contracts">
+      <HintPath>lib\ClarionLsp\ClarionLsp.Contracts.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
     <Compile Include="AgentPanelPad.cs" />
@@ -103,6 +111,7 @@
     <Compile Include="Services\RedFileService.cs" />
     <Compile Include="Services\LspClient.cs" />
     <Compile Include="Services\LspService.cs" />
+    <Compile Include="Services\SharedLspBridge.cs" />
     <Compile Include="Services\LibraryIndexer.cs" />
     <Compile Include="Services\AppTreeService.cs" />
     <Compile Include="Services\IdeReflectionService.cs" />
@@ -112,6 +121,7 @@
     <Compile Include="RightClickHookAutostartCommand.cs" />
     <Compile Include="ShutdownTerminateCommand.cs" />
     <Compile Include="OpenModernEmbeditorPickerCommand.cs" />
+    <Compile Include="OpenSourceFileInCaEditorCommand.cs" />
     <Compile Include="ShowModernDataPadCommand.cs" />
     <Compile Include="Terminal\ModernDataPad.cs" />
     <Compile Include="Terminal\DataPadSettingsWindow.cs" />
@@ -137,6 +147,7 @@
     <Compile Include="Terminal\TerminalTab.cs" />
     <Compile Include="Terminal\TabManager.cs" />
     <Compile Include="Terminal\DiffViewContent.cs" />
+    <Compile Include="Terminal\MonacoDiffViewContent.cs" />
     <Compile Include="Terminal\NativeDiffViewContent.cs" />
     <Compile Include="Terminal\ModernEmbeditorViewContent.cs" />
     <Compile Include="Services\DiffService.cs" />
@@ -191,6 +202,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Terminal\diff.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Terminal\monaco-diff.html">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Terminal\monaco-embeditor.html">

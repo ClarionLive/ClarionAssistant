@@ -1973,6 +1973,12 @@ COMMON QUERIES:
                     if (string.IsNullOrEmpty(wsPath) || !Directory.Exists(wsPath))
                         return "Error: workspace_path required (directory containing .sln)";
 
+                    // Single-process (#17): if the shared ClarionLsp addin is the active server, we
+                    // don't start (or need) our bundled server — all LSP calls route through it.
+                    if (SharedLspBridge.IsSharedActive)
+                        return "LSP ready via the shared ClarionLsp addin (resolver=shared). "
+                            + "The bundled server is not started while ClarionLsp is active.";
+
                     // Resolve up front for a precise error if nothing is installed.
                     string resolveSource;
                     string serverJs = LspService.ResolveServerPath(out resolveSource);
@@ -2023,14 +2029,14 @@ COMMON QUERIES:
                 Handler = args =>
                 {
                     EnsureLspRunning();
-                    if (_lspClient == null || !_lspClient.IsRunning)
+                    if (!SharedLspBridge.IsRunning)
                         return "Error: LSP not running. Call lsp_start first or set a solution.";
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     int line = McpJsonRpc.GetInt(args, "line");
                     int character = McpJsonRpc.GetInt(args, "character");
 
-                    var result = _lspClient.GetDefinition(filePath, line, character);
+                    var result = SharedLspBridge.GetDefinition(filePath, line, character);
                     return FormatLspResult(result);
                 }
             });
@@ -2051,14 +2057,14 @@ COMMON QUERIES:
                 Handler = args =>
                 {
                     EnsureLspRunning();
-                    if (_lspClient == null || !_lspClient.IsRunning)
+                    if (!SharedLspBridge.IsRunning)
                         return "Error: LSP not running.";
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     int line = McpJsonRpc.GetInt(args, "line");
                     int character = McpJsonRpc.GetInt(args, "character");
 
-                    var result = _lspClient.GetReferences(filePath, line, character);
+                    var result = SharedLspBridge.GetReferences(filePath, line, character);
                     return FormatLspResult(result);
                 }
             });
@@ -2079,14 +2085,14 @@ COMMON QUERIES:
                 Handler = args =>
                 {
                     EnsureLspRunning();
-                    if (_lspClient == null || !_lspClient.IsRunning)
+                    if (!SharedLspBridge.IsRunning)
                         return "Error: LSP not running.";
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     int line = McpJsonRpc.GetInt(args, "line");
                     int character = McpJsonRpc.GetInt(args, "character");
 
-                    var result = _lspClient.GetHover(filePath, line, character);
+                    var result = SharedLspBridge.GetHover(filePath, line, character);
                     return FormatLspResult(result);
                 }
             });
@@ -2105,11 +2111,11 @@ COMMON QUERIES:
                 Handler = args =>
                 {
                     EnsureLspRunning();
-                    if (_lspClient == null || !_lspClient.IsRunning)
+                    if (!SharedLspBridge.IsRunning)
                         return "Error: LSP not running.";
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
-                    var result = _lspClient.GetDocumentSymbols(filePath);
+                    var result = SharedLspBridge.GetDocumentSymbols(filePath);
                     return FormatLspResult(result);
                 }
             });
@@ -2128,11 +2134,11 @@ COMMON QUERIES:
                 Handler = args =>
                 {
                     EnsureLspRunning();
-                    if (_lspClient == null || !_lspClient.IsRunning)
+                    if (!SharedLspBridge.IsRunning)
                         return "Error: LSP not running.";
 
                     string query = McpJsonRpc.GetString(args, "query");
-                    var result = _lspClient.FindWorkspaceSymbol(query);
+                    var result = SharedLspBridge.FindWorkspaceSymbol(query);
                     return FormatLspResult(result);
                 }
             });
@@ -2157,7 +2163,7 @@ COMMON QUERIES:
                 Handler = args =>
                 {
                     EnsureLspRunning();
-                    if (_lspClient == null || !_lspClient.IsRunning)
+                    if (!SharedLspBridge.IsRunning)
                         return "Error: LSP not running. Start it with lsp_start or check Lsp.ServerPath.";
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
@@ -2166,7 +2172,7 @@ COMMON QUERIES:
                     if (!File.Exists(filePath))
                         return "Error: File not found: " + filePath;
 
-                    var result = _lspClient.GetDiagnostics(filePath, 3000);
+                    var result = SharedLspBridge.GetDiagnostics(filePath, 3000);
 
                     var response = new Dictionary<string, object>
                     {
@@ -2228,7 +2234,7 @@ COMMON QUERIES:
                 Handler = args =>
                 {
                     EnsureLspRunning();
-                    if (_lspClient == null || !_lspClient.IsRunning)
+                    if (!SharedLspBridge.IsRunning)
                         return "Error: LSP not running. Start it with lsp_start or check Lsp.ServerPath.";
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
@@ -2244,7 +2250,7 @@ COMMON QUERIES:
                     Dictionary<string, object> rawResult;
                     try
                     {
-                        rawResult = _lspClient.Rename(filePath, line, character, newName);
+                        rawResult = SharedLspBridge.Rename(filePath, line, character, newName);
                     }
                     catch (Exception ex)
                     {
@@ -2295,6 +2301,15 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
+                    if (SharedLspBridge.IsSharedActive)
+                        return new JavaScriptSerializer().Serialize(new Dictionary<string, object>
+                        {
+                            { "mode", "shared" },
+                            { "resolver", SharedLspBridge.Resolver },
+                            { "note", "The shared ClarionLsp addin is the active server. Bundled-client debug "
+                                + "telemetry (stderr, notification counts, open documents) is not available on the shared path." }
+                        });
+
                     if (_lspClient == null)
                         return new JavaScriptSerializer().Serialize(new Dictionary<string, object>
                         {
@@ -2326,8 +2341,9 @@ COMMON QUERIES:
                         { "original_end_line", "Last line to include from original_file (1-based, default: end of file)" },
                         { "modified_start_line", "First line to include from modified_file (1-based, default: 1)" },
                         { "modified_end_line", "Last line to include from modified_file (1-based, default: end of file)" },
-                        { "ignore_whitespace", "Set to 'true' to ignore leading/trailing whitespace differences (default: false)" },
-                        { "language", "Syntax highlighting language (default: clarion). Options: clarion, csharp, javascript, html, css, xml, json, plaintext" }
+                        { "ignore_whitespace", "Set to 'true' to ignore leading/trailing whitespace differences (default: false; defaults to true when renderer='monaco')" },
+                        { "language", "Syntax highlighting language (default: clarion). Options: clarion, csharp, javascript, html, css, xml, json, plaintext" },
+                        { "renderer", "Diff renderer: 'classic' (default — unified diff + inline review notes) or 'monaco' (side-by-side/inline Monaco editor with Clarion syntax in both panes). Monaco has no notes workflow." }
                     },
                     new[] { "title" }),
                 RequiresUiThread = true,
@@ -2338,7 +2354,13 @@ COMMON QUERIES:
 
                     string title = McpJsonRpc.GetString(args, "title");
                     string language = McpJsonRpc.GetString(args, "language") ?? "clarion";
+                    bool useMonaco = McpJsonRpc.GetString(args, "renderer") == "monaco";
+
+                    // ignore_whitespace defaults false for the classic renderer, but ON for Monaco (John's
+                    // standing preference for diff viewers) unless the caller explicitly passes it.
+                    bool wsProvided = args.ContainsKey("ignore_whitespace");
                     bool ignoreWs = McpJsonRpc.GetString(args, "ignore_whitespace") == "true";
+                    if (useMonaco && !wsProvided) ignoreWs = true;
 
                     string originalFile = McpJsonRpc.GetString(args, "original_file");
                     string modifiedFile = McpJsonRpc.GetString(args, "modified_file");
@@ -2351,7 +2373,7 @@ COMMON QUERIES:
                         int modStart = McpJsonRpc.GetInt(args, "modified_start_line", 1);
                         int modEnd = McpJsonRpc.GetInt(args, "modified_end_line", -1);
                         return _diffService.ShowDiffFromFiles(title, originalFile, origStart, origEnd,
-                            modifiedFile, modStart, modEnd, language, ignoreWs);
+                            modifiedFile, modStart, modEnd, language, ignoreWs, useMonaco);
                     }
 
                     // Original from file, modified from text parameter
@@ -2360,13 +2382,13 @@ COMMON QUERIES:
                         string modified = McpJsonRpc.GetString(args, "modified_text") ?? "";
                         int startLine = McpJsonRpc.GetInt(args, "original_start_line", 1);
                         int endLine = McpJsonRpc.GetInt(args, "original_end_line", -1);
-                        return _diffService.ShowDiffFromFile(title, originalFile, startLine, endLine, modified, language, ignoreWs);
+                        return _diffService.ShowDiffFromFile(title, originalFile, startLine, endLine, modified, language, ignoreWs, useMonaco);
                     }
 
                     // Both from text parameters
                     string original = McpJsonRpc.GetString(args, "original_text") ?? "";
                     string modifiedText = McpJsonRpc.GetString(args, "modified_text") ?? "";
-                    return _diffService.ShowDiff(title, original, modifiedText, language, ignoreWs);
+                    return _diffService.ShowDiff(title, original, modifiedText, language, ignoreWs, useMonaco);
                 }
             });
 
