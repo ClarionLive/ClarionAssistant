@@ -7,15 +7,20 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { height: 100%; font-family: 'Segoe UI', Tahoma, sans-serif; font-size: 12px;
         background: #ffffff; color: #1f1f1f; overflow: hidden; }
+    /* Tabbed shell: body is a flex column so #bar + .tab-bar sit at the top and the active tab panel
+       fills the rest. Each .tabpanel is a flex column itself; the Data panel lets #list fill it. */
+    body { display: flex; flex-direction: column; }
     #bar { display: flex; align-items: center; gap: 8px; padding: 5px 8px;
-        background: #f3f3f3; border-bottom: 1px solid #d4d4d4; height: 30px; }
+        background: #f3f3f3; border-bottom: 1px solid #d4d4d4; height: 30px; flex: none; }
     #bar .title { font-weight: 600; color: #1f1f1f; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #bar button { font: inherit; padding: 2px 8px; border: 1px solid #bcbcbc; border-radius: 4px;
         background: transparent; color: #0a5dc2; cursor: pointer; }
     #bar button:hover { background: #e4e8ee; }
     #filter { width: 100%; padding: 4px 8px; border: none; border-bottom: 1px solid #d4d4d4;
-        font: inherit; background: #ffffff; color: #1f1f1f; }
-    #list { position: absolute; top: 56px; left: 0; right: 0; bottom: 0; overflow-y: auto; background: #ffffff; }
+        font: inherit; background: #ffffff; color: #1f1f1f; flex: none; }
+    /* #list used to be position:absolute (top:56px below the fixed 2-row header). Inside the tabbed
+       shell it lives in #panel-data (a flex column) and simply fills the remaining space. */
+    #list { flex: 1; overflow-y: auto; background: #ffffff; min-height: 0; }
     .section { font-weight: 600; color: #3a3a3a; background: #eef1f4; padding: 4px 10px;
         border-top: 1px solid #d4d4d4; border-bottom: 1px solid #d4d4d4;
         display: flex; align-items: center; gap: 6px;
@@ -82,10 +87,152 @@
     .empty { padding: 14px; color: #777777; }
     #bar .counts { font-size: 11px; color: #5a5a5a; white-space: nowrap; flex: none; }
     #bar button.icon { padding: 2px 6px; }
-    /* Filter clear (×) overlaid at the right of the full-width filter input — no layout shift. */
-    #filterClear { position: absolute; right: 8px; top: 33px; z-index: 3; cursor: pointer; display: none;
+    /* Filter clear (×) overlaid at the right of the full-width filter input — no layout shift.
+       Positioned relative to #panel-data (position:relative) so it tracks the filter inside the tab. */
+    #filterClear { position: absolute; right: 8px; top: 4px; z-index: 3; cursor: pointer; display: none;
         color: #8a8a8a; font-size: 14px; line-height: 1; padding: 2px 4px; user-select: none; }
     #filterClear:hover { color: #1f1f1f; }
+
+    /* ===================== Tab strip (Data | Files) — adapted from header.html .tab-bar/.tab ===================== */
+    .tab-bar { display: flex; align-items: flex-end; gap: 2px; padding: 4px 8px 0 8px;
+        background: #f3f3f3; border-bottom: 1px solid #d4d4d4; flex: none; }
+    .tab { display: flex; align-items: center; gap: 5px; padding: 5px 14px;
+        background: #e9ebee; border: 1px solid #d4d4d4; border-bottom: none;
+        border-radius: 6px 6px 0 0; color: #5a5a5a; font-size: 12px; cursor: pointer;
+        transition: all .12s; position: relative; top: 1px; user-select: none; }
+    .tab:hover { background: #dfe3e8; color: #1f1f1f; }
+    .tab.active { background: #ffffff; color: #1f1f1f; border-color: #bcbcbc; }
+    .tab .dot { font-size: 13px; }
+
+    /* Tab panels — NOTE: a distinct class (.tabpanel) so it does NOT collide with the Settings overlay's
+       .panel (a floating popup). Only the .active panel is shown; each is a flex column. */
+    .tabpanel { flex: 1; min-height: 0; display: none; flex-direction: column; }
+    .tabpanel.active { display: flex; }
+    #panel-data { position: relative; }   /* anchors #filterClear (absolute) to the Data panel */
+
+    /* ===================== FILES TAB (#panel-files) — light defaults; body.dark overrides below ===================== */
+    #panel-files { overflow: auto; }
+    .files-toolbar { display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+        border-bottom: 1px solid #d4d4d4; flex: none; }
+    .files-toolbar .btn { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 11px;
+        border: 1px solid #bcbcbc; border-radius: 6px; background: #f1f3f5; color: #1f1f1f;
+        font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; transition: all .15s; }
+    .files-toolbar .btn:hover { background: #e4e8ee; }
+    .files-toolbar .btn-primary { background: #0a5dc2; border-color: #0a5dc2; color: #fff; }
+    .files-toolbar .btn-primary:hover { background: #0b6ee0; border-color: #0b6ee0; }
+    .files-toolbar .btn .ico { font-size: 13px; }
+    .files-toolbar .toolbar-spacer { flex: 1; }
+    .filter-wrap { position: relative; flex: none; }
+    .filter-wrap input { height: 28px; width: 150px; padding: 0 24px 0 9px; background: #ffffff;
+        border: 1px solid #bcbcbc; border-radius: 6px; color: #1f1f1f; font: inherit; font-size: 12px; outline: none; }
+    .filter-wrap input:focus { border-color: #0a5dc2; }
+    .filter-wrap .fx { position: absolute; right: 7px; top: 6px; color: #8a8a8a; font-size: 13px; cursor: pointer; display: none; }
+
+    /* last-folder strip */
+    .lastfolder { display: flex; align-items: center; gap: 6px; padding: 5px 10px;
+        background: #eef1f4; border-bottom: 1px solid #d4d4d4; font-size: 11px; color: #3a3a3a; flex: none; }
+    .lastfolder .path { font-family: Consolas, 'Courier New', monospace; color: #0a5dc2;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .lastfolder .change { margin-left: auto; color: #5a5a5a; cursor: pointer; text-decoration: underline dotted; flex: none; }
+    .lastfolder .change:hover { color: #1f1f1f; }
+
+    /* quick-location chips */
+    .quick { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px 6px 10px; }
+    .quick .ql-label { width: 100%; font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+        color: #888; margin-bottom: 2px; }
+    .chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 12px;
+        background: #eef1f4; border: 1px solid #d0d0d0; color: #3a3a3a; font-size: 11px; cursor: pointer; transition: all .12s; }
+    .chip:hover { background: #e0e6ee; border-color: #0a5dc2; }
+    .chip .star { color: #c08a00; }
+    .chip.add { color: #888; border-style: dashed; }
+
+    /* section header inside the Files list */
+    .fsec { display: flex; align-items: center; gap: 6px; padding: 6px 10px 4px 10px;
+        font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: #5a5a5a; margin-top: 4px; }
+    .fsec .count { color: #888; font-weight: 400; }
+    .fsec .sec-line { flex: 1; height: 1px; background: #d4d4d4; margin-left: 4px; }
+    .fsec.grp { cursor: pointer; }
+    .fsec.grp .caret { font-size: 9px; color: #888; width: 10px; display: inline-block; }
+    .fsec.grp:hover { color: #1f1f1f; }
+    .fsec-note { padding: 2px 10px 4px 26px; font-size: 10px; color: #888; font-style: italic; }
+
+    /* class .inc/.clw chips */
+    .pairchip { font-family: Consolas, 'Courier New', monospace; font-size: 9px; padding: 1px 5px; border-radius: 8px;
+        margin-left: 5px; border: 1px solid #d0d0d0; background: #eef1f4; cursor: pointer; }
+    .pairchip.inc { color: #0a7d3a; border-color: rgba(10,125,58,.35); }
+    .pairchip.clw { color: #0a5dc2; border-color: rgba(10,93,194,.35); }
+    .pairchip:hover { background: #e0e6ee; }
+    .pairchip.missing { opacity: .4; }
+
+    /* file rows */
+    .frow2 { display: grid; grid-template-columns: 24px 1fr auto auto; align-items: center; gap: 8px;
+        padding: 5px 10px; cursor: pointer; user-select: none; border-left: 2px solid transparent; }
+    .frow2:hover { background: #e8eef7; border-left-color: #0a5dc2; }
+    .frow2.missing { opacity: .45; }
+    .frow2 .fico { font-size: 15px; text-align: center; }
+    .frow2 .meta { min-width: 0; }
+    .frow2 .fname { color: #1f1f1f; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .frow2 .fname .ext { color: #0a5dc2; font-weight: 600; }
+    .frow2 .fpath { font-family: Consolas, 'Courier New', monospace; font-size: 10px; color: #888;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .frow2 .ftime { font-size: 10px; color: #888; white-space: nowrap; }
+    .frow2 .acts { display: inline-flex; gap: 2px; visibility: hidden; }
+    .frow2:hover .acts { visibility: visible; }
+    .frow2 .acts .a { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 4px; color: #5a5a5a; font-size: 13px; }
+    .frow2 .acts .a:hover { background: #dbe1e8; color: #1f1f1f; }
+    .frow2 .acts .a.del:hover { background: rgba(176,21,46,.12); color: #b0152e; }
+    .frow2 .acts .a.both { color: #0a7d3a; }
+    .frow2 .pin { color: #c08a00; font-size: 12px; }
+
+    /* drop hint / drop zone */
+    .drophint { margin: 10px; padding: 14px; border: 1.5px dashed #c4c4c4; border-radius: 8px;
+        text-align: center; color: #888; font-size: 11px; }
+    .drophint b { color: #5a5a5a; }
+    .drophint.dragover { border-color: #0a5dc2; background: rgba(10,93,194,.08); color: #0a5dc2; }
+    .files-empty { padding: 14px; color: #777; }
+
+    /* ----- Files tab — dark ----- */
+    body.dark .files-toolbar { border-bottom-color: #3a3a4a; }
+    body.dark .files-toolbar .btn { background: #313244; border-color: #313244; color: #d4d4d4; }
+    body.dark .files-toolbar .btn:hover { background: #3a3a52; }
+    body.dark .files-toolbar .btn-primary { background: #1e66a8; border-color: #1e66a8; color: #fff; }
+    body.dark .files-toolbar .btn-primary:hover { background: #2580d4; border-color: #2580d4; }
+    body.dark .filter-wrap input { background: #1a1a28; border-color: #313244; color: #cdd6f4; }
+    body.dark .filter-wrap input:focus { border-color: #89b4fa; }
+    body.dark .filter-wrap .fx { color: #6c7086; }
+    body.dark .lastfolder { background: #1a1a28; border-bottom-color: #3a3a4a; color: #a6adc8; }
+    body.dark .lastfolder .path { color: #89b4fa; }
+    body.dark .lastfolder .change { color: #6c7086; }
+    body.dark .lastfolder .change:hover { color: #cdd6f4; }
+    body.dark .quick .ql-label { color: #6c7086; }
+    body.dark .chip { background: #313244; border-color: #313244; color: #bac2de; }
+    body.dark .chip:hover { background: #3a3a52; border-color: #89b4fa; }
+    body.dark .chip .star { color: #fab387; }
+    body.dark .chip.add { color: #6c7086; }
+    body.dark .fsec { color: #a6adc8; }
+    body.dark .fsec .count { color: #6c7086; }
+    body.dark .fsec .sec-line { background: #3a3a4a; }
+    body.dark .fsec.grp .caret { color: #6c7086; }
+    body.dark .fsec.grp:hover { color: #cdd6f4; }
+    body.dark .fsec-note { color: #6c7086; }
+    body.dark .pairchip { border-color: #313244; background: #313244; }
+    body.dark .pairchip.inc { color: #a6e3a1; border-color: rgba(166,227,161,.35); }
+    body.dark .pairchip.clw { color: #89b4fa; border-color: rgba(137,180,250,.35); }
+    body.dark .pairchip:hover { background: #3a3a52; }
+    body.dark .frow2:hover { background: #2d2d44; border-left-color: #89b4fa; }
+    body.dark .frow2 .fname { color: #e0e0e0; }
+    body.dark .frow2 .fname .ext { color: #89b4fa; }
+    body.dark .frow2 .fpath, body.dark .frow2 .ftime { color: #6c7086; }
+    body.dark .frow2 .acts .a { color: #9a9ab0; }
+    body.dark .frow2 .acts .a:hover { background: #3a3a52; color: #fff; }
+    body.dark .frow2 .acts .a.del:hover { background: rgba(243,139,168,.15); color: #f38ba8; }
+    body.dark .frow2 .acts .a.both { color: #a6e3a1; }
+    body.dark .frow2 .pin { color: #fab387; }
+    body.dark .drophint { border-color: #313244; color: #6c7086; }
+    body.dark .drophint b { color: #a6adc8; }
+    body.dark .drophint.dragover { border-color: #89b4fa; background: rgba(137,180,250,.1); color: #89b4fa; }
+    body.dark .files-empty { color: #9a9ab0; }
 
     /* ===================== Dark theme (body.dark) — mirrors the editor's dark look ===================== */
     body.dark { background: #1e1e2e; color: #d4d4d4; }
@@ -127,6 +274,12 @@
     body.dark .badge.pk { background: #5a4a1a; color: #ffd479; }
     body.dark .badge.uniq { background: #1f3a5a; color: #9accff; }
     body.dark .empty { color: #9a9ab0; }
+
+    /* Tab strip — dark */
+    body.dark .tab-bar { background: #252535; border-bottom-color: #3a3a4a; }
+    body.dark .tab { background: #252536; border-color: #313244; color: #7f849c; }
+    body.dark .tab:hover { background: #313244; color: #bac2de; }
+    body.dark .tab.active { background: #1e1e2e; color: #cdd6f4; border-color: #45475a; }
 
     /* ===================== Settings overlay (section customization) ===================== */
     /* Floating, draggable popup — no dimmed backdrop. The wrapper passes pointer events through so
@@ -181,7 +334,8 @@
 
     /* ?mode=settings — the page IS the floating window's content: hide the pad chrome and let the panel
        fill the client area. The native tool-window caption supplies the title, move, and close. */
-    body.settings-mode #bar, body.settings-mode #filter, body.settings-mode #filterClear, body.settings-mode #list { display: none !important; }
+    body.settings-mode #bar, body.settings-mode #filter, body.settings-mode #filterClear, body.settings-mode #list,
+    body.settings-mode .tab-bar, body.settings-mode .tabpanel { display: none !important; }
     body.settings-mode { overflow: hidden; }
     body.settings-mode .overlay { position: static; pointer-events: auto; }
     body.settings-mode .panel { position: static; top: auto; right: auto; width: 100%; height: 100vh;
@@ -191,7 +345,7 @@
 </head>
 <body>
     <div id="bar">
-        <span class="title" id="title">Data</span>
+        <span class="title" id="title">Explorer</span>
         <span class="counts" id="counts"></span>
         <button id="fontDec" class="icon" title="Smaller font">A−</button>
         <button id="fontInc" class="icon" title="Larger font">A+</button>
@@ -199,9 +353,44 @@
         <button id="refreshBtn" title="Refresh from the active CA Embeditor">Refresh</button>
         <button id="settingsBtn" class="icon" title="Customize sections (reorder, hide, expand)">⚙</button>
     </div>
-    <input id="filter" placeholder="Filter…" />
-    <span id="filterClear" title="Clear filter (Esc)">×</span>
-    <div id="list"><div class="empty">Open a procedure in the CA Embeditor, then Refresh.</div></div>
+
+    <!-- Tab strip: Data (the original Data Pad) | Files (Monaco file loader). pick() toggles .active. -->
+    <div class="tab-bar">
+        <div class="tab active" data-tab="data" onclick="pick('data')"><span class="dot">📊</span>Data</div>
+        <div class="tab" data-tab="files" onclick="pick('files')"><span class="dot">📁</span>Files</div>
+    </div>
+
+    <!-- ===================== DATA PANEL — the original Data Pad UI, IDs unchanged ===================== -->
+    <div class="tabpanel active" id="panel-data">
+        <input id="filter" placeholder="Filter…" />
+        <span id="filterClear" title="Clear filter (Esc)">×</span>
+        <div id="list"><div class="empty">Open a procedure in the CA Embeditor, then Refresh.</div></div>
+    </div>
+
+    <!-- ===================== FILES PANEL — Monaco file loader (rendered by renderExplorer) ===================== -->
+    <div class="tabpanel" id="panel-files">
+        <div class="files-toolbar">
+            <button class="btn btn-primary" id="loadFileBtn" title="Open a file into the Monaco editor"><span class="ico">📂</span>Load File…</button>
+            <button class="btn" id="compareBtn" title="Pick two files and diff them in Monaco"><span class="ico">⇄</span>Compare…</button>
+            <span class="toolbar-spacer"></span>
+            <span class="filter-wrap">
+                <input type="text" id="filesFilter" placeholder="Filter recents…" />
+                <span class="fx" id="filesFilterClear" title="Clear filter">×</span>
+            </span>
+        </div>
+
+        <div class="lastfolder" id="lastFolderStrip" style="display:none;">
+            <span>📍 Last folder:</span>
+            <span class="path" id="lastFolderPath"></span>
+            <span class="change" id="lastFolderChange" title="Pick a different folder">change</span>
+        </div>
+
+        <!-- Scrollable region: quick chips + pinned + grouped recents + drop zone (built in JS). -->
+        <div id="filesScroll" style="flex:1; min-height:0; overflow:auto;">
+            <div id="filesBody"></div>
+            <div class="drophint" id="dropZone">⬇ <b>Drop files here</b> to open them in Monaco</div>
+        </div>
+    </div>
 
     <!-- Section customization overlay (opened by the ⚙ button). Cards built dynamically in JS. -->
     <div id="settingsOverlay" class="overlay" style="display:none;">
@@ -270,6 +459,7 @@
     var darkMode = false;      // pad dark theme
     var fontScale = 1;         // pad font-size multiplier (base 12px)
     var _totalShown = 0;       // unfiltered insertable-row count, for the "N / M" filter readout
+    var procTitle = '';        // the active procedure/file context from setSymbols — shown in #counts, since #title is now the fixed "Explorer" pad name
 
     // ---- Section customization (Settings ⚙) — persisted in the same UI-state blob. ----
     // sectionOrder is the user's display order of section ids; empty = canonical default below.
@@ -469,6 +659,20 @@
 
     function insert(name) { postToHost({ action: 'insert', name: name }); }
 
+    // ---- Tab switching (Data | Files). Called from the inline onclick handlers, so it must be global.
+    // Toggles .active on the matching .tab + .tabpanel. On first switch to Files, ask the host for data
+    // (cheap no-op if already populated; the host re-posts setExplorerData on demand). -----
+    var _explorerRequested = false;
+    function pick(which) {
+        var tabs = document.querySelectorAll('.tab-bar .tab');
+        for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle('active', tabs[i].getAttribute('data-tab') === which);
+        var panels = document.querySelectorAll('.tabpanel');
+        for (var j = 0; j < panels.length; j++) panels[j].classList.remove('active');
+        var p = document.getElementById('panel-' + which);
+        if (p) p.classList.add('active');
+        if (which === 'files' && !_explorerRequested) { _explorerRequested = true; postToHost({ action: 'requestExplorerData' }); }
+    }
+
     // Repaint the multi-select highlight from selSet WITHOUT a full render() — keeps row elements alive so a
     // double-click (insert) still fires after the selecting single-clicks. Valid until the next render()
     // (which rebuilds selOrder with fresh element refs and re-applies the class during construction).
@@ -580,6 +784,8 @@
         var f = (document.getElementById('filter').value || '').trim();
         var selN = Object.keys(selSet).length;
         var parts = [];
+        // #title is now the fixed pad name ("Explorer"); the active procedure/file context rides in #counts.
+        if (procTitle) parts.push(procTitle);
         if (selN) parts.push(selN + ' selected');
         if (f) parts.push(selOrder.length + ' / ' + _totalShown);
         c.textContent = parts.join('  ·  ');
@@ -1446,7 +1652,9 @@
                 // The procedure this payload is for — sent back with a ＋Add click so the host validates the add
                 // against what's actually ON SCREEN now (avoids a wrong-procedure add during a rapid proc switch).
                 renderedProcedure = msg.procedure || '';
-                document.getElementById('title').textContent = msg.title || 'Data';
+                // #title stays the fixed pad name ("Explorer"); the per-procedure title goes to #counts
+                // (via updateCounts), which render() calls at the end. Don't overwrite #title here.
+                procTitle = msg.title || '';
                 var byName = function (a, b) { return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase()); };
                 locals = (msg.locals || []).slice(); // declaration order — matches Clarion's native Data pad; do NOT sort
                 otherFiles = (msg.otherFiles || []).slice().sort(byName); // Clarion lists Other Files alphabetically
@@ -1465,6 +1673,15 @@
                     fileScopes = [{ label: 'File-Browsing List Box', instance: 'browse', files: browseFiles }];
                 render();
             }
+            if (msg.type === 'setExplorerData') {
+                // Files tab payload (host -> JS). Store and render the Files panel. See renderExplorer().
+                explorerData = msg;
+                if (msg.uiState && msg.uiState.collapsed) {
+                    explorerCollapsed = {};
+                    (msg.uiState.collapsed || []).forEach(function (g) { explorerCollapsed[g] = true; });
+                }
+                renderExplorer();
+            }
         });
     }
 
@@ -1477,7 +1694,317 @@
         }
     });
 
+    // ============================================================================================
+    // FILES TAB — Monaco file loader. Renders #panel-files from the host's setExplorerData payload.
+    // Contract (host -> JS): { type:'setExplorerData', lastFolder, quickLocations[{key,label,dir}],
+    //   pinnedFolders[{label,dir}], pinned[{name,ext,path,kind,incPath?,clwPath?}],
+    //   groups:{ classes[{name,incPath,clwPath,dir,ts,incExists,clwExists,pinned}],
+    //            templates|source|other[{name,ext,path,dir,ts,exists,pinned}] }, uiState:{collapsed[]} }
+    // All interactions post messages to the host (handlers live host-side, items 6-8).
+    // ============================================================================================
+    var explorerData = null;        // last setExplorerData payload
+    var explorerCollapsed = {};     // group key ('classes'|'templates'|'source'|'other') -> true when collapsed
+    var explorerFilter = '';        // live filter text for recent rows
+
+    function fIco(ext, kind) {
+        var e = (ext || '').toLowerCase().replace(/^\./, '');
+        if (kind === 'class' || e === 'inc') return '📗';
+        if (e === 'clw') return '📘';
+        if (e === 'tpl' || e === 'tpw') return '🧩';
+        if (e === 'equ') return '📕';
+        if (e === 'app') return '📙';
+        if (e === 'trn' || e === 'dct') return '📒';
+        return '📄';
+    }
+    // Split a filename into base + extension so the extension can be colored. Returns [base, '.ext'] or [name,''].
+    function splitExt(name, ext) {
+        if (ext) { var b = name; if (name.toLowerCase().slice(-ext.length) === ext.toLowerCase()) b = name.slice(0, -ext.length); return [b, ext]; }
+        var i = name.lastIndexOf('.');
+        if (i > 0) return [name.slice(0, i), name.slice(i)];
+        return [name, ''];
+    }
+    function explorerMatch(name, path) {
+        if (!explorerFilter) return true;
+        var q = explorerFilter;
+        return (name && name.toLowerCase().indexOf(q) >= 0) || (path && path.toLowerCase().indexOf(q) >= 0);
+    }
+    // A small action button (the ↗ ⇄ ⧉ 🗁 ☆ ✕ glyphs on a row). cls extra ('del'/'both') styles it.
+    function actBtn(glyph, title, cls, onClick) {
+        var a = document.createElement('span');
+        a.className = 'a' + (cls ? ' ' + cls : '');
+        a.textContent = glyph; a.title = title;
+        a.addEventListener('click', function (e) { e.stopPropagation(); onClick(); });
+        return a;
+    }
+
+    // Build one normal (non-class) file row. entry: {name,ext,path,dir,ts,exists,pinned}. `pinnedSection`
+    // true renders the compact pinned-row layout (📌 + unpin) instead of the recents action cluster.
+    function buildFileRow(entry, pinnedSection) {
+        var row = document.createElement('div');
+        row.className = 'frow2' + (entry.exists === false ? ' missing' : '');
+        if (entry.exists === false) row.title = 'missing on disk';
+        var ico = document.createElement('span'); ico.className = 'fico'; ico.textContent = fIco(entry.ext, entry.kind); row.appendChild(ico);
+
+        var meta = document.createElement('span'); meta.className = 'meta';
+        var fname = document.createElement('div'); fname.className = 'fname';
+        var parts = splitExt(entry.name || '', entry.ext);
+        fname.appendChild(document.createTextNode(parts[0]));
+        if (parts[1]) { var ex = document.createElement('span'); ex.className = 'ext'; ex.textContent = parts[1]; fname.appendChild(ex); }
+        meta.appendChild(fname);
+        var fpath = document.createElement('div'); fpath.className = 'fpath'; fpath.textContent = entry.dir || ''; meta.appendChild(fpath);
+        row.appendChild(meta);
+
+        if (pinnedSection) {
+            var pin = document.createElement('span'); pin.className = 'pin'; pin.textContent = '📌'; row.appendChild(pin);
+            var pacts = document.createElement('span'); pacts.className = 'acts';
+            pacts.appendChild(actBtn('↗', 'Open in Monaco', '', function () { postToHost({ action: 'loadFile', path: entry.path }); }));
+            pacts.appendChild(actBtn('⇄', 'Compare with…', '', function () { postToHost({ action: 'compare', a: entry.path }); }));
+            pacts.appendChild(actBtn('⧉', 'Copy path', '', function () { postToHost({ action: 'copyPath', path: entry.path }); }));
+            pacts.appendChild(actBtn('🗁', 'Reveal in Explorer', '', function () { postToHost({ action: 'reveal', path: entry.path }); }));
+            pacts.appendChild(actBtn('★', 'Unpin', 'del', function () { postToHost({ action: 'unpin', path: entry.path }); }));
+            row.appendChild(pacts);
+        } else {
+            var time = document.createElement('span'); time.className = 'ftime'; time.textContent = entry.ts || ''; row.appendChild(time);
+            var acts = document.createElement('span'); acts.className = 'acts';
+            acts.appendChild(actBtn('↗', 'Open in Monaco', '', function () { postToHost({ action: 'loadFile', path: entry.path }); }));
+            acts.appendChild(actBtn('⇄', 'Compare with…', '', function () { postToHost({ action: 'compare', a: entry.path }); }));
+            acts.appendChild(actBtn('⧉', 'Copy path', '', function () { postToHost({ action: 'copyPath', path: entry.path }); }));
+            acts.appendChild(actBtn('🗁', 'Reveal in Explorer', '', function () { postToHost({ action: 'reveal', path: entry.path }); }));
+            acts.appendChild(actBtn(entry.pinned ? '★' : '☆', entry.pinned ? 'Unpin' : 'Pin', '',
+                function () { postToHost({ action: entry.pinned ? 'unpin' : 'pin', path: entry.path }); }));
+            acts.appendChild(actBtn('✕', 'Remove from list', 'del', function () { postToHost({ action: 'removeRecent', path: entry.path }); }));
+            row.appendChild(acts);
+        }
+        // Primary action: clicking the row body (not an action glyph) opens the file.
+        row.addEventListener('click', function () { postToHost({ action: 'loadFile', path: entry.path }); });
+        return row;
+    }
+
+    // Build one class-pair row: name + dim-able .inc/.clw chips, "open both" primary + the recents cluster.
+    function buildClassRow(entry) {
+        var row = document.createElement('div');
+        var anyMissing = entry.incExists === false || entry.clwExists === false;
+        row.className = 'frow2 class-row' + (anyMissing ? ' missing' : '');
+        if (anyMissing) row.title = 'missing on disk';
+        var ico = document.createElement('span'); ico.className = 'fico'; ico.textContent = '📗'; row.appendChild(ico);
+
+        var meta = document.createElement('span'); meta.className = 'meta';
+        var fname = document.createElement('div'); fname.className = 'fname';
+        fname.appendChild(document.createTextNode(entry.name || ''));
+        // .inc chip
+        var incChip = document.createElement('span');
+        incChip.className = 'pairchip inc' + (entry.incExists === false ? ' missing' : '');
+        incChip.textContent = '.inc'; incChip.title = entry.incExists === false ? 'missing on disk' : 'Open just the .inc';
+        if (entry.incPath) incChip.addEventListener('click', function (e) { e.stopPropagation(); postToHost({ action: 'loadFile', path: entry.incPath }); });
+        fname.appendChild(incChip);
+        // .clw chip
+        var clwChip = document.createElement('span');
+        clwChip.className = 'pairchip clw' + (entry.clwExists === false ? ' missing' : '');
+        clwChip.textContent = '.clw'; clwChip.title = entry.clwExists === false ? 'missing on disk' : 'Open just the .clw';
+        if (entry.clwPath) clwChip.addEventListener('click', function (e) { e.stopPropagation(); postToHost({ action: 'loadFile', path: entry.clwPath }); });
+        fname.appendChild(clwChip);
+        meta.appendChild(fname);
+        var fpath = document.createElement('div'); fpath.className = 'fpath'; fpath.textContent = entry.dir || ''; meta.appendChild(fpath);
+        row.appendChild(meta);
+
+        var time = document.createElement('span'); time.className = 'ftime'; time.textContent = entry.ts || ''; row.appendChild(time);
+
+        var acts = document.createElement('span'); acts.className = 'acts';
+        acts.appendChild(actBtn('⧉↗', 'Open BOTH (.inc + .clw) in separate editors', 'both',
+            function () { postToHost({ action: 'openClassPair', inc: entry.incPath, clw: entry.clwPath }); }));
+        // Compare the pair DIRECTLY when both sides exist (the row promises ".inc ↔ .clw"); otherwise seed
+        // the host's picker with whichever single side we have.
+        var cmpMsg = (entry.incPath && entry.clwPath)
+            ? { action: 'compare', a: entry.incPath, b: entry.clwPath }
+            : { action: 'compare', a: entry.clwPath || entry.incPath };
+        acts.appendChild(actBtn('⇄', 'Compare .inc ↔ .clw', '', function () { postToHost(cmpMsg); }));
+        acts.appendChild(actBtn('⧉', 'Copy path', '', function () { postToHost({ action: 'copyPath', path: entry.incPath || entry.clwPath }); }));
+        acts.appendChild(actBtn('🗁', 'Reveal in Explorer', '', function () { postToHost({ action: 'reveal', path: entry.incPath || entry.clwPath }); }));
+        acts.appendChild(actBtn(entry.pinned ? '★' : '☆', entry.pinned ? 'Unpin' : 'Pin', '',
+            function () { postToHost({ action: entry.pinned ? 'unpin' : 'pin', path: entry.incPath || entry.clwPath }); }));
+        // Remove BOTH sides of the pair so the partner recent can't re-fold the row back next render.
+        acts.appendChild(actBtn('✕', 'Remove from list', 'del', function () { postToHost({ action: 'removeRecent', path: entry.incPath, path2: entry.clwPath }); }));
+        row.appendChild(acts);
+
+        // Primary action: open both .inc + .clw.
+        row.addEventListener('click', function () { postToHost({ action: 'openClassPair', inc: entry.incPath, clw: entry.clwPath }); });
+        return row;
+    }
+
+    // A collapsible group header. key persists collapse via saveExplorerUiState. countText is the label suffix.
+    function buildGroupHeader(host, key, label, countText) {
+        var collapsed = !!explorerCollapsed[key];
+        var sec = document.createElement('div'); sec.className = 'fsec grp';
+        var caret = document.createElement('span'); caret.className = 'caret'; caret.textContent = collapsed ? '▸' : '▾'; sec.appendChild(caret);
+        sec.appendChild(document.createTextNode(' ' + label + ' '));
+        var cnt = document.createElement('span'); cnt.className = 'count'; cnt.textContent = countText; sec.appendChild(cnt);
+        var line = document.createElement('span'); line.className = 'sec-line'; sec.appendChild(line);
+        sec.addEventListener('click', function () {
+            explorerCollapsed[key] = !explorerCollapsed[key];
+            saveExplorerUiState();
+            renderExplorer();
+        });
+        host.appendChild(sec);
+        return collapsed;
+    }
+
+    function saveExplorerUiState() {
+        var collapsed = [];
+        for (var k in explorerCollapsed) if (explorerCollapsed[k]) collapsed.push(k);
+        postToHost({ action: 'saveExplorerUiState', state: { collapsed: collapsed } });
+    }
+
+    // Build the quick-location chips + the "pin folder" chip.
+    function buildQuickChips(host, d) {
+        var quick = document.createElement('div'); quick.className = 'quick';
+        var ql = document.createElement('span'); ql.className = 'ql-label'; ql.textContent = 'Quick locations'; quick.appendChild(ql);
+        (d.quickLocations || []).forEach(function (q) {
+            var chip = document.createElement('span'); chip.className = 'chip';
+            var star = document.createElement('span'); star.className = 'star'; star.textContent = '★'; chip.appendChild(star);
+            chip.appendChild(document.createTextNode(' ' + (q.label || q.key || q.dir)));
+            chip.title = q.dir || '';
+            chip.addEventListener('click', function () { postToHost({ action: 'pickFolderAndLoad', dir: q.dir }); });
+            quick.appendChild(chip);
+        });
+        // Pinned folders the user added (rendered alongside the quick locations).
+        (d.pinnedFolders || []).forEach(function (pf) {
+            var chip = document.createElement('span'); chip.className = 'chip';
+            chip.appendChild(document.createTextNode('📁 ' + (pf.label || pf.dir)));
+            chip.title = pf.dir || '';
+            chip.addEventListener('click', function () { postToHost({ action: 'pickFolderAndLoad', dir: pf.dir }); });
+            quick.appendChild(chip);
+        });
+        // "Last folder" convenience chip.
+        if (d.lastFolder) {
+            var lf = document.createElement('span'); lf.className = 'chip';
+            lf.appendChild(document.createTextNode('🕘 Last folder'));
+            lf.title = d.lastFolder;
+            lf.addEventListener('click', function () { postToHost({ action: 'pickFolderAndLoad', dir: d.lastFolder }); });
+            quick.appendChild(lf);
+        }
+        var add = document.createElement('span'); add.className = 'chip add';
+        add.textContent = '＋ pin folder'; add.title = 'Pin a folder for quick access';
+        add.addEventListener('click', function () { postToHost({ action: 'pinFolder' }); });
+        quick.appendChild(add);
+        host.appendChild(quick);
+    }
+
+    function buildGroupRows(host, key, label, suffix, entries, isClasses) {
+        var shown = (entries || []).filter(function (e) {
+            return isClasses ? explorerMatch(e.name, e.dir || e.incPath || e.clwPath)
+                             : explorerMatch(e.name, e.path || e.dir);
+        });
+        if (!shown.length) return;   // hide an empty (or fully-filtered) group entirely
+        var count = isClasses ? (entries.length + ' pair' + (entries.length === 1 ? '' : 's')) : (entries.length + suffix);
+        var collapsed = buildGroupHeader(host, key, label, count);
+        if (key === 'classes') {
+            var note = document.createElement('div'); note.className = 'fsec-note';
+            note.textContent = 'opening a class loads its .inc + .clw into two separate editors';
+            host.appendChild(note);
+        }
+        if (collapsed) return;
+        shown.forEach(function (e) { host.appendChild(isClasses ? buildClassRow(e) : buildFileRow(e, false)); });
+    }
+
+    function renderExplorer() {
+        var d = explorerData;
+        var body = document.getElementById('filesBody');
+        if (!body) return;
+        body.innerHTML = '';
+        if (!d) { var em = document.createElement('div'); em.className = 'files-empty'; em.textContent = 'Loading recent files…'; body.appendChild(em); return; }
+
+        // Last-folder strip
+        var strip = document.getElementById('lastFolderStrip');
+        var lfp = document.getElementById('lastFolderPath');
+        if (d.lastFolder) { lfp.textContent = d.lastFolder; lfp.title = d.lastFolder; strip.style.display = 'flex'; }
+        else { strip.style.display = 'none'; }
+
+        // Quick locations + pinned-folder chips
+        buildQuickChips(body, d);
+
+        // Pinned files
+        var pinned = (d.pinned || []).filter(function (e) { return explorerMatch(e.name, e.path || e.dir); });
+        if (pinned.length) {
+            var ps = document.createElement('div'); ps.className = 'fsec';
+            ps.appendChild(document.createTextNode('📌 Pinned '));
+            var pc = document.createElement('span'); pc.className = 'count'; pc.textContent = String((d.pinned || []).length); ps.appendChild(pc);
+            var pl = document.createElement('span'); pl.className = 'sec-line'; ps.appendChild(pl);
+            body.appendChild(ps);
+            pinned.forEach(function (e) { body.appendChild(buildFileRow(e, true)); });
+        }
+
+        // Recents grouped by type
+        var g = d.groups || {};
+        buildGroupRows(body, 'classes',   '📗 Classes',   '',            g.classes,   true);
+        buildGroupRows(body, 'templates', '🧩 Templates', ' · .tpl .tpw', g.templates, false);
+        buildGroupRows(body, 'source',    '📘 Source',    ' · .clw .equ', g.source,    false);
+        buildGroupRows(body, 'other',     '📦 Other',     ' · .app .trn …', g.other,   false);
+
+        // No pinned files and no recents in any group → a gentle empty note (the chips + drop zone still show).
+        if (!pinned.length && !hasAnyGroup(g)) {
+            var none = document.createElement('div'); none.className = 'files-empty';
+            none.textContent = explorerFilter ? 'No files match the filter.' : 'No recent files yet — use Load File… or drop files below.';
+            body.appendChild(none);
+        }
+    }
+    function hasAnyGroup(g) {
+        return ((g.classes && g.classes.length) || (g.templates && g.templates.length)
+             || (g.source && g.source.length) || (g.other && g.other.length)) ? true : false;
+    }
+
+    // ---- Files toolbar / strip wiring ----
+    (function wireExplorer() {
+        var loadBtn = document.getElementById('loadFileBtn');
+        if (loadBtn) loadBtn.addEventListener('click', function () { postToHost({ action: 'loadFileDialog' }); });
+        var cmpBtn = document.getElementById('compareBtn');
+        if (cmpBtn) cmpBtn.addEventListener('click', function () { postToHost({ action: 'compare' }); });
+        var change = document.getElementById('lastFolderChange');
+        if (change) change.addEventListener('click', function () { postToHost({ action: 'setLastFolder' }); });
+
+        var ff = document.getElementById('filesFilter');
+        var ffx = document.getElementById('filesFilterClear');
+        if (ff) ff.addEventListener('input', function () {
+            explorerFilter = (ff.value || '').trim().toLowerCase();
+            if (ffx) ffx.style.display = ff.value ? 'block' : 'none';
+            renderExplorer();
+        });
+        if (ffx) ffx.addEventListener('click', function () { ff.value = ''; explorerFilter = ''; ffx.style.display = 'none'; ff.focus(); renderExplorer(); });
+
+        // Drop zone (and whole scroll area): dropping files opens them. In WebView2 a dropped file's full path
+        // is usually NOT exposed to JS (security) — File.path is empty in the browser. We send whatever we can
+        // (file.name plus webkitRelativePath if present); the host resolves real paths from its own drop hook
+        // when available. preventDefault on dragover is required to allow the drop.
+        var dz = document.getElementById('dropZone');
+        var scroll = document.getElementById('filesScroll');
+        function onDragOver(e) { e.preventDefault(); try { e.dataTransfer.dropEffect = 'copy'; } catch (ex) {} if (dz) dz.classList.add('dragover'); }
+        function onDragLeave() { if (dz) dz.classList.remove('dragover'); }
+        function onDrop(e) {
+            e.preventDefault(); if (dz) dz.classList.remove('dragover');
+            var paths = [];
+            try {
+                var files = (e.dataTransfer && e.dataTransfer.files) || [];
+                for (var i = 0; i < files.length; i++) {
+                    var fObj = files[i];
+                    var p = fObj.path || fObj.webkitRelativePath || fObj.name;   // .path: Electron/WebView2 host; usually only .name in pure WebView2
+                    if (p) paths.push(p);
+                }
+                // Fall back to dragged text (e.g. a path dragged from another pane) if no file objects.
+                if (!paths.length) {
+                    var t = ''; try { t = e.dataTransfer.getData('text/plain') || ''; } catch (ex2) {}
+                    t = t.replace(/\r\n?/g, '\n');
+                    t.split('\n').forEach(function (line) { line = line.trim(); if (line) paths.push(line); });
+                }
+            } catch (ex) {}
+            if (paths.length) postToHost({ action: 'dropFiles', paths: paths });
+        }
+        if (scroll) { scroll.addEventListener('dragover', onDragOver); scroll.addEventListener('dragleave', onDragLeave); scroll.addEventListener('drop', onDrop); }
+    })();
+
     postToHost({ action: 'ready' });
+    // Prime the Files tab too (the host also re-posts setExplorerData after each mutation). Marking it
+    // requested here avoids a redundant request on the first Files-tab click.
+    _explorerRequested = true;
+    postToHost({ action: 'requestExplorerData' });
 </script>
 </body>
 </html>

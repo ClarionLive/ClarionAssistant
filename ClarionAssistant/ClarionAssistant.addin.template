@@ -39,7 +39,7 @@
     <Pad id="AgentPanel" category="Tools" title="Agent Panel"
          icon="PadIcons.TaskList" shortcut="Control|Alt|A"
          class="ClarionAssistant.AgentPanelPad"/>
-    <Pad id="ModernData" category="Tools" title="CA Data"
+    <Pad id="ModernData" category="Tools" title="Explorer"
          icon="PadIcons.Output" shortcut="Control|Alt|D"
          class="ClarionAssistant.ModernDataPad"/>
   </Path>
@@ -55,7 +55,7 @@
               class="ClarionAssistant.OpenModernEmbeditorPickerCommand"/>
     <MenuItem id="OpenSourceFileInCaEditor" label="CA Editor (open source file)..."
               class="ClarionAssistant.OpenSourceFileInCaEditorCommand"/>
-    <MenuItem id="ShowModernDataPad" label="CA Data Pad"
+    <MenuItem id="ShowModernDataPad" label="Explorer"
               class="ClarionAssistant.ShowModernDataPadCommand"/>
   </Path>
 

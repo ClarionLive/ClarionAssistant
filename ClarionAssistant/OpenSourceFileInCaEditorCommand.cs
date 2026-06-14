@@ -2,9 +2,7 @@ using System;
 using System.IO;
 using System.Windows.Forms;
 using ICSharpCode.Core;
-using ICSharpCode.SharpDevelop.Gui;
 using ClarionAssistant.Services;
-using ClarionAssistant.Terminal;
 
 namespace ClarionAssistant
 {
@@ -23,28 +21,32 @@ namespace ClarionAssistant
                 using (var dlg = new OpenFileDialog())
                 {
                     dlg.Title = "Open in CA Editor";
-                    dlg.Filter = "Clarion source (*.clw;*.inc;*.equ;*.int;*.trn;*.tpl;*.tpw)|*.clw;*.inc;*.equ;*.int;*.trn;*.tpl;*.tpw|All files (*.*)|*.*";
+                    dlg.Filter = MonacoFileOpener.OpenFileFilter; // single source of truth (shared with the Explorer Files tab)
                     dlg.Multiselect = true;
                     dlg.CheckFileExists = true;
                     try
                     {
-                        string sln = EditorService.GetOpenSolutionPath();
-                        if (!string.IsNullOrEmpty(sln))
-                            dlg.InitialDirectory = Path.GetDirectoryName(sln);
+                        // Prefer the Explorer's last-used folder; fall back to the open solution's directory.
+                        string last = ExplorerRecentsStore.GetLastFolder();
+                        if (!string.IsNullOrEmpty(last) && Directory.Exists(last))
+                        {
+                            dlg.InitialDirectory = last;
+                        }
+                        else
+                        {
+                            string sln = EditorService.GetOpenSolutionPath();
+                            if (!string.IsNullOrEmpty(sln))
+                                dlg.InitialDirectory = Path.GetDirectoryName(sln);
+                        }
                     }
                     catch { }
                     if (dlg.ShowDialog() != DialogResult.OK) return;
                     files = dlg.FileNames;
                 }
 
+                // Route every open through the single choke point so recents + last-folder are recorded.
                 foreach (var f in files)
-                {
-                    // One tab per file: re-opening an already-open file focuses its tab.
-                    var existing = ModernEmbeditorViewContent.FindByFilePath(f);
-                    if (existing != null) { existing.ActivateTab(); continue; }
-                    var view = new ModernEmbeditorViewContent(f, isDark: false);
-                    WorkbenchSingleton.Workbench.ShowView(view);
-                }
+                    MonacoFileOpener.OpenFile(f, isDark: false);
             }
             catch (Exception ex)
             {

@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Explorer — Files tab mockup</title>
+<style>
+  :root{
+    --bg:#1e1e2e; --fg:#cdd6f4; --bar-bg:#252535; --border:#3a3a4a;
+    --section-fg:#a6adc8; --accent:#89b4fa; --accent-hover:#74a8f7;
+    --ok-bg:#1e66a8; --ok-hover:#2580d4; --card-bg:#252536; --card-border:#313244;
+    --hover:#2d2d44; --desc:#6c7086; --danger:#f38ba8; --success:#a6e3a1;
+    --warning:#fab387; --chip-bg:#313244; --mono:'Cascadia Mono','Consolas',monospace;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family:'Segoe UI',sans-serif; font-size:12px;
+    display:flex; flex-direction:column;
+  }
+
+  /* ---- top bar ---- */
+  #bar{
+    display:flex; align-items:center; gap:8px; padding:6px 10px;
+    background:var(--bar-bg); border-bottom:1px solid var(--border);
+    flex-shrink:0;
+  }
+  #bar .title{font-weight:600; font-size:13px; color:#e6e6e6;}
+  #bar .counts{color:#9a9ab0; font-size:11px;}
+  #bar .spacer{flex:1;}
+  #bar button{
+    background:transparent; border:1px solid #45455a; color:#6cb6ff;
+    border-radius:5px; padding:2px 8px; font-size:11px; cursor:pointer;
+  }
+  #bar button:hover{background:#33334a;}
+  #bar .icon{padding:2px 6px;}
+
+  /* ---- tab strip ---- */
+  .tab-bar{
+    display:flex; align-items:flex-end; gap:2px; padding:4px 8px 0 8px;
+    background:var(--bar-bg); border-bottom:1px solid var(--border); flex-shrink:0;
+  }
+  .tab{
+    display:flex; align-items:center; gap:5px; padding:5px 14px;
+    background:#252536; border:1px solid #313244; border-bottom:none;
+    border-radius:6px 6px 0 0; color:#7f849c; font-size:12px; cursor:pointer;
+    transition:all .12s; position:relative; top:1px;
+  }
+  .tab:hover{background:#313244; color:#bac2de;}
+  .tab.active{background:var(--bg); color:#cdd6f4; border-color:#45475a;}
+  .tab .dot{font-size:13px;}
+
+  /* ---- panels ---- */
+  .panel{flex:1; overflow:auto; display:none;}
+  .panel.active{display:block;}
+
+  /* ================= FILES TAB ================= */
+  .files-toolbar{
+    display:flex; align-items:center; gap:6px; padding:8px 10px;
+    border-bottom:1px solid var(--border);
+  }
+  .btn{
+    display:inline-flex; align-items:center; gap:5px; height:28px; padding:0 11px;
+    border:1px solid var(--card-border); border-radius:6px; background:var(--chip-bg);
+    color:var(--fg); font-size:12px; cursor:pointer; white-space:nowrap; transition:all .15s;
+  }
+  .btn:hover{background:#3a3a52;}
+  .btn-primary{background:var(--ok-bg); border-color:var(--ok-bg); color:#fff;}
+  .btn-primary:hover{background:var(--ok-hover); border-color:var(--ok-hover);}
+  .btn .ico{font-size:13px;}
+  .toolbar-spacer{flex:1;}
+  .filter-wrap{position:relative;}
+  .filter-wrap input{
+    height:28px; width:150px; padding:0 24px 0 9px; background:#1a1a28;
+    border:1px solid var(--card-border); border-radius:6px; color:var(--fg);
+    font-size:12px; outline:none;
+  }
+  .filter-wrap input:focus{border-color:var(--accent);}
+  .filter-wrap .fx{position:absolute; right:7px; top:6px; color:var(--desc); font-size:13px; cursor:pointer;}
+
+  /* last folder strip */
+  .lastfolder{
+    display:flex; align-items:center; gap:6px; padding:5px 10px;
+    background:#1a1a28; border-bottom:1px solid var(--border);
+    font-size:11px; color:var(--section-fg);
+  }
+  .lastfolder .path{font-family:var(--mono); color:var(--accent);}
+  .lastfolder .change{margin-left:auto; color:var(--desc); cursor:pointer; text-decoration:underline dotted;}
+
+  /* quick folder chips */
+  .quick{display:flex; flex-wrap:wrap; gap:6px; padding:8px 10px 6px 10px;}
+  .quick .ql-label{width:100%; font-size:10px; text-transform:uppercase; letter-spacing:.5px;
+    color:var(--desc); margin-bottom:2px;}
+  .chip{
+    display:inline-flex; align-items:center; gap:5px; padding:3px 9px; border-radius:12px;
+    background:var(--chip-bg); border:1px solid var(--card-border); color:#bac2de;
+    font-size:11px; cursor:pointer; transition:all .12s;
+  }
+  .chip:hover{background:#3a3a52; border-color:var(--accent);}
+  .chip .star{color:var(--warning);}
+  .chip.add{color:var(--desc); border-style:dashed;}
+
+  /* section header inside list */
+  .sec{
+    display:flex; align-items:center; gap:6px; padding:6px 10px 4px 10px;
+    font-size:10px; text-transform:uppercase; letter-spacing:.6px; color:var(--section-fg);
+    margin-top:4px;
+  }
+  .sec .count{color:var(--desc); font-weight:400;}
+  .sec .sec-line{flex:1; height:1px; background:var(--border); margin-left:4px;}
+  .sec.grp{cursor:pointer;}
+  .sec.grp .caret{font-size:9px; color:var(--desc); width:10px; display:inline-block;}
+  .sec.grp:hover{color:#cdd6f4;}
+  .sec-note{padding:2px 10px 4px 26px; font-size:10px; color:var(--desc); font-style:italic;}
+
+  /* class-pair chips */
+  .pairchip{font-family:var(--mono); font-size:9px; padding:1px 5px; border-radius:8px;
+    margin-left:5px; border:1px solid var(--card-border); background:var(--chip-bg); cursor:pointer;}
+  .pairchip.inc{color:#a6e3a1; border-color:rgba(166,227,161,.35);}
+  .pairchip.clw{color:#89b4fa; border-color:rgba(137,180,250,.35);}
+  .pairchip:hover{background:#3a3a52;}
+  .frow.class-row .acts .a.both{color:var(--success);}
+
+  /* file rows */
+  .frow{
+    display:grid; grid-template-columns:24px 1fr auto auto;
+    align-items:center; gap:8px; padding:5px 10px; cursor:pointer; user-select:none;
+    border-left:2px solid transparent;
+  }
+  .frow:hover{background:var(--hover); border-left-color:var(--accent);}
+  .frow .fico{font-size:15px; text-align:center;}
+  .frow .meta{min-width:0;}
+  .frow .fname{color:#e0e0e0; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .frow .fname .ext{color:var(--accent); font-weight:600;}
+  .frow .fpath{font-family:var(--mono); font-size:10px; color:var(--desc);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .frow .ftime{font-size:10px; color:var(--desc); white-space:nowrap;}
+  .frow .acts{display:inline-flex; gap:2px; visibility:hidden;}
+  .frow:hover .acts{visibility:visible;}
+  .frow .acts .a{
+    width:22px; height:22px; display:inline-flex; align-items:center; justify-content:center;
+    border-radius:4px; color:#9a9ab0; font-size:13px;
+  }
+  .frow .acts .a:hover{background:#3a3a52; color:#fff;}
+  .frow .acts .a.del:hover{background:rgba(243,139,168,.15); color:var(--danger);}
+  .frow .pin{color:var(--warning); font-size:12px;}
+
+  /* drop hint */
+  .drophint{
+    margin:10px; padding:14px; border:1.5px dashed var(--card-border); border-radius:8px;
+    text-align:center; color:var(--desc); font-size:11px;
+  }
+  .drophint b{color:var(--section-fg);}
+
+  /* ================= DATA TAB (simplified preview) ================= */
+  .data-filter{padding:7px 10px; border-bottom:1px solid var(--border);}
+  .data-filter input{width:100%; height:26px; padding:0 9px; background:#1a1a28;
+    border:1px solid var(--card-border); border-radius:6px; color:var(--fg); font-size:12px; outline:none;}
+  .dsec{font-weight:600; color:#c8c8d8; background:#2a2a3c; padding:4px 10px;
+    border-top:1px solid var(--border); border-bottom:1px solid var(--border); font-size:11px;}
+  .drow{display:flex; gap:8px; padding:3px 10px 3px 22px; font-size:12px;}
+  .drow:hover{background:var(--hover);}
+  .drow .k{font-size:10px; color:#c08cf0; min-width:52px;}
+  .drow .n{color:#e0e0e0;}
+  .drow .t{font-size:10px; color:#9a9ab0; margin-left:auto;}
+  .drow .p{font-size:10px; color:#5fd38a; font-family:var(--mono);}
+</style>
+</head>
+<body>
+
+  <div id="bar">
+    <span class="title">Explorer</span>
+    <span class="counts">— win\fields01.clw</span>
+    <span class="spacer"></span>
+    <button class="icon" title="Smaller font">A−</button>
+    <button class="icon" title="Larger font">A+</button>
+    <button class="icon" title="Toggle theme">🌙</button>
+    <button title="Refresh">Refresh</button>
+    <button class="icon" title="Settings">⚙</button>
+  </div>
+
+  <div class="tab-bar">
+    <div class="tab" data-tab="data" onclick="pick('data')"><span class="dot">📊</span>Data</div>
+    <div class="tab active" data-tab="files" onclick="pick('files')"><span class="dot">📁</span>Files</div>
+  </div>
+
+  <!-- ===================== FILES PANEL ===================== -->
+  <div class="panel active" id="panel-files">
+
+    <div class="files-toolbar">
+      <button class="btn btn-primary" title="Open a file into the Monaco editor"><span class="ico">📂</span>Load File…</button>
+      <button class="btn" title="Pick two files and diff them in Monaco"><span class="ico">⇄</span>Compare…</button>
+      <span class="toolbar-spacer"></span>
+      <span class="filter-wrap">
+        <input type="text" placeholder="Filter recents…" />
+        <span class="fx">×</span>
+      </span>
+    </div>
+
+    <div class="lastfolder">
+      <span>📍 Last folder:</span>
+      <span class="path">C:\Clarion12\Accessory\libsrc\win</span>
+      <span class="change">change</span>
+    </div>
+
+    <div class="quick">
+      <span class="ql-label">Quick locations</span>
+      <span class="chip"><span class="star">★</span> libsrc\win</span>
+      <span class="chip"><span class="star">★</span> Accessory</span>
+      <span class="chip">📦 Solution dir</span>
+      <span class="chip">🕘 Last folder</span>
+      <span class="chip add">＋ pin folder</span>
+    </div>
+
+    <!-- Pinned -->
+    <div class="sec">📌 Pinned <span class="count">2</span><span class="sec-line"></span></div>
+
+    <div class="frow">
+      <span class="fico">📘</span>
+      <span class="meta">
+        <div class="fname">ABFILE<span class="ext">.clw</span></div>
+        <div class="fpath">C:\Clarion12\libsrc\win</div>
+      </span>
+      <span class="pin">📌</span>
+      <span class="acts">
+        <span class="a" title="Open in Monaco">↗</span>
+        <span class="a" title="Compare with…">⇄</span>
+        <span class="a" title="Copy path">⧉</span>
+        <span class="a" title="Reveal in Explorer">🗁</span>
+        <span class="a del" title="Unpin">★</span>
+      </span>
+    </div>
+    <div class="frow">
+      <span class="fico">📗</span>
+      <span class="meta">
+        <div class="fname">ABWINDOW<span class="ext">.inc</span></div>
+        <div class="fpath">C:\Clarion12\libsrc\win</div>
+      </span>
+      <span class="pin">📌</span>
+      <span class="acts">
+        <span class="a" title="Open in Monaco">↗</span>
+        <span class="a" title="Compare with…">⇄</span>
+        <span class="a" title="Copy path">⧉</span>
+        <span class="a" title="Reveal in Explorer">🗁</span>
+        <span class="a del" title="Unpin">★</span>
+      </span>
+    </div>
+
+    <!-- Recent, grouped by type -->
+
+    <!-- Classes: .inc+.clw pairs (detected by CLASS definition in the .inc) -->
+    <div class="sec grp"><span class="caret">▾</span>📗 Classes <span class="count">2 pairs</span><span class="sec-line"></span></div>
+    <div class="sec-note">opening a class loads its .inc + .clw into two separate editors</div>
+
+    <div class="frow class-row">
+      <span class="fico">📗</span>
+      <span class="meta">
+        <div class="fname">StringTheory<span class="pairchip inc" title="Open just the .inc">.inc</span><span class="pairchip clw" title="Open just the .clw">.clw</span></div>
+        <div class="fpath">C:\Clarion12\Accessory\libsrc\win</div>
+      </span>
+      <span class="ftime">4 min ago</span>
+      <span class="acts">
+        <span class="a both" title="Open BOTH (.inc + .clw) in separate editors">⧉↗</span>
+        <span class="a" title="Compare the two side-by-side">⇄</span>
+        <span class="a" title="Copy path">⧉</span>
+        <span class="a" title="Reveal in Explorer">🗁</span>
+        <span class="a" title="Pin">☆</span>
+        <span class="a del" title="Remove from list">✕</span>
+      </span>
+    </div>
+    <div class="frow class-row">
+      <span class="fico">📗</span>
+      <span class="meta">
+        <div class="fname">ABWindow<span class="pairchip inc" title="Open just the .inc">.inc</span><span class="pairchip clw" title="Open just the .clw">.clw</span></div>
+        <div class="fpath">C:\Clarion12\libsrc\win</div>
+      </span>
+      <span class="ftime">1 hr ago</span>
+      <span class="acts">
+        <span class="a both" title="Open BOTH (.inc + .clw) in separate editors">⧉↗</span>
+        <span class="a" title="Compare the two side-by-side">⇄</span>
+        <span class="a" title="Copy path">⧉</span>
+        <span class="a" title="Reveal in Explorer">🗁</span>
+        <span class="a" title="Pin">☆</span>
+        <span class="a del" title="Remove from list">✕</span>
+      </span>
+    </div>
+
+    <!-- Templates: .tpl / .tpw -->
+    <div class="sec grp"><span class="caret">▾</span>🧩 Templates <span class="count">2 · .tpl .tpw</span><span class="sec-line"></span></div>
+
+    <div class="frow">
+      <span class="fico">🧩</span>
+      <span class="meta">
+        <div class="fname">ABChain<span class="ext">.tpw</span></div>
+        <div class="fpath">C:\Clarion12\template\win</div>
+      </span>
+      <span class="ftime">20 min ago</span>
+      <span class="acts">
+        <span class="a" title="Open in Monaco">↗</span>
+        <span class="a" title="Compare with…">⇄</span>
+        <span class="a" title="Copy path">⧉</span>
+        <span class="a" title="Reveal in Explorer">🗁</span>
+        <span class="a" title="Pin">☆</span>
+        <span class="a del" title="Remove from list">✕</span>
+      </span>
+    </div>
+    <div class="frow">
+      <span class="fico">🧩</span>
+      <span class="meta">
+        <div class="fname">Control<span class="ext">.tpl</span></div>
+        <div class="fpath">C:\Clarion12\template\win</div>
+      </span>
+      <span class="ftime">Yesterday</span>
+      <span class="acts">
+        <span class="a" title="Open in Monaco">↗</span>
+        <span class="a" title="Compare with…">⇄</span>
+        <span class="a" title="Copy path">⧉</span>
+        <span class="a" title="Reveal in Explorer">🗁</span>
+        <span class="a" title="Pin">☆</span>
+        <span class="a del" title="Remove from list">✕</span>
+      </span>
+    </div>
+
+    <!-- Source: plain .clw / .equ that are NOT a class implementation -->
+    <div class="sec grp"><span class="caret">▾</span>📘 Source <span class="count">2 · .clw .equ</span><span class="sec-line"></span></div>
+
+    <div class="frow">
+      <span class="fico">📘</span>
+      <span class="meta">
+        <div class="fname">fields01<span class="ext">.clw</span></div>
+        <div class="fpath">C:\Clarion12\Accessory\libsrc\win</div>
+      </span>
+      <span class="ftime">just now</span>
+      <span class="acts">
+        <span class="a" title="Open in Monaco">↗</span>
+        <span class="a" title="Compare with…">⇄</span>
+        <span class="a" title="Copy path">⧉</span>
+        <span class="a" title="Reveal in Explorer">🗁</span>
+        <span class="a" title="Pin">☆</span>
+        <span class="a del" title="Remove from list">✕</span>
+      </span>
+    </div>
+    <div class="frow">
+      <span class="fico">📕</span>
+      <span class="meta">
+        <div class="fname">Equates<span class="ext">.equ</span></div>
+        <div class="fpath">C:\Clarion12\libsrc\win</div>
+      </span>
+      <span class="ftime">Yesterday</span>
+      <span class="acts">
+        <span class="a" title="Open in Monaco">↗</span>
+        <span class="a" title="Compare with…">⇄</span>
+        <span class="a" title="Copy path">⧉</span>
+        <span class="a" title="Reveal in Explorer">🗁</span>
+        <span class="a" title="Pin">☆</span>
+        <span class="a del" title="Remove from list">✕</span>
+      </span>
+    </div>
+
+    <!-- Other -->
+    <div class="sec grp"><span class="caret">▾</span>📦 Other <span class="count">1 · .app .trn …</span><span class="sec-line"></span></div>
+
+    <div class="frow">
+      <span class="fico">📙</span>
+      <span class="meta">
+        <div class="fname">myapp<span class="ext">.app</span></div>
+        <div class="fpath">H:\DevLaptop\Projects\Demo</div>
+      </span>
+      <span class="ftime">Today 09:14</span>
+      <span class="acts">
+        <span class="a" title="Open in Monaco">↗</span>
+        <span class="a" title="Compare with…">⇄</span>
+        <span class="a" title="Copy path">⧉</span>
+        <span class="a" title="Reveal in Explorer">🗁</span>
+        <span class="a" title="Pin">☆</span>
+        <span class="a del" title="Remove from list">✕</span>
+      </span>
+    </div>
+
+    <div class="drophint">⬇ <b>Drop files here</b> to open them in Monaco</div>
+
+  </div>
+
+  <!-- ===================== DATA PANEL (preview of existing datapad) ===================== -->
+  <div class="panel" id="panel-data">
+    <div class="data-filter"><input type="text" placeholder="Filter…" /></div>
+    <div class="dsec">Declared Tables</div>
+    <div class="drow"><span class="k">FILE</span><span class="n">Customers</span><span class="t">Cus</span></div>
+    <div class="drow"><span class="k">FILE</span><span class="n">Orders</span><span class="t">Ord</span></div>
+    <div class="dsec">Local Data</div>
+    <div class="drow"><span class="k">LONG</span><span class="n">LOC:Counter</span><span class="p">@n10</span></div>
+    <div class="drow"><span class="k">STRING</span><span class="n">LOC:Name</span><span class="p">@s60</span></div>
+    <div class="dsec">Routines</div>
+    <div class="drow"><span class="k">ROUTINE</span><span class="n">RefreshWindow</span><span class="t">line 142</span></div>
+    <div class="drow" style="color:var(--desc); padding:8px 10px;">…current Data Pad content, unchanged…</div>
+  </div>
+
+<script>
+  function pick(which){
+    document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===which));
+    document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+    document.getElementById('panel-'+which).classList.add('active');
+  }
+</script>
+</body>
+</html>
