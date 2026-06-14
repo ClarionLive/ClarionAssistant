@@ -164,6 +164,7 @@
     <Compile Include="Terminal\MonacoDiffViewContent.cs" />
     <Compile Include="Terminal\NativeDiffViewContent.cs" />
     <Compile Include="Terminal\ModernEmbeditorViewContent.cs" />
+    <Compile Include="Terminal\MonacoEditorControl.cs" />
     <Compile Include="Services\DiffService.cs" />
     <Compile Include="Services\DocGraphService.cs" />
     <Compile Include="Services\InstanceCoordinationService.cs" />
