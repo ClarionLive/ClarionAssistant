@@ -57,6 +57,19 @@ namespace ClarionAssistant
 
                 _webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
 
+                // Drag-drop: WebView2 hides a dropped file's real path from the page (File.path is empty), so
+                // we handle EXTERNAL file drops at the host (WinForms) level — DataFormats.FileDrop carries the
+                // real full paths. This is scoped to the Files tab: on the Data tab the page keeps AllowExternalDrop
+                // so its variable-declaration text-drop still works (see SetFilesDropMode). Default = Data tab.
+                // WebView2.AllowDrop is read-only (the control owns it via AllowExternalDrop). With
+                // AllowExternalDrop=false the OS drop falls through to the parent panel, where we CAN set
+                // AllowDrop and handle DragDrop. Default = Data tab: page handles external drops.
+                _webView.AllowExternalDrop = true;
+                _panel.AllowDrop = false;
+                _panel.DragEnter += OnWebViewDragEnter;
+                _panel.DragOver += OnWebViewDragEnter;
+                _panel.DragDrop += OnWebViewDragDrop;
+
                 // Restore the ctrl-mousewheel font zoom (WebView2's built-in ZoomFactor) and keep it saved.
                 _webView.ZoomFactor = Terminal.WebViewZoomHelper.GetZoom("modernDataPad");
                 _webView.ZoomFactorChanged += (s2, e2) => Terminal.WebViewZoomHelper.SetZoom("modernDataPad", _webView.ZoomFactor);
@@ -251,6 +264,15 @@ namespace ClarionAssistant
                         RunVariableCrud("Copy Column", () => CopyColumns(scope, colsJson, clickedProc), showSuccessInfo: true);
                 }
                 // ===== Explorer "Files" tab — Monaco file loader (all routed through MonacoFileOpener) =====
+                else if (action == "tabChanged")
+                {
+                    // Switch host-vs-page drop ownership with the active tab (see SetFilesDropMode). On the Files
+                    // tab the host handles file drops to recover real paths; on Data the page keeps its text-drop.
+                    string tab = ExtractJsonValue(json, "tab");
+                    bool filesActive = string.Equals(tab, "files", StringComparison.OrdinalIgnoreCase);
+                    if (_panel != null) _panel.BeginInvoke((Action)(() => SetFilesDropMode(filesActive)));
+                    else SetFilesDropMode(filesActive);
+                }
                 else if (action == "requestExplorerData")
                 {
                     // The Files tab asks for its data on first activation (and we re-post after each mutation).
@@ -663,6 +685,59 @@ namespace ClarionAssistant
             char a = path[0], b = path[1];
             if ((a == '\\' || a == '/') && (b == '\\' || b == '/')) return true;
             try { return new Uri(path).IsUnc; } catch { return false; }
+        }
+
+        // True while the Files tab is showing — gates host-level external file drops.
+        private bool _filesTabActive;
+
+        /// <summary>
+        /// Switch external-drop ownership with the active tab. On the FILES tab the host (WinForms) handles
+        /// external drops so it can read the real file paths (DataFormats.FileDrop) that WebView2 hides from the
+        /// page. On the DATA tab the page keeps AllowExternalDrop so its variable-declaration text-drop (which
+        /// needs in-page element targeting) keeps working. UI thread.
+        /// </summary>
+        private void SetFilesDropMode(bool filesActive)
+        {
+            _filesTabActive = filesActive;
+            try
+            {
+                if (_webView != null) _webView.AllowExternalDrop = !filesActive; // page handles drops on Data; host on Files
+                if (_panel != null) _panel.AllowDrop = filesActive;              // enable WinForms DnD on the parent panel
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] SetFilesDropMode: " + ex.Message); }
+        }
+
+        /// <summary>Allow the Copy drop effect for a file drop while the Files tab is active; else reject.</summary>
+        private void OnWebViewDragEnter(object sender, DragEventArgs e)
+        {
+            e.Effect = (_filesTabActive && e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop))
+                ? DragDropEffects.Copy : DragDropEffects.None;
+        }
+
+        /// <summary>
+        /// Host-level file drop (Files tab): read the REAL full paths from DataFormats.FileDrop, validate the same
+        /// way as the JS drop path (rooted, non-UNC, allowed source extension), then open each via the choke point.
+        /// </summary>
+        private void OnWebViewDragDrop(object sender, DragEventArgs e)
+        {
+            if (!_filesTabActive || e.Data == null || !e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+            string[] files;
+            try { files = e.Data.GetData(DataFormats.FileDrop) as string[]; }
+            catch { files = null; }
+            if (files == null || files.Length == 0) return;
+
+            var safe = new List<string>();
+            foreach (var f in files)
+            {
+                if (string.IsNullOrEmpty(f)) continue;
+                bool rooted; try { rooted = Path.IsPathRooted(f); } catch { rooted = false; }
+                if (!rooted || IsUncPath(f)) continue;
+                if (!Services.MonacoFileOpener.IsAllowedDropExtension(f)) continue;
+                safe.Add(f);
+                if (safe.Count >= 50) break;
+            }
+            if (safe.Count == 0) return;
+            DeferExplorer(() => { foreach (var f in safe) Services.MonacoFileOpener.OpenFile(f, _isDark); PostExplorerData(); });
         }
 
         /// <summary>Build the grouped Files-tab view-model and push it to the page. UI thread (called from the

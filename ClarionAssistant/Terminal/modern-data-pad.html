@@ -670,6 +670,9 @@
         for (var j = 0; j < panels.length; j++) panels[j].classList.remove('active');
         var p = document.getElementById('panel-' + which);
         if (p) p.classList.add('active');
+        // Tell the host which tab is active so it can switch external-drop ownership: on Files the host handles
+        // OS file drops (to recover real paths WebView2 hides from JS); on Data the page keeps its text-drop.
+        postToHost({ action: 'tabChanged', tab: which });
         if (which === 'files' && !_explorerRequested) { _explorerRequested = true; postToHost({ action: 'requestExplorerData' }); }
     }
 
