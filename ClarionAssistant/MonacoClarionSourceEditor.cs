@@ -431,7 +431,32 @@ namespace ClarionAssistant
                 var hit = ClarionAppDataReader.FindStructureAtLine(buffer, line);
                 if (!hit.Found)
                 {
-                    editor.PostResponse(reqId, Refusal("Put the caret on a WINDOW or REPORT structure to design it."));
+                    // No structure at the caret → CREATE-NEW path (native Ctrl+D parity). On a blank line,
+                    // hand Monaco the DEFAULTS.CLW template list so it shows the picker; the chosen entry
+                    // comes back via OnOpenDesignerCreate. File mode = the whole buffer is editable, so there
+                    // is no embed-slot guard to satisfy — only the "blank line" gesture gates create-new.
+                    var blines = buffer.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+                    bool lineBlank = line >= 1 && line <= blines.Length && blines[line - 1].Trim().Length == 0;
+                    if (!lineBlank)
+                    {
+                        editor.PostResponse(reqId, Refusal("Put the caret on a WINDOW/REPORT structure, or on a blank line to create a new one."));
+                        return;
+                    }
+                    var templates = DefaultStructuresReader.Load();
+                    if (templates.Count > 0)
+                    {
+                        var list = new List<object>();
+                        foreach (var t in templates)
+                            list.Add(new Dictionary<string, object> { { "title", t.Title }, { "type", t.Kind } });
+                        editor.PostResponse(reqId, new Dictionary<string, object> { { "ok", true }, { "mode", "pickTemplate" }, { "templates", list } });
+                        return;
+                    }
+                    // No DEFAULTS.CLW found → seed a plain window directly (no picker), mirroring the embeditor.
+                    editor.PostResponse(reqId, new Dictionary<string, object>
+                    {
+                        { "ok", true }, { "mode", "insert" }, { "startLine", line }, { "endLine", line }, { "type", "WINDOW" }
+                    });
+                    OpenDesignerOverlay(NewWindowSeed, "NewWindow", true, true);
                     return;
                 }
 
@@ -450,15 +475,7 @@ namespace ClarionAssistant
                 });
 
                 // Run the open OFF this WebView2 message-handler stack (the embeditor's reentrancy rule).
-                Action open = () =>
-                {
-                    string err = StructureDesignerService.Open(structureText, label, isWindow, isWindow, _editor,
-                        onBufferChanged: text => _editor.PostDesignerMessage("designerSplice", text, null),
-                        onClosed: finalText => _editor.PostDesignerMessage("designerClosed", finalText, null));
-                    if (err != null) _editor.PostDesignerMessage("designerClosed", null, err);
-                };
-                try { if (_editor != null && _editor.IsHandleCreated) _editor.BeginInvoke(open); else open(); }
-                catch (Exception oex) { MonacoSpikeLog.Write("overlay designer open marshal error: " + oex.Message); }
+                OpenDesignerOverlay(structureText, label, isWindow, isWindow);
             }
             catch (Exception ex)
             {
@@ -471,7 +488,76 @@ namespace ClarionAssistant
         {
             return new Dictionary<string, object> { { "ok", false }, { "message", message } };
         }
-        void IMonacoEditorHost.OnOpenDesignerCreate(MonacoEditorControl editor, string rawJson) { }
+
+        // Seed used when DEFAULTS.CLW is missing (no picker possible) — mirrors the embeditor's FallbackSeed.
+        private const string NewWindowSeed =
+            "NewWindow WINDOW('New Window'),AT(,,200,120),GRAY,SYSTEM\n" +
+            "         \n" +
+            "       END";
+
+        // Run the designer open OFF this WebView2 message-handler stack (the embeditor's reentrancy rule).
+        // Shared by the edit path (OnOpenDesigner) and the create-new path (OnOpenDesignerCreate).
+        private void OpenDesignerOverlay(string structureText, string label, bool isWindowDesigner, bool isWindowWindow)
+        {
+            Action open = () =>
+            {
+                string err = StructureDesignerService.Open(structureText, label, isWindowDesigner, isWindowWindow, _editor,
+                    onBufferChanged: text => _editor.PostDesignerMessage("designerSplice", text, null),
+                    onClosed: finalText => _editor.PostDesignerMessage("designerClosed", finalText, null));
+                if (err != null) _editor.PostDesignerMessage("designerClosed", null, err);
+            };
+            try { if (_editor != null && _editor.IsHandleCreated) _editor.BeginInvoke(open); else open(); }
+            catch (Exception oex) { MonacoSpikeLog.Write("overlay designer open marshal error: " + oex.Message); }
+        }
+
+        // Second leg of create-new (blank-line Ctrl+D): Monaco's picker chose a DEFAULTS.CLW entry. Seed from
+        // the chosen block and open the designer with the flags its kind dictates (WINDOW/APPLICATION/REPORT).
+        // File mode = whole buffer editable, so no slot re-validation is needed (unlike the embeditor).
+        void IMonacoEditorHost.OnOpenDesignerCreate(MonacoEditorControl editor, string rawJson)
+        {
+            int reqId = 0;
+            try
+            {
+                var data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(rawJson) as Dictionary<string, object>;
+                if (data == null) return;
+                if (data.ContainsKey("reqId")) reqId = Convert.ToInt32(data["reqId"]);
+                int line = data.ContainsKey("line") ? Convert.ToInt32(data["line"]) : 0;
+                string templateTitle = data.ContainsKey("templateTitle") ? data["templateTitle"] as string : null;
+                if (string.IsNullOrEmpty(templateTitle)) { editor.PostResponse(reqId, Refusal("Designer request was malformed.")); return; }
+
+                if (StructureDesignerService.IsActive)
+                {
+                    StructureDesignerService.ActivateCurrent(_editor);
+                    editor.PostResponse(reqId, Refusal("A structure designer is already open — close its tab first."));
+                    return;
+                }
+
+                DefaultStructuresReader.StructureTemplate template = null;
+                foreach (var t in DefaultStructuresReader.Load())
+                    if (string.Equals(t.Title, templateTitle, StringComparison.Ordinal)) { template = t; break; }
+                string structureText = template != null ? template.Source : NewWindowSeed;
+                string kind = template != null ? template.Kind : "WINDOW";
+
+                // Scratch tab name = the template block's own label (e.g. Window / ProgressWindow / Report).
+                string label = "NewStructure";
+                var m = System.Text.RegularExpressions.Regex.Match(structureText, @"^\s*(\w+)");
+                if (m.Success) label = m.Groups[1].Value;
+
+                bool isWindowDesigner = kind != "REPORT";
+                bool isWindowWindow = kind == "WINDOW";
+
+                editor.PostResponse(reqId, new Dictionary<string, object>
+                {
+                    { "ok", true }, { "mode", "insert" }, { "startLine", line }, { "endLine", line }, { "type", kind }
+                });
+                OpenDesignerOverlay(structureText, label, isWindowDesigner, isWindowWindow);
+            }
+            catch (Exception ex)
+            {
+                MonacoSpikeLog.Write("overlay openDesignerCreate error: " + ex.Message);
+                try { editor.PostResponse(reqId, Refusal("Designer failed: " + ex.Message)); } catch { }
+            }
+        }
         void IMonacoEditorHost.OnActivateDesigner(MonacoEditorControl editor) { }
         void IMonacoEditorHost.OnEditorNavigationCompleted(MonacoEditorControl editor, bool success) { MonacoSpikeLog.Write("overlay nav completed success=" + success); }
         void IMonacoEditorHost.OnUnknownAction(MonacoEditorControl editor, string action, string rawJson)

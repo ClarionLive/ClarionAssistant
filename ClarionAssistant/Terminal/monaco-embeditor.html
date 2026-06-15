@@ -1142,6 +1142,17 @@
         try { if (editor2) editor2.updateOptions({ readOnly: on }); } catch (e) { }
     }
 
+    // Reveal the lock overlay ONLY when this tab is actually on top. Opening the designer moves focus to its
+    // scratch tab, so painting the overlay the instant the session begins just flashes it for a frame before
+    // that tab covers it. We show it on (re-)focus instead — i.e. when the user comes back here while the
+    // session is still open. readOnly is set regardless, so edits stay blocked even before the overlay paints.
+    var _designerLockTimer = null;
+    function maybeShowDesignerLock() {
+        if (!designerSession) return;
+        var ov = document.getElementById('designerLock');
+        if (ov && document.hasFocus()) ov.style.display = 'flex';
+    }
+
     function setDesignerLock(on) {
         setPanesReadOnly(on);
         var ov = document.getElementById('designerLock');
@@ -1149,7 +1160,7 @@
             if (!ov) {
                 ov = document.createElement('div');
                 ov.id = 'designerLock';
-                ov.style.cssText = 'position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;';
+                ov.style.cssText = 'position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;';
                 ov.innerHTML =
                     '<div style="background:#2d2d30;color:#eee;padding:18px 26px;border-radius:8px;font-family:Segoe UI,sans-serif;font-size:13px;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.5);">' +
                     '<div style="font-size:14px;margin-bottom:10px;">Window designer is open</div>' +
@@ -1160,9 +1171,15 @@
                 document.getElementById('dlShow').onclick = function () { postToHost({ action: 'activateDesigner' }); };
                 document.getElementById('dlUnlock').onclick = function () { endDesignerSession(); };
             }
-            ov.style.display = 'flex';
+            // Don't show now (the designer tab is about to grab focus). Reveal on return-focus; the deferred
+            // check covers the rare case where the designer never stole focus and we're genuinely still on top.
+            window.addEventListener('focus', maybeShowDesignerLock);
+            clearTimeout(_designerLockTimer);
+            _designerLockTimer = setTimeout(maybeShowDesignerLock, 500);
         } else if (ov) {
             ov.style.display = 'none';
+            clearTimeout(_designerLockTimer);
+            window.removeEventListener('focus', maybeShowDesignerLock);
         }
     }
 
