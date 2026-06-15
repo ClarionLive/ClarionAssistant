@@ -7,6 +7,7 @@ using System.Text;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using ICSharpCode.Core;
+using ICSharpCode.SharpDevelop.Debugging;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using CWBinding.ClarionEditor;
@@ -143,6 +144,7 @@ namespace ClarionAssistant
                 _editor = new MonacoEditorControl(this, true, "monaco-embeditor.html", "clarion-embeditor-data");
                 host.Controls.Add(_editor);
                 _editor.BringToFront();
+                WireBreakpoints();   // keep Monaco's gutter in sync with IDE breakpoints
                 MonacoSpikeLog.Write("overlay MonacoEditorControl attached over host; awaiting ready");
             }
             catch (Exception ex) { MonacoSpikeLog.Write("AttachOverlay error: " + ex.Message); }
@@ -181,6 +183,7 @@ namespace ClarionAssistant
                     + "\"isDark\":true,"
                     + "\"fileMode\":true,"
                     + "\"readOnly\":false,"
+                    + "\"breakpointsEnabled\":true,"
                     + "\"filePath\":" + MonacoEditorControl.JsonString(_filePath ?? "") + ","
                     + "\"saveEnabled\":true,"
                     + "\"editableRanges\":[],"
@@ -191,6 +194,8 @@ namespace ClarionAssistant
                     + "\"sourceUrl\":\"https://clarion-embeditor-data/source.txt\"}";
                 _editor.PostJson(json);
                 MonacoSpikeLog.Write("overlay setSource sent (fileMode editable, " + text.Length + " chars, file=" + (_filePath ?? "?") + ")");
+                PushBreakpoints();   // paint any existing IDE breakpoints for this file
+
             }
             catch (Exception ex) { MonacoSpikeLog.Write("overlay OnReady error: " + ex.Message); }
         }
@@ -315,7 +320,82 @@ namespace ClarionAssistant
         void IMonacoEditorHost.OnOpenDesignerCreate(MonacoEditorControl editor, string rawJson) { }
         void IMonacoEditorHost.OnActivateDesigner(MonacoEditorControl editor) { }
         void IMonacoEditorHost.OnEditorNavigationCompleted(MonacoEditorControl editor, bool success) { MonacoSpikeLog.Write("overlay nav completed success=" + success); }
-        void IMonacoEditorHost.OnUnknownAction(MonacoEditorControl editor, string action, string rawJson) { }
+        void IMonacoEditorHost.OnUnknownAction(MonacoEditorControl editor, string action, string rawJson)
+        {
+            if (action != "toggleBreakpoint") return;
+            // Gutter click in Monaco → toggle the IDE breakpoint on the native document. The native + CA
+            // debuggers both listen to DebuggerService; the BreakPointAdded/Removed event re-pushes the set.
+            try
+            {
+                if (_hostEditor == null || _hostEditor.Document == null || string.IsNullOrEmpty(_filePath)) return;
+                var data = new JavaScriptSerializer().DeserializeObject(rawJson) as Dictionary<string, object>;
+                int line = (data != null && data.ContainsKey("line")) ? Convert.ToInt32(data["line"]) : 0;
+                if (line < 1) return;
+                DebuggerService.ToggleBreakpointAt(_hostEditor.Document, _filePath, line - 1);   // ToggleBreakpointAt is 0-based
+                MonacoSpikeLog.Write("overlay toggleBreakpoint line=" + line + " file=" + _filePath);
+                PushBreakpoints();   // belt-and-suspenders; the event also re-pushes
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("overlay toggleBreakpoint error: " + ex.Message); }
+        }
+
+        // ── Breakpoints (IDE DebuggerService is the single source of truth) ─────────────────────────
+        private EventHandler<BreakpointBookmarkEventArgs> _bpAdded, _bpRemoved;
+
+        private void WireBreakpoints()
+        {
+            try
+            {
+                if (_bpAdded != null) return;
+                _bpAdded = (s, e) => OnBreakpointChanged(e);
+                _bpRemoved = (s, e) => OnBreakpointChanged(e);
+                DebuggerService.BreakPointAdded += _bpAdded;
+                DebuggerService.BreakPointRemoved += _bpRemoved;
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("overlay WireBreakpoints error: " + ex.Message); }
+        }
+
+        private void UnwireBreakpoints()
+        {
+            try
+            {
+                if (_bpAdded != null) DebuggerService.BreakPointAdded -= _bpAdded;
+                if (_bpRemoved != null) DebuggerService.BreakPointRemoved -= _bpRemoved;
+            }
+            catch { }
+            _bpAdded = null; _bpRemoved = null;
+        }
+
+        private void OnBreakpointChanged(BreakpointBookmarkEventArgs e)
+        {
+            try
+            {
+                var bb = e != null ? e.BreakpointBookmark : null;
+                if (bb != null && !string.IsNullOrEmpty(bb.FileName) &&
+                    string.Equals(bb.FileName, _filePath, StringComparison.OrdinalIgnoreCase))
+                    PushBreakpoints();
+            }
+            catch { }
+        }
+
+        /// <summary>Push the IDE's current breakpoint lines for THIS file to Monaco (gutter red dots).</summary>
+        private void PushBreakpoints()
+        {
+            try
+            {
+                if (_editor == null || string.IsNullOrEmpty(_filePath)) return;
+                var sb = new StringBuilder();
+                int n = 0;
+                foreach (var bb in DebuggerService.Breakpoints)
+                {
+                    if (bb == null || string.IsNullOrEmpty(bb.FileName)) continue;
+                    if (!string.Equals(bb.FileName, _filePath, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (n++ > 0) sb.Append(',');
+                    sb.Append(bb.LineNumber + 1);   // bookmark 0-based → Monaco 1-based
+                }
+                _editor.PostJson("{\"type\":\"setBreakpoints\",\"lines\":[" + sb + "]}");
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("overlay PushBreakpoints error: " + ex.Message); }
+        }
 
         // CRLF-normalize + write the buffer to disk with the file's load encoding. Shared by the
         // interactive save (OnSave) and the close-save prompt. Returns the char count written.
@@ -442,6 +522,7 @@ namespace ClarionAssistant
         public override void Dispose()
         {
             StopCaptureTimer();
+            UnwireBreakpoints();
 
             // Save-on-close: the native shell never goes dirty (Monaco owns edits), so the IDE won't
             // prompt — we must, or unsaved edits vanish silently. Capture the mirrored buffer, tear down
