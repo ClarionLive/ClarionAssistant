@@ -454,6 +454,22 @@ namespace ClarionAssistant
                     // everything. Echoed back in PostExplorerData's uiState. (Session-scoped; persistence is polish.)
                     _explorerCollapsed = ParseCollapsed(json);
                 }
+                else if (action == "requestRedIndex")
+                {
+                    // "Open File via Redirection" type-ahead asks for its file index. We enumerate the active .red
+                    // ONCE off the UI thread (below); the page then filters that index in-memory per keystroke with
+                    // zero disk I/O — that's what eliminates the native dialog's fast-typing freeze.
+                    RequestRedIndex();
+                }
+                else if (action == "traceRedFile")
+                {
+                    // "Trace" button: walk the .red sections/patterns for a complete filename and log each step.
+                    // Cheap (a handful of File.Exists checks), so it runs synchronously on the UI thread.
+                    string name = ExtractJsonValue(json, "name");
+                    TraceRedFile(name);
+                }
+                // NOTE: opening a redirection match reuses the existing "loadFile" action above (it already opens via
+                // MonacoFileOpener + records recents), so no separate openRedFile case is needed.
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] Message error: " + ex.Message); }
         }
@@ -852,6 +868,171 @@ namespace ClarionAssistant
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] PostVersionInfo: " + ex.Message); }
         }
 
+        // Supersedes an in-flight redirection enumeration when the index is re-requested (e.g. the solution or
+        // selected Clarion version changed, so RedFileService.Active now points at a different .red). The stale
+        // Task.Run sees the cancelled token and drops its result instead of posting an outdated index.
+        private System.Threading.CancellationTokenSource _redIndexCts;
+
+        // Monotonic generation for redirection-index requests (UI thread). Carried in each setRedIndex payload so
+        // the page can reject a stale enumeration that completes after a newer one (the supersede race).
+        private int _redIndexGen;
+
+        // Canonical section search order used by the resolver (ClarionAppDataReader): C12 names first, then the
+        // legacy names, then the universal Common fallback. EnumerateFiles/ResolveTrace walk this in priority order.
+        private static readonly string[] RedSectionOrder = { "Debug32", "Release32", "Debug", "Release", "Common" };
+
+        /// <summary>
+        /// Build the "Open File via Redirection" file index ONCE, off the UI thread, and push it to the page.
+        /// The page caches it and filters in-memory per keystroke — no disk I/O on the keypath, so fast typing
+        /// cannot freeze the IDE (the bug this feature fixes). Re-requested on Files-tab activation, so a solution
+        /// or Clarion-version switch (which repoints RedFileService.Active) naturally rebuilds against the new .red.
+        /// </summary>
+        private void RequestRedIndex()
+        {
+            // Supersede any enumeration still running for a previous .red: cancel AND dispose the old source
+            // (each owns a wait handle — leaking one per Files-tab activation is a slow handle leak). Safe to
+            // dispose here: the in-flight task only reads its already-captured token, never the source.
+            var old = _redIndexCts;
+            try { if (old != null) old.Cancel(); } catch { }
+            var cts = new System.Threading.CancellationTokenSource();
+            _redIndexCts = cts;
+            var token = cts.Token;
+            try { if (old != null) old.Dispose(); } catch { }
+
+            // Monotonic request generation, stamped on the UI thread and carried in the payload. The page applies
+            // a setRedIndex only if its gen is the newest it has seen — so a stale enumeration that finishes AFTER
+            // a newer one (the supersede race) can't overwrite the current .red's file list. Mirrors _refreshGen.
+            int gen = ++_redIndexGen;
+
+            var red = Services.RedFileService.Active;
+            if (red == null)
+            {
+                // No active .red — tell the page to show the "open a Clarion solution" hint instead of an empty list.
+                Post(new Dictionary<string, object>
+                {
+                    { "type", "setRedIndex" },
+                    { "gen", gen },
+                    { "indexing", false },
+                    { "available", false },
+                    { "files", new List<object>() },
+                    { "truncated", false },
+                    { "redPath", "" }
+                });
+                return;
+            }
+
+            string sol = null;
+            try { sol = Services.EditorService.GetOpenSolutionPath(); } catch { }
+            string baseDir = !string.IsNullOrEmpty(sol) ? Path.GetDirectoryName(sol) : null;
+            string redPath = red.RedFilePath ?? "";
+
+            // Tell the page we've started — it shows "Indexing…" so a slow first scan (large / UNC redirection
+            // trees) isn't mistaken for "no matches" while the off-thread enumeration is still running.
+            Post(new Dictionary<string, object>
+            {
+                { "type", "setRedIndex" },
+                { "gen", gen },
+                { "indexing", true },
+                { "available", true },
+                { "redPath", redPath }
+            });
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    bool truncated;
+                    var matches = red.EnumerateFiles(baseDir, token, out truncated, RedSectionOrder);
+                    if (token.IsCancellationRequested) return;
+
+                    var files = new List<object>(matches.Count);
+                    foreach (var m in matches)
+                        files.Add(new Dictionary<string, object>
+                        {
+                            { "name", m.Name },
+                            { "path", m.FullPath },
+                            { "section", m.Section }
+                        });
+
+                    if (token.IsCancellationRequested) return;
+                    Post(new Dictionary<string, object>
+                    {
+                        { "type", "setRedIndex" },
+                        { "gen", gen },
+                        { "indexing", false },
+                        { "available", true },
+                        { "files", files },
+                        { "truncated", truncated },
+                        { "redPath", redPath }
+                    });
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine("[ModernDataPad] RequestRedIndex: " + ex.Message);
+                    // Clear the page's "Indexing…" state on failure so it doesn't hang there. Only the newest
+                    // request posts the recovery (stale ones are dropped by the gen guard on the page anyway).
+                    if (!token.IsCancellationRequested)
+                        Post(new Dictionary<string, object>
+                        {
+                            { "type", "setRedIndex" },
+                            { "gen", gen },
+                            { "indexing", false },
+                            { "available", true },
+                            { "files", new List<object>() },
+                            { "truncated", false },
+                            { "redPath", redPath }
+                        });
+                }
+            });
+        }
+
+        /// <summary>
+        /// Trace how the active .red resolves <paramref name="name"/> — section by section, pattern by pattern —
+        /// and push the human-readable log to the page's Trace panel. Mirrors the native dialog's trace.
+        /// </summary>
+        private void TraceRedFile(string name)
+        {
+            // Cheap guards first (no filesystem access) — answer synchronously.
+            var red = Services.RedFileService.Active;
+            if (red == null)
+            {
+                Post(new Dictionary<string, object> { { "type", "setRedTrace" },
+                    { "lines", new List<string> { "No active redirection (.red) file — open a Clarion solution first." } }, { "found", "" } });
+                return;
+            }
+            if (string.IsNullOrEmpty(name))
+            {
+                Post(new Dictionary<string, object> { { "type", "setRedTrace" },
+                    { "lines", new List<string> { "Type a complete filename to trace (e.g. Customer.clw)." } }, { "found", "" } });
+                return;
+            }
+
+            string sol = null;
+            try { sol = Services.EditorService.GetOpenSolutionPath(); } catch { }
+            string baseDir = !string.IsNullOrEmpty(sol) ? Path.GetDirectoryName(sol) : null;
+
+            // ResolveTrace probes the filesystem (File.Exists per matching .red entry). Run it OFF the UI thread so a
+            // stale/offline network redirection entry can't freeze the IDE when the user clicks Trace — the whole
+            // point of this feature is to be lock-up-free. Post marshals the result back to the UI thread itself.
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var trace = new List<string>();
+                string found = null;
+                try { found = red.ResolveTrace(name, baseDir, trace, RedSectionOrder); }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine("[ModernDataPad] TraceRedFile: " + ex.Message);
+                    trace.Add("Trace error: " + ex.Message);
+                }
+                Post(new Dictionary<string, object>
+                {
+                    { "type", "setRedTrace" },
+                    { "lines", trace },
+                    { "found", found ?? "" }
+                });
+            });
+        }
+
         /// <summary>
         /// Defer an Explorer action OUT of the WebView2 message callback onto the next UI turn, moving focus to the
         /// main IDE window first — identical to the 'open' action's guard: a WebView2 holding focus can deadlock the
@@ -1010,7 +1191,7 @@ namespace ClarionAssistant
         // bound to the previous editor and insert/goto would target it.
         private bool _lastShownNative;
         private bool _lastShownSelection;    // last shown proc came from app-tree selection, not a focused editor
-        private string _lastSolutionTag = "\0"; // last resolved solution tag; sentinel so the first tick posts the banner
+        private string _lastEnvKey = "\0"; // last (solution | version | active .red path) key; sentinel so the first tick posts the banner
         private string _lastShownProc = " "; // sentinel so the first tick always refreshes
 
         /// <summary>
@@ -1031,17 +1212,35 @@ namespace ClarionAssistant
             if (Services.ModernEmbeditorLauncher.IsBusy) return;  // never touch the IDE mid open/save
             if (_varCrudInProgress) return;  // never run a .txa export while Clarion's add/edit/delete modal is open
 
-            // Solution-change watcher: the pad is a restored dock that can init (and post its version banner /
+            // Environment-change watcher: the pad is a restored dock that can init (and post its version banner /
             // explorer recents) at IDE startup BEFORE a solution finishes loading — bucketing to "NoSolution" with an
-            // empty recents list. When the resolved solution later changes, re-post the banner and (if the Files tab
-            // is showing) the recents so both reflect the now-open solution. Cheap in-memory read; only acts on change.
-            string solTag = null;
-            try { solTag = Services.ModernEmbeditorHistory.SolutionTag(Services.EditorService.GetOpenSolutionPath()); } catch { }
-            if (!string.Equals(solTag, _lastSolutionTag, StringComparison.OrdinalIgnoreCase))
+            // empty recents list. Re-post the banner + (if the Files tab is showing) the recents and redirection index
+            // whenever the EFFECTIVE environment changes. We key on solution tag + Clarion-version tag + active .red
+            // path, not solution alone: a same-solution Clarion VERSION switch repoints RedFileService.Active to a
+            // different version-level .red while the solution tag is unchanged — keying on solution only would leave
+            // the type-ahead/trace resolving against the stale .red until the tab is reactivated. Cheap in-memory read.
+            string envKey;
+            try
             {
-                _lastSolutionTag = solTag;
+                string solTag = Services.ModernEmbeditorHistory.SolutionTag(Services.EditorService.GetOpenSolutionPath());
+                string verTag = Services.ModernEmbeditorHistory.VersionTag();
+                var activeRed = Services.RedFileService.Active;
+                string redPath = activeRed != null ? activeRed.RedFilePath : null;
+                envKey = (solTag ?? "") + "|" + (verTag ?? "") + "|" + (redPath ?? "");
+            }
+            catch { envKey = _lastEnvKey; } // on probe failure, don't thrash — leave the key unchanged
+            if (!string.Equals(envKey, _lastEnvKey, StringComparison.OrdinalIgnoreCase))
+            {
+                _lastEnvKey = envKey;
                 PostVersionInfo();
-                if (_filesTabActive) PostExplorerData();
+                if (_filesTabActive)
+                {
+                    PostExplorerData();
+                    // The solution/version switch repointed RedFileService.Active at a different .red. If the user is
+                    // sitting on the Files tab (no reactivation to trigger it), rebuild the redirection index now —
+                    // otherwise the type-ahead/trace would keep resolving against the previous environment's index.
+                    RequestRedIndex();
+                }
             }
 
             string proc;
@@ -1088,6 +1287,9 @@ namespace ClarionAssistant
         {
             lock (_instances) { _instances.Remove(this); }
             ClearAddRefreshTimers();
+            // Cancel any in-flight redirection enumeration so its Task.Run drops its result instead of
+            // posting to a torn-down WebView2 (and doesn't outlive the pad at shutdown).
+            try { if (_redIndexCts != null) { _redIndexCts.Cancel(); _redIndexCts.Dispose(); _redIndexCts = null; } } catch { }
             if (_settingsWindow != null && !_settingsWindow.IsDisposed) { try { _settingsWindow.Close(); } catch { } _settingsWindow = null; }
             if (_autoTimer != null) { _autoTimer.Stop(); _autoTimer.Dispose(); _autoTimer = null; }
             if (_webView != null) { _webView.Dispose(); _webView = null; }

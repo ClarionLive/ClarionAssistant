@@ -202,6 +202,56 @@
     .drophint.dragover { border-color: #0a5dc2; background: rgba(10,93,194,.08); color: #0a5dc2; }
     .files-empty { padding: 14px; color: #777; }
 
+    /* ----- Open File via Redirection (type-ahead + trace), sits under the Load/Compare toolbar ----- */
+    .redopen { padding: 8px 10px; border-bottom: 1px solid #d4d4d4; flex: none; }
+    .redopen-row { display: flex; align-items: center; gap: 6px; }
+    .redopen-ico { font-size: 13px; color: #5a5a5a; }
+    .redopen-row input { flex: 1; min-width: 0; height: 28px; padding: 0 9px; background: #fff;
+        border: 1px solid #bcbcbc; border-radius: 6px; color: #1f1f1f; font: inherit; font-size: 12px; outline: none; }
+    .redopen-row input:focus { border-color: #0a5dc2; }
+    .redopen-row .btn { display: inline-flex; align-items: center; height: 28px; padding: 0 11px;
+        border: 1px solid #bcbcbc; border-radius: 6px; background: #f1f3f5; color: #1f1f1f;
+        font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; transition: all .15s; }
+    .redopen-row .btn:hover { background: #e4e8ee; }
+    .redopen-drop { margin-top: 5px; border: 1px solid #d0d0d0; border-radius: 6px; background: #fff;
+        max-height: 240px; overflow: auto; }
+    .redopen-item { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center;
+        padding: 4px 9px; cursor: pointer; }
+    .redopen-item .rn { color: #1f1f1f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .redopen-item .rsec { font-size: 9px; color: #888; text-transform: uppercase; letter-spacing: .4px; }
+    .redopen-item:hover, .redopen-item.hl { background: #e8eef7; }
+    .redopen-hint { margin-top: 5px; font-size: 11px; color: #888; font-style: italic; }
+    .redopen-trace { margin-top: 6px; border: 1px solid #d0d0d0; border-radius: 6px; background: #fafafa; }
+    .redopen-trace-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px;
+        border-bottom: 1px solid #e0e0e0; font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: #5a5a5a; }
+    .redopen-trace-actions { display: inline-flex; gap: 4px; }
+    .btn-mini { border: 1px solid #c4c4c4; border-radius: 4px; background: #f1f3f5; color: #1f1f1f;
+        font: inherit; font-size: 11px; padding: 1px 7px; cursor: pointer; }
+    .btn-mini:hover { background: #e4e8ee; }
+    .redopen-trace-log { margin: 0; padding: 8px; font-family: Consolas, 'Courier New', monospace; font-size: 11px;
+        color: #2a2a2a; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow: auto; }
+    .redopen-trace-log .found { color: #0a7d3a; font-weight: 600; }
+    .redopen-trace-log .notfound { color: #b0152e; font-weight: 600; }
+
+    body.dark .redopen { border-bottom-color: #3a3a4a; }
+    body.dark .redopen-ico { color: #9a9ab0; }
+    body.dark .redopen-row input { background: #1a1a28; border-color: #313244; color: #cdd6f4; }
+    body.dark .redopen-row input:focus { border-color: #89b4fa; }
+    body.dark .redopen-row .btn { background: #313244; border-color: #313244; color: #d4d4d4; }
+    body.dark .redopen-row .btn:hover { background: #3a3a52; }
+    body.dark .redopen-drop { background: #1a1a28; border-color: #313244; }
+    body.dark .redopen-item .rn { color: #e0e0e0; }
+    body.dark .redopen-item .rsec { color: #6c7086; }
+    body.dark .redopen-item:hover, body.dark .redopen-item.hl { background: #2d2d44; }
+    body.dark .redopen-hint { color: #6c7086; }
+    body.dark .redopen-trace { background: #161622; border-color: #313244; }
+    body.dark .redopen-trace-head { border-bottom-color: #313244; color: #a6adc8; }
+    body.dark .btn-mini { background: #313244; border-color: #313244; color: #d4d4d4; }
+    body.dark .btn-mini:hover { background: #3a3a52; }
+    body.dark .redopen-trace-log { color: #cdd6f4; }
+    body.dark .redopen-trace-log .found { color: #a6e3a1; }
+    body.dark .redopen-trace-log .notfound { color: #f38ba8; }
+
     /* ----- Files tab — dark ----- */
     body.dark .files-toolbar { border-bottom-color: #3a3a4a; }
     body.dark .files-toolbar .btn { background: #313244; border-color: #313244; color: #d4d4d4; }
@@ -394,6 +444,31 @@
                 <input type="text" id="filesFilter" placeholder="Filter recents…" />
                 <span class="fx" id="filesFilterClear" title="Clear filter">×</span>
             </span>
+        </div>
+
+        <!-- ===== Open File via Redirection: type-ahead search + Trace over the active .red (under the toolbar) ===== -->
+        <div class="redopen" id="redOpen">
+            <div class="redopen-row">
+                <span class="redopen-ico">🔎</span>
+                <input type="text" id="redInput" autocomplete="off" spellcheck="false"
+                       placeholder="Open file via redirection… (type to search the .red)" />
+                <button class="btn" id="redTraceBtn" title="Trace how the active .red resolves this exact filename">Trace</button>
+            </div>
+            <!-- type-ahead results (in-flow so the WebView2 overflow:auto panel never clips it) -->
+            <div class="redopen-drop" id="redDrop" style="display:none;"></div>
+            <!-- status / hint (no active .red, or index truncated) -->
+            <div class="redopen-hint" id="redHint" style="display:none;"></div>
+            <!-- trace log (revealed by the Trace button) -->
+            <div class="redopen-trace" id="redTraceWrap" style="display:none;">
+                <div class="redopen-trace-head">
+                    <span>Trace</span>
+                    <span class="redopen-trace-actions">
+                        <button class="btn-mini" id="redCopyBtn" title="Copy the trace log to the clipboard">Copy</button>
+                        <button class="btn-mini" id="redTraceClose" title="Hide the trace">×</button>
+                    </span>
+                </div>
+                <pre class="redopen-trace-log" id="redTraceLog"></pre>
+            </div>
         </div>
 
         <div class="lastfolder" id="lastFolderStrip" style="display:none;">
@@ -701,7 +776,12 @@
         // Tell the host which tab is active so it can switch external-drop ownership: on Files the host handles
         // OS file drops (to recover real paths WebView2 hides from JS); on Data the page keeps its text-drop.
         postToHost({ action: 'tabChanged', tab: which });
-        if (which === 'files') postToHost({ action: 'requestExplorerData' });
+        if (which === 'files') {
+            postToHost({ action: 'requestExplorerData' });
+            // Rebuild the redirection index on each Files activation — a solution / Clarion-version switch
+            // repoints the active .red, and the host enumerates fresh (off-thread) so this stays cheap.
+            postToHost({ action: 'requestRedIndex' });
+        }
     }
 
     // Repaint the multi-select highlight from selSet WITHOUT a full render() — keeps row elements alive so a
@@ -1722,6 +1802,67 @@
                 setVerBanner(msg.versionTag, msg.solutionTag);
                 return;
             }
+            if (msg.type === 'setRedIndex') {
+                // The full file index for "Open File via Redirection", built once off-thread by the host.
+                // We keep it in memory and filter it per keystroke — no further host round-trips, no disk I/O.
+                // Generation guard: drop any payload older than the newest we've applied, so a stale enumeration
+                // that finishes after a newer one (the supersede race) can't clobber the current .red's list.
+                var gen = (typeof msg.gen === 'number') ? msg.gen : 0;
+                if (gen < redAppliedGen) return;
+                redAppliedGen = gen;
+
+                redAvailable = !!msg.available;
+                var rh = document.getElementById('redHint');
+
+                if (msg.indexing) {
+                    // Host started a (possibly slow) enumeration. Show progress so an in-flight scan isn't read as
+                    // "no matches"; keep the prior redIndex usable until the real result lands.
+                    if (rh) {
+                        if (!redAvailable) { rh.textContent = 'No active redirection (.red) — open a Clarion solution to search.'; rh.style.display = 'block'; }
+                        else { rh.textContent = 'Indexing redirection files…'; rh.style.display = 'block'; }
+                    }
+                    return;
+                }
+
+                // Preserve the user's current highlight across the re-filter (benign re-requests fire on every
+                // Files-tab activation — they must not snap the selection back to row 0).
+                var prevName = (redHl >= 0 && redShown[redHl]) ? redShown[redHl].name : null;
+
+                redIndex = msg.files || [];
+                redTruncated = !!msg.truncated;
+                // Precompute a lowercased name ONCE per entry so the per-keystroke filter is allocation-free.
+                for (var ri2 = 0; ri2 < redIndex.length; ri2++) redIndex[ri2].nameLower = (redIndex[ri2].name || '').toLowerCase();
+
+                if (rh) {
+                    if (!redAvailable) { rh.textContent = 'No active redirection (.red) — open a Clarion solution to search.'; rh.style.display = 'block'; }
+                    else if (redTruncated) { rh.textContent = 'Showing the first ' + redIndex.length + ' files (index truncated).'; rh.style.display = 'block'; }
+                    else { rh.style.display = 'none'; }
+                }
+
+                redFilter(); // re-apply whatever is already typed
+                if (prevName) { // restore the highlight if that file is still in the filtered set
+                    for (var rp = 0; rp < redShown.length; rp++) {
+                        if (redShown[rp].name === prevName) { redHl = rp; redRenderDrop(); break; }
+                    }
+                }
+                return;
+            }
+            if (msg.type === 'setRedTrace') {
+                var rlog = document.getElementById('redTraceLog');
+                var rwrap = document.getElementById('redTraceWrap');
+                if (rlog) {
+                    var lines = msg.lines || [], html = '';
+                    for (var li = 0; li < lines.length; li++) {
+                        var ln = lines[li], cls = '';
+                        if (ln.indexOf('FOUND:') === 0) cls = ' class="found"';
+                        else if (ln.indexOf('NOT FOUND') === 0) cls = ' class="notfound"';
+                        html += '<span' + cls + '>' + redEsc(ln) + '</span>\n';
+                    }
+                    rlog.innerHTML = html;
+                }
+                if (rwrap) rwrap.style.display = 'block';
+                return;
+            }
         });
     }
 
@@ -1992,6 +2133,101 @@
              || (g.source && g.source.length) || (g.other && g.other.length)) ? true : false;
     }
 
+    // ============================================================================================
+    // OPEN FILE VIA REDIRECTION — type-ahead over an in-memory index + Trace. The host enumerates the
+    // active .red ONCE (off-thread, setRedIndex); we filter that array in-memory per keystroke, so there
+    // is ZERO disk I/O on the keypath — this is what eliminates the native dialog's fast-typing freeze.
+    // ============================================================================================
+    var redIndex = [];          // [{name, path, section, nameLower}] supplied by the host
+    var redAvailable = false;   // is there an active .red?
+    var redTruncated = false;   // did the host hit its file cap?
+    var redAppliedGen = -1;     // newest setRedIndex generation applied (drops stale superseded results)
+    var redShown = [];          // currently displayed (filtered) subset
+    var redHl = -1;             // highlighted dropdown row (-1 = none)
+    var redDebounce = null;
+
+    function redEsc(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+    function redFilter() {
+        var input = document.getElementById('redInput');
+        var drop = document.getElementById('redDrop');
+        if (!input || !drop) return;
+        var q = (input.value || '').trim().toLowerCase();
+        if (!redAvailable || !q) { redShown = []; redHl = -1; drop.style.display = 'none'; return; }
+        // Prefix matches rank above substring matches (closest to what you'd expect when typing a name).
+        // Uses the precomputed nameLower so the keypath does no per-keystroke allocation.
+        var pre = [], sub = [];
+        for (var i = 0; i < redIndex.length; i++) {
+            var ix = (redIndex[i].nameLower || '').indexOf(q);
+            if (ix === 0) pre.push(redIndex[i]);
+            else if (ix > 0) sub.push(redIndex[i]);
+            if (pre.length + sub.length >= 400) break; // cap rendered rows; keep typing to narrow further
+        }
+        redShown = pre.concat(sub);
+        redHl = redShown.length ? 0 : -1;
+        redRenderDrop();
+    }
+
+    function redRenderDrop() {
+        var drop = document.getElementById('redDrop');
+        if (!drop) return;
+        if (!redShown.length) { drop.style.display = 'none'; return; }
+        var h = '';
+        for (var i = 0; i < redShown.length; i++) {
+            var it = redShown[i];
+            h += '<div class="redopen-item' + (i === redHl ? ' hl' : '') + '" data-i="' + i + '">'
+               + '<span class="rn" title="' + redEsc(it.path) + '">' + redEsc(it.name) + '</span>'
+               + '<span class="rsec">' + redEsc(it.section) + '</span></div>';
+        }
+        drop.innerHTML = h;
+        drop.style.display = 'block';
+        var rows = drop.querySelectorAll('.redopen-item');
+        for (var j = 0; j < rows.length; j++) {
+            // mousedown (not click) so it fires before the input's blur hides the dropdown.
+            rows[j].addEventListener('mousedown', function (ev) {
+                ev.preventDefault();
+                redOpenIndex(parseInt(this.getAttribute('data-i'), 10));
+            });
+        }
+        redScrollToHl();
+    }
+
+    function redScrollToHl() {
+        var drop = document.getElementById('redDrop');
+        if (!drop || redHl < 0) return;
+        var row = drop.querySelector('.redopen-item[data-i="' + redHl + '"]');
+        if (row && row.scrollIntoView) { try { row.scrollIntoView({ block: 'nearest' }); } catch (x) {} }
+    }
+
+    function redMirror() {
+        // Mirror the highlighted file's full name back into the entry field (matches the native dialog).
+        var input = document.getElementById('redInput');
+        if (input && redHl >= 0 && redShown[redHl]) input.value = redShown[redHl].name;
+    }
+
+    function redOpenIndex(i) {
+        if (i < 0 || !redShown[i]) return;
+        postToHost({ action: 'loadFile', path: redShown[i].path }); // reuse the Files-tab open path (records recents)
+        var drop = document.getElementById('redDrop');
+        if (drop) drop.style.display = 'none';
+    }
+
+    function redOpenTyped() {
+        // Enter: open the highlight if any; else try an exact filename match anywhere in the index.
+        if (redHl >= 0 && redShown[redHl]) { redOpenIndex(redHl); return; }
+        var input = document.getElementById('redInput');
+        var typed = (input && input.value || '').trim().toLowerCase();
+        if (!typed) return;
+        for (var i = 0; i < redIndex.length; i++) {
+            if ((redIndex[i].name || '').toLowerCase() === typed) {
+                postToHost({ action: 'loadFile', path: redIndex[i].path });
+                var drop = document.getElementById('redDrop');
+                if (drop) drop.style.display = 'none';
+                return;
+            }
+        }
+    }
+
     // ---- Files toolbar / strip wiring ----
     (function wireExplorer() {
         var loadBtn = document.getElementById('loadFileBtn');
@@ -2038,6 +2274,39 @@
             if (paths.length) postToHost({ action: 'dropFiles', paths: paths });
         }
         if (scroll) { scroll.addEventListener('dragover', onDragOver); scroll.addEventListener('dragleave', onDragLeave); scroll.addEventListener('drop', onDrop); }
+
+        // ---- Open File via Redirection wiring ----
+        var ri = document.getElementById('redInput');
+        var rdrop = document.getElementById('redDrop');
+        if (ri) {
+            ri.addEventListener('input', function () {
+                if (redDebounce) clearTimeout(redDebounce);
+                redDebounce = setTimeout(redFilter, 80); // in-memory filter; debounce is belt-and-suspenders
+            });
+            ri.addEventListener('keydown', function (e) {
+                if (e.key === 'ArrowDown') { if (redShown.length) { redHl = Math.min(redHl + 1, redShown.length - 1); redRenderDrop(); redMirror(); } e.preventDefault(); }
+                else if (e.key === 'ArrowUp') { if (redShown.length) { redHl = Math.max(redHl - 1, 0); redRenderDrop(); redMirror(); } e.preventDefault(); }
+                else if (e.key === 'Enter') { redOpenTyped(); e.preventDefault(); }
+                else if (e.key === 'Escape') { if (rdrop) rdrop.style.display = 'none'; e.preventDefault(); }
+            });
+            ri.addEventListener('focus', function () { if (redShown.length && (ri.value || '').trim()) { if (rdrop) rdrop.style.display = 'block'; } });
+            // Hide the dropdown shortly after blur — the row mousedown (which opens) fires first.
+            ri.addEventListener('blur', function () { setTimeout(function () { if (rdrop) rdrop.style.display = 'none'; }, 150); });
+        }
+        var rtrace = document.getElementById('redTraceBtn');
+        if (rtrace) rtrace.addEventListener('click', function () { postToHost({ action: 'traceRedFile', name: (ri && ri.value || '').trim() }); });
+        var rclose = document.getElementById('redTraceClose');
+        if (rclose) rclose.addEventListener('click', function () { var w = document.getElementById('redTraceWrap'); if (w) w.style.display = 'none'; });
+        var rcopy = document.getElementById('redCopyBtn');
+        if (rcopy) rcopy.addEventListener('click', function () {
+            var log = document.getElementById('redTraceLog'); if (!log) return;
+            var txt = log.textContent || '';
+            try {
+                if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(txt); }
+                else { var ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); }
+                rcopy.textContent = 'Copied'; setTimeout(function () { rcopy.textContent = 'Copy'; }, 1200);
+            } catch (ex) {}
+        });
     })();
 
     postToHost({ action: 'ready' });
@@ -2045,6 +2314,9 @@
     // and when the solution finishes loading). Harmless if this lands before a solution is open — the later posts
     // self-correct the (empty) result.
     postToHost({ action: 'requestExplorerData' });
+    // Prime the redirection index too (harmless before a solution is open — the host replies available:false,
+    // and every Files-tab activation re-requests it once the .red is loaded).
+    postToHost({ action: 'requestRedIndex' });
 </script>
 </body>
 </html>
