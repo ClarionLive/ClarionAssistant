@@ -206,13 +206,23 @@
     .redopen { padding: 8px 10px; border-bottom: 1px solid #d4d4d4; flex: none; }
     .redopen-row { display: flex; align-items: center; gap: 6px; }
     .redopen-ico { font-size: 13px; color: #5a5a5a; }
-    .redopen-row input { flex: 1; min-width: 0; height: 28px; padding: 0 9px; background: #fff;
+    .redopen-inputwrap { position: relative; flex: 1; min-width: 0; display: flex; }
+    .redopen-inputwrap input { flex: 1; min-width: 0; height: 28px; padding: 0 24px 0 9px; background: #fff;
         border: 1px solid #bcbcbc; border-radius: 6px; color: #1f1f1f; font: inherit; font-size: 12px; outline: none; }
-    .redopen-row input:focus { border-color: #0a5dc2; }
+    .redopen-inputwrap input:focus { border-color: #0a5dc2; }
+    .redopen-clear { position: absolute; right: 7px; top: 6px; color: #8a8a8a; font-size: 14px; line-height: 1;
+        cursor: pointer; display: none; }
+    .redopen-clear:hover { color: #1f1f1f; }
     .redopen-row .btn { display: inline-flex; align-items: center; height: 28px; padding: 0 11px;
         border: 1px solid #bcbcbc; border-radius: 6px; background: #f1f3f5; color: #1f1f1f;
         font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; transition: all .15s; }
     .redopen-row .btn:hover { background: #e4e8ee; }
+    .redopen-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 7px; }
+    .redopen-filters label { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: #3a3a3a; cursor: pointer; }
+    .redopen-filters input[type=radio] { margin: 0; cursor: pointer; }
+    .redopen-custom { height: 22px; width: 140px; padding: 0 7px; background: #fff; border: 1px solid #bcbcbc;
+        border-radius: 5px; color: #1f1f1f; font: inherit; font-size: 11px; outline: none; }
+    .redopen-custom:focus { border-color: #0a5dc2; }
     .redopen-drop { margin-top: 5px; border: 1px solid #d0d0d0; border-radius: 6px; background: #fff;
         max-height: 240px; overflow: auto; }
     .redopen-item { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center;
@@ -235,10 +245,15 @@
 
     body.dark .redopen { border-bottom-color: #3a3a4a; }
     body.dark .redopen-ico { color: #9a9ab0; }
-    body.dark .redopen-row input { background: #1a1a28; border-color: #313244; color: #cdd6f4; }
-    body.dark .redopen-row input:focus { border-color: #89b4fa; }
+    body.dark .redopen-inputwrap input { background: #1a1a28; border-color: #313244; color: #cdd6f4; }
+    body.dark .redopen-inputwrap input:focus { border-color: #89b4fa; }
+    body.dark .redopen-clear { color: #6c7086; }
+    body.dark .redopen-clear:hover { color: #cdd6f4; }
     body.dark .redopen-row .btn { background: #313244; border-color: #313244; color: #d4d4d4; }
     body.dark .redopen-row .btn:hover { background: #3a3a52; }
+    body.dark .redopen-filters label { color: #a6adc8; }
+    body.dark .redopen-custom { background: #1a1a28; border-color: #313244; color: #cdd6f4; }
+    body.dark .redopen-custom:focus { border-color: #89b4fa; }
     body.dark .redopen-drop { background: #1a1a28; border-color: #313244; }
     body.dark .redopen-item .rn { color: #e0e0e0; }
     body.dark .redopen-item .rsec { color: #6c7086; }
@@ -450,9 +465,23 @@
         <div class="redopen" id="redOpen">
             <div class="redopen-row">
                 <span class="redopen-ico">🔎</span>
-                <input type="text" id="redInput" autocomplete="off" spellcheck="false"
-                       placeholder="Open file via redirection… (type to search the .red)" />
+                <span class="redopen-inputwrap">
+                    <input type="text" id="redInput" autocomplete="off" spellcheck="false"
+                           placeholder="Open file via redirection… (type to search the .red)" />
+                    <span class="redopen-clear" id="redClear" title="Clear">×</span>
+                </span>
+                <button class="btn" id="redOpenBtn" title="Open the file named in the field, then clear it">Open</button>
                 <button class="btn" id="redTraceBtn" title="Trace how the active .red resolves this exact filename">Trace</button>
+            </div>
+            <!-- single-select extension filter (radio semantics — only one active at a time) -->
+            <div class="redopen-filters" id="redFilters">
+                <label><input type="radio" name="redext" value="all" checked> All</label>
+                <label><input type="radio" name="redext" value="app"> App</label>
+                <label><input type="radio" name="redext" value="source"> Source</label>
+                <label><input type="radio" name="redext" value="classes"> Classes</label>
+                <label><input type="radio" name="redext" value="templates"> Templates</label>
+                <label><input type="radio" name="redext" value="custom"> Custom</label>
+                <input type="text" id="redCustomExt" class="redopen-custom" placeholder="*.xml, *.txt" title="Comma/space-separated extensions (used when Custom is selected)" />
             </div>
             <!-- type-ahead results (in-flow so the WebView2 overflow:auto panel never clips it) -->
             <div class="redopen-drop" id="redDrop" style="display:none;"></div>
@@ -2145,19 +2174,74 @@
     var redShown = [];          // currently displayed (filtered) subset
     var redHl = -1;             // highlighted dropdown row (-1 = none)
     var redDebounce = null;
+    var redExtMode = 'all';     // active extension filter: all|app|source|classes|templates|custom
+    var redCustomExts = [];     // parsed extensions for Custom mode (e.g. ['.xml','.txt'])
+
+    // Extension sets per filter mode (lowercase, leading dot). 'all'/'custom' are handled separately.
+    var RED_EXT_SETS = {
+        app:       ['.app'],
+        source:    ['.clw', '.inc', '.int', '.trn', '.equ'],
+        classes:   ['.clw', '.inc'],
+        templates: ['.tpl', '.tpw']
+    };
 
     function redEsc(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+    function redExtOf(name) {
+        var n = name || '', dot = n.lastIndexOf('.');
+        return dot >= 0 ? n.substring(dot).toLowerCase() : '';
+    }
+
+    // Parse the Custom extensions field: "*.xml, txt;*.def" -> ['.xml','.txt','.def'].
+    function redParseCustom() {
+        var el = document.getElementById('redCustomExt');
+        var raw = (el && el.value) || '';
+        redCustomExts = raw.split(/[,;\s]+/).map(function (t) {
+            t = t.replace(/^\*/, '').trim().toLowerCase();
+            if (!t) return '';
+            return t.charAt(0) === '.' ? t : '.' + t;
+        }).filter(function (t) { return t.length > 1; });
+    }
+
+    // True if the file passes the active extension filter. .obj is ALWAYS excluded from the dropdown.
+    function redPassesExt(name) {
+        var ext = redExtOf(name);
+        if (ext === '.obj') return false;
+        if (redExtMode === 'all') return true;
+        if (redExtMode === 'custom') return redCustomExts.length ? redCustomExts.indexOf(ext) >= 0 : true;
+        var set = RED_EXT_SETS[redExtMode];
+        return set ? set.indexOf(ext) >= 0 : true;
+    }
+
+    // Show the in-field clear "×" only when there's text to clear.
+    function redUpdateClearX() {
+        var input = document.getElementById('redInput');
+        var x = document.getElementById('redClear');
+        if (x && input) x.style.display = (input.value || '').length ? 'block' : 'none';
+    }
+
+    function redClearField() {
+        var input = document.getElementById('redInput');
+        if (input) input.value = '';
+        redShown = []; redHl = -1;
+        var drop = document.getElementById('redDrop');
+        if (drop) drop.style.display = 'none';
+        redUpdateClearX();
+    }
 
     function redFilter() {
         var input = document.getElementById('redInput');
         var drop = document.getElementById('redDrop');
         if (!input || !drop) return;
+        redUpdateClearX();
         var q = (input.value || '').trim().toLowerCase();
         if (!redAvailable || !q) { redShown = []; redHl = -1; drop.style.display = 'none'; return; }
         // Prefix matches rank above substring matches (closest to what you'd expect when typing a name).
-        // Uses the precomputed nameLower so the keypath does no per-keystroke allocation.
+        // Uses the precomputed nameLower so the keypath does no per-keystroke allocation. Applies the active
+        // extension filter (radio row) and always hides .obj.
         var pre = [], sub = [];
         for (var i = 0; i < redIndex.length; i++) {
+            if (!redPassesExt(redIndex[i].name)) continue;
             var ix = (redIndex[i].nameLower || '').indexOf(q);
             if (ix === 0) pre.push(redIndex[i]);
             else if (ix > 0) sub.push(redIndex[i]);
@@ -2208,21 +2292,20 @@
     function redOpenIndex(i) {
         if (i < 0 || !redShown[i]) return;
         postToHost({ action: 'loadFile', path: redShown[i].path }); // reuse the Files-tab open path (records recents)
-        var drop = document.getElementById('redDrop');
-        if (drop) drop.style.display = 'none';
+        redClearField();   // opening clears the field (and dropdown)
     }
 
-    function redOpenTyped() {
-        // Enter: open the highlight if any; else try an exact filename match anywhere in the index.
+    // Open whatever the field/selection designates, then clear. Used by Enter and the Open button.
+    // (Arrow-select only mirrors the name into the field via redMirror — it does NOT open until this runs.)
+    function redOpenSelected() {
         if (redHl >= 0 && redShown[redHl]) { redOpenIndex(redHl); return; }
         var input = document.getElementById('redInput');
         var typed = (input && input.value || '').trim().toLowerCase();
         if (!typed) return;
         for (var i = 0; i < redIndex.length; i++) {
-            if ((redIndex[i].name || '').toLowerCase() === typed) {
+            if ((redIndex[i].nameLower || (redIndex[i].name || '').toLowerCase()) === typed) {
                 postToHost({ action: 'loadFile', path: redIndex[i].path });
-                var drop = document.getElementById('redDrop');
-                if (drop) drop.style.display = 'none';
+                redClearField();
                 return;
             }
         }
@@ -2280,19 +2363,33 @@
         var rdrop = document.getElementById('redDrop');
         if (ri) {
             ri.addEventListener('input', function () {
+                redUpdateClearX(); // immediate (the debounced filter also calls it, but show the × without the delay)
                 if (redDebounce) clearTimeout(redDebounce);
                 redDebounce = setTimeout(redFilter, 80); // in-memory filter; debounce is belt-and-suspenders
             });
             ri.addEventListener('keydown', function (e) {
                 if (e.key === 'ArrowDown') { if (redShown.length) { redHl = Math.min(redHl + 1, redShown.length - 1); redRenderDrop(); redMirror(); } e.preventDefault(); }
                 else if (e.key === 'ArrowUp') { if (redShown.length) { redHl = Math.max(redHl - 1, 0); redRenderDrop(); redMirror(); } e.preventDefault(); }
-                else if (e.key === 'Enter') { redOpenTyped(); e.preventDefault(); }
+                else if (e.key === 'Enter') { redOpenSelected(); e.preventDefault(); }   // open + clear
                 else if (e.key === 'Escape') { if (rdrop) rdrop.style.display = 'none'; e.preventDefault(); }
             });
             ri.addEventListener('focus', function () { if (redShown.length && (ri.value || '').trim()) { if (rdrop) rdrop.style.display = 'block'; } });
             // Hide the dropdown shortly after blur — the row mousedown (which opens) fires first.
             ri.addEventListener('blur', function () { setTimeout(function () { if (rdrop) rdrop.style.display = 'none'; }, 150); });
         }
+        var rclear = document.getElementById('redClear');
+        if (rclear) rclear.addEventListener('mousedown', function (e) { e.preventDefault(); redClearField(); if (ri) ri.focus(); });
+        var ropen = document.getElementById('redOpenBtn');
+        if (ropen) ropen.addEventListener('click', function () { redOpenSelected(); });   // open file in field + clear
+        // Single-select extension filter: switching mode re-applies the filter to whatever is typed.
+        var redRadios = document.querySelectorAll('input[name="redext"]');
+        for (var rr = 0; rr < redRadios.length; rr++) {
+            redRadios[rr].addEventListener('change', function () {
+                if (this.checked) { redExtMode = this.value; if (redExtMode === 'custom') redParseCustom(); redFilter(); }
+            });
+        }
+        var rcustom = document.getElementById('redCustomExt');
+        if (rcustom) rcustom.addEventListener('input', function () { redParseCustom(); if (redExtMode === 'custom') redFilter(); });
         var rtrace = document.getElementById('redTraceBtn');
         if (rtrace) rtrace.addEventListener('click', function () { postToHost({ action: 'traceRedFile', name: (ri && ri.value || '').trim() }); });
         var rclose = document.getElementById('redTraceClose');
