@@ -548,6 +548,11 @@
         fileMode = !!msg.fileMode;
         var sb = document.getElementById('saveBtn');
         if (sb) sb.style.display = saveEnabled ? '' : 'none';
+        // Optional GLOBAL read-only (the dual-control source overlay sends this for its inert mirror).
+        // Default off → the standalone embeditor/file view, which never sends the field, is unchanged.
+        var roAll = !!msg.readOnly;
+        try { editor.updateOptions({ readOnly: roAll }); } catch (e) { }
+        try { if (editor2) editor2.updateOptions({ readOnly: roAll }); } catch (e) { }
         // File mode: relabel, show Reload, hide the embed-slot navigation (no slots exist).
         var tp = document.getElementById('titlePrefix');
         if (tp) tp.textContent = fileMode ? 'CA Editor' : 'CA Embeditor';

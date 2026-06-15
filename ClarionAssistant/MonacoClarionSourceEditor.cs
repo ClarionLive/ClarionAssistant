@@ -3,6 +3,7 @@ using System.Drawing;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using ICSharpCode.Core;
 using Microsoft.Web.WebView2.Core;
@@ -10,6 +11,7 @@ using Microsoft.Web.WebView2.WinForms;
 using CWBinding.ClarionEditor;
 using SoftVelocity.Common.ClarionEditor;
 using ClarionAssistant.Terminal;
+using ClarionAssistant.Services;
 
 namespace ClarionAssistant
 {
@@ -31,7 +33,7 @@ namespace ClarionAssistant
     /// fully-working ClarionEditor (TextEditorDisplayBindingWrapper + IStructureDesignerCompatible),
     /// so the designer/app-gen keep functioning through us.
     /// </summary>
-    public class MonacoClarionEditor : ClarionEditor
+    public class MonacoClarionEditor : ClarionEditor, IMonacoEditorHost
     {
         private Timer _captureTimer;     // polls until the view's Control (text area) is realized
         private int _captureTries;
@@ -39,10 +41,10 @@ namespace ClarionAssistant
 
         // Phase-1 overlay (inert, read-only): a Monaco/WebView2 surface docked over the live text
         // area. Caret/document two-way sync is Phase 2 — for now we push the buffer once on load.
-        private WebView2 _overlay;
+        private MonacoEditorControl _editor;   // reusable Monaco surface (converge step 4), docked over the native editor
         private Panel _cover;            // opaque shim that hides the native editor until Monaco paints
         private ICSharpCode.TextEditor.TextEditorControl _hostEditor;   // the live editor we mirror
-        private bool _overlayInitializing;
+        private string _overlayTitle = "Clarion Source";
 
         // Monaco's loading background (#eff1f5) — the cover matches it so the swap to Monaco is seamless.
         private static readonly Color CoverColor = Color.FromArgb(0xEF, 0xF1, 0xF5);
@@ -131,117 +133,88 @@ namespace ClarionAssistant
         {
             try
             {
-                if (_overlay != null) return;
-                _overlay = new WebView2 { Dock = DockStyle.Fill };
-                host.Controls.Add(_overlay);
-                _overlay.BringToFront();
-                _overlay.HandleCreated += OnOverlayHandleCreated;
-                if (_overlay.IsHandleCreated) OnOverlayHandleCreated(_overlay, EventArgs.Empty);
-                MonacoSpikeLog.Write("overlay attached over host; awaiting WebView2 init");
+                if (_editor != null) return;
+                // Reuse the rich embeditor Monaco surface (colorize/minimap/find/keymap come free) instead of
+                // the bespoke monaco-source.html page. We are its host; it renders a read-only fileMode mirror.
+                _editor = new MonacoEditorControl(this, true, "monaco-embeditor.html", "clarion-embeditor-data");
+                host.Controls.Add(_editor);
+                _editor.BringToFront();
+                MonacoSpikeLog.Write("overlay MonacoEditorControl attached over host; awaiting ready");
             }
             catch (Exception ex) { MonacoSpikeLog.Write("AttachOverlay error: " + ex.Message); }
         }
 
-        private async void OnOverlayHandleCreated(object sender, EventArgs e)
-        {
-            if (_overlayInitializing || _overlay == null || _overlay.CoreWebView2 != null) return;
-            _overlayInitializing = true;
-            try
-            {
-                var environment = await WebView2EnvironmentCache.GetEnvironmentAsync();
-                await _overlay.EnsureCoreWebView2Async(environment);
-
-                var s = _overlay.CoreWebView2.Settings;
-                s.IsScriptEnabled = true;
-                s.AreDefaultContextMenusEnabled = false;
-                s.AreDevToolsEnabled = true;
-                s.IsZoomControlEnabled = false;
-                s.AreBrowserAcceleratorKeysEnabled = false;
-
-                _overlay.CoreWebView2.WebMessageReceived += OnOverlayMessage;
-
-                string htmlPath = Path.Combine(
-                    Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location),
-                    "Terminal", "monaco-source.html");
-                if (File.Exists(htmlPath))
-                {
-                    _overlay.CoreWebView2.Navigate(
-                        new Uri(htmlPath).AbsoluteUri + "?v=" + File.GetLastWriteTimeUtc(htmlPath).Ticks);
-                    MonacoSpikeLog.Write("overlay navigating: " + htmlPath);
-                }
-                else MonacoSpikeLog.Write("overlay html MISSING: " + htmlPath);
-            }
-            catch (Exception ex)
-            {
-                _overlayInitializing = false;
-                MonacoSpikeLog.Write("overlay init error: " + ex.Message);
-            }
-        }
-
-        private void OnOverlayMessage(object sender, CoreWebView2WebMessageReceivedEventArgs e)
+        // ── IMonacoEditorHost (converge step 4) ─────────────────────────────────────────────────
+        // The MonacoEditorControl drives these as the page sends messages. The overlay is a READ-ONLY
+        // mirror for this milestone, so only OnReady does work (push the native editor's buffer as a
+        // fileMode, read-only setSource). LSP / save / designer are intentionally inert here — Step 5+
+        // wires the two-way caret/document sync and re-fires Ctrl+D.
+        void IMonacoEditorHost.OnReady(MonacoEditorControl editor)
         {
             try
             {
-                string raw = e.TryGetWebMessageAsString();
-                if (raw != null && raw.Contains("\"ready\"")) SendContentToOverlay();
-            }
-            catch (Exception ex) { MonacoSpikeLog.Write("overlay message error: " + ex.Message); }
-        }
-
-        private void SendContentToOverlay()
-        {
-            try
-            {
-                if (_overlay == null || _overlay.CoreWebView2 == null) return;
+                if (_editor == null || _editor.TempDir == null) return;
                 string text = "";
                 try { if (_hostEditor != null && _hostEditor.Document != null) text = _hostEditor.Document.TextContent ?? ""; }
-                catch { }
-                string json = "{\"type\":\"setContent\",\"text\":" + JsonString(text)
-                            + ",\"language\":\"clarion\",\"readOnly\":true}";
-                _overlay.CoreWebView2.PostWebMessageAsJson(json);
-                MonacoSpikeLog.Write("overlay content sent (" + text.Length + " chars)");
+                catch (Exception rex) { MonacoSpikeLog.Write("overlay read document error: " + rex.Message); }
+
+                // Large-buffer transfer via the virtual host (same mechanism the embeditor uses).
+                File.WriteAllText(Path.Combine(_editor.TempDir, "source.txt"), text, Encoding.UTF8);
+
+                string settingsJson;
+                try { settingsJson = new JavaScriptSerializer().Serialize(ModernEmbeditorSettings.Load().ToDict()); }
+                catch { settingsJson = "null"; }
+
+                string json = "{\"type\":\"setSource\","
+                    + "\"title\":" + MonacoEditorControl.JsonString(_overlayTitle) + ","
+                    + "\"language\":\"clarion\","
+                    + "\"isDark\":true,"
+                    + "\"fileMode\":true,"
+                    + "\"readOnly\":true,"
+                    + "\"filePath\":\"\","
+                    + "\"saveEnabled\":false,"
+                    + "\"editableRanges\":[],"
+                    + "\"settings\":" + settingsJson + ","
+                    + "\"findHistory\":[],\"replaceHistory\":[],\"procHistory\":[],"
+                    + "\"cursorLine\":0,\"cursorColumn\":0,"
+                    + "\"bookmarks\":[],"
+                    + "\"sourceUrl\":\"https://clarion-embeditor-data/source.txt\"}";
+                _editor.PostJson(json);
+                MonacoSpikeLog.Write("overlay setSource sent (fileMode read-only, " + text.Length + " chars)");
             }
-            catch (Exception ex) { MonacoSpikeLog.Write("SendContentToOverlay error: " + ex.Message); }
+            catch (Exception ex) { MonacoSpikeLog.Write("overlay OnReady error: " + ex.Message); }
         }
 
-        private static string JsonString(string s)
-        {
-            if (s == null) return "\"\"";
-            var sb = new StringBuilder(s.Length + 2);
-            sb.Append('"');
-            foreach (char c in s)
-            {
-                switch (c)
-                {
-                    case '"': sb.Append("\\\""); break;
-                    case '\\': sb.Append("\\\\"); break;
-                    case '\b': sb.Append("\\b"); break;
-                    case '\f': sb.Append("\\f"); break;
-                    case '\n': sb.Append("\\n"); break;
-                    case '\r': sb.Append("\\r"); break;
-                    case '\t': sb.Append("\\t"); break;
-                    default:
-                        if (c < ' ') sb.Append("\\u").Append(((int)c).ToString("x4"));
-                        else sb.Append(c);
-                        break;
-                }
-            }
-            sb.Append('"');
-            return sb.ToString();
-        }
+        // Read-only mirror: everything else is inert for this milestone.
+        void IMonacoEditorHost.OnSave(MonacoEditorControl editor, string rawJson) { }
+        void IMonacoEditorHost.OnClipboard(MonacoEditorControl editor, string rawJson) { }
+        void IMonacoEditorHost.OnCompletion(MonacoEditorControl editor, string rawJson) { }
+        void IMonacoEditorHost.OnHover(MonacoEditorControl editor, string rawJson) { }
+        void IMonacoEditorHost.OnDiagnostics(MonacoEditorControl editor, string rawJson) { }
+        void IMonacoEditorHost.OnSaveSettings(MonacoEditorControl editor, string rawJson) { }
+        void IMonacoEditorHost.OnSaveHistory(MonacoEditorControl editor, string rawJson) { }
+        void IMonacoEditorHost.OnSaveCursor(MonacoEditorControl editor, string rawJson) { }
+        void IMonacoEditorHost.OnSaveBookmarks(MonacoEditorControl editor, string rawJson) { }
+        void IMonacoEditorHost.OnSelectionChanged(MonacoEditorControl editor, string rawJson) { }
+        void IMonacoEditorHost.OnFocusEditor(MonacoEditorControl editor) { }
+        void IMonacoEditorHost.OnReload(MonacoEditorControl editor) { }
+        void IMonacoEditorHost.OnFileState(MonacoEditorControl editor, string rawJson) { }
+        void IMonacoEditorHost.OnOpenDesigner(MonacoEditorControl editor, string rawJson) { }
+        void IMonacoEditorHost.OnOpenDesignerCreate(MonacoEditorControl editor, string rawJson) { }
+        void IMonacoEditorHost.OnActivateDesigner(MonacoEditorControl editor) { }
+        void IMonacoEditorHost.OnEditorNavigationCompleted(MonacoEditorControl editor, bool success) { MonacoSpikeLog.Write("overlay nav completed success=" + success); }
+        void IMonacoEditorHost.OnUnknownAction(MonacoEditorControl editor, string action, string rawJson) { }
 
         private void DisposeOverlay()
         {
             try
             {
-                if (_overlay != null)
+                if (_editor != null)
                 {
-                    _overlay.HandleCreated -= OnOverlayHandleCreated;
-                    if (_overlay.CoreWebView2 != null) _overlay.CoreWebView2.WebMessageReceived -= OnOverlayMessage;
-                    var parent = _overlay.Parent;
-                    if (parent != null) parent.Controls.Remove(_overlay);
-                    _overlay.Dispose();
-                    _overlay = null;
+                    var parent = _editor.Parent;
+                    if (parent != null) parent.Controls.Remove(_editor);
+                    _editor.Dispose();
+                    _editor = null;
                 }
                 if (_cover != null)
                 {
