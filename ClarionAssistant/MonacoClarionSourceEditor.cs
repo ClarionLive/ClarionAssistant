@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Reflection;
@@ -46,6 +47,8 @@ namespace ClarionAssistant
         private ICSharpCode.TextEditor.TextEditorControl _hostEditor;   // the live editor we mirror
         private string _overlayTitle = "Clarion Source";
         private string _filePath;        // the source file we edit (from the native editor), saved to disk by Monaco
+        private bool _overlayDirty;      // mirrored from the page (fileState) — drives save-on-close
+        private string _overlayLiveText; // last live buffer the page mirrored, for the close-save write
 
         // Monaco's loading background (#eff1f5) — the cover matches it so the swap to Monaco is seamless.
         private static readonly Color CoverColor = Color.FromArgb(0xEF, 0xF1, 0xF5);
@@ -206,14 +209,10 @@ namespace ClarionAssistant
                 long seq = 0;
                 try { if (data != null && data.ContainsKey("seq")) seq = Convert.ToInt64(data["seq"]); } catch { }
 
-                // Clarion source is CRLF; normalize whatever Monaco sent. Preserve the file's load encoding.
-                string normalized = text.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
-                Encoding enc = null;
-                try { enc = _hostEditor != null ? _hostEditor.Encoding : null; } catch { }
-                File.WriteAllText(_filePath, normalized, enc ?? Encoding.UTF8);
-
+                int written = WriteToDisk(text);
+                _overlayDirty = false;
                 editor.PostSaveResult(true, "Saved", seq);
-                MonacoSpikeLog.Write("overlay saved to disk: " + _filePath + " (" + normalized.Length + " chars, seq " + seq + ")");
+                MonacoSpikeLog.Write("overlay saved to disk: " + _filePath + " (" + written + " chars, seq " + seq + ")");
             }
             catch (Exception ex)
             {
@@ -222,11 +221,71 @@ namespace ClarionAssistant
             }
         }
 
+        // LSP completion — route to the shared bridge against the REAL file path so includes/symbols resolve.
+        void IMonacoEditorHost.OnCompletion(MonacoEditorControl editor, string rawJson)
+        {
+            int reqId, line, col; string buffer;
+            if (!ParseLspRequest(rawJson, out reqId, out line, out col, out buffer)) return;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var items = new List<Dictionary<string, object>>();
+                string lspStatus = "ok";
+                try
+                {
+                    EnsureLsp();
+                    if (!SharedLspBridge.IsRunning) lspStatus = "starting";
+                    else
+                    {
+                        var comps = SharedLspBridge.GetCompletion(_filePath, Math.Max(0, line - 1), Math.Max(0, col - 1), 2500, buffer);
+                        if (comps != null)
+                            foreach (var c in comps)
+                                items.Add(new Dictionary<string, object>
+                                {
+                                    { "label", c.Label }, { "kind", c.Kind }, { "detail", c.Detail },
+                                    { "documentation", c.Documentation }, { "insertText", c.InsertText }
+                                });
+                    }
+                }
+                catch (Exception ex) { lspStatus = "error: " + ex.Message; MonacoSpikeLog.Write("overlay completion error: " + ex.Message); }
+                editor.PostResponse(reqId, new Dictionary<string, object> { { "items", items }, { "lsp", lspStatus } });
+            });
+        }
+
+        // LSP hover — the page shows "Loading…" until we PostResponse, so we must always answer.
+        void IMonacoEditorHost.OnHover(MonacoEditorControl editor, string rawJson)
+        {
+            int reqId, line, col; string buffer;
+            if (!ParseLspRequest(rawJson, out reqId, out line, out col, out buffer)) return;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                string contents = null;
+                try
+                {
+                    EnsureLsp();
+                    if (SharedLspBridge.IsRunning)
+                        contents = ExtractHover(SharedLspBridge.GetHover(_filePath, Math.Max(0, line - 1), Math.Max(0, col - 1), buffer));
+                }
+                catch (Exception ex) { MonacoSpikeLog.Write("overlay hover error: " + ex.Message); }
+                editor.PostResponse(reqId, new Dictionary<string, object> { { "contents", contents } });
+            });
+        }
+
+        // LSP/hybrid diagnostics — the page sends fileMode ranges [[1,lineCount]] (whole file editable).
+        void IMonacoEditorHost.OnDiagnostics(MonacoEditorControl editor, string rawJson)
+        {
+            int reqId; string buffer; List<int[]> ranges;
+            if (!ParseDiagRequest(rawJson, out reqId, out buffer, out ranges)) return;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var markers = new List<Dictionary<string, object>>();
+                try { markers = ModernEmbeditorDiagnostics.Compute(_filePath, buffer ?? "", ranges, null, embedSlotChecks: false); }
+                catch (Exception ex) { MonacoSpikeLog.Write("overlay diagnostics error: " + ex.Message); }
+                editor.PostResponse(reqId, new Dictionary<string, object> { { "markers", markers } });
+            });
+        }
+
         // The rest stay inert for now (Step 6 wires Ctrl+D through the embeditor's openDesigner path).
         void IMonacoEditorHost.OnClipboard(MonacoEditorControl editor, string rawJson) { }
-        void IMonacoEditorHost.OnCompletion(MonacoEditorControl editor, string rawJson) { }
-        void IMonacoEditorHost.OnHover(MonacoEditorControl editor, string rawJson) { }
-        void IMonacoEditorHost.OnDiagnostics(MonacoEditorControl editor, string rawJson) { }
         void IMonacoEditorHost.OnSaveSettings(MonacoEditorControl editor, string rawJson) { }
         void IMonacoEditorHost.OnSaveHistory(MonacoEditorControl editor, string rawJson) { }
         void IMonacoEditorHost.OnSaveCursor(MonacoEditorControl editor, string rawJson) { }
@@ -234,12 +293,111 @@ namespace ClarionAssistant
         void IMonacoEditorHost.OnSelectionChanged(MonacoEditorControl editor, string rawJson) { }
         void IMonacoEditorHost.OnFocusEditor(MonacoEditorControl editor) { }
         void IMonacoEditorHost.OnReload(MonacoEditorControl editor) { }
-        void IMonacoEditorHost.OnFileState(MonacoEditorControl editor, string rawJson) { }
+
+        // Track the page's live buffer + dirty flag so we can save-on-close (the native shell stays clean,
+        // so the IDE never prompts — without this, closing a dirty tab would silently lose edits).
+        void IMonacoEditorHost.OnFileState(MonacoEditorControl editor, string rawJson)
+        {
+            try
+            {
+                var data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(rawJson) as Dictionary<string, object>;
+                if (data == null) return;
+                if (data.ContainsKey("text") && data["text"] is string) _overlayLiveText = (string)data["text"];
+                if (data.ContainsKey("dirty")) _overlayDirty = Convert.ToBoolean(data["dirty"]);
+            }
+            catch { }
+        }
+
         void IMonacoEditorHost.OnOpenDesigner(MonacoEditorControl editor, string rawJson) { }
         void IMonacoEditorHost.OnOpenDesignerCreate(MonacoEditorControl editor, string rawJson) { }
         void IMonacoEditorHost.OnActivateDesigner(MonacoEditorControl editor) { }
         void IMonacoEditorHost.OnEditorNavigationCompleted(MonacoEditorControl editor, bool success) { MonacoSpikeLog.Write("overlay nav completed success=" + success); }
         void IMonacoEditorHost.OnUnknownAction(MonacoEditorControl editor, string action, string rawJson) { }
+
+        // CRLF-normalize + write the buffer to disk with the file's load encoding. Shared by the
+        // interactive save (OnSave) and the close-save prompt. Returns the char count written.
+        private int WriteToDisk(string text)
+        {
+            string normalized = (text ?? "").Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
+            Encoding enc = null;
+            try { enc = _hostEditor != null ? _hostEditor.Encoding : null; } catch { }
+            File.WriteAllText(_filePath, normalized, enc ?? Encoding.UTF8);
+            return normalized.Length;
+        }
+
+        private static void EnsureLsp()
+        {
+            try { if (!SharedLspBridge.IsRunning) EmbeditorCompletionService.LspStarter?.Invoke(); }
+            catch { }
+        }
+
+        private static bool ParseLspRequest(string json, out int reqId, out int line, out int column, out string buffer)
+        {
+            reqId = 0; line = 0; column = 0; buffer = null;
+            try
+            {
+                var data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(json) as Dictionary<string, object>;
+                if (data == null) return false;
+                if (data.ContainsKey("reqId")) reqId = Convert.ToInt32(data["reqId"]);
+                if (data.ContainsKey("line")) line = Convert.ToInt32(data["line"]);
+                if (data.ContainsKey("column")) column = Convert.ToInt32(data["column"]);
+                if (data.ContainsKey("buffer")) buffer = data["buffer"] as string;
+                return true;
+            }
+            catch { return false; }
+        }
+
+        private static bool ParseDiagRequest(string json, out int reqId, out string buffer, out List<int[]> ranges)
+        {
+            reqId = 0; buffer = null; ranges = new List<int[]>();
+            try
+            {
+                var data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(json) as Dictionary<string, object>;
+                if (data == null) return false;
+                if (data.ContainsKey("reqId")) reqId = Convert.ToInt32(data["reqId"]);
+                if (data.ContainsKey("buffer")) buffer = data["buffer"] as string;
+                var arr = data.ContainsKey("ranges") ? data["ranges"] as object[] : null;
+                if (arr != null)
+                    foreach (var item in arr)
+                    {
+                        var pair = item as object[];
+                        if (pair != null && pair.Length >= 2)
+                            ranges.Add(new[] { Convert.ToInt32(pair[0]), Convert.ToInt32(pair[1]) });
+                    }
+                return true;
+            }
+            catch { return false; }
+        }
+
+        private static string ExtractHover(Dictionary<string, object> resp)
+        {
+            if (resp == null) return null;
+            object result = resp.ContainsKey("result") ? resp["result"] : null;
+            var rd = result as Dictionary<string, object>;
+            object contents = (rd != null && rd.ContainsKey("contents")) ? rd["contents"] : result;
+            return HoverPart(contents);
+        }
+
+        private static string HoverPart(object contents)
+        {
+            if (contents == null) return null;
+            var s = contents as string;
+            if (s != null) return s;
+            var d = contents as Dictionary<string, object>;
+            if (d != null && d.ContainsKey("value")) return d["value"] as string;
+            var list = contents as System.Collections.IEnumerable;
+            if (list != null)
+            {
+                var sb = new StringBuilder();
+                foreach (var part in list)
+                {
+                    string p = HoverPart(part);
+                    if (!string.IsNullOrEmpty(p)) { if (sb.Length > 0) sb.Append("\n\n"); sb.Append(p); }
+                }
+                return sb.Length > 0 ? sb.ToString() : null;
+            }
+            return null;
+        }
 
         private void DisposeOverlay()
         {
@@ -281,7 +439,31 @@ namespace ClarionAssistant
         public override void Dispose()
         {
             StopCaptureTimer();
+
+            // Save-on-close: the native shell never goes dirty (Monaco owns edits), so the IDE won't
+            // prompt — we must, or unsaved edits vanish silently. Capture the mirrored buffer, tear down
+            // the WebView2 FIRST (so the confirm box can't get stuck behind a live WebView2), then prompt.
+            bool promptSave = _overlayDirty && _overlayLiveText != null && !string.IsNullOrEmpty(_filePath);
+            string toSave = _overlayLiveText;
+
             DisposeOverlay();
+
+            if (promptSave)
+            {
+                try
+                {
+                    var r = MessageBox.Show(
+                        "Save changes to " + Path.GetFileName(_filePath) + " before closing?",
+                        "CA Editor — unsaved changes", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                    if (r == DialogResult.Yes)
+                    {
+                        int n = WriteToDisk(toSave);
+                        MonacoSpikeLog.Write("overlay close-save wrote: " + _filePath + " (" + n + " chars)");
+                    }
+                }
+                catch (Exception ex) { MonacoSpikeLog.Write("overlay close-save error: " + ex.Message); }
+            }
+
             base.Dispose();
         }
     }
