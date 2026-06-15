@@ -877,9 +877,44 @@ namespace ClarionAssistant
         // the page can reject a stale enumeration that completes after a newer one (the supersede race).
         private int _redIndexGen;
 
+        // Our own .red, loaded on demand when RedFileService.Active isn't populated by the chat pad. Cached;
+        // cleared on an environment change so a solution/version switch re-resolves it.
+        private Services.RedFileService _ownRed;
+
         // Canonical section search order used by the resolver (ClarionAppDataReader): C12 names first, then the
         // legacy names, then the universal Common fallback. EnumerateFiles/ResolveTrace walk this in priority order.
         private static readonly string[] RedSectionOrder = { "Debug32", "Release32", "Debug", "Release", "Common" };
+
+        /// <summary>
+        /// Load the active Clarion redirection (.red) file ourselves — same resolution the chat pad's LoadRedFile
+        /// uses (detect the current Clarion version, then LoadForProject against the open solution's dir). Used as a
+        /// fallback when RedFileService.Active is null (chat pad hasn't loaded it yet / isn't up), so the Files-tab
+        /// type-ahead doesn't depend on the chat pad's timing. Cached in _ownRed; LoadForProject also sets the
+        /// global Active, so once this succeeds later requests read Active directly. UI thread.
+        /// </summary>
+        private Services.RedFileService EnsureOwnRedFile()
+        {
+            if (_ownRed != null) return _ownRed;
+            try
+            {
+                var versionInfo = Services.ClarionVersionService.Detect();
+                var cfg = versionInfo != null ? versionInfo.GetCurrentConfig() : null;
+                if (cfg == null) return null;
+
+                string sol = null;
+                try { sol = Services.EditorService.GetOpenSolutionPath(); } catch { }
+                string projDir = !string.IsNullOrEmpty(sol) ? Path.GetDirectoryName(sol) : null;
+
+                var r = new Services.RedFileService();
+                if (r.LoadForProject(projDir, cfg) && !string.IsNullOrEmpty(r.RedFilePath))
+                {
+                    _ownRed = r;   // LoadForProject set RedFileService.Active too
+                    return r;
+                }
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] EnsureOwnRedFile: " + ex.Message); }
+            return null;
+        }
 
         /// <summary>
         /// Build the "Open File via Redirection" file index ONCE, off the UI thread, and push it to the page.
@@ -904,7 +939,11 @@ namespace ClarionAssistant
             // a newer one (the supersede race) can't overwrite the current .red's file list. Mirrors _refreshGen.
             int gen = ++_redIndexGen;
 
-            var red = Services.RedFileService.Active;
+            // RedFileService.Active is populated by the chat pad when it loads the .red. If that hasn't happened
+            // yet (fresh IDE start, chat pad not up, or it raced our first request), load the .red ourselves so the
+            // type-ahead works independently of the chat pad. EnsureOwnRedFile also sets Active, so once it succeeds
+            // every later request just reads Active.
+            var red = Services.RedFileService.Active ?? EnsureOwnRedFile();
             if (red == null)
             {
                 // No active .red — tell the page to show the "open a Clarion solution" hint instead of an empty list.
@@ -992,8 +1031,8 @@ namespace ClarionAssistant
         /// </summary>
         private void TraceRedFile(string name)
         {
-            // Cheap guards first (no filesystem access) — answer synchronously.
-            var red = Services.RedFileService.Active;
+            // Cheap guards first (no filesystem access) — answer synchronously. Same self-load fallback as the index.
+            var red = Services.RedFileService.Active ?? EnsureOwnRedFile();
             if (red == null)
             {
                 Post(new Dictionary<string, object> { { "type", "setRedTrace" },
@@ -1232,6 +1271,7 @@ namespace ClarionAssistant
             if (!string.Equals(envKey, _lastEnvKey, StringComparison.OrdinalIgnoreCase))
             {
                 _lastEnvKey = envKey;
+                _ownRed = null; // env changed — drop our self-loaded .red so RequestRedIndex re-resolves
                 PostVersionInfo();
                 if (_filesTabActive)
                 {
