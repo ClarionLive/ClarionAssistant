@@ -57,6 +57,38 @@ namespace ClarionAssistant
 
                 _webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
 
+                // Drag-drop: WebView2 hides a dropped file's real path from the page (File.path is empty), AND an
+                // external OLE drop does NOT bubble through WebView2's Chromium child HWNDs to the parent panel —
+                // so neither the page nor a panel-level handler can read dropped paths (a panel handler just yields
+                // a no-drop cursor). The fix is a real WinForms control that owns its OWN region: _dropStrip, docked
+                // at the bottom of the Files tab, ON TOP of the WebView2. It receives DataFormats.FileDrop with the
+                // real full paths. Page external-drop stays ON for the Data tab's variable-declaration text-drop and
+                // is turned OFF on the Files tab (see SetFilesDropMode) so the page area shows no-drop, steering the
+                // user to the strip. Default = Data tab.
+                _webView.AllowExternalDrop = true;
+                _dropStrip = new Label
+                {
+                    Dock = DockStyle.Bottom,
+                    Height = 56,
+                    AllowDrop = true,
+                    TextAlign = ContentAlignment.MiddleCenter,
+                    Text = "⬇  Drop files here to open them in Monaco",
+                    Font = new Font("Segoe UI", 9F),
+                    Visible = false
+                };
+                _dropStrip.DragEnter += OnDropStripDragEnter;
+                _dropStrip.DragOver += OnDropStripDragEnter;
+                _dropStrip.DragLeave += (s2, e2) => ApplyDropStripTheme(false);
+                _dropStrip.DragDrop += OnDropStripDragDrop;
+                _panel.Controls.Add(_dropStrip);
+                _dropStrip.BringToFront();
+                // Layout: strip is Dock=Bottom, WebView2 is Dock=Fill. BringToFront() puts the strip ahead of the
+                // WebView2 in the z-order so it reserves its bottom edge first and the WebView2 fills the remainder —
+                // the two never overlap. SetFilesDropMode re-asserts BringToFront() on EVERY Files-tab activation, so
+                // the layout is deterministic across fresh / restored / floating dock states (re-applied each time the
+                // strip is shown), not dependent on Controls.Add order. Validated live in C12.
+                ApplyDropStripTheme(false);
+
                 // Restore the ctrl-mousewheel font zoom (WebView2's built-in ZoomFactor) and keep it saved.
                 _webView.ZoomFactor = Terminal.WebViewZoomHelper.GetZoom("modernDataPad");
                 _webView.ZoomFactorChanged += (s2, e2) => Terminal.WebViewZoomHelper.SetZoom("modernDataPad", _webView.ZoomFactor);
@@ -93,12 +125,16 @@ namespace ClarionAssistant
                 {
                     _isInitialized = true;
                     PostRestoreUiState(); // send saved collapse/expand state BEFORE the first data render
+                    SniffTheme(Terminal.ModernDataPadState.Load()); // learn dark/light for files opened from the Files tab
+                    PostVersionInfo(); // populate the version/solution banner under the title
                     Refresh();
                 }
                 else if (action == "saveUiState")
                 {
                     // Opaque JSON blob owned by the pad's JS (sectionCollapsed/localCollapsed/relExpanded/detailOpen).
-                    Terminal.ModernDataPadState.Save(ExtractJsonValue(json, "state"));
+                    string state = ExtractJsonValue(json, "state");
+                    Terminal.ModernDataPadState.Save(state);
+                    SniffTheme(state); // keep _isDark in sync when the developer toggles the pad theme
                 }
                 else if (action == "openSettings")
                 {
@@ -246,6 +282,166 @@ namespace ClarionAssistant
                     string colsJson = ExtractJsonValue(json, "cols");
                     if (!string.IsNullOrEmpty(colsJson))
                         RunVariableCrud("Copy Column", () => CopyColumns(scope, colsJson, clickedProc), showSuccessInfo: true);
+                }
+                // ===== Explorer "Files" tab — Monaco file loader (all routed through MonacoFileOpener) =====
+                else if (action == "tabChanged")
+                {
+                    // Switch host-vs-page drop ownership with the active tab (see SetFilesDropMode). On the Files
+                    // tab the host handles file drops to recover real paths; on Data the page keeps its text-drop.
+                    string tab = ExtractJsonValue(json, "tab");
+                    bool filesActive = string.Equals(tab, "files", StringComparison.OrdinalIgnoreCase);
+                    if (_panel != null) _panel.BeginInvoke((Action)(() => SetFilesDropMode(filesActive)));
+                    else SetFilesDropMode(filesActive);
+                }
+                else if (action == "requestExplorerData")
+                {
+                    // The Files tab asks for its data on first activation (and we re-post after each mutation).
+                    PostExplorerData();
+                }
+                else if (action == "loadFile")
+                {
+                    string path = ExtractJsonValue(json, "path");
+                    if (!string.IsNullOrEmpty(path))
+                        DeferExplorer(() => { Services.MonacoFileOpener.OpenFile(path, _isDark); PostExplorerData(); });
+                }
+                else if (action == "loadFileDialog")
+                {
+                    // "Load File…" button: pick file(s) starting in the sticky last folder, open each.
+                    DeferExplorer(() =>
+                    {
+                        var files = PickFiles(true, Services.ExplorerRecentsStore.GetLastFolder());
+                        if (files != null) { foreach (var f in files) Services.MonacoFileOpener.OpenFile(f, _isDark); PostExplorerData(); }
+                    });
+                }
+                else if (action == "openClassPair")
+                {
+                    // Open BOTH sides of a class (.inc + .clw) into two separate Monaco editors. If both paths
+                    // are stale (moved/deleted) nothing opens — tell the developer instead of a silent no-op.
+                    string inc = ExtractJsonValue(json, "inc");
+                    string clw = ExtractJsonValue(json, "clw");
+                    if (!string.IsNullOrEmpty(inc) || !string.IsNullOrEmpty(clw))
+                        DeferExplorer(() =>
+                        {
+                            int opened = Services.MonacoFileOpener.OpenClassPair(inc, clw, _isDark);
+                            if (opened == 0)
+                            {
+                                try { MessageBox.Show("Neither side of this class is on disk anymore (it may have been moved or deleted).",
+                                    "Open Class", MessageBoxButtons.OK, MessageBoxIcon.Information); }
+                                catch { }
+                            }
+                            PostExplorerData();
+                        });
+                }
+                else if (action == "compare")
+                {
+                    // Diff two files in Monaco. 'a'/'b' may be supplied (row Compare) or omitted (toolbar) —
+                    // prompt for whichever side is missing, seeding the picker near the known file/last folder.
+                    string a = ExtractJsonValue(json, "a");
+                    string b = ExtractJsonValue(json, "b");
+                    DeferExplorer(() =>
+                    {
+                        string fa = a, fb = b;
+                        if (string.IsNullOrEmpty(fa)) fa = PickSingle("Compare — pick the first file", Services.ExplorerRecentsStore.GetLastFolder());
+                        if (string.IsNullOrEmpty(fa)) return;
+                        if (string.IsNullOrEmpty(fb)) fb = PickSingle("Compare — pick the second file", Path.GetDirectoryName(fa));
+                        if (string.IsNullOrEmpty(fb)) return;
+                        Services.MonacoFileOpener.Compare(fa, fb, _isDark);
+                    });
+                }
+                else if (action == "pickFolderAndLoad")
+                {
+                    // Quick-location / pinned-folder chip: open the file picker rooted at that folder.
+                    string dir = ExtractJsonValue(json, "dir");
+                    DeferExplorer(() =>
+                    {
+                        var files = PickFiles(true, dir);
+                        if (files != null) { foreach (var f in files) Services.MonacoFileOpener.OpenFile(f, _isDark); PostExplorerData(); }
+                    });
+                }
+                else if (action == "setLastFolder")
+                {
+                    // "change" link on the last-folder strip: pick a new sticky default folder.
+                    DeferExplorer(() =>
+                    {
+                        string dir = PickFolder("Set the Explorer's default folder", Services.ExplorerRecentsStore.GetLastFolder());
+                        if (!string.IsNullOrEmpty(dir)) { Services.ExplorerRecentsStore.SetLastFolder(dir); PostExplorerData(); }
+                    });
+                }
+                else if (action == "reveal")
+                {
+                    string path = ExtractJsonValue(json, "path");
+                    if (!string.IsNullOrEmpty(path)) Services.MonacoFileOpener.RevealInExplorer(path);
+                }
+                else if (action == "copyPath")
+                {
+                    // On the STA UI thread here — same guarded clipboard set as 'insert'.
+                    string path = ExtractJsonValue(json, "path");
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        try { System.Windows.Forms.Clipboard.SetText(path); }
+                        catch (Exception cex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] copyPath clipboard: " + cex.Message); }
+                    }
+                }
+                else if (action == "pin")
+                {
+                    string path = ExtractJsonValue(json, "path");
+                    if (!string.IsNullOrEmpty(path)) { Services.ExplorerRecentsStore.Pin(path); PostExplorerData(); }
+                }
+                else if (action == "unpin")
+                {
+                    string path = ExtractJsonValue(json, "path");
+                    if (!string.IsNullOrEmpty(path)) { Services.ExplorerRecentsStore.Unpin(path); PostExplorerData(); }
+                }
+                else if (action == "pinFolder")
+                {
+                    DeferExplorer(() =>
+                    {
+                        string dir = PickFolder("Pin a folder to Quick locations", Services.ExplorerRecentsStore.GetLastFolder());
+                        if (!string.IsNullOrEmpty(dir)) { Services.ExplorerRecentsStore.PinFolder(dir); PostExplorerData(); }
+                    });
+                }
+                else if (action == "unpinFolder")
+                {
+                    string dir = ExtractJsonValue(json, "dir");
+                    if (!string.IsNullOrEmpty(dir)) { Services.ExplorerRecentsStore.UnpinFolder(dir); PostExplorerData(); }
+                }
+                else if (action == "removeRecent")
+                {
+                    // A class row removes BOTH sides (.inc + .clw): removing only one leaves the partner recent,
+                    // which re-folds the class row back on the next render (remove would silently fail). path2 is
+                    // the optional second side, sent by class rows.
+                    string path = ExtractJsonValue(json, "path");
+                    string path2 = ExtractJsonValue(json, "path2");
+                    bool any = false;
+                    if (!string.IsNullOrEmpty(path)) { Services.ExplorerRecentsStore.RemoveRecent(path); any = true; }
+                    if (!string.IsNullOrEmpty(path2)) { Services.ExplorerRecentsStore.RemoveRecent(path2); any = true; }
+                    if (any) PostExplorerData();
+                }
+                else if (action == "dropFiles")
+                {
+                    // Files dragged from Windows Explorer. The page sends whatever it can — in WebView2 a real
+                    // path is often NOT exposed, so a bare filename or arbitrary text/plain can arrive here.
+                    // Validate hard before opening: rooted (absolute), NOT a UNC share (a hostile \\host\share
+                    // path would force outbound SMB auth), and an allowed source extension. OpenFile re-checks
+                    // File.Exists, so a bare name / missing path is dropped rather than opened as a broken tab.
+                    var paths = ExtractStringArray(json, "paths", 50);
+                    var safe = new List<string>();
+                    foreach (var f in paths)
+                    {
+                        if (string.IsNullOrEmpty(f)) continue;
+                        bool rooted; try { rooted = Path.IsPathRooted(f); } catch { rooted = false; }
+                        if (!rooted || IsUncPath(f)) continue;
+                        if (!Services.MonacoFileOpener.IsAllowedDropExtension(f)) continue;
+                        safe.Add(f);
+                    }
+                    if (safe.Count > 0)
+                        DeferExplorer(() => { foreach (var f in safe) Services.MonacoFileOpener.OpenFile(f, _isDark); PostExplorerData(); });
+                }
+                else if (action == "saveExplorerUiState")
+                {
+                    // Collapsed-group state for the Files tab; kept so a re-post (after a pin/open) doesn't expand
+                    // everything. Echoed back in PostExplorerData's uiState. (Session-scoped; persistence is polish.)
+                    _explorerCollapsed = ParseCollapsed(json);
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] Message error: " + ex.Message); }
@@ -488,6 +684,277 @@ namespace ClarionAssistant
             Post(new Dictionary<string, object> { { "type", "restoreUiState" }, { "state", state } });
         }
 
+        // ===================== Explorer "Files" tab host support =====================
+
+        // The pad's current theme, sniffed from the saved/just-saved UI-state blob ("dark":bool). Files opened
+        // from the Files tab match the pad's light/dark mode. Defaults to light.
+        private bool _isDark;
+
+        // Collapsed Files-tab group keys, echoed back in setExplorerData.uiState so a re-post (after a pin/open)
+        // doesn't expand everything. Session-scoped; cross-session persistence is a polish item.
+        private List<string> _explorerCollapsed = new List<string>();
+
+        // Single source of truth for the open-file dialog filter (shared with OpenSourceFileInCaEditorCommand).
+        private static readonly string ExplorerOpenFilter = Services.MonacoFileOpener.OpenFileFilter;
+
+        /// <summary>True for a UNC path (\\host\share\...). Used to reject UNC drops so a hostile share path
+        /// can't force outbound SMB authentication.</summary>
+        private static bool IsUncPath(string path)
+        {
+            if (string.IsNullOrEmpty(path) || path.Length < 2) return false;
+            char a = path[0], b = path[1];
+            if ((a == '\\' || a == '/') && (b == '\\' || b == '/')) return true;
+            try { return new Uri(path).IsUnc; } catch { return false; }
+        }
+
+        // True while the Files tab is showing — gates the native drop strip's visibility / page external-drop.
+        private bool _filesTabActive;
+
+        // The native WinForms drop target for the Files tab. Docked at the bottom of _panel, ON TOP of the WebView2
+        // (in its own region), so it receives external OLE file drops with REAL full paths — which the page and a
+        // panel-level handler cannot (WebView2's Chromium child HWNDs swallow the drop and it doesn't bubble up).
+        private Label _dropStrip;
+
+        /// <summary>
+        /// Switch drop ownership with the active tab. On the FILES tab the native _dropStrip is shown (it reads the
+        /// real DataFormats.FileDrop paths) and the page's external-drop is turned OFF so the WebView2 area shows a
+        /// no-drop cursor, steering the user to the strip. On the DATA tab the strip is hidden and the page keeps
+        /// AllowExternalDrop so its variable-declaration text-drop (which needs in-page element targeting) works. UI thread.
+        /// </summary>
+        private void SetFilesDropMode(bool filesActive)
+        {
+            _filesTabActive = filesActive;
+            try
+            {
+                if (_webView != null) _webView.AllowExternalDrop = !filesActive; // page text-drop on Data; off on Files
+                if (_dropStrip != null)
+                {
+                    _dropStrip.Visible = filesActive;
+                    if (filesActive) _dropStrip.BringToFront();
+                    ApplyDropStripTheme(false);
+                }
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] SetFilesDropMode: " + ex.Message); }
+        }
+
+        /// <summary>Paint the drop strip for the current theme; <paramref name="active"/> = a valid drag is hovering.</summary>
+        private void ApplyDropStripTheme(bool active)
+        {
+            if (_dropStrip == null) return;
+            try
+            {
+                if (_isDark)
+                {
+                    _dropStrip.BackColor = active ? Color.FromArgb(40, 60, 90) : Color.FromArgb(37, 37, 53);
+                    _dropStrip.ForeColor = active ? Color.FromArgb(137, 180, 250) : Color.FromArgb(150, 150, 170);
+                }
+                else
+                {
+                    _dropStrip.BackColor = active ? Color.FromArgb(225, 238, 252) : Color.FromArgb(244, 246, 248);
+                    _dropStrip.ForeColor = active ? Color.FromArgb(10, 93, 194) : Color.FromArgb(90, 90, 100);
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>Allow the Copy drop effect for a file drop; highlight the strip. Else reject.</summary>
+        private void OnDropStripDragEnter(object sender, DragEventArgs e)
+        {
+            bool ok = e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop);
+            e.Effect = ok ? DragDropEffects.Copy : DragDropEffects.None;
+            ApplyDropStripTheme(ok);
+        }
+
+        /// <summary>
+        /// Native file drop (Files tab): read the REAL full paths from DataFormats.FileDrop, validate the same way as
+        /// the JS drop path (rooted, non-UNC, allowed source extension), then open each via the choke point.
+        /// </summary>
+        private void OnDropStripDragDrop(object sender, DragEventArgs e)
+        {
+            ApplyDropStripTheme(false);
+            if (e.Data == null || !e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+            string[] files;
+            try { files = e.Data.GetData(DataFormats.FileDrop) as string[]; }
+            catch { files = null; }
+            if (files == null || files.Length == 0) return;
+
+            var safe = new List<string>();
+            foreach (var f in files)
+            {
+                if (string.IsNullOrEmpty(f)) continue;
+                bool rooted; try { rooted = Path.IsPathRooted(f); } catch { rooted = false; }
+                if (!rooted || IsUncPath(f)) continue;
+                if (!Services.MonacoFileOpener.IsAllowedDropExtension(f)) continue;
+                safe.Add(f);
+                if (safe.Count >= 50) break;
+            }
+            if (safe.Count == 0) return;
+            DeferExplorer(() => { foreach (var f in safe) Services.MonacoFileOpener.OpenFile(f, _isDark); PostExplorerData(); });
+        }
+
+        /// <summary>Build the grouped Files-tab view-model and push it to the page. UI thread (called from the
+        /// WebView2 message callback / deferred handlers); the classifier caches by mtime so re-posts are cheap.</summary>
+        private void PostExplorerData()
+        {
+            try
+            {
+                string sol = null;
+                try { sol = Services.EditorService.GetOpenSolutionPath(); } catch { }
+                var vm = Services.ExplorerFileClassifier.BuildViewModel(true);
+                Post(new Dictionary<string, object>
+                {
+                    { "type", "setExplorerData" },
+                    // Carry the active bucket so the page's banner can self-correct: the pad may post once at IDE
+                    // startup before the solution has loaded (NoSolution); a later post (Files activation / mutation /
+                    // solution-change tick) lands the real solution and refreshes the banner.
+                    { "versionTag", Services.ModernEmbeditorHistory.VersionTag() },
+                    { "solutionTag", Services.ModernEmbeditorHistory.SolutionTag(sol) },
+                    { "lastFolder", vm.lastFolder ?? "" },
+                    { "quickLocations", vm.quickLocations },
+                    { "pinnedFolders", vm.pinnedFolders },
+                    { "pinned", vm.pinned },
+                    { "groups", vm.groups },
+                    { "uiState", new Dictionary<string, object> { { "collapsed", _explorerCollapsed } } }
+                });
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] PostExplorerData: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// Push the active Clarion-version + solution tags to the page's banner. Recents/pins are bucketed by
+        /// (version, solution) in <see cref="Services.ExplorerRecentsStore"/>, so surfacing the active bucket makes
+        /// it obvious why switching the selected Clarion version shows a different recents list. UI thread.
+        /// </summary>
+        private void PostVersionInfo()
+        {
+            try
+            {
+                string sol = null;
+                try { sol = Services.EditorService.GetOpenSolutionPath(); } catch { }
+                Post(new Dictionary<string, object>
+                {
+                    { "type", "setVersionInfo" },
+                    { "versionTag", Services.ModernEmbeditorHistory.VersionTag() },
+                    { "solutionTag", Services.ModernEmbeditorHistory.SolutionTag(sol) }
+                });
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] PostVersionInfo: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// Defer an Explorer action OUT of the WebView2 message callback onto the next UI turn, moving focus to the
+        /// main IDE window first — identical to the 'open' action's guard: a WebView2 holding focus can deadlock the
+        /// native embeditor close, and modal file/folder pickers must not run re-entrantly inside the message pump.
+        /// </summary>
+        private void DeferExplorer(Action work)
+        {
+            if (_panel == null) { try { work(); } catch { } return; }
+            _panel.BeginInvoke((Action)(() =>
+            {
+                try
+                {
+                    var mainForm = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
+                    if (mainForm != null) { mainForm.Activate(); Application.DoEvents(); }
+                }
+                catch { }
+                try { work(); }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] explorer action: " + ex.Message); }
+            }));
+        }
+
+        /// <summary>Sniff the pad's dark/light flag out of the opaque JS UI-state blob (a JSON string with "dark":bool).</summary>
+        private void SniffTheme(string stateBlob)
+        {
+            if (string.IsNullOrEmpty(stateBlob)) return;
+            try
+            {
+                var d = new JavaScriptSerializer().DeserializeObject(stateBlob) as Dictionary<string, object>;
+                object dark;
+                if (d != null && d.TryGetValue("dark", out dark) && dark is bool) _isDark = (bool)dark;
+            }
+            catch { }
+        }
+
+        // OpenFileDialog/FolderBrowserDialog helpers (UI thread, inside DeferExplorer). Return null on cancel.
+        private static string[] PickFiles(bool multi, string initialDir)
+        {
+            using (var dlg = new OpenFileDialog())
+            {
+                dlg.Title = "Load File into CA Editor";
+                dlg.Filter = ExplorerOpenFilter;
+                dlg.Multiselect = multi;
+                dlg.CheckFileExists = true;
+                if (!string.IsNullOrEmpty(initialDir) && Directory.Exists(initialDir)) dlg.InitialDirectory = initialDir;
+                return dlg.ShowDialog() == DialogResult.OK ? dlg.FileNames : null;
+            }
+        }
+
+        private static string PickSingle(string title, string initialDir)
+        {
+            using (var dlg = new OpenFileDialog())
+            {
+                dlg.Title = title;
+                dlg.Filter = ExplorerOpenFilter;
+                dlg.Multiselect = false;
+                dlg.CheckFileExists = true;
+                if (!string.IsNullOrEmpty(initialDir) && Directory.Exists(initialDir)) dlg.InitialDirectory = initialDir;
+                return dlg.ShowDialog() == DialogResult.OK ? dlg.FileName : null;
+            }
+        }
+
+        private static string PickFolder(string description, string initialDir)
+        {
+            using (var dlg = new FolderBrowserDialog())
+            {
+                dlg.Description = description;
+                if (!string.IsNullOrEmpty(initialDir) && Directory.Exists(initialDir)) dlg.SelectedPath = initialDir;
+                return dlg.ShowDialog() == DialogResult.OK ? dlg.SelectedPath : null;
+            }
+        }
+
+        /// <summary>Deserialize a top-level JSON string-array field (e.g. dropFiles.paths) with a hard count cap.</summary>
+        private static List<string> ExtractStringArray(string json, string key, int cap)
+        {
+            var outp = new List<string>();
+            try
+            {
+                var d = new JavaScriptSerializer { MaxJsonLength = 1024 * 1024 }.DeserializeObject(json) as Dictionary<string, object>;
+                object arr;
+                if (d != null && d.TryGetValue(key, out arr) && arr is object[])
+                {
+                    foreach (var it in (object[])arr)
+                    {
+                        if (it == null) continue;
+                        string s = it.ToString();
+                        if (!string.IsNullOrEmpty(s)) outp.Add(s);
+                        if (outp.Count >= cap) break;
+                    }
+                }
+            }
+            catch { }
+            return outp;
+        }
+
+        /// <summary>Parse saveExplorerUiState's nested state.collapsed string array.</summary>
+        private static List<string> ParseCollapsed(string json)
+        {
+            var outp = new List<string>();
+            try
+            {
+                var d = new JavaScriptSerializer().DeserializeObject(json) as Dictionary<string, object>;
+                object st;
+                if (d != null && d.TryGetValue("state", out st))
+                {
+                    var sd = st as Dictionary<string, object>;
+                    object col;
+                    if (sd != null && sd.TryGetValue("collapsed", out col) && col is object[])
+                        foreach (var it in (object[])col) if (it != null) outp.Add(it.ToString());
+                }
+            }
+            catch { }
+            return outp;
+        }
+
         private void Post(Dictionary<string, object> data)
         {
             Action post = () =>
@@ -532,6 +999,7 @@ namespace ClarionAssistant
         // bound to the previous editor and insert/goto would target it.
         private bool _lastShownNative;
         private bool _lastShownSelection;    // last shown proc came from app-tree selection, not a focused editor
+        private string _lastSolutionTag = "\0"; // last resolved solution tag; sentinel so the first tick posts the banner
         private string _lastShownProc = " "; // sentinel so the first tick always refreshes
 
         /// <summary>
@@ -551,6 +1019,20 @@ namespace ClarionAssistant
         {
             if (Services.ModernEmbeditorLauncher.IsBusy) return;  // never touch the IDE mid open/save
             if (_varCrudInProgress) return;  // never run a .txa export while Clarion's add/edit/delete modal is open
+
+            // Solution-change watcher: the pad is a restored dock that can init (and post its version banner /
+            // explorer recents) at IDE startup BEFORE a solution finishes loading — bucketing to "NoSolution" with an
+            // empty recents list. When the resolved solution later changes, re-post the banner and (if the Files tab
+            // is showing) the recents so both reflect the now-open solution. Cheap in-memory read; only acts on change.
+            string solTag = null;
+            try { solTag = Services.ModernEmbeditorHistory.SolutionTag(Services.EditorService.GetOpenSolutionPath()); } catch { }
+            if (!string.Equals(solTag, _lastSolutionTag, StringComparison.OrdinalIgnoreCase))
+            {
+                _lastSolutionTag = solTag;
+                PostVersionInfo();
+                if (_filesTabActive) PostExplorerData();
+            }
+
             string proc;
             bool isNative = false, isSelection = false;
             try

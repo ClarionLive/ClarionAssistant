@@ -107,6 +107,9 @@
       <DependentUpon>ClassHelperControl.cs</DependentUpon>
     </Compile>
     <Compile Include="Services\ClarionClassParser.cs" />
+    <Compile Include="Services\ExplorerRecentsStore.cs" />
+    <Compile Include="Services\ExplorerFileClassifier.cs" />
+    <Compile Include="Services\MonacoFileOpener.cs" />
     <Compile Include="Services\ActiveProcedureContext.cs" />
     <Compile Include="Services\EditorService.cs" />
     <Compile Include="Services\ClarionSourceText.cs" />
