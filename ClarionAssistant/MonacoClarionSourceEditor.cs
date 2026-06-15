@@ -558,7 +558,8 @@ namespace ClarionAssistant
                 try { editor.PostResponse(reqId, Refusal("Designer failed: " + ex.Message)); } catch { }
             }
         }
-        void IMonacoEditorHost.OnActivateDesigner(MonacoEditorControl editor) { }
+        // 'Show designer' on the lock overlay → bring the scratch designer tab back to front.
+        void IMonacoEditorHost.OnActivateDesigner(MonacoEditorControl editor) { StructureDesignerService.ActivateCurrent(_editor); }
         void IMonacoEditorHost.OnEditorNavigationCompleted(MonacoEditorControl editor, bool success) { MonacoSpikeLog.Write("overlay nav completed success=" + success); }
         void IMonacoEditorHost.OnUnknownAction(MonacoEditorControl editor, string action, string rawJson)
         {
