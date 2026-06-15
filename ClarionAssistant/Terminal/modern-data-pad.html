@@ -131,7 +131,6 @@
     .files-toolbar .btn-primary { background: #0a5dc2; border-color: #0a5dc2; color: #fff; }
     .files-toolbar .btn-primary:hover { background: #0b6ee0; border-color: #0b6ee0; }
     .files-toolbar .btn .ico { font-size: 13px; }
-    .files-toolbar .toolbar-spacer { flex: 1; }
     .filter-wrap { position: relative; flex: none; }
     .filter-wrap input { height: 28px; width: 150px; padding: 0 24px 0 9px; background: #ffffff;
         border: 1px solid #bcbcbc; border-radius: 6px; color: #1f1f1f; font: inherit; font-size: 12px; outline: none; }
@@ -2149,7 +2148,7 @@
         // Quick locations + pinned-folder chips — rendered ABOVE the recents filter (in #filesQuick, outside the
         // scroll), so the "Filter recents" control sits directly under Quick locations and above the recents list.
         var quickEl = document.getElementById('filesQuick');
-        if (quickEl) { quickEl.innerHTML = ''; buildQuickChips(quickEl, d); }
+        if (quickEl) buildQuickChips(quickEl, d); // already cleared above (covers the loading-return path too)
 
         // Pinned files
         var pinned = (d.pinned || []).filter(function (e) { return explorerMatch(e.name, e.path || e.dir); });
