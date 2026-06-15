@@ -1039,6 +1039,8 @@
             if (!resp.ok) { showToast(resp.message || 'Cannot open the designer here', false); return; }
             if (resp.mode === 'pickTemplate') { showTemplatePicker(resp.templates || [], pos); return; }
             beginDesignerSession(resp.startLine, resp.endLine);
+            // Create-new (no-DEFAULTS fallback seed): write it in now so OK-with-no-edits still commits it.
+            if (resp.mode === 'insert' && resp.seed != null) applyDesignerSplice(resp.seed);
             showToast('Opening the ' + (resp.type === 'REPORT' ? 'report' : 'window') + ' designer — edits sync back here', true);
         });
     }
@@ -1094,6 +1096,10 @@
                 if (!resp) { showToast('Designer request timed out', false); return; }
                 if (!resp.ok) { showToast(resp.message || 'Cannot open the designer here', false); return; }
                 beginDesignerSession(resp.startLine, resp.endLine);
+                // Create-new: lay the chosen structure into the buffer NOW (native Ctrl+D inserts on pick), so
+                // clicking OK with no control changes — which fires no designer merge — still writes it. Edits
+                // later splice over this. Host omits 'seed' for the embeditor, so that path is unaffected.
+                if (resp.mode === 'insert' && resp.seed != null) applyDesignerSplice(resp.seed);
                 showToast('Opening the ' + (resp.type === 'REPORT' ? 'report' : 'window') + ' designer — edits sync back here', true);
             });
         }

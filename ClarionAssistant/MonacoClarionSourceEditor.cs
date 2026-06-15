@@ -452,9 +452,10 @@ namespace ClarionAssistant
                         return;
                     }
                     // No DEFAULTS.CLW found → seed a plain window directly (no picker), mirroring the embeditor.
+                    // 'seed' lets the page lay the structure into the buffer immediately (so OK-with-no-edits writes it).
                     editor.PostResponse(reqId, new Dictionary<string, object>
                     {
-                        { "ok", true }, { "mode", "insert" }, { "startLine", line }, { "endLine", line }, { "type", "WINDOW" }
+                        { "ok", true }, { "mode", "insert" }, { "startLine", line }, { "endLine", line }, { "type", "WINDOW" }, { "seed", NewWindowSeed }
                     });
                     OpenDesignerOverlay(NewWindowSeed, "NewWindow", true, true);
                     return;
@@ -546,9 +547,10 @@ namespace ClarionAssistant
                 bool isWindowDesigner = kind != "REPORT";
                 bool isWindowWindow = kind == "WINDOW";
 
+                // 'seed' = the chosen structure; the page inserts it immediately so OK-with-no-edits still writes it.
                 editor.PostResponse(reqId, new Dictionary<string, object>
                 {
-                    { "ok", true }, { "mode", "insert" }, { "startLine", line }, { "endLine", line }, { "type", kind }
+                    { "ok", true }, { "mode", "insert" }, { "startLine", line }, { "endLine", line }, { "type", kind }, { "seed", structureText }
                 });
                 OpenDesignerOverlay(structureText, label, isWindowDesigner, isWindowWindow);
             }
