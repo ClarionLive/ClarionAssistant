@@ -550,6 +550,7 @@
         saveEnabled = !!msg.saveEnabled;
         fileMode = !!msg.fileMode;
         breakpointsEnabled = !!msg.breakpointsEnabled;   // overlay: gutter-click toggles a breakpoint (not a bookmark)
+        designerEnabled = !!msg.designerEnabled;         // overlay: Ctrl+D designs structures in plain source files
         var sb = document.getElementById('saveBtn');
         if (sb) sb.style.display = saveEnabled ? '' : 'none';
         // Optional GLOBAL read-only (the dual-control source overlay sends this for its inert mirror).
@@ -1023,7 +1024,7 @@
     var designerSession = null;   // { decoId } — null when no designer is open
 
     function cmdStructureDesigner() {
-        if (fileMode) { showToast('The structure designer needs an embeditor-backed procedure — not available for plain files', false); return; }
+        if (fileMode && !designerEnabled) { showToast('The structure designer needs an embeditor-backed procedure — not available for plain files', false); return; }
         if (designerSession) { showToast('A designer session is already open — close its tab first', false); return; }
         var ed = activeEd();
         var pos = ed.getPosition();
@@ -1233,6 +1234,7 @@
     // which both the native Clarion debugger and the CA Debugger read) and pushes the current line set
     // back via 'setBreakpoints'. We only render what the host tells us — no optimistic paint.
     var breakpointsEnabled = false;
+    var designerEnabled = false;   // overlay: allow Ctrl+D on plain source files (.clw/.inc/.tpl/.tpw)
     var breakpointDecos = [];
     function breakpointDecoOption(ln) {
         return { range: new monaco.Range(ln, 1, ln, 1),

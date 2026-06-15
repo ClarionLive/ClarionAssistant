@@ -184,6 +184,7 @@ namespace ClarionAssistant
                     + "\"fileMode\":true,"
                     + "\"readOnly\":false,"
                     + "\"breakpointsEnabled\":true,"
+                    + "\"designerEnabled\":true,"
                     + "\"filePath\":" + MonacoEditorControl.JsonString(_filePath ?? "") + ","
                     + "\"saveEnabled\":true,"
                     + "\"editableRanges\":[],"
@@ -316,7 +317,72 @@ namespace ClarionAssistant
             catch { }
         }
 
-        void IMonacoEditorHost.OnOpenDesigner(MonacoEditorControl editor, string rawJson) { }
+        // Ctrl+D — open the native structure designer on the WINDOW/REPORT at the caret, in ANY source
+        // file (.clw/.inc/.tpl/.tpw). Reuses the embeditor's proven path: parse the structure, hand the
+        // text to StructureDesignerService (it spins its own scratch editor), splice merges back into
+        // Monaco. The user then saves to disk (Monaco owns the file). The native editor is NOT involved.
+        void IMonacoEditorHost.OnOpenDesigner(MonacoEditorControl editor, string rawJson)
+        {
+            int reqId = 0;
+            try
+            {
+                var data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(rawJson) as Dictionary<string, object>;
+                if (data == null) return;
+                if (data.ContainsKey("reqId")) reqId = Convert.ToInt32(data["reqId"]);
+                int line = data.ContainsKey("line") ? Convert.ToInt32(data["line"]) : 0;
+                string buffer = data.ContainsKey("buffer") ? data["buffer"] as string : null;
+                if (string.IsNullOrEmpty(buffer)) { editor.PostResponse(reqId, Refusal("Designer request was malformed.")); return; }
+
+                if (StructureDesignerService.IsActive)
+                {
+                    StructureDesignerService.ActivateCurrent(_editor);
+                    editor.PostResponse(reqId, Refusal("A structure designer is already open — close its tab first."));
+                    return;
+                }
+
+                var hit = ClarionAppDataReader.FindStructureAtLine(buffer, line);
+                if (!hit.Found)
+                {
+                    editor.PostResponse(reqId, Refusal("Put the caret on a WINDOW or REPORT structure to design it."));
+                    return;
+                }
+
+                var lines = buffer.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+                int s = Math.Max(1, hit.StartLine), e = Math.Min(lines.Length, hit.EndLine);
+                var sb = new StringBuilder();
+                for (int i = s; i <= e; i++) { if (i > s) sb.Append('\n'); sb.Append(lines[i - 1]); }
+                string structureText = sb.ToString();
+                string label = string.IsNullOrEmpty(hit.Name) ? "CAWindow" : hit.Name;
+                bool isWindow = hit.Type == "WINDOW";
+
+                editor.PostResponse(reqId, new Dictionary<string, object>
+                {
+                    { "ok", true }, { "mode", "edit" },
+                    { "startLine", hit.StartLine }, { "endLine", hit.EndLine }, { "type", hit.Type }
+                });
+
+                // Run the open OFF this WebView2 message-handler stack (the embeditor's reentrancy rule).
+                Action open = () =>
+                {
+                    string err = StructureDesignerService.Open(structureText, label, isWindow, isWindow, _editor,
+                        onBufferChanged: text => _editor.PostDesignerMessage("designerSplice", text, null),
+                        onClosed: finalText => _editor.PostDesignerMessage("designerClosed", finalText, null));
+                    if (err != null) _editor.PostDesignerMessage("designerClosed", null, err);
+                };
+                try { if (_editor != null && _editor.IsHandleCreated) _editor.BeginInvoke(open); else open(); }
+                catch (Exception oex) { MonacoSpikeLog.Write("overlay designer open marshal error: " + oex.Message); }
+            }
+            catch (Exception ex)
+            {
+                MonacoSpikeLog.Write("overlay openDesigner error: " + ex.Message);
+                try { editor.PostResponse(reqId, Refusal("Designer failed: " + ex.Message)); } catch { }
+            }
+        }
+
+        private static Dictionary<string, object> Refusal(string message)
+        {
+            return new Dictionary<string, object> { { "ok", false }, { "message", message } };
+        }
         void IMonacoEditorHost.OnOpenDesignerCreate(MonacoEditorControl editor, string rawJson) { }
         void IMonacoEditorHost.OnActivateDesigner(MonacoEditorControl editor) { }
         void IMonacoEditorHost.OnEditorNavigationCompleted(MonacoEditorControl editor, bool success) { MonacoSpikeLog.Write("overlay nav completed success=" + success); }
