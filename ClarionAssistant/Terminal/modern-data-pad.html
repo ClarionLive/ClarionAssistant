@@ -510,7 +510,11 @@
             <span class="change" id="lastFolderChange" title="Pick a different folder">change</span>
         </div>
 
-        <!-- Recents filter — moved down here so it sits right above the file list it actually filters. -->
+        <!-- Quick locations chips (rendered by buildQuickChips) — kept above the recents filter. -->
+        <div id="filesQuick"></div>
+
+        <!-- Recents filter — sits directly UNDER Quick locations and above the recents list (it filters recents,
+             not the quick locations). -->
         <div class="files-filter-row">
             <span class="filter-wrap wide">
                 <input type="text" id="filesFilter" placeholder="Filter recents…" />
@@ -518,7 +522,7 @@
             </span>
         </div>
 
-        <!-- Scrollable region: quick chips + pinned + grouped recents + drop zone (built in JS). -->
+        <!-- Scrollable region: pinned + grouped recents + drop zone (built in JS). -->
         <div id="filesScroll" style="flex:1; min-height:0; overflow:auto;">
             <div id="filesBody"></div>
             <!-- In-page drop hint is hidden: WebView2 strips real file paths from page drops, so external file
@@ -2133,6 +2137,7 @@
         var body = document.getElementById('filesBody');
         if (!body) return;
         body.innerHTML = '';
+        var quickEl0 = document.getElementById('filesQuick'); if (quickEl0) quickEl0.innerHTML = '';
         if (!d) { var em = document.createElement('div'); em.className = 'files-empty'; em.textContent = 'Loading recent files…'; body.appendChild(em); return; }
 
         // Last-folder strip
@@ -2141,8 +2146,10 @@
         if (d.lastFolder) { lfp.textContent = d.lastFolder; lfp.title = d.lastFolder; strip.style.display = 'flex'; }
         else { strip.style.display = 'none'; }
 
-        // Quick locations + pinned-folder chips
-        buildQuickChips(body, d);
+        // Quick locations + pinned-folder chips — rendered ABOVE the recents filter (in #filesQuick, outside the
+        // scroll), so the "Filter recents" control sits directly under Quick locations and above the recents list.
+        var quickEl = document.getElementById('filesQuick');
+        if (quickEl) { quickEl.innerHTML = ''; buildQuickChips(quickEl, d); }
 
         // Pinned files
         var pinned = (d.pinned || []).filter(function (e) { return explorerMatch(e.name, e.path || e.dir); });
