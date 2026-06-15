@@ -51,6 +51,13 @@ namespace ClarionAssistant
         private bool _overlayDirty;      // mirrored from the page (fileState) — drives save-on-close
         private string _overlayLiveText; // last live buffer the page mirrored, for the close-save write
 
+        // Host-driven navigation (debugger / breakpoint-list click via MonacoSourceNavigator). The page can't
+        // be positioned until it signals ready, so a nav that arrives earlier is parked here and flushed in
+        // OnReady. 1-based; _navPendingLine == 0 means "nothing queued".
+        private bool _pageReady;
+        private int _navPendingLine;
+        private int _navPendingCol = 1;
+
         // Monaco's loading background (#eff1f5) — the cover matches it so the swap to Monaco is seamless.
         private static readonly Color CoverColor = Color.FromArgb(0xEF, 0xF1, 0xF5);
 
@@ -106,11 +113,23 @@ namespace ClarionAssistant
                     GetType().Name, host.GetType().FullName, host.Width, host.Height, len, lines,
                     MonacoSourceOverlay.Enabled));
 
+                // Keep the native editor ref + file path in BOTH modes: overlay-on uses it for save/disk +
+                // breakpoints; overlay-off uses it as the visible editor for native-caret navigation. Register
+                // with the navigator now so a debugger nav can find us (overlay-on re-registers in OnReady once
+                // the page-resolved path is firm).
+                _hostEditor = tec;
+                try { _filePath = (tec != null ? tec.FileName : null) ?? _filePath; } catch (Exception fex) { MonacoSpikeLog.Write("capture filename error: " + fex.Message); }
+                MonacoSourceNavigator.Register(_filePath, this);
+
                 if (MonacoSourceOverlay.Enabled)
                 {
                     AttachCover(host);     // hide the native editor FIRST (instant, opaque)
-                    _hostEditor = tec;
                     AttachOverlay(host);   // then the WebView2/Monaco surface on top of the cover
+                }
+                else
+                {
+                    // Overlay off: the native editor is the visible surface — apply any queued nav immediately.
+                    ApplyPendingNavigation();
                 }
             }
             catch (Exception ex) { MonacoSpikeLog.Write("CaptureTick error: " + ex.Message); }
@@ -148,6 +167,68 @@ namespace ClarionAssistant
                 MonacoSpikeLog.Write("overlay MonacoEditorControl attached over host; awaiting ready");
             }
             catch (Exception ex) { MonacoSpikeLog.Write("AttachOverlay error: " + ex.Message); }
+        }
+
+        // ── Host-driven navigation (debugger / breakpoint-list click) ───────────────────────────────
+        // Reached via MonacoSourceNavigator. Works in BOTH overlay states: overlay-on reveals the live Monaco
+        // editor; overlay-off moves the native caret. Caller passes 1-based line/column; conversions are owned
+        // here.
+
+        /// <summary>Position this editor at a 1-based line (and column), scrolling it into view. Queues until
+        /// the page is ready if the overlay is still loading. Returns true once handled or queued.</summary>
+        public bool NavigateToLine(int line, int column)
+        {
+            if (line < 1) return false;
+            if (column < 1) column = 1;
+            try
+            {
+                if (_editor != null)            // overlay attached → reveal the Monaco surface
+                {
+                    if (_pageReady) _editor.RevealLine(line, column);
+                    else { _navPendingLine = line; _navPendingCol = column; }   // flushed in OnReady
+                    return true;
+                }
+                if (_hostEditor != null)        // overlay off → native editor is what's visible
+                {
+                    NativeGoTo(line);
+                    return true;
+                }
+                // Host not captured yet — park it; CaptureTick/OnReady will apply.
+                _navPendingLine = line; _navPendingCol = column;
+                return true;
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("NavigateToLine error: " + ex.Message); return false; }
+        }
+
+        /// <summary>Pull and apply a navigation that the navigator parked for this file (on capture / ready).</summary>
+        internal void ApplyPendingNavigation()
+        {
+            try
+            {
+                int line, col;
+                if (MonacoSourceNavigator.TryConsumePending(_filePath, out line, out col))
+                    NavigateToLine(line, col);
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("ApplyPendingNavigation error: " + ex.Message); }
+        }
+
+        // Overlay-off path: move the native ICSharpCode caret + scroll. Reuses the proven EditorService.GoToLine
+        // (1-based in, 0-based caret out) against the captured text area, reached reflectively to avoid hard
+        // ICSharpCode.TextEditor type coupling here.
+        private void NativeGoTo(int line)
+        {
+            try
+            {
+                object textArea = null;
+                try
+                {
+                    var atc = _hostEditor.GetType().GetProperty("ActiveTextAreaControl")?.GetValue(_hostEditor, null);
+                    textArea = atc != null ? atc.GetType().GetProperty("TextArea")?.GetValue(atc, null) : null;
+                }
+                catch { }
+                if (textArea != null) new Services.EditorService().GoToLine(textArea, line);
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("NativeGoTo error: " + ex.Message); }
         }
 
         // ── IMonacoEditorHost (converge step 4) ─────────────────────────────────────────────────
@@ -197,6 +278,13 @@ namespace ClarionAssistant
                 MonacoSpikeLog.Write("overlay setSource sent (fileMode editable, " + text.Length + " chars, file=" + (_filePath ?? "?") + ")");
                 PushBreakpoints();   // paint any existing IDE breakpoints for this file
 
+                // The page can now be positioned. Re-register under the firm page-resolved path, flush any nav
+                // that was parked while loading, then drain a navigator request that arrived between capture
+                // and ready (debugger click on a cold file).
+                _pageReady = true;
+                MonacoSourceNavigator.Register(_filePath, this);
+                if (_navPendingLine >= 1) { _editor.RevealLine(_navPendingLine, _navPendingCol); _navPendingLine = 0; }
+                ApplyPendingNavigation();
             }
             catch (Exception ex) { MonacoSpikeLog.Write("overlay OnReady error: " + ex.Message); }
         }
@@ -589,6 +677,7 @@ namespace ClarionAssistant
         {
             StopCaptureTimer();
             UnwireBreakpoints();
+            try { MonacoSourceNavigator.Unregister(_filePath, this); } catch { }
 
             // Save-on-close: the native shell never goes dirty (Monaco owns edits), so the IDE won't
             // prompt — we must, or unsaved edits vanish silently. Capture the mirrored buffer, tear down

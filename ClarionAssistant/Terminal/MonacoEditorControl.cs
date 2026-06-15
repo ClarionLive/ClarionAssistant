@@ -276,6 +276,15 @@ namespace ClarionAssistant.Terminal
             PostJson("{\"type\":\"gotoRoutine\",\"name\":" + JsonString(name) + "}");
         }
 
+        /// <summary>Reveal + position the ALREADY-open editor at a 1-based line: {type:"revealLine", line, column}.
+        /// The page centers the line (revealLineInCenter) and focuses the caret. Used for debugger / breakpoint-list
+        /// navigation against the source overlay (where moving the hidden native caret would be invisible).</summary>
+        public void RevealLine(int line, int column)
+        {
+            if (line < 1) return;
+            PostJson("{\"type\":\"revealLine\",\"line\":" + line + ",\"column\":" + Math.Max(1, column) + "}");
+        }
+
         /// <summary>Insert text at the editor's cursor: {type:"insertText", text}. (Tab focus, if
         /// wanted after an insert, is a host UI concern — the control only posts.)</summary>
         public void InsertText(string text)
