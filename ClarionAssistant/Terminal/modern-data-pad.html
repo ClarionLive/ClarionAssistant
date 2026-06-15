@@ -223,6 +223,13 @@
     .redopen-custom { height: 22px; width: 140px; padding: 0 7px; background: #fff; border: 1px solid #bcbcbc;
         border-radius: 5px; color: #1f1f1f; font: inherit; font-size: 11px; outline: none; }
     .redopen-custom:focus { border-color: #0a5dc2; }
+    /* Keep the Custom radio + its field together as one unit so they wrap to a new line together. */
+    .redopen-customgroup { display: inline-flex; align-items: center; gap: 6px; }
+    /* Recents filter, relocated to sit directly above the file list. */
+    .files-filter-row { padding: 6px 10px; border-bottom: 1px solid #d4d4d4; flex: none; }
+    .filter-wrap.wide { display: block; width: 100%; }
+    .filter-wrap.wide input { width: 100%; box-sizing: border-box; }
+    body.dark .files-filter-row { border-bottom-color: #3a3a4a; }
     .redopen-drop { margin-top: 5px; border: 1px solid #d0d0d0; border-radius: 6px; background: #fff;
         max-height: 240px; overflow: auto; }
     .redopen-item { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center;
@@ -454,11 +461,6 @@
         <div class="files-toolbar">
             <button class="btn btn-primary" id="loadFileBtn" title="Open a file into the Monaco editor"><span class="ico">📂</span>Load File…</button>
             <button class="btn" id="compareBtn" title="Pick two files and diff them in Monaco"><span class="ico">⇄</span>Compare…</button>
-            <span class="toolbar-spacer"></span>
-            <span class="filter-wrap">
-                <input type="text" id="filesFilter" placeholder="Filter recents…" />
-                <span class="fx" id="filesFilterClear" title="Clear filter">×</span>
-            </span>
         </div>
 
         <!-- ===== Open File via Redirection: type-ahead search + Trace over the active .red (under the toolbar) ===== -->
@@ -480,8 +482,10 @@
                 <label><input type="radio" name="redext" value="source"> Source</label>
                 <label><input type="radio" name="redext" value="classes"> Classes</label>
                 <label><input type="radio" name="redext" value="templates"> Templates</label>
-                <label><input type="radio" name="redext" value="custom"> Custom</label>
-                <input type="text" id="redCustomExt" class="redopen-custom" placeholder="*.xml, *.txt" title="Comma/space-separated extensions (used when Custom is selected)" />
+                <span class="redopen-customgroup">
+                    <label><input type="radio" name="redext" value="custom"> Custom</label>
+                    <input type="text" id="redCustomExt" class="redopen-custom" placeholder="*.xml, *.txt" title="Comma/space-separated extensions (used when Custom is selected)" />
+                </span>
             </div>
             <!-- type-ahead results (in-flow so the WebView2 overflow:auto panel never clips it) -->
             <div class="redopen-drop" id="redDrop" style="display:none;"></div>
@@ -504,6 +508,14 @@
             <span>📍 Last folder:</span>
             <span class="path" id="lastFolderPath"></span>
             <span class="change" id="lastFolderChange" title="Pick a different folder">change</span>
+        </div>
+
+        <!-- Recents filter — moved down here so it sits right above the file list it actually filters. -->
+        <div class="files-filter-row">
+            <span class="filter-wrap wide">
+                <input type="text" id="filesFilter" placeholder="Filter recents…" />
+                <span class="fx" id="filesFilterClear" title="Clear filter">×</span>
+            </span>
         </div>
 
         <!-- Scrollable region: quick chips + pinned + grouped recents + drop zone (built in JS). -->
