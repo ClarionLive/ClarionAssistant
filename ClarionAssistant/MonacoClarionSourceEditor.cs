@@ -58,6 +58,12 @@ namespace ClarionAssistant
         private int _navPendingLine;
         private int _navPendingCol = 1;
 
+        // Save-on-close: our workbench tab is a SdiWorkspaceWindow (WeifenLuo DockContent : Form), so we host
+        // the prompt on its CANCELLABLE FormClosing — which runs BEFORE teardown. (A MessageBox in Dispose
+        // pumps a nested message loop that interrupts the in-flight tab close → the "have to click X twice" bug.)
+        private Form _wbForm;
+        private bool _closeHooked;
+
         // Monaco's loading background (#eff1f5) — the cover matches it so the swap to Monaco is seamless.
         private static readonly Color CoverColor = Color.FromArgb(0xEF, 0xF1, 0xF5);
 
@@ -401,6 +407,7 @@ namespace ClarionAssistant
                 if (data == null) return;
                 if (data.ContainsKey("text") && data["text"] is string) _overlayLiveText = (string)data["text"];
                 if (data.ContainsKey("dirty")) _overlayDirty = Convert.ToBoolean(data["dirty"]);
+                EnsureCloseHook();   // the page is live now → the workbench window is realized; safe to subscribe
             }
             catch { }
         }
@@ -762,34 +769,76 @@ namespace ClarionAssistant
             catch { }
         }
 
+        // Subscribe ONCE to the workbench tab's cancellable FormClosing so the save prompt runs before the
+        // close commits (single-click close). WorkbenchWindow's runtime type is SdiWorkspaceWindow : Form;
+        // reflect it (not worth a hard compile dependency on the IDE's view-content base) and cast to Form.
+        // Self-healing: if the window isn't realized yet, we stay unhooked and retry on the next file-state.
+        private void EnsureCloseHook()
+        {
+            if (_closeHooked) return;
+            try
+            {
+                object wbw = null;
+                try { wbw = GetType().GetProperty("WorkbenchWindow")?.GetValue(this, null); } catch { }
+                _wbForm = wbw as Form;
+                if (_wbForm != null)
+                {
+                    _wbForm.FormClosing += OnWorkbenchFormClosing;
+                    _closeHooked = true;
+                    MonacoSpikeLog.Write("close-hook attached to " + _wbForm.GetType().FullName);
+                }
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("close-hook attach error: " + ex.Message); }
+        }
+
+        // Cancellable save-on-close: Yes = save + close, No = close without saving, Cancel = stay open. Runs
+        // BEFORE Dispose, so the tab closes in one click. A decision clears _overlayDirty so the Dispose
+        // safety-net won't re-write. During IDE/Windows shutdown we must NOT pop a modal (it can hang the
+        // shutdown — see project_shutdown_hang); leave the buffer dirty so Dispose saves it silently instead.
+        private void OnWorkbenchFormClosing(object sender, FormClosingEventArgs e)
+        {
+            try
+            {
+                if (e.Cancel) return;
+                if (!(_overlayDirty && _overlayLiveText != null && !string.IsNullOrEmpty(_filePath))) return;
+                if (e.CloseReason == CloseReason.WindowsShutDown || e.CloseReason == CloseReason.ApplicationExitCall
+                    || e.CloseReason == CloseReason.TaskManagerClosing)
+                    return;   // shutdown → no modal; Dispose's silent fallback persists the edits
+
+                var r = MessageBox.Show(_wbForm,
+                    "Save changes to " + Path.GetFileName(_filePath) + " before closing?",
+                    "CA Editor — unsaved changes", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
+                if (r == DialogResult.Cancel) { e.Cancel = true; return; }
+                if (r == DialogResult.Yes)
+                {
+                    int n = WriteToDisk(_overlayLiveText);
+                    MonacoSpikeLog.Write("overlay close-save wrote: " + _filePath + " (" + n + " chars)");
+                }
+                _overlayDirty = false;   // decided (saved or discarded) — Dispose must not re-save
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("overlay FormClosing save error: " + ex.Message); }
+        }
+
         public override void Dispose()
         {
             StopCaptureTimer();
             UnwireBreakpoints();
             try { MonacoSourceNavigator.Unregister(_filePath, this); } catch { }
+            try { if (_wbForm != null) { _wbForm.FormClosing -= OnWorkbenchFormClosing; _wbForm = null; } } catch { }
 
-            // Save-on-close: the native shell never goes dirty (Monaco owns edits), so the IDE won't
-            // prompt — we must, or unsaved edits vanish silently. Capture the mirrored buffer, tear down
-            // the WebView2 FIRST (so the confirm box can't get stuck behind a live WebView2), then prompt.
-            bool promptSave = _overlayDirty && _overlayLiveText != null && !string.IsNullOrEmpty(_filePath);
+            // The interactive save prompt lives in OnWorkbenchFormClosing (cancellable, pre-teardown). This is
+            // only a SILENT safety net for disposal paths that bypass FormClosing (solution close / shutdown):
+            // if edits are still pending, write them rather than lose them — NO modal here (a MessageBox in
+            // Dispose pumps a nested loop that interrupts the close, which is the double-close bug we fixed).
+            bool saveFallback = _overlayDirty && _overlayLiveText != null && !string.IsNullOrEmpty(_filePath);
             string toSave = _overlayLiveText;
 
             DisposeOverlay();
 
-            if (promptSave)
+            if (saveFallback)
             {
-                try
-                {
-                    var r = MessageBox.Show(
-                        "Save changes to " + Path.GetFileName(_filePath) + " before closing?",
-                        "CA Editor — unsaved changes", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-                    if (r == DialogResult.Yes)
-                    {
-                        int n = WriteToDisk(toSave);
-                        MonacoSpikeLog.Write("overlay close-save wrote: " + _filePath + " (" + n + " chars)");
-                    }
-                }
-                catch (Exception ex) { MonacoSpikeLog.Write("overlay close-save error: " + ex.Message); }
+                try { int n = WriteToDisk(toSave); MonacoSpikeLog.Write("overlay close-save (fallback) wrote: " + _filePath + " (" + n + " chars)"); }
+                catch (Exception ex) { MonacoSpikeLog.Write("overlay close-save fallback error: " + ex.Message); }
             }
 
             base.Dispose();
