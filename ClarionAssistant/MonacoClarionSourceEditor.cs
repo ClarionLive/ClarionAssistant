@@ -58,10 +58,15 @@ namespace ClarionAssistant
         private int _navPendingLine;
         private int _navPendingCol = 1;
 
-        // Save-on-close: our workbench tab is a SdiWorkspaceWindow (WeifenLuo DockContent : Form), so we host
-        // the prompt on its CANCELLABLE FormClosing — which runs BEFORE teardown. (A MessageBox in Dispose
-        // pumps a nested message loop that interrupts the in-flight tab close → the "have to click X twice" bug.)
-        private Form _wbForm;
+        // Save-on-close: our workbench tab is a SdiWorkspaceWindow. SharpDevelop closes it via its OWN
+        // cancellable ClosingEvent (System.ComponentModel.CancelEventHandler) — NOT the Form's FormClosing
+        // (which never fires on a tab close here) and NOT Dispose (a MessageBox there pumps a nested loop that
+        // interrupts the in-flight close → the "click X twice" bug). Subscribe by reflection; gate on Cancel.
+        // Forced shutdown closes go through CloseWindow(force) and skip ClosingEvent, so the Dispose silent
+        // fallback (no modal) covers IDE/Windows shutdown without a hang.
+        private object _wbWindow;
+        private System.Reflection.EventInfo _closingEvt;
+        private System.ComponentModel.CancelEventHandler _closingHandler;
         private bool _closeHooked;
 
         // Monaco's loading background (#eff1f5) — the cover matches it so the swap to Monaco is seamless.
@@ -769,10 +774,11 @@ namespace ClarionAssistant
             catch { }
         }
 
-        // Subscribe ONCE to the workbench tab's cancellable FormClosing so the save prompt runs before the
-        // close commits (single-click close). WorkbenchWindow's runtime type is SdiWorkspaceWindow : Form;
-        // reflect it (not worth a hard compile dependency on the IDE's view-content base) and cast to Form.
-        // Self-healing: if the window isn't realized yet, we stay unhooked and retry on the next file-state.
+        // Subscribe ONCE to the workbench tab's cancellable ClosingEvent so the save prompt runs before the
+        // close commits (single-click close). WorkbenchWindow's runtime type is SdiWorkspaceWindow, which
+        // raises ClosingEvent (CancelEventHandler); FormClosing never fires on a tab close here. Reflect the
+        // event (IDE-internal) off the runtime type or its interfaces. Self-healing: if the window isn't
+        // realized yet, stay unhooked and retry on the next file-state signal.
         private void EnsureCloseHook()
         {
             if (_closeHooked) return;
@@ -780,34 +786,40 @@ namespace ClarionAssistant
             {
                 object wbw = null;
                 try { wbw = GetType().GetProperty("WorkbenchWindow")?.GetValue(this, null); } catch { }
-                _wbForm = wbw as Form;
-                if (_wbForm != null)
-                {
-                    _wbForm.FormClosing += OnWorkbenchFormClosing;
-                    _closeHooked = true;
-                    MonacoSpikeLog.Write("close-hook attached to " + _wbForm.GetType().FullName);
-                }
+                if (wbw == null) return;   // window not assigned yet — retry next file-state
+
+                var evt = wbw.GetType().GetEvent("ClosingEvent");
+                if (evt == null)
+                    foreach (var itf in wbw.GetType().GetInterfaces()) { evt = itf.GetEvent("ClosingEvent"); if (evt != null) break; }
+
+                _closeHooked = true;   // one shot regardless — don't spam retries if the event is absent
+                if (evt == null) { MonacoSpikeLog.Write("close-hook: ClosingEvent not found on " + wbw.GetType().FullName + " (Dispose fallback will save)"); return; }
+
+                _closingHandler = new System.ComponentModel.CancelEventHandler(OnWorkbenchClosing);
+                evt.AddEventHandler(wbw, _closingHandler);
+                _wbWindow = wbw; _closingEvt = evt;
+                MonacoSpikeLog.Write("close-hook attached (ClosingEvent) to " + wbw.GetType().FullName);
             }
             catch (Exception ex) { MonacoSpikeLog.Write("close-hook attach error: " + ex.Message); }
         }
 
         // Cancellable save-on-close: Yes = save + close, No = close without saving, Cancel = stay open. Runs
         // BEFORE Dispose, so the tab closes in one click. A decision clears _overlayDirty so the Dispose
-        // safety-net won't re-write. During IDE/Windows shutdown we must NOT pop a modal (it can hang the
-        // shutdown — see project_shutdown_hang); leave the buffer dirty so Dispose saves it silently instead.
-        private void OnWorkbenchFormClosing(object sender, FormClosingEventArgs e)
+        // safety-net won't re-write. (Forced shutdown closes skip ClosingEvent, so no modal hangs shutdown —
+        // Dispose's silent fallback persists the edits instead. See project_shutdown_hang.)
+        private void OnWorkbenchClosing(object sender, System.ComponentModel.CancelEventArgs e)
         {
             try
             {
                 if (e.Cancel) return;
                 if (!(_overlayDirty && _overlayLiveText != null && !string.IsNullOrEmpty(_filePath))) return;
-                if (e.CloseReason == CloseReason.WindowsShutDown || e.CloseReason == CloseReason.ApplicationExitCall
-                    || e.CloseReason == CloseReason.TaskManagerClosing)
-                    return;   // shutdown → no modal; Dispose's silent fallback persists the edits
 
-                var r = MessageBox.Show(_wbForm,
-                    "Save changes to " + Path.GetFileName(_filePath) + " before closing?",
-                    "CA Editor — unsaved changes", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
+                var owner = _wbWindow as IWin32Window;
+                var r = owner != null
+                    ? MessageBox.Show(owner, "Save changes to " + Path.GetFileName(_filePath) + " before closing?",
+                        "CA Editor — unsaved changes", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning)
+                    : MessageBox.Show("Save changes to " + Path.GetFileName(_filePath) + " before closing?",
+                        "CA Editor — unsaved changes", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
                 if (r == DialogResult.Cancel) { e.Cancel = true; return; }
                 if (r == DialogResult.Yes)
                 {
@@ -816,7 +828,7 @@ namespace ClarionAssistant
                 }
                 _overlayDirty = false;   // decided (saved or discarded) — Dispose must not re-save
             }
-            catch (Exception ex) { MonacoSpikeLog.Write("overlay FormClosing save error: " + ex.Message); }
+            catch (Exception ex) { MonacoSpikeLog.Write("overlay ClosingEvent save error: " + ex.Message); }
         }
 
         public override void Dispose()
@@ -824,7 +836,8 @@ namespace ClarionAssistant
             StopCaptureTimer();
             UnwireBreakpoints();
             try { MonacoSourceNavigator.Unregister(_filePath, this); } catch { }
-            try { if (_wbForm != null) { _wbForm.FormClosing -= OnWorkbenchFormClosing; _wbForm = null; } } catch { }
+            try { if (_closingEvt != null && _wbWindow != null && _closingHandler != null) _closingEvt.RemoveEventHandler(_wbWindow, _closingHandler); } catch { }
+            _wbWindow = null; _closingEvt = null; _closingHandler = null;
 
             // The interactive save prompt lives in OnWorkbenchFormClosing (cancellable, pre-teardown). This is
             // only a SILENT safety net for disposal paths that bypass FormClosing (solution close / shutdown):
