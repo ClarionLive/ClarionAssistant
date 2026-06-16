@@ -598,6 +598,7 @@
                 applyEmbedDecorations();
                 guarding = false;
                 restoreEmbedState(msg);     // bookmarks + cursor (once per tab); else reveal line 1
+                if (msg.breakpoints) setBreakpointLines(msg.breakpoints);   // debugger red dots, painted after the content is in (cold-open safe)
                 scheduleDiagnostics();      // initial squiggle pass once the buffer is in
             })
             .catch(function (err) {

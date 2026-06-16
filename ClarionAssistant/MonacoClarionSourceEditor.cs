@@ -292,6 +292,10 @@ namespace ClarionAssistant
                 try { int nl, nc; if (MonacoSourceNavigator.TryConsumePending(_filePath, out nl, out nc)) { navLine = nl; navCol = nc; } }
                 catch (Exception nex) { MonacoSpikeLog.Write("overlay OnReady consume-pending error: " + nex.Message); }
 
+                // Carry the current breakpoints INSIDE setSource so the page paints them after the content loads
+                // (a standalone setBreakpoints sent right after would race the async content fetch on a cold open).
+                string bpCsv = BreakpointLinesCsv();
+
                 string json = "{\"type\":\"setSource\","
                     + "\"title\":" + MonacoEditorControl.JsonString(_overlayTitle) + ","
                     + "\"language\":\"clarion\","
@@ -307,10 +311,10 @@ namespace ClarionAssistant
                     + "\"findHistory\":[],\"replaceHistory\":[],\"procHistory\":[],"
                     + "\"cursorLine\":" + navLine + ",\"cursorColumn\":" + navCol + ","
                     + "\"bookmarks\":[],"
+                    + "\"breakpoints\":[" + bpCsv + "],"
                     + "\"sourceUrl\":\"https://clarion-embeditor-data/source.txt\"}";
                 _editor.PostJson(json);
-                MonacoSpikeLog.Write("overlay setSource sent (fileMode editable, " + text.Length + " chars, file=" + (_filePath ?? "?") + (navLine >= 1 ? (", nav->line " + navLine) : "") + ")");
-                PushBreakpoints();   // paint any existing IDE breakpoints for this file
+                MonacoSpikeLog.Write("overlay setSource sent (fileMode editable, " + text.Length + " chars, file=" + (_filePath ?? "?") + (navLine >= 1 ? (", nav->line " + navLine) : "") + ", bps=[" + bpCsv + "])");
 
                 // The page can now be positioned. Re-register under the firm page-resolved path, flush any nav
                 // that was parked while loading. The cold-open target is already seeded into setSource above; the
@@ -656,13 +660,13 @@ namespace ClarionAssistant
             catch { }
         }
 
-        /// <summary>Push the IDE's current breakpoint lines for THIS file to Monaco (gutter red dots).</summary>
-        private void PushBreakpoints()
+        /// <summary>Comma-joined 1-based breakpoint lines for THIS file (from the IDE DebuggerService).</summary>
+        private string BreakpointLinesCsv()
         {
+            var sb = new StringBuilder();
             try
             {
-                if (_editor == null || string.IsNullOrEmpty(_filePath)) return;
-                var sb = new StringBuilder();
+                if (string.IsNullOrEmpty(_filePath)) return "";
                 int n = 0;
                 foreach (var bb in DebuggerService.Breakpoints)
                 {
@@ -671,7 +675,20 @@ namespace ClarionAssistant
                     if (n++ > 0) sb.Append(',');
                     sb.Append(bb.LineNumber + 1);   // bookmark 0-based → Monaco 1-based
                 }
-                _editor.PostJson("{\"type\":\"setBreakpoints\",\"lines\":[" + sb + "]}");
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("overlay BreakpointLinesCsv error: " + ex.Message); }
+            return sb.ToString();
+        }
+
+        /// <summary>Push THIS file's breakpoint lines to Monaco for a LIVE update (BreakPointAdded/Removed). The
+        /// INITIAL paint instead rides inside setSource (see OnReady) so it survives the async content load on a
+        /// cold open — a standalone setBreakpoints sent right after setSource would land before the model is in.</summary>
+        private void PushBreakpoints()
+        {
+            try
+            {
+                if (_editor == null || string.IsNullOrEmpty(_filePath)) return;
+                _editor.PostJson("{\"type\":\"setBreakpoints\",\"lines\":[" + BreakpointLinesCsv() + "]}");
             }
             catch (Exception ex) { MonacoSpikeLog.Write("overlay PushBreakpoints error: " + ex.Message); }
         }
