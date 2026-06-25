@@ -662,7 +662,11 @@ namespace ClarionAssistant.Services
 
             // Read JSON-RPC request
             string body;
-            using (var reader = new StreamReader(request.InputStream, request.ContentEncoding))
+            // JSON-RPC bodies are UTF-8 by spec. HttpListenerRequest.ContentEncoding falls back to
+            // Encoding.Default (system ANSI / Windows-1252) when the request omits a charset, which most
+            // MCP clients do — that decodes UTF-8 bytes as 1252 and mojibakes non-ASCII source (#44:
+            // "på" -> "pÃ¥"). Force UTF-8 to match the response writer.
+            using (var reader = new StreamReader(request.InputStream, new UTF8Encoding(false)))
             {
                 body = reader.ReadToEnd();
             }
@@ -697,7 +701,11 @@ namespace ClarionAssistant.Services
 
             // Read JSON-RPC request body
             string body;
-            using (var reader = new StreamReader(request.InputStream, request.ContentEncoding))
+            // JSON-RPC bodies are UTF-8 by spec. HttpListenerRequest.ContentEncoding falls back to
+            // Encoding.Default (system ANSI / Windows-1252) when the request omits a charset, which most
+            // MCP clients do — that decodes UTF-8 bytes as 1252 and mojibakes non-ASCII source (#44:
+            // "på" -> "pÃ¥"). Force UTF-8 to match the response writer.
+            using (var reader = new StreamReader(request.InputStream, new UTF8Encoding(false)))
             {
                 body = reader.ReadToEnd();
             }
