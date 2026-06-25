@@ -129,6 +129,85 @@ namespace ClarionAssistant.Services
             }
         }
 
+        /// <summary>
+        /// Apply explicit per-slot edits to a procedure in ONE transient open-&gt;write-&gt;save-&gt;close round-trip,
+        /// with NO interactive embeditor session left open. Robust for very large procedures where the live PWEE
+        /// editor is unstable under repeated interactive driving (this reuses the proven Modern Embeditor save
+        /// path: OpenAndMirror -&gt; WriteEmbedContentByLine -&gt; SaveAndCloseEmbeditor -&gt; WaitForEmbedClosed).
+        ///
+        /// Each edit is (1-based «E:N» slot-start line, COMPLETE replacement code for that slot). Every line is
+        /// validated against the freshly-opened embed structure; if ANY line is not a current embed-slot start,
+        /// NOTHING is written (the embeditor is cancelled). Writes run bottom-to-top so earlier slots' line
+        /// numbers stay valid, verbatim (no re-indent — the caller supplies fully-indented code). UI thread only.
+        /// </summary>
+        public static string ApplyLineEdits(string procName, IList<KeyValuePair<int, string>> edits, out bool ok)
+        {
+            ok = false;
+            if (string.IsNullOrWhiteSpace(procName))
+                return "Error: procedure_name is required.";
+            if (edits == null || edits.Count == 0)
+                return "Error: no edits supplied.";
+
+            var appTree = new AppTreeService();
+            // Reliably re-open the correct procedure and mirror its current source + ranges; leaves the
+            // embeditor open for us to write into (same entry point the interactive save uses).
+            string fsource, openErr;
+            List<int[]> franges;
+            if (!ModernEmbeditorLauncher.OpenAndMirror(appTree, procName, out fsource, out franges, out openErr))
+                return "Apply aborted: " + openErr;
+
+            try
+            {
+                // Valid write targets = the slot-START lines of the freshly-opened structure.
+                var slotStarts = new HashSet<int>();
+                if (franges != null)
+                    foreach (var r in franges)
+                        if (r != null && r.Length >= 1) slotStarts.Add(r[0]);
+
+                // Validate ALL edits BEFORE writing anything (all-or-nothing).
+                foreach (var e in edits)
+                {
+                    if (e.Key <= 0 || !slotStarts.Contains(e.Key))
+                    {
+                        try { appTree.CancelEmbeditor(); } catch { }
+                        return "Apply aborted: line " + e.Key + " is not a current embed-slot start in '" +
+                               procName + "'. Re-read with get_embeditor_source and retry. Nothing was written.";
+                    }
+                }
+
+                // Write changed slots bottom-to-top so earlier slots' line numbers stay valid; verbatim.
+                var errors = new List<string>();
+                foreach (var e in edits.OrderByDescending(x => x.Key))
+                {
+                    string res = appTree.WriteEmbedContentByLine(e.Key, e.Value ?? "", false);
+                    if (res != null && res.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
+                        errors.Add("  • slot@line " + e.Key + ": " + res);
+                }
+
+                if (errors.Count > 0)
+                {
+                    try { appTree.CancelEmbeditor(); } catch { } // discard — persist nothing on partial failure
+                    return "Apply FAILED — nothing persisted:\r\n" + string.Join("\r\n", errors);
+                }
+
+                string saveRes = appTree.SaveAndCloseEmbeditor();
+                if (saveRes != null && saveRes.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
+                    return "Apply error: " + saveRes;
+
+                if (!ModernEmbeditorLauncher.WaitForEmbedClosed(appTree, 3000))
+                    return "Apply error: '" + procName + "' was written but the embeditor did not confirm closed — " +
+                           "close it in the IDE before applying again.";
+
+                ok = true;
+                return "Applied " + edits.Count + " embed edit(s) to '" + procName + "'.";
+            }
+            catch (Exception ex)
+            {
+                try { appTree.CancelEmbeditor(); } catch { }
+                return "Apply error: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message);
+            }
+        }
+
         private static bool RangesMatch(List<int[]> a, List<int[]> b)
         {
             if (a == null || b == null || a.Count != b.Count) return false;

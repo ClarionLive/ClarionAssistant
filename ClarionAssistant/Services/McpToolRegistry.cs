@@ -980,6 +980,58 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                 }
             });
 
+            Register(new McpTool
+            {
+                Name = "apply_embed_edits",
+                Description = "Apply one or more embed-slot edits to a procedure in a SINGLE transient " +
+                    "open->write->save->close round-trip — NO interactive embeditor session stays open. " +
+                    "Prefer this over open_procedure_embed + write_embed_content for LARGE procedures where the " +
+                    "live PWEE editor is unstable under repeated interactive driving (it reuses the proven Modern " +
+                    "Embeditor save path). 'edits' is a JSON array of {\"line_number\":N,\"code\":\"...\"}: line_number " +
+                    "is the 1-based «E:N» slot start (from get_embeditor_source/search_embeditor_source), code is the " +
+                    "COMPLETE replacement for that slot (end with a trailing newline). Edits are applied bottom-to-top. " +
+                    "If ANY line_number is not a current embed-slot start, NOTHING is written. The procedure is opened, " +
+                    "written, saved and closed automatically — do NOT wrap this in open_procedure_embed / " +
+                    "save_and_close_embeditor.",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "procedure_name", "Name of the procedure to edit." },
+                    { "edits", "JSON array of edits: [{\"line_number\":123,\"code\":\"...full slot code...\\n\"}]. " +
+                               "line_number = 1-based «E:N» slot start; code = complete replacement for that slot." }
+                }, new[] { "procedure_name", "edits" }),
+                RequiresUiThread = true,
+                Handler = args =>
+                {
+                    string proc = McpJsonRpc.GetString(args, "procedure_name");
+                    if (string.IsNullOrWhiteSpace(proc)) return "Error: procedure_name is required.";
+                    string editsJson = McpJsonRpc.GetString(args, "edits");
+                    if (string.IsNullOrWhiteSpace(editsJson))
+                        return "Error: edits is required (JSON array of {line_number, code}).";
+
+                    var parsed = new List<KeyValuePair<int, string>>();
+                    try
+                    {
+                        var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                        var arr = ser.DeserializeObject(editsJson) as object[];
+                        if (arr == null) return "Error: edits must be a JSON array of {line_number, code}.";
+                        foreach (var item in arr)
+                        {
+                            var d = item as Dictionary<string, object>;
+                            if (d == null) return "Error: each edit must be an object {line_number, code}.";
+                            int ln = 0;
+                            if (d.ContainsKey("line_number")) int.TryParse(Convert.ToString(d["line_number"]), out ln);
+                            if (ln <= 0) return "Error: every edit needs a positive line_number.";
+                            string code = (d.ContainsKey("code") && d["code"] != null) ? d["code"].ToString() : "";
+                            parsed.Add(new KeyValuePair<int, string>(ln, code));
+                        }
+                    }
+                    catch (Exception ex) { return "Error parsing edits JSON: " + ex.Message; }
+
+                    bool ok;
+                    return ModernEmbeditorSaver.ApplyLineEdits(proc, parsed, out ok);
+                }
+            });
+
             // === TXA Export/Import Tools ===
 
             Register(new McpTool
