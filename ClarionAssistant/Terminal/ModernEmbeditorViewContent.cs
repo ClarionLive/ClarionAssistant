@@ -775,6 +775,77 @@ namespace ClarionAssistant.Terminal
             return false;
         }
 
+        // ── Field-drag support (ticket 0bada8de) ───────────────────────────────────────────────────────
+        // The Data pad's host-owned DoDragDrop must (a) belt every live Monaco webview's external-drop OFF for
+        // the drag duration so the native dictionary payload can't land — and insert the wrong window-control
+        // string — inside a code editor, and (b) on a release over a Monaco editor, insert the plain reference
+        // at THAT editor's cursor. These expose the live instances to FieldDropService without it taking a
+        // WebView2 type dependency (it belts via the Control base + reflection).
+
+        /// <summary>The live Monaco editor webviews (as Controls), for the field-drag external-drop belt.</summary>
+        public static List<System.Windows.Forms.Control> LiveMonacoWebViews()
+        {
+            var list = new List<System.Windows.Forms.Control>();
+            lock (_instances)
+                foreach (var inst in _instances)
+                {
+                    var wv = inst._panel != null ? inst._panel.WebView : null;
+                    if (wv != null) list.Add(wv);
+                }
+            return list;
+        }
+
+        /// <summary>If a VISIBLE Monaco editor webview covers the given screen point, move its caret to the editor
+        /// position under that point and return true; otherwise false. Used during a Data-pad field DRAG so the
+        /// caret tracks the mouse (the drop then lands where the pointer is).</summary>
+        public static bool TryMoveMonacoCaretAt(int screenX, int screenY)
+        {
+            lock (_instances)
+                foreach (var inst in _instances)
+                {
+                    var wv = inst._panel != null ? inst._panel.WebView : null;
+                    if (wv == null || !wv.IsHandleCreated || !wv.Visible) continue;
+                    try
+                    {
+                        if (wv.RectangleToScreen(wv.ClientRectangle).Contains(screenX, screenY))
+                        {
+                            inst._panel.MoveCaretToScreenPoint(screenX, screenY);
+                            return true;
+                        }
+                    }
+                    catch { }
+                }
+            return false;
+        }
+
+        /// <summary>If a VISIBLE Monaco editor webview covers the given screen point, insert <paramref name="text"/>
+        /// at that editor's cursor and return true; otherwise false (the release wasn't over an editor). Mirrors
+        /// the designer/pad rect hit-test so z-order/DPI behave consistently.</summary>
+        public static bool TryInsertAtMonacoCursor(int screenX, int screenY, string text)
+        {
+            if (string.IsNullOrEmpty(text)) return false;
+            lock (_instances)
+                foreach (var inst in _instances)
+                {
+                    var wv = inst._panel != null ? inst._panel.WebView : null;
+                    if (wv == null || !wv.IsHandleCreated || !wv.Visible) continue;
+                    try
+                    {
+                        if (wv.RectangleToScreen(wv.ClientRectangle).Contains(screenX, screenY))
+                        {
+                            // Atomic point-based insert: lands exactly where released (the page resolves the
+                            // position from these coords), not at a separately-tracked caret that can go stale.
+                            inst._panel.InsertTextAtScreenPoint(text, screenX, screenY);
+                            inst.BringToFront();
+                            inst._panel.FocusEditor();   // keyboard focus so the dev can type right after the drop
+                            return true;
+                        }
+                    }
+                    catch { }
+                }
+            return false;
+        }
+
         // "Declared Tables": the tables DECLARED in the generated <app>.clw File Declaration (the program's
         // global file set). The SET comes from the <app>.clw (authoritative, stable, explainable — not a
         // fuzzy text scan); the SCHEMA is enriched from the LIVE dictionary snapshot (pictures, GROUP

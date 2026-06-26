@@ -31,6 +31,22 @@ namespace ClarionAssistant
         private bool _isInitialized;
         private bool _isInitializing;
 
+        // ed2ccb84: a Copy/Ctrl+C on a Local/Global variable stashes its identity here (process-wide) so a
+        // subsequent Paste/Ctrl+V can do a FULL-PROPERTY clone (source.Copy) instead of a name-text paste —
+        // matching the native data pad. Validated at paste time against the live clipboard text (the copied name)
+        // so an unrelated clipboard change falls back to the normal declaration-text paste.
+        private sealed class PendingVarCopy { public string Scope; public string Name; public string Proc; }
+        private static PendingVarCopy _pendingVarCopy;
+
+        // ed2ccb84: a Copy/Ctrl+C on a dictionary COLUMN (a Declared Tables / Other Files row) stashes the column(s)
+        // here (process-wide) so a subsequent Paste/Ctrl+V into a Local/Global section does a LOSSLESS field clone
+        // (the same CopyColumns flow a column drag uses) instead of a name-text paste. ColsJson is the
+        // [{table,column},...] payload; Ref is the clipboard text set at copy time (the prefixed reference, e.g.
+        // aut:Phone), validated at paste so an unrelated clipboard change falls back to the normal text paste.
+        // Mutually exclusive with _pendingVarCopy — copying one clears the other.
+        private sealed class PendingColCopy { public string ColsJson; public string Ref; }
+        private static PendingColCopy _pendingColCopy;
+
         public ModernDataPad()
         {
             lock (_instances) { _instances.Add(this); }
@@ -271,16 +287,51 @@ namespace ClarionAssistant
                     string scope = ExtractJsonValue(json, "scope");
                     string clickedProc = ExtractJsonValue(json, "procedure");
                     string droppedText = ExtractJsonValue(json, "text");
-                    RunVariableCrud("Paste Variables", () =>
+                    // FULL-PROPERTY clone path: a prior Copy/Ctrl+C stashed a source variable AND it's still the
+                    // active clipboard (clip text == the copied name) → clone the whole field (every property),
+                    // not a text declaration. Any other clipboard state falls through to the text paste below.
+                    var pend = _pendingVarCopy;
+                    var pendCol = _pendingColCopy;
+                    bool fullClone = false, colClone = false;
+                    if (string.IsNullOrEmpty(droppedText))
                     {
-                        string decl = droppedText;
-                        if (string.IsNullOrEmpty(decl))
+                        string clip = null;
+                        try { clip = System.Windows.Forms.Clipboard.GetText(); }
+                        catch (Exception cex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] paste clip check: " + cex.Message); }
+                        // VARIABLE full-property clone wins if its stash is still the active clipboard; else a COLUMN
+                        // clone if ITS stash matches. Either falls through to the text paste when the clipboard moved on.
+                        if (pend != null && !string.IsNullOrEmpty(pend.Name) && string.Equals(clip, pend.Name, StringComparison.Ordinal))
+                            fullClone = true;
+                        else if (pendCol != null && !string.IsNullOrEmpty(pendCol.ColsJson) && string.Equals(clip, pendCol.Ref, StringComparison.Ordinal))
+                            colClone = true;
+                    }
+                    if (fullClone)
+                    {
+                        var p = pend;
+                        RunVariableCrud("Copy Variable",
+                            () => Services.FileSchemaVariableInserter.CopyVariableToScope(scope, p.Scope, p.Name, p.Proc, clickedProc),
+                            showSuccessInfo: true);
+                    }
+                    else if (colClone)
+                    {
+                        var pc = pendCol;
+                        RunVariableCrud("Copy Column",
+                            () => CopyColumns(scope, pc.ColsJson, clickedProc),
+                            showSuccessInfo: true);
+                    }
+                    else
+                    {
+                        RunVariableCrud("Paste Variables", () =>
                         {
-                            try { decl = System.Windows.Forms.Clipboard.GetText(); }
-                            catch (Exception cex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] clipboard read: " + cex.Message); decl = null; }
-                        }
-                        return Services.FileSchemaVariableInserter.PasteVariableDefinitions(scope, decl, clickedProc);
-                    }, showSuccessInfo: true);
+                            string decl = droppedText;
+                            if (string.IsNullOrEmpty(decl))
+                            {
+                                try { decl = System.Windows.Forms.Clipboard.GetText(); }
+                                catch (Exception cex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] clipboard read: " + cex.Message); decl = null; }
+                            }
+                            return Services.FileSchemaVariableInserter.PasteVariableDefinitions(scope, decl, clickedProc);
+                        }, showSuccessInfo: true);
+                    }
                 }
                 else if (action == "copyColumns")
                 {
@@ -293,6 +344,85 @@ namespace ClarionAssistant
                     string colsJson = ExtractJsonValue(json, "cols");
                     if (!string.IsNullOrEmpty(colsJson))
                         RunVariableCrud("Copy Column", () => CopyColumns(scope, colsJson, clickedProc), showSuccessInfo: true);
+                }
+                else if (action == "copyText")
+                {
+                    // "Copy Details" — put plain "NAME   TYPE" text on the OS clipboard (for pasting a declaration
+                    // into code/Monaco). WinForms Clipboard = the same clipboard Clarion uses. A pure-text copy
+                    // CLEARS any pending full-property var stash so a later Paste doesn't wrongly full-clone.
+                    string text = ExtractJsonValue(json, "text");
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        _pendingVarCopy = null; _pendingColCopy = null;
+                        try { System.Windows.Forms.Clipboard.SetText(text); }
+                        catch (Exception cex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] copyText clipboard: " + cex.Message); }
+                    }
+                }
+                else if (action == "copyColumn")
+                {
+                    // "Copy" / Ctrl+C on a dictionary COLUMN row: put the prefixed reference (e.g. aut:Phone) on the
+                    // clipboard (so pasting into code gives the compilable reference) AND stash the column(s) so a
+                    // subsequent Paste/Ctrl+V into a Local/Global section does a LOSSLESS field clone (CopyColumns) —
+                    // the column analog of copyVar's full-property variable clone.
+                    string cols = ExtractJsonValue(json, "cols");
+                    string refName = ExtractJsonValue(json, "name");
+                    if (!string.IsNullOrEmpty(cols))
+                    {
+                        _pendingVarCopy = null;
+                        _pendingColCopy = new PendingColCopy { ColsJson = cols, Ref = refName };
+                        if (!string.IsNullOrEmpty(refName))
+                        {
+                            try { System.Windows.Forms.Clipboard.SetText(refName); }
+                            catch (Exception cex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] copyColumn clipboard: " + cex.Message); }
+                        }
+                    }
+                }
+                else if (action == "copyVar")
+                {
+                    // "Copy" / Ctrl+C on a Local/Global variable: put the NAME on the clipboard (so pasting into
+                    // code gives the reference) AND stash the source identity so a subsequent Paste into a data
+                    // section does a FULL-PROPERTY clone (the native data pad's Ctrl+C/Ctrl+V behavior).
+                    string scope = ExtractJsonValue(json, "scope");
+                    string name = ExtractJsonValue(json, "name");
+                    string proc = ExtractJsonValue(json, "procedure");
+                    if (!string.IsNullOrEmpty(name))
+                    {
+                        _pendingColCopy = null;
+                        _pendingVarCopy = new PendingVarCopy { Scope = scope, Name = name, Proc = proc };
+                        try { System.Windows.Forms.Clipboard.SetText(name); }
+                        catch (Exception cex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] copyVar clipboard: " + cex.Message); }
+                    }
+                }
+                else if (action == "beginFieldDrag")
+                {
+                    // Ticket ed2ccb84 / 0bada8de: a field/column row drag started (host-owned). The page suppressed
+                    // its own HTML5/WebView2 OLE drag and posted this on a small pointer-move with the button still
+                    // down; FieldDropService then tracks the cursor (WH_MOUSE_LL, NO OLE payload) until release and
+                    // hit-tests the point. On release: DESIGNER creates the bound control natively; MONACO inserts
+                    // the plain reference at the CA-embeditor's cursor; PAD is posted back to THIS page to hit-test
+                    // the section + run the in-pad copy; EDITOR (native Clarion editor / standalone Monaco / any
+                    // other active editor) is inserted here at the active editor's caret (the double-click path) so
+                    // dropping a field into code yields ONLY the reference, never the whole field. We're on the UI
+                    // thread (WebMessageReceived) with the button down — call synchronously inside the live gesture.
+                    string fKind = ExtractJsonValue(json, "kind");
+                    string fName = ExtractJsonValue(json, "name");
+                    string fType = ExtractJsonValue(json, "ftype");
+                    string fPic = ExtractJsonValue(json, "picture");
+                    // table (column drags) + scope (var drags) + procedure let the drop resolve the LIVE,
+                    // parented DDField (real identity) instead of a forged transient one — the live-field fix.
+                    string fTable = ExtractJsonValue(json, "table");
+                    string fScope = ExtractJsonValue(json, "scope");
+                    string fProc = ExtractJsonValue(json, "procedure");
+                    // text = the plain reference (parity with the old HTML5 text drop) inserted on a Monaco
+                    // release; cols = the in-pad column JSON the page re-uses for a PAD release.
+                    string fText = ExtractJsonValue(json, "text");
+                    string fCols = ExtractJsonValue(json, "cols");
+                    var drop = Services.FieldDropService.DoFieldDrag(fKind, fName, fType, fPic, fTable, fScope, fProc, _panel, _webView, fText);
+                    // DESIGNER/MONACO/EDITOR are handled inside DoFieldDrag (EDITOR inserts the reference straight
+                    // into the text area under the cursor — including a Monaco-default-editor the pad's _renderCtx
+                    // resolver doesn't recognize). Only PAD needs the page round-trip to hit-test its own section.
+                    if (drop.Target == Services.FieldDropTarget.Pad)
+                        PostHostFieldDrop(drop.ScreenX, drop.ScreenY, fCols, fText);
                 }
                 // ===== Explorer "Files" tab — Monaco file loader (all routed through MonacoFileOpener) =====
                 else if (action == "tabChanged")
@@ -1186,6 +1316,27 @@ namespace ClarionAssistant
             return outp;
         }
 
+        // A host-owned field drag (beginFieldDrag) was released over THIS pad. Post the drop back to the page so
+        // it can hit-test the Local/Global section under the point and run the in-pad column copy / declaration
+        // insert (the page owns the DOM layout; the host owns the OLE drag). Coords are physical screen offsets
+        // from the webview's client origin; the page divides by devicePixelRatio for elementFromPoint.
+        private void PostHostFieldDrop(int screenX, int screenY, string cols, string text)
+        {
+            try
+            {
+                var origin = _webView.PointToScreen(System.Drawing.Point.Empty);
+                Post(new Dictionary<string, object>
+                {
+                    { "type", "hostFieldDrop" },
+                    { "x", screenX - origin.X },
+                    { "y", screenY - origin.Y },
+                    { "cols", cols ?? "" },
+                    { "text", text ?? "" }
+                });
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] PostHostFieldDrop: " + ex.Message); }
+        }
+
         private void Post(Dictionary<string, object> data)
         {
             Action post = () =>
@@ -1372,34 +1523,29 @@ namespace ClarionAssistant
             catch { return false; }
         }
 
+        // Read a string value out of an inbound page message. Backed by JavaScriptSerializer (full JSON: unicode
+        // escapes, numbers, nesting) rather than a hand-rolled scanner. The whole message is deserialized once
+        // and cached by reference, so the many per-message lookups don't re-parse. Same (json,key)→string
+        // signature the call sites use; missing/null keys return null, non-string scalars stringify invariantly.
+        [ThreadStatic] private static string _lastJson;
+        [ThreadStatic] private static Dictionary<string, object> _lastDict;
         private static string ExtractJsonValue(string json, string key)
         {
             if (json == null) return null;
-            string search = "\"" + key + "\":";
-            int idx = json.IndexOf(search, StringComparison.Ordinal);
-            if (idx < 0) return null;
-            idx += search.Length;
-            while (idx < json.Length && json[idx] == ' ') idx++;
-            if (idx >= json.Length || json[idx] != '"') return null;
-            idx++;
-            var sb = new System.Text.StringBuilder();
-            while (idx < json.Length)
+            try
             {
-                char c = json[idx];
-                if (c == '\\' && idx + 1 < json.Length)
+                if (!ReferenceEquals(json, _lastJson))
                 {
-                    char n = json[idx + 1];
-                    if (n == '"') { sb.Append('"'); idx += 2; continue; }
-                    if (n == '\\') { sb.Append('\\'); idx += 2; continue; }
-                    if (n == 'n') { sb.Append('\n'); idx += 2; continue; }
-                    if (n == 'r') { sb.Append('\r'); idx += 2; continue; }
-                    if (n == 't') { sb.Append('\t'); idx += 2; continue; }
-                    sb.Append(c); idx++; continue;
+                    _lastDict = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }
+                        .DeserializeObject(json) as Dictionary<string, object>;
+                    _lastJson = json;
                 }
-                if (c == '"') break;
-                sb.Append(c); idx++;
+                object v;
+                if (_lastDict != null && _lastDict.TryGetValue(key, out v) && v != null)
+                    return Convert.ToString(v, System.Globalization.CultureInfo.InvariantCulture);
             }
-            return sb.ToString();
+            catch { }
+            return null;
         }
     }
 }

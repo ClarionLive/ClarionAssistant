@@ -1678,6 +1678,42 @@
     }
 
     // Insert text at the cursor (Modern Data pad double-click). Only inside an editable slot.
+    // Move the caret to the editor position under a host-supplied client point (physical px offset from the
+    // webview client origin; we divide by devicePixelRatio for Monaco's CSS-px getTargetAtClientPoint). Used during
+    // a Data-pad field DRAG so the caret tracks the mouse — the drop then lands exactly where the pointer is (parity
+    // with the native data pad). No focus steal: just reposition the visible caret.
+    function moveCaretToClientPoint(px, py) {
+        try {
+            var ed = activeEd();
+            if (!ed) return;
+            var dpr = window.devicePixelRatio || 1;
+            var target = ed.getTargetAtClientPoint(px / dpr, py / dpr);
+            if (target && target.position) ed.setPosition(target.position);
+        } catch (e) {}
+    }
+
+    // Insert at the editor position under a host-supplied client point (physical px offset from the webview client
+    // origin; divide by devicePixelRatio for Monaco's CSS-px hit-test). ATOMIC — the position is resolved from the
+    // drop coordinates at insert time (no dependence on a separately-tracked caret that can race or go stale over
+    // empty space), so a Data-pad field drop lands exactly where it was released. Falls back to the current caret
+    // only if the point resolves to nothing.
+    function insertTextAtPoint(text, px, py) {
+        if (!editor || !text) return;
+        var ed = activeEd();
+        var pos = null;
+        try {
+            var dpr = window.devicePixelRatio || 1;
+            var target = ed.getTargetAtClientPoint(px / dpr, py / dpr);
+            if (target && target.position) pos = target.position;
+        } catch (e) {}
+        if (!pos) pos = ed.getPosition();
+        var range = new monaco.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column);
+        if (!isEditableRange(range)) { showToast('Drop inside an editable slot to insert', false); return; }
+        ed.executeEdits('data-drop', [{ range: range, text: text, forceMoveMarkers: true }]);
+        ed.setPosition({ lineNumber: pos.lineNumber, column: pos.column + text.length });
+        ed.focus();
+    }
+
     function insertTextAtCursor(text) {
         if (!editor || !text) return;
         var ed = activeEd();
@@ -2785,6 +2821,10 @@
                 if (resolver) { delete pendingRequests[msg.reqId]; resolver(msg.data); }
             } else if (msg.type === 'insertText') {
                 insertTextAtCursor(msg.text);
+            } else if (msg.type === 'moveCaretToPoint') {
+                moveCaretToClientPoint(msg.x, msg.y);
+            } else if (msg.type === 'insertTextAtPoint') {
+                insertTextAtPoint(msg.text, msg.x, msg.y);
             } else if (msg.type === 'gotoRoutine') {
                 gotoRoutine(msg.name);
             } else if (msg.type === 'applySettings') {

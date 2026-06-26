@@ -328,6 +328,44 @@ namespace ClarionAssistant
             catch (Exception ex) { MonacoSpikeLog.Write("overlay OnReady error: " + ex.Message); }
         }
 
+        /// <summary>
+        /// Insert a reference at the Monaco overlay's cursor — the Data-pad field-drop / double-click target.
+        /// The OVERLAY is the authoritative editable buffer (OnReady loads it editable, OnSave writes ITS content
+        /// to disk; the native ClaTextAreaControl underneath is an inert shell), so an insert MUST go to Monaco —
+        /// writing the native buffer is invisible. Returns false if the overlay isn't ready yet so the caller can
+        /// fall back. Ticket ed2ccb84.
+        /// </summary>
+        public bool TryInsertReferenceAtPoint(string text, int screenX, int screenY)
+        {
+            try
+            {
+                if (_editor == null || !_pageReady || string.IsNullOrEmpty(text)) return false;
+                _editor.InsertTextAtScreenPoint(text, screenX, screenY);
+                _editor.FocusEditor();   // hand the editor keyboard focus so the dev can type right after the drop
+                return true;
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("TryInsertReferenceAtPoint error: " + ex.Message); return false; }
+        }
+
+        /// <summary>
+        /// During a Data-pad field DRAG, move the Monaco overlay's caret to the position under a SCREEN point so the
+        /// caret tracks the mouse (the drop then lands where the pointer is). Returns false if the overlay isn't
+        /// ready or the point isn't over its webview, so the caller can route elsewhere. Ticket ed2ccb84.
+        /// </summary>
+        public bool TryMoveCaretToScreenPoint(int screenX, int screenY)
+        {
+            try
+            {
+                if (_editor == null || !_pageReady) return false;
+                var wv = _editor.WebView;
+                if (wv == null || !wv.IsHandleCreated || !wv.Visible) return false;
+                if (!wv.RectangleToScreen(wv.ClientRectangle).Contains(screenX, screenY)) return false;
+                _editor.MoveCaretToScreenPoint(screenX, screenY);
+                return true;
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("TryMoveCaretToScreenPoint error: " + ex.Message); return false; }
+        }
+
         // Monaco owns the buffer and saves straight to disk — the native editor underneath stays a clean,
         // untouched shell (never edited → never dirty → no dueling save). It's just a file on disk.
         void IMonacoEditorHost.OnSave(MonacoEditorControl editor, string rawJson)

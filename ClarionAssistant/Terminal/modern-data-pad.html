@@ -578,6 +578,8 @@
     var procedures = [];
     var renderedProcedure = '';  // the procedure the current payload is for — sent with ＋Add so the host validates against the on-screen procedure
     var hoverScope = null;       // 'local'|'global' when the pointer is over that section header — arms Ctrl+V paste
+    var hoverVar = null;         // {name,type,scope,path} of the Local/Global variable row under the pointer — arms Ctrl+C copy
+    var hoverField = null;       // {ins,name,type,meta} of the dictionary COLUMN row under the pointer — arms Ctrl+C copy
     // Per-session random token stamped into every in-pad column drag (application/x-ca-column). The drop handler
     // only honors column drags carrying THIS token — an external drag source can set the MIME but can't know it,
     // so foreign drags can't drive the lossless column-copy path.
@@ -880,8 +882,46 @@
             }
         }, true);
 
-        row.draggable = true;
-        row.addEventListener('dragstart', function (e) {
+        // Field rows (dragMeta present) are HOST-OWNED (ticket 0bada8de): the host runs a single DoDragDrop
+        // carrying the designer's native payload, so the row must NOT also start a competing HTML5 OLE drag —
+        // draggable stays OFF and a small pointer-move posts beginFieldDrag instead. Non-field rows keep the
+        // plain HTML5 text/plain drag that lands in the Monaco editor.
+        row.draggable = !dragMeta;
+
+        if (!dragMeta) {
+            row.addEventListener('dragstart', function (e) {
+                var payload = text;
+                if (selSet[key] !== undefined) {
+                    var parts = [];
+                    for (var i = 0; i < selOrder.length; i++)
+                        if (selSet[selOrder[i].key] !== undefined) parts.push(selOrder[i].text);
+                    if (parts.length) payload = parts.join('\n');
+                }
+                try { e.dataTransfer.setData('text/plain', payload); e.dataTransfer.effectAllowed = 'copy'; }
+                catch (ex) {}
+            });
+            row.addEventListener('dragend', function (e) {
+                try { if (e.dataTransfer && e.dataTransfer.dropEffect && e.dataTransfer.dropEffect !== 'none') { selSet = {}; applySel(); } }
+                catch (ex) {}
+            });
+            return;
+        }
+
+        // Host-owned field-drag gesture: on a small pointer-move while the left button is down, post
+        // beginFieldDrag ONCE — the host then enters a blocking DoDragDrop on this same turn while the button
+        // is still down. After firing, the OLE drag captures the mouse; no further page events are needed.
+        var _hdDown = null, _hdFired = false;
+        row.addEventListener('pointerdown', function (e) {
+            if (e.button !== 0) return;
+            _hdDown = { x: e.clientX, y: e.clientY }; _hdFired = false;
+        }, true);
+        row.addEventListener('pointermove', function (e) {
+            if (!_hdDown || _hdFired) return;
+            if (Math.abs(e.clientX - _hdDown.x) + Math.abs(e.clientY - _hdDown.y) < 6) return;
+            _hdFired = true;
+            // The plain reference (text/plain parity) for a Monaco/declaration drop, plus the x-ca-column JSON
+            // (this page's nonce) for an in-pad lossless column copy — both carried to the host so its single
+            // OLE drag can serve the designer, Monaco, and in-pad targets.
             var payload = text;
             if (selSet[key] !== undefined) {
                 var parts = [];
@@ -889,23 +929,30 @@
                     if (selSet[selOrder[i].key] !== undefined) parts.push(selOrder[i].text);
                 if (parts.length) payload = parts.join('\n');
             }
-            try { e.dataTransfer.setData('text/plain', payload); e.dataTransfer.effectAllowed = 'copy'; }
-            catch (ex) {}
-            // Column rows also carry structured {table,column} (this row, or every selected column row) so a drop
-            // on a Local/Global section copies the real dictionary field(s) rather than parsing "PRE:Name" as text.
+            var colsPayload = '';
             try {
                 var metas = [];
                 if (selSet[key] !== undefined) {
                     for (var j = 0; j < selOrder.length; j++)
-                        if (selSet[selOrder[j].key] !== undefined && selOrder[j].meta) metas.push(selOrder[j].meta);
-                } else if (dragMeta) { metas.push(dragMeta); }
-                if (metas.length) e.dataTransfer.setData('application/x-ca-column', JSON.stringify({ n: DRAG_NONCE, cols: metas }));
-            } catch (ex2) {}
-        });
-        row.addEventListener('dragend', function (e) {
-            try { if (e.dataTransfer && e.dataTransfer.dropEffect && e.dataTransfer.dropEffect !== 'none') { selSet = {}; applySel(); } }
-            catch (ex) {}
-        });
+                        if (selSet[selOrder[j].key] !== undefined && selOrder[j].meta && selOrder[j].meta.kind === 'column')
+                            metas.push(selOrder[j].meta);
+                } else if (dragMeta.kind === 'column') { metas.push(dragMeta); }
+                if (metas.length) colsPayload = JSON.stringify({ n: DRAG_NONCE, cols: metas });
+            } catch (exm) {}
+            postToHost({
+                action: 'beginFieldDrag',
+                kind: dragMeta.kind || 'var',
+                name: dragMeta.name || dragMeta.column || '',
+                ftype: dragMeta.type || '',
+                picture: dragMeta.picture || '',
+                table: dragMeta.table || '',
+                scope: dragMeta.scope || '',
+                procedure: renderedProcedure || '',
+                text: payload || '',
+                cols: colsPayload
+            });
+        }, true);
+        row.addEventListener('pointerup', function () { _hdDown = null; _hdFired = false; }, true);
     }
 
     // Shift-click: select every row between the anchor (lastSel) and the clicked key inclusive, in current
@@ -1094,6 +1141,9 @@
         // any other text/plain → declaration text the host parses. Column data is preferred over text (a column's
         // text/plain is its compilable reference, not a parseable declaration).
         function wireScopeDrop(sec, scope) {
+            // Stash the scope on the element so a HOST-owned field drop (which gets no dragover events) can
+            // resolve the target section by elementFromPoint hit-test (ticket 0bada8de).
+            sec.__caScope = scope;
             sec.addEventListener('mouseenter', function () { hoverScope = scope; });
             sec.addEventListener('mouseleave', function () { if (hoverScope === scope) hoverScope = null; });
             sec.addEventListener('dragover', function (e) {
@@ -1369,7 +1419,20 @@
                                 row.appendChild(pc);
 
                                 row.addEventListener('dblclick', function () { insert(ins); });
-                                makeDraggable(row, ins, true, { table: ff.name, column: c.name });
+                                makeDraggable(row, ins, true, { kind: 'column', table: ff.name, column: c.name, name: c.name, type: c.type || '', picture: c.picture || '' });
+
+                                // Ctrl+C + right-click parity for dictionary columns (Declared Tables / Other Files /
+                                // File Schematic). hoverField arms Ctrl+C; right-click opens the column menu. Captures
+                                // the prefixed reference (cIns, e.g. aut:Phone) + the {table,column} identity used for a
+                                // lossless field copy into a scope.
+                                var cIns = ins, cName = c.name, cType = c.type || '';
+                                var cMeta = { table: ff.name, column: c.name };
+                                row.addEventListener('mouseenter', function () { hoverField = { ins: cIns, name: cName, type: cType, meta: cMeta }; });
+                                row.addEventListener('mouseleave', function () { if (hoverField && hoverField.ins === cIns) hoverField = null; });
+                                row.addEventListener('contextmenu', function (e) {
+                                    e.preventDefault(); e.stopPropagation();
+                                    showColMenu(e.clientX, e.clientY, { ins: cIns, name: cName, type: cType, meta: cMeta });
+                                });
                                 if (hasKids) {
                                     tw.style.cursor = 'pointer';   // chevron-only expand/collapse
                                     tw.addEventListener('click', function (e) {
@@ -1601,6 +1664,24 @@
                         });
                         acts.appendChild(edBtn); acts.appendChild(delBtn);
                         namecell.appendChild(acts);
+
+                        // Native-Clarion-style right-click menu (Copy / Copy Details / Paste / Delete / Properties …)
+                        // + hover-arms Ctrl+C AND Ctrl+V. Captures this row's identity (name/type/scope/structural path).
+                        var vName = it.name, vType = it.type || '', vScope = rowScope, vPath = fieldPath;
+                        // Variable rows are SIBLINGS of the section-header div (the only other element that arms
+                        // hoverScope), so without arming hoverScope here a Ctrl+V while hovering a row no-ops — the
+                        // bug where Copy-from-Global then Ctrl+V-in-Local did nothing (the Paste button worked
+                        // because it carries the row's own scope). Arm both on enter; clear both on leave so
+                        // neither hoverVar nor hoverScope goes stale once the pointer moves off the row.
+                        row.addEventListener('mouseenter', function () { hoverVar = { name: vName, type: vType, scope: vScope, path: vPath }; hoverScope = vScope; });
+                        row.addEventListener('mouseleave', function () {
+                            if (hoverVar && hoverVar.name === vName && hoverVar.scope === vScope) hoverVar = null;
+                            if (hoverScope === vScope) hoverScope = null;
+                        });
+                        row.addEventListener('contextmenu', function (e) {
+                            e.preventDefault(); e.stopPropagation();
+                            showVarMenu(e.clientX, e.clientY, { name: vName, type: vType, scope: vScope, path: vPath });
+                        });
                     }
                     row.appendChild(namecell);
 
@@ -1612,7 +1693,7 @@
                     pc.className = 'picture'; pc.textContent = it.picture || '';
                     row.appendChild(pc);
 
-                    if (it.name) { row.addEventListener('dblclick', function () { insert(it.name); }); makeDraggable(row, it.name); }
+                    if (it.name) { row.addEventListener('dblclick', function () { insert(it.name); }); makeDraggable(row, it.name, true, { kind: 'var', name: it.name, type: it.type || '', picture: it.picture || '', scope: rowScope }); }
                     if (hasKids) {
                         tw.style.cursor = 'pointer';   // chevron-only expand/collapse
                         tw.addEventListener('click', function (e) {
@@ -1799,6 +1880,36 @@
                 } catch (ex) {}
                 return;
             }
+            if (msg.type === 'hostFieldDrop') {
+                // A host-owned field drag (ticket 0bada8de) was released over this pad. The host can't see the
+                // DOM, so it forwards the release point (physical screen offset from the webview client origin)
+                // plus the drag payload; we convert to CSS px, hit-test the Local/Global section under the point,
+                // and route to the SAME copyColumns/pasteVariables flow the in-page drop used. No-op when the
+                // release isn't over a wired scope section.
+                try {
+                    var dpr = window.devicePixelRatio || 1;
+                    var el = document.elementFromPoint((msg.x || 0) / dpr, (msg.y || 0) / dpr);
+                    var scope = null;
+                    while (el) { if (el.__caScope) { scope = el.__caScope; break; } el = el.parentElement; }
+                    if (!scope) return;
+                    var colRaw = msg.cols || '';
+                    if (colRaw) {
+                        // In-pad column copy — must carry this page's session nonce (a foreign source can't forge it).
+                        if (colRaw.length > 256 * 1024) return;
+                        var parsed = null; try { parsed = JSON.parse(colRaw); } catch (e1) {}
+                        if (parsed && parsed.n === DRAG_NONCE && parsed.cols && parsed.cols.length)
+                            postToHost({ action: 'copyColumns', scope: scope, cols: JSON.stringify(parsed.cols), procedure: renderedProcedure });
+                        return;
+                    }
+                    var t = msg.text || '';
+                    if (t) {
+                        if (t.length > 256 * 1024) return;
+                        t = t.replace(/\r\n?/g, '\n');
+                        postToHost({ action: 'pasteVariables', scope: scope, text: t, procedure: renderedProcedure });
+                    }
+                } catch (ex) {}
+                return;
+            }
             if (msg.type === 'setSymbols') {
                 // New data set: drop any prior multi-selection. Selection keys are render-order-scoped
                 // (text + occurrence), so a stale key could silently point at a DIFFERENT row after a
@@ -1909,6 +2020,141 @@
             }
         });
     }
+
+    // ---- Native-Clarion-style right-click menu for Local/Global variable rows ----
+    // Mirrors Clarion's data-pad variable menu: Add Column · Cut · Copy · Copy Details · Paste · Delete · Properties.
+    // All items route through the EXISTING host actions; Copy/Copy Details put plain text on the OS clipboard (via the
+    // host's WinForms clipboard) so they round-trip with Clarion's own Copy/Paste.
+    var _varMenu = null, _varMenuTarget = null;
+    function buildVarMenu() {
+        if (_varMenu) return _varMenu;
+        var m = document.createElement('div');
+        m.id = 'varCtxMenu';
+        m.style.cssText = 'position:fixed;z-index:10000;min-width:170px;background:#fff;border:1px solid #b5b5b5;'
+            + 'box-shadow:2px 2px 7px rgba(0,0,0,0.28);font:12px "Segoe UI",sans-serif;color:#222;padding:3px 0;display:none;user-select:none;';
+        [
+            { id: 'add', label: 'Add Column' },
+            { id: 'cut', label: 'Cut' },
+            { id: 'copy', label: 'Copy' },
+            { id: 'copydet', label: 'Copy Details' },
+            { id: 'paste', label: 'Paste' },
+            { sep: true },
+            { id: 'delete', label: 'Delete' },
+            { sep: true },
+            { id: 'props', label: 'Properties' }
+        ].forEach(function (mi) {
+            if (mi.sep) { var s = document.createElement('div'); s.style.cssText = 'height:1px;background:#e3e3e3;margin:3px 0;'; m.appendChild(s); return; }
+            var r = document.createElement('div');
+            r.textContent = mi.label;
+            r.style.cssText = 'padding:5px 24px;cursor:pointer;white-space:nowrap;';
+            r.addEventListener('mouseenter', function () { r.style.background = '#cde6ff'; });
+            r.addEventListener('mouseleave', function () { r.style.background = ''; });
+            r.addEventListener('mousedown', function (e) { e.preventDefault(); e.stopPropagation(); onVarMenu(mi.id); });
+            m.appendChild(r);
+        });
+        document.body.appendChild(m);
+        _varMenu = m;
+        return m;
+    }
+    function showVarMenu(x, y, target) {
+        var m = buildVarMenu();
+        _varMenuTarget = target;
+        m.style.display = 'block';
+        m.style.left = '0px'; m.style.top = '0px';
+        var w = m.offsetWidth, h = m.offsetHeight, vw = window.innerWidth, vh = window.innerHeight;
+        m.style.left = Math.max(0, Math.min(x, vw - w - 4)) + 'px';
+        m.style.top = Math.max(0, Math.min(y, vh - h - 4)) + 'px';
+    }
+    function hideVarMenu() { if (_varMenu) _varMenu.style.display = 'none'; _varMenuTarget = null; }
+    function onVarMenu(id) {
+        var t = _varMenuTarget; hideVarMenu();
+        if (!t) return;
+        var det = t.name + (t.type ? '   ' + t.type : '');   // "name   TYPE" — spaces (JSON-safe), ParseLine-friendly
+        if (id === 'add') postToHost({ action: 'addVariable', scope: t.scope, procedure: renderedProcedure });
+        else if (id === 'copy') postToHost({ action: 'copyVar', scope: t.scope, name: t.name, procedure: renderedProcedure });
+        else if (id === 'copydet') postToHost({ action: 'copyText', text: det });
+        else if (id === 'paste') postToHost({ action: 'pasteVariables', scope: t.scope, procedure: renderedProcedure });
+        else if (id === 'delete') postToHost({ action: 'deleteVariable', scope: t.scope, path: t.path, procedure: renderedProcedure });
+        else if (id === 'props') postToHost({ action: 'editVariable', scope: t.scope, path: t.path, procedure: renderedProcedure });
+        else if (id === 'cut') { postToHost({ action: 'copyVar', scope: t.scope, name: t.name, procedure: renderedProcedure }); postToHost({ action: 'deleteVariable', scope: t.scope, path: t.path, procedure: renderedProcedure }); }
+    }
+    document.addEventListener('mousedown', function (e) { if (_varMenu && _varMenu.style.display === 'block' && !_varMenu.contains(e.target)) hideVarMenu(); });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') hideVarMenu(); });
+    window.addEventListener('scroll', function () { hideVarMenu(); }, true);
+    window.addEventListener('blur', function () { hideVarMenu(); });
+
+    // ---- Native-Clarion-style right-click menu for dictionary COLUMN rows (Declared Tables, Other Files, …) ----
+    // Columns are read-only dictionary fields, so the menu is copy/insert oriented: Copy (ref + stash for a lossless
+    // Ctrl+V clone), Copy Details (name+type text), Copy to Local/Global Data (immediate lossless field copy), Insert
+    // into code. All route through EXISTING host actions (copyColumn / copyText / copyColumns / insert).
+    var _colMenu = null, _colMenuTarget = null;
+    function buildColMenu() {
+        if (_colMenu) return _colMenu;
+        var m = document.createElement('div');
+        m.id = 'colCtxMenu';
+        m.style.cssText = 'position:fixed;z-index:10000;min-width:170px;background:#fff;border:1px solid #b5b5b5;'
+            + 'box-shadow:2px 2px 7px rgba(0,0,0,0.28);font:12px "Segoe UI",sans-serif;color:#222;padding:3px 0;display:none;user-select:none;';
+        [
+            { id: 'copy', label: 'Copy' },
+            { id: 'copydet', label: 'Copy Details' },
+            { sep: true },
+            { id: 'tolocal', label: 'Copy to Local Data' },
+            { id: 'toglobal', label: 'Copy to Global Data' },
+            { sep: true },
+            { id: 'insert', label: 'Insert into code' }
+        ].forEach(function (mi) {
+            if (mi.sep) { var s = document.createElement('div'); s.style.cssText = 'height:1px;background:#e3e3e3;margin:3px 0;'; m.appendChild(s); return; }
+            var r = document.createElement('div');
+            r.textContent = mi.label;
+            r.style.cssText = 'padding:5px 24px;cursor:pointer;white-space:nowrap;';
+            r.addEventListener('mouseenter', function () { r.style.background = '#cde6ff'; });
+            r.addEventListener('mouseleave', function () { r.style.background = ''; });
+            r.addEventListener('mousedown', function (e) { e.preventDefault(); e.stopPropagation(); onColMenu(mi.id); });
+            m.appendChild(r);
+        });
+        document.body.appendChild(m);
+        _colMenu = m;
+        return m;
+    }
+    function showColMenu(x, y, target) {
+        var m = buildColMenu();
+        _colMenuTarget = target;
+        m.style.display = 'block';
+        m.style.left = '0px'; m.style.top = '0px';
+        var w = m.offsetWidth, h = m.offsetHeight, vw = window.innerWidth, vh = window.innerHeight;
+        m.style.left = Math.max(0, Math.min(x, vw - w - 4)) + 'px';
+        m.style.top = Math.max(0, Math.min(y, vh - h - 4)) + 'px';
+    }
+    function hideColMenu() { if (_colMenu) _colMenu.style.display = 'none'; _colMenuTarget = null; }
+    function onColMenu(id) {
+        var t = _colMenuTarget; hideColMenu();
+        if (!t) return;
+        var det = t.name + (t.type ? '   ' + t.type : '');           // "name   TYPE" — JSON-safe, ParseLine-friendly
+        var cols = JSON.stringify([t.meta]);                          // [{table,column}] for the lossless field copy
+        if (id === 'copy') postToHost({ action: 'copyColumn', cols: cols, name: t.ins });
+        else if (id === 'copydet') postToHost({ action: 'copyText', text: det });
+        else if (id === 'tolocal') postToHost({ action: 'copyColumns', scope: 'local', cols: cols, procedure: renderedProcedure });
+        else if (id === 'toglobal') postToHost({ action: 'copyColumns', scope: 'global', cols: cols, procedure: renderedProcedure });
+        else if (id === 'insert') insert(t.ins);
+    }
+    document.addEventListener('mousedown', function (e) { if (_colMenu && _colMenu.style.display === 'block' && !_colMenu.contains(e.target)) hideColMenu(); });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') hideColMenu(); });
+    window.addEventListener('scroll', function () { hideColMenu(); }, true);
+    window.addEventListener('blur', function () { hideColMenu(); });
+
+    // Ctrl/Cmd+C: native "Copy". On a Local/Global VARIABLE row -> copyVar (NAME on clipboard + full-property clone
+    // stash). On a dictionary COLUMN row -> copyColumn (prefixed reference e.g. aut:Phone on clipboard + lossless
+    // field-copy stash, so a following Ctrl+V into a data section clones the whole column).
+    document.addEventListener('keydown', function (e) {
+        if (!(e.ctrlKey || e.metaKey) || e.altKey || (e.key !== 'c' && e.key !== 'C')) return;
+        if (hoverVar) {
+            e.preventDefault();
+            postToHost({ action: 'copyVar', scope: hoverVar.scope, name: hoverVar.name, procedure: renderedProcedure });
+        } else if (hoverField) {
+            e.preventDefault();
+            postToHost({ action: 'copyColumn', cols: JSON.stringify([hoverField.meta]), name: hoverField.ins });
+        }
+    });
 
     // Ctrl/Cmd+V while hovering a Local/Global section header pastes clipboard declaration text into that scope
     // (the host reads the OS clipboard). Gated on hoverScope so the target is unambiguous; ignored otherwise.

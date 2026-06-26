@@ -295,6 +295,50 @@ namespace ClarionAssistant.Terminal
             PostJson("{\"type\":\"insertText\",\"text\":" + JsonString(text) + "}");
         }
 
+        /// <summary>Move the Monaco caret to the editor position under a SCREEN point (used during a Data-pad field
+        /// drag so the caret tracks the mouse and the drop lands at the pointer). We send the PHYSICAL offset from
+        /// the webview's client origin; the page divides by devicePixelRatio for Monaco's CSS-px hit-test.</summary>
+        public void MoveCaretToScreenPoint(int screenX, int screenY)
+        {
+            try
+            {
+                if (_webView == null || !_webView.IsHandleCreated) return;
+                var origin = _webView.PointToScreen(System.Drawing.Point.Empty);
+                PostJson("{\"type\":\"moveCaretToPoint\",\"x\":" + (screenX - origin.X) + ",\"y\":" + (screenY - origin.Y) + "}");
+            }
+            catch { }
+        }
+
+        /// <summary>Insert text at the editor position under a SCREEN point — the ATOMIC Data-pad field DROP. The
+        /// page resolves the position from these coordinates at insert time, so the drop lands exactly where it was
+        /// released (no race with the drag's caret-follow). Falls back to a plain caret insert if coords are
+        /// unavailable.</summary>
+        public void InsertTextAtScreenPoint(string text, int screenX, int screenY)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            try
+            {
+                if (_webView == null || !_webView.IsHandleCreated) { InsertText(text); return; }
+                var origin = _webView.PointToScreen(System.Drawing.Point.Empty);
+                PostJson("{\"type\":\"insertTextAtPoint\",\"text\":" + JsonString(text)
+                    + ",\"x\":" + (screenX - origin.X) + ",\"y\":" + (screenY - origin.Y) + "}");
+            }
+            catch { InsertText(text); }
+        }
+
+        /// <summary>Give the editor OS keyboard focus (e.g. right after a Data-pad field DROP so the developer can
+        /// type immediately). The page also calls ed.focus() for the Monaco-internal caret; this hands the WebView2
+        /// control the Windows focus the pad held during the drag. Deferred a turn so it lands after the drop edit.</summary>
+        public void FocusEditor()
+        {
+            try
+            {
+                if (_webView == null || !_webView.IsHandleCreated) return;
+                _webView.BeginInvoke((Action)(() => { try { _webView.Focus(); } catch { } }));
+            }
+            catch { }
+        }
+
         /// <summary>Reply to an LSP/request message: {type:"response", reqId, data}.</summary>
         public void PostResponse(int reqId, IDictionary<string, object> data)
         {

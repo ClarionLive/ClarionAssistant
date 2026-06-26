@@ -151,6 +151,7 @@
     <Compile Include="Services\ModernEmbeditorState.cs" />
     <Compile Include="Services\ClarionAppDataReader.cs" />
     <Compile Include="Services\StructureDesignerService.cs" />
+    <Compile Include="Services\FieldDropService.cs" />
     <Compile Include="Services\DefaultStructuresReader.cs" />
     <Compile Include="Dialogs\ModernEmbeditorPickerDialog.cs" />
     <Compile Include="Dialogs\ClaudeChatSettingsDialog.cs" />

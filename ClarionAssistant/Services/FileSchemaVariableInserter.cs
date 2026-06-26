@@ -457,6 +457,130 @@ namespace ClarionAssistant.Services
             }
         }
 
+        /// <summary>
+        /// Ticket ed2ccb84 — full-property copy of an EXISTING Local/Global variable into a scope (the keyboard
+        /// Ctrl+C / Ctrl+V "copy the whole thing" the native data pad does). Resolves the live SOURCE DDField from
+        /// its own scope, then commits it through the SAME native paste-one-item flow as a dictionary-column copy
+        /// (source.Copy(AddParent) → AddItem → OnItemAdded) — a LOSSLESS clone carrying every property (type,
+        /// picture, prompt, header, description, validity, dims, NAME(), …) with Clarion auto-renaming on a name
+        /// clash. UI thread; same LOCAL wrong-procedure fail-closed guard via ResolveAddTarget.
+        /// </summary>
+        public static Result CopyVariableToScope(string targetScope, string sourceScope, string sourceName,
+                                                 string sourceProcedure = null, string targetProcedure = null)
+        {
+            if (string.IsNullOrWhiteSpace(sourceName)) return Result.Fail("No source variable to copy.");
+            try
+            {
+                // Resolve the live SOURCE field first (from ITS scope/proc), then the TARGET add point.
+                var source = ResolveScopeDDField(sourceScope, sourceName, sourceProcedure);
+                if (source == null) return Result.Fail("Couldn't resolve the source variable '" + sourceName + "' to copy.");
+
+                object tree, details, addParent; Result error;
+                if (!ResolveAddTarget(targetScope, targetProcedure, out tree, out details, out addParent, out error))
+                    return error;
+
+                string pasteErr;
+                var newItem = PasteOneField(tree, details, source, true, out pasteErr);
+                if (newItem == null) return Result.Fail("Couldn't copy '" + sourceName + "': " + pasteErr);
+                if (!VerifyAttached(addParent, newItem)) return Result.Fail("Couldn't copy '" + sourceName + "' (not attached).");
+
+                var finalLabel = GetProp(newItem, "Label") ?? GetProp(newItem, "Name");
+                string finalStr = finalLabel == null ? sourceName : finalLabel.ToString();
+                string msg = "Copied " + sourceName + " into " + ScopeName(targetScope) + " data"
+                    + (string.Equals(finalStr, sourceName, StringComparison.OrdinalIgnoreCase) ? "" : " as " + finalStr) + ".";
+                return Result.Done(msg);
+            }
+            catch (Exception ex)
+            {
+                return Result.Fail("Copy variable failed: " + (ex.InnerException?.Message ?? ex.Message));
+            }
+        }
+
+        /// <summary>
+        /// Ticket 590e48b1/0bada8de (window-designer field drop): resolve the LIVE, parented dictionary DDField for
+        /// a column — the real identity the designer can re-resolve on reconcile (vs a forged transient field,
+        /// which gets discarded as an orphan). Resolves the add target only to reach addParent.DataDictionary,
+        /// then looks the column up dictionary-wide. Returns null when no dictionary/model is loaded (e.g. the pad
+        /// was fed from a .txa snapshot) so the caller can fall back. Read-only w.r.t. the field; UI thread.
+        /// </summary>
+        public static object ResolveColumnDDField(string scope, string table, string column, string expectedProcedure = null)
+        {
+            // PRIMARY: reach the LIVE loaded dictionary DIRECTLY off the open app view's FileSchema
+            // (App.FileSchema.DataDictionary) — independent of any Local/Global scope node. The earlier
+            // implementation went through ResolveAddTarget("local"), whose scope-node + wrong-proc /
+            // repopulate resolution can FAIL (or yield a FieldList whose DataDictionary is null) when the
+            // Modern pad was fed from a .txa snapshot — which is exactly the "dict miss … model not loaded"
+            // we saw: the dictionary wasn't absent, the LOCAL scope path just couldn't resolve. The
+            // dictionary is the same regardless of scope, so look the column up dictionary-wide here.
+            // UI thread; pure managed reflection (the AppTreeService FileSchema accessor never touches
+            // native pointers).
+            try
+            {
+                var fs = new AppTreeService().GetAppFileSchema();
+                var dd0 = GetProp(fs, "DataDictionary");
+                if (dd0 != null)
+                {
+                    var f = FindDictionaryField(dd0, table, column);
+                    if (f != null) return f;
+                }
+            }
+            catch { /* fall through to the scope-FieldList path */ }
+
+            // FALLBACK: the original scope-FieldList path. Default to GLOBAL (not LOCAL) so a column
+            // lookup never drags in the per-procedure wrong-proc guard — the dictionary a column lives in
+            // is scope-independent, and Global resolves without a current-procedure dependency.
+            try
+            {
+                object tree, details, addParent; Result error;
+                if (!ResolveAddTarget(string.IsNullOrEmpty(scope) ? "global" : scope, expectedProcedure,
+                                      out tree, out details, out addParent, out error))
+                    return null;
+                var dd = GetProp(addParent, "DataDictionary");
+                if (dd == null) return null;
+                return FindDictionaryField(dd, table, column);
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Ticket 590e48b1/0bada8de: resolve the LIVE local/global DDField from the scope's FieldList — a real
+        /// parented field (Parent == the scope's FieldList), not an orphan, so a window control bound to it
+        /// survives the designer's reconcile. Returns null when the scope/model can't be resolved (caller forges).
+        /// </summary>
+        public static object ResolveScopeDDField(string scope, string name, string expectedProcedure = null)
+        {
+            try
+            {
+                object tree, details, addParent; Result error;
+                if (!ResolveAddTarget(string.IsNullOrEmpty(scope) ? "local" : scope, expectedProcedure,
+                                      out tree, out details, out addParent, out error))
+                    return null;
+                return FindScopeField(addParent, name);
+            }
+            catch { return null; }
+        }
+
+        // Find a field in a scope's FieldList (addParent) by Name/CodeName/Label, prefix-tolerant (PRE:Field -> the
+        // field whose label is Field), matching the dictionary-column resolver's leniency.
+        private static object FindScopeField(object addParent, string name)
+        {
+            var fields = GetProp(addParent, "Fields") as IEnumerable;
+            if (fields == null || string.IsNullOrEmpty(name)) return null;
+            string wantBare = AfterColon(name);
+            object bareMatch = null; int bareCount = 0;
+            foreach (var fld in fields)
+            {
+                if (fld == null) continue;
+                if (NameEquals(fld, name)) return fld;   // an exact Name/CodeName/Label match always wins
+                var fldName = GetProp(fld, "Name") ?? GetProp(fld, "Label");
+                if (fldName != null && string.Equals(AfterColon(fldName.ToString()), wantBare, StringComparison.OrdinalIgnoreCase))
+                { bareMatch = fld; bareCount++; }
+            }
+            // Bare-tail fallback resolves ONLY when it's unambiguous — an ambiguous tail (same suffix under
+            // different prefixes) returns null rather than guessing the wrong field.
+            return bareCount == 1 ? bareMatch : null;
+        }
+
         // Resolve a live DDField from the loaded dictionary by table + column name. Prefix-tolerant: matches the
         // column against the field's Name/CodeName/Label, and as a fallback against the un-prefixed tail (the
         // part after ':') so a pad row carrying "PRE:Field" still resolves to the field whose label is "Field".
@@ -477,16 +601,19 @@ namespace ClarionAssistant.Services
             if (fields == null) return null;
 
             string wantBare = AfterColon(column);
+            object bareMatch = null; int bareCount = 0;
             foreach (var fld in fields)
             {
                 if (fld == null) continue;
-                if (NameEquals(fld, column)) return fld;
-                // prefix-insensitive fallback
+                if (NameEquals(fld, column)) return fld;   // an exact Name/CodeName/Label match always wins
+                // prefix-insensitive fallback — collected, applied only if unique
                 var fldName = GetProp(fld, "Name") ?? GetProp(fld, "Label");
                 if (fldName != null && string.Equals(AfterColon(fldName.ToString()), wantBare, StringComparison.OrdinalIgnoreCase))
-                    return fld;
+                { bareMatch = fld; bareCount++; }
             }
-            return null;
+            // Bare-tail fallback resolves ONLY when it's unambiguous — an ambiguous tail (same suffix under
+            // different prefixes) returns null rather than binding the wrong column.
+            return bareCount == 1 ? bareMatch : null;
         }
 
         private static bool NameEquals(object item, string name)
