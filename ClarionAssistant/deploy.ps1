@@ -38,8 +38,10 @@ $ProjectDir  = $PSScriptRoot
 $ProjectFile = Join-Path $ProjectDir "ClarionAssistant.csproj"
 $MSBuild     = Resolve-MSBuild
 
-# Indexer build output (separate project, shares source files with ClarionCodeGraph)
-$IndexerDir    = "H:\DevLaptop\ClarionLSP\indexer"
+# Indexer build output. VENDORED into this repo as indexer/ (GitHub #30) — self-contained,
+# no longer built from the external H:\DevLaptop\ClarionLSP\indexer tree. Override with
+# $env:CLARIONINDEXER_DIR only if you keep the indexer somewhere else.
+$IndexerDir    = if ($env:CLARIONINDEXER_DIR) { $env:CLARIONINDEXER_DIR } else { Join-Path $ProjectDir "indexer" }
 $IndexerFile   = "$IndexerDir\ClarionIndexer.csproj"
 $IndexerOutput = "$IndexerDir\bin\Debug"
 
@@ -98,8 +100,13 @@ $Items = @(
     "runtimes"
 )
 
-# LSP Server (Clarion Language Server)
-$LspSourceDir = "H:\DevLaptop\ClarionLSP"
+# LSP Server (Clarion Language Server).
+# Source root is the local snapshot of the build output of msarson/Clarion-Extension
+# (server/src/server.ts -> out/server/...) plus our CodeGraph patch + node_modules. The
+# hard-coded local path is gone (GitHub #30): set $env:CLARIONLSP_ROOT to your snapshot
+# dir. Falls back to the legacy H:\DevLaptop\ClarionLSP location for existing dev machines.
+# See CONTRIBUTING.md for where the server source comes from.
+$LspSourceDir = if ($env:CLARIONLSP_ROOT) { $env:CLARIONLSP_ROOT } else { "H:\DevLaptop\ClarionLSP" }
 $LspNodeModules = @(
     "vscode-jsonrpc"
     "vscode-languageserver"
@@ -291,8 +298,13 @@ foreach ($ver in $TargetVersions) {
                 Write-Host "  SKIP  lsp-server (ClarionLSP build output not found)" -ForegroundColor DarkGray
             }
 
-            # Copy bundled node.exe (so end users don't need Node.js installed)
-            $NodeExeSrc = "C:\Program Files\nodejs\node.exe"
+            # Copy bundled node.exe (so end users don't need Node.js installed).
+            # Resolve portably (GitHub #30): explicit $env:CLARIONLSP_NODE, else node on PATH,
+            # else the legacy default install location.
+            $NodeExeSrc =
+                if ($env:CLARIONLSP_NODE) { $env:CLARIONLSP_NODE }
+                elseif (Get-Command node -ErrorAction SilentlyContinue) { (Get-Command node).Source }
+                else { "C:\Program Files\nodejs\node.exe" }
             if (Test-Path $NodeExeSrc) {
                 Copy-Item $NodeExeSrc (Join-Path $LspDestDir "node.exe") -Force
                 Write-Host "  OK    lsp-server\node.exe" -ForegroundColor Green
@@ -311,6 +323,36 @@ foreach ($ver in $TargetVersions) {
                     Write-Host "  OK    lsp-server\node_modules\$mod" -ForegroundColor Green
                     $copied++
                 }
+            }
+
+            # --- ABI assertion: bundled better-sqlite3 must load under bundled node.exe (GitHub #42) ---
+            # The prebuilt better-sqlite3 .node addon is compiled for a specific Node ABI/arch. If the
+            # bundled node.exe drifts from the build machine's Node, the LSP's CodeGraphBridge silently
+            # self-disables ("better-sqlite3 not available") on end-user installs. Assert the EXACT
+            # end-user path here: the just-deployed node.exe loading better-sqlite3 by relative require.
+            $DeployedNode = Join-Path $LspDestDir "node.exe"
+            $DeployedBsq3 = Join-Path $LspDestDir "node_modules\better-sqlite3"
+            if ((Test-Path $DeployedNode) -and (Test-Path $DeployedBsq3)) {
+                $abiProbe = "var D=require('better-sqlite3');var db=new D(':memory:');db.prepare('select 1 as x').get();db.close();process.stdout.write('OK');"
+                Push-Location $LspDestDir
+                try {
+                    $abiOut  = & $DeployedNode -e $abiProbe 2>&1
+                    $abiExit = $LASTEXITCODE
+                } finally {
+                    Pop-Location
+                }
+                if ($abiExit -eq 0) {
+                    Write-Host "  OK    lsp-server better-sqlite3 ABI (loads under bundled node.exe)" -ForegroundColor Green
+                    $copied++
+                } else {
+                    Write-Host "  FAIL  better-sqlite3 ABI mismatch (GitHub #42): bundled node.exe cannot load the prebuilt addon." -ForegroundColor Red
+                    Write-Host "        CodeGraphBridge would self-disable on end-user installs. Rebuild better-sqlite3 against the bundled node's ABI/arch." -ForegroundColor Red
+                    Write-Host "        node: $DeployedNode" -ForegroundColor DarkGray
+                    Write-Host "        $abiOut" -ForegroundColor DarkGray
+                    $failed++
+                }
+            } elseif (Test-Path $DeployedNode) {
+                Write-Host "  SKIP  better-sqlite3 ABI check (module not deployed)" -ForegroundColor DarkGray
             }
         } else {
             Write-Host "  SKIP  lsp-server (ClarionLSP not found)" -ForegroundColor DarkGray

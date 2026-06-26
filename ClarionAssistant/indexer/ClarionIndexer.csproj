@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    clarion-indexer — standalone console tool that builds/queries the CodeGraph SQLite DB
+    consumed by the bundled LSP server (CodeGraphBridge).
+
+    VENDORED, SELF-CONTAINED COPY (GitHub #30, ticket 939865f1).
+    Previously this project lived at H:\DevLaptop\ClarionLSP\indexer and <Compile Include>'d
+    its Graph/Parsing source from the sibling ..\..\ClarionCodeGraphAddin\ClarionCodeGraph tree.
+    That made the contribution path impossible to rebuild without two un-published external repos.
+
+    The Graph/ and Parsing/ source here is the IDE-FREE variant of the CodeGraph layer — it must
+    NOT depend on ClarionAssistant.Services (RedFileService etc.). The CA addin keeps its own,
+    IDE-coupled copy under ..\CodeGraph\; do NOT rewire this project to point there or the
+    standalone exe stops compiling. Keep the two in sync deliberately. See CONTRIBUTING.md.
+  -->
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">x86</Platform>
+    <ProjectGuid>{B2C3D4E5-F6A7-8901-BCDE-F12345678901}</ProjectGuid>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ClarionIndexer</RootNamespace>
+    <AssemblyName>clarion-indexer</AssemblyName>
+    <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <RuntimeIdentifiers>win-x86</RuntimeIdentifiers>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x86' ">
+    <PlatformTarget>x86</PlatformTarget>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x86' ">
+    <PlatformTarget>x86</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <!-- Resolve the NuGet global-packages folder portably (no per-machine user path). -->
+  <PropertyGroup>
+    <NuGetPackagesRoot Condition=" '$(NuGetPackagesRoot)' == '' ">$(USERPROFILE)\.nuget\packages</NuGetPackagesRoot>
+    <SqliteCorePkg>$(NuGetPackagesRoot)\stub.system.data.sqlite.core.netframework\1.0.118</SqliteCorePkg>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.Data.SQLite">
+      <HintPath>$(SqliteCorePkg)\lib\net40\System.Data.SQLite.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Entry point -->
+    <Compile Include="Program.cs" />
+    <!-- Graph layer (IDE-free) -->
+    <Compile Include="Graph\CodeGraphDatabase.cs" />
+    <Compile Include="Graph\CodeGraphIndexer.cs" />
+    <Compile Include="Graph\CodeGraphQuery.cs" />
+    <!-- Parsing layer (IDE-free) -->
+    <Compile Include="Parsing\ClarionParser.cs" />
+    <Compile Include="Parsing\ClarionBuiltins.cs" />
+    <Compile Include="Parsing\SolutionParser.cs" />
+    <Compile Include="Parsing\ProjectParser.cs" />
+    <Compile Include="Parsing\SourceResolver.cs" />
+    <!-- Models -->
+    <Compile Include="Parsing\Models\ClarionSymbol.cs" />
+    <Compile Include="Parsing\Models\ClarionRelationship.cs" />
+    <Compile Include="Parsing\Models\SolutionProject.cs" />
+    <Compile Include="Parsing\Models\ParseResult.cs" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <!-- Copy x86 SQLite.Interop.dll to output directory after build -->
+  <Target Name="CopySQLiteInterop" AfterTargets="Build">
+    <MakeDir Directories="$(OutputPath)x86" />
+    <Copy SourceFiles="$(SqliteCorePkg)\build\net40\x86\SQLite.Interop.dll" DestinationFolder="$(OutputPath)x86" SkipUnchangedFiles="true" />
+  </Target>
+</Project>
