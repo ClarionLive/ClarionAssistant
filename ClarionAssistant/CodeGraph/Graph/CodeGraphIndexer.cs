@@ -16,7 +16,7 @@ namespace ClarionCodeGraph.Graph
         private readonly CodeGraphDatabase _db;
         private readonly SolutionParser _slnParser;
         private readonly ProjectParser _projParser;
-        private readonly SourceResolver _resolver;
+        private SourceResolver _resolver;
         private readonly ClarionParser _clarionParser;
 
         public event Action<string> OnProgress;
@@ -51,6 +51,10 @@ namespace ClarionCodeGraph.Graph
             ReportProgress("Parsing solution file...");
             var projects = _slnParser.Parse(slnPath);
             result.ProjectCount = projects.Count;
+
+            // Load redirection file so SourceResolver can find files in Compile\, Classes\, etc.
+            string slnDir = Path.GetDirectoryName(slnPath);
+            _resolver = new SourceResolver(TryLoadRedFile(slnDir));
 
             // For full re-index, wipe everything and start fresh
             if (!incremental)
@@ -1259,6 +1263,24 @@ namespace ClarionCodeGraph.Graph
             }
             catch { }
             return false;
+        }
+
+        private ClarionAssistant.Services.RedFileService TryLoadRedFile(string slnDir)
+        {
+            try
+            {
+                string[] redFiles = Directory.GetFiles(slnDir, "*.red", SearchOption.TopDirectoryOnly);
+                if (redFiles.Length == 0) return null;
+
+                var svc = new ClarionAssistant.Services.RedFileService();
+                var macros = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["THISDIR"] = slnDir
+                };
+                ReportProgress(string.Format("Using redirection file: {0}", Path.GetFileName(redFiles[0])));
+                return svc.Load(redFiles[0], macros) ? svc : null;
+            }
+            catch { return null; }
         }
 
         private void ReportProgress(string message)
