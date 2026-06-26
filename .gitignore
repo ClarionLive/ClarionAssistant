@@ -42,3 +42,6 @@ ClarionAssistant/knowledge.db
 
 # Transient MultiTerminal task worktrees
 .claude/worktrees/
+
+# Pinned-tag LSP build cache (fetched + built by deploy.ps1, GitHub #40)
+ClarionAssistant/.lsp-build/

@@ -193,6 +193,7 @@
     <Compile Include="Properties\AssemblyVersion.cs" />
     <!-- CodeGraph engine (self-contained, no external dependencies) -->
     <Compile Include="CodeGraph\Graph\CodeGraphDatabase.cs" />
+    <Compile Include="CodeGraph\Graph\CodeGraphProvider.cs" />
     <Compile Include="CodeGraph\Graph\CodeGraphIndexer.cs" />
     <Compile Include="CodeGraph\Graph\CodeGraphQuery.cs" />
     <Compile Include="CodeGraph\Parsing\ClarionParser.cs" />

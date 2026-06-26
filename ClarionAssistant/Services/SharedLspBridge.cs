@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Text.RegularExpressions;
 using ClarionLsp.Contracts;
+using ClarionCodeGraph.Graph;
 using LspModels = ClarionLsp.Contracts.Models;
 
 namespace ClarionAssistant.Services
@@ -136,20 +138,27 @@ namespace ClarionAssistant.Services
             return SharedGetHover(c, filePath, line, character);
         }
 
-        /// <summary>textDocument/definition → raw LSP-response-shaped dict.</summary>
+        /// <summary>textDocument/definition → raw LSP-response-shaped dict. Falls back to the C#
+        /// CodeGraph provider (cross-project) when the LSP returns nothing — see CodeGraph fallback region.</summary>
         public static Dictionary<string, object> GetDefinition(string filePath, int line, int character)
         {
             var c = Shared;
-            if (c == null) { var lsp = LspClient.Active; return lsp != null ? lsp.GetDefinition(filePath, line, character) : null; }
-            return SharedGetDefinition(c, filePath, line, character);
+            Dictionary<string, object> primary = (c == null)
+                ? (LspClient.Active != null ? LspClient.Active.GetDefinition(filePath, line, character) : null)
+                : SharedGetDefinition(c, filePath, line, character);
+            if (!IsEmptyResult(primary)) return primary;
+            return CodeGraphDefinition(filePath, line, character) ?? primary;
         }
 
-        /// <summary>textDocument/references → raw LSP-response-shaped dict.</summary>
+        /// <summary>textDocument/references → raw LSP-response-shaped dict. CodeGraph fallback when empty.</summary>
         public static Dictionary<string, object> GetReferences(string filePath, int line, int character)
         {
             var c = Shared;
-            if (c == null) { var lsp = LspClient.Active; return lsp != null ? lsp.GetReferences(filePath, line, character) : null; }
-            return SharedGetReferences(c, filePath, line, character);
+            Dictionary<string, object> primary = (c == null)
+                ? (LspClient.Active != null ? LspClient.Active.GetReferences(filePath, line, character) : null)
+                : SharedGetReferences(c, filePath, line, character);
+            if (!IsEmptyResult(primary)) return primary;
+            return CodeGraphReferences(filePath, line, character) ?? primary;
         }
 
         /// <summary>textDocument/documentSymbol (optionally syncing a live buffer) → raw LSP dict.</summary>
@@ -160,12 +169,15 @@ namespace ClarionAssistant.Services
             return SharedGetDocumentSymbols(c, filePath, bufferText);
         }
 
-        /// <summary>workspace/symbol → raw LSP dict.</summary>
+        /// <summary>workspace/symbol → raw LSP dict. CodeGraph fallback (cross-project) when empty.</summary>
         public static Dictionary<string, object> FindWorkspaceSymbol(string query)
         {
             var c = Shared;
-            if (c == null) { var lsp = LspClient.Active; return lsp != null ? lsp.FindWorkspaceSymbol(query) : null; }
-            return SharedFindWorkspaceSymbol(c, query);
+            Dictionary<string, object> primary = (c == null)
+                ? (LspClient.Active != null ? LspClient.Active.FindWorkspaceSymbol(query) : null)
+                : SharedFindWorkspaceSymbol(c, query);
+            if (!IsEmptyResult(primary)) return primary;
+            return CodeGraphWorkspaceSymbol(query) ?? primary;
         }
 
         /// <summary>textDocument/rename → WorkspaceEdit-shaped dict (ExtractWorkspaceEditFlat-compatible).</summary>
@@ -612,6 +624,232 @@ namespace ClarionAssistant.Services
             if (string.IsNullOrEmpty(filePath)) return filePath;
             if (filePath.StartsWith("file:///", StringComparison.OrdinalIgnoreCase)) return filePath;
             return "file:///" + filePath.Replace("\\", "/").Replace(" ", "%20");
+        }
+
+        /// <summary>Inverse of <see cref="FilePathToUri"/>: file:///H:/dir/f.clw -&gt; H:\dir\f.clw.</summary>
+        public static string UriToFilePath(string uri)
+        {
+            if (string.IsNullOrEmpty(uri)) return uri;
+            string p = uri;
+            if (p.StartsWith("file:///", StringComparison.OrdinalIgnoreCase)) p = p.Substring(8);
+            else if (p.StartsWith("file://", StringComparison.OrdinalIgnoreCase)) p = p.Substring(7);
+            return p.Replace("/", "\\").Replace("%20", " ");
+        }
+
+        /// <summary>Extract the FIRST Location from a definition/references result dict
+        /// (<c>{ "result": [ { uri, range:{ start:{ line, character } } } ] }</c>) as an on-disk path +
+        /// 0-based line/character. Returns false on any shape mismatch. Shared by the F12 hosts (#40).</summary>
+        public static bool TryGetFirstLocation(Dictionary<string, object> result, out string filePath, out int line, out int character)
+        {
+            filePath = null; line = 0; character = 0;
+            try
+            {
+                object res;
+                if (result == null || !result.TryGetValue("result", out res) || res == null) return false;
+
+                object loc = res;
+                if (!(res is System.Collections.IDictionary) && res is System.Collections.IEnumerable)
+                {
+                    loc = null;
+                    foreach (var item in (System.Collections.IEnumerable)res) { loc = item; break; } // first location
+                }
+                var locDict = loc as System.Collections.IDictionary;
+                if (locDict == null) return false;
+
+                object uriObj = locDict.Contains("uri") ? locDict["uri"] : null;
+                if (uriObj == null) return false;
+                filePath = UriToFilePath(uriObj.ToString());
+
+                var range = (locDict.Contains("range") ? locDict["range"] : null) as System.Collections.IDictionary;
+                if (range != null)
+                {
+                    var start = (range.Contains("start") ? range["start"] : null) as System.Collections.IDictionary;
+                    if (start != null)
+                    {
+                        if (start.Contains("line")) line = Convert.ToInt32(start["line"]);
+                        if (start.Contains("character")) character = Convert.ToInt32(start["character"]);
+                    }
+                }
+                return !string.IsNullOrEmpty(filePath);
+            }
+            catch { filePath = null; line = 0; character = 0; return false; }
+        }
+
+        // ===========================================================================================
+        // CodeGraph fallback (GitHub #40, ticket 2ba0ee17) — answer cross-project definition /
+        // references / workspace-symbol from the .codegraph.db in C# when the LSP (shared OR bundled)
+        // returns nothing. This is what lets us consume Mark's PURE upstream server.js (no CodeGraph
+        // baked in) without losing CA's cross-project navigation: the addin merges in C#, LSP-first.
+        //
+        // Port of server.ts's codegraph-bridge call sites: same word extraction, same 1-based->0-based
+        // line conversion, same "fallback only when the primary result is empty" semantics. Fallback
+        // never overrides a real LSP answer, and every step is defensive (never throws — nav must not
+        // break). It only does work when the LSP came back empty, so with today's codegraph-bearing
+        // bundled server it effectively never fires; once we adopt pure v0.9.6 it supplies the gap.
+        // ===========================================================================================
+
+        /// <summary>Set at startup to return the active solution's .codegraph.db path. When null / no
+        /// db, the fallback walks up from the request's file path instead. (Static-hook pattern, like
+        /// <c>EmbeditorCompletionService.LspStarter</c>.)</summary>
+        public static Func<string> CodeGraphDbPathProvider;
+
+        // Clarion identifier under the cursor — mirrors server.ts getWordAtPosition.
+        private static readonly Regex CgWordPattern = new Regex(@"[A-Za-z_][A-Za-z0-9_:.]*");
+
+        /// <summary>True when a dispatcher result carries no usable payload (null, an error, or an
+        /// empty result collection) — i.e. the LSP had no answer and we should try CodeGraph.</summary>
+        private static bool IsEmptyResult(Dictionary<string, object> r)
+        {
+            if (r == null) return true;
+            if (r.ContainsKey("error")) return true;   // LSP errored → a CodeGraph answer beats an error
+            object res;
+            if (!r.TryGetValue("result", out res) || res == null) return true;
+            if (res is string) return false;
+            var seq = res as System.Collections.IEnumerable;
+            if (seq != null)
+            {
+                foreach (var _ in seq) return false;   // at least one element
+                return true;                            // empty collection
+            }
+            return false;                               // non-null single object = a real answer
+        }
+
+        private static string ResolveCodeGraphDb(string filePathHint)
+        {
+            try
+            {
+                var hook = CodeGraphDbPathProvider;
+                if (hook != null)
+                {
+                    string p = hook();
+                    if (!string.IsNullOrEmpty(p) && File.Exists(p)) return p;
+                }
+            }
+            catch { }
+            try
+            {
+                if (!string.IsNullOrEmpty(filePathHint))
+                    return CodeGraphProvider.FindDatabase(Path.GetDirectoryName(filePathHint));
+            }
+            catch { }
+            return null;
+        }
+
+        // Word under (0-based line, character). Reads the file from disk — matches the disk-fallback
+        // pattern already used by SharedGetCompletion/SharedGetDiagnostics for context-free calls.
+        private static string CgWordAt(string filePath, int line, int character)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return null;
+                var lines = File.ReadAllLines(filePath);
+                if (line < 0 || line >= lines.Length) return null;
+                string text = lines[line];
+                foreach (Match m in CgWordPattern.Matches(text))
+                {
+                    int start = m.Index, end = m.Index + m.Length;
+                    if (character >= start && character <= end) return m.Value;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        // Build an LSP Location dict. DB line_number is 1-based (Clarion source line); LSP is 0-based.
+        private static Dictionary<string, object> CgLocation(string filePath, int dbLine1Based)
+        {
+            int lspLine = dbLine1Based > 0 ? dbLine1Based - 1 : 0;
+            var pos = new Dictionary<string, object> { { "line", lspLine }, { "character", 0 } };
+            return new Dictionary<string, object>
+            {
+                { "uri", FilePathToUri(filePath) },
+                { "range", new Dictionary<string, object> { { "start", pos }, { "end", pos } } }
+            };
+        }
+
+        private static Dictionary<string, object> CodeGraphDefinition(string filePath, int line, int character)
+        {
+            try
+            {
+                string word = CgWordAt(filePath, line, character);
+                if (string.IsNullOrEmpty(word)) return null;
+                string db = ResolveCodeGraphDb(filePath);
+                if (string.IsNullOrEmpty(db)) return null;
+                using (var p = new CodeGraphProvider())
+                {
+                    if (!p.Open(db)) return null;
+                    var def = p.GetDefinition(word);
+                    if (def == null) return null;
+                    return WrapResult(new System.Collections.ArrayList { CgLocation(def.FilePath, def.LineNumber) });
+                }
+            }
+            catch { return null; }
+        }
+
+        private static Dictionary<string, object> CodeGraphReferences(string filePath, int line, int character)
+        {
+            try
+            {
+                string word = CgWordAt(filePath, line, character);
+                if (string.IsNullOrEmpty(word)) return null;
+                string db = ResolveCodeGraphDb(filePath);
+                if (string.IsNullOrEmpty(db)) return null;
+                using (var p = new CodeGraphProvider())
+                {
+                    if (!p.Open(db)) return null;
+                    var refs = p.GetReferences(word);
+                    if (refs == null || refs.Count == 0) return null;
+                    var list = new System.Collections.ArrayList();
+                    foreach (var r in refs) list.Add(CgLocation(r.FilePath, r.LineNumber));
+                    return WrapResult(list);
+                }
+            }
+            catch { return null; }
+        }
+
+        private static Dictionary<string, object> CodeGraphWorkspaceSymbol(string query)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(query)) return null;
+                string db = ResolveCodeGraphDb(null);
+                if (string.IsNullOrEmpty(db)) return null;
+                using (var p = new CodeGraphProvider())
+                {
+                    if (!p.Open(db)) return null;
+                    var syms = p.FindSymbols(query, 100);
+                    if (syms == null || syms.Count == 0) return null;
+                    var list = new System.Collections.ArrayList();
+                    foreach (var s in syms)
+                    {
+                        var sym = new Dictionary<string, object>
+                        {
+                            { "name", s.Name },
+                            { "kind", CgSymbolKind(s.Type) },
+                            { "location", CgLocation(s.FilePath, s.LineNumber) }
+                        };
+                        if (!string.IsNullOrEmpty(s.ParentName)) sym["containerName"] = s.ParentName;
+                        list.Add(sym);
+                    }
+                    return WrapResult(list);
+                }
+            }
+            catch { return null; }
+        }
+
+        // CodeGraph symbol type → LSP SymbolKind int (icon only; approximate is fine).
+        private static int CgSymbolKind(string type)
+        {
+            switch ((type ?? "").ToLowerInvariant())
+            {
+                case "class": return 5;       // Class
+                case "interface": return 11;  // Interface
+                case "procedure": return 12;  // Function
+                case "function": return 12;   // Function
+                case "routine": return 6;     // Method
+                case "variable": return 13;   // Variable
+                default: return 13;           // Variable (reasonable default)
+            }
         }
     }
 }

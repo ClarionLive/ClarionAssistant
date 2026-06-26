@@ -1074,6 +1074,7 @@ namespace ClarionAssistant.Terminal
         void IMonacoEditorHost.OnClipboard(MonacoEditorControl editor, string rawJson) { HandleClipboard(rawJson); }
         void IMonacoEditorHost.OnCompletion(MonacoEditorControl editor, string rawJson) { HandleCompletion(rawJson); }
         void IMonacoEditorHost.OnHover(MonacoEditorControl editor, string rawJson) { HandleHover(rawJson); }
+        void IMonacoEditorHost.OnDefinition(MonacoEditorControl editor, string rawJson) { HandleDefinition(rawJson); }
         void IMonacoEditorHost.OnDiagnostics(MonacoEditorControl editor, string rawJson) { HandleDiagnostics(rawJson); }
         void IMonacoEditorHost.OnSaveSettings(MonacoEditorControl editor, string rawJson) { HandleSaveSettings(rawJson); }
         void IMonacoEditorHost.OnSaveHistory(MonacoEditorControl editor, string rawJson) { HandleSaveHistory(rawJson); }
@@ -1466,6 +1467,32 @@ namespace ClarionAssistant.Terminal
                     lspStatus = "error: " + ex.Message;
                 }
                 PostResponse(reqId, new Dictionary<string, object> { { "items", items }, { "lsp", lspStatus } });
+            });
+        }
+
+        /// <summary>F12 go-to-definition from the embed editor — resolve via the LSP (+ the C# CodeGraph
+        /// fallback for cross-project) against the generated-source file, then open/position the target
+        /// with MonacoSourceNavigator (same- or cross-file). (#40 / 2ba0ee17)</summary>
+        private void HandleDefinition(string json)
+        {
+            int reqId, line, column; string buffer;
+            if (!ParseRequest(json, out reqId, out line, out column, out buffer)) return;
+            Task.Run(() =>
+            {
+                bool navigated = false;
+                try
+                {
+                    EnsureLspStarted();
+                    if (SharedLspBridge.IsRunning)
+                    {
+                        var def = SharedLspBridge.GetDefinition(_lspFileName, Math.Max(0, line - 1), Math.Max(0, column - 1));
+                        string targetPath; int targetLine0, targetChar0;
+                        if (SharedLspBridge.TryGetFirstLocation(def, out targetPath, out targetLine0, out targetChar0))
+                            navigated = MonacoSourceNavigator.NavigateToFileAndLine(targetPath, targetLine0 + 1, 1);
+                    }
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] definition: " + ex.Message); }
+                PostResponse(reqId, new Dictionary<string, object> { { "navigated", navigated } });
             });
         }
 

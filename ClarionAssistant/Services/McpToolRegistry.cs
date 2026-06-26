@@ -64,6 +64,11 @@ namespace ClarionAssistant.Services
         public void SetChatControl(AssistantChatControl control)
         {
             _chatControl = control;
+            // Wire the CodeGraph LSP fallback (#40) to resolve the same .codegraph.db that
+            // query_codegraph uses (selected solution → active-document walk-up). Lets
+            // SharedLspBridge answer cross-project definition/references/workspace-symbol in C#
+            // when the LSP returns nothing (needed once we adopt Mark's pure upstream server.js).
+            SharedLspBridge.CodeGraphDbPathProvider = () => FindCodeGraphDb();
         }
 
         public void SetDiffService(DiffService diffService)

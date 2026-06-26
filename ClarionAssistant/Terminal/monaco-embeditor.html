@@ -1380,7 +1380,21 @@
             }
         });
     }
-    function installGlyphBookmarkClick() { wireGlyphBookmark(editor); }
+    // Ctrl/Cmd+Click a symbol → go to definition at the MOUSE position (F12 uses the caret). #40.
+    // multiCursorModifier is 'alt', so Ctrl+Click is free for navigation. The C# host resolves the
+    // definition (LSP + CodeGraph fallback) and navigates (same- or cross-file).
+    function wireCtrlClickDefinition(ed) {
+        ed.onMouseDown(function (e) {
+            if (!(e.event && (e.event.ctrlKey || e.event.metaKey))) return;
+            if (e.target && e.target.type === monaco.editor.MouseTargetType.CONTENT_TEXT &&
+                e.target.position && e.target.position.lineNumber) {
+                var pos = e.target.position;
+                recordNavAt(pos.lineNumber, pos.column);   // seed origin so Navigate Back returns here (#40)
+                requestFromHost('definition', { line: pos.lineNumber, column: pos.column, buffer: ed.getModel().getValue() });
+            }
+        });
+    }
+    function installGlyphBookmarkClick() { wireGlyphBookmark(editor); wireCtrlClickDefinition(editor); }
     function navBookmark(dir) {
         var lines = bookmarkLines();
         if (!lines.length) { showToast('No bookmarks', false); return; }
@@ -1445,6 +1459,7 @@
         installCommandPalette(editor2); // F1 / Ctrl+Shift+P in the split pane too
         installDropInsert(editor2);    // accept Data-pad drops in the split pane too
         wireGlyphBookmark(editor2);
+        wireCtrlClickDefinition(editor2);   // Ctrl+Click go-to-definition in the split pane too (#40)
         installNavTracking(editor2);   // cursor jumps in the split pane feed the shared history (#14)
         var ebottom = document.getElementById('editor').style.bottom;   // match the Find-panel clearance
         if (ebottom) document.getElementById('editor2').style.bottom = ebottom;
@@ -1547,6 +1562,21 @@
             }
         }
         navStack = navStack.slice(0, navIndex + 1);               // a real jump → drop the forward tail
+        navStack.push({ line: line, column: col, label: navLabel(line) });
+        if (navStack.length > NAV_CAP) navStack.shift();
+        navIndex = navStack.length - 1;
+        updateNavUI();
+    }
+    // Record an entry at (line,col) IMMEDIATELY, bypassing the 250ms debounce. Used right before a
+    // programmatic go-to-definition jump (Ctrl+Click / F12) so the origin is captured before the fast
+    // origin→target cursor move would otherwise clear its pending record — i.e. Navigate Back returns
+    // to where you jumped FROM, making Ctrl+Click behave like a normal click for history. (#40)
+    function recordNavAt(line, col) {
+        if (_navRecordTimer) { clearTimeout(_navRecordTimer); _navRecordTimer = null; }
+        if (navIndex >= 0 && navStack[navIndex] && navStack[navIndex].line === line) {
+            navStack[navIndex].column = col; navStack[navIndex].label = navLabel(line); updateNavUI(); return;
+        }
+        navStack = navStack.slice(0, navIndex + 1);
         navStack.push({ line: line, column: col, label: navLabel(line) });
         if (navStack.length > NAV_CAP) navStack.shift();
         navIndex = navStack.length - 1;
@@ -2203,6 +2233,13 @@
                 ev.preventDefault(); ev.stopImmediatePropagation(); openFindPanel(true);
             } else if (ev.keyCode === 114 || ev.key === 'F3') {                             // F3 / Shift+F3
                 ev.preventDefault(); ev.stopImmediatePropagation(); gotoMatch(ev.shiftKey ? -1 : 1);
+            } else if (ev.keyCode === 123 || ev.key === 'F12') {                            // F12 → go to definition (#40)
+                ev.preventDefault(); ev.stopImmediatePropagation();
+                var dpos = editor && editor.getPosition();
+                if (dpos) {
+                    recordNavAt(dpos.lineNumber, dpos.column);   // seed origin so Navigate Back returns here (#40)
+                    requestFromHost('definition', { line: dpos.lineNumber, column: dpos.column, buffer: editor.getModel().getValue() });
+                }
             }
         }, true);   // capture phase — runs ahead of Monaco's own keydown listener
     }

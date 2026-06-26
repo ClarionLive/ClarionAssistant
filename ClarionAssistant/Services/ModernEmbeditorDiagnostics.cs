@@ -36,8 +36,15 @@ namespace ClarionAssistant.Services
 
         // Structures that open a block needing END or '.' — mirrors the folding STRUCT set in
         // monaco-embeditor.html so balance detection matches what the editor folds.
+        // Matched ONLY in DECLARATION/STATEMENT position — line start, an optional label, then the
+        // keyword as a whole token (followed by whitespace / ',' / '(' / end-of-line). Without this
+        // anchor the keyword matched ANYWHERE on the line, so a reference like BIND(AUT:RECORD) or a
+        // prefixed name like Loop:Counter was treated as an opener — pushing bogus entries that then
+        // swallowed real ENDs and made every genuine IF read as "not terminated" (GitHub #40 follow-up).
+        // The lookahead (not [,(]|$ like BandOpen) deliberately allows code structures that take an
+        // expression: LOOP I = 1 TO 10, CASE SomeVar, EXECUTE n.
         private static readonly Regex StructOpen = new Regex(
-            @"\b(GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|TOOLBAR|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE)\b",
+            @"^\s*(?:[A-Za-z_][A-Za-z0-9_:]*\s+)?(GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|TOOLBAR|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE)(?=\s|,|\(|$)",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex StructWordRx = new Regex(
             @"\b(IF|GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|TOOLBAR|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE)\b",

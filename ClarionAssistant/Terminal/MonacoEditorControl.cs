@@ -53,6 +53,10 @@ namespace ClarionAssistant.Terminal
         /// <summary>{action:"hover"} — LSP hover request; host replies via PostResponse.</summary>
         void OnHover(MonacoEditorControl editor, string rawJson);
 
+        /// <summary>{action:"definition"} — F12 go-to-definition; host navigates (same- or cross-file)
+        /// then replies via PostResponse with {navigated:bool}.</summary>
+        void OnDefinition(MonacoEditorControl editor, string rawJson);
+
         /// <summary>{action:"diagnostics"} — hybrid LSP + slot diagnostics; host replies via PostResponse.</summary>
         void OnDiagnostics(MonacoEditorControl editor, string rawJson);
 
@@ -222,6 +226,7 @@ namespace ClarionAssistant.Terminal
                     case "clipboard":         h.OnClipboard(this, json); break;
                     case "completion":        h.OnCompletion(this, json); break;
                     case "hover":             h.OnHover(this, json); break;
+                    case "definition":        h.OnDefinition(this, json); break;
                     case "diagnostics":       h.OnDiagnostics(this, json); break;
                     case "saveSettings":      h.OnSaveSettings(this, json); break;
                     case "saveHistory":       h.OnSaveHistory(this, json); break;

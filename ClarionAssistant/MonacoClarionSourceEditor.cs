@@ -441,6 +441,32 @@ namespace ClarionAssistant
             });
         }
 
+        // F12 go-to-definition. Resolves the definition via the LSP (shared or bundled) with the C#
+        // CodeGraph fallback for cross-project targets, then opens/positions the target with
+        // MonacoSourceNavigator (handles same-file reveal AND cross-file open uniformly). #40 / 2ba0ee17.
+        void IMonacoEditorHost.OnDefinition(MonacoEditorControl editor, string rawJson)
+        {
+            int reqId, line, col; string buffer;
+            if (!ParseLspRequest(rawJson, out reqId, out line, out col, out buffer)) return;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                bool navigated = false;
+                try
+                {
+                    EnsureLsp();
+                    if (SharedLspBridge.IsRunning)
+                    {
+                        var def = SharedLspBridge.GetDefinition(_filePath, Math.Max(0, line - 1), Math.Max(0, col - 1));
+                        string targetPath; int targetLine0, targetChar0;
+                        if (SharedLspBridge.TryGetFirstLocation(def, out targetPath, out targetLine0, out targetChar0))
+                            navigated = MonacoSourceNavigator.NavigateToFileAndLine(targetPath, targetLine0 + 1, 1);
+                    }
+                }
+                catch (Exception ex) { MonacoSpikeLog.Write("overlay definition error: " + ex.Message); }
+                editor.PostResponse(reqId, new Dictionary<string, object> { { "navigated", navigated } });
+            });
+        }
+
         // LSP/hybrid diagnostics — the page sends fileMode ranges [[1,lineCount]] (whole file editable).
         // embedSlotChecks:true ALSO runs the structure-balance heuristic over the whole file (unmatched
         // IF/LOOP/CASE/structure → squiggle), which file mode normally skips. John wants it for source
