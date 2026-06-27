@@ -44,10 +44,10 @@ namespace ClarionAssistant.Services
         // The lookahead (not [,(]|$ like BandOpen) deliberately allows code structures that take an
         // expression: LOOP I = 1 TO 10, CASE SomeVar, EXECUTE n.
         private static readonly Regex StructOpen = new Regex(
-            @"^\s*(?:[A-Za-z_][A-Za-z0-9_:]*\s+)?(GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|TOOLBAR|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE)(?=\s|,|\(|$)",
+            @"^\s*(?:[A-Za-z_][A-Za-z0-9_:]*\s+)?(GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|TOOLBAR|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)(?=\s|,|\(|$)",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex StructWordRx = new Regex(
-            @"\b(IF|GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|TOOLBAR|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE)\b",
+            @"\b(IF|GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|TOOLBAR|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)\b",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
         // REPORT band structures (HEADER/FOOTER/FORM/DETAIL) — each takes an END, so the balance check
         // must count them or their ENDs read as stray ("END has no matching structure"). Matched ONLY in

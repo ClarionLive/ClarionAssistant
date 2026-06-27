@@ -26,7 +26,7 @@ function registerClarionLanguage() {
         // structures, outdent on END / lone '.' / CASE & IF sub-keywords. The negative lookahead
         // skips one-line forms that self-terminate with a trailing '.' (e.g. IF x THEN y.).
         indentationRules: {
-            increaseIndentPattern: /^\s*(IF|LOOP|CASE|BEGIN|EXECUTE|GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|TOOLBAR|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|OF|OROF|ELSE|ELSIF)\b(?![^!]*\.\s*$).*$/i,
+            increaseIndentPattern: /^\s*(IF|LOOP|CASE|BEGIN|EXECUTE|ACCEPT|GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|TOOLBAR|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|OF|OROF|ELSE|ELSIF)\b(?![^!]*\.\s*$).*$/i,
             decreaseIndentPattern: /^\s*(END\b|\.\s*$|OF\b|OROF\b|ELSE\b|ELSIF\b|UNTIL\b|WHILE\b)/i
         }
     });
@@ -72,7 +72,7 @@ function registerClarionLanguage() {
 // Register once per Monaco page (folding providers are global per language id, but each WebView2
 // page hosts its own Monaco instance).
 function registerClarionFolding() {
-    var STRUCT = /\b(GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|TOOLBAR|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE)\b/;
+    var STRUCT = /\b(GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|TOOLBAR|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)\b/;
     monaco.languages.registerFoldingRangeProvider('clarion', {
         provideFoldingRanges: function (model) {
             var ranges = [];
