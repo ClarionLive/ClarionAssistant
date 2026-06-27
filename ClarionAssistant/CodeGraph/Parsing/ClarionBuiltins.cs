@@ -211,5 +211,51 @@ namespace ClarionCodeGraph.Parsing
                     return false;
             }
         }
+
+        // === ABC standard globals — bare-prefix completion source (task a47a6cac) ===
+        // ABC TEMPLATE-GENERATED global names: NOT user-declared (the CodeGraph never indexes them) and
+        // NOT language built-ins/keywords — so they need this curated source. Generated into every ABC
+        // app's global data + \LIBSRC\TPLEQU.CLW. Verified against the SoftVelocity ABC Library Reference.
+        // Kind ints are LSP CompletionItemKind: 6 = Variable, 21 = Constant.
+        private static readonly BuiltinCompletionItem[] _abcStandardGlobals =
+        {
+            new BuiltinCompletionItem("GlobalRequest",     6,  "global request (ABC) — BYTE"),
+            new BuiltinCompletionItem("GlobalResponse",    6,  "global response (ABC) — BYTE"),
+            new BuiltinCompletionItem("VCRRequest",        6,  "VCR request (ABC) — LONG"),
+            new BuiltinCompletionItem("SilentRunning",     6,  "silent/batch flag (ABC) — BYTE"),
+            new BuiltinCompletionItem("GlobalErrors",      6,  "global error mgr (ABC) — ErrorClass"),
+            new BuiltinCompletionItem("GlobalErrorStatus", 6,  "global error status (ABC) — ErrorStatusClass"),
+            new BuiltinCompletionItem("INIMgr",            6,  "global INI mgr (ABC) — INIClass"),
+            new BuiltinCompletionItem("InsertRecord",      21, "request equate (ABC) = 1"),
+            new BuiltinCompletionItem("ChangeRecord",      21, "request equate (ABC) = 2"),
+            new BuiltinCompletionItem("DeleteRecord",      21, "request equate (ABC) = 3"),
+            new BuiltinCompletionItem("SelectRecord",      21, "request equate (ABC) = 4"),
+            new BuiltinCompletionItem("SaveRecord",        21, "request equate (ABC)"),
+            new BuiltinCompletionItem("RequestCompleted",  21, "response equate (ABC) = 1"),
+            new BuiltinCompletionItem("RequestCancelled",  21, "response equate (ABC) = 2"),
+        };
+
+        /// <summary>ABC standard globals/equates whose name starts with <paramref name="prefix"/>
+        /// (case-insensitive). Bare-prefix completion source for task a47a6cac.</summary>
+        public static IEnumerable<BuiltinCompletionItem> AbcStandardGlobalsByPrefix(string prefix)
+        {
+            if (string.IsNullOrEmpty(prefix)) yield break;
+            foreach (var b in _abcStandardGlobals)
+                if (b.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    yield return b;
+        }
+    }
+
+    /// <summary>A curated completion entry (name + LSP CompletionItemKind int + detail) for ABC standard
+    /// globals — names present in neither the CodeGraph index nor the language built-in/keyword lists.</summary>
+    public sealed class BuiltinCompletionItem
+    {
+        public readonly string Name;
+        public readonly int Kind;     // LSP CompletionItemKind int
+        public readonly string Detail;
+        public BuiltinCompletionItem(string name, int kind, string detail)
+        {
+            Name = name; Kind = kind; Detail = detail;
+        }
     }
 }

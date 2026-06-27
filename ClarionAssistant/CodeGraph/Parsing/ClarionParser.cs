@@ -89,6 +89,23 @@ namespace ClarionCodeGraph.Parsing
             @"^\s{2,}(\w+)\s+PROCEDURE\s*(\([^)]*\))?\s*(,.*)?$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        // LIBRARY-MODE method prototype pattern: same, but allows the method name in column 0.
+        // ABC / library .inc files declare class members and methods in the label column
+        // (e.g. "Open  PROCEDURE(),BYTE,PROC,VIRTUAL"), unlike app-generated .inc which indent.
+        private static readonly Regex MethodPrototypeRegexLib = new Regex(
+            @"^\s*(\w+)\s+PROCEDURE\s*(\([^)]*\))?\s*(,.*)?$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// LIBRARY MODE (ticket 6e8f2439, ClarionGraph): when true, class-body method
+        /// prototypes may start in column 0, and method names that collide with Clarion
+        /// built-in statement keywords (Open/Close/Next/Add/...) are KEPT rather than skipped —
+        /// ABC methods legitimately use those names and are always called qualified
+        /// (FileManager.Open). Default false preserves the exact existing CodeGraph behaviour
+        /// for app source.
+        /// </summary>
+        public bool LibraryMode { get; set; }
+
         // Class/interface instance: VarName ClassName [,attributes] [!comment]
         // Catch-all for declarations where the type is not a built-in Clarion type
         private static readonly Regex ClassInstanceDeclRegex = new Regex(
@@ -311,11 +328,12 @@ namespace ClarionCodeGraph.Parsing
                     }
 
                     // Method prototype inside CLASS: indented "MethodName PROCEDURE(...)"
-                    var methodMatch = MethodPrototypeRegex.Match(line);
+                    // (library mode also allows column-0 names — ABC/library style)
+                    var methodMatch = (LibraryMode ? MethodPrototypeRegexLib : MethodPrototypeRegex).Match(line);
                     if (methodMatch.Success && currentClassName != null)
                     {
                         string methodName = methodMatch.Groups[1].Value;
-                        if (!ClarionBuiltins.IsBuiltInOrKeyword(methodName))
+                        if (LibraryMode || !ClarionBuiltins.IsBuiltInOrKeyword(methodName))
                         {
                             string fullName = currentClassName + "." + methodName;
                             string methodParams = methodMatch.Groups[2].Success ? methodMatch.Groups[2].Value : null;
@@ -743,11 +761,12 @@ namespace ClarionCodeGraph.Parsing
                     }
 
                     // Method prototype inside CLASS/INTERFACE
-                    var methodMatch = MethodPrototypeRegex.Match(line);
+                    // (library mode also allows column-0 names — ABC/library style)
+                    var methodMatch = (LibraryMode ? MethodPrototypeRegexLib : MethodPrototypeRegex).Match(line);
                     if (methodMatch.Success && currentClassName != null)
                     {
                         string methodName = methodMatch.Groups[1].Value;
-                        if (!ClarionBuiltins.IsBuiltInOrKeyword(methodName))
+                        if (LibraryMode || !ClarionBuiltins.IsBuiltInOrKeyword(methodName))
                         {
                             string fullName = currentClassName + "." + methodName;
                             string methodParams = methodMatch.Groups[2].Success ? methodMatch.Groups[2].Value : null;

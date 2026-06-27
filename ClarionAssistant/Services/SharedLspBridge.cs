@@ -5,6 +5,7 @@ using System.IO;
 using System.Text.RegularExpressions;
 using ClarionLsp.Contracts;
 using ClarionCodeGraph.Graph;
+using ClarionCodeGraph.Parsing;
 using LspModels = ClarionLsp.Contracts.Models;
 
 namespace ClarionAssistant.Services
@@ -188,19 +189,140 @@ namespace ClarionAssistant.Services
             return SharedRename(c, filePath, line, character, newName);
         }
 
-        /// <summary>textDocument/completion → bundled LspClient.CompletionItemInfo list.</summary>
+        /// <summary>textDocument/completion → bundled LspClient.CompletionItemInfo list, augmented with
+        /// CodeGraph prefix completion (task a47a6cac Phase 1).</summary>
         public static List<LspClient.CompletionItemInfo> GetCompletion(
             string filePath, int line, int character, int timeoutMs = 2500, string bufferText = null)
         {
+            // Primary completion from the LSP (shared addin or bundled client).
+            List<LspClient.CompletionItemInfo> primary;
             var c = Shared;
             if (c == null)
             {
                 var lsp = LspClient.Active;
-                return lsp != null
+                primary = lsp != null
                     ? lsp.GetCompletion(filePath, line, character, timeoutMs, bufferText)
                     : new List<LspClient.CompletionItemInfo>();
             }
-            return SharedGetCompletion(c, filePath, line, character, timeoutMs, bufferText);
+            else
+            {
+                primary = SharedGetCompletion(c, filePath, line, character, timeoutMs, bufferText);
+            }
+            if (primary == null) primary = new List<LspClient.CompletionItemInfo>();
+
+            // CodeGraph prefix-completion augmentation (task a47a6cac Phase 1). Mark's pure upstream
+            // server does MEMBER-ACCESS-ONLY completion; for a BARE PREFIX (line not ending in '.') it
+            // returns nothing. We merge in global symbols (procedures/functions/classes/vars) from the
+            // .codegraph.db so typing the first letters of a symbol + Ctrl+Space completes it.
+            // Member-access stays LSP-only — the server resolves type-scoped members, CodeGraph can't.
+            // Defensive: never throws (completion must not break), never overrides a real LSP item.
+            try { MergeBarePrefixCompletions(primary, filePath, line, character, bufferText); }
+            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] bare-prefix completion merge failed: " + ex.Message); }
+
+            // Qualified group/queue FIELD completion (task a47a6cac Phase 2 refinement): PRE: prefix
+            // ("Cus:" → fields of GROUP,PRE(Cus)) and dotted access ("Group." → its fields). Separate from
+            // the bare path (which returns early in a qualified context). Never overrides a real LSP item.
+            try { MergeQualifiedFieldCompletions(primary, filePath, line, character, bufferText); }
+            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] qualified field completion merge failed: " + ex.Message); }
+
+            // Colon-qualifier scoping. When the cursor sits right after an "IDENT:" qualifier (PROP:/EVENT:/
+            // PROPLIST:/group-PRE like Cus:...), the Monaco replace-range breaks on the ':' and is EMPTY, so
+            // the client does NO prefix filtering — Mark's LSP also returns its global built-in/keyword set
+            // (ACOS, ABS, ...) which then shows alongside the relevant IDENT:* items. Scope the list to labels
+            // starting with the qualifier (those carry the prefix: "PROP:Bevel", "Cus:Field"). Defensive:
+            // only apply when matches remain, so it can never blank out an otherwise-working list. Member
+            // access ('.') has no colon → unaffected.
+            // Colon-qualified completion (PROP:/EVENT:/PROPLIST:/group-PRE Cus:...). In this context the LSP
+            // returns a broad in-scope symbol dump (locals, globals, builtins like ACOS) — NOT IDENT:* members
+            // — and because the Monaco replace-range breaks on ':' (empty range) the client shows them
+            // unfiltered. Fix in two moves: (1) supply the IDENT:* members from ClarionGraph/CodeGraph (e.g.
+            // every PROP:* property equate from property.clw), then (2) scope the list to labels starting with
+            // the qualifier, which drops the LSP noise. Guard: only scope when matches remain.
+            try
+            {
+                string qualifier = ColonQualifierAt(filePath, line, character, bufferText);
+                if (qualifier != null)
+                {
+                    MergeColonQualifierCompletions(primary, qualifier, filePath);
+                    if (primary.Count > 0)
+                    {
+                        var scoped = primary.FindAll(it =>
+                            it != null && !string.IsNullOrEmpty(it.Label) &&
+                            it.Label.StartsWith(qualifier, StringComparison.OrdinalIgnoreCase));
+                        if (scoped.Count > 0) primary = scoped;
+                    }
+                }
+            }
+            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] colon-qualifier completion failed: " + ex.Message); }
+
+            return primary;
+        }
+
+        // Matches an "IDENT:" qualifier (with the trailing ':') immediately left of the cursor, allowing a
+        // partial suffix after it (PROP: , PROP:Be , Cus:Na). Group 1 includes the colon.
+        private static readonly Regex ColonQualifierPattern =
+            new Regex(@"([A-Za-z_][A-Za-z0-9_]*:)[A-Za-z0-9_]*$", RegexOptions.Compiled);
+
+        /// <summary>In a colon-qualified context ("PROP:", "EVENT:", "PROPLIST:", ...), add IDENT:* members
+        /// (property/event equates, etc.) from the project CodeGraph and the ClarionGraph library DB. Labels
+        /// carry the full "IDENT:Name"; the insert text is the suffix after the ':' (the typed "IDENT:" stays
+        /// put because the Monaco replace-range breaks on the colon). Deduped against existing items. The LSP
+        /// itself returns only a broad scope dump here, so this is what actually populates PROP:/EVENT:
+        /// completion. Never throws.</summary>
+        private static void MergeColonQualifierCompletions(
+            List<LspClient.CompletionItemInfo> primary, string qualifier, string filePath)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var it in primary)
+                if (it != null && !string.IsNullOrEmpty(it.Label)) seen.Add(it.Label);
+
+            string[] dbs = { ResolveCodeGraphDb(filePath), ClarionGraphService.ResolveDbPath() };
+            foreach (string db in dbs)
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(db) || !File.Exists(db)) continue;
+                    using (var p = new CodeGraphProvider())
+                    {
+                        if (!p.Open(db)) continue;
+                        var syms = p.FindSymbols(qualifier, 2000);   // LIKE %IDENT:% — narrowed to true prefix below
+                        if (syms == null) continue;
+                        foreach (var s in syms)
+                        {
+                            if (s == null || string.IsNullOrEmpty(s.Name)) continue;
+                            if (!s.Name.StartsWith(qualifier, StringComparison.OrdinalIgnoreCase)) continue;
+                            if (!seen.Add(s.Name)) continue;
+                            int ci = s.Name.IndexOf(':');
+                            string insert = (ci >= 0 && ci < s.Name.Length - 1) ? s.Name.Substring(ci + 1) : s.Name;
+                            primary.Add(new LspClient.CompletionItemInfo
+                            {
+                                Label = s.Name,
+                                Kind = 21,   // Constant (equates)
+                                Detail = CgCompletionDetail(s),
+                                InsertText = insert
+                            });
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+
+        /// <summary>The "IDENT:" qualifier (e.g. "PROP:") immediately before the cursor, or null when the
+        /// cursor is not in a colon-qualified context. Uses the same line/column slicing as the merges.</summary>
+        private static string ColonQualifierAt(string filePath, int line, int character, string bufferText)
+        {
+            try
+            {
+                string lineText = CgLineAt(bufferText, filePath, line);
+                if (lineText == null) return null;
+                int col = character < 0 ? 0 : (character > lineText.Length ? lineText.Length : character);
+                string upToCursor = lineText.Substring(0, col);
+                if (upToCursor.IndexOf('!') >= 0) return null; // comment line — no completion scoping
+                var m = ColonQualifierPattern.Match(upToCursor);
+                return m.Success ? m.Groups[1].Value : null;
+            }
+            catch { return null; }
         }
 
         /// <summary>Push the live embeditor buffer to the server (completion/diagnostics see current text).</summary>
@@ -849,6 +971,402 @@ namespace ClarionAssistant.Services
                 case "routine": return 6;     // Method
                 case "variable": return 13;   // Variable
                 default: return 13;           // Variable (reasonable default)
+            }
+        }
+
+        // === CodeGraph prefix completion (task a47a6cac Phase 1) ===
+        // Mark's pure upstream server completes members only (after '.'); these helpers merge global
+        // symbols from the .codegraph.db into a BARE-PREFIX completion so typing the first letters of a
+        // symbol + Ctrl+Space completes it. Member-access / qualified contexts are left LSP-only.
+
+        // Identifier prefix immediately left of the cursor.
+        private static readonly Regex CgPrefixPattern = new Regex(@"[A-Za-z_][A-Za-z0-9_]*$");
+
+        // Min prefix length before hitting the CodeGraph — avoids dumping the symbol table on 1 keystroke.
+        private const int CgCompletionMinPrefix = 2;
+
+        /// <summary>Merge bare-prefix completions into <paramref name="primary"/> when the cursor is in a
+        /// bare-prefix context: ABC standard globals (task a47a6cac built-ins) + CodeGraph global symbols.
+        /// Member-access / qualified contexts are left LSP-only. Mutates the list in place. Never throws.</summary>
+        private static void MergeBarePrefixCompletions(
+            List<LspClient.CompletionItemInfo> primary, string filePath, int line, int character, string bufferText)
+        {
+            string lineText = CgLineAt(bufferText, filePath, line);
+            if (lineText == null) return;
+
+            int col = character < 0 ? 0 : (character > lineText.Length ? lineText.Length : character);
+            string upToCursor = lineText.Substring(0, col);
+
+            // In a Clarion comment ('!') → no completion.
+            if (upToCursor.IndexOf('!') >= 0) return;
+            // Member-access ('.' immediately before cursor, ignoring trailing spaces) → LSP-only.
+            if (upToCursor.TrimEnd().EndsWith(".")) return;
+
+            var m = CgPrefixPattern.Match(upToCursor);
+            if (!m.Success) return;
+            string prefix = m.Value;
+            if (prefix.Length < CgCompletionMinPrefix) return;
+            // Qualified access (Class.Member, PROP:/EVENT:/prefixed field) → LSP-only, no global noise.
+            if (m.Index > 0) { char before = upToCursor[m.Index - 1]; if (before == '.' || before == ':') return; }
+
+            // Labels already returned by the LSP — don't double-list (case-insensitive).
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var it in primary)
+                if (it != null && !string.IsNullOrEmpty(it.Label)) seen.Add(it.Label);
+
+            string[] lines = CgGetLines(bufferText, filePath);
+
+            // (1) Local variables (depth-aware) from the enclosing routine + procedure DATA. Never in the
+            // CodeGraph (not cross-project) + must reflect unsaved edits, so parse the live buffer. Phase 2.
+            if (lines != null) MergeLocalVarCompletions(primary, seen, prefix, lines, line);
+
+            // (2) No-PRE group/queue FIELDS in scope (bare-accessible). PRE'd group fields require their
+            // prefix and are offered via the ':' path (MergeQualifiedFieldCompletions) instead.
+            if (lines != null)
+                foreach (var s in ParseScopeStructures(lines, GetScopeDataRanges(lines, line)))
+                {
+                    if (s.Pre != null) continue;
+                    foreach (var f in s.Fields)
+                    {
+                        if (!f.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+                        if (!seen.Add(f.Name)) continue;
+                        primary.Add(new LspClient.CompletionItemInfo
+                        {
+                            Label = f.Name, Kind = 5 /*Field*/,
+                            Detail = string.IsNullOrEmpty(f.Type) ? "(field)" : f.Type + "  (field)",
+                            InsertText = f.Name
+                        });
+                    }
+                }
+
+            // (3) ABC standard globals / request-response equates. These are ABC-template-generated, not
+            // user-declared (CodeGraph never indexes them) and not language built-ins — so they need this
+            // curated source. No DB required, so this fires even when no .codegraph.db is present.
+            foreach (var b in ClarionBuiltins.AbcStandardGlobalsByPrefix(prefix))
+            {
+                if (!seen.Add(b.Name)) continue;
+                primary.Add(new LspClient.CompletionItemInfo
+                {
+                    Label = b.Name,
+                    Kind = b.Kind,
+                    Detail = b.Detail,
+                    InsertText = b.Name
+                });
+            }
+
+            // (4) CodeGraph global symbols (procedures/functions/classes/vars) — project .codegraph.db.
+            MergeDbBarePrefix(primary, seen, prefix, ResolveCodeGraphDb(filePath), bareNamesOnly: false);
+
+            // (5) ClarionGraph static LIBRARY symbols (ABC + library classes, equates) — version-keyed
+            // cache (ticket 6e8f2439). Bare-prefix offers class/interface NAMES + equates; ClassName.Method
+            // entries are skipped here (they belong to member-access completion). No-op until the version
+            // DB is built. Additive + defensive: only ADDS, never overrides an LSP item.
+            MergeDbBarePrefix(primary, seen, prefix, ClarionGraphService.ResolveDbPath(), bareNamesOnly: true);
+        }
+
+        /// <summary>
+        /// Merge true-prefix global symbols from a CodeGraph-schema DB into the bare-prefix completion
+        /// list. <paramref name="bareNamesOnly"/> skips dotted ClassName.Method entries (used for the
+        /// ClarionGraph library DB, whose methods belong to member-access, not bare-prefix). Dedupes via
+        /// <paramref name="seen"/>; no-op when the DB is missing/unopenable. Never throws.
+        /// </summary>
+        private static void MergeDbBarePrefix(
+            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen, string prefix,
+            string db, bool bareNamesOnly)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(db) || !File.Exists(db)) return;
+                using (var p = new CodeGraphProvider())
+                {
+                    if (!p.Open(db)) return;
+                    var syms = p.FindSymbols(prefix, 100);   // substring match, prefix-ordered first
+                    if (syms == null) return;
+                    foreach (var s in syms)
+                    {
+                        if (s == null || string.IsNullOrEmpty(s.Name)) continue;
+                        if (!s.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue; // true prefix only
+                        if (bareNamesOnly && s.Name.IndexOf('.') >= 0) continue; // ClassName.Method → member-access only
+                        if (!seen.Add(s.Name)) continue;
+                        primary.Add(new LspClient.CompletionItemInfo
+                        {
+                            Label = s.Name,
+                            Kind = CgCompletionKind(s.Type),
+                            Detail = CgCompletionDetail(s),
+                            InsertText = s.Name
+                        });
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static string CgLineAt(string bufferText, string filePath, int line)
+        {
+            try
+            {
+                if (line < 0) return null;
+                if (!string.IsNullOrEmpty(bufferText))
+                {
+                    var arr = bufferText.Split('\n');
+                    return line < arr.Length ? arr[line].TrimEnd('\r') : null;
+                }
+                if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
+                {
+                    var lines = File.ReadAllLines(filePath);
+                    if (line < lines.Length) return lines[line];
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        // CodeGraph symbol type → LSP CompletionItemKind int (Monaco icon).
+        private static int CgCompletionKind(string type)
+        {
+            switch ((type ?? "").ToLowerInvariant())
+            {
+                case "class": return 7;       // Class
+                case "interface": return 8;   // Interface
+                case "procedure": return 3;   // Function
+                case "function": return 3;    // Function
+                case "routine": return 2;     // Method
+                case "variable": return 6;    // Variable
+                default: return 6;            // Variable
+            }
+        }
+
+        private static string CgCompletionDetail(CodeGraphSymbol s)
+        {
+            string t = string.IsNullOrEmpty(s.Type) ? "" : s.Type;
+            if (!string.IsNullOrEmpty(s.ReturnType)) t += " : " + s.ReturnType;
+            if (!string.IsNullOrEmpty(s.ProjectName)) t += "  (" + s.ProjectName + ")";
+            return string.IsNullOrEmpty(t) ? null : t;
+        }
+
+        // === Local-variable prefix completion (task a47a6cac Phase 2) ===
+        // Procedure header: a column-1 label followed by the PROCEDURE keyword (e.g. "ThisWindow.Init PROCEDURE").
+        private static readonly Regex CgProcHeaderPattern = new Regex(@"^[A-Za-z_][A-Za-z0-9_.:]*\s+PROCEDURE\b", RegexOptions.IgnoreCase);
+        // Routine header: a column-1 label followed by the ROUTINE keyword (e.g. "TestRoutine ROUTINE").
+        private static readonly Regex CgRoutineHeaderPattern = new Regex(@"^[A-Za-z_][A-Za-z0-9_.:]*\s+ROUTINE\b", RegexOptions.IgnoreCase);
+        // The CODE statement that ends a procedure's DATA section.
+        private static readonly Regex CgCodeLinePattern = new Regex(@"^\s*CODE\b", RegexOptions.IgnoreCase);
+        // A data declaration: a column-1 label (group 1) followed by its type/rest-of-line (group 2).
+        private static readonly Regex CgDataLabelPattern = new Regex(@"^([A-Za-z_][A-Za-z0-9_:]*)\s+(\S.*)$");
+        // Trailing Clarion line comment (' ! ...') — stripped from the type shown in the detail column.
+        private static readonly Regex CgTrailingComment = new Regex(@"\s+!.*$");
+
+        /// <summary>Phase 2: merge in-scope local variables from the live buffer. Two scopes, most-specific
+        /// first: (a) the enclosing ROUTINE's private DATA (visible only inside that routine), then (b) the
+        /// enclosing PROCEDURE's main DATA (visible everywhere in the proc, including its routines). Parsed
+        /// from the live buffer so it reflects unsaved edits. Never throws.</summary>
+        private static void MergeLocalVarCompletions(
+            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen, string prefix,
+            string[] lines, int line)
+        {
+            if (lines == null || line < 0 || line >= lines.Length) return;
+            int from = Math.Min(line, lines.Length - 1);
+
+            // (a) Enclosing ROUTINE (most specific). Scanning up, an enclosing routine is one whose header
+            // we reach BEFORE any PROCEDURE header — otherwise the cursor is in the procedure's main body.
+            // Added first so a routine-private var shadows a same-named procedure local (via `seen`).
+            for (int i = from; i >= 0; i--)
+            {
+                if (CgRoutineHeaderPattern.IsMatch(lines[i])) { CollectDataLabels(lines, i, prefix, seen, primary, "(routine var)"); break; }
+                if (CgProcHeaderPattern.IsMatch(lines[i])) break;   // in proc main body → no enclosing routine
+            }
+
+            // (b) Enclosing PROCEDURE main locals — in scope everywhere in the proc, incl. its routines.
+            for (int i = from; i >= 0; i--)
+                if (CgProcHeaderPattern.IsMatch(lines[i])) { CollectDataLabels(lines, i, prefix, seen, primary, "(local)"); break; }
+        }
+
+        /// <summary>Collect column-1 data declarations from <paramref name="headerIdx"/>+1 down to the next
+        /// CODE statement (the end of that PROCEDURE/ROUTINE's DATA section), offering labels that match
+        /// <paramref name="prefix"/> and aren't already in <paramref name="seen"/>. Shows the declared type
+        /// in the detail column with <paramref name="scopeMarker"/>.</summary>
+        private static void CollectDataLabels(
+            string[] lines, int headerIdx, string prefix, HashSet<string> seen,
+            List<LspClient.CompletionItemInfo> primary, string scopeMarker)
+        {
+            int depth = 0;   // GROUP/QUEUE nesting — fields inside structures are NOT plain locals
+            for (int i = headerIdx + 1; i < lines.Length; i++)
+            {
+                string ln = lines[i];
+                if (CgCodeLinePattern.IsMatch(ln)) break;                                   // end of DATA section
+                if (CgProcHeaderPattern.IsMatch(ln) || CgRoutineHeaderPattern.IsMatch(ln)) break;  // next proc/routine
+                bool isEnd = CgEndLine.IsMatch(ln) || CgPeriodEnd.IsMatch(ln);
+                // Emit only depth-0 declarations: plain locals + the GROUP/QUEUE container's own label.
+                if (depth == 0 && !isEnd)
+                {
+                    var lm = CgDataLabelPattern.Match(ln);
+                    if (lm.Success)
+                    {
+                        string label = lm.Groups[1].Value;
+                        if (label.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && seen.Add(label))
+                        {
+                            // Show the declared type (e.g. "STRING(12)", "LONG", "GROUP") in the detail
+                            // column, stripping any trailing line comment. Fall back to the scope marker.
+                            string typeText = CgTrailingComment.Replace(lm.Groups[2].Value, "").Trim();
+                            string detail = string.IsNullOrEmpty(typeText) ? scopeMarker : typeText + "  " + scopeMarker;
+                            primary.Add(new LspClient.CompletionItemInfo
+                            { Label = label, Kind = 6 /*Variable*/, Detail = detail, InsertText = label });
+                        }
+                    }
+                }
+                if (CgGroupQueueOpen.IsMatch(ln)) depth++;
+                else if (isEnd && depth > 0) depth--;
+            }
+        }
+
+        // === Group/Queue FIELD completion (task a47a6cac Phase 2 refinement) ===
+        // Parses GROUP/QUEUE structures (with PRE() + nesting) from the in-scope DATA sections, then offers
+        // their fields via PRE prefix ("Cus:"), dotted access ("Group."), and bare labels (no-PRE groups, in
+        // MergeBarePrefixCompletions). Proc + routine scope for now (module-level + global are follow-ups).
+
+        private static readonly Regex CgGroupQueueOpen = new Regex(@"^([A-Za-z_][A-Za-z0-9_:]*)\s+(GROUP|QUEUE)\b(.*)$", RegexOptions.IgnoreCase);
+        private static readonly Regex CgEndLine   = new Regex(@"^\s*END\b", RegexOptions.IgnoreCase);
+        private static readonly Regex CgPeriodEnd = new Regex(@"^\s*\.\s*$");
+        private static readonly Regex CgPreAttr   = new Regex(@",\s*PRE\(\s*([A-Za-z_][A-Za-z0-9_]*)?\s*\)", RegexOptions.IgnoreCase);
+        // Qualifier immediately before the cursor: <identifier><':' or '.'><partial>.
+        private static readonly Regex CgQualifier = new Regex(@"([A-Za-z_][A-Za-z0-9_]*)([:.])([A-Za-z0-9_]*)$");
+
+        private sealed class CgStructField { public string Name; public string Type; }
+        private sealed class CgStruct { public string Name; public string Pre; public readonly List<CgStructField> Fields = new List<CgStructField>(); }
+
+        /// <summary>Full buffer (live text preferred, else disk) split into lines, or null.</summary>
+        private static string[] CgGetLines(string bufferText, string filePath)
+        {
+            if (!string.IsNullOrEmpty(bufferText)) return bufferText.Replace("\r\n", "\n").Split('\n');
+            try { if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath)) return File.ReadAllLines(filePath); } catch { }
+            return null;
+        }
+
+        /// <summary>The enclosing routine + procedure DATA-section line ranges [start, endExclusive).</summary>
+        private static List<int[]> GetScopeDataRanges(string[] lines, int line)
+        {
+            var ranges = new List<int[]>();
+            int from = Math.Min(line, lines.Length - 1);
+            for (int i = from; i >= 0; i--)   // enclosing routine (only if reached before any procedure header)
+            {
+                if (CgRoutineHeaderPattern.IsMatch(lines[i])) { ranges.Add(new[] { i + 1, FindCodeAfter(lines, i) }); break; }
+                if (CgProcHeaderPattern.IsMatch(lines[i])) break;
+            }
+            for (int i = from; i >= 0; i--)   // enclosing procedure
+                if (CgProcHeaderPattern.IsMatch(lines[i])) { ranges.Add(new[] { i + 1, FindCodeAfter(lines, i) }); break; }
+            return ranges;
+        }
+
+        // End a DATA region at its CODE statement, OR at the next procedure/routine header — the latter
+        // matters because a routine without its own DATA/CODE (or one being edited) has no CODE of its own,
+        // and without the routine-header stop its range would over-extend into the NEXT routine's DATA and
+        // leak that routine's groups/fields out of scope.
+        private static int FindCodeAfter(string[] lines, int headerIdx)
+        {
+            for (int i = headerIdx + 1; i < lines.Length; i++)
+            {
+                if (CgCodeLinePattern.IsMatch(lines[i])) return i;
+                if (CgProcHeaderPattern.IsMatch(lines[i]) || CgRoutineHeaderPattern.IsMatch(lines[i])) return i;
+            }
+            return lines.Length;
+        }
+
+        /// <summary>Parse GROUP/QUEUE structures (nesting + PRE inheritance) from the given line ranges.</summary>
+        private static List<CgStruct> ParseScopeStructures(string[] lines, List<int[]> ranges)
+        {
+            var all = new List<CgStruct>();
+            foreach (var rg in ranges)
+            {
+                var stack = new List<CgStruct>();
+                for (int i = rg[0]; i < rg[1] && i < lines.Length; i++)
+                {
+                    string ln = lines[i];
+                    var gq = CgGroupQueueOpen.Match(ln);
+                    if (gq.Success)
+                    {
+                        string pre = CgExtractPre(gq.Groups[3].Value)
+                                     ?? (stack.Count > 0 ? stack[stack.Count - 1].Pre : null);
+                        var s = new CgStruct { Name = gq.Groups[1].Value, Pre = pre };
+                        if (stack.Count > 0)   // a nested group is also a field of its parent
+                            stack[stack.Count - 1].Fields.Add(new CgStructField { Name = s.Name, Type = gq.Groups[2].Value });
+                        all.Add(s);
+                        stack.Add(s);
+                        continue;
+                    }
+                    if (stack.Count > 0 && (CgEndLine.IsMatch(ln) || CgPeriodEnd.IsMatch(ln)))
+                    {
+                        stack.RemoveAt(stack.Count - 1);
+                        continue;
+                    }
+                    if (stack.Count > 0)
+                    {
+                        var fm = CgDataLabelPattern.Match(ln);
+                        if (fm.Success)
+                            stack[stack.Count - 1].Fields.Add(new CgStructField
+                            {
+                                Name = fm.Groups[1].Value,
+                                Type = CgTrailingComment.Replace(fm.Groups[2].Value, "").Trim()
+                            });
+                    }
+                }
+            }
+            return all;
+        }
+
+        private static string CgExtractPre(string attrs)
+        {
+            var m = CgPreAttr.Match(attrs ?? "");
+            return (m.Success && m.Groups[1].Success && m.Groups[1].Value.Length > 0) ? m.Groups[1].Value : null;
+        }
+
+        /// <summary>Group/queue FIELD completion for qualified contexts: PRE prefix ("Cus:partial" → fields
+        /// of GROUP,PRE(Cus)) and dotted access ("Group.partial" → direct fields). Only injects for groups/
+        /// queues visible in scope — class member-access ('.') stays the LSP's job. Never throws.</summary>
+        private static void MergeQualifiedFieldCompletions(
+            List<LspClient.CompletionItemInfo> primary, string filePath, int line, int character, string bufferText)
+        {
+            string lineText = CgLineAt(bufferText, filePath, line);
+            if (lineText == null) return;
+            int col = character < 0 ? 0 : (character > lineText.Length ? lineText.Length : character);
+            string upToCursor = lineText.Substring(0, col);
+            if (upToCursor.IndexOf('!') >= 0) return;   // comment
+
+            var q = CgQualifier.Match(upToCursor);
+            if (!q.Success) return;                       // not a "<ident>:partial" / "<ident>.partial" context
+            string qualifier = q.Groups[1].Value;
+            char sep = q.Groups[2].Value[0];
+            string partial = q.Groups[3].Value;
+
+            string[] lines = CgGetLines(bufferText, filePath);
+            if (lines == null) return;
+            var structs = ParseScopeStructures(lines, GetScopeDataRanges(lines, line));
+            if (structs.Count == 0) return;
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var it in primary)
+                if (it != null && !string.IsNullOrEmpty(it.Label)) seen.Add(it.Label);
+
+            foreach (var s in structs)
+            {
+                bool match = sep == ':'
+                    ? (s.Pre != null && string.Equals(s.Pre, qualifier, StringComparison.OrdinalIgnoreCase))
+                    : string.Equals(s.Name, qualifier, StringComparison.OrdinalIgnoreCase);
+                if (!match) continue;
+
+                foreach (var f in s.Fields)
+                {
+                    if (partial.Length > 0 && !f.Name.StartsWith(partial, StringComparison.OrdinalIgnoreCase)) continue;
+                    // PRE label shows the full "Cus:Field"; insert just the field name (the range breaks on
+                    // ':'/'.', so the qualifier + separator already typed stays put).
+                    string label = sep == ':' ? qualifier + ":" + f.Name : f.Name;
+                    if (!seen.Add(label)) continue;
+                    primary.Add(new LspClient.CompletionItemInfo
+                    {
+                        Label = label, Kind = 5 /*Field*/,
+                        Detail = string.IsNullOrEmpty(f.Type) ? "(field)" : f.Type + "  (field)",
+                        InsertText = f.Name
+                    });
+                }
             }
         }
     }

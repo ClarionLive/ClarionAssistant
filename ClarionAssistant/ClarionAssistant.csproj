@@ -131,6 +131,7 @@
     <Compile Include="Services\LspService.cs" />
     <Compile Include="Services\SharedLspBridge.cs" />
     <Compile Include="Services\LibraryIndexer.cs" />
+    <Compile Include="Services\ClarionGraphService.cs" />
     <Compile Include="Services\AppTreeService.cs" />
     <Compile Include="Services\IdeReflectionService.cs" />
     <Compile Include="Services\EmbeditorCompletionService.cs" />

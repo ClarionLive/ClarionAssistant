@@ -266,6 +266,7 @@
         <label>Smart auto-indent <input type="checkbox" id="setAutoIndent"></label>
         <label>Word wrap <input type="checkbox" id="setWordWrap"></label>
         <label>Minimap <input type="checkbox" id="setMinimap"></label>
+        <label>Complete word on insert key (space . ( ) <input type="checkbox" id="setCompleteOnInsertKey"></label>
         <label>Font size <input type="number" id="setFontSize" min="6" max="48" step="1"></label>
         <h4>Keyboard</h4>
         <table id="keybindTable">
@@ -387,6 +388,10 @@
     var pendingRequests = {};     // reqId -> resolver, for async LSP completion/hover round-trips
     var reqSeq = 0;
     var lastSettings = null;      // latest editor settings applied (for the gear panel + re-apply)
+    // When true, the suggest widget's highlighted item is accepted (and the typed char inserted) on an
+    // "insert key" — space, '.', '(' — the way the native Clarion editor does it. Read fresh by
+    // toMonacoCompletion when building each item's commitCharacters, so the gear toggle takes effect live.
+    var commitKeysEnabled = true;
 
     // ----- Find & Replace state -----
     var findResults = [];         // [{line,startCol,endCol,text,editable,checked,matches}]
@@ -715,6 +720,10 @@
             detail: it.detail || undefined,
             documentation: it.documentation ? { value: it.documentation } : undefined,
             insertText: it.insertText || it.label,
+            // "Complete word on insert key": accept the highlighted item AND insert the typed char.
+            // '.' also re-triggers member completion (triggerCharacters); '(' starts a call; ' ' lets you
+            // commit a name then keep typing (Myv<space> -> "Myvar "). Gated by the gear toggle.
+            commitCharacters: commitKeysEnabled ? ['.', '(', ' '] : undefined,
             range: range
         };
     }
@@ -1912,15 +1921,28 @@
         monaco.languages.registerCompletionItemProvider('clarion', {
             triggerCharacters: ['.'],
             provideCompletionItems: function (model, position) {
-                var word = model.getWordUntilPosition(position);
-                var range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
+                // Completion replace-range = the trailing identifier chars only, breaking on ':' and '.'.
+                // We intentionally do NOT use getWordUntilPosition here: the Clarion wordPattern keeps ':'
+                // inside a word (so double-click selects prefixed names like Add:AddressID), but the server's
+                // PROP:/PROPPRINT:/EVENT: items send the SUFFIX after the separator as insertText (e.g. "Bevel"
+                // for label "PROP:Bevel"). If the range spanned "PROP:Be", selecting it would replace the
+                // "PROP:" too and leave just "Bevel". Breaking the range on ':' keeps the "PROP:" prefix. (a47a6cac)
+                var before = model.getLineContent(position.lineNumber).substring(0, position.column - 1);
+                var pfx = /[A-Za-z0-9_]*$/.exec(before);
+                var startCol = position.column - (pfx ? pfx[0].length : 0);
+                var range = new monaco.Range(position.lineNumber, startCol, position.lineNumber, position.column);
                 return requestFromHost('completion', { line: position.lineNumber, column: position.column, buffer: model.getValue() })
                     .then(function (resp) {
                         var items = (resp && resp.items) || [];
                         if (!items.length) maybeReportLsp(resp && resp.lsp);
-                        return { suggestions: items.map(function (it) { return toMonacoCompletion(it, range); }) };
+                        // incomplete:true → Monaco re-queries the provider on every keystroke instead of
+                        // caching the first response and fuzzy-filtering client-side. Required so the
+                        // host-side CodeGraph prefix merge (task a47a6cac) runs live as-you-type — without
+                        // it, globals only appear on a forced Ctrl+Space (min-prefix guard suppresses the
+                        // 1-char query, then the stale list is filtered and never re-fetched).
+                        return { suggestions: items.map(function (it) { return toMonacoCompletion(it, range); }), incomplete: true };
                     })
-                    .catch(function () { return { suggestions: [] }; });
+                    .catch(function () { return { suggestions: [], incomplete: true }; });
             }
         });
         monaco.languages.registerHoverProvider('clarion', {
@@ -1949,6 +1971,8 @@
         opts.wordWrap = s.wordWrap ? 'on' : 'off';
         opts.minimap = { enabled: !!s.minimap };
         opts.autoIndent = s.autoIndent ? 'full' : 'keep';
+        // Live insert-key acceptance: read by toMonacoCompletion on the next keystroke (default ON if absent).
+        if (typeof s.completeOnInsertKey === 'boolean') commitKeysEnabled = s.completeOnInsertKey;
         editor.updateOptions(opts);
         if (editor2) editor2.updateOptions(opts);   // keep the split pane's editor-options in sync (#15)
         // tabSize / insertSpaces are MODEL options in Monaco, not editor options.
@@ -2003,6 +2027,7 @@
         if ((el = document.getElementById('setAutoIndent'))) el.checked = !!s.autoIndent;
         if ((el = document.getElementById('setWordWrap'))) el.checked = !!s.wordWrap;
         if ((el = document.getElementById('setMinimap'))) el.checked = !!s.minimap;
+        if ((el = document.getElementById('setCompleteOnInsertKey'))) el.checked = (s.completeOnInsertKey !== false);
         if ((el = document.getElementById('setFontSize')) && typeof s.fontSize === 'number') el.value = s.fontSize;
     }
 
@@ -2019,6 +2044,7 @@
             autoIndent: chk('setAutoIndent'),
             wordWrap: chk('setWordWrap'),
             minimap: chk('setMinimap'),
+            completeOnInsertKey: chk('setCompleteOnInsertKey'),
             fontSize: num('setFontSize', 13, 6, 48)
         };
     }
@@ -2135,7 +2161,7 @@
             var p = document.getElementById('settingsPanel');
             if (p) p.classList.toggle('hidden');
         });
-        var ids = ['setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setFontSize'];
+        var ids = ['setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize'];
         for (var i = 0; i < ids.length; i++) {
             var e = document.getElementById(ids[i]);
             if (e) e.addEventListener('change', onSettingChanged);

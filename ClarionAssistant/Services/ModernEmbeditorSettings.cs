@@ -23,6 +23,9 @@ namespace ClarionAssistant.Services
         public bool AutoIndent = true;
         public bool WordWrap = false;
         public bool Minimap = true;
+        // "Complete word on insert key" (space, '.', '('): accept the highlighted suggestion and insert the
+        // typed char, the way the native Clarion editor does. Default ON. Maps to commitCharacters in Monaco.
+        public bool CompleteOnInsertKey = true;
         public int FontSize = 13;
 
         /// <summary>
@@ -52,6 +55,7 @@ namespace ClarionAssistant.Services
                 s.AutoIndent = GetBool(sv, "AutoIndent", s.AutoIndent);
                 s.WordWrap = GetBool(sv, "WordWrap", s.WordWrap);
                 s.Minimap = GetBool(sv, "Minimap", s.Minimap);
+                s.CompleteOnInsertKey = GetBool(sv, "CompleteOnInsertKey", s.CompleteOnInsertKey);
                 s.FontSize = GetInt(sv, "FontSize", s.FontSize, 6, 48);
                 s.KeyBindings = ParseKeyBindings(sv.Get(Prefix + "KeyBindings"));
             }
@@ -68,6 +72,7 @@ namespace ClarionAssistant.Services
             sv.Set(Prefix + "AutoIndent", AutoIndent ? "true" : "false");
             sv.Set(Prefix + "WordWrap", WordWrap ? "true" : "false");
             sv.Set(Prefix + "Minimap", Minimap ? "true" : "false");
+            sv.Set(Prefix + "CompleteOnInsertKey", CompleteOnInsertKey ? "true" : "false");
             sv.Set(Prefix + "FontSize", Clamp(FontSize, 6, 48).ToString());
             // Compact JSON, single line — SettingsService rejects CR/LF in values, and the serializer
             // never emits them. Empty map persists as "{}" (clears any prior overrides).
@@ -84,6 +89,7 @@ namespace ClarionAssistant.Services
             s.AutoIndent = ToBool(d, "autoIndent", s.AutoIndent);
             s.WordWrap = ToBool(d, "wordWrap", s.WordWrap);
             s.Minimap = ToBool(d, "minimap", s.Minimap);
+            s.CompleteOnInsertKey = ToBool(d, "completeOnInsertKey", s.CompleteOnInsertKey);
             s.FontSize = Clamp(ToInt(d, "fontSize", s.FontSize), 6, 48);
             object kb;
             if (d.TryGetValue("keyBindings", out kb) && kb is IDictionary<string, object>)
@@ -106,6 +112,7 @@ namespace ClarionAssistant.Services
                 { "autoIndent", AutoIndent },
                 { "wordWrap", WordWrap },
                 { "minimap", Minimap },
+                { "completeOnInsertKey", CompleteOnInsertKey },
                 { "fontSize", FontSize },
                 { "keyBindings", SanitizeBindings(KeyBindings) }
             };
