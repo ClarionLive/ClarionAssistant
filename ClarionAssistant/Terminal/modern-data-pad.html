@@ -120,6 +120,54 @@
     .tabpanel.active { display: flex; }
     #panel-data { position: relative; }   /* anchors #filterClear (absolute) to the Data panel */
 
+    /* ===================== CHEAT SHEET TAB (#panel-cheatsheet) — static editor feature reference ===================== */
+    #panel-cheatsheet { overflow: auto; }
+    .cheatsheet-body { padding: 10px 12px 16px; }
+    .cs-intro { font-size: 11px; color: #5a5a5a; line-height: 1.5; margin: 0 2px 12px; }
+    .cs-search { position: relative; margin: 0 2px 12px; }
+    .cs-search input { width: 100%; padding: 5px 26px 5px 9px; border: 1px solid #c8ccd2; border-radius: 5px;
+        font: inherit; font-size: 12px; background: #ffffff; color: #1f1f1f; }
+    .cs-search input:focus { outline: none; border-color: #0a5dc2; }
+    .cs-search-clear { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); cursor: pointer;
+        color: #8a8a8a; display: none; font-size: 14px; line-height: 1; }
+    .cs-search-clear:hover { color: #1f1f1f; }
+    .cs-section { margin-bottom: 14px; }
+    .cs-head { display: flex; align-items: center; gap: 6px; font-weight: 600; color: #3a3a3a;
+        background: #eef1f4; border: 1px solid #d4d4d4; border-radius: 5px;
+        padding: 5px 9px; margin-bottom: 5px; font-size: 12px; }
+    .cs-head .cs-ico { font-size: 13px; }
+    /* Fixed keys column (not max-content) so EVERY row's description left-edge lines up across the whole
+       sheet. Wide combos (e.g. Ctrl+Alt+↑ or ↓) wrap within the column via .cs-keys flex-wrap rather than
+       pushing the description over. */
+    .cs-row { display: grid; grid-template-columns: 185px 1fr; gap: 10px;
+        align-items: baseline; padding: 3px 9px; border-radius: 4px; }
+    .cs-row.hide { display: none; }                 /* filtered out (item #3) */
+    .cs-row:hover { background: #e8eef7; }
+    .cs-keys { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
+    .cs-keys .pl { color: #9a9a9a; font-size: 10px; }
+    .cs-keys .or { color: #8a8a8a; font-size: 10px; font-style: italic; padding: 0 2px; }
+    .cs-desc { color: #1f1f1f; line-height: 1.45; }
+    .kbd { display: inline-block; font-family: Consolas, 'Courier New', monospace; font-size: 10px;
+        line-height: 1.4; color: #1f1f1f; background: #f6f8fa; border: 1px solid #c8ccd2;
+        border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
+    .cs-note { font-size: 10px; color: #8a6d00; background: #fff7e0; border: 1px solid #f0e0a8;
+        border-radius: 4px; padding: 6px 9px; margin: 10px 2px 0; line-height: 1.5; }
+    .cs-empty { font-size: 11px; color: #8a8a8a; padding: 10px 9px; display: none; }
+    /* Cheat sheet — dark */
+    body.dark .cs-intro { color: #9a9ab0; }
+    body.dark .cs-search input { background: #1e1e2e; color: #cdd6f4; border-color: #45475a; }
+    body.dark .cs-search input:focus { border-color: #89b4fa; }
+    body.dark .cs-search-clear { color: #7f849c; }
+    body.dark .cs-search-clear:hover { color: #cdd6f4; }
+    body.dark .cs-head { color: #cdd6f4; background: #252535; border-color: #3a3a4a; }
+    body.dark .cs-row:hover { background: #2a2a3d; }
+    body.dark .cs-keys .pl { color: #6c7086; }
+    body.dark .cs-keys .or { color: #7f849c; }
+    body.dark .cs-desc { color: #cdd6f4; }
+    body.dark .kbd { color: #cdd6f4; background: #313244; border-color: #45475a; }
+    body.dark .cs-note { color: #ffd479; background: #3a2f12; border-color: #5a4a1a; }
+    body.dark .cs-empty { color: #7f849c; }
+
     /* ===================== FILES TAB (#panel-files) — light defaults; body.dark overrides below ===================== */
     #panel-files { overflow: auto; }
     .files-toolbar { display: flex; align-items: center; gap: 6px; padding: 8px 10px;
@@ -446,6 +494,7 @@
     <div class="tab-bar">
         <div class="tab active" data-tab="data" onclick="pick('data')"><span class="dot">📊</span>Data</div>
         <div class="tab" data-tab="files" onclick="pick('files')"><span class="dot">📁</span>Files</div>
+        <div class="tab" data-tab="cheatsheet" onclick="pick('cheatsheet')"><span class="dot">⌨️</span>Cheat Sheet</div>
     </div>
 
     <!-- ===================== DATA PANEL — the original Data Pad UI, IDs unchanged ===================== -->
@@ -527,6 +576,171 @@
             <!-- In-page drop hint is hidden: WebView2 strips real file paths from page drops, so external file
                  drops are handled by the host's native drop strip (docked below the WebView2 on the Files tab). -->
             <div class="drophint" id="dropZone" style="display:none;">⬇ <b>Drop files here</b> to open them in Monaco</div>
+        </div>
+    </div>
+
+    <!-- ===================== CHEAT SHEET PANEL — CA/Monaco editor feature reference (static, themed) =====================
+         Switched by pick('cheatsheet'); no host round-trip (only 'files' requests data). Content authored in item #2. -->
+    <div class="tabpanel" id="panel-cheatsheet">
+        <div class="cheatsheet-body">
+            <div class="cs-intro">Power features of the CA / Monaco editor. A few chords are CA-specific and differ
+                from stock Monaco — those are called out in the note at the bottom.</div>
+
+            <!-- Type-to-find filter (matches each row's data-keys: chord + description words) -->
+            <div class="cs-search">
+                <input type="text" id="csFilter" autocomplete="off" spellcheck="false"
+                       placeholder="Filter shortcuts… (e.g. comment, ctrl+/, bookmark)" />
+                <span class="cs-search-clear" id="csFilterClear" title="Clear (Esc)">×</span>
+            </div>
+
+            <!-- Navigation & code intelligence -->
+            <div class="cs-section">
+                <div class="cs-head"><span class="cs-ico">🧭</span>Navigation &amp; code intelligence</div>
+                <div class="cs-row" data-keys="f12 go to definition cursor caret">
+                    <span class="cs-keys"><span class="kbd">F12</span></span>
+                    <span class="cs-desc">Go to definition (at the text cursor)</span></div>
+                <div class="cs-row" data-keys="ctrl click go to definition mouse">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">Click</span></span>
+                    <span class="cs-desc">Go to definition (at the mouse pointer)</span></div>
+                <div class="cs-row" data-keys="alt left right navigate back forward history">
+                    <span class="cs-keys"><span class="kbd">Alt</span><span class="pl">+</span><span class="kbd">←</span><span class="or">or</span><span class="kbd">Alt</span><span class="pl">+</span><span class="kbd">→</span></span>
+                    <span class="cs-desc">Navigate back / forward through jumps</span></div>
+                <div class="cs-row" data-keys="ctrl space trigger completion intellisense suggest">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">Space</span></span>
+                    <span class="cs-desc">Trigger code completion</span></div>
+                <div class="cs-row" data-keys="hover type info signature docs tooltip">
+                    <span class="cs-keys"><span class="kbd">Hover</span></span>
+                    <span class="cs-desc">Hover a symbol for type info, signature &amp; docs</span></div>
+            </div>
+
+            <!-- Find & replace -->
+            <div class="cs-section">
+                <div class="cs-head"><span class="cs-ico">🔎</span>Find &amp; replace</div>
+                <div class="cs-row" data-keys="ctrl f find search">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">F</span></span>
+                    <span class="cs-desc">Open Find</span></div>
+                <div class="cs-row" data-keys="ctrl h find replace">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">H</span></span>
+                    <span class="cs-desc">Open Find &amp; Replace</span></div>
+                <div class="cs-row" data-keys="f3 shift next previous match">
+                    <span class="cs-keys"><span class="kbd">F3</span><span class="or">or</span><span class="kbd">Shift</span><span class="pl">+</span><span class="kbd">F3</span></span>
+                    <span class="cs-desc">Jump to next / previous match</span></div>
+                <div class="cs-row" data-keys="enter shift next previous match find box">
+                    <span class="cs-keys"><span class="kbd">Enter</span><span class="or">or</span><span class="kbd">Shift</span><span class="pl">+</span><span class="kbd">Enter</span></span>
+                    <span class="cs-desc">In the find box: next / previous match</span></div>
+                <div class="cs-row" data-keys="esc escape close find panel">
+                    <span class="cs-keys"><span class="kbd">Esc</span></span>
+                    <span class="cs-desc">Close the find panel</span></div>
+            </div>
+
+            <!-- Multi-cursor & selection -->
+            <div class="cs-section">
+                <div class="cs-head"><span class="cs-ico">🖱️</span>Multi-cursor &amp; selection</div>
+                <div class="cs-row" data-keys="alt click add cursor multi caret">
+                    <span class="cs-keys"><span class="kbd">Alt</span><span class="pl">+</span><span class="kbd">Click</span></span>
+                    <span class="cs-desc">Add a cursor where you click</span></div>
+                <div class="cs-row" data-keys="ctrl alt up down add cursor above below column">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">Alt</span><span class="pl">+</span><span class="kbd">↑</span><span class="or">or</span><span class="kbd">↓</span></span>
+                    <span class="cs-desc">Add a cursor above / below</span></div>
+                <div class="cs-row" data-keys="shift alt drag column box selection">
+                    <span class="cs-keys"><span class="kbd">Shift</span><span class="pl">+</span><span class="kbd">Alt</span><span class="pl">+</span><span class="kbd">drag</span></span>
+                    <span class="cs-desc">Column (box) selection</span></div>
+                <div class="cs-row" data-keys="double click select word clarion prefix">
+                    <span class="cs-keys"><span class="kbd">Double-click</span></span>
+                    <span class="cs-desc">Select the word — Clarion-aware (<code>Add:Field</code> counts as one word)</span></div>
+            </div>
+
+            <!-- Line editing -->
+            <div class="cs-section">
+                <div class="cs-head"><span class="cs-ico">✏️</span>Line editing</div>
+                <div class="cs-row" data-keys="alt up down move line">
+                    <span class="cs-keys"><span class="kbd">Alt</span><span class="pl">+</span><span class="kbd">↑</span><span class="or">or</span><span class="kbd">↓</span></span>
+                    <span class="cs-desc">Move the line up / down</span></div>
+                <div class="cs-row" data-keys="shift alt up down copy line">
+                    <span class="cs-keys"><span class="kbd">Shift</span><span class="pl">+</span><span class="kbd">Alt</span><span class="pl">+</span><span class="kbd">↑</span><span class="or">or</span><span class="kbd">↓</span></span>
+                    <span class="cs-desc">Copy the line up / down</span></div>
+                <div class="cs-row" data-keys="ctrl 2 duplicate line above">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">2</span></span>
+                    <span class="cs-desc">Duplicate the line above</span></div>
+                <div class="cs-row" data-keys="ctrl shift y remove line">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">Shift</span><span class="pl">+</span><span class="kbd">Y</span></span>
+                    <span class="cs-desc">Remove the line</span></div>
+                <div class="cs-row" data-keys="ctrl shift k delete line">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">Shift</span><span class="pl">+</span><span class="kbd">K</span></span>
+                    <span class="cs-desc">Delete the line</span></div>
+                <div class="cs-row" data-keys="ctrl x cut clear line">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">X</span></span>
+                    <span class="cs-desc">Cut — or clear the whole line if nothing is selected</span></div>
+                <div class="cs-row" data-keys="tab shift indent outdent">
+                    <span class="cs-keys"><span class="kbd">Tab</span><span class="or">or</span><span class="kbd">Shift</span><span class="pl">+</span><span class="kbd">Tab</span></span>
+                    <span class="cs-desc">Indent / outdent</span></div>
+            </div>
+
+            <!-- Comments & case -->
+            <div class="cs-section">
+                <div class="cs-head"><span class="cs-ico">💬</span>Comments &amp; case</div>
+                <div class="cs-row" data-keys="ctrl slash comment line">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">/</span></span>
+                    <span class="cs-desc">Comment the line</span></div>
+                <div class="cs-row" data-keys="ctrl shift slash uncomment line">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">Shift</span><span class="pl">+</span><span class="kbd">/</span></span>
+                    <span class="cs-desc">Uncomment the line</span></div>
+                <div class="cs-row" data-keys="ctrl shift u uppercase selection">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">Shift</span><span class="pl">+</span><span class="kbd">U</span></span>
+                    <span class="cs-desc">Uppercase the selection</span></div>
+                <div class="cs-row" data-keys="ctrl shift l lowercase selection">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">Shift</span><span class="pl">+</span><span class="kbd">L</span></span>
+                    <span class="cs-desc">Lowercase the selection</span></div>
+                <div class="cs-row" data-keys="ctrl backslash invert case selection">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">\</span></span>
+                    <span class="cs-desc">Invert the case of the selection</span></div>
+            </div>
+
+            <!-- Bookmarks -->
+            <div class="cs-section">
+                <div class="cs-head"><span class="cs-ico">🔖</span>Bookmarks</div>
+                <div class="cs-row" data-keys="ctrl f2 toggle bookmark line">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">F2</span></span>
+                    <span class="cs-desc">Toggle a bookmark on the current line</span></div>
+                <div class="cs-row" data-keys="f2 shift next previous bookmark">
+                    <span class="cs-keys"><span class="kbd">F2</span><span class="or">or</span><span class="kbd">Shift</span><span class="pl">+</span><span class="kbd">F2</span></span>
+                    <span class="cs-desc">Jump to next / previous bookmark</span></div>
+                <div class="cs-row" data-keys="gutter glyph margin click bookmark">
+                    <span class="cs-keys"><span class="kbd">Gutter click</span></span>
+                    <span class="cs-desc">Click the left glyph margin to toggle a bookmark</span></div>
+            </div>
+
+            <!-- Clarion tools -->
+            <div class="cs-section">
+                <div class="cs-head"><span class="cs-ico">🛠️</span>Clarion tools</div>
+                <div class="cs-row" data-keys="ctrl d structure designer">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">D</span></span>
+                    <span class="cs-desc">Open the Structure Designer for the structure at the cursor</span></div>
+            </div>
+
+            <!-- View & editor -->
+            <div class="cs-section">
+                <div class="cs-head"><span class="cs-ico">👁️</span>View &amp; editor</div>
+                <div class="cs-row" data-keys="ctrl wheel zoom font scroll">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">Wheel</span></span>
+                    <span class="cs-desc">Zoom the editor font in / out</span></div>
+                <div class="cs-row" data-keys="f1 ctrl shift p command palette">
+                    <span class="cs-keys"><span class="kbd">F1</span><span class="or">or</span><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">Shift</span><span class="pl">+</span><span class="kbd">P</span></span>
+                    <span class="cs-desc">Open the command palette</span></div>
+                <div class="cs-row" data-keys="ctrl s save file">
+                    <span class="cs-keys"><span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">S</span></span>
+                    <span class="cs-desc">Save</span></div>
+                <div class="cs-row" data-keys="fold unfold collapse chevron region">
+                    <span class="cs-keys"><span class="kbd">Fold</span></span>
+                    <span class="cs-desc">Use the chevrons between the line numbers and code to fold / unfold</span></div>
+            </div>
+
+            <div class="cs-empty" id="csEmpty">No shortcuts match your filter.</div>
+
+            <div class="cs-note">CA-specific: a few chords differ from stock Monaco — <span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">D</span>
+                opens the Structure Designer (not multi-cursor), <span class="kbd">Ctrl</span><span class="pl">+</span><span class="kbd">Click</span> goes to
+                definition (use <span class="kbd">Alt</span><span class="pl">+</span><span class="kbd">Click</span> to add a cursor), and
+                <span class="kbd">F2</span> is Next Bookmark. All editor shortcuts are rebindable in the gear (⚙) panel's Keyboard section.</div>
         </div>
     </div>
 
@@ -1775,6 +1989,50 @@
     document.getElementById('filterClear').addEventListener('click', function () {
         var fi = document.getElementById('filter'); fi.value = ''; fi.focus(); render();
     });
+
+    // Cheat Sheet filter: type-to-find a shortcut. Each .cs-row carries a lowercased data-keys (chord +
+    // description words); we AND the whitespace-separated query terms against it. A section header (.cs-head)
+    // hides when all its rows are filtered out; #csEmpty shows when nothing matches at all.
+    function filterCheatSheet() {
+        var inp = document.getElementById('csFilter');
+        if (!inp) return;
+        var q = (inp.value || '').trim().toLowerCase();
+        var terms = q ? q.split(/\s+/) : [];
+        var clr = document.getElementById('csFilterClear');
+        if (clr) clr.style.display = q ? 'block' : 'none';
+        var sections = document.querySelectorAll('#panel-cheatsheet .cs-section');
+        var anyShown = false;
+        for (var s = 0; s < sections.length; s++) {
+            var rows = sections[s].querySelectorAll('.cs-row');
+            var secShown = false;
+            for (var r = 0; r < rows.length; r++) {
+                // Haystack = data-keys (chord forms like "ctrl+/") PLUS the visible description text, so
+                // words shown to the user (e.g. "open") match even when they aren't in data-keys.
+                var descEl = rows[r].querySelector('.cs-desc');
+                var hay = ((rows[r].getAttribute('data-keys') || '') + ' ' + (descEl ? descEl.textContent : '')).toLowerCase();
+                var hit = terms.every(function (t) { return hay.indexOf(t) >= 0; });   // [] → all true
+                rows[r].classList.toggle('hide', !hit);
+                if (hit) secShown = true;
+            }
+            sections[s].style.display = secShown ? '' : 'none';
+            if (secShown) anyShown = true;
+        }
+        var empty = document.getElementById('csEmpty');
+        if (empty) empty.style.display = anyShown ? 'none' : 'block';
+    }
+    (function () {
+        var cf = document.getElementById('csFilter');
+        if (cf) {
+            cf.addEventListener('input', filterCheatSheet);
+            // Esc clears the filter; stopPropagation so the global Escape handler doesn't also clear the
+            // Data-pad filter / selection underneath.
+            cf.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape' && cf.value) { e.preventDefault(); e.stopPropagation(); cf.value = ''; filterCheatSheet(); }
+            });
+        }
+        var cfc = document.getElementById('csFilterClear');
+        if (cfc) cfc.addEventListener('click', function () { var i = document.getElementById('csFilter'); i.value = ''; i.focus(); filterCheatSheet(); });
+    })();
     document.getElementById('fontDec').addEventListener('click', function () { fontScale -= 0.1; applyFont(); scheduleSaveUiState(); });
     document.getElementById('fontInc').addEventListener('click', function () { fontScale += 0.1; applyFont(); scheduleSaveUiState(); });
     document.getElementById('themeBtn').addEventListener('click', function () { darkMode = !darkMode; applyTheme(); scheduleSaveUiState(); });
