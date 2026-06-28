@@ -781,6 +781,10 @@ namespace ClarionAssistant
                 // populated on first use (the restore sets _currentSlnPath directly, so
                 // no solution-"change" is detected and DetectFromIde never runs here).
                 _toolRegistry?.EnsureLspRunningInBackground();
+
+                // Build-on-first-detect: ensure the version-keyed ClarionGraph DB exists in the
+                // background (item 7). Self-guarded (once per version/session); no-op if cached.
+                Services.ClarionGraphService.EnsureBuiltInBackground();
             }
         }
 
@@ -822,6 +826,9 @@ namespace ClarionAssistant
                 // one poll interval without the user invoking completion first.
                 if (!string.IsNullOrEmpty(_currentSlnPath))
                     _toolRegistry?.EnsureLspRunningInBackground();
+                // NOTE: the ClarionGraph build heartbeat is driven from _statusLineTimer (always started),
+                // NOT here — this poll runs off _instanceStateTimer, which only starts when instance
+                // coordination initializes, so it can't be the sole trigger.
             }
             catch { }
         }
@@ -2444,7 +2451,15 @@ namespace ClarionAssistant
 
             // Poll for Claude Code status line data (model, context, rate limits, git)
             _statusLineTimer = new System.Windows.Forms.Timer { Interval = 3000 };
-            _statusLineTimer.Tick += (s, ev) => PollStatusLine();
+            _statusLineTimer.Tick += (s, ev) =>
+            {
+                PollStatusLine();
+                // Always-on heartbeat for the version-keyed, solution-INDEPENDENT ClarionGraph build. This
+                // timer starts unconditionally (unlike _instanceStateTimer, which is gated on instance
+                // coordination), so the library DB still builds in embeditor / no-solution / coordination-
+                // failed sessions. Self-guarded: a cheap no-op once ensured / building / in failure-cooldown.
+                Services.ClarionGraphService.EnsureBuiltInBackground();
+            };
             _statusLineTimer.Start();
 
             // Poll LSP diagnostics for the header pill (2s interval, cache-only reads).

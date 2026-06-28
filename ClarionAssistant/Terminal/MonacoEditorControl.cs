@@ -176,7 +176,11 @@ namespace ClarionAssistant.Terminal
                 var settings = _webView.CoreWebView2.Settings;
                 settings.IsScriptEnabled = true;
                 settings.AreDefaultContextMenusEnabled = false;
-                settings.AreDevToolsEnabled = true;
+                // DevTools OFF so F12 reaches the page's go-to-definition handler instead of being captured
+                // natively by WebView2 for DevTools (AreBrowserAcceleratorKeysEnabled=false alone doesn't free
+                // F12 while DevTools is enabled — that's why Ctrl+F/Ctrl+click work but F12 did nothing). Flip
+                // to true temporarily if you need to debug the embeditor page. (ticket 6e8f2439)
+                settings.AreDevToolsEnabled = false;
                 settings.IsStatusBarEnabled = false;
                 settings.IsZoomControlEnabled = false;
                 settings.AreBrowserAcceleratorKeysEnabled = false; // let Monaco own Ctrl+S, not the browser

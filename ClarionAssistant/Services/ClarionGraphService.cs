@@ -43,6 +43,11 @@ namespace ClarionAssistant.Services
     {
         private const string CacheFolderName = "clariongraph";
 
+        // Bump when the INGESTION (ClarionParser output / what symbols we store) changes, so existing cached
+        // DBs built by an older parser are treated as stale and auto-rebuilt (LibSrc mtimes alone can't detect
+        // a parser change). v2: capture CLASS data members (dotted "Class.Member"); member queries dotted-only.
+        private const int ParserVersion = 2;
+
         // Flat equate files (no class structure) — ingested via the dedicated EQUATE scan.
         private static readonly string[] EquateFileNames =
         {
@@ -70,10 +75,42 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// Full Clarion build version key (e.g. "12.0.14000"), read from the running IDE exe's
-        /// file version. Returns null if it can't be determined (e.g. running outside the IDE).
+        /// Full Clarion build version key (e.g. "12.0.0.14000"), read from the running IDE exe's
+        /// PRODUCT version. Returns null if it can't be determined (e.g. running outside the IDE).
+        ///
+        /// Uses all FOUR parts of the product version on purpose: Clarion stamps the build
+        /// differentiator in the PRIVATE part (Clarion.exe reports 12.0.0.14000), so the old
+        /// 3-part key "{Major}.{Minor}.{Build}" resolved to "12.0.0" and COLLIDED across every
+        /// 12.0 patch build — they'd all share one cache DB. Including the private part keys each
+        /// build to its own DB (ticket 6e8f2439 item 7). NOTE: this changes the cache filename, so
+        /// the previously-built ClarionGraph_12.0.0.db is orphaned and rebuilt once under the new key.
+        ///
+        /// MEMOIZED with a short TTL: the uncached resolve runs ClarionVersionService.Detect() (a
+        /// ClarionProperties.xml parse + ICSharpCode.Core reflection), and this is called on the hot path
+        /// (every completion keystroke via ResolveDbPath, and the 3s build heartbeat). Caching the key for a
+        /// few seconds removes that per-call XML-parse/reflection cost; a Clarion version switch is picked up
+        /// within the TTL. Failures (null) are not cached, so detection keeps retrying until it succeeds.
         /// </summary>
         public static string ResolveVersionKey()
+        {
+            lock (_versionCacheLock)
+            {
+                if (_cachedVersion != null &&
+                    (DateTime.UtcNow.Ticks - _cachedVersionAtTicks) < _versionCacheTtl.Ticks)
+                    return _cachedVersion;
+            }
+            string v = ResolveVersionKeyUncached();
+            if (v != null)
+                lock (_versionCacheLock) { _cachedVersion = v; _cachedVersionAtTicks = DateTime.UtcNow.Ticks; }
+            return v;
+        }
+
+        private static readonly object _versionCacheLock = new object();
+        private static string _cachedVersion;
+        private static long _cachedVersionAtTicks;
+        private static readonly TimeSpan _versionCacheTtl = TimeSpan.FromSeconds(20);
+
+        private static string ResolveVersionKeyUncached()
         {
             try
             {
@@ -83,11 +120,44 @@ namespace ClarionAssistant.Services
                     return null;
 
                 var vi = FileVersionInfo.GetVersionInfo(exePath);
-                if (vi.FileMajorPart <= 0)
+                // Reject only when BOTH versions are unpopulated — an install with a present FileVersion but
+                // absent ProductVersion must still key (gating on ProductMajorPart alone would make the
+                // FileVersion fallback below unreachable and the graph would never build).
+                if (vi.ProductMajorPart <= 0 && vi.FileMajorPart <= 0)
                     return null;
 
-                return string.Format("{0}.{1}.{2}",
-                    vi.FileMajorPart, vi.FileMinorPart, vi.FileBuildPart);
+                int maj, min, bld, pri;
+                if (vi.ProductMajorPart > 0)
+                {
+                    maj = vi.ProductMajorPart; min = vi.ProductMinorPart;
+                    bld = vi.ProductBuildPart; pri = vi.ProductPrivatePart;
+
+                    // Collapse guard: the build differentiator normally lives in the PRIVATE part
+                    // (12.0.0.14000). If an install reports a short/non-numeric ProductVersion, FileVersionInfo
+                    // returns 0 for the unparsed parts → the key would collapse to "12.0.0.0" and re-COLLIDE
+                    // across builds (the very bug this fixes). When Product build+private are both 0, fall back
+                    // to the FileVersion parts, then to the raw ProductVersion string.
+                    if (bld == 0 && pri == 0)
+                    {
+                        if (vi.FileBuildPart != 0 || vi.FilePrivatePart != 0)
+                        {
+                            maj = vi.FileMajorPart; min = vi.FileMinorPart;
+                            bld = vi.FileBuildPart; pri = vi.FilePrivatePart;
+                        }
+                        else if (!string.IsNullOrWhiteSpace(vi.ProductVersion))
+                        {
+                            return vi.ProductVersion.Trim();   // raw string; SanitizeForFileName handles the filename
+                        }
+                    }
+                }
+                else
+                {
+                    // ProductVersion absent but FileVersion present → key off FileVersion.
+                    maj = vi.FileMajorPart; min = vi.FileMinorPart;
+                    bld = vi.FileBuildPart; pri = vi.FilePrivatePart;
+                }
+
+                return string.Format("{0}.{1}.{2}.{3}", maj, min, bld, pri);
             }
             catch { return null; }
         }
@@ -266,6 +336,7 @@ namespace ClarionAssistant.Services
                         db.SetMetadata("libsrc_root", libSrcRoot);
                         db.SetMetadata("built_at", DateTime.Now.ToString("o"));
                         db.SetMetadata("symbol_count", totalSymbols.ToString());
+                        db.SetMetadata("parser_version", ParserVersion.ToString());
                         tx.Commit();
                     }
                 }
@@ -331,6 +402,129 @@ namespace ClarionAssistant.Services
             return count;
         }
 
+        // ===== Background build (item 7) =====
+
+        private static readonly object _bgLock = new object();
+        private static bool _bgBuilding;
+        private static string _bgEnsuredVersion;   // version whose DB we've ensured (built or confirmed fresh) this session
+        private static string _bgFailedVersion;    // version whose last bg build FAILED (for cooldown backoff)
+        private static long _bgFailedAtTicks;       // DateTime.UtcNow.Ticks of that failure
+        private static readonly TimeSpan _bgFailureCooldown = TimeSpan.FromMinutes(5);
+
+        /// <summary>True while a background build is in flight (for the settings "Building…" status).</summary>
+        public static bool IsBuilding { get { lock (_bgLock) { return _bgBuilding; } } }
+
+        /// <summary>
+        /// Fire-and-forget build-on-detect: ensures the CURRENT version's DB exists and is fresh, on a
+        /// background thread, AT MOST ONCE per version per session. Builds when the DB is ABSENT, and
+        /// force-rebuilds ONCE when it's STALE (a LibSrc file changed after built_at) — otherwise the
+        /// "stale" status would be unactionable. No-op while a build is in flight, after this version is
+        /// ensured, or within the failure-cooldown after a failed build. Safe to call repeatedly (startup,
+        /// every poll, with or without a solution open) — it self-guards. <paramref name="onComplete"/> runs
+        /// on the worker thread only when a build actually ran. Never throws. Until the DB lands,
+        /// completion/definition/hover degrade gracefully to LSP-only (they File.Exists-guard the DB).
+        /// </summary>
+        public static void EnsureBuiltInBackground(Action<ClarionGraphResult> onComplete = null)
+        {
+            try
+            {
+                string version = ResolveVersionKey();
+                if (string.IsNullOrEmpty(version)) return;   // no IDE/version → nothing to build
+
+                // Fast pre-check: skip the DB I/O below once this version is ensured, a build is running, or
+                // we're inside the post-failure cooldown (don't even open the DB for staleness during cooldown).
+                lock (_bgLock)
+                {
+                    if (_bgBuilding) return;
+                    if (string.Equals(_bgEnsuredVersion, version, StringComparison.OrdinalIgnoreCase)) return;
+                    if (InFailureCooldown(version)) return;
+                }
+
+                // DB existence + staleness (DB reads) computed OUTSIDE the lock.
+                string dbPath = ResolveDbPath(version);
+                bool dbExists = !string.IsNullOrEmpty(dbPath) && File.Exists(dbPath);
+                bool stale = dbExists && IsDbStale(dbPath);
+
+                lock (_bgLock)
+                {
+                    if (_bgBuilding) return;                                       // another thread won the race
+                    if (string.Equals(_bgEnsuredVersion, version, StringComparison.OrdinalIgnoreCase)) return;
+                    if (dbExists && !stale) { _bgEnsuredVersion = version; return; } // fresh cached DB → done
+                    if (InFailureCooldown(version)) return;                         // recent failure → back off
+                    _bgBuilding = true;
+                }
+
+                bool force = stale;   // stale → force rebuild; absent → normal (DB missing) build
+                var t = new System.Threading.Thread(() =>
+                {
+                    ClarionGraphResult result = null;
+                    try { result = EnsureBuilt(force); }
+                    catch { }
+                    finally
+                    {
+                        lock (_bgLock)
+                        {
+                            _bgBuilding = false;
+                            if (result != null && result.Success)
+                            {
+                                _bgEnsuredVersion = result.Version;
+                                _bgFailedVersion = null;                 // clear any prior failure
+                            }
+                            else
+                            {
+                                _bgFailedVersion = version;              // start the cooldown window
+                                _bgFailedAtTicks = DateTime.UtcNow.Ticks;
+                            }
+                        }
+                    }
+                    try { if (onComplete != null) onComplete(result); } catch { }
+                })
+                { IsBackground = true, Name = "ClarionGraphBuild" };
+                t.Start();
+            }
+            catch { }
+        }
+
+        /// <summary>True when the last bg build for <paramref name="version"/> failed within the cooldown
+        /// window — avoids re-spawning a fast-failing build every poll (e.g. LibSrc transiently missing).
+        /// Call under <see cref="_bgLock"/>.</summary>
+        private static bool InFailureCooldown(string version)
+        {
+            if (!string.Equals(_bgFailedVersion, version, StringComparison.OrdinalIgnoreCase)) return false;
+            return (DateTime.UtcNow.Ticks - _bgFailedAtTicks) < _bgFailureCooldown.Ticks;
+        }
+
+        /// <summary>Staleness check for an explicit DB path (reads its built_at + libsrc_root metadata and
+        /// compares against LibSrc write times). False on any read failure. Never throws.</summary>
+        private static bool IsDbStale(string dbPath)
+        {
+            try
+            {
+                string libsrc = ReadMetadataValue(dbPath, "libsrc_root");
+                string builtAtRaw = ReadMetadataValue(dbPath, "built_at");
+                DateTime builtAt;
+                if (!DateTime.TryParse(builtAtRaw, null,
+                        System.Globalization.DateTimeStyles.RoundtripKind, out builtAt))
+                    return IsParserOutdated(dbPath);   // can't read built_at, but a parser bump still forces rebuild
+                return IsStale(libsrc, builtAt) || IsParserOutdated(dbPath);
+            }
+            catch { return false; }
+        }
+
+        /// <summary>True when the DB was built by an older ingestion parser than the current
+        /// <see cref="ParserVersion"/> (or has no parser_version stamp) → it should be rebuilt. Never throws.</summary>
+        private static bool IsParserOutdated(string dbPath)
+        {
+            try
+            {
+                string raw = ReadMetadataValue(dbPath, "parser_version");
+                int stored;
+                if (!int.TryParse(raw, out stored)) return true;   // unstamped (built before parser versioning)
+                return stored < ParserVersion;
+            }
+            catch { return false; }
+        }
+
         // ===== Status =====
 
         /// <summary>
@@ -356,7 +550,8 @@ namespace ClarionAssistant.Services
                 status.DbPath = dbPath;
                 if (string.IsNullOrEmpty(dbPath) || !File.Exists(dbPath))
                 {
-                    status.State = "absent";
+                    // A background build-on-first-detect may be in flight for this version.
+                    status.State = IsBuilding ? "building" : "absent";
                     return status;
                 }
 
@@ -370,7 +565,9 @@ namespace ClarionAssistant.Services
                         System.Globalization.DateTimeStyles.RoundtripKind, out builtAt))
                     status.BuiltAt = builtAt;
 
-                status.State = IsStale(status.LibSrcRoot, status.BuiltAt) ? "stale" : "built";
+                // Stale if a LibSrc file changed OR the DB was built by an older ingestion parser.
+                status.State = (IsStale(status.LibSrcRoot, status.BuiltAt) || IsParserOutdated(dbPath))
+                    ? "stale" : "built";
                 return status;
             }
             catch (Exception ex)
@@ -387,7 +584,8 @@ namespace ClarionAssistant.Services
             var s = GetStatus();
             switch (s.State)
             {
-                case "absent": return "Not built" + (s.Version != null ? " (v" + s.Version + ")" : "");
+                case "absent":   return "Not built" + (s.Version != null ? " (v" + s.Version + ")" : "");
+                case "building": return "Building…" + (s.Version != null ? " (v" + s.Version + ")" : "");
                 case "built":  return s.SymbolCount + " symbols (v" + s.Version + ")";
                 case "stale":  return s.SymbolCount + " symbols (v" + s.Version + ", LibSrc changed — rebuild recommended)";
                 default:       return "Error: " + (s.Error ?? "unknown");

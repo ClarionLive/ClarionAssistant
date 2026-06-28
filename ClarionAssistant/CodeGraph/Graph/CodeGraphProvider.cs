@@ -131,9 +131,13 @@ namespace ClarionCodeGraph.Graph
         }
 
         /// <summary>
-        /// All members (methods/properties) declared under a CLASS, looked up by parent_name
+        /// All members (methods + data members) declared under a CLASS, looked up by parent_name
         /// (case-insensitive). Backs ABC/library member-access completion (oInstance.Method).
-        /// Member names are stored as "Parent.Member" — callers slice the suffix after the dot.
+        /// Member names are stored DOTTED as "Parent.Member" — callers slice the suffix after the dot.
+        /// The "name LIKE Parent.%" filter is essential: parent_name is overloaded — a method/data member
+        /// carries parent_name=OwningClass (membership), but a SUBCLASS symbol also carries
+        /// parent_name=BaseClass (inheritance). Only true members are stored dotted, so the dotted-name
+        /// filter excludes subclasses that merely inherit from <paramref name="parentName"/>.
         /// Returns empty (never null/throws); ordered by name.
         /// </summary>
         public List<CodeGraphSymbol> FindMembersOfParent(string parentName, int limit = 500)
@@ -144,10 +148,14 @@ namespace ClarionCodeGraph.Graph
             {
                 string sql = SymbolSelect +
                     "WHERE LOWER(s.parent_name) = LOWER(@parent) " +
+                    "AND s.name LIKE @parentDot ESCAPE '\\' " +
                     "ORDER BY s.name LIMIT @limit";
                 using (var cmd = new SQLiteCommand(sql, _connection))
                 {
                     cmd.Parameters.AddWithValue("@parent", parentName);
+                    // Escape LIKE wildcards in the class name so e.g. a literal '_' isn't treated as a wildcard.
+                    string escaped = parentName.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+                    cmd.Parameters.AddWithValue("@parentDot", escaped + ".%");
                     cmd.Parameters.AddWithValue("@limit", limit);
                     using (var reader = cmd.ExecuteReader())
                         while (reader.Read()) results.Add(MapSymbol(reader));

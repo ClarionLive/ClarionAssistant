@@ -131,24 +131,66 @@ namespace ClarionAssistant.Services
         // The v1.1 member/DTO references live exclusively in the Shared* workers below.
         // ===========================================================================================
 
-        /// <summary>textDocument/hover → raw LSP-response-shaped dict (consumers read ["result"]).</summary>
+        /// <summary>textDocument/hover → raw LSP-response-shaped dict (consumers read ["result"]). Falls back
+        /// to the C# CodeGraph/ClarionGraph providers (library + cross-project symbols) when the LSP returns
+        /// nothing — ticket 6e8f2439 item 6, so hovering an ABC/library symbol shows its signature.</summary>
         public static Dictionary<string, object> GetHover(string filePath, int line, int character, string bufferText = null)
         {
+            // Library/ABC member access ("oInstance.Member") → PREEMPT the LSP with our precise member hover.
+            // The LSP can't resolve libsrc member access (it returns the containing class at best), so ours is
+            // strictly more useful here. Project-local member access is left to the LSP (returns null below).
+            var lm = LibraryMemberAccessSymbol(filePath, line, character, bufferText);
+            if (lm != null)
+            {
+                string mc = CgHoverText(lm, "ClarionGraph");
+                if (!string.IsNullOrEmpty(mc))
+                    return WrapResult(new Dictionary<string, object> { { "contents", mc } });
+            }
+
             var c = Shared;
-            if (c == null) { var lsp = LspClient.Active; return lsp != null ? lsp.GetHover(filePath, line, character, bufferText) : null; }
-            return SharedGetHover(c, filePath, line, character);
+            Dictionary<string, object> primary = (c == null)
+                ? (LspClient.Active != null ? LspClient.Active.GetHover(filePath, line, character, bufferText) : null)
+                : SharedGetHover(c, filePath, line, character);
+            if (!IsHoverEmpty(primary)) return primary;
+            return CodeGraphHover(filePath, line, character, bufferText) ?? primary;
+        }
+
+        /// <summary>A member-access symbol ("oInstance.Member") resolved from the ClarionGraph LIBRARY DB,
+        /// or null. Used to PREEMPT the LSP for member access on ABC/library types — the LSP only resolves to
+        /// the containing CLASS there (so F12 lands on the class's first member, not the target). Member access
+        /// on a PROJECT-LOCAL type (resolved from the project CodeGraph) returns null → left to the LSP, which
+        /// resolves it precisely and from fresher state. Never throws.</summary>
+        private static CodeGraphSymbol LibraryMemberAccessSymbol(string filePath, int line, int character, string bufferText)
+        {
+            try
+            {
+                string mDb, mLabel;
+                var sym = ResolveMemberAccessSymbol(bufferText, filePath, line, character, out mDb, out mLabel);
+                return (sym != null && mLabel == "ClarionGraph") ? sym : null;
+            }
+            catch { return null; }
         }
 
         /// <summary>textDocument/definition → raw LSP-response-shaped dict. Falls back to the C#
-        /// CodeGraph provider (cross-project) when the LSP returns nothing — see CodeGraph fallback region.</summary>
-        public static Dictionary<string, object> GetDefinition(string filePath, int line, int character)
+        /// CodeGraph provider (cross-project + ABC/library member access) when the LSP returns nothing.
+        /// <paramref name="bufferText"/> (when supplied) lets the fallback resolve member access
+        /// ("oInstance.Method" → the method's libsrc declaration) from the live buffer.</summary>
+        public static Dictionary<string, object> GetDefinition(string filePath, int line, int character, string bufferText = null)
         {
+            // Library/ABC member access → PREEMPT the LSP with our precise member definition. The LSP resolves
+            // libsrc member access only to the containing CLASS, so F12/Ctrl+Click lands on the class's first
+            // member (e.g. AutoRefresh) instead of the target member. Project-local member access is left to
+            // the LSP (LibraryMemberAccessSymbol returns null for it).
+            var lm = LibraryMemberAccessSymbol(filePath, line, character, bufferText);
+            if (lm != null && !string.IsNullOrEmpty(lm.FilePath))
+                return WrapResult(new System.Collections.ArrayList { CgLocation(lm.FilePath, lm.LineNumber) });
+
             var c = Shared;
             Dictionary<string, object> primary = (c == null)
                 ? (LspClient.Active != null ? LspClient.Active.GetDefinition(filePath, line, character) : null)
                 : SharedGetDefinition(c, filePath, line, character);
             if (!IsEmptyResult(primary)) return primary;
-            return CodeGraphDefinition(filePath, line, character) ?? primary;
+            return CodeGraphDefinition(filePath, line, character, bufferText) ?? primary;
         }
 
         /// <summary>textDocument/references → raw LSP-response-shaped dict. CodeGraph fallback when empty.</summary>
@@ -915,23 +957,215 @@ namespace ClarionAssistant.Services
             };
         }
 
-        private static Dictionary<string, object> CodeGraphDefinition(string filePath, int line, int character)
+        private static Dictionary<string, object> CodeGraphDefinition(string filePath, int line, int character, string bufferText)
         {
             try
             {
+                // Member access first ("oInstance.Member" → the member's libsrc declaration), resolved from
+                // the live buffer. F12 / Ctrl+Click on an ABC member jumps to where it's declared in libsrc.
+                string mDb, mLabel;
+                var mSym = ResolveMemberAccessSymbol(bufferText, filePath, line, character, out mDb, out mLabel);
+                if (mSym != null && !string.IsNullOrEmpty(mSym.FilePath))
+                    return WrapResult(new System.Collections.ArrayList { CgLocation(mSym.FilePath, mSym.LineNumber) });
+
+                // Bare word (class name, equate). Project CodeGraph first (most specific), then ClarionGraph.
                 string word = CgWordAt(filePath, line, character);
                 if (string.IsNullOrEmpty(word)) return null;
-                string db = ResolveCodeGraphDb(filePath);
-                if (string.IsNullOrEmpty(db)) return null;
+                return CgDefinitionFromDb(word, ResolveCodeGraphDb(filePath))
+                    ?? CgDefinitionFromDb(word, ClarionGraphService.ResolveDbPath());
+            }
+            catch { return null; }
+        }
+
+        /// <summary>Resolve a member-access expression at the cursor ("oInstance.Member") to its CodeGraph
+        /// symbol: take the dotted token, split at the last '.', resolve oInstance's class from the live
+        /// buffer (reusing completion's type-inference), then look up "Class.Member" in the project CodeGraph
+        /// then the ClarionGraph library DB. <paramref name="foundDb"/>/<paramref name="sourceLabel"/> name
+        /// the DB that resolved it. Returns null when not a member-access context or unresolved. Needs the
+        /// live buffer (member access references possibly-unsaved declarations). Never throws.</summary>
+        private static CodeGraphSymbol ResolveMemberAccessSymbol(
+            string bufferText, string filePath, int line, int character, out string foundDb, out string sourceLabel)
+        {
+            foundDb = null; sourceLabel = null;
+            try
+            {
+                string[] lines = CgGetLines(bufferText, filePath);
+                string lineText = (lines != null && line >= 0 && line < lines.Length)
+                    ? lines[line] : CgLineAt(bufferText, filePath, line);
+                if (string.IsNullOrEmpty(lineText)) return null;
+                int col = character < 0 ? 0 : (character > lineText.Length ? lineText.Length : character);
+
+                // The dotted token spanning the cursor (+ its position).
+                Match tok = null;
+                foreach (Match mm in CgWordPattern.Matches(lineText))
+                    if (col >= mm.Index && col <= mm.Index + mm.Length) { tok = mm; break; }
+                if (tok == null) return null;
+
+                string token = tok.Value;
+                int dot = token.LastIndexOf('.');
+                if (dot <= 0 || dot >= token.Length - 1) return null;   // not "instance.member"
+                // Cursor must be on the MEMBER side (after the dot). On the INSTANCE side ("loc:wm"), this is
+                // NOT member access — return null so the LSP resolves the instance's own declaration/hover.
+                if (col <= tok.Index + dot) return null;
+                string instance = token.Substring(0, dot);
+                string member = token.Substring(dot + 1);
+                if (instance.IndexOf('.') >= 0) return null;            // multi-level chain — single-level only
+
+                bool inlineIgnored;
+                string className = ResolveInstanceType(lines, line, instance, filePath, out inlineIgnored);
+                if (string.IsNullOrEmpty(className)) return null;
+
+                string fullName = className + "." + member;
+                string[] dbs = { ResolveCodeGraphDb(filePath), ClarionGraphService.ResolveDbPath() };
+                string[] labels = { "CodeGraph", "ClarionGraph" };
+                for (int k = 0; k < dbs.Length; k++)
+                {
+                    string d = dbs[k];
+                    if (string.IsNullOrEmpty(d) || !File.Exists(d)) continue;
+                    using (var p = new CodeGraphProvider())
+                        if (p.Open(d))
+                        {
+                            var sym = p.FindSymbolByName(fullName);
+                            if (sym != null) { foundDb = d; sourceLabel = labels[k]; return sym; }
+                        }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>Resolve an exact-name definition from one CodeGraph-schema DB → an LSP location list,
+        /// or null when the DB is missing/unopenable or the symbol isn't found. Never throws.</summary>
+        private static Dictionary<string, object> CgDefinitionFromDb(string word, string db)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(word) || string.IsNullOrEmpty(db) || !File.Exists(db)) return null;
                 using (var p = new CodeGraphProvider())
                 {
                     if (!p.Open(db)) return null;
                     var def = p.GetDefinition(word);
-                    if (def == null) return null;
+                    if (def == null || string.IsNullOrEmpty(def.FilePath)) return null;
                     return WrapResult(new System.Collections.ArrayList { CgLocation(def.FilePath, def.LineNumber) });
                 }
             }
             catch { return null; }
+        }
+
+        /// <summary>True when an LSP hover result has no usable contents (null, error, empty collection, or a
+        /// blank/whitespace contents string) — the signal to try the CodeGraph/ClarionGraph hover fallback.</summary>
+        private static bool IsHoverEmpty(Dictionary<string, object> r)
+        {
+            if (IsEmptyResult(r)) return true;
+            try
+            {
+                object res;
+                if (r.TryGetValue("result", out res) && res is System.Collections.IDictionary)
+                {
+                    var d = (System.Collections.IDictionary)res;
+                    object cont = d.Contains("contents") ? d["contents"] : null;
+                    // 'contents' may be a string, a MarkupContent/MarkedString dict ({value:...}), or a list
+                    // of those — extract the actual text and whitespace-check THAT (a {kind,value:""} dict
+                    // would otherwise stringify to its type name and read as non-empty, suppressing fallback).
+                    if (string.IsNullOrWhiteSpace(HoverContentsText(cont))) return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        /// <summary>Best-effort extraction of the displayable text from an LSP hover "contents" value (plain
+        /// string, MarkupContent/MarkedString dict {value:...}, or a list of those). Empty/null when there's
+        /// no real content — the signal that the hover is empty and the CodeGraph fallback should fire.</summary>
+        private static string HoverContentsText(object contents)
+        {
+            if (contents == null) return null;
+            if (contents is string) return (string)contents;
+            var dict = contents as System.Collections.IDictionary;
+            if (dict != null)
+            {
+                object v = dict.Contains("value") ? dict["value"]
+                         : (dict.Contains("contents") ? dict["contents"] : null);
+                return v == null ? null : HoverContentsText(v);
+            }
+            var seq = contents as System.Collections.IEnumerable;
+            if (seq != null)
+            {
+                string acc = "";
+                foreach (var item in seq) acc += HoverContentsText(item);
+                return acc;
+            }
+            return null;   // unknown shape → treat as empty (fallback fires; LSP hover still kept if no DB hit)
+        }
+
+        /// <summary>Hover fallback: build hover contents for the word under the cursor from the project
+        /// CodeGraph, then the ClarionGraph library DB (ABC/library symbols). Null when neither resolves.</summary>
+        private static Dictionary<string, object> CodeGraphHover(string filePath, int line, int character, string bufferText)
+        {
+            try
+            {
+                // Member access first ("oInstance.Member" → that member's signature), resolved via the buffer.
+                string mDb, mLabel;
+                var mSym = ResolveMemberAccessSymbol(bufferText, filePath, line, character, out mDb, out mLabel);
+                if (mSym != null)
+                {
+                    string c = CgHoverText(mSym, mLabel);
+                    if (!string.IsNullOrEmpty(c))
+                        return WrapResult(new Dictionary<string, object> { { "contents", c } });
+                }
+
+                // Bare word (class name, equate) — exact-name lookup.
+                string word = CgWordAt(filePath, line, character);
+                if (string.IsNullOrEmpty(word)) return null;
+                return CgHoverFromDb(word, ResolveCodeGraphDb(filePath), "CodeGraph")
+                    ?? CgHoverFromDb(word, ClarionGraphService.ResolveDbPath(), "ClarionGraph");
+            }
+            catch { return null; }
+        }
+
+        /// <summary>Exact-name hover from one CodeGraph-schema DB → an LSP hover dict ({contents}), or null
+        /// when the DB is missing/unopenable or the symbol isn't found. <paramref name="sourceLabel"/> names
+        /// the DB (e.g. "ClarionGraph") for the detail line when the symbol has no project name. Never throws.</summary>
+        private static Dictionary<string, object> CgHoverFromDb(string word, string db, string sourceLabel)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(word) || string.IsNullOrEmpty(db) || !File.Exists(db)) return null;
+                using (var p = new CodeGraphProvider())
+                {
+                    if (!p.Open(db)) return null;
+                    var sym = p.FindSymbolByName(word);
+                    if (sym == null) return null;
+                    string contents = CgHoverText(sym, sourceLabel);
+                    if (string.IsNullOrEmpty(contents)) return null;
+                    return WrapResult(new Dictionary<string, object> { { "contents", contents } });
+                }
+            }
+            catch { return null; }
+        }
+
+        /// <summary>Markdown hover text for a CodeGraph symbol: a fenced signature line (name + params +
+        /// return type) followed by a detail line (type · member-of-parent · source). The source is the
+        /// symbol's project name when set, else <paramref name="sourceLabel"/>. Null when empty.</summary>
+        private static string CgHoverText(CodeGraphSymbol s, string sourceLabel)
+        {
+            if (s == null || string.IsNullOrEmpty(s.Name)) return null;
+
+            string sig = s.Name;
+            bool isData = string.Equals(s.Type, "variable", StringComparison.OrdinalIgnoreCase);
+            if (!string.IsNullOrEmpty(s.Params))
+            {
+                if (isData) sig += "  " + s.Params;   // data member: "Class.Field  BYTE" (Params holds the type)
+                else sig += s.Params.TrimStart().StartsWith("(") ? s.Params : "(" + s.Params + ")";  // method
+            }
+            if (!string.IsNullOrEmpty(s.ReturnType)) sig += " → " + s.ReturnType;
+
+            var bits = new List<string>();
+            if (!string.IsNullOrEmpty(s.Type)) bits.Add(s.Type);
+            if (!string.IsNullOrEmpty(s.ParentName)) bits.Add("member of " + s.ParentName);
+            bits.Add(!string.IsNullOrEmpty(s.ProjectName) ? s.ProjectName : sourceLabel);
+
+            return "```clarion\n" + sig + "\n```\n\n" + string.Join(" · ", bits);
         }
 
         private static Dictionary<string, object> CodeGraphReferences(string filePath, int line, int character)
@@ -1448,19 +1682,31 @@ namespace ClarionAssistant.Services
                         return fset.Count > 0 ? fset : null;
                     }
 
-            string className = ResolveInstanceType(lines, line, instance, filePath);
+            bool isInlineClass;
+            string className = ResolveInstanceType(lines, line, instance, filePath, out isInlineClass);
             if (string.IsNullOrEmpty(className)) return null;
 
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var it in primary)
                 if (it != null && !string.IsNullOrEmpty(it.Label)) seen.Add(it.Label);
 
-            // Project CodeGraph first (most specific), then ClarionGraph library DB; dedupe across both.
-            // allMembers collects EVERY member name (unfiltered by partial) for the scoping pass.
-            var allMembers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            MergeDbMembers(primary, seen, className, partial, ResolveCodeGraphDb(filePath), allMembers);
-            MergeDbMembers(primary, seen, className, partial, ClarionGraphService.ResolveDbPath(), allMembers);
-            return allMembers.Count > 0 ? allMembers : null;
+            // Add members from the project CodeGraph (most specific) then the ClarionGraph library DB; dedupe
+            // across both. Collect them (unfiltered by partial) into two sets for the scoping decision below.
+            var added = new HashSet<string>(StringComparer.OrdinalIgnoreCase);       // project-DB members
+            var libMembers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);  // library-DB members only
+            MergeDbMembers(primary, seen, className, partial, ResolveCodeGraphDb(filePath), added);
+            MergeDbMembers(primary, seen, className, partial, ClarionGraphService.ResolveDbPath(), libMembers);
+            added.UnionWith(libMembers);   // full set of members WE know about (so our additions survive scoping)
+
+            // SCOPE ONLY for a DIRECT instance of a library/ABC class (review HIGH + MEDIUM, 3 gates). Rationale:
+            // the LSP keyword-dump leak we're suppressing only happens for library types the LSP can't resolve
+            // server-side (libsrc isn't indexed) — there ARE no real LSP members to protect there, so scoping
+            // to our authoritative library member set is safe. For an inline "CLASS(Parent)" declaration
+            // (project-local derived class) or a purely project-local type, the LSP resolves member access
+            // itself — including derived-own methods and just-added members a stale .codegraph.db lacks — so
+            // scoping would silently DROP those valid completions. Leave those to the LSP (return null).
+            bool libraryBacked = libMembers.Count > 0;
+            return (!isInlineClass && libraryBacked && added.Count > 0) ? added : null;
         }
 
         /// <summary>Resolve the declared CLASS type of an instance so member-access knows which class's
@@ -1468,24 +1714,28 @@ namespace ClarionAssistant.Services
         /// "instance Type" / "instance CLASS(Parent)", nearest above the cursor first, then anywhere.
         /// (2) Fall back to the project CodeGraph — the variable's declared type lives in its params/return
         /// (e.g. "&FILEMANAGER"), which covers globally-declared ABC objects absent from the buffer. Returns
-        /// the bare class name (no '&'), or null. Never throws.</summary>
-        private static string ResolveInstanceType(string[] lines, int line, string instance, string filePath)
+        /// the bare class name (no '&'), or null. <paramref name="isInlineClass"/> is true when the type was
+        /// an inline "CLASS(Parent)" declaration (project-local derived class — caller must not scope). Never
+        /// throws.</summary>
+        private static string ResolveInstanceType(string[] lines, int line, string instance, string filePath, out bool isInlineClass)
         {
+            isInlineClass = false;
             try
             {
                 if (lines != null && lines.Length > 0)
                 {
-                    int from = Math.Min(line, lines.Length - 1);
+                    int from = Math.Max(0, Math.Min(line, lines.Length - 1));   // clamp (line may be <0)
                     for (int i = from; i >= 0; i--)
                     {
-                        string t = TypeFromDecl(lines[i], instance);
+                        string t = TypeFromDecl(lines[i], instance, out isInlineClass);
                         if (t != null) return t;
                     }
                     for (int i = from + 1; i < lines.Length; i++)   // declarations below the cursor
                     {
-                        string t = TypeFromDecl(lines[i], instance);
+                        string t = TypeFromDecl(lines[i], instance, out isInlineClass);
                         if (t != null) return t;
                     }
+                    isInlineClass = false;   // reset: no buffer decl matched
                 }
 
                 string db = ResolveCodeGraphDb(filePath);
@@ -1496,8 +1746,11 @@ namespace ClarionAssistant.Services
                             var sym = p.FindSymbolByName(instance);
                             if (sym != null)
                             {
-                                string t = ClassTypeFromText(sym.Params);
-                                if (t == null) t = ClassTypeFromText(sym.ReturnType);
+                                // A global object var's type ref (e.g. "&FILEMANAGER") — a DIRECT reference,
+                                // not an inline class, so leave isInlineClass false.
+                                bool _ignore;
+                                string t = ClassTypeFromText(sym.Params, out _ignore);
+                                if (t == null) t = ClassTypeFromText(sym.ReturnType, out _ignore);
                                 if (t != null) return t;
                             }
                         }
@@ -1507,23 +1760,28 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>If <paramref name="lineText"/> is a column-1 declaration of <paramref name="instance"/>,
-        /// return the class name from its type (else null).</summary>
-        private static string TypeFromDecl(string lineText, string instance)
+        /// return the class name from its type (else null). <paramref name="isInlineClass"/> is set true when
+        /// the type is an inline "CLASS(Parent)..." form (a project-local derived class) — the caller must NOT
+        /// scope those (the LSP resolves their own + inherited members; scoping would drop the own ones).</summary>
+        private static string TypeFromDecl(string lineText, string instance, out bool isInlineClass)
         {
+            isInlineClass = false;
             if (string.IsNullOrEmpty(lineText)) return null;
             var m = CgDataLabelPattern.Match(lineText);   // ^(label)\s+(rest)
             if (!m.Success) return null;
             if (!string.Equals(m.Groups[1].Value, instance, StringComparison.OrdinalIgnoreCase)) return null;
-            return ClassTypeFromText(m.Groups[2].Value);
+            return ClassTypeFromText(m.Groups[2].Value, out isInlineClass);
         }
 
-        /// <summary>Extract a class name from a declaration's type text: "CLASS(Parent)" → Parent;
-        /// otherwise the leading identifier with an optional reference '&' stripped. Null when none.</summary>
-        private static string ClassTypeFromText(string typeText)
+        /// <summary>Extract a class name from a declaration's type text: "CLASS(Parent)" → Parent (and sets
+        /// <paramref name="isInlineClass"/>=true); otherwise the leading identifier with an optional reference
+        /// '&' stripped. Null when none.</summary>
+        private static string ClassTypeFromText(string typeText, out bool isInlineClass)
         {
+            isInlineClass = false;
             if (string.IsNullOrEmpty(typeText)) return null;
             var cp = CgClassParen.Match(typeText);
-            if (cp.Success) return cp.Groups[1].Value;
+            if (cp.Success) { isInlineClass = true; return cp.Groups[1].Value; }
             var tk = CgTypeToken.Match(typeText);
             return tk.Success ? tk.Groups[1].Value : null;
         }
@@ -1549,7 +1807,8 @@ namespace ClarionAssistant.Services
                     {
                         if (s == null || string.IsNullOrEmpty(s.Name)) continue;
                         int dot = s.Name.LastIndexOf('.');
-                        string member = (dot >= 0 && dot < s.Name.Length - 1) ? s.Name.Substring(dot + 1) : s.Name;
+                        if (dot == s.Name.Length - 1) continue;   // malformed "Parent." row — no member suffix
+                        string member = dot >= 0 ? s.Name.Substring(dot + 1) : s.Name;
                         if (collectInto != null) collectInto.Add(member);   // full set (unfiltered) for scoping
                         if (partial.Length > 0 && !member.StartsWith(partial, StringComparison.OrdinalIgnoreCase)) continue;
                         if (!seen.Add(member)) continue;

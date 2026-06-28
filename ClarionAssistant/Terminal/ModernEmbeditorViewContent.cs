@@ -1485,7 +1485,7 @@ namespace ClarionAssistant.Terminal
                     EnsureLspStarted();
                     if (SharedLspBridge.IsRunning)
                     {
-                        var def = SharedLspBridge.GetDefinition(_lspFileName, Math.Max(0, line - 1), Math.Max(0, column - 1));
+                        var def = SharedLspBridge.GetDefinition(_lspFileName, Math.Max(0, line - 1), Math.Max(0, column - 1), buffer);
                         string targetPath; int targetLine0, targetChar0;
                         if (SharedLspBridge.TryGetFirstLocation(def, out targetPath, out targetLine0, out targetChar0))
                             navigated = MonacoSourceNavigator.NavigateToFileAndLine(targetPath, targetLine0 + 1, 1);

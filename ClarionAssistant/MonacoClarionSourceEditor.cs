@@ -456,7 +456,10 @@ namespace ClarionAssistant
                     EnsureLsp();
                     if (SharedLspBridge.IsRunning)
                     {
-                        var def = SharedLspBridge.GetDefinition(_filePath, Math.Max(0, line - 1), Math.Max(0, col - 1));
+                        // Pass the LIVE buffer (mirror OnHover) — the member-access fallback resolves
+                        // "oInstance.Member" from the buffer, so without it F12/Ctrl+Click resolves against
+                        // STALE on-disk text and lands on the wrong member (ticket 6e8f2439).
+                        var def = SharedLspBridge.GetDefinition(_filePath, Math.Max(0, line - 1), Math.Max(0, col - 1), buffer);
                         string targetPath; int targetLine0, targetChar0;
                         if (SharedLspBridge.TryGetFirstLocation(def, out targetPath, out targetLine0, out targetChar0))
                             navigated = MonacoSourceNavigator.NavigateToFileAndLine(targetPath, targetLine0 + 1, 1);
