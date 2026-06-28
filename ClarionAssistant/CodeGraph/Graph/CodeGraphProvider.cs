@@ -130,6 +130,33 @@ namespace ClarionCodeGraph.Graph
             return null;
         }
 
+        /// <summary>
+        /// All members (methods/properties) declared under a CLASS, looked up by parent_name
+        /// (case-insensitive). Backs ABC/library member-access completion (oInstance.Method).
+        /// Member names are stored as "Parent.Member" — callers slice the suffix after the dot.
+        /// Returns empty (never null/throws); ordered by name.
+        /// </summary>
+        public List<CodeGraphSymbol> FindMembersOfParent(string parentName, int limit = 500)
+        {
+            var results = new List<CodeGraphSymbol>();
+            if (_connection == null || string.IsNullOrEmpty(parentName)) return results;
+            try
+            {
+                string sql = SymbolSelect +
+                    "WHERE LOWER(s.parent_name) = LOWER(@parent) " +
+                    "ORDER BY s.name LIMIT @limit";
+                using (var cmd = new SQLiteCommand(sql, _connection))
+                {
+                    cmd.Parameters.AddWithValue("@parent", parentName);
+                    cmd.Parameters.AddWithValue("@limit", limit);
+                    using (var reader = cmd.ExecuteReader())
+                        while (reader.Read()) results.Add(MapSymbol(reader));
+                }
+            }
+            catch { }
+            return results;
+        }
+
         // ===== Reference / call-graph queries =====
 
         /// <summary>

@@ -225,6 +225,32 @@ namespace ClarionAssistant.Services
             try { MergeQualifiedFieldCompletions(primary, filePath, line, character, bufferText); }
             catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] qualified field completion merge failed: " + ex.Message); }
 
+            // Class member-access (ticket 6e8f2439, item 5b): "oInstance." → that instance's ABC/library
+            // methods from ClarionGraph (+ project CodeGraph), resolved by the instance's declared class
+            // type. Mark's LSP answers member access for project-local types; this SUPPLEMENTS it for
+            // library/ABC types it may not index. Returns the owner's full member/field name set (for the
+            // scoping pass below). Additive + deduped + never blanks the LSP's members.
+            HashSet<string> memberScope = null;
+            try { memberScope = MergeMemberAccessCompletions(primary, filePath, line, character, bufferText); }
+            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] member-access completion merge failed: " + ex.Message); }
+
+            // Member/field-access scoping (mirror of the colon-qualifier fix). When '.' doesn't resolve to a
+            // class server-side, Mark's LSP falls back to a global keyword/builtin dump (ABS, ACCEPT, END,
+            // ENTRY, ...) and Monaco filters it by the typed partial, so language keywords leak in beside the
+            // real members. Once we've resolved the owner, scope the list to its members/fields. Genuine LSP
+            // project-local members survive — a resolved class's members are also in the project CodeGraph
+            // set. Guard: only scope when matches remain, so it can never blank an otherwise-working list.
+            try
+            {
+                if (memberScope != null && memberScope.Count > 0)
+                {
+                    var scoped = primary.FindAll(it =>
+                        it != null && !string.IsNullOrEmpty(it.Label) && memberScope.Contains(it.Label));
+                    if (scoped.Count > 0) primary = scoped;
+                }
+            }
+            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] member-access scoping failed: " + ex.Message); }
+
             // Colon-qualifier scoping. When the cursor sits right after an "IDENT:" qualifier (PROP:/EVENT:/
             // PROPLIST:/group-PRE like Cus:...), the Monaco replace-range breaks on the ':' and is EMPTY, so
             // the client does NO prefix filtering — Mark's LSP also returns its global built-in/keyword set
@@ -1368,6 +1394,178 @@ namespace ClarionAssistant.Services
                     });
                 }
             }
+        }
+
+        // === Class member-access completion (ticket 6e8f2439, item 5b) ===
+        // "oInstance." (optionally "oInstance.partial") → the methods/properties of oInstance's declared
+        // CLASS, sourced from ClarionGraph (ABC + library classes) and the project CodeGraph (parent_name).
+        // SUPPLEMENTS Mark's LSP, which resolves project-local member access but may not index libsrc/ABC.
+
+        // "<identifier>.<partial>" at end of line. The instance label may contain ':' (e.g. Access:Customer).
+        private static readonly Regex CgMemberAccess =
+            new Regex(@"([A-Za-z_][A-Za-z0-9_:]*)\.([A-Za-z0-9_]*)$");
+        // "CLASS(Parent)" — the instance is a derived class; member access resolves to the parent's members.
+        private static readonly Regex CgClassParen =
+            new Regex(@"^\s*CLASS\s*\(\s*([A-Za-z_][A-Za-z0-9_:]*)\s*\)", RegexOptions.IgnoreCase);
+        // Leading type token in a declaration's rest-of-line, stripping an optional reference '&'.
+        private static readonly Regex CgTypeToken =
+            new Regex(@"^\s*&?\s*([A-Za-z_][A-Za-z0-9_:]*)");
+
+        /// <summary>Member-access completion: when the cursor sits after "oInstance." resolve the instance's
+        /// declared class and offer that class's methods from ClarionGraph + the project CodeGraph. For a
+        /// GROUP/QUEUE in scope it adds nothing (field access is owned by MergeQualifiedFieldCompletions) but
+        /// still returns that struct's field names. Additive for the class case: only ADDS members (deduped
+        /// against the LSP's items), never blanks the list, never throws. Returns the owner's full member/
+        /// field name set (case-insensitive) for the caller's scoping pass, or null when not a resolvable
+        /// member/field-access context.</summary>
+        private static HashSet<string> MergeMemberAccessCompletions(
+            List<LspClient.CompletionItemInfo> primary, string filePath, int line, int character, string bufferText)
+        {
+            string lineText = CgLineAt(bufferText, filePath, line);
+            if (lineText == null) return null;
+            int col = character < 0 ? 0 : (character > lineText.Length ? lineText.Length : character);
+            string upToCursor = lineText.Substring(0, col);
+            if (upToCursor.IndexOf('!') >= 0) return null;   // comment
+
+            var m = CgMemberAccess.Match(upToCursor);
+            if (!m.Success) return null;
+            // Skip multi-level chains ("a.b.") for now — single-level member access only (follow-up).
+            if (m.Index > 0 && upToCursor[m.Index - 1] == '.') return null;
+            string instance = m.Groups[1].Value;
+            string partial  = m.Groups[2].Value;
+
+            string[] lines = CgGetLines(bufferText, filePath);
+
+            // GROUP/QUEUE in scope → field access (MergeQualifiedFieldCompletions adds the fields). Return its
+            // field-name set so the scoping pass keeps the fields and drops the LSP keyword dump.
+            if (lines != null)
+                foreach (var s in ParseScopeStructures(lines, GetScopeDataRanges(lines, line)))
+                    if (string.Equals(s.Name, instance, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var fset = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var f in s.Fields)
+                            if (f != null && !string.IsNullOrEmpty(f.Name)) fset.Add(f.Name);
+                        return fset.Count > 0 ? fset : null;
+                    }
+
+            string className = ResolveInstanceType(lines, line, instance, filePath);
+            if (string.IsNullOrEmpty(className)) return null;
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var it in primary)
+                if (it != null && !string.IsNullOrEmpty(it.Label)) seen.Add(it.Label);
+
+            // Project CodeGraph first (most specific), then ClarionGraph library DB; dedupe across both.
+            // allMembers collects EVERY member name (unfiltered by partial) for the scoping pass.
+            var allMembers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            MergeDbMembers(primary, seen, className, partial, ResolveCodeGraphDb(filePath), allMembers);
+            MergeDbMembers(primary, seen, className, partial, ClarionGraphService.ResolveDbPath(), allMembers);
+            return allMembers.Count > 0 ? allMembers : null;
+        }
+
+        /// <summary>Resolve the declared CLASS type of an instance so member-access knows which class's
+        /// methods to offer. (1) Scan the live buffer for a column-1 declaration "instance &Type" /
+        /// "instance Type" / "instance CLASS(Parent)", nearest above the cursor first, then anywhere.
+        /// (2) Fall back to the project CodeGraph — the variable's declared type lives in its params/return
+        /// (e.g. "&FILEMANAGER"), which covers globally-declared ABC objects absent from the buffer. Returns
+        /// the bare class name (no '&'), or null. Never throws.</summary>
+        private static string ResolveInstanceType(string[] lines, int line, string instance, string filePath)
+        {
+            try
+            {
+                if (lines != null && lines.Length > 0)
+                {
+                    int from = Math.Min(line, lines.Length - 1);
+                    for (int i = from; i >= 0; i--)
+                    {
+                        string t = TypeFromDecl(lines[i], instance);
+                        if (t != null) return t;
+                    }
+                    for (int i = from + 1; i < lines.Length; i++)   // declarations below the cursor
+                    {
+                        string t = TypeFromDecl(lines[i], instance);
+                        if (t != null) return t;
+                    }
+                }
+
+                string db = ResolveCodeGraphDb(filePath);
+                if (!string.IsNullOrEmpty(db) && File.Exists(db))
+                    using (var p = new CodeGraphProvider())
+                        if (p.Open(db))
+                        {
+                            var sym = p.FindSymbolByName(instance);
+                            if (sym != null)
+                            {
+                                string t = ClassTypeFromText(sym.Params);
+                                if (t == null) t = ClassTypeFromText(sym.ReturnType);
+                                if (t != null) return t;
+                            }
+                        }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>If <paramref name="lineText"/> is a column-1 declaration of <paramref name="instance"/>,
+        /// return the class name from its type (else null).</summary>
+        private static string TypeFromDecl(string lineText, string instance)
+        {
+            if (string.IsNullOrEmpty(lineText)) return null;
+            var m = CgDataLabelPattern.Match(lineText);   // ^(label)\s+(rest)
+            if (!m.Success) return null;
+            if (!string.Equals(m.Groups[1].Value, instance, StringComparison.OrdinalIgnoreCase)) return null;
+            return ClassTypeFromText(m.Groups[2].Value);
+        }
+
+        /// <summary>Extract a class name from a declaration's type text: "CLASS(Parent)" → Parent;
+        /// otherwise the leading identifier with an optional reference '&' stripped. Null when none.</summary>
+        private static string ClassTypeFromText(string typeText)
+        {
+            if (string.IsNullOrEmpty(typeText)) return null;
+            var cp = CgClassParen.Match(typeText);
+            if (cp.Success) return cp.Groups[1].Value;
+            var tk = CgTypeToken.Match(typeText);
+            return tk.Success ? tk.Groups[1].Value : null;
+        }
+
+        /// <summary>Merge a class's members (by parent_name) from one CodeGraph-schema DB into the completion
+        /// list. Names are stored "Parent.Member"; the inserted text is the bare member (the "oInstance."
+        /// already typed stays put). Added items are filtered by <paramref name="partial"/> and deduped via
+        /// <paramref name="seen"/>; <paramref name="collectInto"/> (optional) receives EVERY member name
+        /// unfiltered, for the caller's scoping pass. No-op when the DB is missing/unopenable. Never throws.</summary>
+        private static void MergeDbMembers(
+            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen,
+            string className, string partial, string db, HashSet<string> collectInto = null)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(db) || !File.Exists(db)) return;
+                using (var p = new CodeGraphProvider())
+                {
+                    if (!p.Open(db)) return;
+                    var syms = p.FindMembersOfParent(className, 500);
+                    if (syms == null) return;
+                    foreach (var s in syms)
+                    {
+                        if (s == null || string.IsNullOrEmpty(s.Name)) continue;
+                        int dot = s.Name.LastIndexOf('.');
+                        string member = (dot >= 0 && dot < s.Name.Length - 1) ? s.Name.Substring(dot + 1) : s.Name;
+                        if (collectInto != null) collectInto.Add(member);   // full set (unfiltered) for scoping
+                        if (partial.Length > 0 && !member.StartsWith(partial, StringComparison.OrdinalIgnoreCase)) continue;
+                        if (!seen.Add(member)) continue;
+                        // Members are a mix of methods (type=procedure) and class-typed data members
+                        // (type=class) — map each to its real icon rather than labelling all "method".
+                        primary.Add(new LspClient.CompletionItemInfo
+                        {
+                            Label = member,
+                            Kind = s.Type == "procedure" || s.Type == "function" ? 2 /*Method*/ : CgCompletionKind(s.Type),
+                            Detail = CgCompletionDetail(s),
+                            InsertText = member
+                        });
+                    }
+                }
+            }
+            catch { }
         }
     }
 }
