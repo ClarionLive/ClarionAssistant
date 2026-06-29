@@ -1,0 +1,10 @@
+l:LocalOrShare  BYTE(2)
+l:TempPosition  String(120)
+l:OriginalStock like(ITC:in_stock)
+l:NewStock      like(ITC:in_stock)
+l:Reason        STRING(60)                            !
+l:GLAccount     STRING(20)
+
+qSD             QUEUE
+qSDStoreID          LONG
+                END

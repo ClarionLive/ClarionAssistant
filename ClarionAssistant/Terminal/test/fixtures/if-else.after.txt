@@ -1,0 +1,9 @@
+    IF ORD:STATUS='A'
+        IF CREDIT$>0
+            ?l:ChangeDue:Prompt{prop:text} =  'Credit' !SET MESSAGE
+        ELSE
+            ?l:ChangeDue:Prompt{prop:text} =  'Change Due' !SET MESSAGE
+        END
+    ELSE
+        ?l:ChangeDue:Prompt{prop:text} =  'Change Due' !SET MESSAGE
+    END

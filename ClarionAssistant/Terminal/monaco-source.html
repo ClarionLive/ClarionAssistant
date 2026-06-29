@@ -15,6 +15,10 @@
 <body>
 <div id="loading">Loading Monaco…</div>
 <div id="editor"></div>
+<!-- Shared Clarion Smart Formatter. Loaded now so the formatting API (window.ClarionFormatter) is
+     available the moment this page gains editable + Clarion-aware behavior (Monaco-default-editor
+     Phase 2). While the view is read-only plaintext there is nothing to format yet. -->
+<script>document.write('<script src="clarion-formatter.js?v=' + Date.now() + '"><\/script>');</script>
 <script>
     // Phase-1 minimal source view. Read-only display of a Clarion source buffer hosted as an
     // overlay over the live IDE editor. Caret/document two-way sync is Phase 2. Bootstrap mirrors
@@ -66,6 +70,19 @@
                 });
                 var el = document.getElementById('loading'); if (el) el.style.display = 'none';
                 if (pending) { applyContent(pending); pending = null; }
+                // Phase-2 registration point (Monaco-default-editor): when this view becomes editable and
+                // registers the Clarion language, wire the formatter exactly like monaco-embeditor.html:
+                //   monaco.languages.registerDocumentRangeFormattingEditProvider('clarion', {
+                //     provideDocumentRangeFormattingEdits: function (model, range) {
+                //       var r = ClarionFormatter.formatClarionRange(model.getValue(),
+                //                 range.startLineNumber, range.endLineNumber,
+                //                 { tabSize: model.getOptions().tabSize, insertSpaces: model.getOptions().insertSpaces });
+                //       var text = r.text.split(/\r\n|\n/).slice(range.startLineNumber - 1, range.endLineNumber).join(model.getEOL());
+                //       return [{ range: new monaco.Range(range.startLineNumber, 1, range.endLineNumber,
+                //                 model.getLineMaxColumn(range.endLineNumber)), text: text }];
+                //     }
+                //   });
+                // and bind Ctrl+I to editor.getAction('editor.action.formatSelection'). No-op while read-only.
                 post({ type: 'ready' });
             });
         };
