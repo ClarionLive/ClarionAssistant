@@ -1,0 +1,8 @@
+   Case PTS::Msg#
+        Of Button:OK                              !Return Chang
+          Of Button:Yes                             !Apply Credit
+              CREDIT$     =  ABS(its:cashout) -abs(its:roundamount)
+                its:cashout =  0
+        Of Button:Cancel                          !Cancel
+            Do ProcedureReturn
+          End

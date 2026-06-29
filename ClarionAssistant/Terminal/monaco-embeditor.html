@@ -338,6 +338,8 @@
      so iterative IDE testing never sees a stale copy; document.write keeps it synchronous
      and ordered before the main inline script below. -->
 <script>document.write('<script src="clarion-language.js?v=' + Date.now() + '"><\/script>');</script>
+<!-- Shared Clarion Smart Formatter (Ctrl+I). Same cache-bust + ordered-before-inline pattern. -->
+<script>document.write('<script src="clarion-formatter.js?v=' + Date.now() + '"><\/script>');</script>
 
 <script>
     // ----- Constants (must match ModernEmbeditorViewContent.cs) -----
@@ -490,9 +492,9 @@
                 // (missing / 404 / parse error), these globals are undefined and the calls below would throw
                 // a ReferenceError here — before monaco.editor.create — leaving a silent "Loading editor…"
                 // hang (host 'ready' never fires). Fail loud with a clear message instead.
-                if (typeof registerClarionLanguage !== 'function' || typeof registerClarionFolding !== 'function') {
+                if (typeof registerClarionLanguage !== 'function' || typeof registerClarionFolding !== 'function' || typeof ClarionFormatter === 'undefined') {
                     var le = document.getElementById('loading');
-                    if (le) { le.style.display = 'block'; le.textContent = 'Failed to load clarion-language.js — the Clarion editor cannot start. Redeploy so the .js ships alongside this HTML.'; }
+                    if (le) { le.style.display = 'block'; le.textContent = 'Failed to load clarion-language.js / clarion-formatter.js — the Clarion editor cannot start. Redeploy so the .js files ship alongside this HTML.'; }
                     return;
                 }
                 if (!monaco.languages.getLanguages().some(function (l) { return l.id === 'clarion'; })) {
@@ -522,6 +524,9 @@
                     // LSP-backed completion (M3). Use our provider only — no generic word suggestions.
                     quickSuggestions: true,
                     suggestOnTriggerCharacters: true,
+                    // Enter accepts the highlighted suggestion (no newline); only a non-suggest Enter creates a
+                    // newline, which is what triggers format-on-Enter. Prevents the "blank line + OF eve" glitch.
+                    acceptSuggestionOnEnter: 'on',
                     wordBasedSuggestions: 'off',
                     folding: true,
                     showFoldingControls: 'always',
@@ -546,6 +551,9 @@
                 rebuildChordMap();             // seed the binding map from defaults (settings refine it later)
                 installKeyBindings();          // capture-phase dispatcher for all rebindable Clarion editor keys
                 installGlyphBookmarkClick();   // far-left margin click toggles a bookmark (#16)
+                addFormatAction(editor);       // right-click → Format Selection (Ctrl+I dispatched via keybindings)
+                installAutoCase(editor);        // as-you-type keyword casing (of → OF on word boundary)
+                installFormatOnEnter(editor);   // format the completed line on Enter (Clarion-style)
                 document.getElementById('saveBtn').addEventListener('click', doSave);
                 // Reload (file mode): discards edits, so require a second click within 4s to confirm.
                 document.getElementById('reloadBtn').addEventListener('click', function () {
@@ -722,8 +730,9 @@
             insertText: it.insertText || it.label,
             // "Complete word on insert key": accept the highlighted item AND insert the typed char.
             // '.' also re-triggers member completion (triggerCharacters); '(' starts a call; ' ' lets you
-            // commit a name then keep typing (Myv<space> -> "Myvar "). Gated by the gear toggle.
-            commitCharacters: commitKeysEnabled ? ['.', '(', ' '] : undefined,
+            // commit a name then keep typing (Myv<space> -> "Myvar "); '=' commits then the onDidType
+            // handler normalizes it to " = " (tes= -> "TestVar = "). Gated by the gear toggle.
+            commitCharacters: commitKeysEnabled ? ['.', '(', ' ', '='] : undefined,
             range: range
         };
     }
@@ -867,8 +876,8 @@
         { id: 'prevBookmark',      label: 'Previous Bookmark',    def: 'Shift+F2',     run: cmdPrevBookmark },
         { id: 'navigateBack',      label: 'Navigate Back',        def: 'Alt+Left',     run: cmdNavBack },
         { id: 'navigateForward',   label: 'Navigate Forward',     def: 'Alt+Right',    run: cmdNavForward },
-        // Format line/selection — DEFERRED until a Clarion formatter exists. Shown disabled in the panel.
-        { id: 'formatLine',        label: 'Format Line', def: 'Ctrl+I', run: cmdNoop, deferred: true }
+        // Format selected block (or current line) with the Clarion Smart Formatter — the native Ctrl+I gesture.
+        { id: 'formatLine',        label: 'Format Selection',      def: 'Ctrl+I',       run: cmdFormat }
     ];
 
     function defOf(id) {
@@ -994,6 +1003,161 @@
         applyEmbedDecorations();
         guarding = false;
         scheduleDiagnostics();
+    }
+
+    // Ctrl+I — reformat the selected block (or the caret's line) with the Clarion Smart Formatter.
+    // The native Clarion gesture: select a block with the mouse, press Ctrl+I. fileMode reformats the
+    // whole selection; in slot mode the selection must lie inside editable embed slots (read-only
+    // generated lines are never touched). The formatter preserves line count, so embedRanges are
+    // unchanged. Indentation context (nesting depth) is taken from the FULL buffer above the block, so a
+    // selection inside a procedure still nests correctly even though the lines above it aren't reformatted.
+    function formatterOptions() {
+        var o = {};
+        try { var mo = activeEd().getModel().getOptions(); o.tabSize = mo.tabSize; o.insertSpaces = mo.insertSpaces; } catch (e) { }
+        return o;
+    }
+    function cmdFormat() {
+        if (typeof ClarionFormatter === 'undefined') return;
+        var ed = activeEd();
+        var model = ed && ed.getModel();
+        if (!model) return;
+        var sel = ed.getSelection();
+        var span = selLineSpan();
+        var a = span[0], b = span[1];
+        if (sel.isEmpty()) { a = sel.startLineNumber; b = a; }   // no block selected → just the caret's line
+        if (!fileMode && !linesEditable(a, b)) { editGuardToast(); return; }
+        var res = ClarionFormatter.formatClarionRange(model.getValue(), a, b, formatterOptions());
+        var formatted = res.text.split(/\r\n|\n/).slice(a - 1, b).join(model.getEOL());
+        var range = new monaco.Range(a, 1, b, model.getLineMaxColumn(b));
+        if (model.getValueInRange(range) === formatted) return;   // already formatted → no undo churn
+        applyGuardedEdits([{ range: range, text: formatted }]);
+        ed.setSelection(new monaco.Range(a, 1, b, ed.getModel().getLineMaxColumn(b)));
+    }
+
+    // Add the right-click "Format Selection" entry (keystroke Ctrl+I is handled by the capture-phase
+    // dispatcher, so the action carries no keybinding of its own — avoids a double binding).
+    function addFormatAction(ed) {
+        if (!ed) return;
+        try {
+            ed.addAction({
+                id: 'clarion-format-selection',
+                label: 'Format Selection (Ctrl+I)',
+                contextMenuGroupId: '1_modification',
+                contextMenuOrder: 1.6,
+                run: function () { cmdFormat(); }
+            });
+        } catch (e) { }
+    }
+
+    // ----- As-you-type keyword casing -----
+    // Typing a word-boundary char right after a keyword auto-cases it (e.g. "of " -> "OF "). Uses ONLY
+    // the always-safe keyword set (statement/control/operator words that can never be a variable name),
+    // so live typing never touches your identifiers — matching the "Other names: As declared" intent.
+    // Type/structure/attribute keywords (LONG, GROUP, PRE…) and full case normalization happen on Ctrl+I.
+    var keywordCaseMode = 'upper';   // 'upper' | 'lower' | 'asis' — settings panel (deac3d16) will wire this
+    var _alwaysKw = null;
+    function alwaysKwSet() {
+        if (!_alwaysKw) {
+            _alwaysKw = Object.create(null);
+            try { (ClarionFormatter.ALWAYS_KEYWORDS || []).forEach(function (w) { _alwaysKw[w] = true; }); } catch (e) { }
+        }
+        return _alwaysKw;
+    }
+    function installAutoCase(ed) {
+        if (!ed || typeof ClarionFormatter === 'undefined' || typeof ed.onDidType !== 'function') return;
+        ed.onDidType(function (text) {
+            if (text.length !== 1) return;
+            if (text === '=') { autoSpaceEquals(ed); return; }              // assignment: normalize to " = "
+            if (' \t(),'.indexOf(text) >= 0) autoCaseWordBefore(ed);        // keyword casing on word boundary
+        });
+    }
+    // Normalize a just-typed assignment '=' to " = " (2 spaces are applied later by Ctrl+I alignment).
+    // Leaves comparisons/compound operators (== <= >= != += -= …) alone. Pairs with '=' as a completion
+    // commit character: "tes=" accepts "TestVar" then becomes "TestVar = ".
+    function autoSpaceEquals(ed) {
+        try {
+            var model = ed.getModel(); if (!model) return;
+            var pos = ed.getPosition(); if (!pos) return;
+            var line = model.getLineContent(pos.lineNumber);
+            var eqCol = pos.column - 1;                                     // 1-based column of the '=' just typed
+            if (line.charAt(eqCol - 1) !== '=') return;
+            var prev = line.charAt(eqCol - 2);
+            if (prev === '<' || prev === '>' || prev === '!' || prev === '=' || prev === ':' || '+-*/^%&'.indexOf(prev) >= 0) return;
+            if (line.charAt(eqCol) === '=') return;                         // start of '=='
+            var j = eqCol - 2;                                              // skip spaces back to the lvalue
+            while (j >= 0 && line.charAt(j) === ' ') j--;
+            if (j < 0 || !/[A-Za-z0-9_)\]}]/.test(line.charAt(j))) return;  // need an lvalue before '='
+            var pre = line.substring(0, j + 1);
+            if (pre.indexOf('!') >= 0) return;                             // comment
+            if (((pre.match(/'/g) || []).length) % 2 === 1) return;        // inside a string
+            var startCol = j + 2;                                           // 1-based col just after the lvalue
+            var range = new monaco.Range(pos.lineNumber, startCol, pos.lineNumber, eqCol + 1);   // spaces + '='
+            if (model.getValueInRange(range) === ' = ') return;            // already normalized
+            if (!fileMode && !isEditableRange(range)) return;
+            ed.executeEdits('clarion-eqspace', [{ range: range, text: ' = ', forceMoveMarkers: true }]);
+            ed.setPosition({ lineNumber: pos.lineNumber, column: startCol + 3 });
+        } catch (e) { }
+    }
+
+    // ----- Format the line on Enter (Clarion-style: format after the line is finished, not live) -----
+    // When Enter inserts a NEWLINE (i.e. a completion was NOT being accepted — accepting a suggestion
+    // replaces text on the same line and inserts no newline), reformat the line just completed with the
+    // same formatter Ctrl+I uses (correct indent + keyword casing; structure-aware for OF/ELSE/END).
+    // This avoids the live-typing/completion conflicts entirely. Assignment alignment stays on Ctrl+I.
+    var formatLineOnEnter = true;     // settings panel (deac3d16) will wire this
+    var _fmtLineGuard = false;
+    function installFormatOnEnter(ed) {
+        if (!ed || typeof ClarionFormatter === 'undefined') return;
+        ed.onDidChangeModelContent(function (e) {
+            if (_fmtLineGuard || !formatLineOnEnter || !e.changes || e.changes.length !== 1) return;
+            var c = e.changes[0];
+            if (!c.range || c.rangeLength !== 0) return;            // must be a pure insert at a caret
+            if (!/^\r?\n[ \t]*$/.test(c.text)) return;              // Enter = newline + auto-indent (not paste/typing)
+            var lineToFormat = c.range.startLineNumber;             // the line that was just completed
+            Promise.resolve().then(function () { formatLineNow(ed, lineToFormat); });
+        });
+    }
+    function formatLineNow(ed, L) {
+        try {
+            if (_fmtLineGuard) return;
+            var model = ed.getModel(); if (!model || L < 1 || L > model.getLineCount()) return;
+            var orig = model.getLineContent(L);
+            if (orig.trim() === '') return;
+            var lineRange = new monaco.Range(L, 1, L, model.getLineMaxColumn(L));
+            if (!fileMode && !isEditableRange(lineRange)) return;   // never touch read-only generated lines
+            var o = formatterOptions();
+            o.alignAssignments = false;                            // single line → no per-line 2-space; that's Ctrl+I
+            var res = ClarionFormatter.formatClarionRange(model.getValue(), L, L, o);
+            var formatted = res.text.split(/\r\n|\n/)[L - 1];
+            if (formatted == null || formatted === orig) return;
+            var savedPos = ed.getPosition();
+            _fmtLineGuard = true;
+            ed.executeEdits('clarion-fmtline', [{ range: lineRange, text: formatted }]);
+            _fmtLineGuard = false;
+            if (savedPos) ed.setPosition(savedPos);                // keep the cursor on the new line
+        } catch (e) { _fmtLineGuard = false; }
+    }
+    function autoCaseWordBefore(ed) {
+        try {
+            if (keywordCaseMode === 'asis') return;
+            var model = ed.getModel(); if (!model) return;
+            var pos = ed.getPosition(); if (!pos) return;
+            var line = model.getLineContent(pos.lineNumber);
+            var before = line.substring(0, pos.column - 2);                 // text up to (not incl) the boundary char
+            var m = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(before);
+            if (!m) return;
+            var word = m[1];
+            if (!alwaysKwSet()[word.toUpperCase()]) return;                 // only always-safe keywords live
+            var canonical = keywordCaseMode === 'lower' ? word.toLowerCase() : word.toUpperCase();
+            if (word === canonical) return;
+            var pre = before.substring(0, before.length - word.length);     // line before the word
+            if (pre.indexOf('!') >= 0) return;                             // in a comment
+            if (((pre.match(/'/g) || []).length) % 2 === 1) return;        // inside a string
+            var startCol = (pos.column - 1) - word.length;
+            var range = new monaco.Range(pos.lineNumber, startCol, pos.lineNumber, startCol + word.length);
+            if (!fileMode && !isEditableRange(range)) return;               // respect read-only slots
+            ed.executeEdits('clarion-autocase', [{ range: range, text: canonical }]);
+        } catch (e) { }
     }
 
     // Ctrl+2 — duplicate the current line, the copy landing ABOVE the original (Clarion behavior).
@@ -1466,6 +1630,9 @@
         editor2 = monaco.editor.create(document.getElementById('editor2'), editorOptionsForSplit());
         editor2.onDidFocusEditorText(function () { activeEditor = editor2; });
         installCommandPalette(editor2); // F1 / Ctrl+Shift+P in the split pane too
+        addFormatAction(editor2);       // right-click → Format Selection in the split pane too
+        installAutoCase(editor2);       // as-you-type keyword casing in the split pane too
+        installFormatOnEnter(editor2);  // format the completed line on Enter in the split pane too
         installDropInsert(editor2);    // accept Data-pad drops in the split pane too
         wireGlyphBookmark(editor2);
         wireCtrlClickDefinition(editor2);   // Ctrl+Click go-to-definition in the split pane too (#40)
