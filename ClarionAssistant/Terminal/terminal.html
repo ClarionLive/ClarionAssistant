@@ -332,6 +332,22 @@
                 }
                 return true;
             });
+            // OSC 52: clipboard set from TUI apps (Claude Code, vim, tmux). These
+            // don't press Ctrl+C — they emit ESC ]52;<target>;<base64> BEL, which
+            // xterm.js does not honor by default. Decode and route through the same
+            // C# host copy path (navigator.clipboard fails on file://; see Ctrl+C).
+            term.parser.registerOscHandler(52, (data) => {
+                const sep = data.indexOf(';');               // xterm hands us "<target>;<base64>"
+                const payload = sep >= 0 ? data.slice(sep + 1) : data;
+                if (!payload || payload === '?') return false; // '?' is a clipboard READ query — ignore
+                try {
+                    const bin = atob(payload);
+                    const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+                    const text = new TextDecoder('utf-8').decode(bytes); // base64 payload is UTF-8
+                    if (text) sendToHost({ type: 'copy', selectedText: text });
+                    return true; // handled; suppress default
+                } catch (e) { return false; }
+            });
 
             // Initial fit — use ResizeObserver to handle WebView2 layout race condition.
             // DOMContentLoaded fires before WinForms finishes sizing the WebView2 control,
@@ -353,7 +369,11 @@
                     if (term.hasSelection()) {
                         const clean = smartGetSelection(term, 'flowed');
                         if (clean && clean.length > 0) {
-                            navigator.clipboard.writeText(clean);
+                            // Route copy through the C# host. navigator.clipboard.writeText()
+                            // silently fails on file:// origins under current WebView2, so the
+                            // host writes the Windows clipboard on the UI/STA thread instead
+                            // (mirrors the Ctrl+V paste path).
+                            sendToHost({ type: 'copy', selectedText: clean });
                             return false; // Prevent default (don't send to terminal)
                         }
                     }
@@ -426,12 +446,32 @@
                 }
             }, { passive: false });
 
-            // Handle right-click for context menu
+            // Stash the selection on RIGHT mousedown in the CAPTURE phase, before
+            // xterm.js clears it. xterm's mouse listeners live on descendant elements
+            // (target/bubble phase), so a capture-phase listener on the container
+            // ancestor fires FIRST. Without this, by the time 'contextmenu' fires the
+            // selection is already gone and right-click -> Copy has nothing to copy.
+            // capture:true is the whole trick. Read-only (no preventDefault) so xterm's
+            // own focus/selection handling stays intact. Gate on button===2 + an active
+            // selection so a left-drag (button 0) or a bare right-click never clobbers
+            // a previously stashed value.
+            let lastMenuSelection = { flowed: '', raw: '' };
+            container.addEventListener('mousedown', (e) => {
+                if (e.button === 2 && term && term.hasSelection()) {
+                    lastMenuSelection.flowed = smartGetSelection(term, 'flowed');
+                    lastMenuSelection.raw = smartGetSelection(term, 'raw');
+                }
+            }, true);
+
+            // Handle right-click for context menu. Prefer the live selection; fall back
+            // to the capture-phase stash for when xterm already cleared it. Reset the
+            // stash after use so it never goes stale into the next menu.
             container.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
                 const hasSel = !!(term && term.hasSelection());
-                const selectedText = hasSel ? smartGetSelection(term, 'flowed') : '';
-                const selectedTextRaw = hasSel ? smartGetSelection(term, 'raw') : '';
+                const selectedText = hasSel ? smartGetSelection(term, 'flowed') : lastMenuSelection.flowed;
+                const selectedTextRaw = hasSel ? smartGetSelection(term, 'raw') : lastMenuSelection.raw;
+                lastMenuSelection = { flowed: '', raw: '' };
                 sendToHost({
                     type: 'contextmenu',
                     x: e.clientX,
@@ -508,6 +548,10 @@
             });
 
             isInitialized = true;
+            // Build marker — lets a live probe confirm THIS page is loaded (not a
+            // stale cached file://). Ticket a708efe2: host-routed Ctrl+C + OSC 52 +
+            // right-click capture-phase selection stash.
+            console.log('[CA-COPY-FIX] terminal.html marker a708efe2: ctrl+c-host + osc52 + rightclick-stash');
 
             // Notify C# that terminal is ready
             sendToHost({ type: 'ready', cols: term.cols, rows: term.rows });

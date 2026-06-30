@@ -98,7 +98,14 @@ namespace ClarionAssistant.Terminal
                 System.Diagnostics.Debug.WriteLine("[WVRenderer] HTML path: " + htmlPath + ", exists: " + File.Exists(htmlPath));
                 if (File.Exists(htmlPath))
                 {
-                    string uri = new Uri(htmlPath).AbsoluteUri;
+                    // Cache-bust keyed to the file's last-write time. WebView2 caches
+                    // file:// pages aggressively, so after deploying an edited
+                    // terminal.html a stale page can serve and make a correct fix look
+                    // broken. The query changes only when the html actually changes, so
+                    // launches are still served from cache when nothing moved. (Safe
+                    // here — direct file:// navigation, no virtual-host trust pins.)
+                    string uri = new Uri(htmlPath).AbsoluteUri
+                        + "?v=" + File.GetLastWriteTimeUtc(htmlPath).Ticks;
                     System.Diagnostics.Debug.WriteLine("[WVRenderer] Navigating to: " + uri);
                     _webView.CoreWebView2.Navigate(uri);
                 }
@@ -173,6 +180,9 @@ namespace ClarionAssistant.Terminal
                     case "paste":
                         OnPasteRequested();
                         break;
+                    case "copy":
+                        OnCopyRequested(message.SelectedText);
+                        break;
                     case "contextmenu":
                         OnContextMenuRequested(message.X, message.Y, message.SelectedText, message.SelectedTextRaw);
                         break;
@@ -228,6 +238,17 @@ namespace ClarionAssistant.Terminal
                 _rows = rows;
                 TerminalResized?.Invoke(this, new TerminalSizeEventArgs(cols, rows));
             }
+        }
+
+        private void OnCopyRequested(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            // navigator.clipboard.writeText() silently fails on file:// origins under
+            // current WebView2, so the page routes Ctrl+C and OSC 52 copies here. Runs
+            // on the UI (STA) thread — required by Clipboard.SetText. Best-effort: the
+            // clipboard can be transiently locked by another process. Mirrors OnPasteRequested.
+            try { Clipboard.SetText(text); }
+            catch { }
         }
 
         private void OnPasteRequested()
