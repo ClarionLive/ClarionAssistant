@@ -175,5 +175,73 @@ function firstDiff(expected, got) {
     return 'differs (length ' + e.length + ' vs ' + g.length + ')';
 }
 
+// ---- New configurable options (ticket deac3d16) ----
+console.log('\npreferredKeywordIndent (PROGRAM/MEMBER/MAP/PRAGMA placement):');
+(function () {
+    function lead(src, opt) {
+        var t = F.formatClarion(src, opt).text.replace(/\r\n/g, '\n').split('\n')[0];
+        return /^ */.exec(t)[0].length;
+    }
+    var src = "  MAP\n  END\n";
+    var o = { alignAssignments: false, keywordCase: 'asis', otherNameCase: 'asis' };
+    // default (false): MAP sits at the preferred column (col 31 -> 0-based 32, tab-snapped).
+    var dflt = lead(src, Object.assign({}, o));
+    ok('default -> preferred column (>1 tab)', dflt > 4, 'MAP leading spaces = ' + dflt);
+    // true: MAP sits at a single code indent (one tab = 4 with default tabSize).
+    var indented = lead(src, Object.assign({ preferredKeywordIndent: true }, o));
+    ok('preferredKeywordIndent -> one tab', indented === 4, 'MAP leading spaces = ' + indented);
+})();
+
+console.log('\nalignScope (selection vs global assignment alignment):');
+(function () {
+    var src = ['  AAAAAA = 1', '  B = 2', '  CC = 3'].join('\n');
+    function eqCol(text, lineNo) { return text.replace(/\r\n/g, '\n').split('\n')[lineNo - 1].indexOf('='); }
+    var base = { alignAssignments: true, keywordCase: 'asis', otherNameCase: 'asis' };
+    // Format only the window L2..L3.
+    var sel = F.formatClarionRange(src, 2, 3, Object.assign({ alignScope: 'selection' }, base)).text;
+    var glob = F.formatClarionRange(src, 2, 3, Object.assign({ alignScope: 'global' }, base)).text;
+    // selection: L2 & L3 align to each other (longest = 'CC'), not to the out-of-window 'AAAAAA'.
+    ok('selection: window lines align to each other', eqCol(sel, 2) === eqCol(sel, 3), 'L2=' + eqCol(sel, 2) + ' L3=' + eqCol(sel, 3));
+    ok('selection narrower than global', eqCol(sel, 2) < eqCol(glob, 2), 'sel=' + eqCol(sel, 2) + ' global=' + eqCol(glob, 2));
+    // global: window lines align out to the longest operand in the full buffer ('AAAAAA').
+    ok('global: window aligns to full-buffer longest', eqCol(glob, 2) === eqCol(glob, 3) && eqCol(glob, 2) > eqCol(sel, 2));
+    // L1 is outside the window in both cases -> never modified.
+    ok('out-of-window line untouched', sel.replace(/\r\n/g, '\n').split('\n')[0] === '  AAAAAA = 1');
+})();
+
+// ---- C# <-> JS formatter-key drift guard (ticket deac3d16) ----
+// The host (ModernEmbeditorSettings.FormatterKeys) must round-trip EXACTLY the keys the gear panel
+// persists/broadcasts: the HTML's FORMATTER_SETTING_KEYS plus formatLineOnEnter (an editor-side aid the
+// C# list also carries). A silent drift = a new formatter option that never persists or broadcasts. The
+// two lists live in different languages bound only by a comment, so assert their parity mechanically.
+console.log('\nC#/JS formatter-key list parity:');
+(function () {
+    function keysFromBlock(text, startRe) {
+        var m = startRe.exec(text);
+        if (!m) return null;
+        var tail = text.slice(m.index + m[0].length);   // text just after the opening [ or {
+        var end = tail.search(/[\]}]/);                  // keys are quoted words — first ]/} closes the literal
+        var body = end >= 0 ? tail.slice(0, end) : tail;
+        return (body.match(/['"]([A-Za-z0-9_]+)['"]/g) || []).map(function (t) { return t.replace(/['"]/g, ''); });
+    }
+    var csPath = path.join(__dirname, '..', '..', 'Services', 'ModernEmbeditorSettings.cs');
+    var htmlPath = path.join(__dirname, '..', 'monaco-embeditor.html');
+    if (!fs.existsSync(csPath) || !fs.existsSync(htmlPath)) {
+        ok('formatter-key source files present', false, 'missing ' + (!fs.existsSync(csPath) ? csPath : htmlPath));
+    } else {
+        var cs = keysFromBlock(fs.readFileSync(csPath, 'utf8'), /string\[\]\s+FormatterKeys\s*=\s*\{/);
+        var js = keysFromBlock(fs.readFileSync(htmlPath, 'utf8'), /FORMATTER_SETTING_KEYS\s*=\s*\[/);
+        ok('C# FormatterKeys parsed', cs && cs.length > 0, JSON.stringify(cs));
+        ok('JS FORMATTER_SETTING_KEYS parsed', js && js.length > 0, JSON.stringify(js));
+        if (cs && js) {
+            var expected = js.concat(['formatLineOnEnter']).sort();
+            var actual = cs.slice().sort();
+            var same = expected.length === actual.length && expected.every(function (k, i) { return k === actual[i]; });
+            ok('C# FormatterKeys == JS FORMATTER_SETTING_KEYS + formatLineOnEnter', same,
+                'C#:  ' + JSON.stringify(actual) + '\n      JS+: ' + JSON.stringify(expected));
+        }
+    }
+})();
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed.');
 process.exit(fail ? 1 : 0);

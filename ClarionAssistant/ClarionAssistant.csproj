@@ -123,6 +123,7 @@
     <Compile Include="Services\FileSchemaScopeReader.cs" />
     <Compile Include="Services\ClarionDeclarationParser.cs" />
     <Compile Include="Services\RightClickHookService.cs" />
+    <Compile Include="Services\ShutdownLog.cs" />
     <Compile Include="Services\ShutdownService.cs" />
     <Compile Include="Services\KnowledgeService.cs" />
     <Compile Include="Services\ClarionVersionService.cs" />
@@ -149,6 +150,7 @@
     <Compile Include="Services\ModernEmbeditorSaver.cs" />
     <Compile Include="Services\ModernEmbeditorDiagnostics.cs" />
     <Compile Include="Services\ModernEmbeditorSettings.cs" />
+    <Compile Include="Services\MonacoSettingsBroadcaster.cs" />
     <Compile Include="Services\ModernEmbeditorState.cs" />
     <Compile Include="Services\ClarionAppDataReader.cs" />
     <Compile Include="Services\StructureDesignerService.cs" />

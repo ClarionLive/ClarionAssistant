@@ -65,6 +65,8 @@
     #settingsPanel h4:first-child { margin-top: 0; }
     #settingsPanel label { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 7px 0; }
     #settingsPanel input[type=number] { width: 58px; }
+    #settingsPanel label.fmt-todo { opacity: 0.5; cursor: not-allowed; }
+    #settingsPanel .fmt-todo-note { font-size: 10px; color: var(--fg); opacity: 0.55; margin: 2px 0 0; font-style: italic; }
     /* Keyboard rebinding table (Clarion-style Label / Default / New) */
     #keybindTable { width: 100%; border-collapse: collapse; font-size: 11px; }
     #keybindTable th { text-align: left; font-weight: 600; color: var(--title-accent); padding: 2px 6px; border-bottom: 1px solid var(--toolbar-border); }
@@ -87,11 +89,24 @@
     .breakpoint-glyph { background: #e51400; border-radius: 50%;
         width: 11px !important; height: 11px !important; margin-left: 3px; margin-top: 4px; box-shadow: 0 0 0 1px rgba(255,255,255,0.5); cursor: pointer; }
 
-    #editor { position: absolute; top: 38px; left: 0; right: 0; bottom: 0; }
+    /* Status-bar height: SINGLE SOURCE OF TRUTH. The editors/Find panel reserve it as their resting bottom,
+       and setEditorBottom() reads it from JS (getComputedStyle) so the live layout math can't drift. */
+    :root { --status-bar-h: 22px; }
+    /* Editors rest above the bottom to clear the status bar; the Find panel docks above it too.
+       setEditorBottom() adds --status-bar-h on top of any Find-panel clearance. */
+    #editor { position: absolute; top: 38px; left: 0; right: 0; bottom: var(--status-bar-h); }
     /* Split view (#15): second pane occupies the right half; primary shrinks to the left half. */
-    #editor2 { display: none; position: absolute; top: 38px; left: 50%; right: 0; bottom: 0; }
+    #editor2 { display: none; position: absolute; top: 38px; left: 50%; right: 0; bottom: var(--status-bar-h); }
     body.split #editor { right: 50%; border-right: 1px solid var(--toolbar-border); }
     body.split #editor2 { display: block; }
+    /* Notepad++-style status bar: live Ln / Col / Pos + selection + totals for the active pane. */
+    #statusBar {
+        position: absolute; left: 0; right: 0; bottom: 0; height: var(--status-bar-h); z-index: 16;
+        display: flex; align-items: center; padding: 0 12px; box-sizing: border-box;
+        background: var(--toolbar-bg); border-top: 1px solid var(--toolbar-border);
+        color: var(--title-color); font-family: var(--mono, monospace); font-size: 11px;
+        white-space: pre; overflow: hidden; user-select: none;
+    }
     #toolbar #splitBtn { padding: 3px 8px; font-size: 14px; line-height: 1; }
     #toolbar #splitBtn.on { background: var(--title-accent); color: #fff; }
     #toolbar .embed-nav:disabled { opacity: 0.35; cursor: default; }
@@ -129,7 +144,7 @@
     body.light { --find-accent: #1e66f5; --find-hit: rgba(30,102,245,0.22); --find-hit-border: #1e66f5; --on-fg: #eff1f5; }
 
     #findPanel {
-        position: absolute; left: 0; right: 0; bottom: 0; z-index: 15;
+        position: absolute; left: 0; right: 0; bottom: var(--status-bar-h); z-index: 15;
         height: 300px; display: flex; flex-direction: column;
         background: var(--toolbar-bg); border-top: 2px solid var(--find-accent);
         font-size: var(--find-fz); color: var(--fg);
@@ -268,6 +283,52 @@
         <label>Minimap <input type="checkbox" id="setMinimap"></label>
         <label>Complete word on insert key (space . ( ) <input type="checkbox" id="setCompleteOnInsertKey"></label>
         <label>Font size <input type="number" id="setFontSize" min="6" max="48" step="1"></label>
+
+        <h4>Smart Formatter — General</h4>
+        <label>Preferred column <input type="number" id="setPreferredColumn" min="1" max="120" step="1"></label>
+        <label>Continuation indent (× tab) <input type="number" id="setContLineMultiplier" min="1" max="8" step="1"></label>
+        <label>Indent comments <input type="checkbox" id="setIndentComments"></label>
+        <label>Keep column-1 comments in column 1 <input type="checkbox" id="setDontIndentCol1Comments"></label>
+        <label>Format line on Enter <input type="checkbox" id="setFormatLineOnEnter"></label>
+
+        <h4>Smart Formatter — Code Statements</h4>
+        <label class="fmt-todo" title="Not yet implemented in the formatter engine">Indent OF/ELSE from CASE/IF <input type="checkbox" id="setIndentFromCode" disabled></label>
+        <label class="fmt-todo" title="Not yet implemented in the formatter engine">Indent CASE/OF sub-keywords <input type="checkbox" id="setIndentCaseSubKeywords" disabled></label>
+        <label class="fmt-todo" title="Not yet implemented in the formatter engine">Treat colon-terminated word as label <input type="checkbox" id="setColonAsLabel" disabled></label>
+        <label class="fmt-todo" title="Not yet implemented in the formatter engine">Re-format block after END <input type="checkbox" id="setFormatBlockAfterEnd" disabled></label>
+        <p class="fmt-todo-note">Disabled options above are not yet wired to the formatter engine.</p>
+        <label>PROGRAM/MEMBER/MAP/PRAGMA placement
+            <select id="setPreferredKeywordIndent">
+                <option value="column">Preferred column</option>
+                <option value="indent">One indent</option>
+            </select></label>
+
+        <h4>Smart Formatter — Assignment Alignment</h4>
+        <label>Align assignments (=) <input type="checkbox" id="setAlignAssignments"></label>
+        <label>Spaces before = <input type="number" id="setSpacesBeforeAssignment" min="1" max="12" step="1"></label>
+        <label>Spaces after = <input type="number" id="setSpacesAfterAssignment" min="1" max="12" step="1"></label>
+        <label>Blank lines don't break a run <input type="checkbox" id="setTreatBlankAsContiguous"></label>
+        <label>Comment lines don't break a run <input type="checkbox" id="setTreatCommentAsContiguous"></label>
+        <label>Alignment scope
+            <select id="setAlignScope">
+                <option value="global">Whole file (global)</option>
+                <option value="selection">Selection only</option>
+            </select></label>
+
+        <h4>Smart Formatter — Keyword Casing</h4>
+        <label>Keywords / types
+            <select id="setKeywordCase">
+                <option value="upper">UPPER</option>
+                <option value="lower">lower</option>
+            </select></label>
+        <label>Other names
+            <select id="setOtherNameCase">
+                <option value="upper">UPPER</option>
+                <option value="lower">lower</option>
+                <option value="asis">As declared</option>
+            </select></label>
+        <div class="kb-actions"><button id="fmtResetDefaults">Reset formatter defaults</button></div>
+
         <h4>Keyboard</h4>
         <table id="keybindTable">
             <thead><tr><th>Command</th><th>Default</th><th>Key</th><th></th></tr></thead>
@@ -279,6 +340,7 @@
     <div id="navHist" class="hidden"></div>
     <div id="editor"></div>
     <div id="editor2"></div>
+    <div id="statusBar"></div>
     <div id="findPanel" class="hidden">
         <div id="findGrip" title="Drag to resize"></div>
         <div id="findTabs"></div>
@@ -1011,9 +1073,43 @@
     // generated lines are never touched). The formatter preserves line count, so embedRanges are
     // unchanged. Indentation context (nesting depth) is taken from the FULL buffer above the block, so a
     // selection inside a procedure still nests correctly even though the lines above it aren't reformatted.
+    // Smart Formatter option keys persisted in the gear panel (everything except tabSize/insertSpaces,
+    // which come live from the Monaco model). Merged into formatterOptions() so Ctrl+I and the
+    // as-you-type aids honor the panel. The engine's mergeOptions() fills any absent key from DEFAULTS.
+    // DRIFT: the C# host mirrors this list as ModernEmbeditorSettings.FormatterKeys (plus formatLineOnEnter)
+    // to persist + broadcast these across tabs — keep both in sync when adding/removing an option.
+    var FORMATTER_SETTING_KEYS = [
+        'preferredColumn', 'contLineMultiplier', 'indentComments', 'dontIndentCol1Comments',
+        'indentFromCode', 'indentCaseSubKeywords', 'colonAsLabel', 'formatBlockAfterEnd', 'preferredKeywordIndent',
+        'alignAssignments', 'spacesBeforeAssignment', 'spacesAfterAssignment', 'treatBlankAsContiguous',
+        'treatCommentAsContiguous', 'alignScope', 'keywordCase', 'otherNameCase'
+    ];
+    // Clamp a numeric option to [lo,hi]; drop a present-but-non-finite value so the engine DEFAULT applies.
+    function clampOpt(o, k, lo, hi) {
+        if (o[k] === undefined) return;
+        var n = Number(o[k]);
+        if (isFinite(n)) o[k] = Math.max(lo, Math.min(hi, Math.round(n)));
+        else delete o[k];
+    }
     function formatterOptions() {
         var o = {};
         try { var mo = activeEd().getModel().getOptions(); o.tabSize = mo.tabSize; o.insertSpaces = mo.insertSpaces; } catch (e) { }
+        var s = lastSettings;
+        if (s) for (var i = 0; i < FORMATTER_SETTING_KEYS.length; i++) {
+            var k = FORMATTER_SETTING_KEYS[i];
+            if (s[k] !== undefined) o[k] = s[k];
+        }
+        // Strict-bool coerce: the engine truthiness-tests preferredKeywordIndent, so a stray string from a
+        // foreign/older profile would wrongly read as 'indent'. (deac3d16 LOW)
+        if (o.preferredKeywordIndent !== undefined)
+            o.preferredKeywordIndent = (o.preferredKeywordIndent === true || o.preferredKeywordIndent === 'indent');
+        // Clamp numerics so a corrupted/host-loaded settings file can't reach pad()'s Array(col+1).join with a
+        // huge value and hang the tab — this is the chokepoint for every in-page engine call, so it also
+        // covers the host load/broadcast path that bypasses readSettingsPanel's clamps. (deac3d16 security LOW)
+        clampOpt(o, 'preferredColumn', 1, 120);
+        clampOpt(o, 'contLineMultiplier', 1, 8);
+        clampOpt(o, 'spacesBeforeAssignment', 1, 12);
+        clampOpt(o, 'spacesAfterAssignment', 1, 12);
         return o;
     }
     function cmdFormat() {
@@ -1054,7 +1150,7 @@
     // the always-safe keyword set (statement/control/operator words that can never be a variable name),
     // so live typing never touches your identifiers — matching the "Other names: As declared" intent.
     // Type/structure/attribute keywords (LONG, GROUP, PRE…) and full case normalization happen on Ctrl+I.
-    var keywordCaseMode = 'upper';   // 'upper' | 'lower' | 'asis' — settings panel (deac3d16) will wire this
+    var keywordCaseMode = 'upper';   // 'upper' | 'lower' — wired from settings.keywordCase in applyEditorSettings (deac3d16; 'asis' retired for keywords)
     var _alwaysKw = null;
     function alwaysKwSet() {
         if (!_alwaysKw) {
@@ -1104,7 +1200,7 @@
     // replaces text on the same line and inserts no newline), reformat the line just completed with the
     // same formatter Ctrl+I uses (correct indent + keyword casing; structure-aware for OF/ELSE/END).
     // This avoids the live-typing/completion conflicts entirely. Assignment alignment stays on Ctrl+I.
-    var formatLineOnEnter = true;     // settings panel (deac3d16) will wire this
+    var formatLineOnEnter = true;     // wired from settings.formatLineOnEnter in applyEditorSettings (deac3d16)
     var _fmtLineGuard = false;
     function installFormatOnEnter(ed) {
         if (!ed || typeof ClarionFormatter === 'undefined') return;
@@ -1643,6 +1739,7 @@
         if (pos) editor2.revealLineInCenter(pos.lineNumber);
         activeEditor = editor2;
         editor2.focus();
+        updateStatusBar(activeEd());   // seed the bar for the now-active split pane (the per-editor seed in installNavTracking ran before activeEditor was set)
         updateSplitBtn();
     }
 
@@ -1654,6 +1751,7 @@
             editor2 = null;
         }
         activeEditor = editor;
+        updateStatusBar(activeEd());   // bar follows the sole remaining pane after unsplit
         updateSplitBtn();
         editor.focus();
     }
@@ -1713,11 +1811,41 @@
 
     function installNavTracking(ed) {
         ed.onDidChangeCursorPosition(function () {
+            updateStatusBar(ed);
             if (navSuppress) return;
             scheduleNavRecord();
         });
         // Report selection changes (and click-away → empty selection) for the read-side bridge.
-        ed.onDidChangeCursorSelection(function () { scheduleSelectionPush(ed); });
+        ed.onDidChangeCursorSelection(function () { updateStatusBar(ed); scheduleSelectionPush(ed); });
+        // Keep the status bar's totals (lines/chars) live as the buffer changes, and switch the bar to
+        // whichever split pane has focus.
+        ed.onDidChangeModelContent(function () { updateStatusBar(ed); });
+        ed.onDidFocusEditorText(function () { updateStatusBar(ed); });
+        updateStatusBar(ed);   // seed on creation
+    }
+
+    // Notepad++-style status bar: Ln/Col (1-based, from Monaco), Pos (1-based character offset), selection
+    // length when present, and buffer totals. textContent only — never HTML — so nothing from the source
+    // can reach the DOM as markup.
+    function updateStatusBar(ed) {
+        try {
+            var bar = document.getElementById('statusBar');
+            if (!bar || !ed) return;
+            // In split view both panes share one model, so onDidChangeModelContent fires on BOTH for every
+            // edit; without this guard a non-focused pane's event (or a caret-preserving edit like as-you-type
+            // casing) repaints the bar with the wrong pane's Ln/Col. Only the active pane drives the bar; the
+            // onDidFocusEditorText path (and doSplit/doUnsplit re-seed) flips it on focus. (deac3d16 review)
+            if (ed !== activeEd()) return;
+            var model = ed.getModel(); if (!model) return;
+            var pos = ed.getPosition() || { lineNumber: 1, column: 1 };
+            var sel = ed.getSelection();
+            function grp(x) { return String(x).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }   // 1,007
+            var offset = model.getOffsetAt(pos) + 1;   // Monaco offset is 0-based; NPP "Pos" is 1-based
+            var txt = 'Ln ' + grp(pos.lineNumber) + '    Col ' + grp(pos.column) + '    Pos ' + grp(offset);
+            if (sel && !sel.isEmpty()) txt += '    Sel ' + grp(model.getValueLengthInRange(sel));
+            txt += '    │    ' + grp(model.getLineCount()) + ' lines    ' + grp(model.getValueLength()) + ' chars';
+            bar.textContent = txt;
+        } catch (e) { }
     }
     function scheduleNavRecord() {
         if (_navRecordTimer) clearTimeout(_navRecordTimer);
@@ -2132,7 +2260,11 @@
     // Settings arrive from the host on load (setSource) and on broadcast (applySettings, when another
     // tab changes them). Editing a control applies live AND posts to the host to persist + broadcast.
     function applyEditorSettings(s) {
-        if (!editor || !s) return;
+        if (!s) return;
+        // Capture BEFORE the editor-ready guard so a settings broadcast that races Monaco init isn't lost for
+        // formatterOptions() (Ctrl+I can't fire pre-init anyway, but the next one will then honor it). (deac3d16 adversary LOW)
+        lastSettings = s;
+        if (!editor) return;
         var opts = {};
         if (typeof s.fontSize === 'number') opts.fontSize = s.fontSize;
         opts.wordWrap = s.wordWrap ? 'on' : 'off';
@@ -2140,6 +2272,15 @@
         opts.autoIndent = s.autoIndent ? 'full' : 'keep';
         // Live insert-key acceptance: read by toMonacoCompletion on the next keystroke (default ON if absent).
         if (typeof s.completeOnInsertKey === 'boolean') commitKeysEnabled = s.completeOnInsertKey;
+        // Live as-you-type aids (deac3d16): keyword casing follows the formatter's keywordCase, and the
+        // on-Enter line format honors its toggle. These are per-keystroke aids, separate from Ctrl+I (which
+        // reads the same keys via formatterOptions) — wiring them here keeps both paths consistent.
+        // Keywords casing dropped 'As declared' (deac3d16 rework): only upper/lower are valid now. A legacy
+        // profile carrying keywordCase:'asis' leaves keywordCaseMode at its 'upper' default (live casing ON)
+        // rather than silently doing nothing behind a blank dropdown.
+        if (s.keywordCase === 'upper' || s.keywordCase === 'lower') keywordCaseMode = s.keywordCase;
+        else if (s.keywordCase !== undefined) keywordCaseMode = 'upper';
+        if (typeof s.formatLineOnEnter === 'boolean') formatLineOnEnter = s.formatLineOnEnter;
         editor.updateOptions(opts);
         if (editor2) editor2.updateOptions(opts);   // keep the split pane's editor-options in sync (#15)
         // tabSize / insertSpaces are MODEL options in Monaco, not editor options.
@@ -2152,7 +2293,7 @@
             rebuildChordMap();
             buildKeybindTable();   // reflect into the gear panel (no-op if it isn't built yet)
         }
-        lastSettings = s;
+        // lastSettings was captured at the top (before the editor-ready guard).
     }
 
     // Validate a persisted/broadcast keyBindings map before trusting it. The live rebind UI rejects
@@ -2196,6 +2337,58 @@
         if ((el = document.getElementById('setMinimap'))) el.checked = !!s.minimap;
         if ((el = document.getElementById('setCompleteOnInsertKey'))) el.checked = (s.completeOnInsertKey !== false);
         if ((el = document.getElementById('setFontSize')) && typeof s.fontSize === 'number') el.value = s.fontSize;
+        populateFormatterPanel(s);
+    }
+
+    // Hardcoded fallback mirroring clarion-formatter.js DEFAULTS. If the formatter script failed to load,
+    // ClarionFormatter.DEFAULTS is absent — without this fallback the panel would render every default-TRUE
+    // bool as unchecked and then PERSIST those false values, durably degrading the next healthy session
+    // (mergeOptions can't fall back once a key is present). The fallback keeps defaults honest. (deac3d16 MEDIUM)
+    var FORMATTER_FALLBACK_DEFAULTS = {
+        preferredColumn: 31, contLineMultiplier: 2, indentComments: true, dontIndentCol1Comments: true,
+        formatBlockAfterEnd: true, indentFromCode: false, indentCaseSubKeywords: false, colonAsLabel: false,
+        preferredKeywordIndent: false, alignAssignments: true, spacesBeforeAssignment: 2, spacesAfterAssignment: 2,
+        treatBlankAsContiguous: false, treatCommentAsContiguous: false, alignScope: 'global',
+        keywordCase: 'upper', otherNameCase: 'asis'
+    };
+    function formatterDefaults() {
+        return (typeof ClarionFormatter !== 'undefined' && ClarionFormatter.DEFAULTS) || FORMATTER_FALLBACK_DEFAULTS;
+    }
+
+    // Seed the Smart Formatter controls from the persisted settings, falling back to ClarionFormatter.DEFAULTS
+    // for any absent key. The fallback is essential: several formatter bools default to TRUE, so a missing
+    // value must show as checked (a plain !!s[k] would wrongly clear them on a fresh profile).
+    function populateFormatterPanel(s) {
+        var D = formatterDefaults();
+        function val(k) { return (s && s[k] !== undefined) ? s[k] : D[k]; }
+        function setNum(id, k) { var e = document.getElementById(id); if (e && val(k) !== undefined) e.value = val(k); }
+        function setChk(id, k) { var e = document.getElementById(id); if (e) e.checked = !!val(k); }
+        function setSel(id, k) { var e = document.getElementById(id); if (e && val(k) !== undefined) e.value = String(val(k)); }
+        setNum('setPreferredColumn', 'preferredColumn');
+        setNum('setContLineMultiplier', 'contLineMultiplier');
+        setChk('setIndentComments', 'indentComments');
+        setChk('setDontIndentCol1Comments', 'dontIndentCol1Comments');
+        setChk('setIndentFromCode', 'indentFromCode');
+        setChk('setIndentCaseSubKeywords', 'indentCaseSubKeywords');
+        setChk('setColonAsLabel', 'colonAsLabel');
+        setChk('setFormatBlockAfterEnd', 'formatBlockAfterEnd');
+        // preferredKeywordIndent is a bool in the engine; the select carries 'column'|'indent'.
+        var pk = document.getElementById('setPreferredKeywordIndent');
+        if (pk) pk.value = val('preferredKeywordIndent') ? 'indent' : 'column';
+        setChk('setAlignAssignments', 'alignAssignments');
+        setNum('setSpacesBeforeAssignment', 'spacesBeforeAssignment');
+        setNum('setSpacesAfterAssignment', 'spacesAfterAssignment');
+        setChk('setTreatBlankAsContiguous', 'treatBlankAsContiguous');
+        setChk('setTreatCommentAsContiguous', 'treatCommentAsContiguous');
+        setSel('setAlignScope', 'alignScope');
+        // Keywords casing dropped 'As declared' — migrate any legacy/foreign value (e.g. 'asis') to 'upper'
+        // so the dropdown can't render blank (selectedIndex=-1 on a missing option). otherNameCase keeps 'asis'.
+        var kwSel = document.getElementById('setKeywordCase');
+        if (kwSel) { var kw = val('keywordCase'); kwSel.value = (kw === 'lower') ? 'lower' : 'upper'; }
+        setSel('setOtherNameCase', 'otherNameCase');
+        // Format-line-on-Enter is an editor-side aid (not an engine option), default ON when absent.
+        var fe = document.getElementById('setFormatLineOnEnter');
+        if (fe) fe.checked = (s && s.formatLineOnEnter !== undefined) ? !!s.formatLineOnEnter : true;
     }
 
     function readSettingsPanel() {
@@ -2205,6 +2398,8 @@
             return Math.max(lo, Math.min(hi, v));
         }
         function chk(id) { var e = document.getElementById(id); return !!(e && e.checked); }
+        function sel(id, dflt) { var e = document.getElementById(id); return (e && e.value) || dflt; }
+        var D = formatterDefaults();
         return {
             tabSize: num('setTabSize', 2, 1, 16),
             insertSpaces: chk('setInsertSpaces'),
@@ -2212,7 +2407,27 @@
             wordWrap: chk('setWordWrap'),
             minimap: chk('setMinimap'),
             completeOnInsertKey: chk('setCompleteOnInsertKey'),
-            fontSize: num('setFontSize', 13, 6, 48)
+            fontSize: num('setFontSize', 13, 6, 48),
+            // ----- Smart Formatter -----
+            preferredColumn: num('setPreferredColumn', D.preferredColumn || 31, 1, 120),
+            contLineMultiplier: num('setContLineMultiplier', D.contLineMultiplier || 2, 1, 8),
+            indentComments: chk('setIndentComments'),
+            dontIndentCol1Comments: chk('setDontIndentCol1Comments'),
+            indentFromCode: chk('setIndentFromCode'),
+            indentCaseSubKeywords: chk('setIndentCaseSubKeywords'),
+            colonAsLabel: chk('setColonAsLabel'),
+            formatBlockAfterEnd: chk('setFormatBlockAfterEnd'),
+            preferredKeywordIndent: sel('setPreferredKeywordIndent', 'column') === 'indent',
+            alignAssignments: chk('setAlignAssignments'),
+            spacesBeforeAssignment: num('setSpacesBeforeAssignment', D.spacesBeforeAssignment || 2, 1, 12),
+            spacesAfterAssignment: num('setSpacesAfterAssignment', D.spacesAfterAssignment || 2, 1, 12),
+            treatBlankAsContiguous: chk('setTreatBlankAsContiguous'),
+            treatCommentAsContiguous: chk('setTreatCommentAsContiguous'),
+            alignScope: sel('setAlignScope', D.alignScope || 'global'),
+            keywordCase: sel('setKeywordCase', D.keywordCase || 'upper'),
+            otherNameCase: sel('setOtherNameCase', D.otherNameCase || 'asis'),
+            // Editor-side aid (not an engine key): live on-Enter line format.
+            formatLineOnEnter: chk('setFormatLineOnEnter')
         };
     }
 
@@ -2230,8 +2445,10 @@
 
     function onSettingChanged() {
         var s = buildSettingsPayload();
-        applyEditorSettings(s);
+        // Post to the host FIRST (persist + cross-tab/cross-surface broadcast) so a throw in the live-apply
+        // below can never block the save. The host bus reaches every open Monaco surface. (deac3d16)
         postToHost({ action: 'saveSettings', settings: s });
+        applyEditorSettings(s);
     }
 
     // ----- Keyboard rebinding table (gear panel) -----
@@ -2328,11 +2545,29 @@
             var p = document.getElementById('settingsPanel');
             if (p) p.classList.toggle('hidden');
         });
-        var ids = ['setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize'];
+        var ids = ['setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize',
+            // Smart Formatter controls
+            'setPreferredColumn', 'setContLineMultiplier', 'setIndentComments', 'setDontIndentCol1Comments', 'setFormatLineOnEnter',
+            'setIndentFromCode', 'setIndentCaseSubKeywords', 'setColonAsLabel', 'setFormatBlockAfterEnd', 'setPreferredKeywordIndent',
+            'setAlignAssignments', 'setSpacesBeforeAssignment', 'setSpacesAfterAssignment', 'setTreatBlankAsContiguous',
+            'setTreatCommentAsContiguous', 'setAlignScope', 'setKeywordCase', 'setOtherNameCase'];
         for (var i = 0; i < ids.length; i++) {
             var e = document.getElementById(ids[i]);
             if (e) e.addEventListener('change', onSettingChanged);
         }
+        // Seed the formatter controls from DEFAULTS immediately (before host settings arrive) so a keybind
+        // persist that runs first doesn't read empty/unchecked formatter controls and clobber the defaults.
+        populateFormatterPanel(lastSettings);
+        // Reset just the Smart Formatter keys to engine DEFAULTS (editor settings + keybinds untouched).
+        var fmtReset = document.getElementById('fmtResetDefaults');
+        if (fmtReset) fmtReset.addEventListener('click', function () {
+            var D = formatterDefaults();
+            var merged = {};
+            for (var k in (lastSettings || {})) if (lastSettings.hasOwnProperty(k)) merged[k] = lastSettings[k];
+            for (var fk in D) if (D.hasOwnProperty(fk)) merged[fk] = D[fk];
+            populateFormatterPanel(merged);
+            onSettingChanged();   // apply + persist + broadcast
+        });
         var resetAll = document.getElementById('kbResetAll');
         if (resetAll) resetAll.addEventListener('click', function () {
             keyBindings = {};
@@ -2406,11 +2641,20 @@
             .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
+    // Read the status-bar height from its single CSS source of truth (--status-bar-h) so this and the CSS
+    // can't drift; fall back to 22 if the var can't be resolved.
+    var STATUS_BAR_H = (function () {
+        try { var v = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--status-bar-h'), 10); return isFinite(v) ? v : 22; }
+        catch (e) { return 22; }
+    })();
     function setEditorBottom(px) {
+        // Callers pass the Find-panel clearance (0 when closed); always add the status bar's height so
+        // the editors never sit under it. Resting bottom = STATUS_BAR_H; with Find open = panel + bar.
+        var bottom = (px + STATUS_BAR_H) + 'px';
         var ed = document.getElementById('editor');
-        if (ed) ed.style.bottom = px + 'px';   // automaticLayout picks up the resize
+        if (ed) ed.style.bottom = bottom;   // automaticLayout picks up the resize
         var e2 = document.getElementById('editor2');   // keep the split pane clear of the Find panel too
-        if (e2) e2.style.bottom = px + 'px';
+        if (e2) e2.style.bottom = bottom;
     }
 
     // Monaco binds Ctrl+F / Ctrl+H to its built-in find/replace widgets at a keybinding weight that

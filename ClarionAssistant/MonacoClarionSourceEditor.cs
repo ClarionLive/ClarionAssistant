@@ -51,6 +51,7 @@ namespace ClarionAssistant
         private string _filePath;        // the source file we edit (from the native editor), saved to disk by Monaco
         private bool _overlayDirty;      // mirrored from the page (fileState) — drives save-on-close
         private string _overlayLiveText; // last live buffer the page mirrored, for the close-save write
+        private IDisposable _settingsReg; // registration in MonacoSettingsBroadcaster (cross-surface gear-settings sync, deac3d16)
 
         // Host-driven navigation (debugger / breakpoint-list click via MonacoSourceNavigator). The page can't
         // be positioned until it signals ready, so a nav that arrives earlier is parked here and flushed in
@@ -181,6 +182,9 @@ namespace ClarionAssistant
                 _editor = new MonacoEditorControl(this, false, "monaco-embeditor.html", "clarion-embeditor-data");
                 host.Controls.Add(_editor);
                 _editor.BringToFront();
+                // Participate in cross-surface gear-settings sync: receive applySettings broadcasts from any
+                // other Monaco surface (embeditor or another source editor). Our OnSaveSettings publishes. (deac3d16)
+                _settingsReg = Services.MonacoSettingsBroadcaster.Register(json => { try { _editor?.PostJson(json); } catch { } });
                 if (_cover != null) _cover.BringToFront();   // cover ABOVE the WebView2 until Monaco has painted
                 WireBreakpoints();   // keep Monaco's gutter in sync with IDE breakpoints
 
@@ -296,6 +300,26 @@ namespace ClarionAssistant
                 // (a standalone setBreakpoints sent right after would race the async content fetch on a cold open).
                 string bpCsv = BreakpointLinesCsv();
 
+                // Restore persisted Find history / cursor / bookmarks for this file (shared scope with a file-mode
+                // embeditor). A parked debugger nav (navLine) still wins over the saved cursor. (deac3d16)
+                string findHistJson = "[]", replHistJson = "[]", procHistJson = "[]", bookmarksJson = "[]";
+                int savedCursorLine = 0, savedCursorCol = 0;
+                try
+                {
+                    string sol, key; ResolveHistoryScope(out sol, out key);
+                    List<string> hf, hr, hp;
+                    ModernEmbeditorHistory.Load(sol, key, out hf, out hr, out hp);
+                    findHistJson = ModernEmbeditorHistory.ToJson(hf);
+                    replHistJson = ModernEmbeditorHistory.ToJson(hr);
+                    procHistJson = ModernEmbeditorHistory.ToJson(hp);
+                    List<int> bms;
+                    ModernEmbeditorState.Load(sol, key, out savedCursorLine, out savedCursorCol, out bms);
+                    bookmarksJson = ModernEmbeditorState.BookmarksJson(bms);
+                }
+                catch { }
+                int curLine = navLine >= 1 ? navLine : savedCursorLine;
+                int curCol = navLine >= 1 ? navCol : (savedCursorCol >= 1 ? savedCursorCol : 1);
+
                 string json = "{\"type\":\"setSource\","
                     + "\"title\":" + MonacoEditorControl.JsonString(_overlayTitle) + ","
                     + "\"language\":\"clarion\","
@@ -308,9 +332,9 @@ namespace ClarionAssistant
                     + "\"saveEnabled\":true,"
                     + "\"editableRanges\":[],"
                     + "\"settings\":" + settingsJson + ","
-                    + "\"findHistory\":[],\"replaceHistory\":[],\"procHistory\":[],"
-                    + "\"cursorLine\":" + navLine + ",\"cursorColumn\":" + navCol + ","
-                    + "\"bookmarks\":[],"
+                    + "\"findHistory\":" + findHistJson + ",\"replaceHistory\":" + replHistJson + ",\"procHistory\":" + procHistJson + ","
+                    + "\"cursorLine\":" + curLine + ",\"cursorColumn\":" + curCol + ","
+                    + "\"bookmarks\":" + bookmarksJson + ","
                     + "\"breakpoints\":[" + bpCsv + "],"
                     + "\"sourceUrl\":\"https://clarion-embeditor-data/source.txt\"}";
                 _editor.PostJson(json);
@@ -489,11 +513,96 @@ namespace ClarionAssistant
 
         // The rest stay inert for now (Step 6 wires Ctrl+D through the embeditor's openDesigner path).
         void IMonacoEditorHost.OnClipboard(MonacoEditorControl editor, string rawJson) { }
-        void IMonacoEditorHost.OnSaveSettings(MonacoEditorControl editor, string rawJson) { }
-        void IMonacoEditorHost.OnSaveHistory(MonacoEditorControl editor, string rawJson) { }
-        void IMonacoEditorHost.OnSaveCursor(MonacoEditorControl editor, string rawJson) { }
-        void IMonacoEditorHost.OnSaveBookmarks(MonacoEditorControl editor, string rawJson) { }
-        void IMonacoEditorHost.OnSelectionChanged(MonacoEditorControl editor, string rawJson) { }
+        void IMonacoEditorHost.OnSaveSettings(MonacoEditorControl editor, string rawJson)
+        {
+            // The Monaco source/default editor is a first-class gear-settings participant now: persist + broadcast
+            // to every open Monaco surface (this + other source editors + embeditors) via the shared bus. Before
+            // deac3d16 this was a no-op, so settings changed in the default editor silently vanished. (cross-tab fix)
+            Services.MonacoSettingsBroadcaster.SaveAndBroadcastFromBridge(rawJson);
+        }
+        // Find/Replace history, cursor position, and bookmarks are persisted per (solution + file) — the SAME
+        // scope a file-mode embeditor uses ("file::<path>"), so state is shared between the two surfaces for the
+        // same file. Before deac3d16 these were no-op stubs, so none of it survived a reopen in the default editor.
+        void IMonacoEditorHost.OnSaveHistory(MonacoEditorControl editor, string rawJson)
+        {
+            try
+            {
+                var data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(rawJson) as Dictionary<string, object>;
+                if (data == null) return;
+                string sol, key; ResolveHistoryScope(out sol, out key);
+                List<string> savedFind, savedReplace;
+                ModernEmbeditorHistory.Save(sol, key, HistList(data, "find"), HistList(data, "replace"), HistList(data, "proc"), out savedFind, out savedReplace);
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("overlay saveHistory error: " + ex.Message); }
+        }
+        void IMonacoEditorHost.OnSaveCursor(MonacoEditorControl editor, string rawJson)
+        {
+            try
+            {
+                var data = new JavaScriptSerializer { MaxJsonLength = 65536 }.DeserializeObject(rawJson) as Dictionary<string, object>;
+                if (data == null) return;
+                int line = data.ContainsKey("line") ? Convert.ToInt32(data["line"]) : 0;
+                int column = data.ContainsKey("column") ? Convert.ToInt32(data["column"]) : 0;
+                if (line < 1) return;
+                string sol, key; ResolveHistoryScope(out sol, out key);
+                ModernEmbeditorState.SaveCursor(sol, key, line, column);
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("overlay saveCursor error: " + ex.Message); }
+        }
+        void IMonacoEditorHost.OnSaveBookmarks(MonacoEditorControl editor, string rawJson)
+        {
+            try
+            {
+                var data = new JavaScriptSerializer { MaxJsonLength = 65536 }.DeserializeObject(rawJson) as Dictionary<string, object>;
+                if (data == null) return;
+                var lines = new List<int>();
+                object o;
+                if (data.TryGetValue("bookmarks", out o) && o is object[])
+                {
+                    var arr = (object[])o;
+                    for (int i = 0; i < arr.Length && lines.Count < 1000; i++)
+                        if (arr[i] != null) { try { lines.Add(Convert.ToInt32(arr[i])); } catch { } }
+                }
+                string sol, key; ResolveHistoryScope(out sol, out key);
+                ModernEmbeditorState.SaveBookmarks(sol, key, lines);
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("overlay saveBookmarks error: " + ex.Message); }
+        }
+
+        /// <summary>Per-(solution + file) scope key for history/cursor/bookmarks. Matches the embeditor's
+        /// file-mode key so the two surfaces share saved state for the same file. Recomputed each call so it
+        /// stays correct after _filePath resolves in OnReady.</summary>
+        private void ResolveHistoryScope(out string solutionPath, out string procKey)
+        {
+            try { solutionPath = EditorService.GetOpenSolutionPath(); } catch { solutionPath = null; }
+            procKey = string.IsNullOrEmpty(_filePath) ? "" : ("file::" + _filePath.ToLowerInvariant());
+        }
+
+        /// <summary>Coerce a JSON array field (object[] from DeserializeObject) into a string list.</summary>
+        private static List<string> HistList(Dictionary<string, object> data, string key)
+        {
+            var outp = new List<string>();
+            object o;
+            if (data != null && data.TryGetValue(key, out o) && o is object[])
+                foreach (var item in (object[])o) if (item != null) outp.Add(item.ToString());
+            return outp;
+        }
+        // Cache the live caret (the page pushes selectionChanged ~80ms-debounced on every cursor/selection move)
+        // so the cursor can be persisted on CLOSE even without an explicit Ctrl+S — matching how bookmarks already
+        // survive a plain tab close. The caret is the selection's active end. (deac3d16)
+        private int _lastCursorLine, _lastCursorCol;
+        void IMonacoEditorHost.OnSelectionChanged(MonacoEditorControl editor, string rawJson)
+        {
+            try
+            {
+                var data = new JavaScriptSerializer { MaxJsonLength = 65536 }.DeserializeObject(rawJson) as Dictionary<string, object>;
+                if (data == null) return;
+                int line = data.ContainsKey("endLine") ? Convert.ToInt32(data["endLine"]) : 0;
+                int col = data.ContainsKey("endColumn") ? Convert.ToInt32(data["endColumn"]) : 0;
+                if (line >= 1) { _lastCursorLine = line; _lastCursorCol = col >= 1 ? col : 1; }
+            }
+            catch { }
+        }
         void IMonacoEditorHost.OnFocusEditor(MonacoEditorControl editor) { }
         void IMonacoEditorHost.OnReload(MonacoEditorControl editor) { }
 
@@ -849,6 +958,19 @@ namespace ClarionAssistant
         {
             try
             {
+                // Persist the last-known caret on close (no Ctrl+S required), so reopening the file restores it —
+                // bookmarks already do this via their on-change push; the cursor only saved on Ctrl+S before. (deac3d16)
+                try
+                {
+                    if (_lastCursorLine >= 1)
+                    {
+                        string sol, key; ResolveHistoryScope(out sol, out key);
+                        ModernEmbeditorState.SaveCursor(sol, key, _lastCursorLine, _lastCursorCol >= 1 ? _lastCursorCol : 1);
+                    }
+                }
+                catch { }
+                try { _settingsReg?.Dispose(); } catch { }
+                _settingsReg = null;
                 if (_editor != null)
                 {
                     var parent = _editor.Parent;

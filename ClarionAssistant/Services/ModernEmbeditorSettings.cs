@@ -36,6 +36,28 @@ namespace ClarionAssistant.Services
         /// </summary>
         public Dictionary<string, string> KeyBindings = new Dictionary<string, string>(StringComparer.Ordinal);
 
+        /// <summary>
+        /// Smart Formatter gear-panel options (deac3d16). Pass-through bag: the host stays agnostic to
+        /// formatter semantics — the HTML's formatterOptions() chokepoint re-clamps/coerces every value on
+        /// the way into the engine — so C# only needs to ferry these through Save/Load AND the cross-tab
+        /// broadcast. Persisting them ONLY here was the gap that left formatter settings not carrying across
+        /// tabs (and fragile across reopen): the editor keys round-tripped but the formatter keys were dropped
+        /// from FromDict/ToDict. Whitelisted (see FormatterKeys) so a crafted payload can't smuggle arbitrary
+        /// keys into settings.txt, and value-sanitized to bool/number/short-string with no CR/LF.
+        /// </summary>
+        public Dictionary<string, object> Formatter = new Dictionary<string, object>(StringComparer.Ordinal);
+
+        // The 18 formatter option keys the gear panel round-trips (mirrors FORMATTER_SETTING_KEYS +
+        // formatLineOnEnter in monaco-embeditor.html). Keep in sync if the panel gains/loses an option.
+        private static readonly string[] FormatterKeys = {
+            "preferredColumn", "contLineMultiplier", "indentComments", "dontIndentCol1Comments",
+            "indentFromCode", "indentCaseSubKeywords", "colonAsLabel", "formatBlockAfterEnd", "preferredKeywordIndent",
+            "alignAssignments", "spacesBeforeAssignment", "spacesAfterAssignment", "treatBlankAsContiguous",
+            "treatCommentAsContiguous", "alignScope", "keywordCase", "otherNameCase", "formatLineOnEnter"
+        };
+        private static readonly HashSet<string> FormatterKeySet = new HashSet<string>(FormatterKeys, StringComparer.Ordinal);
+        private const int MaxFormatterStringLen = 32;
+
         // Safety caps for the untrusted JS payload: bound how many overrides and how long a chord can be
         // so a crafted settings.txt / postMessage can't bloat the file or the binding map.
         private const int MaxKeyBindings = 64;
@@ -58,6 +80,7 @@ namespace ClarionAssistant.Services
                 s.CompleteOnInsertKey = GetBool(sv, "CompleteOnInsertKey", s.CompleteOnInsertKey);
                 s.FontSize = GetInt(sv, "FontSize", s.FontSize, 6, 48);
                 s.KeyBindings = ParseKeyBindings(sv.Get(Prefix + "KeyBindings"));
+                s.Formatter = ParseFormatter(sv.Get(Prefix + "Formatter"));
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditorSettings] Load: " + ex.Message); }
             return s;
@@ -77,6 +100,9 @@ namespace ClarionAssistant.Services
             // Compact JSON, single line — SettingsService rejects CR/LF in values, and the serializer
             // never emits them. Empty map persists as "{}" (clears any prior overrides).
             sv.Set(Prefix + "KeyBindings", new JavaScriptSerializer().Serialize(SanitizeBindings(KeyBindings)));
+            // Compact JSON, single line (the serializer never emits CR/LF, which SettingsService rejects).
+            // Empty map persists as "{}" — the panel then seeds every formatter control from DEFAULTS.
+            sv.Set(Prefix + "Formatter", new JavaScriptSerializer().Serialize(SanitizeFormatter(Formatter)));
         }
 
         /// <summary>Build a settings instance from the JS payload dict (validated + clamped).</summary>
@@ -99,13 +125,21 @@ namespace ClarionAssistant.Services
                     if (kv.Value != null) map[kv.Key] = kv.Value.ToString();
                 s.KeyBindings = SanitizeBindings(map);
             }
+            // Collect the whitelisted formatter keys present in the payload (sanitized to safe scalars).
+            var fm = new Dictionary<string, object>(StringComparer.Ordinal);
+            foreach (var k in FormatterKeys)
+            {
+                object fv;
+                if (d.TryGetValue(k, out fv)) fm[k] = fv;
+            }
+            s.Formatter = SanitizeFormatter(fm);
             return s;
         }
 
         /// <summary>Serialize for the JS bridge (keys match the HTML's applyEditorSettings).</summary>
         public Dictionary<string, object> ToDict()
         {
-            return new Dictionary<string, object>
+            var dict = new Dictionary<string, object>
             {
                 { "tabSize", TabSize },
                 { "insertSpaces", InsertSpaces },
@@ -116,6 +150,92 @@ namespace ClarionAssistant.Services
                 { "fontSize", FontSize },
                 { "keyBindings", SanitizeBindings(KeyBindings) }
             };
+            // Merge the formatter pass-through bag so the bridge payload (load + cross-tab broadcast) carries
+            // the gear-panel formatter options the same way it carries the editor keys.
+            foreach (var kv in SanitizeFormatter(Formatter)) dict[kv.Key] = kv.Value;
+            return dict;
+        }
+
+        /// <summary>
+        /// Host-side clamp for the four numeric formatter options, mirroring the HTML formatterOptions() ranges
+        /// (preferredColumn [1,120], contLineMultiplier [1,8], spacesBefore/AfterAssignment [1,12]). Non-numeric
+        /// keys never reach here. Returns an int within range — the JS num() always emits ints, so rounding a
+        /// fractional hand-edit is correct, not lossy. A numeric value landing on a non-numeric key (malformed
+        /// payload) passes through unchanged; the page coerces it harmlessly.
+        /// </summary>
+        private static object ClampFormatterNumeric(string key, double dv, object original)
+        {
+            int lo, hi;
+            switch (key)
+            {
+                case "preferredColumn": lo = 1; hi = 120; break;
+                case "contLineMultiplier": lo = 1; hi = 8; break;
+                case "spacesBeforeAssignment":
+                case "spacesAfterAssignment": lo = 1; hi = 12; break;
+                default: return original;
+            }
+            long iv = (long)Math.Round(dv, MidpointRounding.AwayFromZero);
+            if (iv < lo) iv = lo; else if (iv > hi) iv = hi;
+            return (int)iv;
+        }
+
+        /// <summary>Deserialize the persisted compact-JSON formatter bag; tolerant of null/garbage.</summary>
+        private static Dictionary<string, object> ParseFormatter(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return new Dictionary<string, object>(StringComparer.Ordinal);
+            try
+            {
+                var d = new JavaScriptSerializer().DeserializeObject(raw) as Dictionary<string, object>;
+                return SanitizeFormatter(d);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[ModernEmbeditorSettings] ParseFormatter: " + ex.Message);
+                return new Dictionary<string, object>(StringComparer.Ordinal);
+            }
+        }
+
+        /// <summary>
+        /// Defensive copy of the formatter bag: keep only whitelisted keys whose value is a safe scalar —
+        /// bool, number, or a short string with no CR/LF (would corrupt the line-based settings file) and no
+        /// HTML metacharacters (defense in depth; the panel sets these via &lt;select&gt;.value/&lt;input&gt;.value,
+        /// never innerHTML). Validation of ranges/enums lives in the HTML; C# only ensures nothing stored here
+        /// can break settings.txt or balloon.
+        /// </summary>
+        private static Dictionary<string, object> SanitizeFormatter(IDictionary<string, object> map)
+        {
+            var outp = new Dictionary<string, object>(StringComparer.Ordinal);
+            if (map == null) return outp;
+            foreach (var kv in map)
+            {
+                if (!FormatterKeySet.Contains(kv.Key)) continue;
+                object v = kv.Value;
+                if (v is bool) { outp[kv.Key] = (bool)v; continue; }
+                if (v is sbyte || v is byte || v is short || v is ushort || v is int || v is uint
+                    || v is long || v is ulong || v is float || v is double || v is decimal)
+                {
+                    double dv;
+                    try { dv = Convert.ToDouble(v); } catch { continue; }
+                    // Reject non-finite — a hand-edited settings.txt literal can deserialize to ±Infinity/NaN,
+                    // which would throw in Save()'s JSON serialize (JSON has no Infinity) and is never a valid
+                    // option value. Drop it so the engine DEFAULT applies. (deac3d16 security LOW)
+                    // (double.IsFinite is .NET Core only — this is .NET Framework, so test the complement.)
+                    if (double.IsNaN(dv) || double.IsInfinity(dv)) continue;
+                    // Independent host-side clamp of the engine's numeric options, so the bound doesn't rely
+                    // solely on the HTML formatterOptions() chokepoint (defense in depth: a future host consumer
+                    // or new engine call site would otherwise reintroduce the Array(col+1).join hang risk with
+                    // no host floor). (deac3d16 security LOW)
+                    outp[kv.Key] = ClampFormatterNumeric(kv.Key, dv, v);
+                    continue;
+                }
+                var str = v as string;
+                if (str == null) continue;                       // drop null / arrays / nested objects
+                if (str.Length > MaxFormatterStringLen) continue;
+                if (str.IndexOf('\r') >= 0 || str.IndexOf('\n') >= 0) continue;
+                if (str.IndexOf('<') >= 0 || str.IndexOf('>') >= 0 || str.IndexOf('"') >= 0) continue;
+                outp[kv.Key] = str;
+            }
+            return outp;
         }
 
         /// <summary>Deserialize the persisted compact-JSON binding map; tolerant of null/garbage.</summary>

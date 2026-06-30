@@ -47,8 +47,9 @@ namespace ClarionAssistant
 
         public void Run()
         {
+            ShutdownLog.Log("/Workspace/Terminate dispatched -> Terminate()");
             try { ShutdownService.Terminate(); }
-            catch (Exception ex) { Debug.WriteLine("[ShutdownTerminate] failed: " + ex.Message); }
+            catch (Exception ex) { Debug.WriteLine("[ShutdownTerminate] failed: " + ex.Message); ShutdownLog.Log("/Workspace/Terminate Terminate() threw: " + ex.Message); }
         }
     }
 }

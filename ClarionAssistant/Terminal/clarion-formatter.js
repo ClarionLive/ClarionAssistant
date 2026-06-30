@@ -49,6 +49,8 @@
     var PREFERRED_SET = toSet(PREFERRED_KEYWORDS);
     var KEYWORD_SET = toSet(CONTROL_OPENERS.concat(DATA_STRUCT_OPENERS, MID, PREFERRED_KEYWORDS, PROC_HEADERS, STATEMENT_KEYWORDS));
 
+    // NOTE: monaco-embeditor.html carries a hardcoded mirror (FORMATTER_FALLBACK_DEFAULTS) used only when
+    // this script fails to load. If you add/rename/retune a key here, update that mirror too (deac3d16).
     var DEFAULTS = {
         preferredColumn: 31,
         contLineMultiplier: 2,
@@ -58,6 +60,9 @@
         indentFromCode: false,
         indentCaseSubKeywords: false,
         colonAsLabel: false,
+        // Module-level preferred keywords (PROGRAM/MEMBER/MAP/PRAGMA/SECTION): false = preferred column
+        // (native default), true = one code indent (a single tab) instead.
+        preferredKeywordIndent: false,
         tabSize: 4,
         insertSpaces: true,
         // Assignment alignment (Upper Park Solutions "Format Assignment" feature, folded into Ctrl+I).
@@ -68,6 +73,10 @@
         spacesAfterAssignment: 2,
         treatBlankAsContiguous: false,
         treatCommentAsContiguous: false,
+        // Assignment-alignment scope: 'global' = align runs using full-buffer context (native behavior),
+        // 'selection' = confine each run to the formatted window so a selection never aligns to lines
+        // outside it (consumed via opts.alignWindow set by formatClarionRange).
+        alignScope: 'global',
         // Keyword case ("Complete" feature): keywords/attributes/built-in types vs other names.
         // keywordCase: 'upper' | 'lower' | 'asis'   (John: upper)
         // otherNameCase: 'upper' | 'lower' | 'asis' (John: asis = As declared)
@@ -301,8 +310,9 @@
 
             // ---- preferred keywords (module-level): MEMBER/PROGRAM/MAP/PRAGMA/SECTION ----
             if (PREFERRED_SET[first] && stack.length === 0) {
-                rec.cat = 'plain'; rec.col = P;
-                if (DATASTRUCT_SET[first] && !isOneLineStructure(code)) openStruct(rec, 'data', P);
+                var pkCol = opts.preferredKeywordIndent ? codeBase : P;   // one indent vs preferred column
+                rec.cat = 'plain'; rec.col = pkCol;
+                if (DATASTRUCT_SET[first] && !isOneLineStructure(code)) openStruct(rec, 'data', pkCol);
                 finish(rec, code); continue;
             }
 
@@ -479,13 +489,20 @@
     }
     function alignAssignments(lines, opts) {
         var res = lines.slice();
-        var i = 0;
-        while (i < res.length) {
+        // 'selection' scope confines alignment to the formatted window: never read or modify lines
+        // outside it, so a partial selection aligns only to itself. 'global' (default) uses the whole buffer.
+        var lo = 0, hi = res.length - 1;
+        if (opts.alignScope === 'selection' && opts.alignWindow) {
+            lo = Math.max(0, opts.alignWindow[0]);
+            hi = Math.min(res.length - 1, opts.alignWindow[1]);
+        }
+        var i = lo;
+        while (i <= hi) {
             var a = parseAssign(res[i]);
             if (!a) { i++; continue; }
             var block = [{ idx: i, a: a }];
             var j = i + 1;
-            for (; j < res.length; j++) {
+            for (; j <= hi; j++) {
                 var t = res[j].trim();
                 if (t === '') { if (opts.treatBlankAsContiguous) continue; else break; }
                 if (isFullComment(t)) { if (opts.treatCommentAsContiguous) continue; else break; }
@@ -521,6 +538,8 @@
         var opts = mergeOptions(options);
         var eol = detectEol(text);
         var lines = text.split(/\r\n|\n/);
+        // In 'selection' scope, confine assignment alignment to the formatted window (0-based, inclusive).
+        if (opts.alignScope === 'selection') opts.alignWindow = [startLine - 1, endLine - 1];
         var full = formatLines(lines, opts, 0);                 // format the whole buffer with full context
         var result = lines.slice();
         for (var i = startLine - 1; i < endLine && i < full.length; i++) result[i] = full[i];

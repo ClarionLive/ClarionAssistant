@@ -83,6 +83,7 @@ namespace ClarionAssistant.Terminal
         private static Dictionary<string, object> _lastFocusedSelection;
 
         private static readonly List<ModernEmbeditorViewContent> _instances = new List<ModernEmbeditorViewContent>();
+        private IDisposable _settingsReg;   // registration in MonacoSettingsBroadcaster (cross-surface gear-settings sync, deac3d16)
         // Set during IDE shutdown (DisposeAllForShutdown) so per-tab Dispose takes a NONINTERACTIVE recovery path —
         // no modal prompt per dirty tab (avoids a shutdown modal storm). (pipeline Run-3 adversary)
         private static volatile bool _shuttingDown;
@@ -919,6 +920,9 @@ namespace ClarionAssistant.Terminal
             _panel = new MonacoEditorControl(this, isDark, "monaco-embeditor.html", VIRTUAL_HOST);
 
             lock (_instances) { _instances.Add(this); }
+            // Cross-surface gear-settings sync: receive applySettings from any other Monaco surface (another
+            // embeditor or a source/default editor). HandleSaveSettings publishes through the same bus. (deac3d16)
+            _settingsReg = Services.MonacoSettingsBroadcaster.Register(json => { try { _panel?.PostJson(json); } catch { } });
         }
 
         /// <summary>
@@ -950,6 +954,9 @@ namespace ClarionAssistant.Terminal
             _panel = new MonacoEditorControl(this, isDark, "monaco-embeditor.html", VIRTUAL_HOST);
 
             lock (_instances) { _instances.Add(this); }
+            // Cross-surface gear-settings sync: receive applySettings from any other Monaco surface (another
+            // embeditor or a source/default editor). HandleSaveSettings publishes through the same bus. (deac3d16)
+            _settingsReg = Services.MonacoSettingsBroadcaster.Register(json => { try { _panel?.PostJson(json); } catch { } });
         }
 
         /// <summary>The file this tab edits (file mode), else null.</summary>
@@ -1790,32 +1797,16 @@ namespace ClarionAssistant.Terminal
         {
             try
             {
-                var data = ParseBoundedBridgeJson(json);
-                var sd = (data != null && data.ContainsKey("settings")) ? data["settings"] as Dictionary<string, object> : null;
-                if (sd == null) return;
-                var settings = ModernEmbeditorSettings.FromDict(sd);
-                try { settings.Save(); }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] saveSettings persist: " + ex.Message); }
-                ApplySettingsToAll(settings); // broadcast to every open tab (incl. this one — idempotent)
+                // Persist + broadcast through the shared bus so the change reaches EVERY Monaco surface — other
+                // embeditors AND source/default editors — not just ModernEmbeditorViewContent tabs. (deac3d16)
+                Services.MonacoSettingsBroadcaster.SaveAndBroadcastFromBridge(json);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] saveSettings: " + ex.Message); }
         }
 
-        /// <summary>Push the given settings to this tab's Monaco (gear panel + live updateOptions).</summary>
-        public void ApplySettings(ModernEmbeditorSettings settings)
-        {
-            if (settings == null) return;
-            string sjson;
-            try { sjson = new JavaScriptSerializer().Serialize(settings.ToDict()); }
-            catch { return; }
-            _panel?.PostJson("{\"type\":\"applySettings\",\"settings\":" + sjson + "}");
-        }
-
-        /// <summary>Broadcast editor settings to all open Modern Embeditor tabs (mirrors ApplyThemeToAll).</summary>
-        public static void ApplySettingsToAll(ModernEmbeditorSettings settings)
-        {
-            lock (_instances) { foreach (var inst in _instances) inst.ApplySettings(settings); }
-        }
+        // ApplySettings/ApplySettingsToAll were replaced by Services.MonacoSettingsBroadcaster (deac3d16): this
+        // tab now receives applySettings as a registered bus sink (see ctor), so the broadcast reaches source
+        // editors too — not just Modern Embeditor tabs.
 
         /// <summary>
         /// Persist the Find/Replace dropdown history (sent by JS as full arrays) and broadcast the saved
@@ -2283,6 +2274,8 @@ namespace ClarionAssistant.Terminal
             _disposed = true;
 
             lock (_instances) { _instances.Remove(this); }
+            try { _settingsReg?.Dispose(); } catch { }
+            _settingsReg = null;
             // Dispose the editor control (its WebView2 + temp dir) FIRST so the confirm MessageBox below
             // can't get stuck behind a live WebView2 (the documented native<->WebView2 focus deadlock).
             if (_panel != null)

@@ -52,11 +52,18 @@ namespace ClarionAssistant.Services
             if (_appExitHandler != null) return;
             _appExitHandler = (s, e) =>
             {
+                ShutdownLog.Log("ApplicationExit fired -> Terminate()");
                 try { Terminate(); }
-                catch (Exception ex) { Debug.WriteLine("[Shutdown] appExit: " + ex.Message); }
+                catch (Exception ex) { Debug.WriteLine("[Shutdown] appExit: " + ex.Message); ShutdownLog.Log("appExit Terminate() threw: " + ex.Message); }
             };
-            try { Application.ApplicationExit += _appExitHandler; }
-            catch (Exception ex) { Debug.WriteLine("[Shutdown] appExit subscribe: " + ex.Message); }
+            try
+            {
+                Application.ApplicationExit += _appExitHandler;
+                // Session-start delimiter on disk: confirms the backstop armed at addin load, and bounds this
+                // IDE run as a block so a post-mortem can find the last session's trace. (intermittent shutdown hang)
+                ShutdownLog.LogSessionStart("backstop armed");
+            }
+            catch (Exception ex) { Debug.WriteLine("[Shutdown] appExit subscribe: " + ex.Message); ShutdownLog.Log("appExit subscribe failed: " + ex.Message); }
         }
 
         /// <summary>Record the MCP server so Terminate() can stop it (independent of the chat pad's Dispose
@@ -72,8 +79,9 @@ namespace ClarionAssistant.Services
         /// which is required for the WebView2 disposal step.</summary>
         public static void Terminate()
         {
-            if (_done) return;
+            if (_done) { ShutdownLog.Log("Terminate() re-entry ignored (already done)"); return; }
             _done = true;
+            ShutdownLog.Log("Terminate() begin");
 
             // 0. HARD-EXIT WATCHDOG — the never-hang guarantee. WebView2 disposal must run on THIS (the UI)
             //    thread, so a synchronous same-thread dispose that truly deadlocks cannot be unblocked from
@@ -84,19 +92,23 @@ namespace ClarionAssistant.Services
             //    the genuinely-stuck case); the event makes a clean exit return immediately regardless of it.
             ArmHardExitWatchdog(15000);
             Debug.WriteLine("[Shutdown] begin");
+            ShutdownLog.Log("watchdog armed (15000ms)");
 
             // 1. Stop the MCP server (fast, clean).
-            try { if (_mcpServer != null) _mcpServer.Stop(); }
-            catch (Exception ex) { Debug.WriteLine("[Shutdown] MCP stop: " + ex.Message); }
+            ShutdownLog.Log("step 1: MCP stop ...");
+            try { if (_mcpServer != null) _mcpServer.Stop(); ShutdownLog.Log("step 1: MCP stop done"); }
+            catch (Exception ex) { Debug.WriteLine("[Shutdown] MCP stop: " + ex.Message); ShutdownLog.Log("step 1: MCP stop failed: " + ex.Message); }
 
             // 2. Kill all ConPty child-process trees FAST, bounded so a stuck kill can't stall shutdown.
-            try { RunBounded(ConPtyTerminal.KillAllForShutdown, 2500); }
-            catch (Exception ex) { Debug.WriteLine("[Shutdown] ConPty kill: " + ex.Message); }
+            ShutdownLog.Log("step 2: ConPty kill ...");
+            try { RunBounded(ConPtyTerminal.KillAllForShutdown, 2500); ShutdownLog.Log("step 2: ConPty kill returned"); }
+            catch (Exception ex) { Debug.WriteLine("[Shutdown] ConPty kill: " + ex.Message); ShutdownLog.Log("step 2: ConPty kill failed: " + ex.Message); }
 
             // 3. Kill the LSP node.exe tree FAST (skip the graceful handshake Stop() does), bounded — a leaked
             //    node handle is a prime suspect for keeping the IDE alive after the windows are gone.
-            try { RunBounded(Services.LspClient.KillForShutdown, 2000); }
-            catch (Exception ex) { Debug.WriteLine("[Shutdown] LSP kill: " + ex.Message); }
+            ShutdownLog.Log("step 3: LSP kill ...");
+            try { RunBounded(Services.LspClient.KillForShutdown, 2000); ShutdownLog.Log("step 3: LSP kill returned"); }
+            catch (Exception ex) { Debug.WriteLine("[Shutdown] LSP kill: " + ex.Message); ShutdownLog.Log("step 3: LSP kill failed: " + ex.Message); }
 
             // 4. Dispose all WebView2 instances on the UI thread (this call runs on it) BEFORE native teardown,
             //    to avoid the WebView2 <-> native focus deadlock. Each is independently guarded + marked; the
@@ -123,6 +135,7 @@ namespace ClarionAssistant.Services
             // reach here and the watchdog would fire — exactly the never-hang case it exists for.)
             _teardownDone.Set();
             Debug.WriteLine("[Shutdown] teardown complete");
+            ShutdownLog.Log("teardown complete — _teardownDone set, watchdog stands down (native IDE teardown now proceeds)");
         }
 
         /// <summary>Run one WebView2 disposer on the current (UI) thread, guarded and Debug-marked so verify
@@ -133,10 +146,12 @@ namespace ClarionAssistant.Services
             try
             {
                 Debug.WriteLine("[Shutdown] dispose " + label + " ...");
+                ShutdownLog.Log("dispose " + label + " ...");   // if the matching 'done' never follows, THIS owner's dispose deadlocked
                 dispose();
                 Debug.WriteLine("[Shutdown] dispose " + label + " done");
+                ShutdownLog.Log("dispose " + label + " done");
             }
-            catch (Exception ex) { Debug.WriteLine("[Shutdown] dispose " + label + " failed: " + ex.Message); }
+            catch (Exception ex) { Debug.WriteLine("[Shutdown] dispose " + label + " failed: " + ex.Message); ShutdownLog.Log("dispose " + label + " failed: " + ex.Message); }
         }
 
         /// <summary>Dispose the WebView2 control(s) inside every OPEN top-level WinForms Form (modeless dialogs
@@ -202,8 +217,12 @@ namespace ClarionAssistant.Services
                 try { completed = _teardownDone.Wait(ms); } catch { completed = false; }
                 if (completed) return;   // managed teardown finished cleanly — stand down, do NOT kill
                 try { Debug.WriteLine("[Shutdown] WATCHDOG fired after " + ms + "ms (teardown stuck) — forcing process exit"); } catch { }
+                // GOLD LINE for the intermittent hang: if this is the LAST entry in the log but the process is
+                // still alive, Process.Kill couldn't reap it (a thread stuck in an uninterruptible kernel-mode
+                // wait) — NOT a missed managed owner. Compare against the last "dispose X ..." to see what stuck.
+                ShutdownLog.Log("WATCHDOG FIRED after " + ms + "ms — teardown never signaled done; forcing Process.Kill now");
                 try { Process.GetCurrentProcess().Kill(); }
-                catch { try { Environment.Exit(0); } catch { } }
+                catch (Exception ex) { ShutdownLog.Log("Process.Kill threw: " + ex.Message + " — falling back to Environment.Exit"); try { Environment.Exit(0); } catch { } }
             }) { IsBackground = true, Name = "Shutdown-Watchdog" };
             t.Start();
         }
