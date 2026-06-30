@@ -39,7 +39,7 @@
     <Pad id="AgentPanel" category="Tools" title="Agent Panel"
          icon="PadIcons.TaskList" shortcut="Control|Alt|A"
          class="ClarionAssistant.AgentPanelPad"/>
-    <Pad id="ModernData" category="Tools" title="Explorer"
+    <Pad id="ModernData" category="Tools" title="CA Explorer"
          icon="PadIcons.Output" shortcut="Control|Alt|D"
          class="ClarionAssistant.ModernDataPad"/>
   </Path>
@@ -51,15 +51,8 @@
               class="ClarionAssistant.ShowClaudeChatCommand"/>
     <MenuItem id="ShowAgentPanel" label="Agent Panel"
               class="ClarionAssistant.ShowAgentPanelCommand"/>
-    <MenuItem id="OpenModernEmbeditorPicker" label="CA Embeditor (open procedures)..."
-              class="ClarionAssistant.OpenModernEmbeditorPickerCommand"/>
-    <MenuItem id="OpenSourceFileInCaEditor" label="CA Editor (open source file)..."
-              class="ClarionAssistant.OpenSourceFileInCaEditorCommand"/>
-    <MenuItem id="ShowModernDataPad" label="Explorer"
+    <MenuItem id="ShowModernDataPad" label="CA Explorer"
               class="ClarionAssistant.ShowModernDataPadCommand"/>
-    <!-- SPIKE (task cc8b092f) Phase 1: toggle the experimental Monaco overlay on the default source editor. -->
-    <MenuItem id="ToggleMonacoSourceOverlay" label="Toggle Monaco Source Overlay (experimental)"
-              class="ClarionAssistant.ToggleMonacoSourceOverlayCommand"/>
   </Path>
 
   <!-- CA Embeditor button on the native embeditor toolbar. -->
