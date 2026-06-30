@@ -854,7 +854,7 @@ namespace ClarionAssistant.Services
                 string label, rest;
                 SplitLabelRest(StripComment(lines[i]), out label, out rest);
                 if (label == null) continue;
-                if (rest.ToUpperInvariant().StartsWith("ROUTINE") && IsIdent(label) && seen.Add(label))
+                if (rest.ToUpperInvariant().StartsWith("ROUTINE") && IsRoutineLabel(label) && seen.Add(label))
                     outp.Add(new RoutineDef { Name = label, Line = i + 1 });
             }
             return outp;
@@ -1077,6 +1077,14 @@ namespace ClarionAssistant.Services
         private static bool IsIdent(string s)
         {
             return !string.IsNullOrEmpty(s) && Regex.IsMatch(s, @"^[A-Za-z_][A-Za-z0-9_]*$");
+        }
+
+        // Routine labels use the ABC '::' convention (e.g. BRW1::PostNewSelection), so they may contain
+        // colons that a plain data identifier never does — IsIdent rejects ':'. Routine parsing needs this
+        // wider check or every '::' routine is dropped, making DO <name> read as an undefined routine.
+        private static bool IsRoutineLabel(string s)
+        {
+            return !string.IsNullOrEmpty(s) && Regex.IsMatch(s, @"^[A-Za-z_][A-Za-z0-9_:]*$");
         }
 
         private static string FirstWord(string s)
