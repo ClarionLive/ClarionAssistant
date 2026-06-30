@@ -292,11 +292,10 @@
         <label>Format line on Enter <input type="checkbox" id="setFormatLineOnEnter"></label>
 
         <h4>Smart Formatter — Code Statements</h4>
-        <label class="fmt-todo" title="Not yet implemented in the formatter engine">Indent OF/ELSE from CASE/IF <input type="checkbox" id="setIndentFromCode" disabled></label>
-        <label class="fmt-todo" title="Not yet implemented in the formatter engine">Indent CASE/OF sub-keywords <input type="checkbox" id="setIndentCaseSubKeywords" disabled></label>
-        <label class="fmt-todo" title="Not yet implemented in the formatter engine">Treat colon-terminated word as label <input type="checkbox" id="setColonAsLabel" disabled></label>
-        <label class="fmt-todo" title="Not yet implemented in the formatter engine">Re-format block after END <input type="checkbox" id="setFormatBlockAfterEnd" disabled></label>
-        <p class="fmt-todo-note">Disabled options above are not yet wired to the formatter engine.</p>
+        <label title="Indent OF/OROF/ELSE/ELSIF one tab from their CASE/IF opener; statement bodies indent a further tab. END stays aligned to the opener.">Indent OF/ELSE from CASE/IF <input type="checkbox" id="setIndentFromCode"></label>
+        <label title="Extend the OF/ELSE indent to the other block structures (LOOP/EXECUTE/ACCEPT/BEGIN) so their bodies also indent.">Indent CASE/OF sub-keywords <input type="checkbox" id="setIndentCaseSubKeywords"></label>
+        <label title="Treat a CODE-section expression ending in a colon (e.g. Retry:) as a statement label, pinned to column 1.">Treat colon-terminated word as label <input type="checkbox" id="setColonAsLabel"></label>
+        <label title="When you finish typing END, re-indent the whole enclosing block (as-you-type).">Re-format block after END <input type="checkbox" id="setFormatBlockAfterEnd"></label>
         <label>PROGRAM/MEMBER/MAP/PRAGMA placement
             <select id="setPreferredKeywordIndent">
                 <option value="column">Preferred column</option>
@@ -1201,17 +1200,73 @@
     // same formatter Ctrl+I uses (correct indent + keyword casing; structure-aware for OF/ELSE/END).
     // This avoids the live-typing/completion conflicts entirely. Assignment alignment stays on Ctrl+I.
     var formatLineOnEnter = true;     // wired from settings.formatLineOnEnter in applyEditorSettings (deac3d16)
+    var formatBlockAfterEnd = true;   // wired from settings.formatBlockAfterEnd in applyEditorSettings (24aa9557)
     var _fmtLineGuard = false;
     function installFormatOnEnter(ed) {
         if (!ed || typeof ClarionFormatter === 'undefined') return;
         ed.onDidChangeModelContent(function (e) {
-            if (_fmtLineGuard || !formatLineOnEnter || !e.changes || e.changes.length !== 1) return;
+            if (_fmtLineGuard || !e.changes || e.changes.length !== 1) return;
             var c = e.changes[0];
             if (!c.range || c.rangeLength !== 0) return;            // must be a pure insert at a caret
             if (!/^\r?\n[ \t]*$/.test(c.text)) return;              // Enter = newline + auto-indent (not paste/typing)
-            var lineToFormat = c.range.startLineNumber;             // the line that was just completed
-            Promise.resolve().then(function () { formatLineNow(ed, lineToFormat); });
+            var L = c.range.startLineNumber;                        // the line that was just completed
+            var model = ed.getModel(); if (!model) return;
+            var done = model.getLineContent(L).trim();
+            // When the line just completed CLOSES a block (END or a lone '.'), "Re-format block after END"
+            // re-indents the whole enclosing block — supersedes the single-line aid for that keystroke.
+            if (formatBlockAfterEnd && (/^END\b/i.test(done) || done === '.')) {
+                Promise.resolve().then(function () { formatBlockNow(ed, L); });
+                return;
+            }
+            if (formatLineOnEnter) Promise.resolve().then(function () { formatLineNow(ed, L); });
         });
+    }
+    // Walk upward from a just-completed END/'.' to its matching opener, balancing nested closers. Uses the
+    // formatter's own opener sets; a label may precede a structure word ("Name GROUP"), and one-line
+    // IF..THEN.. / single-statement '.' forms never open a block. Returns the END line if no opener is found.
+    function blockOpenerLine(model, endLine) {
+        var CF = (typeof ClarionFormatter !== 'undefined') ? ClarionFormatter : null;
+        var openers = {};
+        ((CF && CF.CONTROL_OPENERS) || []).concat((CF && CF.DATA_STRUCT_OPENERS) || [])
+            .forEach(function (k) { openers[k] = true; });
+        var depth = 0;
+        for (var L = endLine; L >= 1; L--) {
+            var raw = model.getLineContent(L);
+            var t = raw.replace(/!.*$/, '').trim();                // crude comment strip — fine for indent intent
+            if (t === '') continue;
+            var isCloser = /^END\b/i.test(t) || /^\.\s*$/.test(t);
+            var m = /^([A-Za-z_][A-Za-z0-9_:.]*)/.exec(t);
+            var word = m ? m[1].toUpperCase() : '';
+            var col1 = raw.length > 0 && raw.charAt(0) !== ' ' && raw.charAt(0) !== '\t';
+            if (col1 && !openers[word] && !isCloser) {             // skip a leading label, take the next token
+                var lm = /^[A-Za-z_][A-Za-z0-9_:.]*\s+([A-Za-z_][A-Za-z0-9_:.]*)/.exec(t);
+                if (lm) word = lm[1].toUpperCase();
+            }
+            var isOpener = openers[word] && !/\bTHEN\b/i.test(t) && !/\.\s*$/.test(t);
+            if (L !== endLine && isCloser) { depth++; continue; }
+            if (isOpener) { if (depth === 0) return L; depth--; }
+        }
+        return endLine;
+    }
+    function formatBlockNow(ed, endLine) {
+        try {
+            if (_fmtLineGuard) return;
+            var model = ed.getModel(); if (!model) return;
+            var startLine = blockOpenerLine(model, endLine);
+            if (startLine >= endLine) { if (formatLineOnEnter) formatLineNow(ed, endLine); return; }
+            var range = new monaco.Range(startLine, 1, endLine, model.getLineMaxColumn(endLine));
+            if (!fileMode && !isEditableRange(range)) return;      // never touch read-only generated lines
+            var o = formatterOptions();
+            o.alignAssignments = false;                            // block re-indent only; alignment stays on Ctrl+I
+            var res = ClarionFormatter.formatClarionRange(model.getValue(), startLine, endLine, o);
+            var newLines = res.text.split(/\r\n|\n/).slice(startLine - 1, endLine).join('\n');
+            if (newLines === model.getValueInRange(range)) return;
+            var savedPos = ed.getPosition();
+            _fmtLineGuard = true;
+            ed.executeEdits('clarion-fmtblock', [{ range: range, text: newLines }]);
+            _fmtLineGuard = false;
+            if (savedPos) ed.setPosition(savedPos);                // keep the caret where the user left it
+        } catch (e) { _fmtLineGuard = false; }
     }
     function formatLineNow(ed, L) {
         try {
@@ -2281,6 +2336,7 @@
         if (s.keywordCase === 'upper' || s.keywordCase === 'lower') keywordCaseMode = s.keywordCase;
         else if (s.keywordCase !== undefined) keywordCaseMode = 'upper';
         if (typeof s.formatLineOnEnter === 'boolean') formatLineOnEnter = s.formatLineOnEnter;
+        if (typeof s.formatBlockAfterEnd === 'boolean') formatBlockAfterEnd = s.formatBlockAfterEnd;
         editor.updateOptions(opts);
         if (editor2) editor2.updateOptions(opts);   // keep the split pane's editor-options in sync (#15)
         // tabSize / insertSpaces are MODEL options in Monaco, not editor options.

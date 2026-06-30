@@ -209,6 +209,63 @@ console.log('\nalignScope (selection vs global assignment alignment):');
     ok('out-of-window line untouched', sel.replace(/\r\n/g, '\n').split('\n')[0] === '  AAAAAA = 1');
 })();
 
+// ---- Code Statements: indent-from-opener toggles (ticket 24aa9557) ----
+// Both deviate from native default (OFF). indentFromCode: CASE/IF mid-keywords (OF/OROF/ELSE/ELSIF)
+// +1 tab, statement bodies +2 tabs, END stays at opener. indentCaseSubKeywords: same body indent
+// extended to the non-mid structures (LOOP/EXECUTE/ACCEPT/BEGIN).
+function leadOf(text, i) { var l = text.replace(/\r\n/g, '\n').split('\n')[i]; return /^ */.exec(l)[0].length; }
+console.log('\nindentFromCode (Indent OF/ELSE from CASE/IF):');
+(function () {
+    var o = { alignAssignments: false, keywordCase: 'asis', otherNameCase: 'asis' };
+    var src = ['  CASE x', '  OF 1', '  DoA', '  OF 2', '  DoB', '  END'].join('\n');
+    var off = F.formatClarion(src, o).text;
+    ok('default: OF aligns to CASE', leadOf(off, 1) === leadOf(off, 0), 'CASE=' + leadOf(off, 0) + ' OF=' + leadOf(off, 1));
+    ok('default: body +1 tab', leadOf(off, 2) === leadOf(off, 0) + 4, 'body=' + leadOf(off, 2));
+    ok('default: END at CASE', leadOf(off, 5) === leadOf(off, 0));
+    var on = F.formatClarion(src, Object.assign({ indentFromCode: true }, o)).text;
+    ok('ON: OF +1 tab from CASE', leadOf(on, 1) === leadOf(on, 0) + 4, 'CASE=' + leadOf(on, 0) + ' OF=' + leadOf(on, 1));
+    ok('ON: body +2 tabs from CASE', leadOf(on, 2) === leadOf(on, 0) + 8, 'body=' + leadOf(on, 2));
+    ok('ON: END stays at CASE', leadOf(on, 5) === leadOf(on, 0), 'CASE=' + leadOf(on, 0) + ' END=' + leadOf(on, 5));
+    // IF/ELSE family
+    var ifsrc = ['  IF x', '  DoA', '  ELSE', '  DoB', '  END'].join('\n');
+    var ion = F.formatClarion(ifsrc, Object.assign({ indentFromCode: true }, o)).text;
+    ok('ON: ELSE +1 tab from IF', leadOf(ion, 2) === leadOf(ion, 0) + 4, 'IF=' + leadOf(ion, 0) + ' ELSE=' + leadOf(ion, 2));
+    ok('ON: IF body +2 tabs', leadOf(ion, 1) === leadOf(ion, 0) + 8, 'body=' + leadOf(ion, 1));
+    ok('ON: IF END at IF', leadOf(ion, 4) === leadOf(ion, 0));
+})();
+
+console.log('\nindentCaseSubKeywords (extend indent to LOOP/EXECUTE):');
+(function () {
+    var o = { alignAssignments: false, keywordCase: 'asis', otherNameCase: 'asis' };
+    var src = ['  LOOP 5 TIMES', '  DoA', '  END'].join('\n');
+    // indentFromCode alone must NOT touch LOOP (it only governs CASE/IF).
+    var fc = F.formatClarion(src, Object.assign({ indentFromCode: true }, o)).text;
+    ok('indentFromCode leaves LOOP body at +1 tab', leadOf(fc, 1) === leadOf(fc, 0) + 4, 'body=' + leadOf(fc, 1));
+    // indentCaseSubKeywords pushes LOOP body to +2 tabs, END stays at opener.
+    var sk = F.formatClarion(src, Object.assign({ indentCaseSubKeywords: true }, o)).text;
+    ok('indentCaseSubKeywords: LOOP body +2 tabs', leadOf(sk, 1) === leadOf(sk, 0) + 8, 'body=' + leadOf(sk, 1));
+    ok('indentCaseSubKeywords: LOOP END at opener', leadOf(sk, 2) === leadOf(sk, 0));
+    // EXECUTE too.
+    var esrc = ['  EXECUTE n', '  DoA', '  END'].join('\n');
+    var esk = F.formatClarion(esrc, Object.assign({ indentCaseSubKeywords: true }, o)).text;
+    ok('indentCaseSubKeywords: EXECUTE body +2 tabs', leadOf(esk, 1) === leadOf(esk, 0) + 8, 'body=' + leadOf(esk, 1));
+})();
+
+console.log('\ncolonAsLabel (colon-terminated word = CODE-section label):');
+(function () {
+    var o = { alignAssignments: false, keywordCase: 'asis', otherNameCase: 'asis' };
+    var src = ['  CODE', '  IF x', '  Retry:', '  DoA', '  END'].join('\n');
+    var off = F.formatClarion(src, o).text;                                  // default OFF
+    var on = F.formatClarion(src, Object.assign({ colonAsLabel: true }, o)).text;
+    ok('OFF: colon-label indented as a statement', leadOf(off, 2) > 0, 'lead=' + leadOf(off, 2));
+    ok('ON: colon-label pinned to column 1', leadOf(on, 2) === 0, 'lead=' + leadOf(on, 2));
+    ok('ON: surrounding body still indented', leadOf(on, 3) > 0, 'DoA lead=' + leadOf(on, 3));
+    // A field equate (colon mid-token, line does NOT end with ':') must never be treated as a label.
+    var src2 = ['  CODE', '  x = ITC:in_stock'].join('\n');
+    var on2 = F.formatClarion(src2, Object.assign({ colonAsLabel: true }, o)).text;
+    ok('ON: field-equate line not pinned', leadOf(on2, 1) > 0, 'lead=' + leadOf(on2, 1));
+})();
+
 // ---- C# <-> JS formatter-key drift guard (ticket deac3d16) ----
 // The host (ModernEmbeditorSettings.FormatterKeys) must round-trip EXACTLY the keys the gear panel
 // persists/broadcasts: the HTML's FORMATTER_SETTING_KEYS plus formatLineOnEnter (an editor-side aid the

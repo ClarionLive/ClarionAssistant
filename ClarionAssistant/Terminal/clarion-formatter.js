@@ -335,9 +335,17 @@
             }
 
             // ---- CODE scope: executable statements ----
+            // "Treat colon-terminated word as label" (colonAsLabel, default off): a bare identifier that
+            // ends with ':' is a CODE-section statement label (e.g. a GOTO target) — pin it to column 1
+            // instead of indenting it as a statement. Field equates (PRE:Field) carry the colon mid-token
+            // and never match, so they are unaffected.
+            if (opts.colonAsLabel && /^[A-Za-z_][A-Za-z0-9_]*:$/.test(stripComment(raw).trim())) {
+                rec.cat = 'stmt'; rec.col = 0;
+                finish(rec, code); continue;
+            }
             rec.cat = 'stmt';
             rec.col = codeBodyCol();
-            if (CONTROL_SET[first] && !isOneLineStructure(code)) openStruct(rec, 'code', rec.col);
+            if (CONTROL_SET[first] && !isOneLineStructure(code)) openStruct(rec, 'code', rec.col, first);
             finish(rec, code); continue;
         }
 
@@ -345,10 +353,23 @@
 
         // -- helpers closed over the walk state --
         function nextIdPeek() { return nextId; }
-        function openStruct(rec, kind, col) {
+        function openStruct(rec, kind, col, opener) {
             var id = nextId++;
             meta[id] = { enclosingId: enclosingId() };
-            if (kind === 'code') { colOfStruct[id] = col; stack.push({ id: id, kind: 'code', col: col, bodyCol: col + T }); }
+            if (kind === 'code') {
+                // "Indent from opener" toggles (deviate from native default, both OFF by default):
+                //   indentFromCode      -> CASE/IF: OF/OROF/ELSE/ELSIF +1 tab, bodies +2 tabs, END stays at opener.
+                //   indentCaseSubKeywords -> extend the same treatment to the non-mid structures
+                //                            (LOOP/EXECUTE/ACCEPT/BEGIN) so their bodies also indent +2 tabs.
+                // END always aligns to the opener column (colOfStruct[id] = col) regardless.
+                var indentFrom =
+                    (opts.indentFromCode && (opener === 'IF' || opener === 'CASE')) ||
+                    (opts.indentCaseSubKeywords && (opener === 'LOOP' || opener === 'EXECUTE' || opener === 'ACCEPT' || opener === 'BEGIN'));
+                var midCol = indentFrom ? col + T : col;       // OF/OROF/ELSE/ELSIF column
+                var bodyCol = indentFrom ? col + 2 * T : col + T;
+                colOfStruct[id] = col;
+                stack.push({ id: id, kind: 'code', col: midCol, bodyCol: bodyCol });
+            }
             else { stack.push({ id: id, kind: 'data', col: null, bodyCol: null }); }   // data col resolved in pass 2
             rec.opensId = id;
         }
