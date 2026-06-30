@@ -137,14 +137,18 @@ namespace ClarionAssistant
                 try { _filePath = (tec != null ? tec.FileName : null) ?? _filePath; } catch (Exception fex) { MonacoSpikeLog.Write("capture filename error: " + fex.Message); }
                 MonacoSourceNavigator.Register(_filePath, this);
 
-                if (MonacoSourceOverlay.Enabled)
+                // Gate on BOTH the master switch AND the file-type filter (ticket 1c0862e1). A file
+                // whose extension isn't in MonacoSourceFileTypes falls through to the native editor
+                // exactly like the overlay-off case.
+                if (MonacoSourceOverlay.Enabled && CaEditorSettings.SourceAppliesTo(_filePath))
                 {
                     AttachCover(host);     // hide the native editor FIRST (instant, opaque)
                     AttachOverlay(host);   // then the WebView2/Monaco surface on top of the cover
                 }
                 else
                 {
-                    // Overlay off: the native editor is the visible surface — apply any queued nav immediately.
+                    // Overlay off (or excluded by file-type filter): the native editor is the visible
+                    // surface — apply any queued nav immediately.
                     ApplyPendingNavigation();
                 }
             }
@@ -1115,36 +1119,24 @@ namespace ClarionAssistant
     }
 
     /// <summary>
-    /// Persisted on/off switch for the Monaco source-editor overlay. Backed by a tiny flag file so
-    /// it survives restarts and can be toggled at runtime (next file-open picks it up) without a
-    /// rebuild/redeploy. OFF by default — Phase 0/foundation ship safely as the stock editor.
+    /// Persisted on/off switch for the Monaco source-editor overlay. UNIFIED onto
+    /// <see cref="CaEditorSettings"/> (settings.txt) so the IDE Options panel (Options &gt; Clarion
+    /// Assistant &gt; Editor Surfaces) and this legacy Tools-menu toggle share ONE source of truth
+    /// (ticket 1c0862e1). Read fresh each call so a toggle takes effect on the next opened file.
+    /// OFF by default. The historical monaco-overlay.enabled flag file is migrated lazily by
+    /// CaEditorSettings when the settings key is absent.
     /// </summary>
     public static class MonacoSourceOverlay
     {
-        private static string FlagPath
-        {
-            get { return Path.Combine(MonacoSpikeLog.DataDir, "monaco-overlay.enabled"); }
-        }
-
-        /// <summary>Read fresh each call so a toggle takes effect on the next opened file.</summary>
         public static bool Enabled
         {
-            get
-            {
-                try { return File.Exists(FlagPath) && File.ReadAllText(FlagPath).Trim() == "1"; }
-                catch { return false; }
-            }
+            get { return CaEditorSettings.MonacoSourceEnabled; }
         }
 
         public static bool Toggle()
         {
             bool next = !Enabled;
-            try
-            {
-                MonacoSpikeLog.EnsureDir();
-                File.WriteAllText(FlagPath, next ? "1" : "0");
-            }
-            catch (Exception ex) { MonacoSpikeLog.Write("toggle write error: " + ex.Message); }
+            CaEditorSettings.MonacoSourceEnabled = next;
             return next;
         }
     }

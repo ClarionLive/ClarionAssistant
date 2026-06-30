@@ -444,6 +444,7 @@ namespace ClarionAssistant.Services
                     s_armNextPopup = false;   // FLAG C: consume+clear on the very next popup, armed or not
 
                     if (armed && !systemMenu && !_shuttingDown
+                        && CaEditorSettings.MonacoEmbeditorEnabled  // user toggle (Options > Clarion Assistant > Editor Surfaces): off => don't inject our item (ticket 1c0862e1)
                         && MenuHasCmd(hMenu, EMBEDITOR_CMD)     // FLAG B: orthogonal confirm — popup actually has the Embeditor command
                         && !MenuHasCmd(hMenu, OUR_CMD)          // dedup (HMENU rebuilt per show, but be safe on a reused handle)
                         && !MenuHasCmd(hMenu, OUR_SEP_ID))      // ...and don't re-stack our owner-draw separator either

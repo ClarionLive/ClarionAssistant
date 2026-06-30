@@ -81,4 +81,16 @@
                     supportedformats="Text Files,Source Files"
                     class="ClarionAssistant.MonacoClarionEditorDisplayBinding"/>
   </Path>
+
+  <!-- IDE Options pane (ticket 1c0862e1): Options > Clarion Assistant > Editor Surfaces.
+       Per-surface toggles to disable the Monaco source-editor / embeditor replacements.
+       Same SharpDevelop mechanism the 3rd-party "Upper Park Solutions" pane uses: the OUTER
+       <DialogPanel> (no class) is the tree GROUP node; the INNER one (class=...) is the pane.
+       Panel persists via CaEditorSettings (settings.txt); read at editor/embeditor attach time. -->
+  <Path name="/SharpDevelop/Dialogs/OptionsDialog">
+    <DialogPanel id="ClarionAssistantOptions" label="Clarion Assistant">
+      <DialogPanel id="CAEditorSurfaces" label="Editor Surfaces"
+                   class="ClarionAssistant.Options.CAEditorSurfacesOptionPanel"/>
+    </DialogPanel>
+  </Path>
 </AddIn>
