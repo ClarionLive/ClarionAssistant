@@ -85,12 +85,18 @@ namespace ClarionAssistant.Services
         /// Guards: E3 (already-open Monaco tab for this proc → focus it, no duplicate); E6 (name
         /// unrecoverable from source → CancelEmbeditor + NO tab + return error; never a blank/wrong proc).
         /// </summary>
-        public static string OpenCommittedSelection(bool isDark)
+        public static string OpenCommittedSelection(bool isDark, bool live = false)
         {
             EnterBusy();
             try
             {
                 var appTree = new AppTreeService();
+
+                // LIVE mode (ticket a5bbf005): the previous foreground tab may STILL hold a native embed open
+                // (only one embed can be open at a time). Release it synchronously BEFORE we open the new one,
+                // or OpenAndMirrorCurrentSelection's WaitForEmbedClosed guard would error. Safe to pump here —
+                // this runs on the launch delegate (off-stack), not inside an active-view-changed event.
+                if (live) { try { ModernEmbeditorViewContent.ReleaseLiveInstanceSync(); } catch { } }
 
                 string source, error;
                 List<int[]> ranges;
@@ -135,21 +141,27 @@ namespace ClarionAssistant.Services
                 // background solution parse overlaps the WebView2/Monaco load below. Idempotent, fire-and-forget.
                 try { EmbeditorCompletionService.LspStarter?.Invoke(); } catch { }
 
-                // We made no edits — discard/close to free the native single-embeditor lock.
-                try { appTree.CancelEmbeditor(); } catch { }
-                WaitForEmbedClosed(appTree, 3000);
+                // LIVE mode: do NOT cancel — leave the native embed OPEN + locked so save can write straight
+                // back into it (no re-open). SNAPSHOT mode (default): discard/close to free the single-embeditor
+                // lock so any number of Monaco tabs can be open at once.
+                if (!live)
+                {
+                    try { appTree.CancelEmbeditor(); } catch { }
+                    WaitForEmbedClosed(appTree, 3000);
+                }
 
                 // CRITICAL freeze-safe tail — identical to OpenProcedure: do NOT create the WebView2 view on
                 // THIS call stack (still unwinding the native open's nested DoEvents pumps). Post ShowView so
                 // the stack unwinds and the message/input state drains first, or WebView2's async init can't
-                // progress and the IDE hard-hangs.
+                // progress and the IDE hard-hangs. (In live mode the embed stays open across this Post; the
+                // freeze is about stack reentrancy, not the embed being open, so the deferral still covers it.)
                 var ctx = WindowsFormsSynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
-                string capProc = procName; string capSrc = source; List<int[]> capRanges = ranges; bool capDark = isDark;
+                string capProc = procName; string capSrc = source; List<int[]> capRanges = ranges; bool capDark = isDark; bool capLive = live;
                 ctx.Post(_ =>
                 {
                     try
                     {
-                        var view = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc);
+                        var view = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc, capLive);
                         WorkbenchSingleton.Workbench.ShowView(view);
                     }
                     catch (Exception ex)

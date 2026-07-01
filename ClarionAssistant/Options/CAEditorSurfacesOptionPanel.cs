@@ -24,6 +24,7 @@ namespace ClarionAssistant.Options
     {
         private CheckBox _chkSource;
         private CheckBox _chkEmbeditor;
+        private CheckBox _chkLiveLinked;
         private TextBox _txtFileTypes;
         private bool _built;
 
@@ -39,8 +40,10 @@ namespace ClarionAssistant.Options
             // Populate from current settings each time the pane is shown.
             _chkSource.Checked = CaEditorSettings.MonacoSourceEnabled;
             _chkEmbeditor.Checked = CaEditorSettings.MonacoEmbeditorEnabled;
+            _chkLiveLinked.Checked = CaEditorSettings.MonacoEmbeditorLiveLinked;
             _txtFileTypes.Text = CaEditorSettings.MonacoSourceFileTypes;
             UpdateFileTypesEnabled();
+            UpdateLiveLinkedEnabled();
         }
 
         public override bool StorePanelContents()
@@ -48,6 +51,7 @@ namespace ClarionAssistant.Options
             // Only called on OK. Persist all three toggles.
             CaEditorSettings.MonacoSourceEnabled = _chkSource.Checked;
             CaEditorSettings.MonacoEmbeditorEnabled = _chkEmbeditor.Checked;
+            CaEditorSettings.MonacoEmbeditorLiveLinked = _chkLiveLinked.Checked;
 
             // Blank file-types box => "all files"; otherwise keep the user's list verbatim
             // (CaEditorSettings normalizes when filtering).
@@ -90,7 +94,14 @@ namespace ClarionAssistant.Options
             {
                 Text = "Use the Monaco embeditor (adds the right-click \"Open in CA Embeditor\" item)",
                 AutoSize = true,
-                Margin = new Padding(0, 2, 0, 10),
+                Margin = new Padding(0, 2, 0, 2),
+            };
+
+            _chkLiveLinked = new CheckBox
+            {
+                Text = "Live-linked embeditor — keep the native embed open, save writes straight back (experimental)",
+                AutoSize = true,
+                Margin = new Padding(20, 0, 0, 10),   // indented: sub-option of the embeditor toggle
             };
 
             var lblFileTypes = new Label
@@ -116,10 +127,13 @@ namespace ClarionAssistant.Options
 
             // Grey out the file-types box when the source overlay is off (it has no effect then).
             _chkSource.CheckedChanged += (s, e) => UpdateFileTypesEnabled();
+            // Grey out the live-linked sub-option when the embeditor itself is off (it has no effect then).
+            _chkEmbeditor.CheckedChanged += (s, e) => UpdateLiveLinkedEnabled();
 
             layout.Controls.Add(lblHeader);
             layout.Controls.Add(_chkSource);
             layout.Controls.Add(_chkEmbeditor);
+            layout.Controls.Add(_chkLiveLinked);
             layout.Controls.Add(lblFileTypes);
             layout.Controls.Add(_txtFileTypes);
             layout.Controls.Add(lblNote);
@@ -131,6 +145,12 @@ namespace ClarionAssistant.Options
         {
             if (_txtFileTypes != null && _chkSource != null)
                 _txtFileTypes.Enabled = _chkSource.Checked;
+        }
+
+        private void UpdateLiveLinkedEnabled()
+        {
+            if (_chkLiveLinked != null && _chkEmbeditor != null)
+                _chkLiveLinked.Enabled = _chkEmbeditor.Checked;
         }
     }
 }

@@ -45,6 +45,19 @@ namespace ClarionAssistant.Terminal
         private readonly bool _saveEnabled;
         private readonly string _lspFileName;        // synthetic .clw URI for LSP completion/hover requests
 
+        // LIVE-LINKED mode (ticket a5bbf005): this tab holds Clarion's native embeditor OPEN underneath the
+        // floating Monaco, so save writes straight back into it (no re-open / no locator re-type). At most ONE
+        // tab is live at a time (native single-embeditor lock); _liveInstance is that tab. Switching away, cancel,
+        // or save RELEASES the native embed and demotes the tab to a passive snapshot (which still saves via the
+        // proven re-open Save path). We never re-link on activate — a re-focused tab stays a snapshot.
+        private bool _liveLinked;
+        private static ModernEmbeditorViewContent _liveInstance;   // the ONE tab currently holding an open native embed, or null
+        private static bool _liveWatchWired;                       // one-time ActiveWorkbenchWindowChanged subscription guard
+        // Generation counter bumped at every live ACQUISITION (start of a live open, in ReleaseLiveInstanceSync).
+        // A deferred switch-away release captures the gen when QUEUED and no-ops if a newer live open has since
+        // happened — so a stale release can never cancel a NEWER tab's embed (CC static-review finding, a5bbf005).
+        private static int _liveGen;
+
         // File mode (ticket 564aa142): the tab edits a plain source file on disk (.clw/.inc/...) instead of
         // an embeditor snapshot. Save = encoding-preserving file write; no slot machinery, no Data pad refresh,
         // no designer. _lspFileName is the REAL path so the LSP resolves includes/symbols against the file.
@@ -903,7 +916,7 @@ namespace ClarionAssistant.Terminal
         }
 
         public ModernEmbeditorViewContent(string title, string sourceText, List<int[]> editableRanges,
-            string language = "clarion", bool isDark = true, string procedureName = null)
+            string language = "clarion", bool isDark = true, string procedureName = null, bool liveLinked = false)
         {
             _title = title ?? "Embeditor";
             _sourceText = sourceText ?? "";
@@ -923,6 +936,15 @@ namespace ClarionAssistant.Terminal
             // Cross-surface gear-settings sync: receive applySettings from any other Monaco surface (another
             // embeditor or a source/default editor). HandleSaveSettings publishes through the same bus. (deac3d16)
             _settingsReg = Services.MonacoSettingsBroadcaster.Register(json => { try { _panel?.PostJson(json); } catch { } });
+
+            // Live-linked (ticket a5bbf005): become THE live tab and start watching for deactivation so we
+            // release the native single-embeditor lock when the user switches away.
+            _liveLinked = liveLinked;
+            if (liveLinked)
+            {
+                _liveInstance = this;
+                WireLiveWatch();
+            }
         }
 
         /// <summary>
@@ -1370,7 +1392,24 @@ namespace ClarionAssistant.Terminal
         private void RunSaveRoundTrip(List<string> current)
         {
             bool ok;
-            string msg = ModernEmbeditorSaver.Save(_procedureName, _editableRanges, _originalSlotTexts, current, out ok);
+            string msg;
+            // LIVE fast-path (ticket a5bbf005): if THIS tab still holds its native embed open, write straight back
+            // into it (no re-open, no locator re-type). Otherwise — a demoted/background tab — fall back to the
+            // proven re-open Save. Both share the same per-slot write + SaveAndClose tail.
+            bool live = _liveLinked && IsStillLive();
+            if (live)
+                msg = ModernEmbeditorSaver.SaveLive(_procedureName, _editableRanges, _originalSlotTexts, current, out ok);
+            else
+                msg = ModernEmbeditorSaver.Save(_procedureName, _editableRanges, _originalSlotTexts, current, out ok);
+
+            // A successful live save closed the native embed (SAVE-AND-EXIT) — drop the live link so Dispose won't
+            // try to cancel an already-closed embed, and clear the global live pointer if it's us.
+            if (live && ok)
+            {
+                _liveLinked = false;
+                if (ReferenceEquals(_liveInstance, this)) _liveInstance = null;
+            }
+
             // On success, the saved content is the new baseline so a follow-up save sees no changes.
             if (ok && current.Count == _originalSlotTexts.Count) _originalSlotTexts = current;
             // The save activated the app tree to drive the embeditor — bring this tab back to the front.
@@ -1378,6 +1417,146 @@ namespace ClarionAssistant.Terminal
             // Refresh the pad's IDE-sourced caches (UI thread) so Local/Global Data + Other Files reflect the save.
             if (ok) RefreshPadSources();
             PostSaveResult(ok, msg);
+
+            // SAVE-AND-EXIT (live mode only): once the round-trip has settled and the result posted, close this
+            // tab — mirroring native Clarion embed editing. Deferred so it runs after the WebView2 gets its save
+            // result and the close stack is clean.
+            if (live && ok) PostCloseTab();
+        }
+
+        /// <summary>True if THIS tab is still the live one AND its native embed is still open (GetEmbedInfo). A tab
+        /// demoted by a switch-away, or whose embed already closed, returns false → save uses the fallback path.</summary>
+        private bool IsStillLive()
+        {
+            try
+            {
+                if (!ReferenceEquals(_liveInstance, this)) return false;
+                return new AppTreeService().GetEmbedInfo() != null;
+            }
+            catch { return false; }
+        }
+
+        // ── Live-linked lock lifecycle (ticket a5bbf005) ─────────────────────────────────────────────────────
+        // At most ONE tab holds Clarion's native embed open (single-embeditor lock). Opening a new live tab,
+        // switching away from the live tab, cancel-closing it, or saving it all RELEASE that embed. We never
+        // re-link on activate; a re-focused tab stays a passive snapshot that saves via the re-open path.
+
+        /// <summary>One-time subscription to the workbench's active-document-changed event, so we can release the
+        /// live embed the moment the live tab loses foreground. Wired lazily the first time a live tab opens.</summary>
+        private static void WireLiveWatch()
+        {
+            if (_liveWatchWired) return;
+            try
+            {
+                var wb = WorkbenchSingleton.Workbench;
+                if (wb == null) return;
+                wb.ActiveWorkbenchWindowChanged += OnActiveWindowChangedForLive;
+                _liveWatchWired = true;
+            }
+            catch { }
+        }
+
+        /// <summary>When the live tab loses foreground, demote it and release its native embed. CC's hard rule:
+        /// NEVER pump DoEvents inside this active-view-changed handler (the switch may be mid WebView2 focus
+        /// handshake → the original freeze). Mark demoted SYNCHRONOUSLY and DEFER the actual
+        /// CancelEmbeditor+WaitForEmbedClosed off the event stack (mirrors the deferred-ShowView fix).</summary>
+        private static void OnActiveWindowChangedForLive(object sender, EventArgs e)
+        {
+            var live = _liveInstance;
+            if (live == null) return;
+            ModernEmbeditorViewContent active = null;
+            try { active = FocusedModernView(); } catch { }
+            if (ReferenceEquals(active, live)) return;   // still the foreground doc → stay live
+
+            _liveInstance = null;            // demote synchronously (cheap) …
+            live._liveLinked = false;
+            live.PostReleaseNativeEmbed();   // … release the embed on a clean, non-reentrant turn
+        }
+
+        /// <summary>Defer CancelEmbeditor+WaitForEmbedClosed off the current (event) stack, then run it on a settled
+        /// turn. The brief window where the lock is still held is covered by ReleaseLiveInstanceSync at the next
+        /// live open (and by OpenAndMirror's own WaitForEmbedClosed guard).</summary>
+        private void PostReleaseNativeEmbed()
+        {
+            int gen = _liveGen;   // capture at QUEUE time; a newer live open bumps _liveGen and invalidates this
+            Action release = () =>
+            {
+                try
+                {
+                    // If a newer live tab was acquired after we queued, the currently-open embed is ITS embed —
+                    // not the one we meant to release (which ReleaseLiveInstanceSync already closed synchronously).
+                    // No-op so we never cancel a newer tab's embed. (CC static-review race fix, a5bbf005.)
+                    if (gen != _liveGen) return;
+                    var appTree = new AppTreeService();
+                    if (appTree.GetEmbedInfo() != null)
+                    {
+                        appTree.CancelEmbeditor();
+                        ModernEmbeditorLauncher.WaitForEmbedClosed(appTree, 3000);
+                    }
+                }
+                catch { }
+            };
+            try
+            {
+                if (_panel != null && _panel.IsHandleCreated) _panel.BeginInvoke(release);
+                else
+                {
+                    var ctx = System.Threading.SynchronizationContext.Current;
+                    if (ctx != null) ctx.Post(_ => release(), null); else release();
+                }
+            }
+            catch { try { release(); } catch { } }
+        }
+
+        /// <summary>Synchronously release whatever tab currently holds the live embed (if any). Called from the
+        /// live-OPEN path, which runs on the launch delegate (off any event stack), so pumping DoEvents here is
+        /// safe — it guarantees no stale embed is held before we open the next procedure's embed.</summary>
+        internal static void ReleaseLiveInstanceSync()
+        {
+            // Bump the acquisition generation FIRST (before the new embed opens): any switch-away release still
+            // queued for a previous live tab captured the old gen and will now no-op instead of cancelling the
+            // embed we're about to open. We still cancel the currently-open embed by GetEmbedInfo() below — that
+            // closes the outgoing embed synchronously here, so the no-op'd deferred release leaks nothing.
+            _liveGen++;
+            var live = _liveInstance;
+            _liveInstance = null;
+            if (live != null) live._liveLinked = false;
+            try
+            {
+                var appTree = new AppTreeService();
+                if (appTree.GetEmbedInfo() != null)
+                {
+                    appTree.CancelEmbeditor();
+                    ModernEmbeditorLauncher.WaitForEmbedClosed(appTree, 3000);
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>Close this tab after a successful live save-and-exit. Deferred onto a clean turn (never the save
+        /// round-trip's DoEvents-pumped stack) — re-entrant teardown of a WebView2 view risks the native↔WebView2
+        /// focus deadlock. Uses IWorkbenchWindow.CloseWindow(force:true); the content is already persisted.</summary>
+        private void PostCloseTab()
+        {
+            Action close = () =>
+            {
+                try
+                {
+                    var w = WorkbenchWindow;
+                    if (w != null)
+                    {
+                        var m = w.GetType().GetMethod("CloseWindow", new[] { typeof(bool) });
+                        if (m != null) m.Invoke(w, new object[] { true });   // force — already persisted
+                    }
+                }
+                catch { }
+            };
+            try
+            {
+                if (_panel != null && _panel.IsHandleCreated) _panel.BeginInvoke(close);
+                else close();
+            }
+            catch { }
         }
 
         /// <summary>Re-select this view's tab (the save round-trip activates the app tree to drive the embeditor).</summary>
@@ -2282,6 +2461,28 @@ namespace ClarionAssistant.Terminal
             {
                 _panel.Dispose();
                 _panel = null;
+            }
+
+            // Live-linked cancel-close (ticket a5bbf005): the tab is closing while STILL holding the native embed
+            // open (i.e. NOT via save-and-exit, which clears _liveLinked first) — so this is a discard/cancel.
+            // Release the single-embeditor lock or the next open fails. Flow A leaves the native buffer untouched
+            // until save, so we lose only the unsaved Monaco edits (which closing discards by intent). Safe to pump
+            // here — Dispose is on the UI thread and NOT an active-view-changed event stack, and _panel is already
+            // gone so there's no WebView2 reentrancy. Skipped during IDE shutdown (the lock is moot then).
+            if (_liveLinked && ReferenceEquals(_liveInstance, this) && !_shuttingDown)
+            {
+                _liveInstance = null;
+                _liveLinked = false;
+                try
+                {
+                    var appTree = new AppTreeService();
+                    if (appTree.GetEmbedInfo() != null)
+                    {
+                        appTree.CancelEmbeditor();
+                        ModernEmbeditorLauncher.WaitForEmbedClosed(appTree, 3000);
+                    }
+                }
+                catch { }
             }
 
             if (promptSave)

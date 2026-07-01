@@ -653,7 +653,11 @@ namespace ClarionAssistant.Services
                 // The REAL open — reuse the freeze-fixed launcher (its off-stack ShowView fixes the WebView2
                 // reentrancy freeze; E7 BM_CLICK→caption→name stays tightly sequential inside it, no awaits).
                 // isDark resolved the same way OpenModernEmbeditorPickerCommand does (false).
-                string err = ModernEmbeditorLauncher.OpenCommittedSelection(isDark: false);
+                // Live-linked (ticket a5bbf005, experimental, default OFF): when on, keep the native embed OPEN
+                // under a floating Monaco so save writes straight back (no re-open / no locator re-type).
+                bool live = false;
+                try { live = CaEditorSettings.MonacoEmbeditorLiveLinked; } catch { }
+                string err = ModernEmbeditorLauncher.OpenCommittedSelection(isDark: false, live: live);
                 if (err != null)
                 {
                     LastLaunchInfo = "launch #" + LaunchRequestCount + " — " + err;
