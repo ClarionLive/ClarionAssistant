@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/peterparker57/ClarionAssistant/releases/tag/v5.0.0"><img src="https://img.shields.io/github/v/release/peterparker57/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
+  <a href="https://github.com/peterparker57/ClarionAssistant/releases/tag/v5.1.0"><img src="https://img.shields.io/github/v/release/peterparker57/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
   <img src="https://img.shields.io/badge/Clarion-10%20%7C%2011%20%7C%2012-blue?style=for-the-badge" alt="Clarion 10 | 11 | 12">
-  <img src="https://img.shields.io/badge/version-5.0%20Preview-orange?style=for-the-badge" alt="v5.0 Preview">
+  <img src="https://img.shields.io/badge/version-5.1-blue?style=for-the-badge" alt="v5.1">
 </p>
 
 ---
@@ -35,8 +35,10 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 - **Build tools** &mdash; build solutions, individual apps, or C# COM controls without leaving the chat
 - **Class intelligence** &mdash; parse CLASS definitions, sync .inc/.clw, generate method stubs
 - **Application tree** &mdash; open .app files, list procedures, navigate the embeditor
+- **Monaco source editor** &mdash; the default editor for Clarion `.clw`/`.inc` source: syntax highlighting, folding, F12/Ctrl+Click go-to-definition, inline diagnostics, and completion (toggleable under Options &rarr; Clarion Assistant &rarr; Editor Surfaces)
+- **Smart Formatter (Ctrl+I)** &mdash; reformats Clarion code with structure indentation and aligned declarations; configurable
 - **CA Embeditor** &mdash; right-click any procedure in the app tree to open its embed code directly in a fast Monaco/WebView2 editor; open multiple procedures as tabs
-- **CA Data Pad** &mdash; docked pad showing the active CA Embeditor tab's Local, Module &amp; Global Data, Declared Tables, Other Files, and their Keys, Columns, and Relations
+- **CA Explorer** &mdash; docked pad showing the active CA Embeditor tab's Local, Module &amp; Global Data, Declared Tables, Other Files, and their Keys, Columns, and Relations; drag a field to the editor or Window designer, copy/paste variables native-style, and a Cheat Sheet tab of editor shortcuts
 - **Evaluate Code** &mdash; interactive code review for entire apps, procedures, open files, or selected code
 - **Diff viewer** &mdash; Monaco-based side-by-side diffs with syntax highlighting
 - **Knowledge system** &mdash; persistent cross-session memory for decisions, patterns, and gotchas
@@ -44,31 +46,49 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
-## What's New in v5.0 (Preview)
+## What's New in v5.1
 
-> **Preview edition.** v5.0 is an early look for developers to test &mdash; the headline features below are working but not yet feature-complete. Feedback welcome.
+v5.1 brings a modern editing experience to the Clarion IDE: Monaco is now the default source editor, a Smart Formatter cleans up your code on demand, and the CA Embeditor and CA Explorer give you a fast, keyboard-friendly way to work with embeds and their data.
 
-The headline of v5.0 is the **CA Embeditor** and its companion **CA Data Pad**: open any procedure's embed code in a fast modern editor straight from the application tree, with its data in a docked pad alongside.
+### Monaco is now the default Clarion source editor
+
+Clarion source files (`.clw`, `.inc`) open by default in a Monaco-powered editor &mdash; syntax highlighting, code folding, **F12 / Ctrl+Click go-to-definition**, inline diagnostics, and completion &mdash; while keeping the same save and navigation behavior as the native editor.
+
+- **Toggleable per surface** &mdash; turn the Monaco source editor or the Monaco embeditor off under **Options &rarr; Clarion Assistant &rarr; Editor Surfaces**, with an optional file-type filter. Changes apply the next time you open a file.
+
+### Smart Formatter (Ctrl+I)
+
+Press **Ctrl+I** in the Monaco source editor or CA Embeditor to reformat Clarion code &mdash; consistent indentation for structures (IF/LOOP/CASE/ACCEPT) and aligned data declarations. As-you-type aids apply light formatting while you write, and the formatter's behavior is configurable.
 
 ### CA Embeditor &mdash; right-click a procedure to open it instantly
 
-Opening a procedure's embed code is now a single right-click. In the Clarion application tree, right-click any procedure and choose **Open in CA Embeditor** &mdash; the procedure opens directly in a fast Monaco/WebView2 editor, with no Tools-menu or picker round-trip.
+Opening a procedure's embed code is a single right-click. In the Clarion application tree, right-click any procedure and choose **Open in CA Embeditor** &mdash; the procedure opens directly in a fast Monaco/WebView2 editor, with no Tools-menu or picker round-trip.
 
 - **One-click from the app tree** &mdash; right-click the procedure &rarr; **Open in CA Embeditor**. The procedure you clicked is the one that opens.
 - **Multiple procedures as tabs** &mdash; open several procedures side by side; each gets its own CA Embeditor tab.
-- **Still available the classic ways** &mdash; **Tools &rarr; CA Embeditor (open procedures)&hellip;** and the **CA Embeditor** button on the embeditor toolbar continue to work.
+- **Also available from the toolbar** &mdash; the **CA Embeditor** button on the native embed-editor toolbar opens the currently selected procedure.
 
-### CA Data Pad
+### CA Explorer
 
-A docked pad that shows the data behind the procedure you're editing. Open it from **Tools &rarr; CA Data Pad** or with **Ctrl+Alt+D** (its docked title bar reads **CA Data**); it follows the active CA Embeditor tab.
+A docked pad that shows the data behind the procedure you're editing. Open it from **Tools &rarr; CA Explorer** or with **Ctrl+Alt+D** (its docked title bar reads **CA Explorer**); it follows the active CA Embeditor tab.
 
 - **Local, Module &amp; Global Data** &mdash; the variables in scope for the active procedure.
 - **Declared Tables &amp; Other Files** &mdash; with their **Keys**, **Columns**, and **Relations**.
 - **Follows the active tab** &mdash; switch CA Embeditor tabs and the pad updates to match.
+- **Drag a field to the editor or designer** &mdash; drop a column or variable onto the Monaco editor or the native Window designer to create a bound control.
+- **Copy / paste variables** native-style, plus a **Cheat Sheet tab** of Monaco editor shortcuts.
 
-### Renamed: "Modern Embeditor / Modern Data" &rarr; "CA Embeditor / CA Data"
+### Richer LSP in the Monaco surfaces
 
-The feature previously shown as *Modern Embeditor* and *Modern Data* is now **CA Embeditor** and **CA Data** (Clarion Assistant) across the menus and UI. Same feature, clearer name.
+The Monaco source editor and CA Embeditor surface live error/warning squiggles and code completion directly as you type &mdash; including `PROP:`/`EVENT:` equates and member-access (`oInstance.Method`) suggestions &mdash; alongside F12 / Ctrl+Click go-to-definition.
+
+### Fixed
+
+- **Clean-install editor load on Clarion 12** &mdash; a strong-name assembly version-lock caused a `Cannot create object: MonacoClarionEditorDisplayBinding` error on C12 builds other than the dev build. The editor now loads on any Clarion 12 build, and installer packaging (Monaco assets and LSP contracts) has been corrected.
+
+### Renamed: "Modern Embeditor / Modern Data" &rarr; "CA Embeditor / CA Explorer"
+
+The feature previously shown as *Modern Embeditor* and *Modern Data* is now **CA Embeditor** and **CA Explorer** (Clarion Assistant) across the menus and UI. Same feature, clearer name.
 
 ---
 
@@ -340,7 +360,7 @@ The installer bundles **COM for Clarion**, a complete toolkit for creating .NET 
 
 ### Install
 
-1. **[Download the latest installer](https://github.com/peterparker57/ClarionAssistant/releases/tag/v5.0.0)** (code-signed)
+1. **[Download the latest installer](https://github.com/peterparker57/ClarionAssistant/releases/tag/v5.1.0)** (code-signed)
 2. Close the Clarion IDE
 3. Run the installer &mdash; select which Clarion versions to install for
 4. Restart the Clarion IDE

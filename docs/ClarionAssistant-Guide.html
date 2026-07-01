@@ -427,7 +427,7 @@
 <header class="site-header">
   <h1>Clarion.Assistant</h1>
   <div class="subtitle">AI-Powered Development for the Clarion IDE</div>
-  <div class="version-badge">User Guide &middot; v1.4 &middot; for Clarion.Assistant 5.0 (Preview)</div>
+  <div class="version-badge">User Guide &middot; v1.5 &middot; for Clarion.Assistant 5.1</div>
 </header>
 
 <!-- ════════════════════════════════════════════════════ -->
@@ -439,7 +439,7 @@
   <nav class="sidebar">
     <h3>What's New</h3>
     <a href="#whats-new">Release Notes</a>
-    <a href="#whats-new-50" class="sub">v5.0 (Preview)</a>
+    <a href="#whats-new-50" class="sub">v5.1</a>
     <a href="#whats-new-sidecar" class="sub">Custom MCP Servers</a>
     <a href="#whats-new-codex" class="sub">Codex Backend</a>
     <a href="#whats-new-selfheal" class="sub">Codex Config Self-Heal</a>
@@ -463,10 +463,11 @@
     <a href="#claude-chat-examples" class="sub">Example Conversations</a>
     <a href="#claude-chat-settings" class="sub">Settings</a>
 
-    <h3>CA Embeditor &amp; Data Pad</h3>
+    <h3>CA Embeditor &amp; CA Explorer</h3>
     <a href="#ca-embeditor">Overview</a>
     <a href="#ca-embeditor-open" class="sub">Opening a Procedure</a>
-    <a href="#ca-data-pad" class="sub">CA Data Pad</a>
+    <a href="#ca-monaco-editor" class="sub">Monaco Source Editor</a>
+    <a href="#ca-data-pad" class="sub">CA Explorer</a>
 
     <h3>Class Helper</h3>
     <a href="#class-helper">Overview</a>
@@ -521,15 +522,16 @@
 <section id="whats-new" class="doc-section">
   <h2>What's New</h2>
 
-  <h3 id="whats-new-50">v5.0 &mdash; CA Embeditor &amp; CA Data Pad <span style="font-weight:400;font-size:0.85em;color:var(--text-light)">(Preview)</span></h3>
+  <h3 id="whats-new-50">v5.1 &mdash; CA Embeditor, CA Explorer &amp; Monaco Editor</h3>
 
   <p>
-    v5.0 introduces the <a href="#ca-embeditor"><strong>CA Embeditor</strong></a> and its companion
-    <strong>CA Data Pad</strong>. Right-click any procedure in the application tree and choose
+    v5.1 introduces the <a href="#ca-embeditor"><strong>CA Embeditor</strong></a> and its companion
+    <strong>CA Explorer</strong>. Right-click any procedure in the application tree and choose
     <strong>Open in CA Embeditor</strong> to open its embed code in a fast Monaco/WebView2 editor,
     with the procedure's Local, Module &amp; Global Data, Declared Tables and Other Files (and their
-    Keys, Columns &amp; Relations) shown in a docked pad alongside. This is an early preview for
-    developers to test &mdash; see <a href="#ca-embeditor">CA Embeditor &amp; CA Data Pad</a> for the
+    Keys, Columns &amp; Relations) shown in a docked pad alongside. Clarion source files now open by
+    default in a Monaco-powered editor with syntax highlighting, go-to-definition, live diagnostics
+    and a Smart Formatter &mdash; see <a href="#ca-embeditor">CA Embeditor &amp; CA Explorer</a> for the
     full walkthrough.
   </p>
 
@@ -836,7 +838,7 @@
         <tr>
           <td>Claude Code CLI</td>
           <td>Required, must be in PATH</td>
-          <td>Install via <code>npm install -g @anthropic-ai/claude</code></td>
+          <td>Install via <code>npm install -g @anthropic-ai/claude-code</code></td>
         </tr>
         <tr>
           <td>MultiTerminal</td>
@@ -1274,6 +1276,7 @@
       <li>Go to definition for any symbol, across files and projects</li>
       <li>Find all references to a symbol across the entire workspace</li>
       <li>Get type information, signatures, and documentation via hover</li>
+      <li>Surface live error and warning diagnostics, plus code completion, in the Monaco surfaces</li>
     </ul>
   </div>
 
@@ -1283,7 +1286,7 @@
       <li>Open .app files and list all procedures</li>
       <li>Open the embeditor for any procedure and navigate between embed points</li>
       <li>Save, cancel, and close the embeditor programmatically</li>
-      <li>Export and import TXA (Text Application) files for bulk analysis</li>
+      <li>Export the whole app to a TXA (Text Application) file for bulk analysis</li>
       <li>Close apps and solutions to switch contexts cleanly</li>
     </ul>
   </div>
@@ -1392,22 +1395,21 @@
 </section>
 
 <!-- ════════════════════════════════════════════════════ -->
-<!--  SECTION: CA EMBEDITOR & CA DATA PAD                -->
+<!--  SECTION: CA EMBEDITOR & CA EXPLORER                -->
 <!-- ════════════════════════════════════════════════════ -->
 <section id="ca-embeditor" class="doc-section">
-  <h2>CA Embeditor &amp; CA Data Pad <span style="font-weight:400;font-size:0.85em;color:var(--text-light)">(v5.0 Preview)</span></h2>
+  <h2>CA Embeditor &amp; CA Explorer</h2>
 
   <div class="section-intro">
     <p>
       The <strong>CA Embeditor</strong> opens a procedure's embed code in a fast Monaco/WebView2
-      editor right inside the IDE, and the <strong>CA Data Pad</strong> shows the data behind the
+      editor right inside the IDE, and the <strong>CA Explorer</strong> shows the data behind the
       procedure you're editing. Together they give you a modern, keyboard-friendly way to read and
       edit embeds without leaving Clarion Assistant.
     </p>
     <p>
-      <em>New in v5.0 (Preview):</em> you can now open a procedure straight from the application
-      tree with a single right-click. This is an early preview for developers to test &mdash; the
-      core flow works, with more polish to come.
+      <em>New in 5.1:</em> you can now open a procedure straight from the application tree with a
+      single right-click.
     </p>
   </div>
 
@@ -1428,18 +1430,48 @@
       opens in its own CA Embeditor tab, so you can move between them while you work.
     </li>
     <li>
-      <strong>Other ways to open</strong> &mdash; <strong>Tools &rarr; CA Embeditor (open
-      procedures)&hellip;</strong> opens a picker, and the <strong>CA Embeditor</strong> button on
-      the embeditor toolbar opens the currently selected procedure. The right-click is simply the
-      shortcut for the common case.
+      <strong>Other ways to open</strong> &mdash; the <strong>CA Embeditor</strong> button on the
+      native embed-editor toolbar opens the currently selected procedure. The right-click is simply
+      the shortcut for the common case.
     </li>
   </ul>
 
-  <h3 id="ca-data-pad">CA Data Pad</h3>
+  <h3 id="ca-monaco-editor">Monaco Source Editor</h3>
 
   <p>
-    Open the docked <strong>CA Data Pad</strong> from <strong>Tools &rarr; CA Data Pad</strong> or
-    with <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>D</kbd> (its title bar reads <strong>CA Data</strong>
+    In 5.1, Clarion source files (<code>.clw</code>, <code>.inc</code>) open by default in a
+    Monaco-powered editor with Clarion syntax highlighting, code folding, go-to-definition
+    (<kbd>F12</kbd> / <kbd>Ctrl</kbd>+click), inline diagnostics, and completion. It replaces the
+    native Clarion text editor while keeping the same save and navigation behavior.
+  </p>
+
+  <p>
+    You can turn either surface off under <strong>Options &rarr; Clarion Assistant &rarr; Editor
+    Surfaces</strong>:
+  </p>
+
+  <ul>
+    <li><strong>Use the Monaco source editor</strong> &mdash; replaces the native Clarion text editor.</li>
+    <li><strong>Use the Monaco embeditor</strong> &mdash; adds the right-click <em>Open in CA Embeditor</em> item.</li>
+    <li><strong>Apply to these file types only</strong> &mdash; a semicolon-separated extension filter; blank means all.</li>
+  </ul>
+
+  <p>Changes take effect the next time you open a file; already-open editors are not changed.</p>
+
+  <h4>Smart Formatter</h4>
+
+  <p>
+    Press <kbd>Ctrl</kbd>+<kbd>I</kbd> in the Monaco source editor or CA Embeditor to reformat
+    Clarion code &mdash; consistent indentation for structures (IF/LOOP/CASE/ACCEPT), aligned data
+    declarations, and normalized code statements. As-you-type aids apply light formatting while you
+    write. The formatter's behavior is configurable from its settings panel.
+  </p>
+
+  <h3 id="ca-data-pad">CA Explorer</h3>
+
+  <p>
+    Open the docked <strong>CA Explorer</strong> from <strong>Tools &rarr; CA Explorer</strong> or
+    with <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>D</kbd> (its title bar reads <strong>CA Explorer</strong>
     when docked). It follows the active CA Embeditor tab, so it always shows the data for the
     procedure you're currently editing:
   </p>
@@ -1460,6 +1492,19 @@
     <li>
       <strong>Follows the active tab</strong> &mdash; switch CA Embeditor tabs and the pad updates
       to match the procedure you switched to.
+    </li>
+    <li>
+      <strong>Drag a field to the editor or designer</strong> &mdash; drag a column or variable row
+      out of CA Explorer and drop it into the Monaco editor or the native Window designer to create
+      a bound control.
+    </li>
+    <li>
+      <strong>Copy / paste variables</strong> &mdash; native-style copy of variable rows for reuse
+      elsewhere.
+    </li>
+    <li>
+      <strong>Cheat Sheet tab</strong> &mdash; a built-in reference of Monaco editor keyboard
+      shortcuts.
     </li>
   </ul>
 </section>
@@ -1846,6 +1891,16 @@
         quickly locating procedures, classes, or variables when you know part of the name.
       </p>
     </div>
+
+    <div class="feature-card">
+      <h4>Live Diagnostics &amp; Completion</h4>
+      <p>
+        The Monaco source editor and CA Embeditor show real-time error and warning squiggles
+        (via <code>lsp_diagnostics</code>) and offer code completion &mdash; including
+        <code>PROP:</code>/<code>EVENT:</code> equates and member-access
+        (<code>oInstance.Method</code>) suggestions &mdash; as you type.
+      </p>
+    </div>
   </div>
 
   <h3>How It Works</h3>
@@ -1853,7 +1908,8 @@
   <p>
     The Language Server starts automatically when you select a solution in the Clarion Assistant panel.
     It runs in the background, analyzing your Clarion source files and maintaining an up-to-date
-    model of your codebase.
+    model of your codebase. In the Monaco source editor and CA Embeditor you can jump to a
+    definition directly with <kbd>F12</kbd> or <kbd>Ctrl</kbd>+click.
   </p>
 
   <div class="feature-card">
@@ -1952,7 +2008,8 @@
     <thead><tr><th>Tool</th><th>Description</th></tr></thead>
     <tbody>
       <tr><td><code>get_active_file</code></td><td>Get the path and full content of the file currently open in the editor.</td></tr>
-      <tr><td><code>get_selected_text</code></td><td>Get the currently selected (highlighted) text.</td></tr>
+      <tr><td><code>get_selected_text</code></td><td>Get the currently selected (highlighted) text in the native Clarion editor.</td></tr>
+      <tr><td><code>embeditor_get_selection</code></td><td>Get the text highlighted in the CA Embeditor (Monaco), with its 1-based line/column range.</td></tr>
       <tr><td><code>get_word_under_cursor</code></td><td>Get the word at the current cursor position.</td></tr>
       <tr><td><code>get_cursor_position</code></td><td>Get the current line number, column, and total line count.</td></tr>
     </tbody>
@@ -1995,13 +2052,28 @@
       <tr><td><code>select_procedure</code></td><td>Select a procedure in the procedure list without opening the embeditor.</td></tr>
       <tr><td><code>open_procedure_embed</code></td><td>Open the embeditor for a specific procedure.</td></tr>
       <tr><td><code>get_embed_info</code></td><td>Get info about the active embeditor.</td></tr>
+      <tr><td><code>list_embeds</code></td><td>List all embed sections in the active embeditor with names and filled status.</td></tr>
+      <tr><td><code>find_embed</code></td><td>Find an embed section by name and navigate the cursor there.</td></tr>
       <tr><td><code>save_and_close_embeditor</code></td><td>Save changes and close the currently open embeditor.</td></tr>
       <tr><td><code>cancel_embeditor</code></td><td>Discard changes and close the currently open embeditor.</td></tr>
       <tr><td><code>next_embed</code> / <code>prev_embed</code></td><td>Navigate to the next or previous embed point in the embeditor.</td></tr>
       <tr><td><code>next_filled_embed</code> / <code>prev_filled_embed</code></td><td>Navigate to the next or previous embed point that contains user code.</td></tr>
-      <tr><td><code>export_txa</code></td><td>Export the entire current app to a TXA (Text Application) file for analysis.</td></tr>
+      <tr><td><code>export_txa</code></td><td>Export the <em>entire</em> current app to a TXA (Text Application) file for analysis. Whole-app export is the supported path; per-procedure export opens a blocking modal dialog and is avoided.</td></tr>
       <tr><td><code>import_txa</code></td><td>Import a TXA file into the current app.</td></tr>
       <tr><td><code>close_solution</code></td><td>Close the currently open Clarion solution. Close any open apps first.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="tools-embed-content">CA Embeditor Content</h3>
+  <p>Read and write embed code slots in the CA Embeditor without touching any files on disk.</p>
+  <table class="tools-table">
+    <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>search_embeditor_source</code></td><td>Regex search over the annotated embeditor source; returns matching lines with context and embed-slot markers.</td></tr>
+      <tr><td><code>get_embeditor_source</code></td><td>Return the full annotated source with empty and filled embed-slot markers.</td></tr>
+      <tr><td><code>get_embed_content</code></td><td>Read the current code inside one embed slot by its line number.</td></tr>
+      <tr><td><code>write_embed_content</code></td><td>Write code into a specific embed slot.</td></tr>
+      <tr><td><code>apply_embed_edits</code></td><td>Apply batched edits to large procedures without reloading the whole source &mdash; crash-free on big embeds.</td></tr>
     </tbody>
   </table>
 
@@ -2061,6 +2133,8 @@
       <tr><td><code>lsp_hover</code></td><td>Get type information, signature, and documentation for a symbol.</td></tr>
       <tr><td><code>lsp_document_symbols</code></td><td>Get all symbols defined in a file (procedures, classes, variables).</td></tr>
       <tr><td><code>lsp_find_symbol</code></td><td>Search for symbols by name across the entire workspace.</td></tr>
+      <tr><td><code>lsp_diagnostics</code></td><td>Get current errors and warnings for a file &mdash; the feedback loop for verifying an edit is syntactically valid.</td></tr>
+      <tr><td><code>lsp_rename</code></td><td>Propose a workspace-wide rename of the symbol at a position. Returns the edit list for review before it is applied.</td></tr>
     </tbody>
   </table>
 
@@ -2342,7 +2416,7 @@
 <!--  FOOTER                                             -->
 <!-- ════════════════════════════════════════════════════ -->
 <footer class="site-footer">
-  <p>Clarion.Assistant User Guide &middot; v1.1 &middot; &copy; 2025&ndash;2026</p>
+  <p>Clarion.Assistant User Guide &middot; v1.5 &middot; &copy; 2025&ndash;2026</p>
 </footer>
 
 <!-- Smooth scrolling -->

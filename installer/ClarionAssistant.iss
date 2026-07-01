@@ -1,10 +1,9 @@
-; Clarion Assistant v5.0 (Preview) Installer
+; Clarion Assistant v5.1 Installer
 ; Inno Setup 6 Script
 ; Supports Clarion 10, 11, 12 — user picks which version(s) to install
 
 #define MyAppName "Clarion Assistant"
-#define MyAppVersion "5.0"
-#define MyAppEdition "Preview"
+#define MyAppVersion "5.1"
 #define MyAppPublisher "ClarionLive"
 #define MyAppURL "https://clarionlive.com"
 
@@ -37,7 +36,7 @@
 AppId={{B7E2F4A1-8C3D-4E5F-9A1B-2C3D4E5F6A7B}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppVerName={#MyAppName} {#MyAppVersion} {#MyAppEdition}
+AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 DefaultDirName={autopf}\ClarionAssistant
@@ -45,7 +44,7 @@ DefaultGroupName={#MyAppName}
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 OutputDir=output
-OutputBaseFilename=ClarionAssistant-{#MyAppVersion}-{#MyAppEdition}-Setup
+OutputBaseFilename=ClarionAssistant-{#MyAppVersion}-Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
