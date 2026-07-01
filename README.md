@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/peterparker57/ClarionAssistant/releases/tag/v5.1.0"><img src="https://img.shields.io/github/v/release/peterparker57/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
+  <a href="https://github.com/ClarionLive/ClarionAssistant/releases/tag/v5.1.0"><img src="https://img.shields.io/github/v/release/ClarionLive/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
   <img src="https://img.shields.io/badge/Clarion-10%20%7C%2011%20%7C%2012-blue?style=for-the-badge" alt="Clarion 10 | 11 | 12">
   <img src="https://img.shields.io/badge/version-5.1-blue?style=for-the-badge" alt="v5.1">
 </p>
@@ -360,7 +360,7 @@ The installer bundles **COM for Clarion**, a complete toolkit for creating .NET 
 
 ### Install
 
-1. **[Download the latest installer](https://github.com/peterparker57/ClarionAssistant/releases/tag/v5.1.0)** (code-signed)
+1. **[Download the latest installer](https://github.com/ClarionLive/ClarionAssistant/releases/tag/v5.1.0)** (code-signed)
 2. Close the Clarion IDE
 3. Run the installer &mdash; select which Clarion versions to install for
 4. Restart the Clarion IDE
