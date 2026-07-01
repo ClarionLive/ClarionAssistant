@@ -873,6 +873,10 @@ namespace ClarionAssistant
             catch (Exception ex) { MonacoSpikeLog.Write("overlay PushBreakpoints error: " + ex.Message); }
         }
 
+        // A BOM-free UTF-8 encoding. Encoding.UTF8 emits a 3-byte BOM (EF BB BF) via File.WriteAllText,
+        // which Clarion's compiler/IDE rejects (GitHub #34). Use this whenever we'd otherwise write UTF-8.
+        private static readonly Encoding NoBomUtf8 = new UTF8Encoding(false);
+
         // CRLF-normalize + write the buffer to disk with the file's load encoding. Shared by the
         // interactive save (OnSave) and the close-save prompt. Returns the char count written.
         private int WriteToDisk(string text)
@@ -880,7 +884,10 @@ namespace ClarionAssistant
             string normalized = (text ?? "").Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
             Encoding enc = null;
             try { enc = _hostEditor != null ? _hostEditor.Encoding : null; } catch { }
-            File.WriteAllText(_filePath, normalized, enc ?? Encoding.UTF8);
+            // #34 HARD RULE: never emit a UTF-8 BOM. Preserve a detected ANSI codepage (already BOM-free);
+            // for UTF-8 or an unknown/missing encoding, write BOM-free UTF-8.
+            if (enc == null || enc is UTF8Encoding) enc = NoBomUtf8;
+            File.WriteAllText(_filePath, normalized, enc);
             return normalized.Length;
         }
 
