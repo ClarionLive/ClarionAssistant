@@ -15,10 +15,9 @@
 #define SrcC12 SrcBase + "\bin\Debug-C12"
 #define SrcClarionIndexer "H:\DevLaptop\ClarionLSP\indexer\bin\Debug"
 #define SrcComForClarion "H:\DevLaptop\ClarionIdeCOMPane\ClarionCOMBrowser\bin\Debug"
-; Marketplace skills source of truth is now version-controlled in the repo
-; (was the live profile folder, which drifted from the installer — see marketplace/README.md).
-#define SrcMarketplace "H:\DevLaptop\ClarionAssistant\marketplace"
-#define SrcPlugin SrcMarketplace + "\plugins\clarion-assistant"
+; Plugin marketplace is no longer bundled by the installer — configure.ps1
+; installs it from the GitHub repo ClarionLive/clarionassistant-marketplace.
+; Repo source of truth: marketplace\ (publish via publish-marketplace-to-github.ps1).
 #define SrcAgents "C:\Users\John Hickey\.claude\agents"
 #define SrcBlankDct "C:\Users\John Hickey\AppData\Roaming\clarionassistant"
 #define SrcDocs "H:\DevLaptop\ClarionAssistant\docs"
@@ -83,10 +82,11 @@ Name: "comforclarion\templates"; Description: "UltimateCOM Templates and Class";
 Name: "comforclarion\docs"; Description: "COM for Clarion Documentation"; Types: full custom
 Name: "comforclarion\tooling"; Description: "ClarionCOM Project Templates and Scripts"; Types: full custom
 ; Plugin and agents
-Name: "plugin"; Description: "Clarion Assistant Plugin (skills, hooks, docs)"; Types: full custom
-Name: "plugin\skills"; Description: "Clarion Development Skills"; Types: full custom; Flags: fixed
-Name: "plugin\hooks"; Description: "Safety Hooks"; Types: full custom
-Name: "plugin\docs"; Description: "Plugin Documentation"; Types: full custom
+; The plugin (skills, hooks, docs) is installed from the GitHub marketplace by
+; configure.ps1 — not bundled here. The plugin\skills sub-component is retained
+; because it also gates the blank dictionary / class-model templates below.
+Name: "plugin"; Description: "Clarion Assistant Plugin (installed from GitHub marketplace)"; Types: full custom
+Name: "plugin\skills"; Description: "Clarion Assistant templates (blank dictionary, class models)"; Types: full custom; Flags: fixed
 Name: "agents"; Description: "Claude Code Quality Agents"; Types: full custom
 Name: "lsp"; Description: "Clarion Language Server (LSP)"; Types: full custom
 Name: "docgraph"; Description: "Pre-loaded Documentation Database"; Types: full custom
@@ -271,21 +271,16 @@ Source: "{#SrcClarionCOM}\install-env.ps1"; DestDir: "{userappdata}\ClarionCOM";
 Source: "{#SrcClarionCOM}\version.txt"; DestDir: "{userappdata}\ClarionCOM"; Components: comforclarion\tooling; Flags: ignoreversion
 
 ; --- Clarion Assistant Plugin ---
-Source: "{#SrcMarketplace}\.claude-plugin\marketplace.json"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\.claude-plugin"; Components: plugin; Flags: ignoreversion
-Source: "{#SrcPlugin}\.claude-plugin\plugin.json"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\.claude-plugin"; Components: plugin; Flags: ignoreversion
-Source: "{#SrcPlugin}\CLAUDE.md"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant"; Components: plugin; Flags: ignoreversion
-
-; Plugin Skills — single recursive copy from the repo source of truth.
-; Every skill folder under marketplace\plugins\clarion-assistant\skills ships
-; automatically; no per-skill line to forget (that is how stringtheory got
-; dropped before — see marketplace/README.md).
-Source: "{#SrcPlugin}\skills\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills"; Components: plugin\skills; Flags: ignoreversion recursesubdirs createallsubdirs
-
-; Plugin Hooks
-Source: "{#SrcPlugin}\hooks\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\hooks"; Components: plugin\hooks; Flags: ignoreversion
-
-; Plugin Docs
-Source: "{#SrcPlugin}\docs\*"; DestDir: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\docs"; Components: plugin\docs; Flags: ignoreversion recursesubdirs createallsubdirs
+; The plugin is NO LONGER bundled here. configure.ps1 (see [Run]) registers the
+; real GitHub marketplace and installs it:
+;   claude plugin marketplace add ClarionLive/clarionassistant-marketplace
+;   claude plugin install clarion-assistant@clarionassistant-marketplace --scope user
+; Claude Code git-clones it to
+;   %USERPROFILE%\.claude\plugins\marketplaces\clarionassistant-marketplace\...
+; which is the exact path the ClarionAssistant runtime reads. This makes the
+; plugin a genuine, `claude plugin marketplace update`-able marketplace instead
+; of a static installer copy. Repo source of truth: marketplace\ (published to
+; the GitHub repo via installer\publish-marketplace-to-github.ps1).
 
 ; --- Blank dictionary template ---
 Source: "{#SrcBlankDct}\blank.dct"; DestDir: "{userappdata}\clarionassistant"; Components: plugin\skills; Flags: ignoreversion
@@ -311,7 +306,10 @@ Source: "{#SrcInstaller}\docgraph.db"; DestDir: "{userappdata}\ClarionAssistant"
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{app}"; Components: docs; Flags: ignoreversion
 
 ; --- Post-install configuration script ---
-Source: "{#SrcInstaller}\configure.ps1"; DestDir: "{tmp}"; Flags: deleteafterinstall
+; Installed to {app} (not {tmp}) so the SECOND [Run] entry, which runs as the
+; original NON-elevated user via `runasoriginaluser`, can read it -- {tmp} lives
+; under the elevated account and is not reliably accessible to the de-elevated user.
+Source: "{#SrcInstaller}\configure.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 ; --- CLAUDE.md reference ---
 Source: "{#SrcInstaller}\CLAUDE.md"; DestDir: "{%USERPROFILE}\.claude"; DestName: "clarion-assistant-reference.md"; Flags: ignoreversion
@@ -322,12 +320,8 @@ Source: "{#SrcInstaller}\CLAUDE.md"; DestDir: "{%USERPROFILE}\.claude"; DestName
 
 [Dirs]
 Name: "{localappdata}\ClarionAssistant"
-Name: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\.claude-plugin"; Components: plugin
-Name: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\.claude-plugin"; Components: plugin
-Name: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant"; Components: plugin
-Name: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\skills"; Components: plugin\skills
-Name: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\hooks"; Components: plugin\hooks
-Name: "{%USERPROFILE}\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant\docs"; Components: plugin\docs
+; Marketplace dirs are created by `claude plugin marketplace add` (git clone),
+; not the installer — see the [Files] note above and configure.ps1.
 Name: "{%USERPROFILE}\.claude\agents"; Components: agents
 Name: "{userappdata}\clarionassistant"; Components: plugin\skills
 Name: "{userappdata}\ClarionCOM"; Components: comforclarion\tooling
@@ -339,11 +333,22 @@ Name: "{userappdata}\ClarionCOM\scripts"; Components: comforclarion\tooling
 ; ============================================================
 
 [Run]
-; Run configure.ps1 for the primary Clarion version
+; 1. Configure Claude Code settings + env (runs elevated, like the rest of Setup).
+;    Plugin install is a SEPARATE step (below) so it can run as the original user.
 Filename: "powershell.exe"; \
-  Parameters: "-ExecutionPolicy Bypass -File ""{tmp}\configure.ps1"" -ClarionRoot ""{code:GetPrimaryClarionPath}"" -DocGraphDb ""{localappdata}\ClarionAssistant\docgraph.db"""; \
+  Parameters: "-ExecutionPolicy Bypass -File ""{app}\configure.ps1"" -ClarionRoot ""{code:GetPrimaryClarionPath}"" -DocGraphDb ""{localappdata}\ClarionAssistant\docgraph.db"""; \
   StatusMsg: "Configuring Claude Code settings..."; \
   Flags: runhidden waituntilterminated
+
+; 2. Register + install the Clarion Assistant plugin from GitHub AS THE ORIGINAL USER.
+;    runasoriginaluser => `claude plugin install --scope user` lands in the actual
+;    user's profile (where ClarionAssistant reads it), not the elevated admin's, and
+;    we never exec a user-writable `claude` binary from the elevated installer context.
+Filename: "powershell.exe"; \
+  Parameters: "-ExecutionPolicy Bypass -File ""{app}\configure.ps1"" -InstallPlugin"; \
+  Components: plugin; \
+  StatusMsg: "Installing Clarion Assistant plugin from GitHub..."; \
+  Flags: runasoriginaluser runhidden waituntilterminated
 
 ; Run install-env.bat for ClarionCOM
 Filename: "{userappdata}\ClarionCOM\install-env.bat"; \

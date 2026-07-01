@@ -2,10 +2,108 @@
 # Merges Claude Code settings non-destructively
 param(
     [string]$ClarionRoot,
-    [string]$DocGraphDb
+    [string]$DocGraphDb,
+    # When set, run ONLY the plugin register/install step and skip the settings/env
+    # merge. The .iss invokes this a SECOND time with -InstallPlugin under the Inno
+    # `runasoriginaluser` flag, so plugin install runs as the ORIGINAL (non-elevated)
+    # user -- landing in THEIR profile (where ClarionAssistant reads), not the elevated
+    # admin's, and never exec'ing a user-writable CLI from the elevated installer.
+    [switch]$InstallPlugin
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Find-ClaudeCli {
+    $candidates = @(
+        (Join-Path $env:APPDATA 'npm\claude.cmd'),                          # npm global (most common)
+        (Join-Path $env:USERPROFILE '.claude\local\claude.exe'),            # standalone CLI
+        (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\claude.exe')   # winget shim
+    )
+    foreach ($c in $candidates) { if (Test-Path $c) { return $c } }
+    $cmd = Get-Command claude -ErrorAction SilentlyContinue                 # anything on PATH
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
+
+if ($InstallPlugin) {
+    # --- Register and install the clarion-assistant plugin from GitHub ---
+    # The installer no longer bundles a copy of the marketplace into the profile.
+    # Instead we register the real GitHub marketplace and install the plugin, so it is
+    # a genuine, updatable Claude Code marketplace (git-sourced, not a static Directory
+    # copy). Claude clones it to
+    #   %USERPROFILE%\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant
+    # which is the exact path the ClarionAssistant runtime reads. Best-effort: if Claude
+    # Code is not installed yet or there is no network, we WARN and continue.
+    $marketplaceName = 'clarionassistant-marketplace'
+    $marketplaceRepo = 'ClarionLive/clarionassistant-marketplace'
+    $pluginRef       = "clarion-assistant@$marketplaceName"
+    $manualSteps     = "    claude plugin marketplace add $marketplaceRepo`n    claude plugin install $pluginRef --scope user"
+
+    try {
+        # Native CLI calls (claude/git) legitimately write progress to stderr and exit
+        # non-zero on benign conditions -- notably `marketplace remove` of a not-yet-
+        # registered marketplace on a FRESH machine. Under the file-wide 'Stop', Windows
+        # PowerShell 5.1 promotes native stderr merged via 2>&1 into a TERMINATING error,
+        # which would skip add/install. Scope to 'Continue' and gate on $LASTEXITCODE.
+        $ErrorActionPreference = 'Continue'
+
+        $claude = Find-ClaudeCli
+        if (-not $claude) {
+            Write-Host "WARNING: Claude Code CLI not found; skipping plugin registration."
+            Write-Host "  Once Claude Code is installed, finish setup with:`n$manualSteps"
+        } else {
+            Write-Host "Registering clarion-assistant plugin via Claude CLI: $claude"
+
+            # UPGRADE SAFETY. The `remove` clears an existing registration so `add` can
+            # re-clone under the same name -- but it also DELETES the on-disk plugin. If
+            # the subsequent GitHub `add` then fails, an UPGRADING user is left with no
+            # plugin (lost skills/hooks). So we only ever remove when BOTH hold:
+            #   (a) there IS an existing plugin to migrate, AND
+            #   (b) we have POSITIVELY confirmed the GitHub repo is reachable.
+            # A FRESH machine (no existing plugin) has nothing to lose, so it just adds
+            # directly. If we cannot confirm reachability -- no network, OR no `git` on
+            # PATH to probe with -- we treat it as NOT verified and leave any existing
+            # plugin untouched. (Absence of git must fail SAFE, not fall through to the
+            # destructive path: claude's own `add` may rely on that same missing git.)
+            $repoUrlGit  = "https://github.com/$marketplaceRepo.git"
+            $mktDir      = Join-Path $env:USERPROFILE ".claude\plugins\marketplaces\$marketplaceName"
+            $hasExisting = Test-Path $mktDir
+
+            $reachable = $false
+            if (Get-Command git -ErrorAction SilentlyContinue) {
+                & git ls-remote --exit-code --heads $repoUrlGit *> $null
+                $reachable = ($LASTEXITCODE -eq 0)
+            }
+
+            if ($hasExisting -and -not $reachable) {
+                Write-Host "WARNING: cannot confirm $repoUrlGit is reachable -- leaving the existing plugin in place."
+                Write-Host "  Update later when online with:`n$manualSteps"
+            } else {
+                if ($hasExisting) {
+                    # Reachable upgrade: clear the prior registration (older installers
+                    # bundled it as a Source: Directory copy) so the GitHub git source can
+                    # own the name/path, then re-add fresh.
+                    & $claude plugin marketplace remove $marketplaceName 2>&1 | Out-Null
+                }
+
+                & $claude plugin marketplace add $marketplaceRepo 2>&1 | ForEach-Object { Write-Host "  $_" }
+                if ($LASTEXITCODE -ne 0) { throw "marketplace add failed (exit $LASTEXITCODE)" }
+
+                & $claude plugin install $pluginRef --scope user 2>&1 | ForEach-Object { Write-Host "  $_" }
+                if ($LASTEXITCODE -ne 0) { throw "plugin install failed (exit $LASTEXITCODE)" }
+
+                Write-Host "Installed $pluginRef from GitHub."
+            }
+        }
+    } catch {
+        # Non-fatal: never abort the installer over the plugin step.
+        Write-Host "WARNING: Could not register/install the clarion-assistant plugin from GitHub: $_"
+        Write-Host "  This is non-fatal. Finish setup later with:`n$manualSteps"
+    }
+
+    Write-Host "`nClarion Assistant plugin registration complete."
+    return
+}
 
 $claudeDir = Join-Path $env:USERPROFILE '.claude'
 
