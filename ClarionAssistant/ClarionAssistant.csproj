@@ -139,6 +139,7 @@
     <Compile Include="Services\IdeReflectionService.cs" />
     <Compile Include="Services\EmbeditorCompletionService.cs" />
     <Compile Include="ShowModernEmbeditorCommand.cs" />
+    <Compile Include="ClarionBindingAssemblyResolver.cs" />
     <Compile Include="LspAutostartCommand.cs" />
     <Compile Include="RightClickHookAutostartCommand.cs" />
     <Compile Include="ShutdownTerminateCommand.cs" />

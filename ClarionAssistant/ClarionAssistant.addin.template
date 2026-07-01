@@ -15,6 +15,11 @@
 
   <!-- Start the Clarion LSP early and independent of any pad (see LspAutostartCommand). -->
   <Path name="/Workspace/Autostart">
+    <!-- FIRST: install the CWBinding/CommonSources version-agnostic AssemblyResolve shim BEFORE any
+         source file's DisplayBinding is built. CommonSources.dll is strong-named, so our binding
+         subclass otherwise fails to load on any C12 build != the one we compiled against
+         ("Cannot create object: MonacoClarionEditorDisplayBinding", ticket 0abd79df). -->
+    <Class id="ClarionAssistantBindingResolver" class="ClarionAssistant.ClarionBindingAssemblyResolverCommand"/>
     <Class id="ClarionAssistantStartLsp" class="ClarionAssistant.LspAutostartCommand"/>
     <!-- Right-click proc -> "Open in Modern Embeditor" native hook (ticket 4b82f1de, see RightClickHookService). -->
     <Class id="ClarionAssistantStartRightClickHook" class="ClarionAssistant.RightClickHookAutostartCommand"/>
