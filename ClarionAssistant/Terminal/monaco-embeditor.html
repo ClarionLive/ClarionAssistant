@@ -44,14 +44,10 @@
     /* Modern light/dark TOGGLE switch (a nod beyond Clarion, which has no toggle buttons).
        Neutral track + strong border so it stays visible on ANY themed toolbar; knob slides + recolors. */
     #themeBtn.theme-toggle { padding: 2px 5px; display: inline-flex; align-items: center; }
-    .tt-track { position: relative; display: inline-block; width: 34px; height: 16px; border-radius: 9px;
-        background: #9aa5b5; border: 1px solid rgba(0,0,0,0.3); box-shadow: inset 0 1px 2px rgba(0,0,0,0.25); }
-    .tt-knob { position: absolute; top: 1px; left: 1.5px; width: 12px; height: 12px; border-radius: 50%;
-        background: #6366f1; transition: left .2s, background .2s; box-shadow: 0 1px 2px rgba(0,0,0,0.4); }
-    /* Dark mode (default): knob right = indigo "moon". */
-    #themeBtn .tt-knob { left: 18.5px; background: #6366f1; }
-    /* Light mode: knob left = amber "sun". */
-    body.light #themeBtn .tt-knob { left: 1.5px; background: #f59e0b; }
+    #themeBtn .tgl { display: block; }
+    /* Dark mode (default): knob right = indigo "moon". Light mode: knob slides left = amber "sun". */
+    #themeBtn .tgl-knob { fill: #6366f1; transition: transform .2s, fill .2s; }
+    body.light #themeBtn .tgl-knob { transform: translateX(-17px); fill: #f59e0b; }
 
     /* ---------- Clarion-faithful overlay chrome (b1e05287) ---------- */
     /* Clickable header strip mimicking the native "Proc - Embeditor - (module.clw)" line; click → open source. */
@@ -352,7 +348,7 @@
         <button id="findBtn" title="Find &amp; Replace"><svg class="fico-sm" viewBox="0 0 20 20" fill="none" stroke="#2563eb" stroke-width="2.2" stroke-linecap="round"><circle cx="8.5" cy="8.5" r="5"/><path d="M12.6 12.6 L17 17"/></svg></button>
         <button id="splitBtn" title="Split editor — two panes of the same file (compare/copy between areas)"><svg class="fico-sm" viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="1.6" fill="none" stroke="#475569" stroke-width="2"/><rect x="10" y="4" width="7" height="12" fill="#475569" opacity="0.22"/><path d="M10 4 V16" stroke="#475569" stroke-width="2"/></svg></button>
         <button id="settingsBtn" title="Editor settings"><svg class="fico-sm" viewBox="0 0 24 24" fill="#475569"><path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54a7 7 0 0 0-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.31 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96a7 7 0 0 0 1.62.94l.36 2.54a.5.5 0 0 0 .5.42h3.8a.5.5 0 0 0 .5-.42l.36-2.54a7 7 0 0 0 1.62-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64z" /><circle cx="12" cy="12" r="3.1" fill="#fff"/></svg></button>
-        <button id="themeBtn" class="theme-toggle" title="Toggle light / dark"><span class="tt-track"><span class="tt-knob"></span></span></button>
+        <button id="themeBtn" class="theme-toggle" title="Toggle light / dark"><svg class="tgl" width="34" height="16" viewBox="0 0 34 16"><rect x="0.5" y="0.5" width="33" height="15" rx="7.5" fill="#9aa5b5" stroke="rgba(0,0,0,0.3)"/><circle class="tgl-knob" cx="25" cy="8" r="6"/></svg></button>
         <button id="reloadBtn" style="display:none" title="Reload from disk (discards your edits — click twice to confirm)">&#10227; Reload</button>
         <button id="cancelBtn" style="display:none" title="Discard changes and close">Cancel</button>
         <button id="saveBtn" title="Save changes (Ctrl+S)">Save</button>
