@@ -37,22 +37,21 @@
         background: transparent; color: var(--title-accent);
     }
     #toolbar button:hover { background: rgba(127,127,127,0.18); }
-    /* Consistent line-icons for our utility buttons — colored SVGs. */
-    #toolbar .tb-ico { width: 16px; height: 16px; display: inline-block; vertical-align: middle; }
-    /* Modern light/dark TOGGLE switch (a nod beyond Clarion, which has no toggle buttons). */
+    /* Flat-modern icon sizing (single design language across the whole toolbar). */
+    #toolbar .fico    { display: block; width: 22px; height: 22px; }
+    #toolbar .fico-sm { display: block; width: 18px; height: 18px; }
+    #toolbar .fico-xs { display: block; width: 12px; height: 12px; }
+    /* Modern light/dark TOGGLE switch (a nod beyond Clarion, which has no toggle buttons).
+       Neutral track + strong border so it stays visible on ANY themed toolbar; knob slides + recolors. */
     #themeBtn.theme-toggle { padding: 2px 5px; display: inline-flex; align-items: center; }
     .tt-track { position: relative; display: inline-block; width: 34px; height: 16px; border-radius: 9px;
-        background: #3b4261; transition: background .2s; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.12); }
-    .tt-knob { position: absolute; top: 1.5px; left: 1.5px; width: 13px; height: 13px; border-radius: 50%;
-        background: #cdd6f4; transition: left .2s, background .2s; box-shadow: 0 1px 2px rgba(0,0,0,0.35); }
-    .tt-sun, .tt-moon { position: absolute; top: 2px; font-size: 10px; line-height: 12px; pointer-events: none; }
-    .tt-sun { left: 3px; } .tt-moon { right: 3px; }
-    /* Dark mode (default): knob right, pale "moon" knob on a deep track. */
-    #themeBtn .tt-track { background: #313244; }
-    #themeBtn .tt-knob { left: 19px; background: #c8cdf0; }
-    /* Light mode: knob left, warm "sun" knob on a sky track. */
-    body.light #themeBtn .tt-track { background: #7fc8e8; }
-    body.light #themeBtn .tt-knob { left: 1.5px; background: #f9a825; }
+        background: #9aa5b5; border: 1px solid rgba(0,0,0,0.3); box-shadow: inset 0 1px 2px rgba(0,0,0,0.25); }
+    .tt-knob { position: absolute; top: 1px; left: 1.5px; width: 12px; height: 12px; border-radius: 50%;
+        background: #6366f1; transition: left .2s, background .2s; box-shadow: 0 1px 2px rgba(0,0,0,0.4); }
+    /* Dark mode (default): knob right = indigo "moon". */
+    #themeBtn .tt-knob { left: 18.5px; background: #6366f1; }
+    /* Light mode: knob left = amber "sun". */
+    body.light #themeBtn .tt-knob { left: 1.5px; background: #f59e0b; }
 
     /* ---------- Clarion-faithful overlay chrome (b1e05287) ---------- */
     /* Clickable header strip mimicking the native "Proc - Embeditor - (module.clw)" line; click → open source. */
@@ -67,10 +66,8 @@
     #toolbar button.tb-save, #toolbar button.tb-cancel {
         padding: 1px 5px; font-size: 0; line-height: 0; display: inline-flex; align-items: center;
     }
-    #toolbar button.tb-save svg, #toolbar button.tb-cancel svg { display: block; width: 24px; height: 24px; }
-    /* Embed-nav icons in Clarion blue (SVG uses currentColor so this drives them). */
-    #toolbar button.embed-nav.clarion { color: #3b82f6; padding: 1px 5px; }
-    #toolbar button.embed-nav.clarion svg { display: block; width: 22px; height: 22px; }
+    #toolbar button.tb-save svg, #toolbar button.tb-cancel svg { display: block; width: 22px; height: 22px; }
+    #toolbar button.embed-nav { padding: 2px 5px; }
     /* Real extracted native Clarion icons — rendered at the native toolbar's 24px scaling size (pixel-match). */
     #toolbar button .native-ico { display: block; height: 24px; width: auto; }
     /* Overlay: LEFT-align the buttons like the native Clarion bar — save/cancel first, then embed-nav, then the
@@ -97,7 +94,7 @@
     /* Overlay: tighten spacing + shift left to match the native bar's density. */
     body.has-embheader #toolbar { gap: 2px; padding-left: 5px; }
     body.has-embheader #toolbar button.tb-save, body.has-embheader #toolbar button.tb-cancel,
-    body.has-embheader #toolbar button.embed-nav.clarion { padding-left: 3px; padding-right: 3px; }
+    body.has-embheader #toolbar button.embed-nav { padding-left: 3px; padding-right: 3px; }
     body.has-embheader #toolbar .tb-sep { margin: 4px 3px; }
     /* Overlay: attach the nav-history caret to the Back button as one split-button unit (like Clarion). */
     /* Both halves stretch to the same (row) height so they read as one attached split-button. */
@@ -340,18 +337,21 @@
     <div id="toolbar">
         <div class="title"><span id="titlePrefix">CA Embeditor</span> — <span id="titleText">(no procedure)</span></div>
         <div class="spacer"></div>
-        <button id="prevEmbedBtn" class="embed-nav" title="Previous Embed">&#8593;</button>
-        <button id="nextEmbedBtn" class="embed-nav" title="Next Embed">&#8595;</button>
-        <button id="prevFilledBtn" class="embed-nav" title="Previous Filled Embed">&#8657;</button>
-        <button id="nextFilledBtn" class="embed-nav" title="Next Filled Embed">&#8659;</button>
+        <button id="prevEmbedBtn" class="embed-nav" title="Previous Embed"><svg class="fico" viewBox="0 0 20 20"><path d="M10 3.8 L15.6 9.6 L12.3 9.6 L12.3 16.3 L7.7 16.3 L7.7 9.6 L4.4 9.6 Z" fill="none" stroke="#2563eb" stroke-width="1.7" stroke-linejoin="round"/></svg></button>
+        <button id="nextEmbedBtn" class="embed-nav" title="Next Embed"><svg class="fico" viewBox="0 0 20 20"><path d="M10 16.2 L15.6 10.4 L12.3 10.4 L12.3 3.7 L7.7 3.7 L7.7 10.4 L4.4 10.4 Z" fill="none" stroke="#2563eb" stroke-width="1.7" stroke-linejoin="round"/></svg></button>
+        <button id="prevFilledBtn" class="embed-nav" title="Previous Filled Embed"><svg class="fico" viewBox="0 0 20 20"><path d="M10 3.8 L15.6 9.6 L12.3 9.6 L12.3 16.3 L7.7 16.3 L7.7 9.6 L4.4 9.6 Z" fill="#2563eb"/></svg></button>
+        <button id="nextFilledBtn" class="embed-nav" title="Next Filled Embed"><svg class="fico" viewBox="0 0 20 20"><path d="M10 16.2 L15.6 10.4 L12.3 10.4 L12.3 3.7 L7.7 3.7 L7.7 10.4 L4.4 10.4 Z" fill="#2563eb"/></svg></button>
         <span class="tb-sep"></span>
-        <button id="navBackBtn" class="embed-nav nav-split-main" title="Navigate Back (Alt+Left)">&#9664;</button>
-        <button id="navListBtn" class="embed-nav nav-split-caret" title="Navigation history">&#9662;</button>
-        <button id="navFwdBtn" class="embed-nav" title="Navigate Forward (Alt+Right)">&#9654;</button>
+        <button id="undoBtn" class="embed-nav" title="Undo (Ctrl+Z)"><svg class="fico-sm" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 15 L3 9 L9 3"/><path d="M3 9 H15 A6 6 0 0 1 15 21 H11"/></svg></button>
+        <button id="redoBtn" class="embed-nav" title="Redo (Ctrl+Y)"><svg class="fico-sm" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 15 L21 9 L15 3"/><path d="M21 9 H9 A6 6 0 0 0 9 21 H13"/></svg></button>
         <span class="tb-sep"></span>
-        <button id="findBtn" title="Find &amp; Replace"><svg class="tb-ico" viewBox="0 0 16 16"><defs><linearGradient id="findG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7db9fb"/><stop offset="1" stop-color="#2563eb"/></linearGradient></defs><path d="M9.8 9.8 L14.2 14.2" stroke="#1e3a8a" stroke-width="2.4" stroke-linecap="round"/><circle cx="6.6" cy="6.6" r="4.7" fill="url(#findG)" stroke="#1e40af" stroke-width="0.8"/><path d="M6.6 2.9 a3.7 3.7 0 0 1 3.7 3.7" fill="none" stroke="#fff" stroke-width="1.1" stroke-linecap="round" opacity="0.8"/><circle cx="5.2" cy="5.2" r="1" fill="#fff" opacity="0.85"/></svg></button>
-        <button id="splitBtn" title="Split editor — two panes of the same file (compare/copy between areas)"><svg class="tb-ico" viewBox="0 0 16 16"><defs><linearGradient id="splitG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b79bfb"/><stop offset="1" stop-color="#7c3aed"/></linearGradient></defs><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.6" fill="#f1ecfe" stroke="#6d28d9" stroke-width="1"/><rect x="8.2" y="3.7" width="5.1" height="8.6" rx="0.7" fill="url(#splitG)"/><line x1="8" y1="2.8" x2="8" y2="13.2" stroke="#6d28d9" stroke-width="1"/></svg></button>
-        <button id="settingsBtn" title="Editor settings"><svg class="tb-ico" viewBox="0 0 24 24"><defs><linearGradient id="gearG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#aab6c6"/><stop offset="1" stop-color="#475569"/></linearGradient></defs><path fill="url(#gearG)" stroke="#334155" stroke-width="0.5" d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54a7 7 0 0 0-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.31 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96a7 7 0 0 0 1.62.94l.36 2.54a.5.5 0 0 0 .5.42h3.8a.5.5 0 0 0 .5-.42l.36-2.54a7 7 0 0 0 1.62-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64zM12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5z"/><circle cx="12" cy="12" r="3.1" fill="#e2e8f0"/></svg></button>
+        <button id="navBackBtn" class="embed-nav nav-split-main" title="Navigate Back (Alt+Left)"><svg class="fico-sm" viewBox="0 0 20 20" fill="none" stroke="#475569" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 10 H5"/><path d="M9.5 5 L4.5 10 L9.5 15"/></svg></button>
+        <button id="navListBtn" class="embed-nav nav-split-caret" title="Navigation history"><svg class="fico-xs" viewBox="0 0 20 20" fill="none" stroke="#475569" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8 L10 12 L14 8"/></svg></button>
+        <button id="navFwdBtn" class="embed-nav" title="Navigate Forward (Alt+Right)"><svg class="fico-sm" viewBox="0 0 20 20" fill="none" stroke="#475569" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 10 H15"/><path d="M10.5 5 L15.5 10 L10.5 15"/></svg></button>
+        <span class="tb-sep"></span>
+        <button id="findBtn" title="Find &amp; Replace"><svg class="fico-sm" viewBox="0 0 20 20" fill="none" stroke="#2563eb" stroke-width="2.2" stroke-linecap="round"><circle cx="8.5" cy="8.5" r="5"/><path d="M12.6 12.6 L17 17"/></svg></button>
+        <button id="splitBtn" title="Split editor — two panes of the same file (compare/copy between areas)"><svg class="fico-sm" viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="1.6" fill="none" stroke="#475569" stroke-width="2"/><rect x="10" y="4" width="7" height="12" fill="#475569" opacity="0.22"/><path d="M10 4 V16" stroke="#475569" stroke-width="2"/></svg></button>
+        <button id="settingsBtn" title="Editor settings"><svg class="fico-sm" viewBox="0 0 24 24" fill="#475569"><path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54a7 7 0 0 0-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.31 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96a7 7 0 0 0 1.62.94l.36 2.54a.5.5 0 0 0 .5.42h3.8a.5.5 0 0 0 .5-.42l.36-2.54a7 7 0 0 0 1.62-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64z" /><circle cx="12" cy="12" r="3.1" fill="#fff"/></svg></button>
         <button id="themeBtn" class="theme-toggle" title="Toggle light / dark"><span class="tt-track"><span class="tt-knob"></span></span></button>
         <button id="reloadBtn" style="display:none" title="Reload from disk (discards your edits — click twice to confirm)">&#10227; Reload</button>
         <button id="cancelBtn" style="display:none" title="Discard changes and close">Cancel</button>
@@ -701,6 +701,10 @@
                 document.getElementById('saveBtn').addEventListener('click', doSave);
                 var _cancelBtn = document.getElementById('cancelBtn');
                 if (_cancelBtn) _cancelBtn.addEventListener('click', doCancel);
+                var _undoBtn = document.getElementById('undoBtn');
+                if (_undoBtn) _undoBtn.addEventListener('click', function () { var e = activeEd(); e.focus(); e.trigger('toolbar', 'undo', null); });
+                var _redoBtn = document.getElementById('redoBtn');
+                if (_redoBtn) _redoBtn.addEventListener('click', function () { var e = activeEd(); e.focus(); e.trigger('toolbar', 'redo', null); });
                 var _embHeader = document.getElementById('embHeader');
                 if (_embHeader) _embHeader.addEventListener('click', function () { postToHost({ action: 'openSource' }); });
                 // Reload (file mode): discards edits, so require a second click within 4s to confirm.
@@ -755,51 +759,18 @@
             // Cancel/Discard. Snapshot/file mode keeps closing via the tab, so no Cancel button there. (a5bbf005)
             var cb = document.getElementById('cancelBtn');
             if (overlay) {
-                var ni = msg.nativeIcons || {};   // real extracted Clarion icons, role → data-URI (b1e05287)
-                function icoImg(uri) { return '<img class="native-ico" src="' + uri + '" alt="">'; }
-                // Save & Exit: prefer the REAL native icon; else fall back to the drawn green-circle check.
-                sb.innerHTML = ni.save ? icoImg(ni.save) :
-                    '<svg viewBox="0 0 16 16" aria-hidden="true"><defs>' +
-                    '<linearGradient id="caSaveG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7ac943"/><stop offset="1" stop-color="#3f9c35"/></linearGradient></defs>' +
-                    '<circle cx="8" cy="8" r="7.3" fill="url(#caSaveG)" stroke="#2e7d24" stroke-width="0.6"/>' +
-                    '<path d="M4.4 8.3 L6.8 10.7 L11.6 5.1" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+                // Flat-modern icon language (b1e05287): embed-nav / undo-redo / nav / find / split / settings / theme
+                // are STATIC flat SVGs in the markup (all modes). Here we only turn Save into the flat green check-
+                // circle and reveal the flat red X-circle Cancel (snapshot keeps the plain "Save" text + tab close).
+                sb.innerHTML = '<svg class="fico" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="#16a34a"/><path d="M6 10.5 L9 13.5 L14.5 7" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
                 sb.title = 'Save and Exit';
                 sb.classList.add('tb-save');
                 if (cb) {
-                    cb.innerHTML = ni.cancel ? icoImg(ni.cancel) :
-                        '<svg viewBox="0 0 16 16" aria-hidden="true"><defs>' +
-                        '<linearGradient id="caCancelG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ef5350"/><stop offset="1" stop-color="#c62828"/></linearGradient></defs>' +
-                        '<circle cx="8" cy="8" r="7.3" fill="url(#caCancelG)" stroke="#a01818" stroke-width="0.6"/>' +
-                        '<path d="M5.3 5.3 L10.7 10.7 M10.7 5.3 L5.3 10.7" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round"/></svg>';
+                    cb.innerHTML = '<svg class="fico" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="#dc2626"/><path d="M6.6 6.6 L13.4 13.4 M13.4 6.6 L6.6 13.4" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg>';
                     cb.title = 'Cancel (discard changes)';
                     cb.classList.add('tb-cancel');
                     cb.style.display = '';
                 }
-                // Clarion-style embed-nav icons: a bar (the embed point) + an arrow to it. Hollow arrows = any
-                // embed (prev up / next down); solid arrows = FILLED embeds. currentColor → the .clarion blue. b1e05287
-                var _navSvg = {
-                    prevEmbedBtn:  '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="10" height="1.7" rx="0.6"/>' +
-                                   '<path d="M8 13.5 L8 5.5 M5 8 L8 5 L11 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-                    nextEmbedBtn:  '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="12.3" width="10" height="1.7" rx="0.6"/>' +
-                                   '<path d="M8 2.5 L8 10.5 M5 8 L8 11 L11 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-                    prevFilledBtn: '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="10" height="1.7" rx="0.6"/>' +
-                                   '<path d="M8 13.5 L8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M8 4.2 L11.2 8.4 L4.8 8.4 Z"/></svg>',
-                    nextFilledBtn: '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="12.3" width="10" height="1.7" rx="0.6"/>' +
-                                   '<path d="M8 2.5 L8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M8 11.8 L11.2 7.6 L4.8 7.6 Z"/></svg>'
-                };
-                var _navRole = { prevEmbedBtn: 'prevEmbed', nextEmbedBtn: 'nextEmbed', prevFilledBtn: 'prevFilled', nextFilledBtn: 'nextFilled' };
-                ['prevEmbedBtn', 'nextEmbedBtn', 'prevFilledBtn', 'nextFilledBtn'].forEach(function (id) {
-                    var b = document.getElementById(id);
-                    if (!b) return;
-                    b.classList.add('clarion');
-                    var uri = ni[_navRole[id]];
-                    b.innerHTML = uri ? icoImg(uri) : _navSvg[id];   // real native icon, else my SVG fallback
-                });
-                // Native navigate back/forward icons (from the IDE nav toolbar), if captured; else keep the ◄ ► glyphs.
-                var _nb = document.getElementById('navBackBtn');
-                if (_nb && ni.navBack) { _nb.classList.add('clarion'); _nb.innerHTML = icoImg(ni.navBack); }
-                var _nf = document.getElementById('navFwdBtn');
-                if (_nf && ni.navFwd) { _nf.classList.add('clarion'); _nf.innerHTML = icoImg(ni.navFwd); }
             } else {
                 sb.textContent = live ? 'Save and Exit' : 'Save';
                 sb.title = live ? 'Save changes and close (Ctrl+S)' : 'Save changes (Ctrl+S)';
