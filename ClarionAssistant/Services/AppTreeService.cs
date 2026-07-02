@@ -415,6 +415,25 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
+        /// <summary>The open native embeditor (ClaGenEditor) view content, or null. Public entry for the
+        /// live-linked Monaco OVERLAY (ticket a5bbf005): we dock the Monaco surface onto its host panel and
+        /// hook its Disposed for teardown.</summary>
+        public object GetOpenClaGenEditor()
+        {
+            return GetClaGenEditor();
+        }
+
+        /// <summary>The WinForms Panel that hosts the open native embeditor's text area — i.e. ClaGenEditor.Control,
+        /// which CC's probe (a5bbf005) proved is a System.Windows.Forms.Panel sitting exactly over the source text
+        /// area (below the Source/Design tab strip). This is the DOCK TARGET for the Monaco overlay: adding a
+        /// Dock=Fill child + BringToFront covers exactly the embeditor and nothing else. Null if no embed is open,
+        /// or the host isn't a Control.</summary>
+        public System.Windows.Forms.Control GetClaGenEditorHost()
+        {
+            try { return GetProp(GetClaGenEditor(), "Control") as System.Windows.Forms.Control; }
+            catch { return null; }
+        }
+
         /// <summary>
         /// The native ClaGenEditor IFF its text area is the currently-focused editor surface, else null.
         /// "Existence ≠ focus": GetClaGenEditor() returns the editor even when it persists hidden in

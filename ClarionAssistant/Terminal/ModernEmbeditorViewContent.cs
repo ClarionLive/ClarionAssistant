@@ -64,6 +64,19 @@ namespace ClarionAssistant.Terminal
         // happened — so a stale release can never cancel a NEWER tab's embed (CC static-review finding, a5bbf005).
         private static int _liveGen;
 
+        // EMBED OVERLAY mode (ticket a5bbf005): instead of a separate workbench tab, this view's Monaco surface
+        // (_panel) is docked FILL on top of the open native embeditor's host panel (ClaGenEditor.Control, per CC's
+        // probe), with the native embed alive underneath as the write-back target. There is no ShowView tab and no
+        // switch-away watch — the overlay auto-hides with the Source/Design tab and tears down when the embed
+        // closes. Save uses the same live fast path (SaveLive) as the tab mode.
+        private bool _embedOverlay;
+        private Control _overlayHost;          // the ClaGenEditor.Control panel we docked into
+        private Panel _overlayCover;           // opaque shim hiding the native text area until Monaco paints (anti-flash)
+        private Timer _overlayCoverSafety;     // backstop: drop the cover even if navigation-completed never arrives
+        private object _overlayGenEditor;      // the ClaGenEditor view content, for the Disposed teardown backstop
+        private EventHandler _overlayDisposedHandler; // our subscription to ClaGenEditor.Disposed (removed on detach)
+        private bool _overlayDetached;         // idempotent guard so teardown runs exactly once
+
         // File mode (ticket 564aa142): the tab edits a plain source file on disk (.clw/.inc/...) instead of
         // an embeditor snapshot. Save = encoding-preserving file write; no slot machinery, no Data pad refresh,
         // no designer. _lspFileName is the REAL path so the LSP resolves includes/symbols against the file.
@@ -1125,7 +1138,7 @@ namespace ClarionAssistant.Terminal
         void IMonacoEditorHost.OnOpenDesignerCreate(MonacoEditorControl editor, string rawJson) { if (!_fileMode) HandleOpenDesignerCreate(rawJson); }
         void IMonacoEditorHost.OnActivateDesigner(MonacoEditorControl editor) { if (!_fileMode) StructureDesignerService.ActivateCurrent(_panel); }
 
-        void IMonacoEditorHost.OnEditorNavigationCompleted(MonacoEditorControl editor, bool success) { _isInitialized = success; }
+        void IMonacoEditorHost.OnEditorNavigationCompleted(MonacoEditorControl editor, bool success) { _isInitialized = success; if (_embedOverlay && success) RemoveOverlayCover(); }
         void IMonacoEditorHost.OnUnknownAction(MonacoEditorControl editor, string action, string rawJson) { }
 
         /// <summary>Persist the user's edits: parse the per-slot payload and run the save round-trip.</summary>
@@ -1403,6 +1416,26 @@ namespace ClarionAssistant.Terminal
             // into it (no re-open, no locator re-type). Otherwise — a demoted/background tab — fall back to the
             // proven re-open Save. Both share the same per-slot write + SaveAndClose tail.
             bool live = _liveLinked && IsStillLive();
+
+            // OVERLAY save-and-exit (a5bbf005): tear the Monaco surface OFF the embed host BEFORE SaveLive closes the
+            // native embed. Closing it disposes the ClaGenEditor host panel, which would otherwise cascade-dispose
+            // our WebView2 child on the native close stack (the documented freeze). We already captured `current`, so
+            // the surface isn't needed for the write; and SaveLive discards-on-failure (cancels the embed either
+            // way), so detaching first is consistent with both outcomes. DetachOverlay disposes the WebView2 on THIS
+            // settled turn — well before SaveAndCloseEmbeditor's native-close DoEvents pump.
+            if (_embedOverlay && live)
+            {
+                DetachOverlay();
+                msg = ModernEmbeditorSaver.SaveLive(_procedureName, _editableRanges, _originalSlotTexts, current, out ok);
+                try
+                {
+                    if (ok) RefreshPadSources();
+                    else MessageBox.Show(msg, "CA Embeditor — save", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                catch { }
+                return;
+            }
+
             if (live)
                 msg = ModernEmbeditorSaver.SaveLive(_procedureName, _editableRanges, _originalSlotTexts, current, out ok);
             else
@@ -1532,7 +1565,15 @@ namespace ClarionAssistant.Terminal
             _liveGen++;
             var live = _liveInstance;
             _liveInstance = null;
-            if (live != null) live._liveLinked = false;
+            if (live != null)
+            {
+                live._liveLinked = false;
+                // OVERLAY (a5bbf005): the outgoing live surface is docked on the embed we're about to cancel below.
+                // Detach it NOW (this runs on the launch delegate — a settled turn) so CancelEmbeditor's disposal of
+                // the ClaGenEditor host panel can't cascade-dispose the WebView2 on that stack. DetachOverlay is
+                // idempotent + a no-op for the tab-mode (non-overlay) live path.
+                if (live._embedOverlay) { try { live.DetachOverlay(); } catch { } }
+            }
             try
             {
                 var appTree = new AppTreeService();
@@ -1574,6 +1615,9 @@ namespace ClarionAssistant.Terminal
         /// <summary>Re-select this view's tab (the save round-trip activates the app tree to drive the embeditor).</summary>
         private void BringToFront()
         {
+            // Overlay mode has no workbench tab to SelectWindow — "front" means the Monaco surface on top of the
+            // embeditor's host panel. Just re-assert z-order over the native text area. (a5bbf005)
+            if (_embedOverlay) { try { _panel?.BringToFront(); } catch { } return; }
             // DEFER the re-select onto a clean, non-reentrant turn. The save round-trip just pumped DoEvents inside
             // the native TryClose; re-activating this (WebView2) tab synchronously on that same stack risks the very
             // focus deadlock we're fixing on the close side. Post it (same primitive HandleSave uses) so it runs
@@ -1606,6 +1650,135 @@ namespace ClarionAssistant.Terminal
                     select();
             }
             catch { }
+        }
+
+        // ── Embed OVERLAY hosting (ticket a5bbf005) ─────────────────────────────────────────────────────
+        // Dock the Monaco surface FILL on top of the open native embeditor's host panel (ClaGenEditor.Control),
+        // native embed alive underneath. Runs on the launcher's settled Post turn (same freeze-safe turn ShowView
+        // used), so the WebView2 async init that follows AddControl has a non-reentrant message loop to complete on.
+
+        /// <summary>Attach this view's Monaco surface as an in-place overlay over the open native embeditor's host
+        /// panel (<paramref name="host"/> = ClaGenEditor.Control). The native embed stays open as the write-back
+        /// target; <paramref name="genEditor"/> is the ClaGenEditor view content whose Disposed we hook so an
+        /// uncontrolled embed close (native cancel / Source-tab close / regen) tears the overlay down before WinForms
+        /// cascades disposal into our WebView2.</summary>
+        internal void ShowAsEmbedOverlay(Control host, object genEditor)
+        {
+            if (host == null) throw new ArgumentNullException(nameof(host));
+            _embedOverlay = true;
+            _overlayHost = host;
+            _overlayGenEditor = genEditor;
+
+            // Route saves through the live fast path (SaveLive writes into the still-open embed) WITHOUT the tab
+            // switch-away watch: the overlay lives inside the embed's own document, so there is no "switch away" to
+            // release on. Set live AFTER the ctor (which we called with liveLinked:false, so WireLiveWatch never ran).
+            _liveLinked = true;
+            _liveInstance = this;
+
+            // Opaque cover first (hide the native text area before Monaco paints — no flash), then the WebView2 on
+            // top, then the cover above it until the page signals its first paint. Mirrors MonacoClarionSourceEditor.
+            _overlayCover = new Panel { Dock = DockStyle.Fill, BackColor = _isDark ? Color.FromArgb(0x1E, 0x1E, 0x1E) : Color.FromArgb(0xEF, 0xF1, 0xF5) };
+            host.Controls.Add(_overlayCover);
+            _overlayCover.BringToFront();
+
+            _panel.Dock = DockStyle.Fill;
+            host.Controls.Add(_panel);
+            _panel.BringToFront();
+            _overlayCover.BringToFront();   // keep the cover ABOVE the WebView2 until Monaco has painted
+
+            _overlayCoverSafety = new Timer { Interval = 6000 };
+            _overlayCoverSafety.Tick += (s, e) => RemoveOverlayCover();
+            _overlayCoverSafety.Start();
+
+            HookOverlayTeardown(genEditor);
+        }
+
+        /// <summary>Drop the anti-flash cover once Monaco has painted (or the safety timer fires).</summary>
+        private void RemoveOverlayCover()
+        {
+            try { if (_overlayCoverSafety != null) { _overlayCoverSafety.Stop(); _overlayCoverSafety.Dispose(); _overlayCoverSafety = null; } } catch { }
+            try
+            {
+                if (_overlayCover != null)
+                {
+                    _overlayCover.Parent?.Controls.Remove(_overlayCover);
+                    _overlayCover.Dispose();
+                    _overlayCover = null;
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>Subscribe to the ClaGenEditor's Disposed so an embed close we did NOT initiate (native cancel,
+        /// Source-tab close, app-gen regen) detaches the overlay. Best-effort/reflection — the event name matches
+        /// SharpDevelop's IViewContent.Disposed.</summary>
+        private void HookOverlayTeardown(object genEditor)
+        {
+            try
+            {
+                var evt = genEditor?.GetType().GetEvent("Disposed");
+                if (evt == null) return;
+                _overlayDisposedHandler = (s, e) => PostDetachOverlay();
+                evt.AddEventHandler(genEditor, _overlayDisposedHandler);
+            }
+            catch { }
+        }
+
+        private void UnhookOverlayTeardown()
+        {
+            try
+            {
+                if (_overlayGenEditor != null && _overlayDisposedHandler != null)
+                {
+                    var evt = _overlayGenEditor.GetType().GetEvent("Disposed");
+                    evt?.RemoveEventHandler(_overlayGenEditor, _overlayDisposedHandler);
+                }
+            }
+            catch { }
+            _overlayDisposedHandler = null;
+        }
+
+        /// <summary>Defer overlay teardown onto a clean, non-reentrant turn (never the native embed-close stack —
+        /// disposing a WebView2 there risks the native&lt;-&gt;WebView2 focus deadlock).</summary>
+        private void PostDetachOverlay()
+        {
+            try
+            {
+                if (_panel != null && _panel.IsHandleCreated) _panel.BeginInvoke((Action)(() => DetachOverlay()));
+                else DetachOverlay();
+            }
+            catch { try { DetachOverlay(); } catch { } }
+        }
+
+        /// <summary>Remove the Monaco surface (and cover) from the embeditor host and dispose it. Idempotent. The
+        /// native embed itself is closed by whoever triggered teardown (SaveLive's save-and-close, native cancel, or
+        /// the host's own disposal) — we only own the overlay controls.</summary>
+        private void DetachOverlay()
+        {
+            if (_overlayDetached) return;
+            _overlayDetached = true;
+            UnhookOverlayTeardown();
+            RemoveOverlayCover();
+            try
+            {
+                // Reparent the WebView2 out of the host FIRST (so a host disposal in flight can't cascade into it),
+                // then dispose it ourselves on this settled turn.
+                if (_panel != null)
+                {
+                    _panel.Parent?.Controls.Remove(_panel);
+                    _panel.Dispose();
+                    _panel = null;
+                }
+            }
+            catch { }
+            try { _settingsReg?.Dispose(); } catch { }
+            _settingsReg = null;
+            lock (_instances) { _instances.Remove(this); }
+            if (ReferenceEquals(_liveInstance, this)) _liveInstance = null;
+            _liveLinked = false;
+            _embedOverlay = false;
+            _overlayHost = null;
+            _overlayGenEditor = null;
         }
 
         /// <summary>

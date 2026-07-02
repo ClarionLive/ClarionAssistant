@@ -161,14 +161,28 @@ namespace ClarionAssistant.Services
                 {
                     try
                     {
+                        // LIVE mode (ticket a5bbf005): the native embed is still OPEN (the live path above skipped the
+                        // cancel). Dock the Monaco surface as an in-place OVERLAY on top of the embeditor's host panel
+                        // (ClaGenEditor.Control, per CC's probe) instead of opening a separate workbench tab — that's
+                        // what keeps the native embeditor open with Monaco floating over it, one document, no
+                        // switch-away flash. Fall back to the separate-tab path if the host can't be resolved.
+                        if (capLive)
+                        {
+                            var at = new AppTreeService();
+                            var host = at.GetClaGenEditorHost();
+                            if (host != null)
+                            {
+                                var overlay = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc, false);
+                                overlay.ShowAsEmbedOverlay(host, at.GetOpenClaGenEditor());
+                                return;
+                            }
+                            System.Diagnostics.Debug.WriteLine("[ModernEmbeditorLauncher] live overlay: no ClaGenEditor host resolved — falling back to a separate tab.");
+                        }
+
                         var view = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc, capLive);
                         WorkbenchSingleton.Workbench.ShowView(view);
-                        // LIVE mode (ticket a5bbf005 probe fix): ShowView lands the tab in the BACKGROUND. Foreground
-                        // it so (1) it opens focused as the ticket requires, and (2) it becomes the active view —
-                        // which ARMS the switch-away watch and prevents the open-time active-window churn from
-                        // releasing the native embed before the first save (that demoted save-and-exit to the
-                        // re-open path). ActivateTab defers onto a settled turn (SelectWindow, not a WebView2 focus
-                        // call), so it stays clear of the native<->WebView2 focus deadlock.
+                        // Separate-tab fallback: ShowView lands the tab in the BACKGROUND. Foreground it (also arms the
+                        // switch-away watch, see the probe fix) via SelectWindow on a settled turn.
                         if (capLive) view.ActivateTab();
                     }
                     catch (Exception ex)
