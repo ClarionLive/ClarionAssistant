@@ -76,6 +76,11 @@ namespace ClarionAssistant.Terminal
         private object _overlayGenEditor;      // the ClaGenEditor view content, for the Disposed teardown backstop
         private EventHandler _overlayDisposedHandler; // our subscription to ClaGenEditor.Disposed (removed on detach)
         private bool _overlayDetached;         // idempotent guard so teardown runs exactly once
+        // The native embeditor chrome (its ~24px Dock=Top toolbar strip: green-check save / red-X cancel /
+        // embed-nav + header) we hide while the overlay is up, so only OUR Monaco toolbar shows. Restored on
+        // detach. It's a real WinForms child of SdiWorkspaceWindow, above ClaGenEditor.Control (CC probe a5bbf005).
+        private readonly List<Control> _hiddenChrome = new List<Control>();
+        private Control _chromeHost;           // SdiWorkspaceWindow (the chrome strips' parent) — for PerformLayout on restore
 
         // File mode (ticket 564aa142): the tab edits a plain source file on disk (.clw/.inc/...) instead of
         // an embeditor snapshot. Save = encoding-preserving file write; no slot machinery, no Data pad refresh,
@@ -1727,7 +1732,62 @@ namespace ClarionAssistant.Terminal
             _overlayCoverSafety.Tick += (s, e) => RemoveOverlayCover();
             _overlayCoverSafety.Start();
 
+            HideNativeChrome(host);
             HookOverlayTeardown(genEditor);
+        }
+
+        /// <summary>Hide the native embeditor chrome (its ~24px Dock=Top toolbar strip with green-check/red-X/
+        /// embed-nav + header) so only OUR Monaco toolbar shows. Per CC's probe (a5bbf005) it's a real WinForms
+        /// child of SdiWorkspaceWindow sitting ABOVE the content panel (ClaGenEditor.Control); Visible=false hides
+        /// it and the Dock=Fill content reflows up to fill the gap. Logs every sibling to a file so we can confirm
+        /// exactly which control(s) matched. Best-effort — never throws into the open path.</summary>
+        private void HideNativeChrome(Control content)
+        {
+            try
+            {
+                var wb = content?.Parent;
+                if (wb == null) return;
+                _chromeHost = wb;
+                var sb = new StringBuilder();
+                sb.AppendLine("[overlay chrome] host=" + wb.GetType().FullName + " children=" + wb.Controls.Count +
+                              " contentTop=" + content.Top);
+                foreach (Control c in wb.Controls)
+                {
+                    bool isChrome = !ReferenceEquals(c, content) && c.Visible && c.Top < content.Top && c.Height > 0 && c.Height <= 40;
+                    sb.AppendLine("  " + (isChrome ? "HIDE " : "keep ") + c.GetType().FullName +
+                                  " dock=" + c.Dock + " bounds=" + c.Bounds + " vis=" + c.Visible);
+                    if (isChrome) { _hiddenChrome.Add(c); c.Visible = false; }
+                }
+                try { wb.PerformLayout(); } catch { }
+                OverlayChromeLog(sb.ToString());
+            }
+            catch (Exception ex) { OverlayChromeLog("[overlay chrome] HideNativeChrome error: " + ex.Message); }
+        }
+
+        /// <summary>Restore the native chrome we hid (so a later native embed open shows its toolbar again).</summary>
+        private void RestoreNativeChrome()
+        {
+            try
+            {
+                foreach (var c in _hiddenChrome) { try { if (c != null && !c.IsDisposed) c.Visible = true; } catch { } }
+                _hiddenChrome.Clear();
+                try { if (_chromeHost != null && !_chromeHost.IsDisposed) _chromeHost.PerformLayout(); } catch { }
+                _chromeHost = null;
+            }
+            catch { }
+        }
+
+        /// <summary>One-shot diagnostic log for the chrome-hide probe → %APPDATA%\ClarionAssistant\overlay-chrome.log
+        /// (readable by CC/John to confirm exactly which strip matched). Best-effort.</summary>
+        private static void OverlayChromeLog(string text)
+        {
+            try
+            {
+                var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ClarionAssistant");
+                Directory.CreateDirectory(dir);
+                File.AppendAllText(Path.Combine(dir, "overlay-chrome.log"), text + Environment.NewLine);
+            }
+            catch { }
         }
 
         /// <summary>Drop the anti-flash cover once Monaco has painted (or the safety timer fires).</summary>
@@ -1795,6 +1855,7 @@ namespace ClarionAssistant.Terminal
             if (_overlayDetached) return;
             _overlayDetached = true;
             UnhookOverlayTeardown();
+            RestoreNativeChrome();
             RemoveOverlayCover();
             try
             {
