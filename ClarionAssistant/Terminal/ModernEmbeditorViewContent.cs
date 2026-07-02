@@ -51,6 +51,12 @@ namespace ClarionAssistant.Terminal
         // or save RELEASES the native embed and demotes the tab to a passive snapshot (which still saves via the
         // proven re-open Save path). We never re-link on activate — a re-focused tab stays a snapshot.
         private bool _liveLinked;
+        // The switch-away release ARMS only after this live tab has been foreground at least once. ShowView lands
+        // the new tab in the BACKGROUND, so the open-time active-window churn (app tree still active, then we
+        // activate the tab) would otherwise fire OnActiveWindowChangedForLive with active!=live and release the
+        // native embed the instant it opened — demoting the very first save off the live fast path (no save-and-
+        // exit). Gate the release on this flag so open-time churn can't drop the embed. (a5bbf005 probe fix)
+        private bool _liveActivatedOnce;
         private static ModernEmbeditorViewContent _liveInstance;   // the ONE tab currently holding an open native embed, or null
         private static bool _liveWatchWired;                       // one-time ActiveWorkbenchWindowChanged subscription guard
         // Generation counter bumped at every live ACQUISITION (start of a live open, in ReleaseLiveInstanceSync).
@@ -1466,7 +1472,13 @@ namespace ClarionAssistant.Terminal
             if (live == null) return;
             ModernEmbeditorViewContent active = null;
             try { active = FocusedModernView(); } catch { }
-            if (ReferenceEquals(active, live)) return;   // still the foreground doc → stay live
+            if (ReferenceEquals(active, live)) { live._liveActivatedOnce = true; return; }   // foreground → arm + stay live
+
+            // Not the foreground doc. But if the live tab has NOT yet been brought to the foreground even once,
+            // this is the open-time activation churn (ShowView placed the tab in the background before we could
+            // activate it), NOT a genuine switch-away. Releasing now would drop the native embed before the first
+            // save and demote save-and-exit to the re-open path. Wait until it's been foreground once. (a5bbf005)
+            if (!live._liveActivatedOnce) return;
 
             _liveInstance = null;            // demote synchronously (cheap) …
             live._liveLinked = false;
@@ -1575,7 +1587,16 @@ namespace ClarionAssistant.Terminal
                     try
                     {
                         var w = WorkbenchWindow;
-                        if (w != null) w.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(w, null);
+                        if (w != null)
+                        {
+                            w.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(w, null);
+                            // This tab is now the foreground doc. If it's the live one, ARM the switch-away release
+                            // (see _liveActivatedOnce): from here on, losing foreground genuinely means "switched
+                            // away" and should release the native embed. Set deterministically here rather than
+                            // relying only on the active-window event, which may not re-fire if we were already
+                            // the active window. (a5bbf005 probe fix)
+                            if (_liveLinked && ReferenceEquals(_liveInstance, this)) _liveActivatedOnce = true;
+                        }
                     }
                     catch { }
                 };

@@ -163,6 +163,13 @@ namespace ClarionAssistant.Services
                     {
                         var view = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc, capLive);
                         WorkbenchSingleton.Workbench.ShowView(view);
+                        // LIVE mode (ticket a5bbf005 probe fix): ShowView lands the tab in the BACKGROUND. Foreground
+                        // it so (1) it opens focused as the ticket requires, and (2) it becomes the active view —
+                        // which ARMS the switch-away watch and prevents the open-time active-window churn from
+                        // releasing the native embed before the first save (that demoted save-and-exit to the
+                        // re-open path). ActivateTab defers onto a settled turn (SelectWindow, not a WebView2 focus
+                        // call), so it stays clear of the native<->WebView2 focus deadlock.
+                        if (capLive) view.ActivateTab();
                     }
                     catch (Exception ex)
                     {
