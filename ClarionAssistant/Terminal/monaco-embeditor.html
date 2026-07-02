@@ -49,15 +49,14 @@
     #embHeader:hover { color: var(--title-accent); text-decoration: underline; }
     /* Clarion-style save/cancel: filled green/red circle + white check/X (inline SVG). */
     #toolbar button.tb-save, #toolbar button.tb-cancel {
-        padding: 2px 6px; font-size: 0; line-height: 0; display: inline-flex; align-items: center;
+        padding: 1px 5px; font-size: 0; line-height: 0; display: inline-flex; align-items: center;
     }
-    #toolbar button.tb-save svg, #toolbar button.tb-cancel svg { display: block; width: 22px; height: 22px; }
+    #toolbar button.tb-save svg, #toolbar button.tb-cancel svg { display: block; width: 24px; height: 24px; }
     /* Embed-nav icons in Clarion blue (SVG uses currentColor so this drives them). */
-    #toolbar button.embed-nav.clarion { color: #3b82f6; padding: 2px 6px; }
-    #toolbar button.embed-nav.clarion svg { display: block; width: 17px; height: 17px; }
-    /* Real extracted native Clarion icons (pixel-perfect) — normalized to a consistent height. */
-    #toolbar button .native-ico { display: block; height: 18px; width: auto; }
-    #toolbar button.tb-save .native-ico, #toolbar button.tb-cancel .native-ico { height: 20px; }
+    #toolbar button.embed-nav.clarion { color: #3b82f6; padding: 1px 5px; }
+    #toolbar button.embed-nav.clarion svg { display: block; width: 22px; height: 22px; }
+    /* Real extracted native Clarion icons — rendered at the native toolbar's 24px scaling size (pixel-match). */
+    #toolbar button .native-ico { display: block; height: 24px; width: auto; }
     /* Overlay: LEFT-align the buttons like the native Clarion bar — save/cancel first, then embed-nav, then the
        rest; the spacer moves to the far right so it absorbs the slack. */
     body.has-embheader #saveBtn   { order: -2; }
