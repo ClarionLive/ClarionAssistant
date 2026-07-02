@@ -38,6 +38,21 @@
     }
     #toolbar button:hover { background: rgba(127,127,127,0.18); }
 
+    /* ---------- Clarion-faithful overlay chrome (b1e05287) ---------- */
+    /* Clickable header strip mimicking the native "Proc - Embeditor - (module.clw)" line; click → open source. */
+    #embHeader {
+        display: none; align-items: center; height: 24px; flex-shrink: 0;
+        padding: 0 12px; font-size: 12px; cursor: pointer; user-select: none;
+        background: var(--toolbar-bg); border-bottom: 1px solid var(--toolbar-border);
+        color: var(--title-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #embHeader:hover { color: var(--title-accent); text-decoration: underline; }
+    /* Clarion-style save (green check) / cancel (red X) — icon-first, bold, larger glyph. */
+    #toolbar button.tb-save   { color: #2fa84f; font-weight: 700; font-size: 15px; padding: 2px 10px; }
+    #toolbar button.tb-cancel { color: #e5484d; font-weight: 700; font-size: 15px; padding: 2px 10px; }
+    /* Embed-nav icons in Clarion blue. */
+    #toolbar button.embed-nav.clarion { color: #3b82f6; font-size: 14px; }
+
     #toast {
         position: absolute; right: 14px; bottom: 14px; z-index: 20;
         max-width: 60%; padding: 8px 14px; border-radius: 6px;
@@ -255,6 +270,7 @@
 </style>
 </head>
 <body>
+    <div id="embHeader" title="Open the generated source"></div>
     <div id="toolbar">
         <div class="title"><span id="titlePrefix">CA Embeditor</span> — <span id="titleText">(no procedure)</span></div>
         <div class="spacer"></div>
@@ -619,6 +635,8 @@
                 document.getElementById('saveBtn').addEventListener('click', doSave);
                 var _cancelBtn = document.getElementById('cancelBtn');
                 if (_cancelBtn) _cancelBtn.addEventListener('click', doCancel);
+                var _embHeader = document.getElementById('embHeader');
+                if (_embHeader) _embHeader.addEventListener('click', function () { postToHost({ action: 'openSource' }); });
                 // Reload (file mode): discards edits, so require a second click within 4s to confirm.
                 document.getElementById('reloadBtn').addEventListener('click', function () {
                     if (!fileMode) return;
@@ -666,12 +684,38 @@
         // (save-and-exit), so label it as such. Snapshot mode keeps the plain "Save". (a5bbf005)
         if (sb) {
             var live = !!msg.liveLinked;
-            sb.textContent = live ? 'Save and Exit' : 'Save';
-            sb.title = live ? 'Save changes and close (Ctrl+S)' : 'Save changes (Ctrl+S)';
+            var overlay = !!msg.embedOverlay;   // in-place overlay → Clarion-faithful toolbar + clickable header
             // Live/overlay mode hides the native embeditor toolbar (with its red-X cancel), so surface our own
             // Cancel/Discard. Snapshot/file mode keeps closing via the tab, so no Cancel button there. (a5bbf005)
             var cb = document.getElementById('cancelBtn');
-            if (cb) cb.style.display = live ? '' : 'none';
+            if (overlay) {
+                // Clarion-faithful: green ✔ = Save & Exit, red ✖ = Cancel (icon-first, familiar to migrating devs). b1e05287
+                sb.innerHTML = '&#10004;';                 // heavy check
+                sb.title = 'Save and Exit';
+                sb.classList.add('tb-save');
+                if (cb) { cb.innerHTML = '&#10006;'; cb.title = 'Cancel (discard changes)'; cb.classList.add('tb-cancel'); cb.style.display = ''; }
+                // Colour the embed-nav icons Clarion blue.
+                ['prevEmbedBtn', 'nextEmbedBtn', 'prevFilledBtn', 'nextFilledBtn'].forEach(function (id) {
+                    var b = document.getElementById(id); if (b) b.classList.add('clarion');
+                });
+            } else {
+                sb.textContent = live ? 'Save and Exit' : 'Save';
+                sb.title = live ? 'Save changes and close (Ctrl+S)' : 'Save changes (Ctrl+S)';
+                if (cb) cb.style.display = live ? '' : 'none';
+            }
+            // Clickable header strip mimicking the native "Proc - Embeditor - (module.clw)" line — click opens the
+            // generated source. Shown only when the host supplied the captured native header text (overlay mode). b1e05287
+            var eh = document.getElementById('embHeader');
+            if (eh) {
+                if (overlay && msg.headerText) {
+                    eh.textContent = msg.headerText;
+                    eh.style.display = 'flex';
+                    // The header now carries the title, so drop the toolbar's own title to give the buttons room.
+                    var tt = document.querySelector('#toolbar .title'); if (tt) tt.style.display = 'none';
+                } else {
+                    eh.style.display = 'none';
+                }
+            }
         }
         // Optional GLOBAL read-only (the dual-control source overlay sends this for its inert mirror).
         // Default off → the standalone embeditor/file view, which never sends the field, is unchanged.

@@ -48,6 +48,10 @@ namespace ClarionAssistant.Terminal
         /// mode closes the workbench tab. (a5bbf005 — our toolbar's Cancel, replacing the hidden native red-X.)</summary>
         void OnCancel(MonacoEditorControl editor);
 
+        /// <summary>{action:"openSource"} — clicking our header strip opens the generated source (runs the native
+        /// OpenSourceButton.OpenSourceCommand). Overlay mode only; other hosts no-op. (b1e05287)</summary>
+        void OnOpenSource(MonacoEditorControl editor);
+
         /// <summary>{action:"clipboard"} — Clarion-style cut: put text on the Windows clipboard.</summary>
         void OnClipboard(MonacoEditorControl editor, string rawJson);
 
@@ -232,6 +236,7 @@ namespace ClarionAssistant.Terminal
                     case "ready":             h.OnReady(this); break;
                     case "save":              h.OnSave(this, json); break;
                     case "cancel":            h.OnCancel(this); break;
+                    case "openSource":        h.OnOpenSource(this); break;
                     case "clipboard":         h.OnClipboard(this, json); break;
                     case "completion":        h.OnCompletion(this, json); break;
                     case "hover":             h.OnHover(this, json); break;

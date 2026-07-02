@@ -611,6 +611,8 @@ namespace ClarionAssistant
         void IMonacoEditorHost.OnReload(MonacoEditorControl editor) { }
         // The source-editor overlay has no Cancel affordance (the native file editor owns its own close); no-op.
         void IMonacoEditorHost.OnCancel(MonacoEditorControl editor) { }
+        // No clickable header in the source-editor overlay (that's the embeditor overlay's feature); no-op.
+        void IMonacoEditorHost.OnOpenSource(MonacoEditorControl editor) { }
 
         // Track the page's live buffer + dirty flag so we can save-on-close (the native shell stays clean,
         // so the IDE never prompts — without this, closing a dirty tab would silently lose edits).

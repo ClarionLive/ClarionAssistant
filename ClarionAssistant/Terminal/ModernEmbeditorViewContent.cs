@@ -81,6 +81,8 @@ namespace ClarionAssistant.Terminal
         // detach. It's a real WinForms child of SdiWorkspaceWindow, above ClaGenEditor.Control (CC probe a5bbf005).
         private readonly List<Control> _hiddenChrome = new List<Control>();
         private Control _chromeHost;           // SdiWorkspaceWindow (the chrome strips' parent) — for PerformLayout on restore
+        private string _nativeHeaderText;      // captured from the hidden AppHeaderLabel ("Proc - Embeditor - (module.clw)"):
+                                               // rendered as OUR clickable header, whose click opens the generated source (b1e05287)
 
         // File mode (ticket 564aa142): the tab edits a plain source file on disk (.clw/.inc/...) instead of
         // an embeditor snapshot. Save = encoding-preserving file write; no slot machinery, no Data pad refresh,
@@ -1125,6 +1127,7 @@ namespace ClarionAssistant.Terminal
 
         void IMonacoEditorHost.OnSave(MonacoEditorControl editor, string rawJson) { HandleSave(rawJson); }
         void IMonacoEditorHost.OnCancel(MonacoEditorControl editor) { HandleCancel(); }
+        void IMonacoEditorHost.OnOpenSource(MonacoEditorControl editor) { HandleOpenSource(); }
         void IMonacoEditorHost.OnClipboard(MonacoEditorControl editor, string rawJson) { HandleClipboard(rawJson); }
         void IMonacoEditorHost.OnCompletion(MonacoEditorControl editor, string rawJson) { HandleCompletion(rawJson); }
         void IMonacoEditorHost.OnHover(MonacoEditorControl editor, string rawJson) { HandleHover(rawJson); }
@@ -1212,6 +1215,41 @@ namespace ClarionAssistant.Terminal
                     return;
                 }
                 PostCloseTab();   // tab / snapshot / file mode: discard by closing the tab
+            };
+            try
+            {
+                if (_panel != null && _panel.IsHandleCreated) _panel.BeginInvoke(work);
+                else work();
+            }
+            catch { try { work(); } catch { } }
+        }
+
+        /// <summary>Clicking our header strip opens the generated source — same as the native embeditor's "Open Source"
+        /// button, which is the registered command OpenSourceButton.OpenSourceCommand. Resolve the type across loaded
+        /// assemblies, instantiate, and invoke Run() (mirrors McpToolRegistry.execute_command). Deferred onto a settled
+        /// UI turn off the web-message stack. (b1e05287)</summary>
+        private void HandleOpenSource()
+        {
+            Action work = () =>
+            {
+                try
+                {
+                    Type cmdType = null;
+                    foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                    {
+                        try { cmdType = asm.GetType("OpenSourceButton.OpenSourceCommand", false); if (cmdType != null) break; }
+                        catch { }
+                    }
+                    if (cmdType == null) { PostSaveResult(false, "Open Source: command not found (OpenSourceButton.OpenSourceCommand)."); return; }
+                    var cmd = Activator.CreateInstance(cmdType);
+                    var run = cmdType.GetMethod("Run");
+                    if (run == null) { PostSaveResult(false, "Open Source: no Run() on the command."); return; }
+                    run.Invoke(cmd, null);
+                }
+                catch (Exception ex)
+                {
+                    try { PostSaveResult(false, "Open Source failed: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message)); } catch { }
+                }
             };
             try
             {
@@ -1761,7 +1799,13 @@ namespace ClarionAssistant.Terminal
                         bool isChrome = !ReferenceEquals(c, content) && c.Visible && c.Top < content.Top && c.Height > 0 && c.Height <= 40;
                         sb.AppendLine("  [parent] " + (isChrome ? "HIDE " : "keep ") + c.GetType().FullName +
                                       " dock=" + c.Dock + " bounds=" + c.Bounds + " vis=" + c.Visible);
-                        if (isChrome) { _hiddenChrome.Add(c); c.Visible = false; }
+                        if (isChrome)
+                        {
+                            // Capture the header text (AppHeaderLabel = "Proc - Embeditor - (module.clw)") before we
+                            // hide it, so OUR clickable header can reproduce it and route a click to Open Source. (b1e05287)
+                            try { if (string.IsNullOrWhiteSpace(_nativeHeaderText) && !string.IsNullOrWhiteSpace(c.Text)) _nativeHeaderText = c.Text; } catch { }
+                            _hiddenChrome.Add(c); c.Visible = false;
+                        }
                     }
                 }
 
@@ -2642,6 +2686,8 @@ namespace ClarionAssistant.Terminal
                     "\"filePath\":" + JsonString(_filePath ?? "") + "," +
                     "\"saveEnabled\":" + (_saveEnabled ? "true" : "false") + "," +
                     "\"liveLinked\":" + (_liveLinked ? "true" : "false") + "," +   // live mode: relabel Save → "Save and Exit" (a5bbf005)
+                    "\"embedOverlay\":" + (_embedOverlay ? "true" : "false") + "," +   // overlay: Clarion-faithful toolbar + clickable header (b1e05287)
+                    "\"headerText\":" + JsonString(_nativeHeaderText ?? "") + "," +    // native "Proc - Embeditor - (clw)" → our clickable header
                     "\"editableRanges\":" + RangesJson() + "," +
                     "\"settings\":" + settingsJson + "," +
                     "\"findHistory\":" + findHistJson + "," +
