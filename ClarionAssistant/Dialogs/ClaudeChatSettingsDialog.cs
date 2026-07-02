@@ -187,6 +187,15 @@ namespace ClarionAssistant.Dialogs
                     case "testGitHubToken":
                         HandleTestGitHubToken(json);
                         break;
+                    case "addSnippet":
+                        HandleAddSnippet(json);
+                        break;
+                    case "editSnippet":
+                        HandleEditSnippet(json);
+                        break;
+                    case "deleteSnippet":
+                        HandleDeleteSnippet(json);
+                        break;
                     case "browseClassFolder":
                         BrowseFolder("classFolder", "Select Class Output Folder", _settings.Get("Class.OutputFolder"));
                         break;
@@ -361,6 +370,107 @@ namespace ClarionAssistant.Dialogs
 
             // Send GitHub accounts (separate message — keeps setSettings clean)
             SendGitHubAccounts();
+            SendSnippets();
+        }
+
+        private void SendSnippets()
+        {
+            try
+            {
+                _webView.CoreWebView2.PostWebMessageAsString(
+                    "{\"type\":\"setSnippets\",\"snippets\":" + SnippetStore.ToJson(SnippetStore.Load()) + "}");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[SettingsDialog] SendSnippets error: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Snippet payloads carry a multi-line Clarion code body (arbitrary quotes/backslashes/tabs), so
+        /// unlike the GitHub-account handlers above (which use the hand-rolled ExtractJsonValue on a
+        /// double-stringified "data" field), the snippet JS side sends "data" as a native nested object
+        /// and this parses the WHOLE envelope with JavaScriptSerializer — one clean JSON round-trip
+        /// instead of two layers of string-escaping that ExtractJsonValue isn't built to survive
+        /// (it doesn't decode \t or \uXXXX).
+        /// </summary>
+        private static Dictionary<string, object> ExtractSnippetData(string json)
+        {
+            try
+            {
+                var d = new System.Web.Script.Serialization.JavaScriptSerializer { MaxJsonLength = int.MaxValue }
+                    .DeserializeObject(json) as Dictionary<string, object>;
+                object data;
+                return (d != null && d.TryGetValue("data", out data)) ? data as Dictionary<string, object> : null;
+            }
+            catch { return null; }
+        }
+
+        private static string SnippetStr(Dictionary<string, object> d, string key)
+        {
+            object v;
+            return (d != null && d.TryGetValue(key, out v) && v != null) ? v.ToString() : null;
+        }
+
+        private static List<string> SnippetStrList(Dictionary<string, object> d, string key)
+        {
+            var list = new List<string>();
+            object v;
+            if (d != null && d.TryGetValue(key, out v) && v is object[])
+                foreach (var item in (object[])v) if (item != null) list.Add(item.ToString());
+            return list;
+        }
+
+        private void HandleAddSnippet(string json)
+        {
+            try
+            {
+                var data = ExtractSnippetData(json);
+                if (data == null) return;
+                var updated = SnippetStore.Add(
+                    SnippetStr(data, "trigger"), SnippetStr(data, "description"),
+                    SnippetStrList(data, "extensions"), SnippetStr(data, "body"));
+                SendSnippets();
+                Terminal.ModernEmbeditorViewContent.ApplySnippetsToAll(updated);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[SettingsDialog] AddSnippet error: " + ex.Message);
+            }
+        }
+
+        private void HandleEditSnippet(string json)
+        {
+            try
+            {
+                var data = ExtractSnippetData(json);
+                if (data == null) return;
+                var updated = SnippetStore.Update(
+                    SnippetStr(data, "id"), SnippetStr(data, "trigger"), SnippetStr(data, "description"),
+                    SnippetStrList(data, "extensions"), SnippetStr(data, "body"));
+                SendSnippets();
+                Terminal.ModernEmbeditorViewContent.ApplySnippetsToAll(updated);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[SettingsDialog] EditSnippet error: " + ex.Message);
+            }
+        }
+
+        private void HandleDeleteSnippet(string json)
+        {
+            try
+            {
+                string id = ExtractJsonValue(json, "data");
+                if (string.IsNullOrEmpty(id)) return;
+                var updated = SnippetStore.Delete(id);
+                SendSnippets();
+                Terminal.ModernEmbeditorViewContent.ApplySnippetsToAll(updated);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[SettingsDialog] DeleteSnippet error: " + ex.Message);
+            }
         }
 
         private void SendGitHubAccounts()
