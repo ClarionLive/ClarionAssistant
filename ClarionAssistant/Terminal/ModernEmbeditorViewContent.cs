@@ -85,6 +85,9 @@ namespace ClarionAssistant.Terminal
                                                // rendered as OUR clickable header, whose click opens the generated source (b1e05287)
         private ToolStrip _nativeToolStrip;    // the hidden native embeditor toolbar — we PerformClick its "Open Source"
                                                // item from our header (hidden != disabled), instead of guessing a command class (b1e05287)
+        // Chrome colors captured from the native toolbar so our overlay header/toolbar follow the active Clarion
+        // theme (its ToolStripProfessionalRenderer gradient + text color). CSS hex strings, null if unavailable. (b1e05287)
+        private string _chromeBg1, _chromeBg2, _chromeFg;
 
         // File mode (ticket 564aa142): the tab edits a plain source file on disk (.clw/.inc/...) instead of
         // an embeditor snapshot. Save = encoding-preserving file write; no slot machinery, no Data pad refresh,
@@ -1847,7 +1850,7 @@ namespace ClarionAssistant.Terminal
                     if (isToolbar)
                     {
                         // Keep a handle to the native toolbar so our header can PerformClick its "Open Source" item. (b1e05287)
-                        if (_nativeToolStrip == null) _nativeToolStrip = c as ToolStrip;
+                        if (_nativeToolStrip == null) { _nativeToolStrip = c as ToolStrip; CaptureChromeColors(_nativeToolStrip); }
                         _hiddenChrome.Add(c); c.Visible = false;
                     }
                 }
@@ -1857,6 +1860,32 @@ namespace ClarionAssistant.Terminal
                 OverlayChromeLog(sb.ToString());
             }
             catch (Exception ex) { OverlayChromeLog("[overlay chrome] HideNativeChrome error: " + ex.Message); }
+        }
+
+        /// <summary>Capture the native toolbar's colors so our overlay chrome follows the active Clarion theme. Prefer
+        /// the ToolStripProfessionalRenderer's gradient (that's the blue bar you see); fall back to flat BackColor.
+        /// ForeColor drives our header/button text. All best-effort → null leaves the page on its own theme. (b1e05287)</summary>
+        private void CaptureChromeColors(ToolStrip strip)
+        {
+            if (strip == null) return;
+            try
+            {
+                var rend = strip.Renderer as ToolStripProfessionalRenderer;
+                if (rend != null && rend.ColorTable != null)
+                {
+                    _chromeBg1 = ToCssHex(rend.ColorTable.ToolStripGradientBegin);
+                    _chromeBg2 = ToCssHex(rend.ColorTable.ToolStripGradientEnd);
+                }
+                if (_chromeBg1 == null) { _chromeBg1 = ToCssHex(strip.BackColor); _chromeBg2 = _chromeBg1; }
+                _chromeFg = ToCssHex(strip.ForeColor);
+            }
+            catch { }
+        }
+
+        private static string ToCssHex(Color c)
+        {
+            try { if (c.A == 0) return null; return string.Format("#{0:X2}{1:X2}{2:X2}", c.R, c.G, c.B); }
+            catch { return null; }
         }
 
         /// <summary>Restore the native chrome we hid (so a later native embed open shows its toolbar again).</summary>
@@ -2717,6 +2746,9 @@ namespace ClarionAssistant.Terminal
                     "\"liveLinked\":" + (_liveLinked ? "true" : "false") + "," +   // live mode: relabel Save → "Save and Exit" (a5bbf005)
                     "\"embedOverlay\":" + (_embedOverlay ? "true" : "false") + "," +   // overlay: Clarion-faithful toolbar + clickable header (b1e05287)
                     "\"headerText\":" + JsonString(_nativeHeaderText ?? "") + "," +    // native "Proc - Embeditor - (clw)" → our clickable header
+                    "\"chromeBg1\":" + JsonString(_chromeBg1 ?? "") + "," +            // native theme colors → our overlay chrome (b1e05287)
+                    "\"chromeBg2\":" + JsonString(_chromeBg2 ?? "") + "," +
+                    "\"chromeFg\":" + JsonString(_chromeFg ?? "") + "," +
                     "\"editableRanges\":" + RangesJson() + "," +
                     "\"settings\":" + settingsJson + "," +
                     "\"findHistory\":" + findHistJson + "," +

@@ -52,6 +52,24 @@
     #toolbar button.tb-cancel { color: #e5484d; font-weight: 700; font-size: 15px; padding: 2px 10px; }
     /* Embed-nav icons in Clarion blue. */
     #toolbar button.embed-nav.clarion { color: #3b82f6; font-size: 14px; }
+    /* Overlay: LEFT-align the buttons like the native Clarion bar — save/cancel first, then embed-nav, then the
+       rest; the spacer moves to the far right so it absorbs the slack. */
+    body.has-embheader #saveBtn   { order: -2; }
+    body.has-embheader #cancelBtn { order: -1; }
+    body.has-embheader #toolbar .spacer { order: 100; }
+    /* Overlay: flat, native-style buttons (no boxy borders) over the themed gradient bar. */
+    body.has-embheader #toolbar button { border-color: transparent; background: transparent; }
+    body.has-embheader #toolbar button:hover { background: rgba(127,127,127,0.22); }
+    /* Overlay: follow the active Clarion theme colors captured from the native toolbar (gradient + text). */
+    body.has-embheader #toolbar,
+    body.has-embheader #embHeader {
+        background: linear-gradient(to bottom, var(--chrome-bg1, var(--toolbar-bg)), var(--chrome-bg2, var(--toolbar-bg)));
+        color: var(--chrome-fg, var(--title-color));
+        border-bottom-color: var(--chrome-bg2, var(--toolbar-border));
+    }
+    body.has-embheader #embHeader { color: var(--chrome-fg, var(--title-color)); }
+    /* Non-icon buttons follow the theme text color; the green/red/blue icons keep their own colors. */
+    body.has-embheader #toolbar button:not(.tb-save):not(.tb-cancel):not(.clarion) { color: var(--chrome-fg, var(--title-accent)); }
 
     #toast {
         position: absolute; right: 14px; bottom: 14px; z-index: 20;
@@ -717,6 +735,11 @@
                     // Activate --header-h so the editor + all below-toolbar panels shift down by the header height
                     // (else the absolutely-positioned editor overlaps and clips the toolbar).
                     document.body.classList.add('has-embheader');
+                    // Follow the active Clarion theme: apply the native toolbar's captured gradient + text color.
+                    var bs = document.body.style;
+                    if (msg.chromeBg1) bs.setProperty('--chrome-bg1', msg.chromeBg1); else bs.removeProperty('--chrome-bg1');
+                    if (msg.chromeBg2) bs.setProperty('--chrome-bg2', msg.chromeBg2); else bs.removeProperty('--chrome-bg2');
+                    if (msg.chromeFg)  bs.setProperty('--chrome-fg',  msg.chromeFg);  else bs.removeProperty('--chrome-fg');
                     // The header now carries the title, so drop the toolbar's own title to give the buttons room.
                     var tt = document.querySelector('#toolbar .title'); if (tt) tt.style.display = 'none';
                 } else {
