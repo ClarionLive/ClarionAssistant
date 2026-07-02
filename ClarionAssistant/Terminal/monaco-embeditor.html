@@ -659,6 +659,13 @@
         designerEnabled = !!msg.designerEnabled;         // overlay: Ctrl+D designs structures in plain source files
         var sb = document.getElementById('saveBtn');
         if (sb) sb.style.display = saveEnabled ? '' : 'none';
+        // Live-linked mode: Save writes straight back into the still-open native embed AND closes the tab
+        // (save-and-exit), so label it as such. Snapshot mode keeps the plain "Save". (a5bbf005)
+        if (sb) {
+            var live = !!msg.liveLinked;
+            sb.textContent = live ? 'Save and Exit' : 'Save';
+            sb.title = live ? 'Save changes and close (Ctrl+S)' : 'Save changes (Ctrl+S)';
+        }
         // Optional GLOBAL read-only (the dual-control source overlay sends this for its inert mirror).
         // Default off → the standalone embeditor/file view, which never sends the field, is unchanged.
         var roAll = !!msg.readOnly;

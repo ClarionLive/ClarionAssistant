@@ -2348,6 +2348,7 @@ namespace ClarionAssistant.Terminal
                     "\"fileMode\":" + (_fileMode ? "true" : "false") + "," +
                     "\"filePath\":" + JsonString(_filePath ?? "") + "," +
                     "\"saveEnabled\":" + (_saveEnabled ? "true" : "false") + "," +
+                    "\"liveLinked\":" + (_liveLinked ? "true" : "false") + "," +   // live mode: relabel Save → "Save and Exit" (a5bbf005)
                     "\"editableRanges\":" + RangesJson() + "," +
                     "\"settings\":" + settingsJson + "," +
                     "\"findHistory\":" + findHistJson + "," +
