@@ -83,6 +83,8 @@ namespace ClarionAssistant.Terminal
         private Control _chromeHost;           // SdiWorkspaceWindow (the chrome strips' parent) — for PerformLayout on restore
         private string _nativeHeaderText;      // captured from the hidden AppHeaderLabel ("Proc - Embeditor - (module.clw)"):
                                                // rendered as OUR clickable header, whose click opens the generated source (b1e05287)
+        private ToolStrip _nativeToolStrip;    // the hidden native embeditor toolbar — we PerformClick its "Open Source"
+                                               // item from our header (hidden != disabled), instead of guessing a command class (b1e05287)
 
         // File mode (ticket 564aa142): the tab edits a plain source file on disk (.clw/.inc/...) instead of
         // an embeditor snapshot. Save = encoding-preserving file write; no slot machinery, no Data pad refresh,
@@ -1225,26 +1227,18 @@ namespace ClarionAssistant.Terminal
         }
 
         /// <summary>Clicking our header strip opens the generated source — same as the native embeditor's "Open Source"
-        /// button, which is the registered command OpenSourceButton.OpenSourceCommand. Resolve the type across loaded
-        /// assemblies, instantiate, and invoke Run() (mirrors McpToolRegistry.execute_command). Deferred onto a settled
-        /// UI turn off the web-message stack. (b1e05287)</summary>
+        /// toolbar button. We drive that native ToolStripItem's Click directly (it's hidden with the toolbar, but
+        /// hidden != disabled, so PerformClick still fires its handler) — robust, reuses the exact native behaviour,
+        /// no guessing at a command class. Deferred onto a settled UI turn off the web-message stack. (b1e05287)</summary>
         private void HandleOpenSource()
         {
             Action work = () =>
             {
                 try
                 {
-                    Type cmdType = null;
-                    foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-                    {
-                        try { cmdType = asm.GetType("OpenSourceButton.OpenSourceCommand", false); if (cmdType != null) break; }
-                        catch { }
-                    }
-                    if (cmdType == null) { PostSaveResult(false, "Open Source: command not found (OpenSourceButton.OpenSourceCommand)."); return; }
-                    var cmd = Activator.CreateInstance(cmdType);
-                    var run = cmdType.GetMethod("Run");
-                    if (run == null) { PostSaveResult(false, "Open Source: no Run() on the command."); return; }
-                    run.Invoke(cmd, null);
+                    var item = FindToolStripItem(_nativeToolStrip, "source");   // "Open Source"
+                    if (item != null) { item.PerformClick(); return; }
+                    PostSaveResult(false, "Open Source: couldn't find the native toolbar's Open Source button.");
                 }
                 catch (Exception ex)
                 {
@@ -1257,6 +1251,36 @@ namespace ClarionAssistant.Terminal
                 else work();
             }
             catch { try { work(); } catch { } }
+        }
+
+        /// <summary>Find a ToolStripItem whose Text/ToolTipText contains <paramref name="needle"/> (case-insensitive),
+        /// excluding our own "CA Embeditor" item. Recurses dropdowns. Null if none. (b1e05287)</summary>
+        private static ToolStripItem FindToolStripItem(ToolStrip strip, string needle)
+        {
+            if (strip == null || string.IsNullOrEmpty(needle)) return null;
+            foreach (ToolStripItem it in strip.Items)
+            {
+                var found = MatchToolStripItem(it, needle);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        private static ToolStripItem MatchToolStripItem(ToolStripItem it, string needle)
+        {
+            if (it == null) return null;
+            string t = ((it.Text ?? "") + " " + (it.ToolTipText ?? ""));
+            bool hit = t.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0
+                       && t.IndexOf("CA Embeditor", StringComparison.OrdinalIgnoreCase) < 0;
+            if (hit) return it;
+            var dd = it as ToolStripDropDownItem;
+            if (dd != null)
+                foreach (ToolStripItem sub in dd.DropDownItems)
+                {
+                    var f = MatchToolStripItem(sub, needle);
+                    if (f != null) return f;
+                }
+            return null;
         }
 
         /// <summary>
@@ -1820,7 +1844,12 @@ namespace ClarionAssistant.Terminal
                     bool isToolbar = !ours && c.Visible && c.Dock == DockStyle.Top && c.Height > 0 && c.Height <= 60;
                     sb.AppendLine("  [content] " + (isToolbar ? "HIDE " : "keep ") + c.GetType().FullName +
                                   " dock=" + c.Dock + " bounds=" + c.Bounds + " vis=" + c.Visible);
-                    if (isToolbar) { _hiddenChrome.Add(c); c.Visible = false; }
+                    if (isToolbar)
+                    {
+                        // Keep a handle to the native toolbar so our header can PerformClick its "Open Source" item. (b1e05287)
+                        if (_nativeToolStrip == null) _nativeToolStrip = c as ToolStrip;
+                        _hiddenChrome.Add(c); c.Visible = false;
+                    }
                 }
 
                 try { content.PerformLayout(); } catch { }
