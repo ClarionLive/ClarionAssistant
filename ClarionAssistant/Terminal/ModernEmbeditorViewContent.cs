@@ -1745,20 +1745,42 @@ namespace ClarionAssistant.Terminal
         {
             try
             {
-                var wb = content?.Parent;
-                if (wb == null) return;
-                _chromeHost = wb;
+                if (content == null) return;
                 var sb = new StringBuilder();
-                sb.AppendLine("[overlay chrome] host=" + wb.GetType().FullName + " children=" + wb.Controls.Count +
-                              " contentTop=" + content.Top);
-                foreach (Control c in wb.Controls)
+
+                // (a) The header strip (AppHeaderLabel) is a Dock=Top sibling of the content panel in
+                // SdiWorkspaceWindow — a small strip positioned ABOVE the content.
+                var wb = content.Parent;
+                if (wb != null)
                 {
-                    bool isChrome = !ReferenceEquals(c, content) && c.Visible && c.Top < content.Top && c.Height > 0 && c.Height <= 40;
-                    sb.AppendLine("  " + (isChrome ? "HIDE " : "keep ") + c.GetType().FullName +
-                                  " dock=" + c.Dock + " bounds=" + c.Bounds + " vis=" + c.Visible);
-                    if (isChrome) { _hiddenChrome.Add(c); c.Visible = false; }
+                    _chromeHost = wb;
+                    sb.AppendLine("[overlay chrome] parent=" + wb.GetType().FullName + " children=" + wb.Controls.Count +
+                                  " contentTop=" + content.Top);
+                    foreach (Control c in wb.Controls)
+                    {
+                        bool isChrome = !ReferenceEquals(c, content) && c.Visible && c.Top < content.Top && c.Height > 0 && c.Height <= 40;
+                        sb.AppendLine("  [parent] " + (isChrome ? "HIDE " : "keep ") + c.GetType().FullName +
+                                      " dock=" + c.Dock + " bounds=" + c.Bounds + " vis=" + c.Visible);
+                        if (isChrome) { _hiddenChrome.Add(c); c.Visible = false; }
+                    }
                 }
-                try { wb.PerformLayout(); } catch { }
+
+                // (b) The native embeditor TOOLBAR (green-check save / red-X cancel / embed-nav + our injected
+                // buttons) is a Dock=Top child INSIDE the content panel itself, above the Dock=Fill text area. Our
+                // overlay (_panel + _overlayCover) is also inside content but Dock=Fill, so filtering Dock=Top hides
+                // the native toolbar without touching our surface or the text area. (a5bbf005, confirmed via log)
+                sb.AppendLine("[overlay chrome] content=" + content.GetType().FullName + " children=" + content.Controls.Count);
+                foreach (Control c in content.Controls)
+                {
+                    bool ours = ReferenceEquals(c, _panel) || ReferenceEquals(c, _overlayCover);
+                    bool isToolbar = !ours && c.Visible && c.Dock == DockStyle.Top && c.Height > 0 && c.Height <= 60;
+                    sb.AppendLine("  [content] " + (isToolbar ? "HIDE " : "keep ") + c.GetType().FullName +
+                                  " dock=" + c.Dock + " bounds=" + c.Bounds + " vis=" + c.Visible);
+                    if (isToolbar) { _hiddenChrome.Add(c); c.Visible = false; }
+                }
+
+                try { content.PerformLayout(); } catch { }
+                try { wb?.PerformLayout(); } catch { }
                 OverlayChromeLog(sb.ToString());
             }
             catch (Exception ex) { OverlayChromeLog("[overlay chrome] HideNativeChrome error: " + ex.Message); }
