@@ -80,6 +80,17 @@
     body.has-embheader #toolbar button.tb-save, body.has-embheader #toolbar button.tb-cancel,
     body.has-embheader #toolbar button.embed-nav.clarion { padding-left: 3px; padding-right: 3px; }
     body.has-embheader #toolbar .tb-sep { margin: 4px 3px; }
+    /* Overlay: attach the nav-history caret to the Back button as one split-button unit (like Clarion). */
+    body.has-embheader #navBackBtn.nav-split-main {
+        border: 1px solid var(--toolbar-border); border-right: none;
+        border-radius: 3px 0 0 3px; padding-right: 2px;
+    }
+    body.has-embheader #navListBtn.nav-split-caret {
+        border: 1px solid var(--toolbar-border); border-left: 1px solid rgba(127,127,127,0.4);
+        border-radius: 0 3px 3px 0; margin-left: -2px; padding: 1px 3px; font-size: 10px;
+    }
+    body.has-embheader #navBackBtn.nav-split-main:hover,
+    body.has-embheader #navListBtn.nav-split-caret:hover { background: rgba(127,127,127,0.22); }
 
     #toast {
         position: absolute; right: 14px; bottom: 14px; z-index: 20;
@@ -311,9 +322,9 @@
         <button id="prevFilledBtn" class="embed-nav" title="Previous Filled Embed">&#8657;</button>
         <button id="nextFilledBtn" class="embed-nav" title="Next Filled Embed">&#8659;</button>
         <span class="tb-sep"></span>
-        <button id="navBackBtn" class="embed-nav" title="Navigate Back (Alt+Left)">&#9664;</button>
+        <button id="navBackBtn" class="embed-nav nav-split-main" title="Navigate Back (Alt+Left)">&#9664;</button>
+        <button id="navListBtn" class="embed-nav nav-split-caret" title="Navigation history">&#9662;</button>
         <button id="navFwdBtn" class="embed-nav" title="Navigate Forward (Alt+Right)">&#9654;</button>
-        <button id="navListBtn" class="embed-nav" title="Navigation history">&#9662;</button>
         <span class="tb-sep"></span>
         <button id="findBtn" title="Find &amp; Replace">&#128269; Find</button>
         <button id="themeBtn" title="Toggle light/dark background">&#127769;</button>
