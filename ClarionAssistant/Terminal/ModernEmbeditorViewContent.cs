@@ -88,6 +88,9 @@ namespace ClarionAssistant.Terminal
         // Chrome colors captured from the native toolbar so our overlay header/toolbar follow the active Clarion
         // theme (its ToolStripProfessionalRenderer gradient + text color). CSS hex strings, null if unavailable. (b1e05287)
         private string _chromeBg1, _chromeBg2, _chromeFg;
+        // The REAL native embeditor icons (save/cancel/prev+next embed/filled), extracted from the hidden ToolStrip's
+        // items as PNG data-URIs → rendered pixel-perfect in our WebView2 toolbar. role → data-uri. (b1e05287)
+        private readonly Dictionary<string, string> _nativeIcons = new Dictionary<string, string>();
 
         // File mode (ticket 564aa142): the tab edits a plain source file on disk (.clw/.inc/...) instead of
         // an embeditor snapshot. Save = encoding-preserving file write; no slot machinery, no Data pad refresh,
@@ -1850,7 +1853,7 @@ namespace ClarionAssistant.Terminal
                     if (isToolbar)
                     {
                         // Keep a handle to the native toolbar so our header can PerformClick its "Open Source" item. (b1e05287)
-                        if (_nativeToolStrip == null) { _nativeToolStrip = c as ToolStrip; CaptureChromeColors(_nativeToolStrip); }
+                        if (_nativeToolStrip == null) { _nativeToolStrip = c as ToolStrip; CaptureChromeColors(_nativeToolStrip); CaptureNativeIcons(_nativeToolStrip); }
                         _hiddenChrome.Add(c); c.Visible = false;
                     }
                 }
@@ -1886,6 +1889,78 @@ namespace ClarionAssistant.Terminal
         {
             try { if (c.A == 0) return null; return string.Format("#{0:X2}{1:X2}{2:X2}", c.R, c.G, c.B); }
             catch { return null; }
+        }
+
+        /// <summary>Extract the REAL native embeditor icons from the hidden ToolStrip's items (save/cancel/prev+next
+        /// embed/filled) as PNG data-URIs, keyed by role, so our WebView2 toolbar renders pixel-perfect Clarion icons
+        /// instead of hand-drawn SVGs. Role is inferred from each item's Text/ToolTipText. Logs every item so the
+        /// mapping is verifiable. Best-effort. (b1e05287)</summary>
+        private void CaptureNativeIcons(ToolStrip strip)
+        {
+            if (strip == null) return;
+            try
+            {
+                var log = new StringBuilder();
+                log.AppendLine("[overlay icons] toolstrip items=" + strip.Items.Count + " scalingSize=" + strip.ImageScalingSize);
+                foreach (ToolStripItem it in strip.Items)
+                {
+                    string text = it.Text ?? "", tip = it.ToolTipText ?? "";
+                    bool hasImg = it.Image != null;
+                    string role = RoleForItem(text, tip);
+                    log.AppendLine("  item text='" + text + "' tip='" + tip + "' img=" + hasImg + " role=" + (role ?? "-"));
+                    if (hasImg && role != null && !_nativeIcons.ContainsKey(role))
+                    {
+                        var uri = ImageToDataUri(it.Image);
+                        if (uri != null) _nativeIcons[role] = uri;
+                    }
+                }
+                log.AppendLine("[overlay icons] captured roles=" + string.Join(",", _nativeIcons.Keys));
+                OverlayChromeLog(log.ToString());
+            }
+            catch (Exception ex) { OverlayChromeLog("[overlay icons] error: " + ex.Message); }
+        }
+
+        /// <summary>Map a native toolbar item to one of our button roles by its text/tooltip (filled checked before
+        /// plain embed; excludes CA Embeditor / Open Source). Null = not one of ours.</summary>
+        private static string RoleForItem(string text, string tip)
+        {
+            string s = ((text ?? "") + " " + (tip ?? "")).ToLowerInvariant();
+            if (s.Contains("filled") && s.Contains("prev")) return "prevFilled";
+            if (s.Contains("filled") && s.Contains("next")) return "nextFilled";
+            if (s.Contains("embed") && s.Contains("prev")) return "prevEmbed";
+            if (s.Contains("embed") && s.Contains("next")) return "nextEmbed";
+            if (s.Contains("cancel")) return "cancel";
+            if (s.Contains("save") && s.IndexOf("source", StringComparison.Ordinal) < 0) return "save";
+            return null;
+        }
+
+        private static string ImageToDataUri(System.Drawing.Image img)
+        {
+            try
+            {
+                using (var ms = new System.IO.MemoryStream())
+                {
+                    img.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                    return "data:image/png;base64," + Convert.ToBase64String(ms.ToArray());
+                }
+            }
+            catch { return null; }
+        }
+
+        /// <summary>JSON object of role→data-URI for the captured native icons (empty {} if none).</summary>
+        private string NativeIconsJson()
+        {
+            if (_nativeIcons.Count == 0) return "{}";
+            var sb = new StringBuilder("{");
+            bool first = true;
+            foreach (var kv in _nativeIcons)
+            {
+                if (!first) sb.Append(",");
+                sb.Append(JsonString(kv.Key)).Append(":").Append(JsonString(kv.Value));
+                first = false;
+            }
+            sb.Append("}");
+            return sb.ToString();
         }
 
         /// <summary>Restore the native chrome we hid (so a later native embed open shows its toolbar again).</summary>
@@ -2749,6 +2824,7 @@ namespace ClarionAssistant.Terminal
                     "\"chromeBg1\":" + JsonString(_chromeBg1 ?? "") + "," +            // native theme colors → our overlay chrome (b1e05287)
                     "\"chromeBg2\":" + JsonString(_chromeBg2 ?? "") + "," +
                     "\"chromeFg\":" + JsonString(_chromeFg ?? "") + "," +
+                    "\"nativeIcons\":" + NativeIconsJson() + "," +          // real Clarion icons → pixel-perfect toolbar (b1e05287)
                     "\"editableRanges\":" + RangesJson() + "," +
                     "\"settings\":" + settingsJson + "," +
                     "\"findHistory\":" + findHistJson + "," +

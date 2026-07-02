@@ -55,6 +55,9 @@
     /* Embed-nav icons in Clarion blue (SVG uses currentColor so this drives them). */
     #toolbar button.embed-nav.clarion { color: #3b82f6; padding: 2px 6px; }
     #toolbar button.embed-nav.clarion svg { display: block; width: 17px; height: 17px; }
+    /* Real extracted native Clarion icons (pixel-perfect) — normalized to a consistent height. */
+    #toolbar button .native-ico { display: block; height: 18px; width: auto; }
+    #toolbar button.tb-save .native-ico, #toolbar button.tb-cancel .native-ico { height: 20px; }
     /* Overlay: LEFT-align the buttons like the native Clarion bar — save/cancel first, then embed-nav, then the
        rest; the spacer moves to the far right so it absorbs the slack. */
     body.has-embheader #saveBtn   { order: -2; }
@@ -714,8 +717,10 @@
             // Cancel/Discard. Snapshot/file mode keeps closing via the tab, so no Cancel button there. (a5bbf005)
             var cb = document.getElementById('cancelBtn');
             if (overlay) {
-                // Clarion-faithful save/cancel: the iconic filled green circle + white check / red circle + white X. b1e05287
-                sb.innerHTML =
+                var ni = msg.nativeIcons || {};   // real extracted Clarion icons, role → data-URI (b1e05287)
+                function icoImg(uri) { return '<img class="native-ico" src="' + uri + '" alt="">'; }
+                // Save & Exit: prefer the REAL native icon; else fall back to the drawn green-circle check.
+                sb.innerHTML = ni.save ? icoImg(ni.save) :
                     '<svg viewBox="0 0 16 16" aria-hidden="true"><defs>' +
                     '<linearGradient id="caSaveG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7ac943"/><stop offset="1" stop-color="#3f9c35"/></linearGradient></defs>' +
                     '<circle cx="8" cy="8" r="7.3" fill="url(#caSaveG)" stroke="#2e7d24" stroke-width="0.6"/>' +
@@ -723,7 +728,7 @@
                 sb.title = 'Save and Exit';
                 sb.classList.add('tb-save');
                 if (cb) {
-                    cb.innerHTML =
+                    cb.innerHTML = ni.cancel ? icoImg(ni.cancel) :
                         '<svg viewBox="0 0 16 16" aria-hidden="true"><defs>' +
                         '<linearGradient id="caCancelG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ef5350"/><stop offset="1" stop-color="#c62828"/></linearGradient></defs>' +
                         '<circle cx="8" cy="8" r="7.3" fill="url(#caCancelG)" stroke="#a01818" stroke-width="0.6"/>' +
@@ -744,9 +749,13 @@
                     nextFilledBtn: '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="12.3" width="10" height="1.7" rx="0.6"/>' +
                                    '<path d="M8 2.5 L8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M8 11.8 L11.2 7.6 L4.8 7.6 Z"/></svg>'
                 };
+                var _navRole = { prevEmbedBtn: 'prevEmbed', nextEmbedBtn: 'nextEmbed', prevFilledBtn: 'prevFilled', nextFilledBtn: 'nextFilled' };
                 ['prevEmbedBtn', 'nextEmbedBtn', 'prevFilledBtn', 'nextFilledBtn'].forEach(function (id) {
                     var b = document.getElementById(id);
-                    if (b) { b.classList.add('clarion'); b.innerHTML = _navSvg[id]; }
+                    if (!b) return;
+                    b.classList.add('clarion');
+                    var uri = ni[_navRole[id]];
+                    b.innerHTML = uri ? icoImg(uri) : _navSvg[id];   // real native icon, else my SVG fallback
                 });
             } else {
                 sb.textContent = live ? 'Save and Exit' : 'Save';
