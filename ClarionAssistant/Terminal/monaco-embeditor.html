@@ -51,9 +51,10 @@
     #toolbar button.tb-save, #toolbar button.tb-cancel {
         padding: 2px 6px; font-size: 0; line-height: 0; display: inline-flex; align-items: center;
     }
-    #toolbar button.tb-save svg, #toolbar button.tb-cancel svg { display: block; width: 18px; height: 18px; }
-    /* Embed-nav icons in Clarion blue. */
-    #toolbar button.embed-nav.clarion { color: #3b82f6; font-size: 14px; }
+    #toolbar button.tb-save svg, #toolbar button.tb-cancel svg { display: block; width: 22px; height: 22px; }
+    /* Embed-nav icons in Clarion blue (SVG uses currentColor so this drives them). */
+    #toolbar button.embed-nav.clarion { color: #3b82f6; padding: 2px 6px; }
+    #toolbar button.embed-nav.clarion svg { display: block; width: 17px; height: 17px; }
     /* Overlay: LEFT-align the buttons like the native Clarion bar — save/cancel first, then embed-nav, then the
        rest; the spacer moves to the far right so it absorbs the slack. */
     body.has-embheader #saveBtn   { order: -2; }
@@ -731,9 +732,21 @@
                     cb.classList.add('tb-cancel');
                     cb.style.display = '';
                 }
-                // Colour the embed-nav icons Clarion blue.
+                // Clarion-style embed-nav icons: a bar (the embed point) + an arrow to it. Hollow arrows = any
+                // embed (prev up / next down); solid arrows = FILLED embeds. currentColor → the .clarion blue. b1e05287
+                var _navSvg = {
+                    prevEmbedBtn:  '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="10" height="1.7" rx="0.6"/>' +
+                                   '<path d="M8 13.5 L8 5.5 M5 8 L8 5 L11 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+                    nextEmbedBtn:  '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="12.3" width="10" height="1.7" rx="0.6"/>' +
+                                   '<path d="M8 2.5 L8 10.5 M5 8 L8 11 L11 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+                    prevFilledBtn: '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="10" height="1.7" rx="0.6"/>' +
+                                   '<path d="M8 13.5 L8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M8 4.2 L11.2 8.4 L4.8 8.4 Z"/></svg>',
+                    nextFilledBtn: '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="12.3" width="10" height="1.7" rx="0.6"/>' +
+                                   '<path d="M8 2.5 L8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M8 11.8 L11.2 7.6 L4.8 7.6 Z"/></svg>'
+                };
                 ['prevEmbedBtn', 'nextEmbedBtn', 'prevFilledBtn', 'nextFilledBtn'].forEach(function (id) {
-                    var b = document.getElementById(id); if (b) b.classList.add('clarion');
+                    var b = document.getElementById(id);
+                    if (b) { b.classList.add('clarion'); b.innerHTML = _navSvg[id]; }
                 });
             } else {
                 sb.textContent = live ? 'Save and Exit' : 'Save';
