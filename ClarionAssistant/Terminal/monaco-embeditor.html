@@ -595,6 +595,17 @@
         updateThemeBtn();
     }
 
+    // Grey out Undo/Redo when the focused editor's model has nothing to undo/redo. Best-effort: if the Monaco
+    // build doesn't expose canUndo/canRedo, the buttons simply stay enabled (harmless). (b1e05287)
+    function updateUndoRedo() {
+        try {
+            var m = activeEd().getModel();
+            var u = document.getElementById('undoBtn'), r = document.getElementById('redoBtn');
+            if (u) u.disabled = !(m && m.canUndo && m.canUndo());
+            if (r) r.disabled = !(m && m.canRedo && m.canRedo());
+        } catch (e) { }
+    }
+
     // Find-pane font size (Ctrl+mousewheel over the Find panel), persisted — mirrors the editor's zoom.
     var findFontPx = 12;
     (function () { try { var v = parseInt(localStorage.getItem('modernEmbeditor.findFontPx'), 10); if (!isNaN(v)) findFontPx = Math.max(8, Math.min(28, v)); } catch (e) { } })();
@@ -698,9 +709,11 @@
                 var _cancelBtn = document.getElementById('cancelBtn');
                 if (_cancelBtn) _cancelBtn.addEventListener('click', doCancel);
                 var _undoBtn = document.getElementById('undoBtn');
-                if (_undoBtn) _undoBtn.addEventListener('click', function () { var e = activeEd(); e.focus(); e.trigger('toolbar', 'undo', null); });
+                if (_undoBtn) _undoBtn.addEventListener('click', function () { var e = activeEd(); e.focus(); e.trigger('toolbar', 'undo', null); updateUndoRedo(); });
                 var _redoBtn = document.getElementById('redoBtn');
-                if (_redoBtn) _redoBtn.addEventListener('click', function () { var e = activeEd(); e.focus(); e.trigger('toolbar', 'redo', null); });
+                if (_redoBtn) _redoBtn.addEventListener('click', function () { var e = activeEd(); e.focus(); e.trigger('toolbar', 'redo', null); updateUndoRedo(); });
+                editor.onDidChangeModelContent(updateUndoRedo);   // keep Undo/Redo enabled-state in sync with the edit stack
+                updateUndoRedo();
                 var _embHeader = document.getElementById('embHeader');
                 if (_embHeader) _embHeader.addEventListener('click', function () { postToHost({ action: 'openSource' }); });
                 // Reload (file mode): discards edits, so require a second click within 4s to confirm.
