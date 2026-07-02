@@ -44,6 +44,10 @@ namespace ClarionAssistant.Terminal
         /// <summary>{action:"save"} — embed mode: per-slot save; file mode: whole-buffer save.</summary>
         void OnSave(MonacoEditorControl editor, string rawJson);
 
+        /// <summary>{action:"cancel"} — discard edits and close: overlay mode releases the native embed; tab
+        /// mode closes the workbench tab. (a5bbf005 — our toolbar's Cancel, replacing the hidden native red-X.)</summary>
+        void OnCancel(MonacoEditorControl editor);
+
         /// <summary>{action:"clipboard"} — Clarion-style cut: put text on the Windows clipboard.</summary>
         void OnClipboard(MonacoEditorControl editor, string rawJson);
 
@@ -227,6 +231,7 @@ namespace ClarionAssistant.Terminal
                 {
                     case "ready":             h.OnReady(this); break;
                     case "save":              h.OnSave(this, json); break;
+                    case "cancel":            h.OnCancel(this); break;
                     case "clipboard":         h.OnClipboard(this, json); break;
                     case "completion":        h.OnCompletion(this, json); break;
                     case "hover":             h.OnHover(this, json); break;

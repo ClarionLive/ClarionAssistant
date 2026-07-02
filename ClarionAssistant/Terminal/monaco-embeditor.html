@@ -272,6 +272,7 @@
         <button id="splitBtn" title="Split editor — two panes of the same file (compare/copy between areas)">&#9707;</button>
         <button id="settingsBtn" title="Editor settings">&#9881;</button>
         <button id="reloadBtn" style="display:none" title="Reload from disk (discards your edits — click twice to confirm)">&#10227; Reload</button>
+        <button id="cancelBtn" style="display:none" title="Discard changes and close">Cancel</button>
         <button id="saveBtn" title="Save changes (Ctrl+S)">Save</button>
     </div>
     <div id="settingsPanel" class="hidden">
@@ -616,6 +617,8 @@
                 installAutoCase(editor);        // as-you-type keyword casing (of → OF on word boundary)
                 installFormatOnEnter(editor);   // format the completed line on Enter (Clarion-style)
                 document.getElementById('saveBtn').addEventListener('click', doSave);
+                var _cancelBtn = document.getElementById('cancelBtn');
+                if (_cancelBtn) _cancelBtn.addEventListener('click', doCancel);
                 // Reload (file mode): discards edits, so require a second click within 4s to confirm.
                 document.getElementById('reloadBtn').addEventListener('click', function () {
                     if (!fileMode) return;
@@ -665,6 +668,10 @@
             var live = !!msg.liveLinked;
             sb.textContent = live ? 'Save and Exit' : 'Save';
             sb.title = live ? 'Save changes and close (Ctrl+S)' : 'Save changes (Ctrl+S)';
+            // Live/overlay mode hides the native embeditor toolbar (with its red-X cancel), so surface our own
+            // Cancel/Discard. Snapshot/file mode keeps closing via the tab, so no Cancel button there. (a5bbf005)
+            var cb = document.getElementById('cancelBtn');
+            if (cb) cb.style.display = live ? '' : 'none';
         }
         // Optional GLOBAL read-only (the dual-control source overlay sends this for its inert mirror).
         // Default off → the standalone embeditor/file view, which never sends the field, is unchanged.
@@ -844,6 +851,13 @@
         saveSafetyTimer = setTimeout(function () {
             showToast('Save sent, but no confirmation came back. The edit may have saved — reopen the procedure to verify.', false);
         }, 90000);
+    }
+
+    // ----- Cancel / Discard (live/overlay mode) -----
+    // Replaces the hidden native red-X. The host discards the native embed (nothing written back) and closes
+    // the surface. No confirm here — matches the native embeditor's cancel, which discards without prompting.
+    function doCancel() {
+        postToHost({ action: 'cancel' });
     }
 
     // Surface the language-server state when completion comes back empty, so a down/starting LSP is

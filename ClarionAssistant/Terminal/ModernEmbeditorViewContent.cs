@@ -1119,6 +1119,7 @@ namespace ClarionAssistant.Terminal
         }
 
         void IMonacoEditorHost.OnSave(MonacoEditorControl editor, string rawJson) { HandleSave(rawJson); }
+        void IMonacoEditorHost.OnCancel(MonacoEditorControl editor) { HandleCancel(); }
         void IMonacoEditorHost.OnClipboard(MonacoEditorControl editor, string rawJson) { HandleClipboard(rawJson); }
         void IMonacoEditorHost.OnCompletion(MonacoEditorControl editor, string rawJson) { HandleCompletion(rawJson); }
         void IMonacoEditorHost.OnHover(MonacoEditorControl editor, string rawJson) { HandleHover(rawJson); }
@@ -1177,6 +1178,42 @@ namespace ClarionAssistant.Terminal
                 _panel.BeginInvoke((Action)(() => RunSaveRoundTrip(captured)));
             else
                 RunSaveRoundTrip(captured);
+        }
+
+        /// <summary>Cancel/Discard from our toolbar (replaces the hidden native red-X). Overlay mode: detach the
+        /// overlay then discard the native embed (CancelEmbeditor); tab/file mode: close the workbench tab (its
+        /// Dispose does the discard). Deferred off the web-message stack — cancelling the native embed pumps
+        /// DoEvents and disposing the WebView2 on that reentrant stack would deadlock the IDE.</summary>
+        private void HandleCancel()
+        {
+            Action work = () =>
+            {
+                if (_embedOverlay)
+                {
+                    // Controlled discard: detach the overlay (dispose the WebView2 on THIS settled turn) BEFORE
+                    // cancelling the native embed, so the host disposal can't cascade-dispose the WebView2 on the
+                    // native close stack (the freeze). Then release the native embed (nothing is written back).
+                    DetachOverlay();
+                    try
+                    {
+                        var appTree = new AppTreeService();
+                        if (appTree.GetEmbedInfo() != null)
+                        {
+                            appTree.CancelEmbeditor();
+                            ModernEmbeditorLauncher.WaitForEmbedClosed(appTree, 3000);
+                        }
+                    }
+                    catch { }
+                    return;
+                }
+                PostCloseTab();   // tab / snapshot / file mode: discard by closing the tab
+            };
+            try
+            {
+                if (_panel != null && _panel.IsHandleCreated) _panel.BeginInvoke(work);
+                else work();
+            }
+            catch { try { work(); } catch { } }
         }
 
         /// <summary>
