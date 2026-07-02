@@ -37,9 +37,22 @@
         background: transparent; color: var(--title-accent);
     }
     #toolbar button:hover { background: rgba(127,127,127,0.18); }
-    /* Consistent line-icons for our utility buttons (Find/theme/split/settings) — monochrome, currentColor. */
+    /* Consistent line-icons for our utility buttons — colored SVGs. */
     #toolbar .tb-ico { width: 16px; height: 16px; display: inline-block; vertical-align: middle; }
-    #toolbar #findBtn .tb-ico { margin-right: 3px; }
+    /* Modern light/dark TOGGLE switch (a nod beyond Clarion, which has no toggle buttons). */
+    #themeBtn.theme-toggle { padding: 2px 5px; display: inline-flex; align-items: center; }
+    .tt-track { position: relative; width: 34px; height: 16px; border-radius: 9px;
+        background: #3b4261; transition: background .2s; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.12); }
+    .tt-knob { position: absolute; top: 1.5px; left: 1.5px; width: 13px; height: 13px; border-radius: 50%;
+        background: #cdd6f4; transition: left .2s, background .2s; box-shadow: 0 1px 2px rgba(0,0,0,0.35); }
+    .tt-sun, .tt-moon { position: absolute; top: 2px; font-size: 10px; line-height: 12px; pointer-events: none; }
+    .tt-sun { left: 3px; } .tt-moon { right: 3px; }
+    /* Dark mode (default): knob right, pale "moon" knob on a deep track. */
+    #themeBtn .tt-track { background: #313244; }
+    #themeBtn .tt-knob { left: 19px; background: #c8cdf0; }
+    /* Light mode: knob left, warm "sun" knob on a sky track. */
+    body.light #themeBtn .tt-track { background: #7fc8e8; }
+    body.light #themeBtn .tt-knob { left: 1.5px; background: #f9a825; }
 
     /* ---------- Clarion-faithful overlay chrome (b1e05287) ---------- */
     /* Clickable header strip mimicking the native "Proc - Embeditor - (module.clw)" line; click → open source. */
@@ -64,7 +77,10 @@
        rest; the spacer moves to the far right so it absorbs the slack. */
     body.has-embheader #saveBtn   { order: -2; }
     body.has-embheader #cancelBtn { order: -1; }
-    body.has-embheader #toolbar .spacer { order: 100; }
+    /* Right-hand group: push theme + settings past the spacer, separated from the editor functions. */
+    body.has-embheader #toolbar .spacer { order: 50; }
+    body.has-embheader #themeBtn { order: 51; }
+    body.has-embheader #settingsBtn { order: 52; }
     /* Overlay: flat, native-style buttons (no boxy borders) over the themed gradient bar. */
     body.has-embheader #toolbar button { border-color: transparent; background: transparent; }
     body.has-embheader #toolbar button:hover { background: rgba(127,127,127,0.22); }
@@ -333,10 +349,10 @@
         <button id="navListBtn" class="embed-nav nav-split-caret" title="Navigation history">&#9662;</button>
         <button id="navFwdBtn" class="embed-nav" title="Navigate Forward (Alt+Right)">&#9654;</button>
         <span class="tb-sep"></span>
-        <button id="findBtn" title="Find &amp; Replace"><svg class="tb-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6.5" cy="6.5" r="4.3"/><path d="M9.8 9.8 L14 14" stroke-linecap="round"/></svg>Find</button>
-        <button id="themeBtn" title="Toggle light/dark background"><svg class="tb-ico" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 3 A5 5 0 0 1 8 13 Z" fill="currentColor"/></svg></button>
-        <button id="splitBtn" title="Split editor — two panes of the same file (compare/copy between areas)"><svg class="tb-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="3" width="11" height="10" rx="1"/><path d="M8 3 L8 13"/></svg></button>
-        <button id="settingsBtn" title="Editor settings"><svg class="tb-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6 L8 3.4 M8 12.6 L8 14.4 M1.6 8 L3.4 8 M12.6 8 L14.4 8 M3.4 3.4 L4.7 4.7 M11.3 11.3 L12.6 12.6 M12.6 3.4 L11.3 4.7 M4.7 11.3 L3.4 12.6" stroke-linecap="round"/></svg></button>
+        <button id="findBtn" title="Find &amp; Replace"><svg class="tb-ico" viewBox="0 0 16 16" fill="none" stroke="#2563eb" stroke-width="1.9"><circle cx="6.6" cy="6.6" r="4.2"/><path d="M10 10 L14 14" stroke-linecap="round"/></svg></button>
+        <button id="splitBtn" title="Split editor — two panes of the same file (compare/copy between areas)"><svg class="tb-ico" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5" fill="none" stroke="#8b5cf6" stroke-width="1.6"/><rect x="8.4" y="3.9" width="5" height="8.2" rx="0.6" fill="#8b5cf6" opacity="0.35"/><path d="M8 3.2 L8 12.8" stroke="#8b5cf6" stroke-width="1.4"/></svg></button>
+        <button id="settingsBtn" title="Editor settings"><svg class="tb-ico" viewBox="0 0 24 24" fill="#64748b"><path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54a7 7 0 0 0-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.31 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96a7 7 0 0 0 1.62.94l.36 2.54a.5.5 0 0 0 .5.42h3.8a.5.5 0 0 0 .5-.42l.36-2.54a7 7 0 0 0 1.62-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64zM12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5z"/></svg></button>
+        <button id="themeBtn" class="theme-toggle" title="Toggle light / dark"><span class="tt-track"><span class="tt-knob"></span></span></button>
         <button id="reloadBtn" style="display:none" title="Reload from disk (discards your edits — click twice to confirm)">&#10227; Reload</button>
         <button id="cancelBtn" style="display:none" title="Discard changes and close">Cancel</button>
         <button id="saveBtn" title="Save changes (Ctrl+S)">Save</button>
