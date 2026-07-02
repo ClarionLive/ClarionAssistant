@@ -37,6 +37,9 @@
         background: transparent; color: var(--title-accent);
     }
     #toolbar button:hover { background: rgba(127,127,127,0.18); }
+    /* Consistent line-icons for our utility buttons (Find/theme/split/settings) — monochrome, currentColor. */
+    #toolbar .tb-ico { width: 16px; height: 16px; display: inline-block; vertical-align: middle; }
+    #toolbar #findBtn .tb-ico { margin-right: 3px; }
 
     /* ---------- Clarion-faithful overlay chrome (b1e05287) ---------- */
     /* Clickable header strip mimicking the native "Proc - Embeditor - (module.clw)" line; click → open source. */
@@ -81,13 +84,17 @@
     body.has-embheader #toolbar button.embed-nav.clarion { padding-left: 3px; padding-right: 3px; }
     body.has-embheader #toolbar .tb-sep { margin: 4px 3px; }
     /* Overlay: attach the nav-history caret to the Back button as one split-button unit (like Clarion). */
+    /* Both halves stretch to the same (row) height so they read as one attached split-button. */
+    body.has-embheader #navBackBtn.nav-split-main, body.has-embheader #navListBtn.nav-split-caret {
+        align-self: stretch; display: inline-flex; align-items: center; justify-content: center;
+    }
     body.has-embheader #navBackBtn.nav-split-main {
         border: 1px solid var(--toolbar-border); border-right: none;
         border-radius: 3px 0 0 3px; padding-right: 2px;
     }
     body.has-embheader #navListBtn.nav-split-caret {
         border: 1px solid var(--toolbar-border); border-left: 1px solid rgba(127,127,127,0.4);
-        border-radius: 0 3px 3px 0; margin-left: -2px; padding: 1px 3px; font-size: 10px;
+        border-radius: 0 3px 3px 0; margin-left: -2px; padding: 1px 4px; font-size: 10px;
     }
     body.has-embheader #navBackBtn.nav-split-main:hover,
     body.has-embheader #navListBtn.nav-split-caret:hover { background: rgba(127,127,127,0.22); }
@@ -326,10 +333,10 @@
         <button id="navListBtn" class="embed-nav nav-split-caret" title="Navigation history">&#9662;</button>
         <button id="navFwdBtn" class="embed-nav" title="Navigate Forward (Alt+Right)">&#9654;</button>
         <span class="tb-sep"></span>
-        <button id="findBtn" title="Find &amp; Replace">&#128269; Find</button>
-        <button id="themeBtn" title="Toggle light/dark background">&#127769;</button>
-        <button id="splitBtn" title="Split editor — two panes of the same file (compare/copy between areas)">&#9707;</button>
-        <button id="settingsBtn" title="Editor settings">&#9881;</button>
+        <button id="findBtn" title="Find &amp; Replace"><svg class="tb-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6.5" cy="6.5" r="4.3"/><path d="M9.8 9.8 L14 14" stroke-linecap="round"/></svg>Find</button>
+        <button id="themeBtn" title="Toggle light/dark background"><svg class="tb-ico" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 3 A5 5 0 0 1 8 13 Z" fill="currentColor"/></svg></button>
+        <button id="splitBtn" title="Split editor — two panes of the same file (compare/copy between areas)"><svg class="tb-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="3" width="11" height="10" rx="1"/><path d="M8 3 L8 13"/></svg></button>
+        <button id="settingsBtn" title="Editor settings"><svg class="tb-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6 L8 3.4 M8 12.6 L8 14.4 M1.6 8 L3.4 8 M12.6 8 L14.4 8 M3.4 3.4 L4.7 4.7 M11.3 11.3 L12.6 12.6 M12.6 3.4 L11.3 4.7 M4.7 11.3 L3.4 12.6" stroke-linecap="round"/></svg></button>
         <button id="reloadBtn" style="display:none" title="Reload from disk (discards your edits — click twice to confirm)">&#10227; Reload</button>
         <button id="cancelBtn" style="display:none" title="Discard changes and close">Cancel</button>
         <button id="saveBtn" title="Save changes (Ctrl+S)">Save</button>
