@@ -1801,6 +1801,7 @@ namespace ClarionAssistant.Terminal
             _overlayCoverSafety.Start();
 
             HideNativeChrome(host);
+            CaptureNavIcons();
             HookOverlayTeardown(genEditor);
         }
 
@@ -1945,6 +1946,51 @@ namespace ClarionAssistant.Terminal
                 }
             }
             catch { return null; }
+        }
+
+        // Navigate Back/Forward icons live in the IDE's main navigation toolbar (NOT the embeditor's). Scanned once
+        // across the workbench form's ToolStrips and cached, then merged into _nativeIcons per instance. (b1e05287)
+        private static bool _navIconsScanned;
+        private static string _navBackUri, _navFwdUri;
+
+        private void CaptureNavIcons()
+        {
+            try
+            {
+                if (!_navIconsScanned)
+                {
+                    _navIconsScanned = true;
+                    var log = new StringBuilder("[overlay navicons] scanning workbench toolstrips\n");
+                    Control root = null;
+                    try { root = GetProp(WorkbenchSingleton.Workbench, "MainForm") as Control; } catch { }
+                    if (root == null) { try { root = Form.ActiveForm; } catch { } }
+                    if (root != null) ScanForNav(root, log, 0);
+                    log.AppendLine("[overlay navicons] back=" + (_navBackUri != null) + " fwd=" + (_navFwdUri != null));
+                    OverlayChromeLog(log.ToString());
+                }
+                if (_navBackUri != null && !_nativeIcons.ContainsKey("navBack")) _nativeIcons["navBack"] = _navBackUri;
+                if (_navFwdUri != null && !_nativeIcons.ContainsKey("navFwd")) _nativeIcons["navFwd"] = _navFwdUri;
+            }
+            catch { }
+        }
+
+        private static void ScanForNav(Control c, StringBuilder log, int depth)
+        {
+            if (c == null || depth > 8 || (_navBackUri != null && _navFwdUri != null)) return;
+            var strip = c as ToolStrip;
+            if (strip != null)
+            {
+                foreach (ToolStripItem it in strip.Items)
+                {
+                    if (it.Image == null) continue;
+                    string s = ((it.Text ?? "") + " " + (it.ToolTipText ?? "")).ToLowerInvariant();
+                    if (s.IndexOf("back", StringComparison.Ordinal) >= 0 || s.IndexOf("forward", StringComparison.Ordinal) >= 0 || s.IndexOf("navigate", StringComparison.Ordinal) >= 0)
+                        log.AppendLine("  candidate tip='" + it.ToolTipText + "' text='" + it.Text + "'");
+                    if (_navBackUri == null && s.Contains("navigate back")) _navBackUri = ImageToDataUri(it.Image);
+                    else if (_navFwdUri == null && s.Contains("navigate forward")) _navFwdUri = ImageToDataUri(it.Image);
+                }
+            }
+            try { foreach (Control child in c.Controls) ScanForNav(child, log, depth + 1); } catch { }
         }
 
         /// <summary>JSON object of role→data-URI for the captured native icons (empty {} if none).</summary>

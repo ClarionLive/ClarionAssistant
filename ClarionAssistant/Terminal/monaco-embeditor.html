@@ -75,6 +75,11 @@
     body.has-embheader #embHeader { color: var(--chrome-fg, var(--title-color)); }
     /* Non-icon buttons follow the theme text color; the green/red/blue icons keep their own colors. */
     body.has-embheader #toolbar button:not(.tb-save):not(.tb-cancel):not(.clarion) { color: var(--chrome-fg, var(--title-accent)); }
+    /* Overlay: tighten spacing + shift left to match the native bar's density. */
+    body.has-embheader #toolbar { gap: 2px; padding-left: 5px; }
+    body.has-embheader #toolbar button.tb-save, body.has-embheader #toolbar button.tb-cancel,
+    body.has-embheader #toolbar button.embed-nav.clarion { padding-left: 3px; padding-right: 3px; }
+    body.has-embheader #toolbar .tb-sep { margin: 4px 3px; }
 
     #toast {
         position: absolute; right: 14px; bottom: 14px; z-index: 20;
@@ -756,6 +761,11 @@
                     var uri = ni[_navRole[id]];
                     b.innerHTML = uri ? icoImg(uri) : _navSvg[id];   // real native icon, else my SVG fallback
                 });
+                // Native navigate back/forward icons (from the IDE nav toolbar), if captured; else keep the ◄ ► glyphs.
+                var _nb = document.getElementById('navBackBtn');
+                if (_nb && ni.navBack) { _nb.classList.add('clarion'); _nb.innerHTML = icoImg(ni.navBack); }
+                var _nf = document.getElementById('navFwdBtn');
+                if (_nf && ni.navFwd) { _nf.classList.add('clarion'); _nf.innerHTML = icoImg(ni.navFwd); }
             } else {
                 sb.textContent = live ? 'Save and Exit' : 'Save';
                 sb.title = live ? 'Save changes and close (Ctrl+S)' : 'Save changes (Ctrl+S)';
