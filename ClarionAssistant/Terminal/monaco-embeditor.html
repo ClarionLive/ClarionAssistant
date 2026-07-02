@@ -583,8 +583,8 @@
     function updateThemeBtn() {
         var b = document.getElementById('themeBtn');
         if (!b) return;
-        // Show the icon for the state you'd switch TO.
-        b.innerHTML = themePrefDark ? '&#9728;' : '&#127769;';   // ☀ (to light) when dark, 🌙 (to dark) when light
+        // The SVG toggle (rect + sliding knob) lives in the markup and follows body.light via CSS — do NOT
+        // overwrite its innerHTML (that was clobbering the pill with a ☀/🌙 emoji). Only refresh the tooltip.
         b.title = themePrefDark ? 'Switch to light (white) background' : 'Switch to dark background';
     }
 
