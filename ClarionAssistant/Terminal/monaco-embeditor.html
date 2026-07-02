@@ -47,9 +47,11 @@
         color: var(--title-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     #embHeader:hover { color: var(--title-accent); text-decoration: underline; }
-    /* Clarion-style save (green check) / cancel (red X) — icon-first, bold, larger glyph. */
-    #toolbar button.tb-save   { color: #2fa84f; font-weight: 700; font-size: 15px; padding: 2px 10px; }
-    #toolbar button.tb-cancel { color: #e5484d; font-weight: 700; font-size: 15px; padding: 2px 10px; }
+    /* Clarion-style save/cancel: filled green/red circle + white check/X (inline SVG). */
+    #toolbar button.tb-save, #toolbar button.tb-cancel {
+        padding: 2px 6px; font-size: 0; line-height: 0; display: inline-flex; align-items: center;
+    }
+    #toolbar button.tb-save svg, #toolbar button.tb-cancel svg { display: block; width: 18px; height: 18px; }
     /* Embed-nav icons in Clarion blue. */
     #toolbar button.embed-nav.clarion { color: #3b82f6; font-size: 14px; }
     /* Overlay: LEFT-align the buttons like the native Clarion bar — save/cancel first, then embed-nav, then the
@@ -711,11 +713,24 @@
             // Cancel/Discard. Snapshot/file mode keeps closing via the tab, so no Cancel button there. (a5bbf005)
             var cb = document.getElementById('cancelBtn');
             if (overlay) {
-                // Clarion-faithful: green ✔ = Save & Exit, red ✖ = Cancel (icon-first, familiar to migrating devs). b1e05287
-                sb.innerHTML = '&#10004;';                 // heavy check
+                // Clarion-faithful save/cancel: the iconic filled green circle + white check / red circle + white X. b1e05287
+                sb.innerHTML =
+                    '<svg viewBox="0 0 16 16" aria-hidden="true"><defs>' +
+                    '<linearGradient id="caSaveG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7ac943"/><stop offset="1" stop-color="#3f9c35"/></linearGradient></defs>' +
+                    '<circle cx="8" cy="8" r="7.3" fill="url(#caSaveG)" stroke="#2e7d24" stroke-width="0.6"/>' +
+                    '<path d="M4.4 8.3 L6.8 10.7 L11.6 5.1" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
                 sb.title = 'Save and Exit';
                 sb.classList.add('tb-save');
-                if (cb) { cb.innerHTML = '&#10006;'; cb.title = 'Cancel (discard changes)'; cb.classList.add('tb-cancel'); cb.style.display = ''; }
+                if (cb) {
+                    cb.innerHTML =
+                        '<svg viewBox="0 0 16 16" aria-hidden="true"><defs>' +
+                        '<linearGradient id="caCancelG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ef5350"/><stop offset="1" stop-color="#c62828"/></linearGradient></defs>' +
+                        '<circle cx="8" cy="8" r="7.3" fill="url(#caCancelG)" stroke="#a01818" stroke-width="0.6"/>' +
+                        '<path d="M5.3 5.3 L10.7 10.7 M10.7 5.3 L5.3 10.7" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round"/></svg>';
+                    cb.title = 'Cancel (discard changes)';
+                    cb.classList.add('tb-cancel');
+                    cb.style.display = '';
+                }
                 // Colour the embed-nav icons Clarion blue.
                 ['prevEmbedBtn', 'nextEmbedBtn', 'prevFilledBtn', 'nextFilledBtn'].forEach(function (id) {
                     var b = document.getElementById(id); if (b) b.classList.add('clarion');
