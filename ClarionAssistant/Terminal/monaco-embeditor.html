@@ -206,7 +206,7 @@
     #snipHelp .ex code { font-family: Consolas, monospace; color: #dca94a; }
     /* Ctrl+J snippet picker — theme-aware (follows the editor's light/dark) */
     #snippetPicker { position: fixed; inset: 0; z-index: 1001; background: rgba(0,0,0,.28); display: flex; align-items: center; justify-content: center; }
-    #snippetPicker .sp-panel { min-width: 440px; max-width: 92vw; background: var(--toolbar-bg); color: var(--fg); border: 1px solid var(--toolbar-border); border-radius: 8px; box-shadow: 0 8px 30px rgba(0,0,0,.35); font-family: 'Segoe UI', Tahoma, sans-serif; overflow: hidden; }
+    #snippetPicker .sp-panel { min-width: 640px; max-width: 92vw; background: var(--toolbar-bg); color: var(--fg); border: 1px solid var(--toolbar-border); border-radius: 8px; box-shadow: 0 8px 30px rgba(0,0,0,.35); font-family: 'Segoe UI', Tahoma, sans-serif; overflow: hidden; }
     #snippetPicker .sp-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--toolbar-border); }
     #snippetPicker .sp-head h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--title-accent); }
     #snippetPicker .sp-sel { font-size: 11px; opacity: .65; font-weight: 400; margin-left: 8px; }
@@ -214,7 +214,10 @@
     #snippetPicker .sp-x:hover { opacity: 1; }
     #snippetPicker .sp-body { padding: 12px 14px; }
     #snippetPicker .sp-filter { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--fg); border: 1px solid var(--toolbar-border); border-radius: 4px; padding: 6px 8px; font-family: inherit; font-size: 12px; margin-bottom: 8px; }
-    #snippetPicker .sp-list { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--fg); border: 1px solid var(--toolbar-border); border-radius: 4px; font-family: Consolas, monospace; font-size: 12px; padding: 2px; outline: none; }
+    #snippetPicker .sp-cols { display: flex; gap: 10px; }
+    #snippetPicker .sp-list { flex: 0 0 46%; box-sizing: border-box; height: 210px; background: var(--bg); color: var(--fg); border: 1px solid var(--toolbar-border); border-radius: 4px; font-family: Consolas, monospace; font-size: 12px; padding: 2px; outline: none; }
+    #snippetPicker .sp-preview { flex: 1; min-width: 0; box-sizing: border-box; height: 210px; overflow: auto; margin: 0; background: var(--bg); color: var(--fg); border: 1px solid var(--toolbar-border); border-radius: 4px; padding: 8px 10px; font-family: Consolas, monospace; font-size: 12px; white-space: pre; }
+    #snippetPicker .sp-preview:empty::before { content: 'select a snippet to preview'; opacity: .45; font-style: italic; }
     #snippetPicker .sp-empty { opacity: .6; font-size: 11px; margin-top: 6px; }
     #snippetPicker .sp-foot { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--toolbar-border); }
     #snippetPicker .sp-hint { flex: 1; opacity: .5; font-size: 11px; }
@@ -3335,7 +3338,8 @@
             '</h3><button class="sp-x" id="snipPickX" title="Close (Esc)">&times;</button></div>' +
             '<div class="sp-body">' +
             '<input id="snippetFilter" class="sp-filter" type="text" placeholder="Filter by trigger or description...">' +
-            '<select id="snippetListBox" class="sp-list" size="10"></select>' +
+            '<div class="sp-cols"><select id="snippetListBox" class="sp-list" size="10"></select>' +
+            '<pre id="snippetPreview" class="sp-preview"></pre></div>' +
             '<div id="snippetEmptyMsg" class="sp-empty" style="display:none;">No snippets match' +
             (ext ? ' for ' + escHtml(ext) : '') + '.</div></div>' +
             '<div class="sp-foot"><span class="sp-hint">↑↓ navigate · Enter insert · Esc cancel</span>' +
@@ -3347,6 +3351,7 @@
         var filterInput = document.getElementById('snippetFilter');
         var listBox = document.getElementById('snippetListBox');
         var emptyMsg = document.getElementById('snippetEmptyMsg');
+        var previewBox = document.getElementById('snippetPreview');
         var pickerKeyHandler = null;   // document-capture keydown handler; removed in close()
         document.getElementById('snipPickX').onclick = function () { close(); };
         document.getElementById('snipPickCancel').onclick = function () { close(); };
@@ -3372,6 +3377,13 @@
             }
             emptyMsg.style.display = any ? 'none' : '';
             listBox.selectedIndex = restoredIdx >= 0 ? restoredIdx : (any ? 0 : -1);
+            updatePreview();
+        }
+        // Show the currently-selected snippet's expansion (tab-stop tokens reduced to defaults) beside the list.
+        function updatePreview() {
+            var id = listBox.value, snip = null;
+            for (var i = 0; i < snippetsList.length; i++) if (snippetsList[i].id === id) { snip = snippetsList[i]; break; }
+            previewBox.textContent = snip ? snippetPreview(snip.body || '') : '';
         }
         // Exposed so the applySnippets broadcast handler can refresh a picker left open while the
         // gear panel's Code Snippets tab is edited (here or in another open tab).
@@ -3397,6 +3409,7 @@
 
         filterInput.addEventListener('input', renderList);
         listBox.ondblclick = accept;
+        listBox.onchange = updatePreview;   // click-select updates the preview
         // Handle picker keys at DOCUMENT / capture level (not on ov) so Enter/Esc/arrows work even
         // after Monaco/WebView2 grabs focus back — a bubble handler on ov silently stops the moment
         // focus leaves the overlay, which made the picker impossible to dismiss (#49 follow-up).
@@ -3404,8 +3417,8 @@
         pickerKeyHandler = function (e) {
             if (e.key === 'Enter') { e.preventDefault(); e.stopImmediatePropagation(); accept(); }
             else if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); close(); }
-            else if (e.key === 'ArrowDown') { e.preventDefault(); e.stopImmediatePropagation(); if (listBox.selectedIndex < listBox.options.length - 1) listBox.selectedIndex++; }
-            else if (e.key === 'ArrowUp') { e.preventDefault(); e.stopImmediatePropagation(); if (listBox.selectedIndex > 0) listBox.selectedIndex--; }
+            else if (e.key === 'ArrowDown') { e.preventDefault(); e.stopImmediatePropagation(); if (listBox.selectedIndex < listBox.options.length - 1) { listBox.selectedIndex++; updatePreview(); } }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); e.stopImmediatePropagation(); if (listBox.selectedIndex > 0) { listBox.selectedIndex--; updatePreview(); } }
         };
         document.addEventListener('keydown', pickerKeyHandler, true);   // capture — beats Monaco, focus-independent
         // Click the dark backdrop (outside the panel) to cancel — matches the Settings modals.
