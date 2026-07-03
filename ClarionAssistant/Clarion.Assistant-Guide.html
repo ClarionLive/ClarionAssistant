@@ -427,7 +427,7 @@
 <header class="site-header">
   <h1>Clarion.Assistant</h1>
   <div class="subtitle">AI-Powered Development for the Clarion IDE</div>
-  <div class="version-badge">User Guide &middot; v4.1</div>
+  <div class="version-badge">User Guide &middot; v5.1</div>
 </header>
 
 <!-- ════════════════════════════════════════════════════ -->
@@ -446,10 +446,17 @@
     <a href="#getting-started-first-conversation" class="sub">Your First Conversation</a>
 
     <h3>What's New</h3>
-    <a href="#whats-new-v41">v4.1</a>
+    <a href="#whats-new-v51">v5.1</a>
+    <a href="#whats-new-v41" class="sub">v4.1</a>
     <a href="#whats-new-v4" class="sub">v4.0</a>
     <a href="#whats-new-v31" class="sub">v3.1</a>
     <a href="#whats-new-v3" class="sub">v3.0</a>
+
+    <h3>CA Embeditor</h3>
+    <a href="#ca-embeditor">Overview</a>
+    <a href="#ca-embeditor-toolbar" class="sub">Toolbar</a>
+    <a href="#ca-embeditor-navigation" class="sub">Go to Definition</a>
+    <a href="#ca-embeditor-settings" class="sub">Settings</a>
 
     <h3>Claude Chat Terminal</h3>
     <a href="#claude-chat">Overview</a>
@@ -821,6 +828,43 @@
 <!-- ════════════════════════════════════════════════════ -->
 <!--  SECTION: WHAT'S NEW                                -->
 <!-- ════════════════════════════════════════════════════ -->
+<section id="whats-new-v51" class="doc-section">
+  <h2>What's New in v5.1</h2>
+
+  <h3>CA Embeditor &amp; CA Editor &mdash; Monaco inside Clarion</h3>
+  <p>
+    The embed editor and the source editor are now powered by <strong>Monaco</strong> (the editor behind VS Code),
+    floated directly over Clarion's native editors. See the <a href="#ca-embeditor">CA Embeditor</a> section for the
+    full tour. Highlights:
+  </p>
+  <ul>
+    <li><strong>Go to definition</strong> with <code>F12</code> or <code>Ctrl</code>+click &mdash; local variables,
+      routines (the target of a <code>DO&nbsp;RoutineName</code>), procedures, classes and library symbols all
+      resolve, with in-place reveal for same-file targets.</li>
+    <li><strong>Clarion-aware hover &amp; completion</strong>, including procedure locals, group/queue fields and
+      ABC symbols. Hovering a keyword-looking word inside a <code>!</code> comment no longer pops a tooltip.</li>
+    <li>New <strong>horizontal scrollbar</strong> setting: show when needed / always / never.</li>
+    <li>The CA Editor's <strong>toolbar follows your active Clarion IDE theme</strong> (SerenityBlue, OfficeXP,
+      Win10Blue, &hellip;), matching the embeditor.</li>
+    <li>Right-click a procedure in the Application Tree &rarr; <strong>CA Embeditor Source</strong> to open it.</li>
+  </ul>
+
+  <h3>Library symbol resolution</h3>
+  <p>
+    Hover and go-to-definition now resolve Clarion library equates and ABC globals &mdash; the keycodes
+    (<code>MouseRight</code>&hellip;), the file-request equates from <code>ABFILE.EQU</code>
+    (<code>InsertRecord</code>, <code>RequestCancelled</code>&hellip;), and the ABC globals
+    (<code>GlobalRequest</code>, <code>GlobalResponse</code>&hellip;).
+  </p>
+
+  <h3>Fixes &amp; polish</h3>
+  <ul>
+    <li>The native editor's class / members drop-down bar no longer shows through the CA Editor overlay.</li>
+    <li>The app-tree <strong>CA Embeditor Source</strong> menu item is placed so it no longer disturbs the native
+      <em>Rename</em> item.</li>
+  </ul>
+</section>
+
 <section id="whats-new-v41" class="doc-section">
   <h2>What's New in v4.1</h2>
 
@@ -984,6 +1028,65 @@
 <!-- ════════════════════════════════════════════════════ -->
 <!--  SECTION: CLAUDE CHAT TERMINAL                      -->
 <!-- ════════════════════════════════════════════════════ -->
+<!-- ════════════════════════════════════════════════════ -->
+<!--  SECTION: CA EMBEDITOR                               -->
+<!-- ════════════════════════════════════════════════════ -->
+<section id="ca-embeditor" class="doc-section">
+  <h2>CA Embeditor &amp; CA Editor</h2>
+  <p>
+    The <strong>CA Embeditor</strong> replaces Clarion's embed editor &mdash; and the <strong>CA Editor</strong>
+    replaces the source editor for hand-coded <code>.clw</code> / <code>.inc</code> files &mdash; with
+    <strong>Monaco</strong>, the editor that powers VS Code. Monaco is floated directly on top of Clarion's native
+    editor as a single live document, so you keep everything Clarion gives you (embed points, the Source/Design
+    switch, the application generator, breakpoints) and gain a modern editing surface: Clarion-aware syntax
+    highlighting, a minimap, multi-cursor, structure folding, and find/replace.
+  </p>
+
+  <h3 id="ca-embeditor-overview">Opening it</h3>
+  <ul>
+    <li><strong>Embed code</strong> &mdash; open a procedure's embeds as you normally would, or right-click a
+      procedure in the Application Tree and choose <strong>CA Embeditor Source</strong>.</li>
+    <li><strong>Source files</strong> &mdash; open any <code>.clw</code> or <code>.inc</code> file and the CA Editor
+      takes over automatically. Which surfaces are enabled is configurable under
+      <em>Options &rarr; Clarion Assistant &rarr; Editor Surfaces</em>.</li>
+  </ul>
+
+  <h3 id="ca-embeditor-toolbar">Toolbar</h3>
+  <p>
+    The toolbar mirrors Clarion's own and follows your active IDE theme (SerenityBlue, OfficeXP, Win10Blue, &hellip;):
+  </p>
+  <ul>
+    <li><strong>Save / Save and Exit</strong> and <strong>Cancel</strong> &mdash; changes are written back through
+      Clarion. The embeditor stays live, so there is no re-open or regeneration round-trip.</li>
+    <li><strong>Embed navigation</strong> &mdash; jump to the previous / next embed point, or the previous / next
+      <em>filled</em> embed.</li>
+    <li><strong>Undo / Redo</strong>, <strong>navigate Back / Forward</strong> (with a history dropdown),
+      <strong>Find / Replace</strong>, a <strong>split view</strong> toggle, a light/dark <strong>theme toggle</strong>,
+      and a <strong>settings</strong> gear.</li>
+  </ul>
+
+  <h3 id="ca-embeditor-navigation">Go to Definition, Hover &amp; Completion</h3>
+  <ul>
+    <li><strong>Go to definition</strong> &mdash; press <code>F12</code> or <code>Ctrl</code>+click a symbol.
+      Local variables, routines (the target of a <code>DO&nbsp;RoutineName</code>), procedures, classes and
+      global / library symbols all resolve. Same-file targets reveal in place; cross-file targets open the file.</li>
+    <li><strong>Hover</strong> &mdash; hold the pointer over a symbol for its type, signature or value. Hovering
+      inside a <code>!</code> comment is ignored. Clarion library equates (keycodes such as <code>MouseRight</code>,
+      the file-request equates like <code>RequestCancelled</code>) and ABC globals (<code>GlobalRequest</code>,
+      <code>GlobalResponse</code>) resolve as well.</li>
+    <li><strong>Completion</strong> &mdash; as you type, completion offers globals, indexed classes,
+      procedure-local variables, group / queue fields (in <code>PRE()</code>, dotted, or bare form) and ABC symbols.</li>
+  </ul>
+
+  <h3 id="ca-embeditor-settings">Settings</h3>
+  <p>
+    The gear button opens a settings panel that is shared across every open editor and remembered between sessions:
+    tab size, insert-spaces, smart auto-indent, word wrap, minimap, font size, a three-way
+    <strong>horizontal scrollbar</strong> (show when needed / always / never), completion behaviour, a
+    Smart&nbsp;Formatter, and customizable key bindings.
+  </p>
+</section>
+
 <section id="claude-chat" class="doc-section">
   <h2>Claude Chat Terminal</h2>
   <p>
