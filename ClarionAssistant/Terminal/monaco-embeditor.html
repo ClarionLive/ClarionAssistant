@@ -204,6 +204,23 @@
     #snipHelp .cb .caret { color: #e0724f; font-weight: 700; }
     #snipHelp .ex { font-size: 12px; line-height: 1.7; }
     #snipHelp .ex code { font-family: Consolas, monospace; color: #dca94a; }
+    /* Ctrl+J snippet picker — theme-aware (follows the editor's light/dark) */
+    #snippetPicker { position: fixed; inset: 0; z-index: 1001; background: rgba(0,0,0,.28); display: flex; align-items: center; justify-content: center; }
+    #snippetPicker .sp-panel { min-width: 440px; max-width: 92vw; background: var(--toolbar-bg); color: var(--fg); border: 1px solid var(--toolbar-border); border-radius: 8px; box-shadow: 0 8px 30px rgba(0,0,0,.35); font-family: 'Segoe UI', Tahoma, sans-serif; overflow: hidden; }
+    #snippetPicker .sp-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--toolbar-border); }
+    #snippetPicker .sp-head h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--title-accent); }
+    #snippetPicker .sp-sel { font-size: 11px; opacity: .65; font-weight: 400; margin-left: 8px; }
+    #snippetPicker .sp-x { background: transparent; border: none; color: var(--fg); opacity: .65; font-size: 18px; line-height: 1; cursor: pointer; padding: 0 3px; }
+    #snippetPicker .sp-x:hover { opacity: 1; }
+    #snippetPicker .sp-body { padding: 12px 14px; }
+    #snippetPicker .sp-filter { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--fg); border: 1px solid var(--toolbar-border); border-radius: 4px; padding: 6px 8px; font-family: inherit; font-size: 12px; margin-bottom: 8px; }
+    #snippetPicker .sp-list { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--fg); border: 1px solid var(--toolbar-border); border-radius: 4px; font-family: Consolas, monospace; font-size: 12px; padding: 2px; outline: none; }
+    #snippetPicker .sp-empty { opacity: .6; font-size: 11px; margin-top: 6px; }
+    #snippetPicker .sp-foot { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--toolbar-border); }
+    #snippetPicker .sp-hint { flex: 1; opacity: .5; font-size: 11px; }
+    #snippetPicker .sp-btn { background: transparent; border: 1px solid var(--toolbar-border); color: var(--fg); border-radius: 4px; padding: 5px 16px; font-size: 12px; cursor: pointer; font-family: inherit; }
+    #snippetPicker .sp-btn:hover { border-color: var(--title-accent); }
+    #snippetPicker .sp-btn.primary { background: var(--title-accent); border-color: var(--title-accent); color: var(--toolbar-bg); }
     /* Keyboard rebinding table (Clarion-style Label / Default / New) */
     #keybindTable { width: 100%; border-collapse: collapse; font-size: 11px; }
     #keybindTable th { text-align: left; font-weight: 600; color: var(--title-accent); padding: 2px 6px; border-bottom: 1px solid var(--toolbar-border); }
@@ -3309,19 +3326,21 @@
 
         var ov = document.createElement('div');
         ov.id = 'snippetPicker';
-        ov.style.cssText = 'position:fixed;inset:0;z-index:1001;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;';
         var panel = document.createElement('div');
-        panel.style.cssText = 'background:#2d2d30;color:#eee;padding:14px 16px;border-radius:8px;font-family:Segoe UI,sans-serif;box-shadow:0 4px 24px rgba(0,0,0,.5);min-width:380px;';
+        panel.className = 'sp-panel';
         var selPreview = selText ? (selText.length > 30 ? selText.substring(0, 30) + '…' : selText) : '';
         panel.innerHTML =
-            '<div style="font-size:14px;margin-bottom:8px;">Insert Snippet' +
-            (selPreview ? ' — selection: "' + escHtml(selPreview) + '"' : '') + '</div>' +
-            '<input id="snippetFilter" type="text" placeholder="Filter by trigger or description..." ' +
-            'style="width:100%;box-sizing:border-box;font-family:Segoe UI,sans-serif;background:#1e1e1e;color:#eee;border:1px solid #555;padding:5px 8px;margin-bottom:6px;">' +
-            '<select id="snippetListBox" size="10" style="width:100%;font-family:Consolas,monospace;font-size:12px;background:#1e1e1e;color:#eee;border:1px solid #555;padding:2px;"></select>' +
-            '<div id="snippetEmptyMsg" style="opacity:.6;font-size:11px;margin-top:6px;display:none;">No snippets match' +
-            (ext ? ' for ' + escHtml(ext) : '') + '.</div>' +
-            '<div style="opacity:.6;font-size:11px;margin-top:6px;">↑↓ to navigate · Enter to insert · Esc to cancel</div>';
+            '<div class="sp-head"><h3>Insert Snippet' +
+            (selPreview ? '<span class="sp-sel">wrapping "' + escHtml(selPreview) + '"</span>' : '') +
+            '</h3><button class="sp-x" id="snipPickX" title="Close (Esc)">&times;</button></div>' +
+            '<div class="sp-body">' +
+            '<input id="snippetFilter" class="sp-filter" type="text" placeholder="Filter by trigger or description...">' +
+            '<select id="snippetListBox" class="sp-list" size="10"></select>' +
+            '<div id="snippetEmptyMsg" class="sp-empty" style="display:none;">No snippets match' +
+            (ext ? ' for ' + escHtml(ext) : '') + '.</div></div>' +
+            '<div class="sp-foot"><span class="sp-hint">↑↓ navigate · Enter insert · Esc cancel</span>' +
+            '<button class="sp-btn primary" id="snipPickSelect">Select</button>' +
+            '<button class="sp-btn" id="snipPickCancel">Cancel</button></div>';
         ov.appendChild(panel);
         document.body.appendChild(ov);
 
@@ -3329,6 +3348,9 @@
         var listBox = document.getElementById('snippetListBox');
         var emptyMsg = document.getElementById('snippetEmptyMsg');
         var pickerKeyHandler = null;   // document-capture keydown handler; removed in close()
+        document.getElementById('snipPickX').onclick = function () { close(); };
+        document.getElementById('snipPickCancel').onclick = function () { close(); };
+        document.getElementById('snipPickSelect').onclick = function () { accept(); };
 
         function appliesToExt(s) { return snippetAppliesToExt(s, ext); }
         function renderList() {
