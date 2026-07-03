@@ -2611,6 +2611,10 @@
                 var ext = activeSnippetExtension(), wl = word.toLowerCase(), sugg = [];
                 for (var i = 0; i < snippetsList.length; i++) {
                     var s = snippetsList[i];
+                    // ${SELECTED} snippets wrap the current selection — but typing a trigger to autocomplete
+                    // has already destroyed any selection. They only make sense via Ctrl+J (which captures the
+                    // selection before the picker opens), so keep them OUT of the completion list.
+                    if (s.body && s.body.indexOf('${SELECTED}') !== -1) continue;
                     if (!snippetAppliesToExt(s, ext)) continue;   // scoped out (case-insensitive)
                     var trig = (s.trigger || '').toLowerCase();
                     if (trig.indexOf(wl) !== 0) continue;   // prefix match on the trigger
