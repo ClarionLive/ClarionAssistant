@@ -2210,13 +2210,90 @@ namespace ClarionAssistant.Terminal
                     {
                         var def = SharedLspBridge.GetDefinition(_lspFileName, Math.Max(0, line - 1), Math.Max(0, column - 1), buffer);
                         string targetPath; int targetLine0, targetChar0;
-                        if (SharedLspBridge.TryGetFirstLocation(def, out targetPath, out targetLine0, out targetChar0))
-                            navigated = MonacoSourceNavigator.NavigateToFileAndLine(targetPath, targetLine0 + 1, 1);
+                        bool got = SharedLspBridge.TryGetFirstLocation(def, out targetPath, out targetLine0, out targetChar0);
+                        // The embeditor's LSP document is a SYNTHETIC file (_lspFileName has no file on disk),
+                        // so a SAME-FILE definition resolves to that synthetic path — NavigateToFileAndLine can't
+                        // open it and returns false, which is why F12 did nothing. When the LSP resolves in-buffer
+                        // (e.g. a local var) its line numbers ARE this buffer's, so reveal in-place. (task 37e2079f)
+                        bool sameFile = got && IsSameLspFile(targetPath);
+                        if (sameFile)
+                        {
+                            if (_panel != null) _panel.RevealLine(targetLine0 + 1, targetChar0 + 1);
+                            navigated = _panel != null;
+                        }
+                        else
+                        {
+                            // Not resolved in-buffer by the LSP. If the symbol is a ROUTINE declared in THIS
+                            // embeditor buffer (a DO/GOTO target — the LSP doesn't resolve DO/ROUTINE, so CodeGraph
+                            // pointed at the on-disk generated module clbrws001.clw), reveal it in-place instead of
+                            // opening that file. Otherwise open the cross-file target. (task 37e2079f — RefreshWindow)
+                            int localTargetLine;
+                            if (TryResolveLocalRoutine(buffer, line, column, out localTargetLine))
+                            {
+                                if (_panel != null) _panel.RevealLine(localTargetLine, 1);
+                                navigated = _panel != null;
+                            }
+                            else if (got)
+                            {
+                                navigated = MonacoSourceNavigator.NavigateToFileAndLine(targetPath, targetLine0 + 1, 1);
+                            }
+                        }
                     }
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] definition: " + ex.Message); }
                 PostResponse(reqId, new Dictionary<string, object> { { "navigated", navigated } });
             });
+        }
+
+        /// <summary>If the identifier at (line1,col1) in <paramref name="buffer"/> is a ROUTINE declared in
+        /// the SAME buffer (a DO/GOTO target), return its 1-based declaration line. The embeditor buffer is one
+        /// procedure's view, so any ROUTINE in it belongs here — reveal in-place instead of opening the on-disk
+        /// generated module the LSP/CodeGraph resolves it to. Matches "&lt;label&gt; ROUTINE". (task 37e2079f)</summary>
+        private bool TryResolveLocalRoutine(string buffer, int line1, int col1, out int targetLine1)
+        {
+            targetLine1 = 0;
+            try
+            {
+                if (string.IsNullOrEmpty(buffer)) return false;
+                string[] lines = buffer.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+                int li = line1 - 1;
+                if (li < 0 || li >= lines.Length) return false;
+
+                // Identifier under the cursor (Clarion names allow ':' and '.').
+                string word = null;
+                foreach (System.Text.RegularExpressions.Match m in
+                         System.Text.RegularExpressions.Regex.Matches(lines[li], @"[A-Za-z_][A-Za-z0-9_:.]*"))
+                {
+                    if (col1 - 1 >= m.Index && col1 - 1 <= m.Index + m.Length) { word = m.Value; break; }
+                }
+                if (string.IsNullOrEmpty(word)) return false;
+
+                // "<label> ROUTINE" — the routine's declaration (label at line start, optional leading whitespace).
+                var re = new System.Text.RegularExpressions.Regex(
+                    @"^\s*" + System.Text.RegularExpressions.Regex.Escape(word) + @"\s+ROUTINE\b",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                for (int i = 0; i < lines.Length; i++)
+                    if (re.IsMatch(lines[i])) { targetLine1 = i + 1; return true; }
+            }
+            catch { }
+            return false;
+        }
+
+        /// <summary>True when a definition target refers to THIS editor's own LSP document (so a same-file
+        /// jump reveals in-place rather than trying to open a file). Exact match, or — for the embeditor's
+        /// synthetic bare-name doc — a directory-less target whose file name matches ours.</summary>
+        private bool IsSameLspFile(string targetPath)
+        {
+            if (string.IsNullOrEmpty(targetPath) || string.IsNullOrEmpty(_lspFileName)) return false;
+            if (string.Equals(targetPath, _lspFileName, StringComparison.OrdinalIgnoreCase)) return true;
+            try
+            {
+                if (string.IsNullOrEmpty(System.IO.Path.GetDirectoryName(targetPath)))
+                    return string.Equals(System.IO.Path.GetFileName(targetPath),
+                                         System.IO.Path.GetFileName(_lspFileName), StringComparison.OrdinalIgnoreCase);
+            }
+            catch { }
+            return false;
         }
 
         /// <summary>LSP hover request from Monaco. Syncs the current buffer (needed to resolve the symbol).</summary>

@@ -490,12 +490,39 @@ namespace ClarionAssistant
                         var def = SharedLspBridge.GetDefinition(_filePath, Math.Max(0, line - 1), Math.Max(0, col - 1), buffer);
                         string targetPath; int targetLine0, targetChar0;
                         if (SharedLspBridge.TryGetFirstLocation(def, out targetPath, out targetLine0, out targetChar0))
-                            navigated = MonacoSourceNavigator.NavigateToFileAndLine(targetPath, targetLine0 + 1, 1);
+                        {
+                            // Same-file jump → reveal in-place in this overlay editor rather than reopening the
+                            // file (mirror the embeditor fix — NavigateToFileAndLine can fail on a bare/synthetic
+                            // path, and reveal-in-place is the right UX for a same-file target). (task 37e2079f)
+                            bool sameFile = SameSourceFile(targetPath);
+                            if (sameFile)
+                            {
+                                if (_editor != null) _editor.RevealLine(targetLine0 + 1, targetChar0 + 1);
+                                navigated = _editor != null;
+                            }
+                            else
+                                navigated = MonacoSourceNavigator.NavigateToFileAndLine(targetPath, targetLine0 + 1, 1);
+                        }
                     }
                 }
                 catch (Exception ex) { MonacoSpikeLog.Write("overlay definition error: " + ex.Message); }
                 editor.PostResponse(reqId, new Dictionary<string, object> { { "navigated", navigated } });
             });
+        }
+
+        /// <summary>True when a definition target is THIS overlay's own source file (so a same-file jump
+        /// reveals in-place). Exact match, or a directory-less target whose file name matches ours.</summary>
+        private bool SameSourceFile(string targetPath)
+        {
+            if (string.IsNullOrEmpty(targetPath) || string.IsNullOrEmpty(_filePath)) return false;
+            if (string.Equals(targetPath, _filePath, StringComparison.OrdinalIgnoreCase)) return true;
+            try
+            {
+                if (string.IsNullOrEmpty(Path.GetDirectoryName(targetPath)))
+                    return string.Equals(Path.GetFileName(targetPath), Path.GetFileName(_filePath), StringComparison.OrdinalIgnoreCase);
+            }
+            catch { }
+            return false;
         }
 
         // LSP/hybrid diagnostics — the page sends fileMode ranges [[1,lineCount]] (whole file editable).

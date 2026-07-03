@@ -27,6 +27,9 @@ namespace ClarionAssistant.Services
         // typed char, the way the native Clarion editor does. Default ON. Maps to commitCharacters in Monaco.
         public bool CompleteOnInsertKey = true;
         public int FontSize = 13;
+        // Horizontal scrollbar visibility → Monaco editor option scrollbar.horizontal:
+        //   "auto" (show when needed) | "visible" (show always) | "hidden" (show never). Default auto.
+        public string HorizontalScrollbar = "auto";
 
         /// <summary>
         /// User key-binding OVERRIDES only: command id → canonical chord string (e.g. "Ctrl+Shift+Y").
@@ -79,6 +82,7 @@ namespace ClarionAssistant.Services
                 s.Minimap = GetBool(sv, "Minimap", s.Minimap);
                 s.CompleteOnInsertKey = GetBool(sv, "CompleteOnInsertKey", s.CompleteOnInsertKey);
                 s.FontSize = GetInt(sv, "FontSize", s.FontSize, 6, 48);
+                s.HorizontalScrollbar = NormalizeScrollbar(sv.Get(Prefix + "HorizontalScrollbar"));
                 s.KeyBindings = ParseKeyBindings(sv.Get(Prefix + "KeyBindings"));
                 s.Formatter = ParseFormatter(sv.Get(Prefix + "Formatter"));
             }
@@ -97,6 +101,7 @@ namespace ClarionAssistant.Services
             sv.Set(Prefix + "Minimap", Minimap ? "true" : "false");
             sv.Set(Prefix + "CompleteOnInsertKey", CompleteOnInsertKey ? "true" : "false");
             sv.Set(Prefix + "FontSize", Clamp(FontSize, 6, 48).ToString());
+            sv.Set(Prefix + "HorizontalScrollbar", NormalizeScrollbar(HorizontalScrollbar));
             // Compact JSON, single line — SettingsService rejects CR/LF in values, and the serializer
             // never emits them. Empty map persists as "{}" (clears any prior overrides).
             sv.Set(Prefix + "KeyBindings", new JavaScriptSerializer().Serialize(SanitizeBindings(KeyBindings)));
@@ -117,6 +122,9 @@ namespace ClarionAssistant.Services
             s.Minimap = ToBool(d, "minimap", s.Minimap);
             s.CompleteOnInsertKey = ToBool(d, "completeOnInsertKey", s.CompleteOnInsertKey);
             s.FontSize = Clamp(ToInt(d, "fontSize", s.FontSize), 6, 48);
+            object hs;
+            if (d.TryGetValue("horizontalScrollbar", out hs) && hs != null)
+                s.HorizontalScrollbar = NormalizeScrollbar(hs.ToString());
             object kb;
             if (d.TryGetValue("keyBindings", out kb) && kb is IDictionary<string, object>)
             {
@@ -148,6 +156,7 @@ namespace ClarionAssistant.Services
                 { "minimap", Minimap },
                 { "completeOnInsertKey", CompleteOnInsertKey },
                 { "fontSize", FontSize },
+                { "horizontalScrollbar", HorizontalScrollbar },
                 { "keyBindings", SanitizeBindings(KeyBindings) }
             };
             // Merge the formatter pass-through bag so the bridge payload (load + cross-tab broadcast) carries
@@ -281,6 +290,13 @@ namespace ClarionAssistant.Services
         }
 
         private static int Clamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+        /// <summary>Whitelist the horizontal-scrollbar mode to Monaco's three legal scrollbar.horizontal
+        /// values ("visible"/"hidden"); anything else (null, missing, or a crafted payload) → "auto".</summary>
+        private static string NormalizeScrollbar(string v)
+        {
+            return (v == "visible" || v == "hidden") ? v : "auto";
+        }
 
         private static int GetInt(SettingsService sv, string key, int dflt, int lo, int hi)
         {

@@ -244,6 +244,16 @@ namespace ClarionCodeGraph.Parsing
                 if (b.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
                     yield return b;
         }
+
+        /// <summary>Exact (case-insensitive) ABC standard global/equate match, or null. Hover source for the
+        /// template-generated globals (GlobalRequest/Response …) that live in no indexed DB. (task 37e2079f)</summary>
+        public static BuiltinCompletionItem AbcStandardGlobalExact(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            foreach (var b in _abcStandardGlobals)
+                if (string.Equals(b.Name, name, StringComparison.OrdinalIgnoreCase)) return b;
+            return null;
+        }
     }
 
     /// <summary>A curated completion entry (name + LSP CompletionItemKind int + detail) for ABC standard

@@ -925,14 +925,23 @@ namespace ClarionAssistant.Services
             return null;
         }
 
-        // Word under (0-based line, character). Reads the file from disk — matches the disk-fallback
-        // pattern already used by SharedGetCompletion/SharedGetDiagnostics for context-free calls.
-        private static string CgWordAt(string filePath, int line, int character)
+        // Word under (0-based line, character). PREFERS the live buffer when supplied — the CA Embeditor's
+        // _lspFileName is a SYNTHETIC .clw path with no file on disk, so a disk read there returns null and
+        // the whole CodeGraph definition/hover fallback silently yields nothing (this is what made F12 do
+        // nothing in the embeditor once we moved to the pure-upstream LSP, whose definition provider returns
+        // empty for bare symbols → the fallback must carry it). Falls back to reading filePath from disk for
+        // on-disk callers that pass no buffer. (task 37e2079f)
+        private static string CgWordAt(string filePath, int line, int character, string bufferText = null)
         {
             try
             {
-                if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return null;
-                var lines = File.ReadAllLines(filePath);
+                string[] lines;
+                if (!string.IsNullOrEmpty(bufferText))
+                    lines = bufferText.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+                else if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
+                    lines = File.ReadAllLines(filePath);
+                else
+                    return null;
                 if (line < 0 || line >= lines.Length) return null;
                 string text = lines[line];
                 foreach (Match m in CgWordPattern.Matches(text))
@@ -969,7 +978,7 @@ namespace ClarionAssistant.Services
                     return WrapResult(new System.Collections.ArrayList { CgLocation(mSym.FilePath, mSym.LineNumber) });
 
                 // Bare word (class name, equate). Project CodeGraph first (most specific), then ClarionGraph.
-                string word = CgWordAt(filePath, line, character);
+                string word = CgWordAt(filePath, line, character, bufferText);
                 if (string.IsNullOrEmpty(word)) return null;
                 return CgDefinitionFromDb(word, ResolveCodeGraphDb(filePath))
                     ?? CgDefinitionFromDb(word, ClarionGraphService.ResolveDbPath());
@@ -1115,10 +1124,30 @@ namespace ClarionAssistant.Services
                 }
 
                 // Bare word (class name, equate) — exact-name lookup.
-                string word = CgWordAt(filePath, line, character);
+                string word = CgWordAt(filePath, line, character, bufferText);
                 if (string.IsNullOrEmpty(word)) return null;
-                return CgHoverFromDb(word, ResolveCodeGraphDb(filePath), "CodeGraph")
+                var hov = CgHoverFromDb(word, ResolveCodeGraphDb(filePath), "CodeGraph")
                     ?? CgHoverFromDb(word, ClarionGraphService.ResolveDbPath(), "ClarionGraph");
+                if (hov != null) return hov;
+                // Template-generated ABC globals (GlobalRequest/Response, VCRRequest, GlobalErrors …) live in
+                // no libsrc file, so no DB has them — resolve their hover from the curated built-in list. This
+                // also covers the request equates before the ABFILE.EQU rebuild lands. (task 37e2079f, CC probe)
+                return AbcGlobalHover(word);
+            }
+            catch { return null; }
+        }
+
+        /// <summary>Hover for a well-known ABC standard global/equate (GlobalRequest, GlobalResponse,
+        /// VCRRequest, RequestCancelled …) that is template-generated or otherwise absent from every indexed
+        /// DB. Returns null when the word isn't one of them. Markdown mirrors CgHoverText. (task 37e2079f)</summary>
+        private static Dictionary<string, object> AbcGlobalHover(string word)
+        {
+            try
+            {
+                var g = ClarionCodeGraph.Parsing.ClarionBuiltins.AbcStandardGlobalExact(word);
+                if (g == null) return null;
+                string contents = "```clarion\n" + g.Name + "\n```\n\n" + g.Detail + " · ABC";
+                return WrapResult(new Dictionary<string, object> { { "contents", contents } });
             }
             catch { return null; }
         }

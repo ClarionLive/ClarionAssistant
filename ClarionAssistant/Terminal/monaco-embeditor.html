@@ -362,6 +362,12 @@
         <label>Minimap <input type="checkbox" id="setMinimap"></label>
         <label>Complete word on insert key (space . ( ) <input type="checkbox" id="setCompleteOnInsertKey"></label>
         <label>Font size <input type="number" id="setFontSize" min="6" max="48" step="1"></label>
+        <label>Horizontal scrollbar
+            <select id="setHorizontalScrollbar">
+                <option value="auto">Show when needed</option>
+                <option value="visible">Show always</option>
+                <option value="hidden">Show never</option>
+            </select></label>
 
         <h4>Smart Formatter — General</h4>
         <label>Preferred column <input type="number" id="setPreferredColumn" min="1" max="120" step="1"></label>
@@ -665,6 +671,7 @@
                     mouseWheelZoom: true,   // Ctrl+wheel zooms the editor font (native Monaco)
                     renderWhitespace: 'selection',
                     scrollBeyondLastLine: false,
+                    scrollbar: { horizontal: 'auto' },   // overridden live by applyEditorSettings (horizontalScrollbar setting)
                     // Pin the enclosing PROCEDURE/ROUTINE/structure header to the top while scrolling.
                     // Sticky scroll derives scopes from the Clarion folding ranges (registerClarionFolding).
                     stickyScroll: { enabled: true },
@@ -1912,6 +1919,7 @@
             mouseWheelZoom: true,
             renderWhitespace: 'selection',
             scrollBeyondLastLine: false,
+            scrollbar: { horizontal: s.horizontalScrollbar || 'auto' },
             stickyScroll: { enabled: true },   // pin enclosing scope header (split pane; same as primary)
             multiCursorModifier: 'alt',        // Alt+Click / Ctrl+Alt+Up-Down carets (split pane; same as primary)
             quickSuggestions: true,
@@ -2423,6 +2431,21 @@
     // embeditor and the diff editor fold from ONE provider; it also feeds Monaco sticky-scroll scopes.
 
     // LSP-backed completion + hover, routed through the C# host to the Clarion language server.
+    // True when 0-based column `col0` on `text` falls at or after the line's first UNQUOTED '!'
+    // (a Clarion line comment runs from '!' to end-of-line). A '!' inside a single-quoted string
+    // literal is not a comment; quotes toggle string state and Clarion's doubled-quote ('') escape
+    // is handled naturally by the toggle. Mirrors ClarionDeclarationParser.StripComment. (task 37e2079f)
+    function isInClarionComment(text, col0) {
+        if (!text) return false;
+        var inStr = false;
+        for (var i = 0; i < text.length; i++) {
+            var ch = text[i];
+            if (ch === "'") inStr = !inStr;
+            else if (ch === '!' && !inStr) return col0 >= i;
+        }
+        return false;
+    }
+
     function registerClarionProviders() {
         monaco.languages.registerCompletionItemProvider('clarion', {
             triggerCharacters: ['.'],
@@ -2453,6 +2476,11 @@
         });
         monaco.languages.registerHoverProvider('clarion', {
             provideHover: function (model, position) {
+                // Suppress the tooltip when the hover position is inside a Clarion comment — hovering a
+                // keyword-looking word like 'End' in a '! ...' comment must be ignored. position.column
+                // is 1-based, so pass column-1 as the 0-based index. Guarding here (not host-side) avoids
+                // a wasted round-trip and needs no C# change. (task 37e2079f)
+                if (isInClarionComment(model.getLineContent(position.lineNumber), position.column - 1)) return null;
                 return requestFromHost('hover', { line: position.lineNumber, column: position.column, buffer: model.getValue() })
                     .then(function (resp) {
                         if (!resp || !resp.contents) return null;
@@ -2480,6 +2508,7 @@
         if (typeof s.fontSize === 'number') opts.fontSize = s.fontSize;
         opts.wordWrap = s.wordWrap ? 'on' : 'off';
         opts.minimap = { enabled: !!s.minimap };
+        opts.scrollbar = { horizontal: s.horizontalScrollbar || 'auto' };   // auto | visible | hidden (task 37e2079f)
         opts.autoIndent = s.autoIndent ? 'full' : 'keep';
         // Live insert-key acceptance: read by toMonacoCompletion on the next keystroke (default ON if absent).
         if (typeof s.completeOnInsertKey === 'boolean') commitKeysEnabled = s.completeOnInsertKey;
@@ -2549,6 +2578,7 @@
         if ((el = document.getElementById('setMinimap'))) el.checked = !!s.minimap;
         if ((el = document.getElementById('setCompleteOnInsertKey'))) el.checked = (s.completeOnInsertKey !== false);
         if ((el = document.getElementById('setFontSize')) && typeof s.fontSize === 'number') el.value = s.fontSize;
+        if ((el = document.getElementById('setHorizontalScrollbar'))) el.value = s.horizontalScrollbar || 'auto';
         populateFormatterPanel(s);
     }
 
@@ -2620,6 +2650,7 @@
             minimap: chk('setMinimap'),
             completeOnInsertKey: chk('setCompleteOnInsertKey'),
             fontSize: num('setFontSize', 13, 6, 48),
+            horizontalScrollbar: sel('setHorizontalScrollbar', 'auto'),
             // ----- Smart Formatter -----
             preferredColumn: num('setPreferredColumn', D.preferredColumn || 31, 1, 120),
             contLineMultiplier: num('setContLineMultiplier', D.contLineMultiplier || 2, 1, 8),
@@ -2757,7 +2788,7 @@
             var p = document.getElementById('settingsPanel');
             if (p) p.classList.toggle('hidden');
         });
-        var ids = ['setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize',
+        var ids = ['setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setHorizontalScrollbar',
             // Smart Formatter controls
             'setPreferredColumn', 'setContLineMultiplier', 'setIndentComments', 'setDontIndentCol1Comments', 'setFormatLineOnEnter',
             'setIndentFromCode', 'setIndentCaseSubKeywords', 'setColonAsLabel', 'setFormatBlockAfterEnd', 'setPreferredKeywordIndent',

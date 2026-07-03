@@ -46,12 +46,14 @@ namespace ClarionAssistant.Services
         // Bump when the INGESTION (ClarionParser output / what symbols we store) changes, so existing cached
         // DBs built by an older parser are treated as stale and auto-rebuilt (LibSrc mtimes alone can't detect
         // a parser change). v2: capture CLASS data members (dotted "Class.Member"); member queries dotted-only.
-        private const int ParserVersion = 2;
+        // v3: index keycodes.clw + errors.clw equates (MouseRight, NoFileErr, …) so F12/hover resolve them.
+        private const int ParserVersion = 3;
 
-        // Flat equate files (no class structure) — ingested via the dedicated EQUATE scan.
+        // Flat equate files (no class structure) — ingested via the dedicated EQUATE scan. keycodes.clw
+        // (MouseRight, Key* …) and errors.clw (NoFileErr, …) added so their equates resolve for F12/hover. (task 37e2079f)
         private static readonly string[] EquateFileNames =
         {
-            "equates.clw", "property.clw", "builtins.clw", "winerr.inc"
+            "equates.clw", "property.clw", "builtins.clw", "winerr.inc", "keycodes.clw", "errors.clw"
         };
 
         private static readonly Regex EquateRegex = new Regex(
@@ -323,13 +325,26 @@ namespace ClarionAssistant.Services
                             catch { /* skip a single bad file, keep building */ }
                         }
 
-                        // 2) Flat equate files → dedicated EQUATE scan.
+                        // 2) Flat equate files → dedicated EQUATE scan: the named .clw/.inc equate lists PLUS
+                        //    every *.EQU in libsrc\win. The ABC action-request equates (RequestCompleted/
+                        //    RequestCancelled, InsertRecord/ChangeRecord/DeleteRecord, Record:OK, file-access
+                        //    modes …) live in ABFILE.EQU — a .EQU file the named list never matched (CC probe,
+                        //    ticket 37e2079f). Dedupe so a named file also picked by the glob isn't scanned twice.
+                        var equatePaths = new List<string>();
+                        var seenEquate = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                         foreach (string fileName in EquateFileNames)
                         {
-                            string filePath = Path.Combine(libSrcRoot, fileName);
-                            if (File.Exists(filePath))
-                                totalSymbols += IngestEquateFile(db, filePath, projectId);
+                            string p = Path.Combine(libSrcRoot, fileName);
+                            if (File.Exists(p) && seenEquate.Add(p)) equatePaths.Add(p);
                         }
+                        try
+                        {
+                            foreach (string p in Directory.GetFiles(libSrcRoot, "*.EQU", SearchOption.TopDirectoryOnly))
+                                if (seenEquate.Add(p)) equatePaths.Add(p);
+                        }
+                        catch { }
+                        foreach (string filePath in equatePaths)
+                            totalSymbols += IngestEquateFile(db, filePath, projectId);
 
                         // Metadata (version, libsrc root, built_at, symbol_count).
                         db.SetMetadata("version", version);
@@ -605,6 +620,8 @@ namespace ClarionAssistant.Services
 
                 var candidates = new List<string>();
                 try { candidates.AddRange(Directory.GetFiles(libSrcRoot, "*.inc", SearchOption.TopDirectoryOnly)); }
+                catch { }
+                try { candidates.AddRange(Directory.GetFiles(libSrcRoot, "*.EQU", SearchOption.TopDirectoryOnly)); }
                 catch { }
                 foreach (string fileName in EquateFileNames)
                     candidates.Add(Path.Combine(libSrcRoot, fileName));

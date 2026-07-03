@@ -467,18 +467,21 @@ namespace ClarionAssistant.Services
                             SetMenuInfo(hMenu, ref mi);
                         }
 
-                        // (2) Visually group our injected action like the native separator-delimited groups
-                        // (Properties | Window..Formulas | ... | Rename), then append the item. BOTH appends
-                        // live inside the OUR_CMD/OUR_SEP_ID dedup guard so a re-fire on a reused HMENU can't
-                        // stack separators. The separator is OWNER-DRAW (MF_OWNERDRAW | MF_DISABLED) so we can
-                        // draw it INDENTED to the text column and LIGHTER (etched) to match Clarion's native
-                        // separators — a plain MF_SEPARATOR renders full-width + solid, visibly off. MF_DISABLED
-                        // makes it non-selectable and never-highlighted; OUR_SEP_ID lets WM_MEASUREITEM/WM_DRAWITEM
-                        // recognize our row. The item stays MF_STRING (system-drawn); only the separator is owner-draw.
-                        // Leading spaces nudge the caption toward the native owner-drawn text column (wide icon
-                        // gutter our system-drawn item lacks). 7 overshot (image #4) → 5 → 6 (John: a touch right).
-                        AppendMenu(hMenu, MF_OWNERDRAW | MF_DISABLED, (UIntPtr)OUR_SEP_ID, null);
-                        AppendMenu(hMenu, MF_STRING, (UIntPtr)OUR_CMD, "      Open in CA Embeditor");
+                        // (2) Append "CA Embeditor Source" AT THE END of the popup.
+                        // Clarion's proc popup is 100% OWNER-DRAW and lays its trailing rows out by cached
+                        // position/rect (measured before our RET hook runs). Inserting our item ANYWHERE mid-list
+                        // shifts the native rows below it, so the LAST native item — "Rename" (renames the
+                        // procedure) — renders against a stale rect and paints BLANK, leaving a reserved empty gap.
+                        // CC live probe (ticket 37e2079f) confirmed the popup is 16 all-owner-draw items with
+                        // Rename = id 0xC at pos 15: append-at-end never shifted it (Rename intact), but an
+                        // InsertMenu after "Embeditor Source" (even a plain MF_STRING item, no separator) dropped it.
+                        // So we append AFTER every native item — shifts nothing → Rename stays intact. Trade-off:
+                        // the item sits at the popup bottom rather than beside "Embeditor Source" (Clarion owns the
+                        // owner-draw layout and can't accommodate a foreign row mid-list). The item is MF_STRING,
+                        // whited by the MIM_BACKGROUND brush above. Leading spaces nudge the caption toward the
+                        // native text column. (The OUR_SEP_ID owner-draw separator is no longer inserted; its
+                        // WM_MEASUREITEM/WM_DRAWITEM handlers below simply never fire now.)
+                        AppendMenu(hMenu, MF_STRING, (UIntPtr)OUR_CMD, "      CA Embeditor Source");
                     }
                 }
                 // ---- owner-draw separator: measure + paint, RET-hook (paint-last wins, Eve's rule) ----
