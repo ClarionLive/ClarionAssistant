@@ -3007,6 +3007,7 @@
         var filterInput = document.getElementById('snippetFilter');
         var listBox = document.getElementById('snippetListBox');
         var emptyMsg = document.getElementById('snippetEmptyMsg');
+        var pickerKeyHandler = null;   // document-capture keydown handler; removed in close()
 
         function appliesToExt(s) {
             return !s.extensions || !s.extensions.length || s.extensions.indexOf(ext) !== -1;
@@ -3037,6 +3038,7 @@
 
         function close() {
             snippetPickerOpen = false;
+            if (pickerKeyHandler) { document.removeEventListener('keydown', pickerKeyHandler, true); pickerKeyHandler = null; }
             if (window.renderSnippetPickerList === renderList) delete window.renderSnippetPickerList;
             ov.remove();
             try { ed.focus(); } catch (e) { }
@@ -3054,12 +3056,19 @@
 
         filterInput.addEventListener('input', renderList);
         listBox.ondblclick = accept;
-        ov.addEventListener('keydown', function (e) {
-            if (e.key === 'Enter') { e.preventDefault(); accept(); }
-            else if (e.key === 'Escape') { e.preventDefault(); close(); }
-            else if (e.key === 'ArrowDown') { e.preventDefault(); if (listBox.selectedIndex < listBox.options.length - 1) listBox.selectedIndex++; }
-            else if (e.key === 'ArrowUp') { e.preventDefault(); if (listBox.selectedIndex > 0) listBox.selectedIndex--; }
-        });
+        // Handle picker keys at DOCUMENT / capture level (not on ov) so Enter/Esc/arrows work even
+        // after Monaco/WebView2 grabs focus back — a bubble handler on ov silently stops the moment
+        // focus leaves the overlay, which made the picker impossible to dismiss (#49 follow-up).
+        // stopImmediatePropagation keeps Enter/Esc from also reaching the Monaco editor underneath.
+        pickerKeyHandler = function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); e.stopImmediatePropagation(); accept(); }
+            else if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); close(); }
+            else if (e.key === 'ArrowDown') { e.preventDefault(); e.stopImmediatePropagation(); if (listBox.selectedIndex < listBox.options.length - 1) listBox.selectedIndex++; }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); e.stopImmediatePropagation(); if (listBox.selectedIndex > 0) listBox.selectedIndex--; }
+        };
+        document.addEventListener('keydown', pickerKeyHandler, true);   // capture — beats Monaco, focus-independent
+        // Click the dark backdrop (outside the panel) to cancel — matches the Settings modals.
+        ov.addEventListener('mousedown', function (e) { if (e.target === ov) close(); });
 
         renderList();
         filterInput.focus();
