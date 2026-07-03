@@ -811,6 +811,7 @@
                 installCommandPalette(editor); // F1 / Ctrl+Shift+P open Monaco's quick-command palette
                 installFindKeyInterceptor();   // capture-phase Ctrl+F/Ctrl+H/F3 — beats Monaco's stock widgets
                 installSnippetKeyInterceptor(); // capture-phase Ctrl+J — classic Clarion code-snippet picker
+                installSnippetTriggerKey();     // capture-phase SPACE — classic Clarion "trigger + space" expansion
                 rebuildChordMap();             // seed the binding map from defaults (settings refine it later)
                 installKeyBindings();          // capture-phase dispatcher for all rebindable Clarion editor keys
                 installGlyphBookmarkClick();   // far-left margin click toggles a bookmark (#16)
@@ -2626,7 +2627,6 @@
                         insertText: s.trigger,   // the accept command replaces this with the expanded body
                         range: range,
                         sortText: '0_' + s.trigger,   // float snippets to the top of a prefix match
-                        commitCharacters: (wl === trig) ? [' '] : undefined,   // full trigger + space commits (Clarion-style)
                         command: _snippetInsertCmd ? { id: _snippetInsertCmd, title: 'Insert snippet', arguments: [s.id] } : undefined
                     });
                 }
@@ -3239,6 +3239,39 @@
                 ev.preventDefault(); ev.stopImmediatePropagation(); openSnippetPicker();
             }
         }, true);   // capture phase — runs ahead of Monaco's own keydown listener
+    }
+
+    // Classic Clarion "trigger + <SPACE>" expansion: pressing space right after an EXACT snippet trigger
+    // word expands it in place. We own the space key here because Monaco does NOT run a completion item's
+    // command when you commit with a space (only on Enter/Tab), so the completion-list route can't expand
+    // on space. Fires ONLY on an exact trigger match; any other word lets the space through untouched.
+    // ${SELECTED} snippets are skipped (no selection exists once you've typed a trigger — those are Ctrl+J).
+    function installSnippetTriggerKey() {
+        document.addEventListener('keydown', function (ev) {
+            if (ev.code !== 'Space' && ev.keyCode !== 32) return;
+            if (ev.ctrlKey || ev.altKey || ev.metaKey || ev.shiftKey) return;   // a plain space only
+            if (capturingKey || snippetPickerOpen || !snippetsList.length) return;
+            var ed = activeEd();
+            if (!ed || (ed.hasTextFocus && !ed.hasTextFocus())) return;   // editor must actually have focus
+            var sel = ed.getSelection();
+            if (!sel || !sel.isEmpty() || !isEditableRange(sel)) return;   // caret in editable code, no selection
+            var pos = ed.getPosition(), model = ed.getModel();
+            var before = model.getLineContent(pos.lineNumber).substring(0, pos.column - 1);
+            var m = /[A-Za-z0-9_]+$/.exec(before);
+            if (!m) return;
+            var wl = m[0].toLowerCase(), ext = activeSnippetExtension(), snip = null;
+            for (var i = 0; i < snippetsList.length; i++) {
+                var s = snippetsList[i];
+                if (s.body && s.body.indexOf('${SELECTED}') !== -1) continue;   // wrap-style → Ctrl+J only
+                if (!snippetAppliesToExt(s, ext)) continue;
+                if ((s.trigger || '').toLowerCase() === wl) { snip = s; break; }   // EXACT trigger match
+            }
+            if (!snip) return;   // not a trigger — let the space through normally
+            ev.preventDefault(); ev.stopImmediatePropagation();
+            try { ed.trigger('snippet', 'hideSuggestWidget', null); } catch (e) { }   // don't let the popup also act
+            ed.setSelection(new monaco.Range(pos.lineNumber, pos.column - m[0].length, pos.lineNumber, pos.column));
+            insertSnippetBody(ed, snip.body || '', '');   // replaces the selected trigger word with the body
+        }, true);   // capture phase — beats Monaco's own space handling
     }
 
     // In procedure/embed mode there's no real file path (a PWEE procedure always generates into a
