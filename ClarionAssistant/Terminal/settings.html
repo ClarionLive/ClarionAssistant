@@ -314,6 +314,7 @@
     <div class="nav-item" onclick="showPage('data')">Data</div>
     <div class="nav-item" onclick="showPage('classes')">Classes</div>
     <div class="nav-item" onclick="showPage('github')">Source Control</div>
+    <div class="nav-item" onclick="showPage('snippets')">Snippets</div>
     <div class="nav-item" onclick="showPage('mcp')">MCP Server</div>
     <div class="nav-item" onclick="showPage('acknowledgments')">Acknowledgments</div>
     <div class="nav-item" onclick="showPage('about')">About</div>
@@ -589,6 +590,27 @@
       <!-- Add/Edit form is now in the ghFormOverlay modal -->
     </div>
 
+    <!-- Snippets -->
+    <div class="page" id="page-snippets">
+      <h2>Code Snippets</h2>
+      <div class="field-desc" style="margin-bottom:12px">Ctrl+J in the CA Embeditor opens a picker with these snippets. Bodies use Monaco snippet syntax (<code>$1</code>, <code>${1:default}</code>, <code>$0</code>) plus <code>${SELECTED}</code>, which is replaced with whatever text was selected when Ctrl+J was pressed.</div>
+
+      <table style="width:100%;border-collapse:collapse;margin-bottom:10px" id="snippetTable">
+        <thead>
+          <tr>
+            <th style="text-align:left;font-size:11px;font-weight:600;color:var(--section-fg);padding:6px 8px;border-bottom:1px solid var(--input-border)">TRIGGER</th>
+            <th style="text-align:left;font-size:11px;font-weight:600;color:var(--section-fg);padding:6px 8px;border-bottom:1px solid var(--input-border)">DESCRIPTION</th>
+            <th style="text-align:left;font-size:11px;font-weight:600;color:var(--section-fg);padding:6px 8px;border-bottom:1px solid var(--input-border);width:120px">EXTENSIONS</th>
+            <th style="width:120px;text-align:right;font-size:11px;font-weight:600;color:var(--section-fg);padding:6px 8px;border-bottom:1px solid var(--input-border)"></th>
+          </tr>
+        </thead>
+        <tbody id="snippetBody"></tbody>
+      </table>
+      <div id="snippetEmpty" style="color:var(--desc-fg);font-size:12px;font-style:italic;padding:8px 0;display:none">No snippets configured.</div>
+
+      <button class="btn" onclick="showSnippetForm()" style="margin-top:4px">+ Add Snippet</button>
+    </div>
+
     <!-- MCP Server -->
     <div class="page" id="page-mcp">
       <h2>MCP Server</h2>
@@ -811,6 +833,54 @@
         <button class="btn" onclick="cancelGhForm()">Cancel</button>
         <button class="btn" id="ghTestBtn" onclick="testGhToken()">Test</button>
         <span id="ghTestResult" style="font-size:12px;margin-left:4px"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="snippetFormOverlay" onclick="if(event.target===this)cancelSnippetForm()">
+  <div class="overlay-panel" style="width:520px;max-height:640px">
+    <div class="overlay-header">
+      <h3 id="snippetFormTitle">Add Snippet</h3>
+      <button class="overlay-close" onclick="cancelSnippetForm()">&times;</button>
+    </div>
+    <div class="overlay-body">
+      <input type="hidden" id="snippetFormId" value="">
+      <div class="field">
+        <div class="field-label">Trigger</div>
+        <input type="text" id="snippetTrigger" placeholder="e.g. loopventas">
+      </div>
+      <div class="field">
+        <div class="field-label">Description</div>
+        <input type="text" id="snippetDescription" placeholder="e.g. Standard loop over the Ventas file">
+      </div>
+      <div class="field">
+        <div class="field-label">Extensions</div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap">
+          <label class="check-row" style="margin-bottom:0"><input type="checkbox" class="snippetExt" value=".clw">.clw</label>
+          <label class="check-row" style="margin-bottom:0"><input type="checkbox" class="snippetExt" value=".tpl">.tpl</label>
+          <label class="check-row" style="margin-bottom:0"><input type="checkbox" class="snippetExt" value=".tpw">.tpw</label>
+        </div>
+        <div class="field-desc">Leave all unchecked to make this snippet available for every file type.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Body</div>
+        <textarea id="snippetBodyField" rows="10" placeholder="$1, ${1:default}, $0 for tab-stops; ${SELECTED} for the text selected when Ctrl+J was pressed"
+          style="width:100%;font-family:Cascadia Mono,Consolas,monospace;font-size:12px;background:var(--input-bg);color:var(--input-fg);border:1px solid var(--input-border);padding:8px;border-radius:4px;resize:vertical"></textarea>
+        <div style="padding:8px 10px;background:rgba(116,199,236,0.08);border:1px solid rgba(116,199,236,0.35);border-radius:4px;margin-top:6px;font-size:11px;line-height:1.6">
+          <b>Placeholders</b> (indentation is automatic — every line after the first matches the line Ctrl+J was pressed on):
+          <table style="margin-top:4px;border-collapse:collapse">
+            <tr><td style="font-family:Consolas,monospace;padding:1px 10px 1px 0;white-space:nowrap">${SELECTED}</td><td style="color:var(--section-fg)">Text selected when Ctrl+J was pressed; becomes a fillable tab-stop if nothing was selected.</td></tr>
+            <tr><td style="font-family:Consolas,monospace;padding:1px 10px 1px 0;white-space:nowrap">$1 $2 ...</td><td style="color:var(--section-fg)">Tab-stops. Tab/Shift+Tab cycles through them in order after insertion.</td></tr>
+            <tr><td style="font-family:Consolas,monospace;padding:1px 10px 1px 0;white-space:nowrap">${1:texto}</td><td style="color:var(--section-fg)">Tab-stop pre-filled with default text (here, "texto").</td></tr>
+            <tr><td style="font-family:Consolas,monospace;padding:1px 10px 1px 0;white-space:nowrap">$0</td><td style="color:var(--section-fg)">Final cursor position, visited last (after every numbered tab-stop).</td></tr>
+            <tr><td style="font-family:Consolas,monospace;padding:1px 10px 1px 0;white-space:nowrap">\$</td><td style="color:var(--section-fg)">Literal dollar sign (escapes the tab-stop syntax above).</td></tr>
+          </table>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+        <button class="btn" style="background:var(--accent);color:#fff;border-color:var(--accent)" onclick="saveSnippet()">Save</button>
+        <button class="btn" onclick="cancelSnippetForm()">Cancel</button>
       </div>
     </div>
   </div>
@@ -1506,6 +1576,84 @@
     }
   }
 
+  // ----- Code Snippets (Ctrl+J) -----
+  var snippetsData = [];
+
+  function renderSnippets() {
+    var tbody = document.getElementById('snippetBody');
+    var empty = document.getElementById('snippetEmpty');
+    if (snippetsData.length === 0) {
+      tbody.innerHTML = '';
+      empty.style.display = 'block';
+      return;
+    }
+    empty.style.display = 'none';
+    var html = '';
+    for (var i = 0; i < snippetsData.length; i++) {
+      var s = snippetsData[i];
+      var exts = (s.extensions && s.extensions.length) ? s.extensions.join(', ') : 'all';
+      html += '<tr>'
+        + '<td style="padding:6px 8px;border-bottom:1px solid var(--input-border);font-size:13px;font-family:Consolas,monospace">' + esc(s.trigger) + '</td>'
+        + '<td style="padding:6px 8px;border-bottom:1px solid var(--input-border);font-size:13px;color:var(--section-fg)">' + esc(s.description) + '</td>'
+        + '<td style="padding:6px 8px;border-bottom:1px solid var(--input-border);font-size:12px;color:var(--section-fg)">' + esc(exts) + '</td>'
+        + '<td style="padding:6px 8px;border-bottom:1px solid var(--input-border);text-align:right">'
+        + '<button class="btn btn-sm" onclick="editSnippet(\'' + esc(s.id) + '\')" style="margin-right:4px">Edit</button>'
+        + '<button class="btn btn-sm" onclick="deleteSnippet(\'' + esc(s.id) + '\')">Delete</button>'
+        + '</td></tr>';
+    }
+    tbody.innerHTML = html;
+  }
+
+  function showSnippetForm(id) {
+    var overlay = document.getElementById('snippetFormOverlay');
+    overlay.classList.add('visible');
+    var checks = document.querySelectorAll('.snippetExt');
+    if (id) {
+      var snip = null;
+      for (var i = 0; i < snippetsData.length; i++) { if (snippetsData[i].id === id) { snip = snippetsData[i]; break; } }
+      if (!snip) return;
+      document.getElementById('snippetFormTitle').textContent = 'Edit Snippet';
+      document.getElementById('snippetFormId').value = snip.id;
+      document.getElementById('snippetTrigger').value = snip.trigger || '';
+      document.getElementById('snippetDescription').value = snip.description || '';
+      document.getElementById('snippetBodyField').value = snip.body || '';
+      var exts = snip.extensions || [];
+      for (var j = 0; j < checks.length; j++) checks[j].checked = exts.indexOf(checks[j].value) !== -1;
+    } else {
+      document.getElementById('snippetFormTitle').textContent = 'Add Snippet';
+      document.getElementById('snippetFormId').value = '';
+      document.getElementById('snippetTrigger').value = '';
+      document.getElementById('snippetDescription').value = '';
+      document.getElementById('snippetBodyField').value = '';
+      for (var k = 0; k < checks.length; k++) checks[k].checked = false;
+    }
+  }
+
+  function editSnippet(id) { showSnippetForm(id); }
+
+  function cancelSnippetForm() {
+    document.getElementById('snippetFormOverlay').classList.remove('visible');
+  }
+
+  function saveSnippet() {
+    var id = document.getElementById('snippetFormId').value;
+    var trigger = document.getElementById('snippetTrigger').value.trim();
+    var description = document.getElementById('snippetDescription').value.trim();
+    var body = document.getElementById('snippetBodyField').value;
+    if (!trigger) { document.getElementById('snippetTrigger').focus(); return; }
+    var extensions = [];
+    var checks = document.querySelectorAll('.snippetExt');
+    for (var i = 0; i < checks.length; i++) if (checks[i].checked) extensions.push(checks[i].value);
+    var data = { id: id, trigger: trigger, description: description, extensions: extensions, body: body };
+    send(id ? 'editSnippet' : 'addSnippet', data);
+    cancelSnippetForm();
+  }
+
+  function deleteSnippet(id) {
+    if (!confirm('Delete this snippet?')) return;
+    send('deleteSnippet', id);
+  }
+
   function testGhToken() {
     var token = document.getElementById('ghToken').value;
     var id = document.getElementById('ghFormId').value;
@@ -1785,6 +1933,11 @@
     if (msg.type === 'setGitHubAccounts') {
       ghAccounts = msg.accounts || [];
       renderGhAccounts();
+    }
+
+    if (msg.type === 'setSnippets') {
+      snippetsData = msg.snippets || [];
+      renderSnippets();
     }
 
     if (msg.type === 'testGitHubResult') {

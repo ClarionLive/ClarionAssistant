@@ -563,6 +563,9 @@
     var lastFindQuery = null;     // the query that produced findResults (for Enter = next)
     var findOpts = { matchCase: false, wholeWord: false, regex: false, includeReadOnly: true };
     // Monaco's standard word-boundary separators (needed to enable whole-word matching).
+
+    // ----- Snippets (Ctrl+J) state -----
+    var snippetsList = [];        // [{id,trigger,description,extensions,body}], from setSource + applySnippets broadcast
     var WORD_SEPARATORS = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
 
     // ----- Find TABS: each tab is an independent search session {query, replaceText, opts}. The live
@@ -718,6 +721,7 @@
                 editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, doSave);
                 installCommandPalette(editor); // F1 / Ctrl+Shift+P open Monaco's quick-command palette
                 installFindKeyInterceptor();   // capture-phase Ctrl+F/Ctrl+H/F3 — beats Monaco's stock widgets
+                installSnippetKeyInterceptor(); // capture-phase Ctrl+J — classic Clarion code-snippet picker
                 rebuildChordMap();             // seed the binding map from defaults (settings refine it later)
                 installKeyBindings();          // capture-phase dispatcher for all rebindable Clarion editor keys
                 installGlyphBookmarkClick();   // far-left margin click toggles a bookmark (#16)
@@ -774,6 +778,7 @@
         embedRanges = msg.editableRanges || [];
         saveEnabled = !!msg.saveEnabled;
         fileMode = !!msg.fileMode;
+        currentFilePath = msg.filePath || '';
         breakpointsEnabled = !!msg.breakpointsEnabled;   // overlay: gutter-click toggles a breakpoint (not a bookmark)
         designerEnabled = !!msg.designerEnabled;         // overlay: Ctrl+D designs structures in plain source files
         var sb = document.getElementById('saveBtn');
@@ -853,6 +858,7 @@
         if (msg.findHistory) replaceArray(findHistory, msg.findHistory);
         if (msg.replaceHistory) replaceArray(replHistory, msg.replaceHistory);
         if (msg.procHistory) replaceArray(procFindHistory, msg.procHistory);
+        if (msg.snippets) snippetsList = msg.snippets;
         // Source is transferred via the virtual-host URL to avoid huge postMessage payloads.
         fetch(msg.sourceUrl, { cache: 'no-store' })
             .then(function (r) { return r.text(); })
@@ -1184,6 +1190,7 @@
 
     function installKeyBindings() {
         document.addEventListener('keydown', function (ev) {
+            if (snippetPickerOpen) return;   // the snippet picker owns its own keydown handling while open
             if (capturingKey) { handleKeyCapture(ev); return; }
             var chord = chordFromEvent(ev);
             if (!chord) return;
@@ -2920,7 +2927,7 @@
     // Monaco's textarea handler) and stop it dead, so OUR panel opens instead. F3/Shift+F3 cycle.
     function installFindKeyInterceptor() {
         document.addEventListener('keydown', function (ev) {
-            if (capturingKey) return;   // rebind-capture in the settings panel owns the keyboard
+            if (capturingKey || snippetPickerOpen) return;   // rebind-capture / snippet picker owns the keyboard
             var ctrl = ev.ctrlKey || ev.metaKey;
             if (ctrl && (ev.keyCode === 70 || ev.key === 'f' || ev.key === 'F')) {         // Ctrl+F
                 ev.preventDefault(); ev.stopImmediatePropagation(); openFindPanel(false);
@@ -2937,6 +2944,243 @@
                 }
             }
         }, true);   // capture phase — runs ahead of Monaco's own keydown listener
+    }
+
+    // ----- Code Snippets (Ctrl+J) picker -----
+    // Classic-Clarion-style Ctrl+J: a dedicated modal picker (NOT folded into the LSP completion
+    // provider), filterable by trigger/description, scoped to the active file's extension. Modeled
+    // on showTemplatePicker's overlay (dynamically-built DOM, centered, native <select> for
+    // keyboard nav) rather than the docked Find panel, since this is a one-shot pick-and-insert.
+    var snippetPickerOpen = false;
+    var currentFilePath = '';   // set from setSource's msg.filePath; used to scope snippets by extension
+
+    function installSnippetKeyInterceptor() {
+        document.addEventListener('keydown', function (ev) {
+            if (capturingKey || snippetPickerOpen) return;   // picker owns its own keydown once open
+            var ctrl = ev.ctrlKey || ev.metaKey;
+            if (ctrl && (ev.keyCode === 74 || ev.key === 'j' || ev.key === 'J')) {   // Ctrl+J
+                ev.preventDefault(); ev.stopImmediatePropagation(); openSnippetPicker();
+            }
+        }, true);   // capture phase — runs ahead of Monaco's own keydown listener
+    }
+
+    // In procedure/embed mode there's no real file path (a PWEE procedure always generates into a
+    // .clw), so extension scoping falls back to .clw; file mode uses the real path's extension.
+    function activeSnippetExtension() {
+        if (fileMode && currentFilePath) {
+            var m = /\.[^.\\\/]+$/.exec(currentFilePath);
+            if (m) return m[0].toLowerCase();
+        }
+        return '.clw';
+    }
+
+    function openSnippetPicker() {
+        if (snippetPickerOpen) return;
+        var ed = activeEd();
+        if (!ed) return;
+        var sel = ed.getSelection();
+        var selText = (sel && !sel.isEmpty()) ? ed.getModel().getValueInRange(sel) : '';
+        var ext = activeSnippetExtension();
+
+        var old = document.getElementById('snippetPicker');
+        if (old) old.remove();
+        snippetPickerOpen = true;
+
+        var ov = document.createElement('div');
+        ov.id = 'snippetPicker';
+        ov.style.cssText = 'position:fixed;inset:0;z-index:1001;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;';
+        var panel = document.createElement('div');
+        panel.style.cssText = 'background:#2d2d30;color:#eee;padding:14px 16px;border-radius:8px;font-family:Segoe UI,sans-serif;box-shadow:0 4px 24px rgba(0,0,0,.5);min-width:380px;';
+        var selPreview = selText ? (selText.length > 30 ? selText.substring(0, 30) + '…' : selText) : '';
+        panel.innerHTML =
+            '<div style="font-size:14px;margin-bottom:8px;">Insert Snippet' +
+            (selPreview ? ' — selection: "' + escHtml(selPreview) + '"' : '') + '</div>' +
+            '<input id="snippetFilter" type="text" placeholder="Filter by trigger or description..." ' +
+            'style="width:100%;box-sizing:border-box;font-family:Segoe UI,sans-serif;background:#1e1e1e;color:#eee;border:1px solid #555;padding:5px 8px;margin-bottom:6px;">' +
+            '<select id="snippetListBox" size="10" style="width:100%;font-family:Consolas,monospace;font-size:12px;background:#1e1e1e;color:#eee;border:1px solid #555;padding:2px;"></select>' +
+            '<div id="snippetEmptyMsg" style="opacity:.6;font-size:11px;margin-top:6px;display:none;">No snippets match' +
+            (ext ? ' for ' + escHtml(ext) : '') + '.</div>' +
+            '<div style="opacity:.6;font-size:11px;margin-top:6px;">↑↓ to navigate · Enter to insert · Esc to cancel</div>';
+        ov.appendChild(panel);
+        document.body.appendChild(ov);
+
+        var filterInput = document.getElementById('snippetFilter');
+        var listBox = document.getElementById('snippetListBox');
+        var emptyMsg = document.getElementById('snippetEmptyMsg');
+
+        function appliesToExt(s) {
+            return !s.extensions || !s.extensions.length || s.extensions.indexOf(ext) !== -1;
+        }
+        function renderList() {
+            var q = (filterInput.value || '').toLowerCase();
+            var prevId = listBox.value;
+            listBox.innerHTML = '';
+            var any = false, restoredIdx = -1;
+            for (var i = 0; i < snippetsList.length; i++) {
+                var s = snippetsList[i];
+                if (!appliesToExt(s)) continue;
+                var hay = (s.trigger + ' ' + (s.description || '')).toLowerCase();
+                if (q && hay.indexOf(q) === -1) continue;
+                var o = document.createElement('option');
+                o.value = s.id;
+                o.textContent = s.trigger + (s.description ? '  — ' + s.description : '');
+                listBox.appendChild(o);
+                if (s.id === prevId) restoredIdx = listBox.options.length - 1;
+                any = true;
+            }
+            emptyMsg.style.display = any ? 'none' : '';
+            listBox.selectedIndex = restoredIdx >= 0 ? restoredIdx : (any ? 0 : -1);
+        }
+        // Exposed so the applySnippets broadcast handler can refresh a picker left open while
+        // Settings > Snippets is edited from another window.
+        window.renderSnippetPickerList = renderList;
+
+        function close() {
+            snippetPickerOpen = false;
+            if (window.renderSnippetPickerList === renderList) delete window.renderSnippetPickerList;
+            ov.remove();
+            try { ed.focus(); } catch (e) { }
+        }
+
+        function accept() {
+            var id = listBox.value;
+            if (!id) return;
+            var snip = null;
+            for (var i = 0; i < snippetsList.length; i++) if (snippetsList[i].id === id) { snip = snippetsList[i]; break; }
+            if (!snip) return;
+            close();
+            insertSnippetBody(ed, snip.body || '', selText);
+        }
+
+        filterInput.addEventListener('input', renderList);
+        listBox.ondblclick = accept;
+        ov.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); accept(); }
+            else if (e.key === 'Escape') { e.preventDefault(); close(); }
+            else if (e.key === 'ArrowDown') { e.preventDefault(); if (listBox.selectedIndex < listBox.options.length - 1) listBox.selectedIndex++; }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); if (listBox.selectedIndex > 0) listBox.selectedIndex--; }
+        });
+
+        renderList();
+        filterInput.focus();
+    }
+
+    // Home-grown tab-stop engine. Monaco's own snippet controller (editor.action.insertSnippet) is
+    // deliberately NOT used here — same reason the Data-pad drop site avoids it (see "dropIntoEditor
+    // snippet-expands the text" above): its internal edits aren't recognized by installReadOnlyGuard
+    // as a single legal executeEdits() operation, so the guard silently undoes them inside embed
+    // slots. Every other programmatic edit in this file goes through executeEdits() (cmdComment,
+    // cmdDuplicateLineAbove, the Data-pad drop, Find/Replace...) — snippets follow the same path and
+    // roll their own minimal $0 / $N / ${N} / ${N:default} parsing + Tab/Shift+Tab cycling.
+    function parseSnippetBody(body) {
+        var text = '', stops = [], i = 0;
+        while (i < body.length) {
+            var c = body[i];
+            if (c === '\\' && body[i + 1] === '$') { text += '$'; i += 2; continue; }
+            if (c === '$') {
+                var rest = body.slice(i);
+                var m = /^\$(\d+)/.exec(rest);
+                if (m) { stops.push({ index: parseInt(m[1], 10), start: text.length, end: text.length }); i += m[0].length; continue; }
+                m = /^\$\{(\d+)(?::([^}]*))?\}/.exec(rest);
+                if (m) {
+                    var def = m[2] || '';
+                    stops.push({ index: parseInt(m[1], 10), start: text.length, end: text.length + def.length });
+                    text += def; i += m[0].length; continue;
+                }
+            }
+            text += c; i++;
+        }
+        return { text: text, stops: stops };
+    }
+
+    // Substitutes ${SELECTED} in the snippet body: with the text that was selected when Ctrl+J was
+    // pressed, or — if nothing was selected — with a new editable tab-stop (so the snippet never
+    // inserts a blank hole). A literal '$' inside the selected text is escaped so parseSnippetBody
+    // doesn't mistake it for the start of another tab-stop.
+    function insertSnippetBody(ed, body, selText) {
+        var subst;
+        if (selText) {
+            var escaped = selText.replace(/\$/g, function () { return '\\$'; });
+            subst = body.split('${SELECTED}').join(escaped);
+        } else {
+            var maxIdx = 0, re = /\$\{?(\d+)/g, m;
+            while ((m = re.exec(body))) { var n = parseInt(m[1], 10); if (n > maxIdx) maxIdx = n; }
+            subst = body.split('${SELECTED}').join('${' + (maxIdx + 1) + ':seleccionar}');
+        }
+
+        var model = ed.getModel();
+        var range = ed.getSelection() || ed.getModel().getFullModelRange();
+
+        // Match the classic Clarion Ctrl+J behavior: every line after the first inherits the leading
+        // whitespace of the line the snippet was triggered on, so nested body text (LOOP/IF blocks
+        // etc.) lands aligned instead of jammed at column 1. No control character needed in the body —
+        // this is automatic, same as VS Code's own snippet indentation.
+        var baseIndent = /^[ \t]*/.exec(model.getLineContent(range.startLineNumber))[0];
+        if (baseIndent) subst = subst.split('\n').map(function (line, i) { return i === 0 ? line : baseIndent + line; }).join('\n');
+
+        var parsed = parseSnippetBody(subst);
+        var startOffset = model.getOffsetAt({ lineNumber: range.startLineNumber, column: range.startColumn });
+
+        ed.executeEdits('snippet-picker', [{ range: range, text: parsed.text, forceMoveMarkers: true }]);
+
+        var numbered = parsed.stops.filter(function (s) { return s.index > 0; })
+            .sort(function (a, b) { return a.index - b.index; });
+        var zero = parsed.stops.filter(function (s) { return s.index === 0; })[0];
+        var target = numbered.length ? numbered[0] : zero;
+        var endOfInsert = model.getPositionAt(startOffset + parsed.text.length);
+        if (target) {
+            var sp = model.getPositionAt(startOffset + target.start), ep = model.getPositionAt(startOffset + target.end);
+            ed.setSelection(new monaco.Range(sp.lineNumber, sp.column, ep.lineNumber, ep.column));
+        } else {
+            ed.setSelection(new monaco.Range(endOfInsert.lineNumber, endOfInsert.column, endOfInsert.lineNumber, endOfInsert.column));
+        }
+        ed.revealPositionInCenterIfOutsideViewport(ed.getPosition());
+        ed.focus();
+
+        installSnippetTabCycling(ed, model, startOffset, numbered, zero);
+    }
+
+    // Tracks the remaining tab-stops as live decorations (so they shift correctly as the user types
+    // into an earlier stop) and lets Tab/Shift+Tab cycle between them, gated by a per-editor context
+    // key so Tab still indents normally once no snippet is in progress.
+    var _snippetTabState = null;
+    function installSnippetTabCycling(ed, model, startOffset, numbered, zero) {
+        clearSnippetTabState();
+        var all = numbered.concat(zero ? [zero] : []);
+        if (all.length < 2) return;   // nothing left to Tab to
+        var decoIds = model.deltaDecorations([], all.map(function (s) {
+            var sp = model.getPositionAt(startOffset + s.start), ep = model.getPositionAt(startOffset + s.end);
+            return {
+                range: new monaco.Range(sp.lineNumber, sp.column, ep.lineNumber, ep.column),
+                options: { stickiness: monaco.editor.TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges }
+            };
+        }));
+        if (!ed.__snippetTabKey) {
+            ed.__snippetTabKey = ed.createContextKey('caSnippetTabActive', false);
+            var nav = function (dir) { return function () { jumpSnippetStop(dir); }; };
+            ed.addCommand(monaco.KeyCode.Tab, nav(1), 'caSnippetTabActive');
+            ed.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Tab, nav(-1), 'caSnippetTabActive');
+            ed.onDidBlurEditorWidget(clearSnippetTabState);
+        }
+        _snippetTabState = { ed: ed, model: model, decoIds: decoIds, idx: 0, key: ed.__snippetTabKey };
+        ed.__snippetTabKey.set(true);
+    }
+
+    function jumpSnippetStop(dir) {
+        var st = _snippetTabState;
+        if (!st) return;
+        st.idx = (st.idx + dir + st.decoIds.length) % st.decoIds.length;
+        var r = st.model.getDecorationRange(st.decoIds[st.idx]);
+        if (!r) { clearSnippetTabState(); return; }
+        st.ed.setSelection(r);
+        st.ed.revealPositionInCenterIfOutsideViewport(r.getStartPosition());
+    }
+
+    function clearSnippetTabState() {
+        if (!_snippetTabState) return;
+        try { _snippetTabState.model.deltaDecorations(_snippetTabState.decoIds, []); } catch (e) { }
+        try { _snippetTabState.key.set(false); } catch (e) { }
+        _snippetTabState = null;
     }
 
     // Single-line non-empty editor selection text, else '' (used to seed a search from Ctrl+F).
@@ -3578,6 +3822,9 @@
                 if (fh && !fh.classList.contains('hidden')) showFindHist();
                 var rh = document.getElementById('replHist');
                 if (rh && !rh.classList.contains('hidden')) showReplHist();
+            } else if (msg.type === 'applySnippets') {
+                snippetsList = msg.snippets || [];
+                if (snippetPickerOpen) renderSnippetPickerList();   // keep an open picker live if Settings was edited concurrently
             }
         });
     }

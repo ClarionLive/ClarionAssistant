@@ -38,6 +38,7 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 - **Monaco source editor** &mdash; the default editor for Clarion `.clw`/`.inc` source: syntax highlighting, folding, F12/Ctrl+Click go-to-definition, inline diagnostics, and completion (toggleable under Options &rarr; Clarion Assistant &rarr; Editor Surfaces)
 - **Smart Formatter (Ctrl+I)** &mdash; reformats Clarion code with structure indentation and aligned declarations; configurable
 - **CA Embeditor** &mdash; right-click any procedure in the app tree to open its embed code directly in a fast Monaco/WebView2 editor; open multiple procedures as tabs
+- **Code Snippets (Ctrl+J)** &mdash; classic Clarion template-picker parity: insert reusable code with tab-stops and a `${SELECTED}` placeholder, managed from Settings &rarr; Snippets
 - **CA Explorer** &mdash; docked pad showing the active CA Embeditor tab's Local, Module &amp; Global Data, Declared Tables, Other Files, and their Keys, Columns, and Relations; drag a field to the editor or Window designer, copy/paste variables native-style, and a Cheat Sheet tab of editor shortcuts
 - **Evaluate Code** &mdash; interactive code review for entire apps, procedures, open files, or selected code
 - **Diff viewer** &mdash; Monaco-based side-by-side diffs with syntax highlighting
@@ -59,6 +60,15 @@ Clarion source files (`.clw`, `.inc`) open by default in a Monaco-powered editor
 ### Smart Formatter (Ctrl+I)
 
 Press **Ctrl+I** in the Monaco source editor or CA Embeditor to reformat Clarion code &mdash; consistent indentation for structures (IF/LOOP/CASE/ACCEPT) and aligned data declarations. As-you-type aids apply light formatting while you write, and the formatter's behavior is configurable.
+
+### Code Snippets (Ctrl+J)
+
+Press **Ctrl+J** in the CA Embeditor to open a code-snippet picker &mdash; the same shortcut as the classic Clarion text editor's template picker, filterable by trigger/description and scoped to the active file's extension.
+
+- **Managed from Settings &rarr; Snippets** &mdash; add/edit/delete snippets (trigger, description, extensions, body); stored globally in `%APPDATA%\ClarionAssistant\snippets.json`.
+- **Tab-stops** &mdash; bodies use VS Code-style snippet syntax (`$1`, `${1:default}`, `$0`); **Tab**/**Shift+Tab** cycles between stops after insertion.
+- **`${SELECTED}`** &mdash; substituted with the text selected when Ctrl+J was pressed, or left as a fillable tab-stop if nothing was selected.
+- **Auto-indent** &mdash; continuation lines match the indentation of the line Ctrl+J was triggered on.
 
 ### CA Embeditor &mdash; right-click a procedure to open it instantly
 

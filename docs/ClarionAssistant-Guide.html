@@ -440,6 +440,7 @@
     <h3>What's New</h3>
     <a href="#whats-new">Release Notes</a>
     <a href="#whats-new-50" class="sub">v5.1</a>
+    <a href="#whats-new-snippets" class="sub">Code Snippets (Ctrl+J)</a>
     <a href="#whats-new-sidecar" class="sub">Custom MCP Servers</a>
     <a href="#whats-new-codex" class="sub">Codex Backend</a>
     <a href="#whats-new-selfheal" class="sub">Codex Config Self-Heal</a>
@@ -467,6 +468,7 @@
     <a href="#ca-embeditor">Overview</a>
     <a href="#ca-embeditor-open" class="sub">Opening a Procedure</a>
     <a href="#ca-monaco-editor" class="sub">Monaco Source Editor</a>
+    <a href="#ca-snippets" class="sub">Code Snippets (Ctrl+J)</a>
     <a href="#ca-data-pad" class="sub">CA Explorer</a>
 
     <h3>Class Helper</h3>
@@ -534,6 +536,36 @@
     and a Smart Formatter &mdash; see <a href="#ca-embeditor">CA Embeditor &amp; CA Explorer</a> for the
     full walkthrough.
   </p>
+
+  <h3 id="whats-new-snippets">Code Snippets in the CA Embeditor <span style="font-weight:400;font-size:0.85em;color:var(--text-light)">(issue #49)</span></h3>
+
+  <p>
+    The CA Embeditor now has a Ctrl+J code-snippet picker, matching the classic Clarion text
+    editor's Ctrl+J template picker &mdash; see
+    <a href="#ca-snippets">Code Snippets (Ctrl+J)</a> for the full walkthrough.
+  </p>
+
+  <ul>
+    <li>
+      <strong>Settings &rarr; Snippets</strong> &mdash; add, edit, and delete snippets from a page in
+      the Clarion Assistant Settings dialog. Snippets are stored globally
+      (<code>%APPDATA%\ClarionAssistant\snippets.json</code>) and available across every solution.
+    </li>
+    <li>
+      <strong>Tab-stops</strong> &mdash; snippet bodies use the same tab-stop syntax as VS Code user
+      snippets (<code>$1</code>, <code>${1:default}</code>, <code>$0</code>); after inserting,
+      <kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd> cycles between the remaining stops.
+    </li>
+    <li>
+      <strong><code>${SELECTED}</code></strong> &mdash; a Clarion Assistant-specific placeholder
+      substituted with whatever text was selected when Ctrl+J was pressed (or left as a fillable
+      tab-stop when nothing was selected).
+    </li>
+    <li>
+      <strong>Extension scoping</strong> &mdash; a snippet can be restricted to specific file
+      extensions (e.g. only <code>.clw</code>), or left available everywhere.
+    </li>
+  </ul>
 
   <div class="section-intro">
     <p>
@@ -1466,6 +1498,49 @@
     declarations, and normalized code statements. As-you-type aids apply light formatting while you
     write. The formatter's behavior is configurable from its settings panel.
   </p>
+
+  <h3 id="ca-snippets">Code Snippets (Ctrl+J)</h3>
+
+  <p>
+    Press <kbd>Ctrl</kbd>+<kbd>J</kbd> in the CA Embeditor to open the code-snippet picker &mdash;
+    the same shortcut as the classic Clarion text editor's template picker, reimplemented on
+    Monaco's snippet engine. It's a dedicated picker (not folded into regular autocomplete): type
+    to filter by trigger or description, use <kbd>&uarr;</kbd>/<kbd>&darr;</kbd> to pick a row, and
+    <kbd>Enter</kbd> to insert (<kbd>Esc</kbd> to cancel).
+  </p>
+
+  <ul>
+    <li>
+      <strong>Managed from Settings</strong> &mdash; open <strong>Clarion Assistant &rarr;
+      Settings &rarr; Snippets</strong> to add, edit, or delete snippets. Each has a trigger, an
+      optional description, an optional list of file extensions it applies to (blank = all), and a
+      body.
+    </li>
+    <li>
+      <strong>Tab-stops</strong> &mdash; the body uses the same placeholder syntax as VS Code user
+      snippets: <code>$1</code>, <code>$2</code>&hellip; number the stops, <code>${1:texto}</code>
+      pre-fills a stop with default text, and <code>$0</code> is the final cursor position (visited
+      last). After inserting, press <kbd>Tab</kbd> to jump to the next stop and
+      <kbd>Shift</kbd>+<kbd>Tab</kbd> to go back.
+    </li>
+    <li>
+      <strong><code>${SELECTED}</code></strong> &mdash; select some text before pressing
+      <kbd>Ctrl</kbd>+<kbd>J</kbd> and any <code>${SELECTED}</code> in the chosen snippet's body is
+      replaced with it (handy for wrapping an existing variable or file name in a template, e.g. a
+      standard <code>SET</code>/<code>LOOP</code> block). If nothing is selected,
+      <code>${SELECTED}</code> becomes an ordinary fillable tab-stop instead of inserting blank.
+    </li>
+    <li>
+      <strong>Auto-indent</strong> &mdash; every line of the snippet after the first automatically
+      picks up the indentation of the line Ctrl+J was pressed on, so multi-line bodies (a
+      <code>LOOP</code>/<code>END</code> block, for example) land aligned with the surrounding code.
+    </li>
+    <li>
+      <strong>Scoped to the file type</strong> &mdash; a snippet restricted to specific extensions
+      only shows up while editing a matching file; leave the extension list empty to make it
+      available everywhere.
+    </li>
+  </ul>
 
   <h3 id="ca-data-pad">CA Explorer</h3>
 

@@ -2602,6 +2602,17 @@ namespace ClarionAssistant.Terminal
         // editors too — not just Modern Embeditor tabs.
 
         /// <summary>
+        /// Broadcast the current Ctrl+J snippet list to every open Modern Embeditor tab, so an
+        /// add/edit/delete in Settings &gt; Snippets is picked up live without reopening the tab
+        /// (mirrors ApplySettingsToAll — called by ClaudeChatSettingsDialog after each CRUD op).
+        /// </summary>
+        public static void ApplySnippetsToAll(List<Snippet> snippets)
+        {
+            string json = "{\"type\":\"applySnippets\",\"snippets\":" + SnippetStore.ToJson(snippets) + "}";
+            lock (_instances) { foreach (var inst in _instances) inst._panel?.PostJson(json); }
+        }
+
+        /// <summary>
         /// Persist the Find/Replace dropdown history (sent by JS as full arrays) and broadcast the saved
         /// lists to every open tab so all tabs converge. The incoming list is authoritative, so per-entry
         /// delete and "clear history" stick. Persist failures are logged but never block the broadcast.
@@ -2934,6 +2945,10 @@ namespace ClarionAssistant.Terminal
                 }
                 catch { }
 
+                string snippetsJson;
+                try { snippetsJson = SnippetStore.ToJson(SnippetStore.Load()); }
+                catch { snippetsJson = "[]"; }
+
                 string json = "{\"type\":\"setSource\"," +
                     "\"title\":" + JsonString(_title) + "," +
                     "\"language\":" + JsonString(_language) + "," +
@@ -2956,6 +2971,7 @@ namespace ClarionAssistant.Terminal
                     "\"cursorLine\":" + cursorLine + "," +
                     "\"cursorColumn\":" + cursorColumn + "," +
                     "\"bookmarks\":" + bookmarksJson + "," +
+                    "\"snippets\":" + snippetsJson + "," +
                     "\"sourceUrl\":\"https://" + VIRTUAL_HOST + "/source.txt\"}";
                 _panel.PostJson(json);
             }
