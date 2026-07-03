@@ -496,7 +496,7 @@ namespace ClarionCodeGraph.Graph
             // Build per-file variable lookup: filePath → list of (name, id, parentName/scope)
             var variablesByFile = new Dictionary<string, List<VariableInfo>>(StringComparer.OrdinalIgnoreCase);
             var allVarDt = _db.ExecuteQuery(
-                "SELECT id, name, file_path, parent_name, scope FROM symbols WHERE type = 'variable'");
+                "SELECT id, name, file_path, parent_name, scope, params FROM symbols WHERE type = 'variable'");
 
             foreach (System.Data.DataRow row in allVarDt.Rows)
             {
@@ -505,6 +505,7 @@ namespace ClarionCodeGraph.Graph
                 string fp = row["file_path"].ToString();
                 string parentName = row["parent_name"] != DBNull.Value ? row["parent_name"].ToString() : null;
                 string scope = row["scope"] != DBNull.Value ? row["scope"].ToString() : "local";
+                string varParams = row["params"] != DBNull.Value ? row["params"].ToString() : null;
 
                 List<VariableInfo> fileVars;
                 if (!variablesByFile.TryGetValue(fp, out fileVars))
@@ -512,7 +513,7 @@ namespace ClarionCodeGraph.Graph
                     fileVars = new List<VariableInfo>();
                     variablesByFile[fp] = fileVars;
                 }
-                fileVars.Add(new VariableInfo { Name = name, Id = id, ParentName = parentName, Scope = scope });
+                fileVars.Add(new VariableInfo { Name = name, Id = id, ParentName = parentName, Scope = scope, Params = varParams });
             }
 
             int totalVarCount = allVarDt.Rows.Count;
@@ -664,37 +665,40 @@ namespace ClarionCodeGraph.Graph
                         {
                             inCode = false;
                             string matchedName = procMatch.Groups[1].Value;
-                            // Only update currentProcId for top-level procedures, not class method
-                            // implementations (ClassName.Method). Class methods are local to their
-                            // parent procedure — their calls should be attributed to the parent.
-                            if (!matchedName.Contains("."))
+                            // Update currentProcId for both top-level procedures AND class method
+                            // implementations (ClassName.Method). Dotted method names resolve through
+                            // currentFileSymbols (the same lookup SELF.Method uses), so calls made
+                            // inside a class method are attributed to that method — not to whatever
+                            // procedure was recognized before it (issue #54, Bug 2). The old
+                            // `!matchedName.Contains(".")` guard skipped every class-method
+                            // implementation, misattributing all their calls to the file's first
+                            // method (typically Construct).
+                            //
+                            // Before the first CODE section, all PROCEDURE/FUNCTION matches
+                            // are declarations (parent proc def, CLASS method declarations,
+                            // local MAP forward declarations) — not implementations.
+                            // Skip them to avoid prematurely updating currentProcId.
+                            if (!seenFirstCode)
                             {
-                                // Before the first CODE section, all PROCEDURE/FUNCTION matches
-                                // are declarations (parent proc def, CLASS method declarations,
-                                // local MAP forward declarations) — not implementations.
-                                // Skip them to avoid prematurely updating currentProcId.
-                                if (!seenFirstCode)
-                                {
-                                    continue;
-                                }
-                                // Local MAP procedures are implementation details of the parent.
-                                // Reset currentProcId to the parent so their calls are
-                                // attributed to the parent procedure, not to whatever
-                                // non-local proc happened to be defined before them.
-                                if (localMapNames.Contains(matchedName))
-                                {
-                                    currentProcId = parentProcId;
-                                    continue;
-                                }
-                                // Use ONLY file-specific lookup to avoid cross-file name collisions.
-                                // If the symbol isn't in this file's symbols, reset to parentProcId
-                                // rather than risking a match to a same-named symbol in another file.
-                                long id;
-                                if (currentFileSymbols.TryGetValue(matchedName, out id))
-                                    currentProcId = id;
-                                else
-                                    currentProcId = parentProcId;
+                                continue;
                             }
+                            // Local MAP procedures are implementation details of the parent.
+                            // Reset currentProcId to the parent so their calls are
+                            // attributed to the parent procedure, not to whatever
+                            // non-local proc happened to be defined before them.
+                            if (localMapNames.Contains(matchedName))
+                            {
+                                currentProcId = parentProcId;
+                                continue;
+                            }
+                            // Use ONLY file-specific lookup to avoid cross-file name collisions.
+                            // If the symbol isn't in this file's symbols, reset to parentProcId
+                            // rather than risking a match to a same-named symbol in another file.
+                            long id;
+                            if (currentFileSymbols.TryGetValue(matchedName, out id))
+                                currentProcId = id;
+                            else
+                                currentProcId = parentProcId;
                             continue;
                         }
 
@@ -791,7 +795,29 @@ namespace ClarionCodeGraph.Graph
                                 continue;
                             if (ClarionBuiltins.IsBuiltInOrKeyword(methodName)) continue;
 
-                            string fullName = objName + "." + methodName;
+                            // Resolve the object name through its declared class type when it is a
+                            // typed variable (e.g. "Worker.Sign" where Worker is a WorkerClass →
+                            // look up "WorkerClass.Sign", the real symbol name). Match by variable
+                            // name anywhere in the file — Clarion overwhelmingly reuses the same var
+                            // name for the same type across a file's procedures. Falls back to the
+                            // literal name so genuine static-style ClassName.Method calls still
+                            // resolve (issue #54, Bug 1).
+                            string lookupOwner = objName;
+                            if (currentFileVars != null)
+                            {
+                                foreach (var varInfo in currentFileVars)
+                                {
+                                    if (string.Equals(varInfo.Name, objName, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        string varTypeName;
+                                        if (TryResolveVariableClassType(varInfo.Params, out varTypeName))
+                                            lookupOwner = varTypeName;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            string fullName = lookupOwner + "." + methodName;
                             long targetId;
                             if (symbolNameToId.TryGetValue(fullName, out targetId))
                             {
@@ -1062,6 +1088,25 @@ namespace ClarionCodeGraph.Graph
             ReportProgress(string.Format("  Resolved {0} relationships across {1} files", relCount, fileCount));
         }
 
+        // Resolve a variable's declared class type from its raw params string, mirroring the
+        // uses_type extraction logic (see ResolveRelationships). Strips a leading '&' (reference
+        // vars) and rejects Clarion built-in types, keywords, LIKE(...), and GROUP/QUEUE PRE-
+        // attributed declarations. Returns false when params don't name a resolvable user class.
+        private static bool TryResolveVariableClassType(string rawParams, out string typeName)
+        {
+            typeName = null;
+            if (string.IsNullOrEmpty(rawParams)) return false;
+            string t = rawParams.Trim();
+            if (t.StartsWith("&")) t = t.Substring(1);
+            if (t.Length == 0) return false;
+            if (ClarionBuiltins.IsClarionType(t)) return false;
+            if (ClarionBuiltins.IsBuiltInOrKeyword(t)) return false;
+            if (t.StartsWith("LIKE(", StringComparison.OrdinalIgnoreCase)) return false;
+            if (t.Contains(",")) return false; // GROUP/QUEUE with PRE attrs
+            typeName = t;
+            return true;
+        }
+
         private bool LineContainsCall(string line, string procName)
         {
             int startSearch = 0;
@@ -1305,5 +1350,6 @@ namespace ClarionCodeGraph.Graph
         public long Id { get; set; }
         public string ParentName { get; set; }
         public string Scope { get; set; }
+        public string Params { get; set; }
     }
 }
