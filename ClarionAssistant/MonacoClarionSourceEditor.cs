@@ -46,8 +46,12 @@ namespace ClarionAssistant
         private MonacoEditorControl _editor;   // reusable Monaco surface (converge step 4), docked over the native editor
         private Panel _cover;            // opaque shim over the native editor + WebView2 init until Monaco paints
         private Timer _coverSafety;      // backstop: drop the cover even if the page never signals nav-completed
+        private Control _navBar;         // native QuickClassBrowser bar (class/members combos) hidden while the overlay covers the editor; restored on teardown
         private ICSharpCode.TextEditor.TextEditorControl _hostEditor;   // the live editor we mirror
         private string _overlayTitle = "Clarion Source";
+        // Active Clarion IDE theme's toolbar gradient (SerenityBlue/OfficeXP/…) → our overlay toolbar chrome, so
+        // the CA Editor's toolbar matches the IDE theme like the embeditor's does. Captured at OnReady. (task c8e669d3)
+        private string _chromeBg1, _chromeBg2;
         private string _filePath;        // the source file we edit (from the native editor), saved to disk by Monaco
         private bool _overlayDirty;      // mirrored from the page (fileState) — drives save-on-close
         private string _overlayLiveText; // last live buffer the page mirrored, for the close-save write
@@ -186,6 +190,7 @@ namespace ClarionAssistant
                 _editor = new MonacoEditorControl(this, false, "monaco-embeditor.html", "clarion-embeditor-data");
                 host.Controls.Add(_editor);
                 _editor.BringToFront();
+                HideNativeNavBar(host);   // hide the native class/members drop-down bar so it doesn't peek through the overlay top
                 // Participate in cross-surface gear-settings sync: receive applySettings broadcasts from any
                 // other Monaco surface (embeditor or another source editor). Our OnSaveSettings publishes. (deac3d16)
                 _settingsReg = Services.MonacoSettingsBroadcaster.Register(json => { try { _editor?.PostJson(json); } catch { } });
@@ -324,10 +329,13 @@ namespace ClarionAssistant
                 int curLine = navLine >= 1 ? navLine : savedCursorLine;
                 int curCol = navLine >= 1 ? navCol : (savedCursorCol >= 1 ? savedCursorCol : 1);
 
+                CaptureIdeChromeColors();   // active Clarion IDE theme colors → our toolbar chrome (task c8e669d3)
                 string json = "{\"type\":\"setSource\","
                     + "\"title\":" + MonacoEditorControl.JsonString(_overlayTitle) + ","
                     + "\"language\":\"clarion\","
                     + "\"isDark\":false,"
+                    + "\"chromeBg1\":" + MonacoEditorControl.JsonString(_chromeBg1 ?? "") + ","
+                    + "\"chromeBg2\":" + MonacoEditorControl.JsonString(_chromeBg2 ?? "") + ","
                     + "\"fileMode\":true,"
                     + "\"readOnly\":false,"
                     + "\"breakpointsEnabled\":true,"
@@ -489,18 +497,30 @@ namespace ClarionAssistant
                         // STALE on-disk text and lands on the wrong member (ticket 6e8f2439).
                         var def = SharedLspBridge.GetDefinition(_filePath, Math.Max(0, line - 1), Math.Max(0, col - 1), buffer);
                         string targetPath; int targetLine0, targetChar0;
-                        if (SharedLspBridge.TryGetFirstLocation(def, out targetPath, out targetLine0, out targetChar0))
+                        bool got = SharedLspBridge.TryGetFirstLocation(def, out targetPath, out targetLine0, out targetChar0);
+                        // Same-file jump → reveal in-place in this overlay editor rather than reopening the file
+                        // (NavigateToFileAndLine can fail on a bare/synthetic path, and reveal-in-place is the
+                        // right UX for a same-file target). (task 37e2079f)
+                        bool sameFile = got && SameSourceFile(targetPath);
+                        if (sameFile)
                         {
-                            // Same-file jump → reveal in-place in this overlay editor rather than reopening the
-                            // file (mirror the embeditor fix — NavigateToFileAndLine can fail on a bare/synthetic
-                            // path, and reveal-in-place is the right UX for a same-file target). (task 37e2079f)
-                            bool sameFile = SameSourceFile(targetPath);
-                            if (sameFile)
+                            if (_editor != null) _editor.RevealLine(targetLine0 + 1, targetChar0 + 1);
+                            navigated = _editor != null;
+                        }
+                        else
+                        {
+                            // Target isn't this file. If the symbol is a ROUTINE declared in THIS buffer (a DO/GOTO
+                            // target), reveal it in-place. The upstream LSP doesn't resolve DO/ROUTINE, so CodeGraph
+                            // returns an arbitrary SAME-NAMED routine from another module (browse procs share routine
+                            // names, e.g. LookupRelated) → opened the wrong .clw. Reveal the local one instead,
+                            // scoped to the enclosing procedure. (task c8e669d3)
+                            int localTargetLine;
+                            if (TryResolveLocalRoutine(buffer, line, col, out localTargetLine))
                             {
-                                if (_editor != null) _editor.RevealLine(targetLine0 + 1, targetChar0 + 1);
+                                if (_editor != null) _editor.RevealLine(localTargetLine, 1);
                                 navigated = _editor != null;
                             }
-                            else
+                            else if (got)
                                 navigated = MonacoSourceNavigator.NavigateToFileAndLine(targetPath, targetLine0 + 1, 1);
                         }
                     }
@@ -508,6 +528,105 @@ namespace ClarionAssistant
                 catch (Exception ex) { MonacoSpikeLog.Write("overlay definition error: " + ex.Message); }
                 editor.PostResponse(reqId, new Dictionary<string, object> { { "navigated", navigated } });
             });
+        }
+
+        /// <summary>Capture the active Clarion IDE theme's toolbar gradient (SerenityBlue/OfficeXP/Win10Blue/…)
+        /// into _chromeBg1/_chromeBg2/_chromeFg so our overlay toolbar chrome follows it — the same colors the
+        /// embeditor reads off its native ToolStrip, but sourced from the global ToolStripManager.Renderer (the IDE
+        /// applies its theme's ProfessionalColorTable there), with a workbench-ToolStrip fallback. Best-effort →
+        /// null leaves the toolbar on its own theme (unchanged behavior). (task c8e669d3)</summary>
+        private void CaptureIdeChromeColors()
+        {
+            try
+            {
+                var rend = System.Windows.Forms.ToolStripManager.Renderer as System.Windows.Forms.ToolStripProfessionalRenderer;
+                if (rend == null || rend.ColorTable == null)
+                    rend = FindWorkbenchToolStripRenderer() ?? rend;
+                if (rend != null && rend.ColorTable != null)
+                {
+                    _chromeBg1 = ToCssHex(rend.ColorTable.ToolStripGradientBegin);
+                    _chromeBg2 = ToCssHex(rend.ColorTable.ToolStripGradientEnd);
+                    // No chromeFg sent: ProfessionalColorTable carries no text color, so the page's has-chrome CSS
+                    // falls back to --title-color (readable on the light Clarion themes). Refine later if needed.
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>A themed ToolStripProfessionalRenderer from a live workbench ToolStrip, used when the global
+        /// ToolStripManager.Renderer isn't professional. Walks the main window (found via our own controls) for the
+        /// first ToolStrip carrying a professional renderer. (task c8e669d3)</summary>
+        private System.Windows.Forms.ToolStripProfessionalRenderer FindWorkbenchToolStripRenderer()
+        {
+            try
+            {
+                var form = (_editor as System.Windows.Forms.Control)?.FindForm()
+                           ?? (_hostEditor as System.Windows.Forms.Control)?.FindForm();
+                if (form == null) return null;
+                foreach (var ts in EnumToolStrips(form))
+                {
+                    var r = ts.Renderer as System.Windows.Forms.ToolStripProfessionalRenderer;
+                    if (r != null && r.ColorTable != null) return r;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static IEnumerable<System.Windows.Forms.ToolStrip> EnumToolStrips(System.Windows.Forms.Control root)
+        {
+            foreach (System.Windows.Forms.Control c in root.Controls)
+            {
+                if (c is System.Windows.Forms.ToolStrip ts) yield return ts;
+                foreach (var child in EnumToolStrips(c)) yield return child;
+            }
+        }
+
+        private static string ToCssHex(System.Drawing.Color c)
+        {
+            try { if (c.A == 0) return null; return string.Format("#{0:X2}{1:X2}{2:X2}", c.R, c.G, c.B); }
+            catch { return null; }
+        }
+
+        /// <summary>If the identifier at (line1,col1) is a ROUTINE declared in THIS buffer (a DO/GOTO target),
+        /// return its 1-based declaration line — scoped to the ENCLOSING procedure, since a .clw source module
+        /// holds many procedures that may each declare a same-named routine (a naive first-match would jump to
+        /// the wrong one). Matches "&lt;label&gt; ROUTINE" between the procedure header at/above the cursor and the
+        /// next procedure header below. (task c8e669d3)</summary>
+        private bool TryResolveLocalRoutine(string buffer, int line1, int col1, out int targetLine1)
+        {
+            targetLine1 = 0;
+            try
+            {
+                if (string.IsNullOrEmpty(buffer)) return false;
+                string[] lines = buffer.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+                int li = line1 - 1;
+                if (li < 0 || li >= lines.Length) return false;
+
+                // Identifier under the cursor (Clarion names allow ':' and '.').
+                string word = null;
+                foreach (System.Text.RegularExpressions.Match m in
+                         System.Text.RegularExpressions.Regex.Matches(lines[li], @"[A-Za-z_][A-Za-z0-9_:.]*"))
+                {
+                    if (col1 - 1 >= m.Index && col1 - 1 <= m.Index + m.Length) { word = m.Value; break; }
+                }
+                if (string.IsNullOrEmpty(word)) return false;
+
+                // Enclosing-procedure bounds: a column-1 label followed by PROCEDURE (definition, not a MAP proto).
+                var procRe = new System.Text.RegularExpressions.Regex(@"^[A-Za-z_][A-Za-z0-9_:.]*\s+PROCEDURE\b",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                int start = 0, end = lines.Length;
+                for (int i = li; i >= 0; i--) if (procRe.IsMatch(lines[i])) { start = i; break; }
+                for (int i = li + 1; i < lines.Length; i++) if (procRe.IsMatch(lines[i])) { end = i; break; }
+
+                var re = new System.Text.RegularExpressions.Regex(
+                    @"^\s*" + System.Text.RegularExpressions.Regex.Escape(word) + @"\s+ROUTINE\b",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                for (int i = start; i < end; i++)
+                    if (re.IsMatch(lines[i])) { targetLine1 = i + 1; return true; }
+            }
+            catch { }
+            return false;
         }
 
         /// <summary>True when a definition target is THIS overlay's own source file (so a same-file jump
@@ -1020,9 +1139,38 @@ namespace ClarionAssistant
                     _editor.Dispose();
                     _editor = null;
                 }
+                // Restore the native QuickClassBrowser nav bar we hid on attach, so the native editor is whole
+                // again if it's revealed (overlay torn down while the tab stays open). (task c8e669d3)
+                try { if (_navBar != null && !_navBar.IsDisposed) _navBar.Visible = true; } catch { }
+                _navBar = null;
                 RemoveCover();
             }
             catch { }
+        }
+
+        /// <summary>Hide the native Clarion editor's QuickClassBrowser nav bar (the class/members drop-downs) —
+        /// a top-docked ~28px UserControl (SoftVelocity ClaQuickClassBrowserPanel) that is a SIBLING of our
+        /// Dock=Fill overlay under `host`, so without this it peeks through above the Monaco surface. Hiding it
+        /// frees the 28px and our overlay + cover expand to full coverage automatically (no re-parent / bounds
+        /// math). Cached in _navBar and restored in DisposeOverlay. (task c8e669d3, CC probe)</summary>
+        private void HideNativeNavBar(Control host)
+        {
+            try
+            {
+                if (host == null || _navBar != null) return;
+                foreach (Control c in host.Controls)
+                {
+                    if (c == null) continue;
+                    if (string.Equals(c.GetType().Name, "ClaQuickClassBrowserPanel", StringComparison.Ordinal)
+                        || string.Equals(c.Name, "ClaQuickClassBrowserPanel", StringComparison.Ordinal))
+                    {
+                        _navBar = c;
+                        c.Visible = false;
+                        break;
+                    }
+                }
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("HideNativeNavBar error: " + ex.Message); }
         }
 
         // Reveal Monaco: drop the load cover and its backstop timer. Called once the page has painted

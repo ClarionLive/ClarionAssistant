@@ -87,6 +87,18 @@
     body.has-embheader #embHeader { color: var(--chrome-fg, var(--title-color)); }
     /* Non-icon buttons follow the theme text color; the green/red/blue icons keep their own colors. */
     body.has-embheader #toolbar button:not(.tb-save):not(.tb-cancel):not(.clarion) { color: var(--chrome-fg, var(--title-accent)); }
+
+    /* has-chrome: theme JUST the toolbar bar to the active Clarion IDE theme (gradient + text), WITHOUT the
+       embeditor-only clickable header / button reorder. Used by the CA source editor so its toolbar matches the
+       IDE theme (SerenityBlue/OfficeXP/…) like the embeditor's. The embeditor sets has-chrome too (same colors),
+       so its existing look is unchanged. (task c8e669d3) */
+    body.has-chrome #toolbar {
+        background: linear-gradient(to bottom, var(--chrome-bg1, var(--toolbar-bg)), var(--chrome-bg2, var(--toolbar-bg)));
+        color: var(--chrome-fg, var(--title-color));
+        border-bottom-color: var(--chrome-bg2, var(--toolbar-border));
+    }
+    body.has-chrome #toolbar .title { color: var(--chrome-fg, var(--title-color)); }
+    body.has-chrome #toolbar button:not(.tb-save):not(.tb-cancel):not(.clarion) { color: var(--chrome-fg, var(--title-accent)); }
     /* Overlay: tighten spacing + shift left to match the native bar's density. */
     body.has-embheader #toolbar { gap: 2px; padding-left: 5px; }
     body.has-embheader #toolbar button.tb-save, body.has-embheader #toolbar button.tb-cancel,
@@ -792,8 +804,16 @@
                 sb.title = live ? 'Save changes and close (Ctrl+S)' : 'Save changes (Ctrl+S)';
                 if (cb) cb.style.display = live ? '' : 'none';
             }
-            // Clickable header strip mimicking the native "Proc - Embeditor - (module.clw)" line — click opens the
-            // generated source. Shown only when the host supplied the captured native header text (overlay mode). b1e05287
+            // Chrome colors = the active Clarion IDE theme's toolbar gradient (SerenityBlue/OfficeXP/…), captured
+            // by the host. Apply them to OUR toolbar whenever supplied — independent of the embeditor header — so
+            // the CA source editor themes its toolbar too (has-chrome), not just the embeditor. (task c8e669d3)
+            var bs = document.body.style;
+            if (msg.chromeBg1) bs.setProperty('--chrome-bg1', msg.chromeBg1); else bs.removeProperty('--chrome-bg1');
+            if (msg.chromeBg2) bs.setProperty('--chrome-bg2', msg.chromeBg2); else bs.removeProperty('--chrome-bg2');
+            if (msg.chromeFg)  bs.setProperty('--chrome-fg',  msg.chromeFg);  else bs.removeProperty('--chrome-fg');
+            document.body.classList.toggle('has-chrome', !!msg.chromeBg1);
+            // Clickable header strip mimicking the native "Proc - Embeditor - (module.clw)" line — EMBEDITOR ONLY
+            // (needs the captured native header text); click opens the generated source. b1e05287
             var eh = document.getElementById('embHeader');
             if (eh) {
                 if (overlay && msg.headerText) {
@@ -802,11 +822,6 @@
                     // Activate --header-h so the editor + all below-toolbar panels shift down by the header height
                     // (else the absolutely-positioned editor overlaps and clips the toolbar).
                     document.body.classList.add('has-embheader');
-                    // Follow the active Clarion theme: apply the native toolbar's captured gradient + text color.
-                    var bs = document.body.style;
-                    if (msg.chromeBg1) bs.setProperty('--chrome-bg1', msg.chromeBg1); else bs.removeProperty('--chrome-bg1');
-                    if (msg.chromeBg2) bs.setProperty('--chrome-bg2', msg.chromeBg2); else bs.removeProperty('--chrome-bg2');
-                    if (msg.chromeFg)  bs.setProperty('--chrome-fg',  msg.chromeFg);  else bs.removeProperty('--chrome-fg');
                     // The header now carries the title, so drop the toolbar's own title to give the buttons room.
                     var tt = document.querySelector('#toolbar .title'); if (tt) tt.style.display = 'none';
                 } else {
