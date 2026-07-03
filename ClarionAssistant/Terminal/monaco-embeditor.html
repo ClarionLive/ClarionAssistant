@@ -2463,7 +2463,7 @@
 
     function registerClarionProviders() {
         monaco.languages.registerCompletionItemProvider('clarion', {
-            triggerCharacters: ['.'],
+            triggerCharacters: ['.', ':'],
             provideCompletionItems: function (model, position) {
                 // Completion replace-range = the trailing identifier chars only, breaking on ':' and '.'.
                 // We intentionally do NOT use getWordUntilPosition here: the Clarion wordPattern keeps ':'
