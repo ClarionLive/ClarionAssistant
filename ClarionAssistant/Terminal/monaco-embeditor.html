@@ -149,6 +149,61 @@
     #settingsPanel input[type=number] { width: 58px; }
     #settingsPanel label.fmt-todo { opacity: 0.5; cursor: not-allowed; }
     #settingsPanel .fmt-todo-note { font-size: 10px; color: var(--fg); opacity: 0.55; margin: 2px 0 0; font-style: italic; }
+    /* Gear panel tabs (Editor | Code Snippets) */
+    #settingsPanel.wide { min-width: 430px; }
+    #gearTabs { display: flex; gap: 2px; margin: -2px 0 8px; border-bottom: 1px solid var(--toolbar-border); }
+    .gear-tab { padding: 5px 13px; font-size: 12px; cursor: pointer; color: var(--fg); opacity: .55;
+        border: 1px solid transparent; border-bottom: none; border-radius: 5px 5px 0 0; user-select: none; }
+    .gear-tab:hover { opacity: .85; }
+    .gear-tab.active { opacity: 1; background: var(--bg); border-color: var(--toolbar-border); position: relative; top: 1px; }
+    .gear-pane.hidden { display: none; }
+    /* Code Snippets manager */
+    .snip-intro { font-size: 11px; opacity: .7; margin: 0 0 8px; line-height: 1.5; }
+    .snip-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--toolbar-border); border-radius: 4px; margin-bottom: 6px; }
+    .snip-row .st { font-family: Consolas, monospace; color: var(--title-accent); font-weight: 600; }
+    .snip-row .sd { flex: 1; opacity: .7; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .snip-row .sx { font-size: 10px; opacity: .7; background: var(--toolbar-border); border-radius: 3px; padding: 1px 6px; font-family: Consolas, monospace; }
+    .snip-row button { background: transparent; border: 1px solid var(--toolbar-border); color: var(--fg); border-radius: 3px; padding: 2px 8px; font-size: 11px; cursor: pointer; }
+    .snip-row button:hover { border-color: var(--title-accent); }
+    .snip-empty { opacity: .5; font-size: 11px; font-style: italic; padding: 4px 0 8px; }
+    .snip-add { background: transparent; border: 1px solid var(--toolbar-border); color: var(--fg); border-radius: 4px; padding: 5px 12px; font-size: 12px; cursor: pointer; margin-top: 2px; }
+    .snip-add:hover { border-color: var(--title-accent); }
+    .snip-form { border: 1px solid var(--toolbar-border); border-radius: 5px; padding: 12px; margin-top: 8px; }
+    .snip-form.hidden { display: none; }
+    .sf-field { margin-bottom: 10px; }
+    .sf-lbl { font-size: 11px; opacity: .7; margin-bottom: 3px; display: flex; align-items: center; gap: 6px; }
+    .sf-hint { opacity: .6; }
+    .sf-field input[type=text], .sf-field textarea { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--fg); border: 1px solid var(--toolbar-border); border-radius: 3px; padding: 5px 7px; font-family: inherit; font-size: 12px; }
+    .sf-field textarea { font-family: Consolas, monospace; resize: vertical; }
+    .sf-exts { display: flex; gap: 14px; flex-wrap: wrap; }
+    .sf-exts label { display: flex; align-items: center; gap: 4px; margin: 0; justify-content: flex-start; font-size: 12px; }
+    .sf-help { width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--title-accent); color: var(--title-accent); background: transparent; font-size: 11px; line-height: 1; cursor: pointer; padding: 0; }
+    .sf-help:hover { background: var(--title-accent); color: var(--toolbar-bg); }
+    .sf-actions { display: flex; gap: 8px; margin-top: 10px; }
+    .sf-btn { background: transparent; border: 1px solid var(--toolbar-border); color: var(--fg); border-radius: 4px; padding: 5px 14px; font-size: 12px; cursor: pointer; }
+    .sf-btn.primary { background: var(--title-accent); border-color: var(--title-accent); color: var(--toolbar-bg); }
+    /* Snippet examples help modal (built by JS) */
+    #snipHelp { position: fixed; inset: 0; z-index: 1002; background: rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center; }
+    #snipHelp .box { width: 720px; max-width: 94vw; height: 460px; max-height: 88vh; background: var(--toolbar-bg); border: 1px solid var(--toolbar-border); border-radius: 8px; box-shadow: 0 8px 30px rgba(0,0,0,.6); display: flex; flex-direction: column; overflow: hidden; }
+    #snipHelp .hd { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--toolbar-border); }
+    #snipHelp .hd h3 { margin: 0; font-size: 14px; color: var(--title-accent); }
+    #snipHelp .hd .x { background: transparent; border: none; color: var(--fg); opacity: .7; font-size: 18px; cursor: pointer; line-height: 1; }
+    #snipHelp .bd { display: flex; flex: 1; min-height: 0; }
+    #snipHelp .toc { width: 210px; border-right: 1px solid var(--toolbar-border); overflow-y: auto; padding: 8px 0; flex-shrink: 0; }
+    #snipHelp .ti { padding: 9px 14px; cursor: pointer; font-size: 12px; border-left: 3px solid transparent; }
+    #snipHelp .ti .t { font-weight: 600; }
+    #snipHelp .ti .s { opacity: .6; font-size: 11px; margin-top: 2px; }
+    #snipHelp .ti:hover { background: rgba(127,127,127,.12); }
+    #snipHelp .ti.active { background: rgba(127,127,127,.18); border-left-color: var(--title-accent); }
+    #snipHelp .dt { flex: 1; overflow-y: auto; padding: 14px 18px; }
+    #snipHelp .dt h5 { margin: 0 0 4px; font-size: 11px; color: var(--title-accent); text-transform: uppercase; letter-spacing: .04em; }
+    #snipHelp .dt .arrow { opacity: .55; font-size: 11px; margin-bottom: 4px; }
+    #snipHelp .dt .cb { background: var(--bg); border: 1px solid var(--toolbar-border); border-radius: 5px; padding: 10px 12px; font-family: Consolas, monospace; font-size: 12px; white-space: pre; overflow-x: auto; margin: 2px 0 14px; line-height: 1.5; }
+    #snipHelp .cb .ph { color: #dca94a; }
+    #snipHelp .cb .sel { color: #4a9fe0; }
+    #snipHelp .cb .caret { color: #e0724f; font-weight: 700; }
+    #snipHelp .ex { font-size: 12px; line-height: 1.7; }
+    #snipHelp .ex code { font-family: Consolas, monospace; color: #dca94a; }
     /* Keyboard rebinding table (Clarion-style Label / Default / New) */
     #keybindTable { width: 100%; border-collapse: collapse; font-size: 11px; }
     #keybindTable th { text-align: left; font-weight: 600; color: var(--title-accent); padding: 2px 6px; border-bottom: 1px solid var(--toolbar-border); }
@@ -366,6 +421,11 @@
         <button id="saveBtn" title="Save changes (Ctrl+S)">Save</button>
     </div>
     <div id="settingsPanel" class="hidden">
+        <div id="gearTabs">
+            <div class="gear-tab active" data-gtab="editor">Editor</div>
+            <div class="gear-tab" data-gtab="snippets">Code Snippets</div>
+        </div>
+        <div class="gear-pane" id="gearPaneEditor">
         <h4>Editor settings</h4>
         <label>Tab size <input type="number" id="setTabSize" min="1" max="16" step="1"></label>
         <label>Insert spaces (not tabs) <input type="checkbox" id="setInsertSpaces"></label>
@@ -432,6 +492,34 @@
         </table>
         <p class="kb-hint">Click a key cell, then press the shortcut. Esc cancels.</p>
         <div class="kb-actions"><button id="kbResetAll">Reset all keys</button></div>
+        </div><!-- /gearPaneEditor -->
+        <div class="gear-pane hidden" id="gearPaneSnippets">
+            <p class="snip-intro"><b>Ctrl+J</b> in the editor opens these snippets, scoped to the file's extension.</p>
+            <div id="snipMgrList"></div>
+            <div id="snipMgrEmpty" class="snip-empty">No snippets yet — add one below.</div>
+            <button class="snip-add" id="snipAddBtn">+ Add Snippet</button>
+            <div id="snipForm" class="snip-form hidden">
+                <input type="hidden" id="snipFormId">
+                <div class="sf-field"><div class="sf-lbl">Trigger</div>
+                    <input type="text" id="snipTrigger" placeholder="e.g. loopv" autocomplete="off" spellcheck="false"></div>
+                <div class="sf-field"><div class="sf-lbl">Description</div>
+                    <input type="text" id="snipDesc" placeholder="e.g. Loop over the Ventas file" autocomplete="off" spellcheck="false"></div>
+                <div class="sf-field"><div class="sf-lbl">Extensions <span class="sf-hint">(none = all file types)</span></div>
+                    <div class="sf-exts">
+                        <label><input type="checkbox" class="snipExt" value=".clw">.clw</label>
+                        <label><input type="checkbox" class="snipExt" value=".inc">.inc</label>
+                        <label><input type="checkbox" class="snipExt" value=".tpl">.tpl</label>
+                        <label><input type="checkbox" class="snipExt" value=".tpw">.tpw</label>
+                    </div></div>
+                <div class="sf-field"><div class="sf-lbl">Body
+                    <button class="sf-help" id="snipHelpBtn" title="Show examples">?</button></div>
+                    <textarea id="snipBody" rows="7" spellcheck="false" placeholder="$1  ${1:default}  $0  ${SELECTED}  — click ? for examples"></textarea></div>
+                <div class="sf-actions">
+                    <button class="sf-btn primary" id="snipSaveBtn">Save</button>
+                    <button class="sf-btn" id="snipCancelBtn">Cancel</button>
+                </div>
+            </div>
+        </div><!-- /gearPaneSnippets -->
     </div>
     <div id="navHist" class="hidden"></div>
     <div id="editor"></div>
@@ -756,6 +844,7 @@
                 installNavTracking(editor);    // record cursor jumps for Back/Forward (#14)
                 wireNavButtons();
                 wireSettingsPanel();
+                wireSnippetManager();
                 wireFindPanel();
                 setTheme(themePrefDark);   // apply the user's persisted background choice (default light)
                 updateThemeBtn();
@@ -859,6 +948,7 @@
         if (msg.replaceHistory) replaceArray(replHistory, msg.replaceHistory);
         if (msg.procHistory) replaceArray(procFindHistory, msg.procHistory);
         if (msg.snippets) snippetsList = msg.snippets;
+        renderGearSnippets();
         // Source is transferred via the virtual-host URL to avoid huge postMessage payloads.
         fetch(msg.sourceUrl, { cache: 'no-store' })
             .then(function (r) { return r.text(); })
@@ -2804,6 +2894,146 @@
         persistSettings();
     }
 
+    // ===================== Code Snippets manager (gear panel > Code Snippets tab) =====================
+    function byId(id) { return document.getElementById(id); }
+
+    function wireSnippetManager() {
+        var tabs = document.querySelectorAll('#gearTabs .gear-tab');
+        Array.prototype.forEach.call(tabs, function (tab) {
+            tab.addEventListener('click', function () {
+                var which = tab.getAttribute('data-gtab');
+                Array.prototype.forEach.call(tabs, function (t) { t.classList.toggle('active', t === tab); });
+                byId('gearPaneEditor').classList.toggle('hidden', which !== 'editor');
+                byId('gearPaneSnippets').classList.toggle('hidden', which !== 'snippets');
+                byId('settingsPanel').classList.toggle('wide', which === 'snippets');
+                if (which === 'snippets') renderGearSnippets();
+            });
+        });
+        byId('snipAddBtn').addEventListener('click', function () { showSnipForm(null); });
+        byId('snipSaveBtn').addEventListener('click', saveSnipForm);
+        byId('snipCancelBtn').addEventListener('click', function () { byId('snipForm').classList.add('hidden'); });
+        byId('snipHelpBtn').addEventListener('click', openSnippetHelp);
+        renderGearSnippets();
+    }
+
+    function extLabel(s) { return (s.extensions && s.extensions.length) ? s.extensions.join(', ') : 'all'; }
+
+    function renderGearSnippets() {
+        var list = byId('snipMgrList'), empty = byId('snipMgrEmpty');
+        if (!list) return;   // gear DOM not built yet (early setSource)
+        list.innerHTML = '';
+        if (!snippetsList.length) { if (empty) empty.style.display = ''; return; }
+        if (empty) empty.style.display = 'none';
+        snippetsList.forEach(function (s) {
+            var row = document.createElement('div'); row.className = 'snip-row';
+            var st = document.createElement('span'); st.className = 'st'; st.textContent = s.trigger || '';
+            var sd = document.createElement('span'); sd.className = 'sd'; sd.textContent = s.description || '';
+            var sx = document.createElement('span'); sx.className = 'sx'; sx.textContent = extLabel(s);
+            var edit = document.createElement('button'); edit.textContent = 'Edit';
+            edit.onclick = (function (id) { return function () { showSnipForm(id); }; })(s.id);
+            var del = document.createElement('button'); del.textContent = 'Delete';
+            del.onclick = (function (id) { return function () { postToHost({ action: 'snippetCommand', op: 'delete', data: { id: id } }); }; })(s.id);
+            row.appendChild(st); row.appendChild(sd); row.appendChild(sx); row.appendChild(edit); row.appendChild(del);
+            list.appendChild(row);
+        });
+    }
+
+    function showSnipForm(id) {
+        byId('snipForm').classList.remove('hidden');
+        var s = null;
+        if (id) { for (var i = 0; i < snippetsList.length; i++) if (snippetsList[i].id === id) { s = snippetsList[i]; break; } }
+        byId('snipFormId').value = s ? s.id : '';
+        byId('snipTrigger').value = s ? (s.trigger || '') : '';
+        byId('snipDesc').value = s ? (s.description || '') : '';
+        byId('snipBody').value = s ? (s.body || '') : '';
+        var exts = (s && s.extensions) ? s.extensions : [];
+        var checks = document.querySelectorAll('.snipExt');
+        for (var j = 0; j < checks.length; j++) checks[j].checked = exts.indexOf(checks[j].value) !== -1;
+        byId('snipTrigger').focus();
+    }
+
+    function saveSnipForm() {
+        var trigger = byId('snipTrigger').value.trim();
+        if (!trigger) { byId('snipTrigger').focus(); return; }
+        var exts = [], checks = document.querySelectorAll('.snipExt');
+        for (var i = 0; i < checks.length; i++) if (checks[i].checked) exts.push(checks[i].value);
+        var id = byId('snipFormId').value;
+        // Host persists via SnippetStore and broadcasts applySnippets, which refreshes this list.
+        postToHost({
+            action: 'snippetCommand', op: id ? 'edit' : 'add',
+            data: { id: id, trigger: trigger, description: byId('snipDesc').value.trim(), extensions: exts, body: byId('snipBody').value }
+        });
+        byId('snipForm').classList.add('hidden');
+    }
+
+    // ----- Examples help dialog (the "?" next to Body) -----
+    var SNIP_EX = [
+        { title: "Fill-in fields", sub: "$1 $2 — tab-stops",
+          body: "MESSAGE('$1','$2')",
+          result: "MESSAGE('<span class=caret>&#9474;</span>','<span class=ph>&#9633;</span>')",
+          explain: "<code>$1</code> and <code>$2</code> are numbered tab-stops. The caret lands on <code>$1</code>; press <b>Tab</b> to jump to <code>$2</code>, <b>Shift+Tab</b> to go back. Great for filling arguments in order." },
+        { title: "Default text", sub: "${1:default} — pre-filled stop",
+          body: "CASE ${1:Field}\nOF ${2:Value}\n  $0\nEND",
+          result: "CASE <span class=ph>Field</span>\nOF <span class=ph>Value</span>\n  <span class=caret>&#9474;</span>\nEND",
+          explain: "<code>${1:Field}</code> is a tab-stop <i>pre-filled</i> with the word <code>Field</code>, highlighted so you can type over it (or Tab past to keep it). <code>$0</code> is where the caret finally rests, after every numbered stop." },
+        { title: "Wrap a selection", sub: "${SELECTED} — reuse highlighted text",
+          body: "IF ${SELECTED}\n  $0\nEND",
+          result: "IF <span class=sel>Customer:Name</span>\n  <span class=caret>&#9474;</span>\nEND",
+          explain: "Select some text first (say <code>Customer:Name</code>), then press <b>Ctrl+J</b>. <code>${SELECTED}</code> is replaced with what you had highlighted. If nothing was selected, it becomes a normal fillable tab-stop instead." },
+        { title: "Multi-line block", sub: "auto-indent + $0",
+          body: "LOOP\n  ${1:! your code}\n  $0\nEND",
+          result: "    LOOP\n      <span class=ph>! your code</span>\n      <span class=caret>&#9474;</span>\n    END",
+          explain: "Bodies keep their shape: every line after the first is indented to match the line where you pressed <b>Ctrl+J</b>, so the block lands aligned instead of jammed at column&nbsp;1." },
+        { title: "Branching logic", sub: "IF / ELSIF / ELSE — empty stops",
+          body: "IF ${1:cond}\n  $2\nELSIF ${3:cond2}\n  $4\nELSE\n  $0\nEND",
+          result: "IF <span class=ph>cond</span>\n  <span class=ph>&#9633;</span>\nELSIF <span class=ph>cond2</span>\n  <span class=ph>&#9633;</span>\nELSE\n  <span class=caret>&#9474;</span>\nEND",
+          explain: "Stops don't need default text &mdash; <code>$2</code> and <code>$4</code> are <i>empty</i> holes you Tab into to type each branch body. Tab visits them in order <code>$1&#8594;$2&#8594;$3&#8594;$4</code>, then <code>$0</code> last." },
+        { title: "Wrap in a transaction", sub: "${SELECTED} + a tab-stop together",
+          body: "LOGOUT(2, ${1:File})\nIF ERRORCODE()\n  MESSAGE('Cannot lock')\n  RETURN\nEND\n${SELECTED}\nCOMMIT",
+          result: "LOGOUT(2, <span class=ph>File</span>)\nIF ERRORCODE()\n  MESSAGE('Cannot lock')\n  RETURN\nEND\n<span class=sel>PUT(Orders)</span>\nCOMMIT",
+          explain: "Highlight your update statements, press <b>Ctrl+J</b>, and they're wrapped in a LOGOUT/COMMIT transaction via <code>${SELECTED}</code> &mdash; while <code>${1:File}</code> stays a tab-stop for the table name. Mixing a selection <i>and</i> tab-stops is where snippets really pay off." },
+        { title: "Process a file", sub: "the classic Clarion loop (mirrored stop)",
+          body: "OPEN(${1:File})\nSET(${1:File})\nLOOP\n  NEXT(${1:File})\n  IF ERRORCODE() THEN BREAK.\n  $0\nEND\nCLOSE(${1:File})",
+          result: "OPEN(<span class=ph>Orders</span>)\nSET(<span class=ph>Orders</span>)\nLOOP\n  NEXT(<span class=ph>Orders</span>)\n  IF ERRORCODE() THEN BREAK.\n  <span class=caret>&#9474;</span>\nEND\nCLOSE(<span class=ph>Orders</span>)",
+          explain: "The everyday record-processing loop. <code>${1:File}</code> appears four times &mdash; type the table name <b>once</b>, press <b>Tab</b>, and all four fill together (repeated stops are <b>mirrored</b>). Then <code>$0</code> drops you inside the loop body." }
+    ];
+    function snipEsc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+    function openSnippetHelp() {
+        closeSnippetHelp();
+        var ov = document.createElement('div'); ov.id = 'snipHelp';
+        ov.innerHTML = '<div class="box"><div class="hd"><h3>Snippet examples</h3><button class="x" title="Close">&times;</button></div>'
+            + '<div class="bd"><div class="toc"></div><div class="dt"></div></div></div>';
+        document.body.appendChild(ov);
+        var toc = ov.querySelector('.toc'), dt = ov.querySelector('.dt');
+        function show(i, el) {
+            Array.prototype.forEach.call(toc.querySelectorAll('.ti'), function (x) { x.classList.toggle('active', x === el); });
+            var e = SNIP_EX[i];
+            dt.innerHTML = '<h5>What you type (Body)</h5><div class="arrow">the snippet definition</div>'
+                + '<div class="cb">' + snipEsc(e.body) + '</div>'
+                + '<h5>What it inserts</h5><div class="arrow">after Ctrl+J</div>'
+                + '<div class="cb">' + e.result + '</div>'
+                + '<h5>How it works</h5><div class="ex">' + e.explain + '</div>';
+        }
+        SNIP_EX.forEach(function (e, i) {
+            var ti = document.createElement('div'); ti.className = 'ti' + (i === 0 ? ' active' : '');
+            ti.innerHTML = '<div class="t">' + e.title + '</div><div class="s">' + e.sub + '</div>';
+            ti.addEventListener('click', function () { show(i, ti); });
+            toc.appendChild(ti);
+        });
+        show(0, toc.querySelector('.ti'));
+        ov.querySelector('.x').addEventListener('click', closeSnippetHelp);
+        ov.addEventListener('mousedown', function (e) { if (e.target === ov) closeSnippetHelp(); });
+        // Esc closes the modal (capture phase, so it beats the gear panel's Esc-to-close).
+        ov.__key = function (e) { if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); closeSnippetHelp(); } };
+        document.addEventListener('keydown', ov.__key, true);
+    }
+    function closeSnippetHelp() {
+        var ov = byId('snipHelp');
+        if (!ov) return;
+        if (ov.__key) document.removeEventListener('keydown', ov.__key, true);
+        ov.remove();
+    }
+
     function wireSettingsPanel() {
         var btn = document.getElementById('settingsBtn');
         if (btn) btn.addEventListener('click', function () {
@@ -3114,7 +3344,7 @@
         } else {
             var maxIdx = 0, re = /\$\{?(\d+)/g, m;
             while ((m = re.exec(body))) { var n = parseInt(m[1], 10); if (n > maxIdx) maxIdx = n; }
-            subst = body.split('${SELECTED}').join('${' + (maxIdx + 1) + ':seleccionar}');
+            subst = body.split('${SELECTED}').join('${' + (maxIdx + 1) + ':selected}');
         }
 
         var model = ed.getModel();
@@ -3132,38 +3362,51 @@
 
         ed.executeEdits('snippet-picker', [{ range: range, text: parsed.text, forceMoveMarkers: true }]);
 
-        var numbered = parsed.stops.filter(function (s) { return s.index > 0; })
-            .sort(function (a, b) { return a.index - b.index; });
-        var zero = parsed.stops.filter(function (s) { return s.index === 0; })[0];
-        var target = numbered.length ? numbered[0] : zero;
-        var endOfInsert = model.getPositionAt(startOffset + parsed.text.length);
-        if (target) {
-            var sp = model.getPositionAt(startOffset + target.start), ep = model.getPositionAt(startOffset + target.end);
+        // Group stops by index — repeated ${N} share a group and are mirrored (type once, Tab, all
+        // fill). Tab order = distinct indices ascending, then $0 last.
+        var byIndex = {};
+        parsed.stops.forEach(function (s) { (byIndex[s.index] = byIndex[s.index] || []).push(s); });
+        var order = Object.keys(byIndex).map(Number).filter(function (n) { return n > 0; }).sort(function (a, b) { return a - b; });
+        if (byIndex[0]) order.push(0);
+
+        var firstStop = order.length ? byIndex[order[0]][0] : null;
+        if (firstStop) {
+            var sp = model.getPositionAt(startOffset + firstStop.start), ep = model.getPositionAt(startOffset + firstStop.end);
             ed.setSelection(new monaco.Range(sp.lineNumber, sp.column, ep.lineNumber, ep.column));
         } else {
+            var endOfInsert = model.getPositionAt(startOffset + parsed.text.length);
             ed.setSelection(new monaco.Range(endOfInsert.lineNumber, endOfInsert.column, endOfInsert.lineNumber, endOfInsert.column));
         }
         ed.revealPositionInCenterIfOutsideViewport(ed.getPosition());
         ed.focus();
 
-        installSnippetTabCycling(ed, model, startOffset, numbered, zero);
+        installSnippetTabCycling(ed, model, startOffset, byIndex, order);
     }
 
-    // Tracks the remaining tab-stops as live decorations (so they shift correctly as the user types
-    // into an earlier stop) and lets Tab/Shift+Tab cycle between them, gated by a per-editor context
-    // key so Tab still indents normally once no snippet is in progress.
+    // Snippet-in-progress state: one decoration per stop occurrence, grouped by index. Repeated ${N}
+    // occurrences share a group and are MIRRORED — leaving a group (Tab, or blur/replace ending the
+    // snippet) copies the group's first (primary) occurrence text into its other occurrences, so the
+    // classic OPEN/SET/NEXT/CLOSE file loop fills all four spots from one edit. Tab/Shift+Tab cycle
+    // the distinct groups; gated by a per-editor context key so Tab still indents when idle.
     var _snippetTabState = null;
-    function installSnippetTabCycling(ed, model, startOffset, numbered, zero) {
+    function installSnippetTabCycling(ed, model, startOffset, byIndex, order) {
         clearSnippetTabState();
-        var all = numbered.concat(zero ? [zero] : []);
-        if (all.length < 2) return;   // nothing left to Tab to
-        var decoIds = model.deltaDecorations([], all.map(function (s) {
-            var sp = model.getPositionAt(startOffset + s.start), ep = model.getPositionAt(startOffset + s.end);
-            return {
-                range: new monaco.Range(sp.lineNumber, sp.column, ep.lineNumber, ep.column),
-                options: { stickiness: monaco.editor.TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges }
-            };
-        }));
+        if (order.length < 1) return;
+        var groups = order.map(function (idx) {
+            var decos = model.deltaDecorations([], byIndex[idx].map(function (s) {
+                var sp = model.getPositionAt(startOffset + s.start), ep = model.getPositionAt(startOffset + s.end);
+                return {
+                    range: new monaco.Range(sp.lineNumber, sp.column, ep.lineNumber, ep.column),
+                    options: { stickiness: monaco.editor.TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges }
+                };
+            }));
+            return { index: idx, decos: decos };
+        });
+        var mirrored = groups.some(function (g) { return g.decos.length > 1; });
+        if (order.length < 2 && !mirrored) {   // single plain stop: nothing to Tab to, nothing to mirror
+            groups.forEach(function (g) { model.deltaDecorations(g.decos, []); });
+            return;
+        }
         if (!ed.__snippetTabKey) {
             ed.__snippetTabKey = ed.createContextKey('caSnippetTabActive', false);
             var nav = function (dir) { return function () { jumpSnippetStop(dir); }; };
@@ -3171,25 +3414,43 @@
             ed.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Tab, nav(-1), 'caSnippetTabActive');
             ed.onDidBlurEditorWidget(clearSnippetTabState);
         }
-        _snippetTabState = { ed: ed, model: model, decoIds: decoIds, idx: 0, key: ed.__snippetTabKey };
+        _snippetTabState = { ed: ed, model: model, groups: groups, idx: 0, key: ed.__snippetTabKey };
         ed.__snippetTabKey.set(true);
+    }
+
+    // Copy a group's primary (first) occurrence text into its other occurrences. No-op for single-
+    // occurrence groups. Called when leaving a group so mirrored stops converge.
+    function syncSnippetGroup(st, g) {
+        if (!st || !g || g.decos.length < 2) return;
+        var primaryRange = st.model.getDecorationRange(g.decos[0]);
+        if (!primaryRange) return;
+        var text = st.model.getValueInRange(primaryRange);
+        var edits = [];
+        for (var i = 1; i < g.decos.length; i++) {
+            var r = st.model.getDecorationRange(g.decos[i]);
+            if (r && st.model.getValueInRange(r) !== text) edits.push({ range: r, text: text, forceMoveMarkers: true });
+        }
+        if (edits.length) st.ed.executeEdits('snippet-mirror', edits);
     }
 
     function jumpSnippetStop(dir) {
         var st = _snippetTabState;
         if (!st) return;
-        st.idx = (st.idx + dir + st.decoIds.length) % st.decoIds.length;
-        var r = st.model.getDecorationRange(st.decoIds[st.idx]);
+        syncSnippetGroup(st, st.groups[st.idx]);   // propagate edits before leaving this group
+        st.idx = (st.idx + dir + st.groups.length) % st.groups.length;
+        var r = st.model.getDecorationRange(st.groups[st.idx].decos[0]);
         if (!r) { clearSnippetTabState(); return; }
         st.ed.setSelection(r);
         st.ed.revealPositionInCenterIfOutsideViewport(r.getStartPosition());
     }
 
     function clearSnippetTabState() {
-        if (!_snippetTabState) return;
-        try { _snippetTabState.model.deltaDecorations(_snippetTabState.decoIds, []); } catch (e) { }
-        try { _snippetTabState.key.set(false); } catch (e) { }
-        _snippetTabState = null;
+        var st = _snippetTabState;
+        if (!st) return;
+        _snippetTabState = null;   // null first so the mirror executeEdits below can't re-enter
+        try { syncSnippetGroup(st, st.groups[st.idx]); } catch (e) { }   // flush the last-edited group
+        try { st.groups.forEach(function (g) { st.model.deltaDecorations(g.decos, []); }); } catch (e) { }
+        try { st.key.set(false); } catch (e) { }
     }
 
     // Single-line non-empty editor selection text, else '' (used to seed a search from Ctrl+F).
@@ -3834,6 +4095,7 @@
             } else if (msg.type === 'applySnippets') {
                 snippetsList = msg.snippets || [];
                 if (snippetPickerOpen) renderSnippetPickerList();   // keep an open picker live if Settings was edited concurrently
+                renderGearSnippets();                               // refresh the gear-panel manager list
             }
         });
     }

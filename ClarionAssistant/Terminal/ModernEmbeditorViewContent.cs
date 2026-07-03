@@ -1143,6 +1143,13 @@ namespace ClarionAssistant.Terminal
         void IMonacoEditorHost.OnDiagnostics(MonacoEditorControl editor, string rawJson) { HandleDiagnostics(rawJson); }
         void IMonacoEditorHost.OnSaveSettings(MonacoEditorControl editor, string rawJson) { HandleSaveSettings(rawJson); }
         void IMonacoEditorHost.OnSaveHistory(MonacoEditorControl editor, string rawJson) { HandleSaveHistory(rawJson); }
+        void IMonacoEditorHost.OnSnippetCommand(MonacoEditorControl editor, string rawJson)
+        {
+            // Gear-panel Code Snippets CRUD — persist via the shared store, then live-broadcast the
+            // updated list to every open tab (refreshes both the Ctrl+J picker and the gear list).
+            var updated = SnippetStore.ApplyCommand(rawJson);
+            if (updated != null) ApplySnippetsToAll(updated);
+        }
         void IMonacoEditorHost.OnSaveCursor(MonacoEditorControl editor, string rawJson) { HandleSaveCursor(rawJson); }
         void IMonacoEditorHost.OnSaveBookmarks(MonacoEditorControl editor, string rawJson) { HandleSaveBookmarks(rawJson); }
         void IMonacoEditorHost.OnSelectionChanged(MonacoEditorControl editor, string rawJson) { HandleSelectionChanged(rawJson); }

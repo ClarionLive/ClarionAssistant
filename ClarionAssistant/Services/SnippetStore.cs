@@ -147,6 +147,52 @@ namespace ClarionAssistant.Services
             catch { return "[]"; }
         }
 
+        /// <summary>
+        /// Apply a gear-panel snippet command envelope { op:"add"|"edit"|"delete", data:{...} } from the
+        /// editor and return the full updated list (or null on a bad/unknown command). Shared by every
+        /// IMonacoEditorHost so the CA Embeditor and the Monaco source editor write through one path.
+        /// Parses the WHOLE envelope with JavaScriptSerializer — the body carries arbitrary multi-line
+        /// Clarion code (quotes/tabs/backslashes), so a hand-rolled extractor won't survive it.
+        /// </summary>
+        public static List<Snippet> ApplyCommand(string rawJson)
+        {
+            try
+            {
+                var d = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }
+                    .DeserializeObject(rawJson) as Dictionary<string, object>;
+                if (d == null) return null;
+                object opv, datav;
+                string op = (d.TryGetValue("op", out opv) && opv != null) ? opv.ToString() : null;
+                var data = d.TryGetValue("data", out datav) ? datav as Dictionary<string, object> : null;
+                switch (op)
+                {
+                    case "add":
+                        return Add(Field(data, "trigger"), Field(data, "description"), FieldList(data, "extensions"), Field(data, "body"));
+                    case "edit":
+                        return Update(Field(data, "id"), Field(data, "trigger"), Field(data, "description"), FieldList(data, "extensions"), Field(data, "body"));
+                    case "delete":
+                        return Delete(Field(data, "id"));
+                }
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[SnippetStore] ApplyCommand: " + ex.Message); }
+            return null;
+        }
+
+        private static string Field(Dictionary<string, object> d, string key)
+        {
+            object v;
+            return (d != null && d.TryGetValue(key, out v) && v != null) ? v.ToString() : null;
+        }
+
+        private static List<string> FieldList(Dictionary<string, object> d, string key)
+        {
+            var list = new List<string>();
+            object v;
+            if (d != null && d.TryGetValue(key, out v) && v is object[])
+                foreach (var item in (object[])v) if (item != null) list.Add(item.ToString());
+            return list;
+        }
+
         private static string FilePath()
         {
             return Path.Combine(

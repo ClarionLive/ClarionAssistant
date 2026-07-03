@@ -351,6 +351,7 @@ namespace ClarionAssistant
                     + "\"findHistory\":" + findHistJson + ",\"replaceHistory\":" + replHistJson + ",\"procHistory\":" + procHistJson + ","
                     + "\"cursorLine\":" + curLine + ",\"cursorColumn\":" + curCol + ","
                     + "\"bookmarks\":" + bookmarksJson + ","
+                    + "\"snippets\":" + Services.SnippetStore.ToJson(Services.SnippetStore.Load()) + ","
                     + "\"breakpoints\":[" + bpCsv + "],"
                     + "\"sourceUrl\":\"https://clarion-embeditor-data/source.txt\"}";
                 _editor.PostJson(json);
@@ -668,6 +669,13 @@ namespace ClarionAssistant
 
         // The rest stay inert for now (Step 6 wires Ctrl+D through the embeditor's openDesigner path).
         void IMonacoEditorHost.OnClipboard(MonacoEditorControl editor, string rawJson) { }
+        // Gear-panel Code Snippets CRUD from the source editor. Persist through the shared store (never a
+        // silent no-op — see the dual-host gotcha) and broadcast the updated list to all embeditor tabs.
+        void IMonacoEditorHost.OnSnippetCommand(MonacoEditorControl editor, string rawJson)
+        {
+            var updated = Services.SnippetStore.ApplyCommand(rawJson);
+            if (updated != null) Terminal.ModernEmbeditorViewContent.ApplySnippetsToAll(updated);
+        }
         void IMonacoEditorHost.OnSaveSettings(MonacoEditorControl editor, string rawJson)
         {
             // The Monaco source/default editor is a first-class gear-settings participant now: persist + broadcast

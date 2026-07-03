@@ -74,6 +74,10 @@ namespace ClarionAssistant.Terminal
         /// <summary>{action:"saveHistory"} — persist Find/Replace history + broadcast to all tabs.</summary>
         void OnSaveHistory(MonacoEditorControl editor, string rawJson);
 
+        /// <summary>{action:"snippetCommand", op:"add"|"edit"|"delete", data:{...}} — gear-panel Code
+        /// Snippets CRUD; host persists via SnippetStore and broadcasts the updated list to all tabs.</summary>
+        void OnSnippetCommand(MonacoEditorControl editor, string rawJson);
+
         /// <summary>{action:"saveCursor"} — persist cursor position per proc+solution.</summary>
         void OnSaveCursor(MonacoEditorControl editor, string rawJson);
 
@@ -244,6 +248,7 @@ namespace ClarionAssistant.Terminal
                     case "diagnostics":       h.OnDiagnostics(this, json); break;
                     case "saveSettings":      h.OnSaveSettings(this, json); break;
                     case "saveHistory":       h.OnSaveHistory(this, json); break;
+                    case "snippetCommand":    h.OnSnippetCommand(this, json); break;
                     case "saveCursor":        h.OnSaveCursor(this, json); break;
                     case "saveBookmarks":     h.OnSaveBookmarks(this, json); break;
                     case "selectionChanged":  h.OnSelectionChanged(this, json); break;
