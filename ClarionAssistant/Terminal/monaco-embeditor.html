@@ -3379,11 +3379,12 @@
             listBox.selectedIndex = restoredIdx >= 0 ? restoredIdx : (any ? 0 : -1);
             updatePreview();
         }
-        // Show the currently-selected snippet's expansion (tab-stop tokens reduced to defaults) beside the list.
+        // Show the currently-selected snippet's RAW body (with $1 / ${1:default} / ${SELECTED} tab-stops
+        // visible) beside the list, so you can see exactly where the cursor stops are.
         function updatePreview() {
             var id = listBox.value, snip = null;
             for (var i = 0; i < snippetsList.length; i++) if (snippetsList[i].id === id) { snip = snippetsList[i]; break; }
-            previewBox.textContent = snip ? snippetPreview(snip.body || '') : '';
+            previewBox.textContent = snip ? (snip.body || '') : '';
         }
         // Exposed so the applySnippets broadcast handler can refresh a picker left open while the
         // gear panel's Code Snippets tab is edited (here or in another open tab).
