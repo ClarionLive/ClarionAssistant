@@ -237,9 +237,11 @@ namespace ClarionAssistant.Services
                     }
                 }
 
+                string id = string.IsNullOrEmpty(s.Id) ? Guid.NewGuid().ToString("N") : s.Id;
+                if (id.Length > MaxTriggerLength) id = id.Substring(0, MaxTriggerLength);   // clamp like every other field (security LOW)
                 outp.Add(new Snippet
                 {
-                    Id = string.IsNullOrEmpty(s.Id) ? Guid.NewGuid().ToString("N") : s.Id,
+                    Id = id,
                     Trigger = trigger, Description = description, Extensions = extensions, Body = body
                 });
             }

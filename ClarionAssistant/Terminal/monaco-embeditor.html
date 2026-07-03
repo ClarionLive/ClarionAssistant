@@ -1080,6 +1080,7 @@
 
     function doSave() {
         if (!saveEnabled) { showToast('Save not available (mirror mode)', false); return; }
+        if (_snippetTabState) clearSnippetTabState();   // converge any in-progress mirrored stops before persisting (adversary FAILURE 2)
         // Persist the cursor on save (#13) — from the FOCUSED pane — restored next time the proc opens.
         var cpos = activeEd().getPosition();
         if (cpos) postToHost({ action: 'saveCursor', line: cpos.lineNumber, column: cpos.column });
@@ -3209,6 +3210,7 @@
         var ed = activeEd();
         if (!ed) return;
         var sel = ed.getSelection();
+        if (!isEditableRange(sel)) { showToast('Snippets insert into editable code only', false); return; }   // no picker over read-only code (Bug A)
         var selText = (sel && !sel.isEmpty()) ? ed.getModel().getValueInRange(sel) : '';
         var ext = activeSnippetExtension();
 
@@ -3262,8 +3264,8 @@
             emptyMsg.style.display = any ? 'none' : '';
             listBox.selectedIndex = restoredIdx >= 0 ? restoredIdx : (any ? 0 : -1);
         }
-        // Exposed so the applySnippets broadcast handler can refresh a picker left open while
-        // Settings > Snippets is edited from another window.
+        // Exposed so the applySnippets broadcast handler can refresh a picker left open while the
+        // gear panel's Code Snippets tab is edited (here or in another open tab).
         window.renderSnippetPickerList = renderList;
 
         function close() {
@@ -3349,6 +3351,9 @@
 
         var model = ed.getModel();
         var range = ed.getSelection() || ed.getModel().getFullModelRange();
+        // Don't insert into generated / read-only code: the read-only guard would revert the edit and
+        // we'd install phantom tab-state that hijacks Tab over unrelated code (debugger Bug A).
+        if (!isEditableRange(range)) { showToast('Snippets insert into editable code only', false); return; }
 
         // Match the classic Clarion Ctrl+J behavior: every line after the first inherits the leading
         // whitespace of the line the snippet was triggered on, so nested body text (LOOP/IF blocks
@@ -3400,7 +3405,8 @@
                     options: { stickiness: monaco.editor.TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges }
                 };
             }));
-            return { index: idx, decos: decos };
+            var pr = model.getDecorationRange(decos[0]);
+            return { index: idx, decos: decos, value: pr ? model.getValueInRange(pr) : '' };   // baseline for change-detection
         });
         var mirrored = groups.some(function (g) { return g.decos.length > 1; });
         if (order.length < 2 && !mirrored) {   // single plain stop: nothing to Tab to, nothing to mirror
@@ -3418,19 +3424,27 @@
         ed.__snippetTabKey.set(true);
     }
 
-    // Copy a group's primary (first) occurrence text into its other occurrences. No-op for single-
+    // Converge a mirrored group's occurrences. Propagate the text of the occurrence the user actually
+    // EDITED (the one whose text drifted from the group's last-known value) — not blindly the primary —
+    // so typing into any occurrence, not just the first, survives (debugger Bug B). No-op for single-
     // occurrence groups. Called when leaving a group so mirrored stops converge.
     function syncSnippetGroup(st, g) {
         if (!st || !g || g.decos.length < 2) return;
-        var primaryRange = st.model.getDecorationRange(g.decos[0]);
-        if (!primaryRange) return;
-        var text = st.model.getValueInRange(primaryRange);
+        var source = null;
+        for (var i = 0; i < g.decos.length; i++) {
+            var ri = st.model.getDecorationRange(g.decos[i]);
+            if (ri && st.model.getValueInRange(ri) !== g.value) { source = ri; break; }   // the edited occurrence
+        }
+        if (!source) source = st.model.getDecorationRange(g.decos[0]);   // nothing changed → primary
+        if (!source) return;
+        var text = st.model.getValueInRange(source);
         var edits = [];
-        for (var i = 1; i < g.decos.length; i++) {
-            var r = st.model.getDecorationRange(g.decos[i]);
-            if (r && st.model.getValueInRange(r) !== text) edits.push({ range: r, text: text, forceMoveMarkers: true });
+        for (var j = 0; j < g.decos.length; j++) {
+            var rj = st.model.getDecorationRange(g.decos[j]);
+            if (rj && st.model.getValueInRange(rj) !== text) edits.push({ range: rj, text: text, forceMoveMarkers: true });
         }
         if (edits.length) st.ed.executeEdits('snippet-mirror', edits);
+        g.value = text;   // new baseline for the next leave
     }
 
     function jumpSnippetStop(dir) {
@@ -3438,10 +3452,12 @@
         if (!st) return;
         syncSnippetGroup(st, st.groups[st.idx]);   // propagate edits before leaving this group
         st.idx = (st.idx + dir + st.groups.length) % st.groups.length;
-        var r = st.model.getDecorationRange(st.groups[st.idx].decos[0]);
+        var g = st.groups[st.idx];
+        var r = st.model.getDecorationRange(g.decos[0]);
         if (!r) { clearSnippetTabState(); return; }
         st.ed.setSelection(r);
         st.ed.revealPositionInCenterIfOutsideViewport(r.getStartPosition());
+        if (g.index === 0) clearSnippetTabState();   // reached $0 (final caret): end the snippet so Tab indents again (debugger Bug C)
     }
 
     function clearSnippetTabState() {

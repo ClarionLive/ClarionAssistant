@@ -674,7 +674,12 @@ namespace ClarionAssistant
         void IMonacoEditorHost.OnSnippetCommand(MonacoEditorControl editor, string rawJson)
         {
             var updated = Services.SnippetStore.ApplyCommand(rawJson);
-            if (updated != null) Terminal.ModernEmbeditorViewContent.ApplySnippetsToAll(updated);
+            if (updated == null) return;
+            Terminal.ModernEmbeditorViewContent.ApplySnippetsToAll(updated);   // all embeditor tabs
+            // ApplySnippetsToAll reaches embeditor tabs only, not this source-editor host — so echo the
+            // updated list back to our OWN page or its gear list + Ctrl+J picker won't refresh live after
+            // a CRUD made here (adversary/code-review finding).
+            try { editor.PostJson("{\"type\":\"applySnippets\",\"snippets\":" + Services.SnippetStore.ToJson(updated) + "}"); } catch { }
         }
         void IMonacoEditorHost.OnSaveSettings(MonacoEditorControl editor, string rawJson)
         {

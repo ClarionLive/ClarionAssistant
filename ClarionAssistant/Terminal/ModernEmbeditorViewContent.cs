@@ -2610,8 +2610,8 @@ namespace ClarionAssistant.Terminal
 
         /// <summary>
         /// Broadcast the current Ctrl+J snippet list to every open Modern Embeditor tab, so an
-        /// add/edit/delete in Settings &gt; Snippets is picked up live without reopening the tab
-        /// (mirrors ApplySettingsToAll — called by ClaudeChatSettingsDialog after each CRUD op).
+        /// add/edit/delete in the gear panel's Code Snippets tab is picked up live without reopening
+        /// the tab (mirrors ApplySettingsToAll — called by OnSnippetCommand after each CRUD op).
         /// </summary>
         public static void ApplySnippetsToAll(List<Snippet> snippets)
         {
