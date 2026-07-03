@@ -69,9 +69,15 @@ present (via `SharedLspBridge` / `ClarionLspLocator`) and falls back to this bun
 [msarson/clarion-lsp](https://github.com/msarson/clarion-lsp).
 
 > **Drift (#40):** because `CLARIONLSP_ROOT` is a hand-maintained snapshot, it can drift from upstream.
-> The planned direction is to pull a **pinned, tagged** `server.js` from `msarson/Clarion-Extension`
-> and apply the CodeGraph patch at build time instead of copying a local snapshot. Until that lands,
-> keep the snapshot reasonably current and coordinate tag cadence with upstream.
+> A runnable sync mechanism now lives in **`lsp-server-sync/`** — `Sync-LspServer.ps1` re-pins the
+> clone to a *tagged* release of `msarson/Clarion-Extension`, re-applies the CodeGraph `server.ts`
+> wiring, rebuilds `out/`, and verifies the CodeGraph markers survived. Run it dry (`.\lsp-server-sync\Sync-LspServer.ps1`)
+> to see current drift, or with `-Apply` to re-pin. The anchor state lives in `lsp-server-sync/lsp-snapshot.json`.
+>
+> As observed 2026-07-03 the snapshot is built from `feat/lsp-member-completion` (`383ef95`, **untagged**,
+> forked near the 0.8.7 line — 318 commits behind the `v0.9.6` tag). The CodeGraph overlay `.ts` files are
+> untracked in the clone, so they survive a tag checkout; only the `server.ts` wiring must be re-merged.
+> See `lsp-server-sync/README.md`. Coordinate tag cadence with upstream (#40 / #51).
 
 ## The clarion-indexer (`indexer/`)
 
