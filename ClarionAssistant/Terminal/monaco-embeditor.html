@@ -654,6 +654,7 @@
 
     // ----- Snippets (Ctrl+J) state -----
     var snippetsList = [];        // [{id,trigger,description,extensions,body}], from setSource + applySnippets broadcast
+    var _snippetInsertCmd = null; // Monaco command id that expands a snippet chosen from the completion list
     var WORD_SEPARATORS = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
 
     // ----- Find TABS: each tab is an independent search session {query, replaceText, opts}. The live
@@ -2587,6 +2588,47 @@
                     .catch(function () { return { suggestions: [], incomplete: true }; });
             }
         });
+        // Code Snippets appear IN the completion list (classic Clarion Ctrl+J parity): typing a trigger
+        // prefix shows the snippet with a snippet icon + an expansion preview; Enter/Tab (or space on an
+        // exact full-trigger match) expands it via OUR engine — Monaco's native snippet insert is undone
+        // by the read-only guard inside embed slots, so acceptance runs a command that calls insertSnippetById.
+        monaco.languages.registerCompletionItemProvider('clarion', {
+            provideCompletionItems: function (model, position) {
+                if (!snippetsList.length) return { suggestions: [] };
+                if (!_snippetInsertCmd && editor) {
+                    _snippetInsertCmd = editor.addCommand(0, function () {
+                        var a = Array.prototype.slice.call(arguments);
+                        insertSnippetById(a[a.length - 1]);
+                    }, '');
+                }
+                var before = model.getLineContent(position.lineNumber).substring(0, position.column - 1);
+                var pfx = /[A-Za-z0-9_]*$/.exec(before);
+                var word = pfx ? pfx[0] : '';
+                if (!word) return { suggestions: [] };   // only offer once a word is being typed
+                var startCol = position.column - word.length;
+                var range = new monaco.Range(position.lineNumber, startCol, position.lineNumber, position.column);
+                if (!isEditableRange(range)) return { suggestions: [] };   // never offer in read-only/generated code
+                var ext = activeSnippetExtension(), wl = word.toLowerCase(), sugg = [];
+                for (var i = 0; i < snippetsList.length; i++) {
+                    var s = snippetsList[i];
+                    if (s.extensions && s.extensions.length && s.extensions.indexOf(ext) === -1) continue;   // scoped out
+                    var trig = (s.trigger || '').toLowerCase();
+                    if (trig.indexOf(wl) !== 0) continue;   // prefix match on the trigger
+                    sugg.push({
+                        label: s.trigger,
+                        kind: monaco.languages.CompletionItemKind.Snippet,
+                        detail: s.description || 'Code snippet',
+                        documentation: { value: '```\n' + snippetPreview(s.body || '') + '\n```' },
+                        insertText: s.trigger,   // the accept command replaces this with the expanded body
+                        range: range,
+                        sortText: '0_' + s.trigger,   // float snippets to the top of a prefix match
+                        commitCharacters: (wl === trig) ? [' '] : undefined,   // full trigger + space commits (Clarion-style)
+                        command: _snippetInsertCmd ? { id: _snippetInsertCmd, title: 'Insert snippet', arguments: [s.id] } : undefined
+                    });
+                }
+                return { suggestions: sugg };
+            }
+        });
         monaco.languages.registerHoverProvider('clarion', {
             provideHover: function (model, position) {
                 // Suppress the tooltip when the hover position is inside a Clarion comment — hovering a
@@ -3467,6 +3509,35 @@
         try { syncSnippetGroup(st, st.groups[st.idx]); } catch (e) { }   // flush the last-edited group
         try { st.groups.forEach(function (g) { st.model.deltaDecorations(g.decos, []); }); } catch (e) { }
         try { st.key.set(false); } catch (e) { }
+    }
+
+    // Expand a snippet (by id) at the caret, REPLACING any trigger-word prefix already typed before it.
+    // Invoked by the completion-list acceptance command, so typing a trigger + Enter expands in place
+    // (the completion first writes the full trigger; this selects it back and swaps in the body).
+    function insertSnippetById(id) {
+        var snip = null;
+        for (var i = 0; i < snippetsList.length; i++) if (snippetsList[i].id === id) { snip = snippetsList[i]; break; }
+        if (!snip) return;
+        var ed = activeEd();
+        if (!ed) return;
+        var pos = ed.getPosition(), model = ed.getModel();
+        var before = model.getLineContent(pos.lineNumber).substring(0, pos.column - 1);
+        var m = /[A-Za-z0-9_]*$/.exec(before);
+        if (m && m[0] && (snip.trigger || '').toLowerCase().indexOf(m[0].toLowerCase()) === 0) {
+            ed.setSelection(new monaco.Range(pos.lineNumber, pos.column - m[0].length, pos.lineNumber, pos.column));
+        }
+        insertSnippetBody(ed, snip.body || '', '');
+    }
+
+    // Readable preview of a snippet body for the completion details flyout — tab-stop tokens reduced to
+    // their defaults so the user sees roughly what will be inserted (like Clarion's side preview).
+    function snippetPreview(body) {
+        return (body || '')
+            .replace(/\$\{(\d+):([^}]*)\}/g, '$2')       // ${1:default} -> default
+            .replace(/\$\{(\d+)\}/g, '')                 // ${1} -> (empty)
+            .replace(/\$(\d+)/g, '')                     // $1 -> (empty)
+            .replace(/\$\{SELECTED\}/g, 'selected')
+            .replace(/\\\$/g, '$');                       // \$ -> literal $ (done last so it can't seed a token)
     }
 
     // Single-line non-empty editor selection text, else '' (used to seed a search from Ctrl+F).
