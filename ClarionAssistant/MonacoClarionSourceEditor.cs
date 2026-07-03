@@ -330,18 +330,22 @@ namespace ClarionAssistant
                 int curCol = navLine >= 1 ? navCol : (savedCursorCol >= 1 ? savedCursorCol : 1);
 
                 CaptureIdeChromeColors();   // active Clarion IDE theme colors → our toolbar chrome (task c8e669d3)
+                // Honor the file's Windows read-only attribute: open the buffer read-only + flag the title,
+                // instead of letting the user edit freely only to fail at save time (issue #50).
+                bool fileReadOnly = IsFileReadOnly();
+                string pageTitle = fileReadOnly ? (_overlayTitle + " (read-only)") : _overlayTitle;
                 string json = "{\"type\":\"setSource\","
-                    + "\"title\":" + MonacoEditorControl.JsonString(_overlayTitle) + ","
+                    + "\"title\":" + MonacoEditorControl.JsonString(pageTitle) + ","
                     + "\"language\":\"clarion\","
                     + "\"isDark\":false,"
                     + "\"chromeBg1\":" + MonacoEditorControl.JsonString(_chromeBg1 ?? "") + ","
                     + "\"chromeBg2\":" + MonacoEditorControl.JsonString(_chromeBg2 ?? "") + ","
                     + "\"fileMode\":true,"
-                    + "\"readOnly\":false,"
+                    + "\"readOnly\":" + (fileReadOnly ? "true" : "false") + ","
                     + "\"breakpointsEnabled\":true,"
                     + "\"designerEnabled\":true,"
                     + "\"filePath\":" + MonacoEditorControl.JsonString(_filePath ?? "") + ","
-                    + "\"saveEnabled\":true,"
+                    + "\"saveEnabled\":" + (fileReadOnly ? "false" : "true") + ","
                     + "\"editableRanges\":[],"
                     + "\"settings\":" + settingsJson + ","
                     + "\"findHistory\":" + findHistJson + ",\"replaceHistory\":" + replHistJson + ",\"procHistory\":" + procHistJson + ","
@@ -409,6 +413,7 @@ namespace ClarionAssistant
             try
             {
                 if (string.IsNullOrEmpty(_filePath)) { editor.PostSaveResult(false, "No file path for this editor."); return; }
+                if (IsFileReadOnly()) { editor.PostSaveResult(false, "This file is read-only and cannot be saved."); return; }
 
                 var data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }
                     .DeserializeObject(rawJson) as System.Collections.Generic.Dictionary<string, object>;
@@ -1029,8 +1034,18 @@ namespace ClarionAssistant
 
         // CRLF-normalize + write the buffer to disk with the file's load encoding. Shared by the
         // interactive save (OnSave) and the close-save prompt. Returns the char count written.
+        // True when _filePath exists on disk with the Windows read-only attribute set. Cheap + defensive
+        // (any IO error → treated as writable, preserving prior behavior). (issue #50)
+        private bool IsFileReadOnly()
+        {
+            try { return !string.IsNullOrEmpty(_filePath) && File.Exists(_filePath) && new FileInfo(_filePath).IsReadOnly; }
+            catch { return false; }
+        }
+
         private int WriteToDisk(string text)
         {
+            if (IsFileReadOnly())
+                throw new IOException("This file is read-only: " + Path.GetFileName(_filePath));
             string normalized = (text ?? "").Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
             Encoding enc = null;
             try { enc = _hostEditor != null ? _hostEditor.Encoding : null; } catch { }
