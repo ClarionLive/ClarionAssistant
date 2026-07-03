@@ -2611,7 +2611,7 @@
                 var ext = activeSnippetExtension(), wl = word.toLowerCase(), sugg = [];
                 for (var i = 0; i < snippetsList.length; i++) {
                     var s = snippetsList[i];
-                    if (s.extensions && s.extensions.length && s.extensions.indexOf(ext) === -1) continue;   // scoped out
+                    if (!snippetAppliesToExt(s, ext)) continue;   // scoped out (case-insensitive)
                     var trig = (s.trigger || '').toLowerCase();
                     if (trig.indexOf(wl) !== 0) continue;   // prefix match on the trigger
                     sugg.push({
@@ -3247,6 +3247,16 @@
         return '.clw';
     }
 
+    // Extension scoping is CASE-INSENSITIVE (unlike native Clarion, which forces you to add
+    // .CLW;.Clw;.clw). No extensions selected = applies to every file type. `ext` is already
+    // lowercased by activeSnippetExtension; we lowercase the stored side too so a hand-edited
+    // snippets.json with .CLW still matches.
+    function snippetAppliesToExt(s, ext) {
+        if (!s.extensions || !s.extensions.length) return true;
+        for (var i = 0; i < s.extensions.length; i++) if (String(s.extensions[i]).toLowerCase() === ext) return true;
+        return false;
+    }
+
     function openSnippetPicker() {
         if (snippetPickerOpen) return;
         var ed = activeEd();
@@ -3283,9 +3293,7 @@
         var emptyMsg = document.getElementById('snippetEmptyMsg');
         var pickerKeyHandler = null;   // document-capture keydown handler; removed in close()
 
-        function appliesToExt(s) {
-            return !s.extensions || !s.extensions.length || s.extensions.indexOf(ext) !== -1;
-        }
+        function appliesToExt(s) { return snippetAppliesToExt(s, ext); }
         function renderList() {
             var q = (filterInput.value || '').toLowerCase();
             var prevId = listBox.value;

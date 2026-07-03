@@ -231,7 +231,7 @@ namespace ClarionAssistant.Services
                     foreach (var e in s.Extensions)
                     {
                         if (string.IsNullOrWhiteSpace(e) || extensions.Count >= MaxExtensions) continue;
-                        string ext = e.Trim();
+                        string ext = e.Trim().ToLowerInvariant();   // store lowercase — scoping is case-insensitive (.CLW==.clw)
                         if (ext.Length > MaxExtensionLength || HasCrLf(ext)) continue;
                         extensions.Add(ext);
                     }
