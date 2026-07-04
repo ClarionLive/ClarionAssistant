@@ -75,124 +75,100 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// PHASE 3 (ticket 4b82f1de) — open the procedure CURRENTLY committed in the app tree (selected by
-        /// the proc-tree right-click, F3) as a Monaco snapshot tab, with NO proc name supplied up front.
-        /// Flow: open+mirror the committed selection (no locator typing → no type-miss → no retry) → derive
-        /// the authoritative name via source-regex (cardinal rule #7 — NOT the temp pwee FileName/caption) →
-        /// CancelEmbeditor → deferred ShowView (the SAME freeze-safe tail as <see cref="OpenProcedure"/>).
-        /// Returns null on success, else an error string. MUST run on the managed UI thread.
+        /// TICKET 4d16b53a — the poll-detect entry. Attach the live Monaco overlay to an embed that is
+        /// ALREADY OPEN in the native embeditor (opened via Clarion's own "Embeditor Source" menu — we did
+        /// NOT open it). Unlike <see cref="OpenCommittedSelection"/> there is NO native open here: the embed
+        /// is live, so we only MIRROR it (TryGetActiveEmbeditorSource reads the ACTIVE embed) and dock the
+        /// overlay onto the editor's host panel. Returns null on success, else an error string. MUST run on
+        /// the managed UI thread.
         ///
-        /// Guards: E3 (already-open Monaco tab for this proc → focus it, no duplicate); E6 (name
-        /// unrecoverable from source → CancelEmbeditor + NO tab + return error; never a blank/wrong proc).
+        /// Structural parity with our BM_CLICK path proven live (CC probe, 4d16b53a): a Clarion-native-opened
+        /// embed reads identically on all 3 axes (TryGetActiveEmbeditorSource, host resolution, SaveLive
+        /// CustomLines target). Single-live-overlay: release any prior overlay first. E3: a Monaco surface
+        /// already open for this proc → focus it, don't double-attach. E6: name unrecoverable → abort, no overlay.
         /// </summary>
-        public static string OpenCommittedSelection(bool isDark, bool live = false)
+        public static string AttachOverlayToOpenEmbed(bool isDark)
         {
             EnterBusy();
+            System.Windows.Forms.Panel preCover = null;
             try
             {
                 var appTree = new AppTreeService();
 
-                // LIVE mode (ticket a5bbf005): the previous foreground tab may STILL hold a native embed open
-                // (only one embed can be open at a time). Release it synchronously BEFORE we open the new one,
-                // or OpenAndMirrorCurrentSelection's WaitForEmbedClosed guard would error. Safe to pump here —
-                // this runs on the launch delegate (off-stack), not inside an active-view-changed event.
-                if (live) { try { ModernEmbeditorViewContent.ReleaseLiveInstanceSync(); } catch { } }
+                // Nothing to attach to if no native embed is currently open.
+                if (appTree.GetOpenClaGenEditor() == null)
+                    return "No native embeditor is open.";
 
-                string source, error;
+                // Single-live-overlay (a5bbf005): release the previous overlay's hold before attaching a new one.
+                // cancelOpenEmbed:FALSE is load-bearing — the currently-open native embed is the one the developer
+                // just opened via Clarion's own menu and is our DOCK TARGET; the default (true) would CancelEmbeditor
+                // it and close the very embed we're attaching to. This only detaches a stale prior overlay.
+                try { ModernEmbeditorViewContent.ReleaseLiveInstanceSync(cancelOpenEmbed: false); } catch { }
+
+                // PRE-COVER FIRST (4d16b53a flicker): synchronously drop an opaque cover over the embed host NOW —
+                // before the mirror + WebView2 work — so the native text area is hidden before it can paint. When
+                // driven by the ActiveViewContentChanged event this runs in the posted turn that precedes WM_PAINT,
+                // so the native text never shows. Cheap WinForms, no WebView2 → freeze-safe. Removed if we abort.
+                var host = appTree.GetClaGenEditorHost();
+                if (host != null) { try { preCover = ModernEmbeditorViewContent.AddInstantCover(host, isDark); } catch { } }
+
+                // MIRROR the already-open embed — the KEY difference vs OpenCommittedSelection: no open, just read
+                // the ACTIVE embed's assembled source + editable-range map (Document.CustomLineManager.CustomLines).
+                string title, source, ferr;
                 List<int[]> ranges;
-                if (!OpenAndMirrorCurrentSelection(appTree, out source, out ranges, out error))
-                    return error;
+                if (!EmbeditorCompletionService.TryGetActiveEmbeditorSource(out title, out source, out ranges, out ferr))
+                { RemoveCover(preCover); return "Could not read the open embed source: " + ferr; }
 
-                // E6 — authoritative name from the mirrored SOURCE (cardinal rule #7), never the temp pwee
-                // FileName/caption. Iterate the col-0 "Name PROCEDURE" declarations and take the first that is a
-                // KNOWN top-level procedure (validates the regex pick against App.ProcedureNames).
+                // Authoritative proc name from source (cardinal rule #7 — never the temp pwee FileName/caption).
                 List<string> knownProcs = null;
                 try { knownProcs = appTree.GetProcedureNames(); } catch { }
                 string procName = ProcNameFromSource(source, knownProcs);
                 if (string.IsNullOrWhiteSpace(procName))
-                {
-                    // E6: no confident identity → abort cleanly, no tab.
-                    try { appTree.CancelEmbeditor(); } catch { }
-                    WaitForEmbedClosed(appTree, 3000);
-                    return "Could not determine the procedure name from the embed source — no tab opened.";
-                }
+                { RemoveCover(preCover); return "Could not determine the procedure name from the embed source — no overlay attached."; }
 
-                // Dup-name limitation (Eve #5): if the app declares the same proc name in more than one module,
-                // source-regex has no module context to disambiguate → the tab may reflect the wrong module's
-                // proc. Acceptable for v1; log it so it's diagnosable (future fix = embeditor window caption).
-                if (CountIgnoreCase(knownProcs, procName) > 1)
-                    System.Diagnostics.Debug.WriteLine(
-                        "[ModernEmbeditorLauncher] '" + procName + "' is a duplicate proc name across modules — "
-                        + "source-regex cannot disambiguate the module; may open the wrong module's tab.");
-
-                // E3 — a Monaco tab for this proc is already open: focus it, discard the redundant native
-                // open, and do NOT open a duplicate. (h2: the ~2.6s open is unavoidable here — no name to
-                // dedup on before opening — so we eat it once and log nothing user-facing.)
+                // E3 — already overlaid/open for this proc: focus it, don't double-attach.
                 if (ModernEmbeditorViewContent.TryFocusExisting(procName))
-                {
-                    try { appTree.CancelEmbeditor(); } catch { }
-                    WaitForEmbedClosed(appTree, 3000);
-                    System.Diagnostics.Debug.WriteLine(
-                        "[ModernEmbeditorLauncher] '" + procName + "' already open — focused existing tab (redundant ~2.6s open).");
-                    return null;
-                }
+                { RemoveCover(preCover); return null; }
 
-                // ABC is loaded now (the native open triggered the lazy load). Warm the LSP HERE so its
-                // background solution parse overlaps the WebView2/Monaco load below. Idempotent, fire-and-forget.
+                // Warm the LSP now so its background parse overlaps the WebView2/Monaco load. Fire-and-forget.
                 try { EmbeditorCompletionService.LspStarter?.Invoke(); } catch { }
 
-                // LIVE mode: do NOT cancel — leave the native embed OPEN + locked so save can write straight
-                // back into it (no re-open). SNAPSHOT mode (default): discard/close to free the single-embeditor
-                // lock so any number of Monaco tabs can be open at once.
-                if (!live)
-                {
-                    try { appTree.CancelEmbeditor(); } catch { }
-                    WaitForEmbedClosed(appTree, 3000);
-                }
-
-                // CRITICAL freeze-safe tail — identical to OpenProcedure: do NOT create the WebView2 view on
-                // THIS call stack (still unwinding the native open's nested DoEvents pumps). Post ShowView so
-                // the stack unwinds and the message/input state drains first, or WebView2's async init can't
-                // progress and the IDE hard-hangs. (In live mode the embed stays open across this Post; the
-                // freeze is about stack reentrancy, not the embed being open, so the deferral still covers it.)
+                // Freeze-safe tail — dock on a settled turn. Keep WebView2 async init off any reentrant stack. The
+                // pre-cover is already up over the host; ShowAsEmbedOverlay ADOPTS it (no second cover, no gap).
                 var ctx = WindowsFormsSynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
-                string capProc = procName; string capSrc = source; List<int[]> capRanges = ranges; bool capDark = isDark; bool capLive = live;
+                string capProc = procName; string capSrc = source; List<int[]> capRanges = ranges; bool capDark = isDark;
+                var capHost = host; var capCover = preCover; var capEditor = appTree.GetOpenClaGenEditor();
                 ctx.Post(_ =>
                 {
                     try
                     {
-                        // LIVE mode (ticket a5bbf005): the native embed is still OPEN (the live path above skipped the
-                        // cancel). Dock the Monaco surface as an in-place OVERLAY on top of the embeditor's host panel
-                        // (ClaGenEditor.Control, per CC's probe) instead of opening a separate workbench tab — that's
-                        // what keeps the native embeditor open with Monaco floating over it, one document, no
-                        // switch-away flash. Fall back to the separate-tab path if the host can't be resolved.
-                        if (capLive)
+                        var h = capHost ?? new AppTreeService().GetClaGenEditorHost();
+                        if (h == null)
                         {
-                            var at = new AppTreeService();
-                            var host = at.GetClaGenEditorHost();
-                            if (host != null)
-                            {
-                                var overlay = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc, false);
-                                overlay.ShowAsEmbedOverlay(host, at.GetOpenClaGenEditor());
-                                return;
-                            }
-                            System.Diagnostics.Debug.WriteLine("[ModernEmbeditorLauncher] live overlay: no ClaGenEditor host resolved — falling back to a separate tab.");
+                            RemoveCover(capCover);
+                            System.Diagnostics.Debug.WriteLine("[ModernEmbeditorLauncher] AttachOverlayToOpenEmbed: no ClaGenEditor host — cannot overlay.");
+                            return;
                         }
-
-                        var view = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc, capLive);
-                        WorkbenchSingleton.Workbench.ShowView(view);
-                        // Separate-tab fallback: ShowView lands the tab in the BACKGROUND. Foreground it (also arms the
-                        // switch-away watch, see the probe fix) via SelectWindow on a settled turn.
-                        if (capLive) view.ActivateTab();
+                        var overlay = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc, false);
+                        overlay.ShowAsEmbedOverlay(h, capEditor ?? new AppTreeService().GetOpenClaGenEditor(), capCover);
                     }
                     catch (Exception ex)
                     {
-                        System.Diagnostics.Debug.WriteLine("[ModernEmbeditorLauncher] deferred ShowView (committed) failed: " + ex.Message);
+                        RemoveCover(capCover);
+                        System.Diagnostics.Debug.WriteLine("[ModernEmbeditorLauncher] AttachOverlayToOpenEmbed deferred attach failed: " + ex.Message);
                     }
                 }, null);
                 return null;
             }
             finally { LeaveBusy(); }
+        }
+
+        /// <summary>Remove + dispose a pre-cover panel (ticket 4d16b53a) when the attach aborts before the overlay
+        /// adopts it. Guarded — never throws into the attach path.</summary>
+        private static void RemoveCover(System.Windows.Forms.Control cover)
+        {
+            if (cover == null) return;
+            try { if (cover.Parent != null) cover.Parent.Controls.Remove(cover); cover.Dispose(); } catch { }
         }
 
         /// <summary>
@@ -302,50 +278,6 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// PHASE 3 variant of <see cref="OpenAndMirror"/>: open the embeditor for the ALREADY-committed
-        /// app-tree selection (the right-click selected the row, F3 — no name to type) and mirror its source
-        /// + editable-range map, leaving the embeditor OPEN on success. Because nothing is typed there is no
-        /// type-miss failure mode, so there is NO retry loop and NO SourceMentionsProcedure verify (there's
-        /// no name to verify against — the committed selection is ground truth; the caller derives the name
-        /// from the mirrored source). UI thread only.
-        /// </summary>
-        internal static bool OpenAndMirrorCurrentSelection(AppTreeService appTree,
-            out string source, out List<int[]> ranges, out string error)
-        {
-            source = null; ranges = null; error = null;
-            EnterBusy();
-            try
-            {
-                if (!WaitForEmbedClosed(appTree, 3000))
-                { error = "An embeditor is still open; close it and try again."; return false; }
-
-                // Bring the app tree to the front so the native automation works even when a Modern
-                // Embeditor tab is the active document.
-                appTree.ActivateAppView();
-                appTree.OpenProcedureEmbedCurrentSelection();
-
-                // First open loads the ABC libraries and can take many seconds; wait generously.
-                if (!WaitForEmbedOpen(appTree, 45000))
-                {
-                    try { appTree.CancelEmbeditor(); } catch { }
-                    error = "Embeditor did not open for the committed selection within 45s.";
-                    return false;
-                }
-
-                string title, ferr;
-                if (!EmbeditorCompletionService.TryGetActiveEmbeditorSource(out title, out source, out ranges, out ferr))
-                {
-                    try { appTree.CancelEmbeditor(); } catch { }
-                    error = "Could not read embed source for the committed selection: " + ferr;
-                    source = null; ranges = null;
-                    return false;
-                }
-                return true; // leave the embeditor open — caller mirrors then closes
-            }
-            finally { LeaveBusy(); }
-        }
-
-        /// <summary>
         /// Extract the authoritative procedure name from generated embed source (cardinal rule #7 — name from
         /// source, NEVER the temp pwee FileName/caption). MIRROR SCOPE IS SINGLE-PROC: the embeditor buffer is
         /// one procedure's assembled source (verified live — BrowseAuthors' buffer contained only its own
@@ -395,15 +327,6 @@ namespace ClarionAssistant.Services
             foreach (var n in names)
                 if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) return true;
             return false;
-        }
-
-        private static int CountIgnoreCase(ICollection<string> names, string name)
-        {
-            if (names == null) return 0;
-            int c = 0;
-            foreach (var n in names)
-                if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) c++;
-            return c;
         }
 
         /// <summary>

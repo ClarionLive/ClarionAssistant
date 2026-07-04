@@ -22,7 +22,6 @@ namespace ClarionAssistant.Services
         // Keys live in the shared settings.txt alongside every other CA setting.
         private const string KeySourceEnabled       = "ClarionAssistant.MonacoSourceEnabled";
         private const string KeyEmbeditorEnabled    = "ClarionAssistant.MonacoEmbeditorEnabled";
-        private const string KeyEmbeditorLiveLinked = "ClarionAssistant.MonacoEmbeditorLiveLinked";
         private const string KeySourceFileTypes     = "ClarionAssistant.MonacoSourceFileTypes";
 
         /// <summary>Default extensions the Monaco SOURCE overlay applies to (when enabled).</summary>
@@ -83,29 +82,6 @@ namespace ClarionAssistant.Services
                 catch { return true; }
             }
             set { TrySet(KeyEmbeditorEnabled, value ? "true" : "false"); }
-        }
-
-        /// <summary>
-        /// EXPERIMENTAL (ticket a5bbf005) — LIVE-LINKED CA Embeditor. When ON, the right-click "Open in CA
-        /// Embeditor" keeps Clarion's native embeditor OPEN and floats Monaco on top, so save writes straight
-        /// back into the still-open embed (no re-open, no locator re-type) — Clarion-native save-and-exit.
-        /// Default OFF. Only the FOREGROUND tab is live; switching away releases the native single-embeditor
-        /// lock and demotes the tab to a passive snapshot (which still saves via the proven re-open path).
-        /// Gated by <see cref="MonacoEmbeditorEnabled"/> (this flag is meaningless if the embeditor item is off).
-        /// </summary>
-        public static bool MonacoEmbeditorLiveLinked
-        {
-            get
-            {
-                try
-                {
-                    string raw = new SettingsService().Get(KeyEmbeditorLiveLinked);
-                    if (raw == null) return false;   // default OFF (experimental)
-                    return ParseBool(raw, false);
-                }
-                catch { return false; }
-            }
-            set { TrySet(KeyEmbeditorLiveLinked, value ? "true" : "false"); }
         }
 
         /// <summary>

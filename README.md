@@ -37,13 +37,33 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 - **Application tree** &mdash; open .app files, list procedures, navigate the embeditor
 - **Monaco source editor** &mdash; the default editor for Clarion `.clw`/`.inc` source: syntax highlighting, folding, F12/Ctrl+Click go-to-definition, inline diagnostics, and completion (toggleable under Options &rarr; Clarion Assistant &rarr; Editor Surfaces)
 - **Smart Formatter (Ctrl+I)** &mdash; reformats Clarion code with structure indentation and aligned declarations; configurable
-- **CA Embeditor** &mdash; right-click any procedure in the app tree to open its embed code directly in a fast Monaco/WebView2 editor; open multiple procedures as tabs
+- **CA Embeditor** &mdash; use Clarion's own **Embeditor Source** (right-click a procedure, or the Views toolbar button) and a fast Monaco/WebView2 editor overlays the native embeditor automatically; edits save straight back with Clarion-native Save &amp; Exit
 - **Code Snippets (Ctrl+J)** &mdash; classic Clarion template-picker parity: insert reusable code with tab-stops and a `${SELECTED}` placeholder, managed from Settings &rarr; Snippets
 - **CA Explorer** &mdash; docked pad showing the active CA Embeditor tab's Local, Module &amp; Global Data, Declared Tables, Other Files, and their Keys, Columns, and Relations; drag a field to the editor or Window designer, copy/paste variables native-style, and a Cheat Sheet tab of editor shortcuts
 - **Evaluate Code** &mdash; interactive code review for entire apps, procedures, open files, or selected code
 - **Diff viewer** &mdash; Monaco-based side-by-side diffs with syntax highlighting
 - **Knowledge system** &mdash; persistent cross-session memory for decisions, patterns, and gotchas
 - **Zoom persistence** &mdash; Ctrl+mousewheel zoom is saved and restored across sessions
+
+---
+
+## What's New in v5.2
+
+v5.2 makes the CA Embeditor feel completely native: it now rides Clarion's **own** "Embeditor Source" command instead of a separate menu item, and it appears with no flicker.
+
+### CA Embeditor rides Clarion's native "Embeditor Source"
+
+There is no longer a separate **Open in CA Embeditor** popup item. Just open an embed the way you always have &mdash; right-click a procedure &rarr; **Embeditor Source**, or the **Embeditor** button on the Views toolbar &mdash; and the Monaco CA Embeditor overlays the native embeditor automatically. One embed at a time, exactly like the native editor; edits save straight back with **Save &amp; Exit** (no re-open).
+
+- **Nothing new to learn** &mdash; the trigger is Clarion's existing command, so it works from every place that opens an embed.
+- **Toggle** the overlay under **Options &rarr; Clarion Assistant &rarr; Editor Surfaces** (&ldquo;Use the Monaco embeditor&rdquo;, on by default).
+- **Flicker-free** &mdash; the overlay is placed the instant the embed view opens, before the native editor paints, so you don't see the native embeditor flash first.
+
+*(Thanks to Mark Sarson &mdash; this adopts the auto-detect approach from his [ClarionMonacoEditor](https://github.com/msarson/ClarionMonacoEditor).)*
+
+### Removed
+
+- The old **Open in CA Embeditor** right-click menu injection and its underlying native Windows-hook machinery have been retired &mdash; the native-command overlay replaces them entirely, with far less moving machinery in the IDE.
 
 ---
 

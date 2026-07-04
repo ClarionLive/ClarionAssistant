@@ -434,6 +434,17 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
+        /// <summary>The PweeEditorDetails object of the currently-open native embeditor — non-null exactly when a
+        /// PWEE embed is loaded (CommonGenEditor.IsPwee). This is the type-name-independent "an embed is open"
+        /// signal the poll monitor (ticket 4d16b53a, adapted from Mark Sarson's EmbedEditorMonitor, CA issue #55)
+        /// keys on; its OBJECT IDENTITY changes when a different procedure is loaded into the reused ClaGenEditor,
+        /// which is the monitor's "reload the overlay" trigger. Null if no embed is open.</summary>
+        public object GetOpenPweeDetails()
+        {
+            try { return GetProp(GetClaGenEditor(), "PweeEditorDetails"); }
+            catch { return null; }
+        }
+
         /// <summary>
         /// The native ClaGenEditor IFF its text area is the currently-focused editor surface, else null.
         /// "Existence ≠ focus": GetClaGenEditor() returns the editor even when it persists hidden in
@@ -926,58 +937,6 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// PHASE 3 (ticket 4b82f1de) — open the embeditor for the procedure ALREADY selected in the app tree.
-        /// The proc-tree right-click commits the selection to the clicked row (F3), so unlike
-        /// <see cref="OpenProcedureEmbed(string,int)"/> there is no name to type: skip Phase 1 (focus) and
-        /// Phase 2 (locator typing) entirely and go straight to Phase 3 — find the native app window's
-        /// ClaButtons and BM_CLICK the Embeditor button on the current selection (shared
-        /// <see cref="ClickEmbeditorButton"/>). UI thread only. Returns a diagnostic log; the caller's
-        /// WaitForEmbedOpen poll is the real success signal (an early "Error:" string means we couldn't
-        /// reach the app window / Embeditor button at all).
-        /// </summary>
-        public string OpenProcedureEmbedCurrentSelection()
-        {
-            try
-            {
-                // Already-open guard — same contract as OpenProcedureEmbed.
-                var embedInfo = GetEmbedInfo();
-                if (embedInfo != null)
-                {
-                    var openFile = (embedInfo["fileName"] ?? "").ToString();
-                    return "Error: An embeditor is already open (" + openFile + "). Please close it before opening another procedure.";
-                }
-
-                var log = new StringBuilder();
-                log.AppendLine("=== OpenProcedureEmbedCurrentSelection (committed selection) ===");
-
-                var viewContent = FindAppViewContent();
-                if (viewContent == null) return "Error: no ViewContent — is an .app file open?";
-
-                var container = GetProp(viewContent, "_Container")
-                             ?? GetProp(viewContent, "ApplicationContainer");
-                if (!(container is Control containerCtrl) || containerCtrl.Controls.Count == 0)
-                    return "Error: cannot access ApplicationContainer";
-
-                var mainCtrl = containerCtrl.Controls[0] as Control;
-                if (mainCtrl == null || !mainCtrl.IsHandleCreated)
-                    return "Error: ApplicationMainWindowControl has no handle";
-
-                var children = GetChildWindows(mainCtrl.Handle);
-
-                // NO Phase 1 (focus) / NO Phase 2 (select): the right-click already committed + highlighted
-                // the row. Straight to Phase 3 — click the Embeditor button on the current selection.
-                if (!ClickEmbeditorButton(children, log))
-                    return log.ToString();
-
-                log.AppendLine("\nEmbeditor opened for the committed selection");
-                return log.ToString();
-            }
-            catch (Exception ex)
-            {
-                return "Error: " + (ex.InnerException?.Message ?? ex.Message) + "\n" + ex.StackTrace;
-            }
-        }
-
         /// <summary>
         /// PHASE 3 (shared) — locate the Embeditor button among the app-window ClaButtons (matched by
         /// "beditor" in its caption) and BM_CLICK it to open the embeditor for the CURRENTLY selected

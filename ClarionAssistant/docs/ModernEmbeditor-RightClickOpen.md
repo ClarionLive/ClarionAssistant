@@ -1,5 +1,12 @@
 # Right-Click Procedure → "Open in Modern Embeditor"
 
+> ⚠️ **RETIRED (ticket 4d16b53a, 2026-07-04).** This entire native-menu-injection + `SetWindowsHookEx`
+> approach (`RightClickHookService`) has been **removed**. The CA Embeditor overlay is now triggered by a
+> lightweight 1.5s poll (`EmbedEditorMonitorService`) that detects when a native PWEE embed opens — via
+> Clarion's OWN built-in **"Embeditor Source"** menu — and auto-attaches the live overlay. No injected menu
+> item, no thread hooks. Adopted from Mark Sarson's `EmbedEditorMonitor` (CA issue #55). This document is kept
+> for historical record of the hook design only.
+
 Ticket **4b82f1de**. Native-menu injection that adds an **"Open in Modern Embeditor"** item to the Clarion app-tree procedure right-click popup, opening the selected procedure in the Monaco/WebView2 Modern Embeditor.
 
 This doc is the **build-ready phase-2 spec** for both fingerprint branches. Phase-1.5 selects the branch; everything else is shared and locked. Authored from the three-way design consensus (Diana / Eve / Charlie) + CC's live probes, 2026-06-04.

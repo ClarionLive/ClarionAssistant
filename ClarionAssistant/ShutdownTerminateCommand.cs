@@ -31,8 +31,9 @@ namespace ClarionAssistant
     /// <summary>
     /// /Workspace/Terminate command — runs the ordered addin teardown (stop MCP, kill ConPty child-process
     /// trees, dispose WebView2 instances on the UI thread) BEFORE native IDE teardown, to fix Clarion hanging
-    /// on close (ticket: addin shutdown hardening). Registered ahead of RightClickHookTerminateCommand so our
-    /// heavy teardown runs first. Idempotent with the Application.ApplicationExit backstop in ShutdownService.
+    /// on close (ticket: addin shutdown hardening). Registered FIRST in /Workspace/Terminate so our heavy
+    /// teardown runs ahead of the other terminate commands. Idempotent with the Application.ApplicationExit
+    /// backstop in ShutdownService.
     /// </summary>
     public class ShutdownTerminateCommand : ICommand
     {

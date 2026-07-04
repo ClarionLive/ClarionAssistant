@@ -125,7 +125,7 @@
     <Compile Include="Services\FileSchemaVariableInserter.cs" />
     <Compile Include="Services\FileSchemaScopeReader.cs" />
     <Compile Include="Services\ClarionDeclarationParser.cs" />
-    <Compile Include="Services\RightClickHookService.cs" />
+    <Compile Include="Services\EmbedEditorMonitorService.cs" />
     <Compile Include="Services\ShutdownLog.cs" />
     <Compile Include="Services\ShutdownService.cs" />
     <Compile Include="Services\KnowledgeService.cs" />
@@ -142,7 +142,7 @@
     <Compile Include="ShowModernEmbeditorCommand.cs" />
     <Compile Include="ClarionBindingAssemblyResolver.cs" />
     <Compile Include="LspAutostartCommand.cs" />
-    <Compile Include="RightClickHookAutostartCommand.cs" />
+    <Compile Include="EmbedEditorMonitorAutostartCommand.cs" />
     <Compile Include="ShutdownTerminateCommand.cs" />
     <Compile Include="OpenModernEmbeditorPickerCommand.cs" />
     <Compile Include="OpenSourceFileInCaEditorCommand.cs" />
