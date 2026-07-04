@@ -4,7 +4,8 @@
 param(
     [switch]$SkipBuild,
     [switch]$Sign,
-    [switch]$NoDocGraph
+    [switch]$NoDocGraph,
+    [switch]$AllowStaleBins   # bypass the per-config version freshness gate (escape hatch only)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -76,6 +77,43 @@ if (-not $SkipBuild) {
         if ($LASTEXITCODE -ne 0) { Write-Warning "COMforClarion build failed (non-fatal)" }
         else { Write-Host "  OK" -ForegroundColor Green }
     }
+}
+
+# ── Step 1b: Freshness gate — the per-config addin bins (bin\Debug-C10/C11/C12) that the
+# .iss packages are built OUT-OF-BAND by deploy.ps1, NOT by this script's build step. With
+# -SkipBuild it's easy to silently ship a STALE config (e.g. C11 left at 5.1.612 while C12 is
+# 5.2.691 — happened for the 5.2 release). Assert every present config bin matches Version.props
+# FullVersion before we sign or package anything. Override with -AllowStaleBins.
+$versionProps = "$repoRoot\ClarionAssistant\Version.props"
+if (Test-Path $versionProps) {
+    $expected = if ((Get-Content $versionProps -Raw) -match '<FullVersion>\s*(.+?)\s*</FullVersion>') { $Matches[1] } else { $null }
+    if ($expected) {
+        Write-Host "`nChecking per-config addin freshness (expected $expected)..." -ForegroundColor Yellow
+        $stale = @(); $found = 0
+        foreach ($cfg in 'C10','C11','C12') {
+            $dll = "$repoRoot\ClarionAssistant\bin\Debug-$cfg\ClarionAssistant.dll"
+            if (-not (Test-Path $dll)) { Write-Host "  --   ${cfg}: no bin (won't ship this config)" -ForegroundColor DarkGray; continue }
+            $found++
+            # FileVersion is 4-part (5.2.691.0); compare the first three against FullVersion.
+            $fv = (Get-Item $dll).VersionInfo.FileVersion
+            $fv3 = ($fv -split '\.')[0..2] -join '.'
+            if ($fv3 -eq $expected) { Write-Host "  OK   ${cfg}: $fv" -ForegroundColor Green }
+            else { Write-Host "  FAIL ${cfg}: $fv (expected $expected)" -ForegroundColor Red; $stale += "${cfg}=$fv3" }
+        }
+        if ($found -eq 0) {
+            Write-Error "No bin\Debug-C* addin builds found. Run deploy.ps1 (per Clarion version) to populate them before building the installer."
+            exit 1
+        }
+        if ($stale.Count -gt 0 -and -not $AllowStaleBins) {
+            Write-Error ("Stale addin bin(s): {0}. Expected {1}. These are built by deploy.ps1, not this script. Rebuild the affected config(s), e.g.:`n  msbuild ClarionAssistant.csproj /p:Configuration=Debug /p:ClarionVersion=<10|11|12> /p:BuildingInsideVisualStudio=true`nThen re-run. (Use -AllowStaleBins to override.)" -f ($stale -join ', '), $expected)
+            exit 1
+        }
+        if ($stale.Count -gt 0) { Write-Warning "Shipping stale bins ($($stale -join ', ')) because -AllowStaleBins was passed." }
+    } else {
+        Write-Warning "Could not parse <FullVersion> from Version.props — skipping freshness gate."
+    }
+} else {
+    Write-Warning "Version.props not found at $versionProps — skipping freshness gate."
 }
 
 # ── Step 2: Sign DLLs before packaging (if requested) ──
