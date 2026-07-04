@@ -1141,12 +1141,17 @@
     var _lastLspReport = 0;
     function maybeReportLsp(status) {
         if (!status || status === 'ok') return;
+        // #40: "raw=N" is a per-completion count diagnostic. Under the pure member-access-only upstream
+        // server a bare-prefix raw=0 is NORMAL (the C# CodeGraph fallback supplies bare-prefix items), so
+        // it must NOT pop a toast on every keystroke. Suppress raw=* — still surface real down/starting/
+        // timeout/error states below.
+        if (status.indexOf('raw=') === 0) return;
         var now = (window.performance && performance.now) ? performance.now() : 0;
         if (now && _lastLspReport && (now - _lastLspReport) < 6000) return;
         _lastLspReport = now;
         var msg = (status === 'not started' || status === 'starting')
             ? 'Language server is starting — completion/hover will work in a few seconds. Try again.'
-            : 'LSP: ' + status;   // diagnostic (e.g. timeout, server error, raw=0 = wrong/old server)
+            : 'LSP: ' + status;   // diagnostic (e.g. timeout, server error)
         showToast(msg, false);
     }
 

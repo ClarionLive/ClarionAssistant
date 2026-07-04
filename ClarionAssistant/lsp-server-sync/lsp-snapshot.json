@@ -1,13 +1,11 @@
 {
   "$comment": "Anchor manifest for the bundled Clarion LSP server (GitHub #40 — LSP snapshot drift). The bundled server (lsp-server/out/server/...) is a build artifact of msarson/Clarion-Extension with OUR CodeGraph overlay applied on top. This file records what the deployed snapshot is pinned to and the target tag to sync toward, so the pin is a reliable anchor instead of a hand-maintained mystery. Consumed by Sync-LspServer.ps1. See lsp-server-sync/README.md.",
-
   "source": {
     "repo": "https://github.com/msarson/Clarion-Extension.git",
     "serverEntry": "server/src/server.ts",
     "buildOutput": "out/server/src/server.js",
     "compile": "npm ci && npm run compile"
   },
-
   "codeGraphOverlay": {
     "description": "OUR patch on top of upstream. The two overlay .ts files are UNTRACKED in the upstream clone (out/ is gitignored too), so they SURVIVE `git checkout <tag>` and do NOT need re-copying. Only the server.ts wiring (a tracked file with our uncommitted edits) must be re-applied onto the new tag's server.ts.",
     "overlayFiles": [
@@ -28,7 +26,6 @@
       "CodeGraphBridge"
     ]
   },
-
   "currentPin": {
     "note": "STATE AS OBSERVED 2026-07-03 in $CLARIONLSP_ROOT. The deployed snapshot is built from an UNTAGGED dev branch that forked near the 0.8.7 line — it is 318 commits BEHIND the v0.9.6 tag with only 2 experimental commits on top. This is the exact drift #40 tracks: the bundle is ~0.8.7-era code, well behind upstream v0.9.6 and the shared clarion-lsp addin v1.4.0.",
     "branch": "feat/lsp-member-completion",
@@ -37,12 +34,12 @@
     "behindLatestTagBy": 318,
     "aheadOfLatestTagBy": 2
   },
-
   "targetPin": {
     "note": "Recommended anchor to sync toward. As of the 2026-07-03 fetch the available tags are v0.9.6 (2026-04-23), v0.9.7 and v0.9.8 — v0.9.8 is the newest. Sync-LspServer.ps1 reports exact drift against whatever tag is chosen (-Tag), so confirm the cadence with @msarson and pick the newest STABLE tag. Pinning to any of these DROPS the 2 experimental member-completion commits (383ef95, 643b269) that are not on a tag — per issue #51 the equivalent capability ships in the public extension, so this is expected and desirable (it also pulls the bundle forward off the ~0.8.7-era branch). If the member-completion prototype must be retained, ask @msarson to cut a tag at/after 383ef95 and set that tag here instead.",
     "tag": "v0.9.8"
   },
-
-  "resolvedCommit": null,
-  "lastSync": null
+  "pure": true,
+  "resolvedCommit": "a43591f",
+  "resolvedTag": "v0.9.6",
+  "lastSync": "2026-07-03"
 }

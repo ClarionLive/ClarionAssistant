@@ -35,11 +35,15 @@ namespace ClarionAssistant.Services
     /// </summary>
     public static class SharedLspBridge
     {
-        /// <summary>Settings key — when "true", ignore the shared addin and always use the bundled
-        /// LspClient. For debugging / rollback when the shared path misbehaves.</summary>
+        /// <summary>Settings key controlling shared-vs-bundled LSP selection. As of #40 the BUNDLED
+        /// pure-v0.9.6 server is the DEFAULT — the shared-addin preference was dropped once pure upstream
+        /// was proven (member-access + hover work with no solution handshake; CodeGraph nav/completion is
+        /// served C#-side). So an ABSENT setting now means BUNDLED. To opt BACK IN to the shared ClarionLsp
+        /// addin when it's installed, set "Lsp.ForceLocal=false".</summary>
         public const string ForceLocalSettingKey = "Lsp.ForceLocal";
 
-        /// <summary>True when the developer has pinned us to the bundled LSP via settings.</summary>
+        /// <summary>True → use the bundled LSP (the #40 default). Only an explicit "false" opts into the
+        /// shared ClarionLsp addin; absent/anything-else → bundled.</summary>
         public static bool ForceLocal
         {
             get
@@ -47,10 +51,10 @@ namespace ClarionAssistant.Services
                 try
                 {
                     string v = new SettingsService().Get(ForceLocalSettingKey);
-                    return !string.IsNullOrEmpty(v) &&
-                           v.Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
+                    if (string.IsNullOrEmpty(v)) return true;   // #40: bundled pure-v0.9.6 is the default
+                    return !v.Trim().Equals("false", StringComparison.OrdinalIgnoreCase);
                 }
-                catch { return false; }
+                catch { return true; }
             }
         }
 
@@ -1517,8 +1521,11 @@ namespace ClarionAssistant.Services
         private static readonly Regex CgEndLine   = new Regex(@"^\s*END\b", RegexOptions.IgnoreCase);
         private static readonly Regex CgPeriodEnd = new Regex(@"^\s*\.\s*$");
         private static readonly Regex CgPreAttr   = new Regex(@",\s*PRE\(\s*([A-Za-z_][A-Za-z0-9_]*)?\s*\)", RegexOptions.IgnoreCase);
-        // Qualifier immediately before the cursor: <identifier><':' or '.'><partial>.
-        private static readonly Regex CgQualifier = new Regex(@"([A-Za-z_][A-Za-z0-9_]*)([:.])([A-Za-z0-9_]*)$");
+        // Qualifier immediately before the cursor: <identifier><':' or '.'><partial>. The identifier may
+        // contain ':' so a colon-named container (template queues like "Queue:Browse:1") is matched for
+        // dotted access — mirrors CgGroupQueueOpen / CgMemberAccess / CgDataLabelPattern, which all allow ':'.
+        // Greedy backtracking keeps PRE ("Cus:Name"→"Cus") and plain-dotted ("Group."→"Group") intact.
+        private static readonly Regex CgQualifier = new Regex(@"([A-Za-z_][A-Za-z0-9_:]*)([:.])([A-Za-z0-9_]*)$");
 
         private sealed class CgStructField { public string Name; public string Type; }
         private sealed class CgStruct { public string Name; public string Pre; public readonly List<CgStructField> Fields = new List<CgStructField>(); }

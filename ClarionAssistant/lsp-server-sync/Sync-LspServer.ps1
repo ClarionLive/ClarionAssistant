@@ -36,20 +36,37 @@
 .PARAMETER SkipBuild
     Skip `npm ci && npm run compile` after checkout (report + re-pin only).
 
+.PARAMETER Pure
+    #40 disposition (2026-07-03): build STOCK upstream at the tag with NO CodeGraph overlay. The overlay
+    is retired — CodeGraph go-to-def / references / completion are served C#-side (SharedLspBridge +
+    CodeGraphProvider), so the bundled LSP is pure msarson/Clarion-Extension. Produces a clean tag build
+    under $PureRoot (default <repo>\.lsp-build\<Tag>) which deploy.ps1 sources instead of the overlay clone.
+    Independent of -Apply (which is the legacy overlay-keeping path). Idempotent: skips the rebuild if a
+    pure build is already present. VERIFIES the built server.js contains ZERO codegraph refs.
+
+.PARAMETER PureRoot
+    Where the pure build lives / is created. Defaults to <repo>\.lsp-build\<Tag>.
+
 .EXAMPLE
     # Dry run — show how far the bundled server has drifted from v0.9.6
     .\Sync-LspServer.ps1
 
 .EXAMPLE
-    # Re-pin to v0.9.6 and rebuild
+    # Re-pin to v0.9.6 and rebuild WITH the CodeGraph overlay (legacy path)
     .\Sync-LspServer.ps1 -Apply
+
+.EXAMPLE
+    # Build PURE upstream v0.9.6 (no overlay) for the #40 default bundled server
+    .\Sync-LspServer.ps1 -Pure -Tag v0.9.6
 #>
 [CmdletBinding()]
 param(
     [string]$LspRoot,
     [string]$Tag,
     [switch]$Apply,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$Pure,
+    [string]$PureRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -100,6 +117,78 @@ try {
         exit 2
     }
     OK "target tag exists: $Tag ($(git show -s --format='%ci' $Tag 2>$null | Select-Object -First 1))"
+
+    # --- PURE mode (#40) -------------------------------------------------------------
+    # Build STOCK upstream at $Tag with NO CodeGraph overlay, into $PureRoot. The overlay is retired;
+    # CodeGraph is C#-side now. Self-contained: creates/refreshes a clean tag checkout (untracked overlay
+    # .ts files in $LspRoot do NOT propagate into a fresh worktree), builds, verifies purity, records pin.
+    if ($Pure) {
+        if (-not $PureRoot) {
+            $RepoRoot = Split-Path -Parent $ScriptDir      # ...\ClarionAssistant
+            $PureRoot = Join-Path $RepoRoot (".lsp-build\" + $Tag)
+        }
+        $builtServer = Join-Path $PureRoot $manifest.source.buildOutput   # out/server/src/server.js
+        Write-Host ""
+        Info "PURE build target: $PureRoot (tag $Tag, NO overlay)"
+
+        # Ensure a clean tag checkout at $PureRoot
+        if (Test-Path (Join-Path $PureRoot '.git')) {
+            Info "Refreshing existing checkout -> $Tag"
+            git -C $PureRoot fetch --tags --quiet origin 2>$null
+            git -C $PureRoot checkout --quiet --force $Tag
+        } elseif (Test-Path (Join-Path $PureRoot 'package.json')) {
+            Info "Using existing (non-git) pure tree as-is"
+        } else {
+            Info "Creating clean worktree at $PureRoot ..."
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $PureRoot) | Out-Null
+            git worktree add --force $PureRoot $Tag
+        }
+
+        # Assert PURE source: the overlay .ts must NOT be present in this tree.
+        foreach ($f in $manifest.codeGraphOverlay.overlayFiles) {
+            if (Test-Path (Join-Path $PureRoot $f)) {
+                Fail "PURE tree contains overlay file '$f' — not pure. Use a clean checkout."; exit 6
+            }
+        }
+        OK "no CodeGraph overlay in source (pure)"
+
+        # Build (idempotent: skip if a pure build is already present)
+        if ($SkipBuild) {
+            Warn "Skipping build (-SkipBuild)."
+        } elseif ((Test-Path $builtServer) -and ((Get-Content $builtServer -Raw) -notmatch 'codegraph|CodeGraph')) {
+            OK "pure build already present (skipping rebuild; delete out/ to force)"
+        } else {
+            Info "Building (npm ci && npm run compile) — can take a minute..."
+            Push-Location $PureRoot
+            try {
+                npm ci;          if ($LASTEXITCODE) { throw "npm ci failed ($LASTEXITCODE)" }
+                npm run compile; if ($LASTEXITCODE) { throw "npm run compile failed ($LASTEXITCODE)" }
+            } finally { Pop-Location }
+            OK "build complete"
+        }
+
+        # Verify PURE: built server.js must contain ZERO codegraph refs.
+        if (Test-Path $builtServer) {
+            if ((Get-Content $builtServer -Raw) -match 'codegraph|CodeGraph') {
+                Fail "Built server.js STILL contains CodeGraph refs — not pure. Aborting."; exit 6
+            }
+            OK "verified PURE: no CodeGraph refs in built server.js"
+        } elseif (-not $SkipBuild) {
+            Fail "Expected build output not found: $builtServer"; exit 6
+        }
+
+        # Record the pure pin
+        $resolved = (git -C $PureRoot rev-parse --short HEAD 2>$null)
+        $manifest | Add-Member -NotePropertyName 'pure'           -NotePropertyValue $true   -Force
+        $manifest | Add-Member -NotePropertyName 'resolvedCommit' -NotePropertyValue $resolved -Force
+        $manifest | Add-Member -NotePropertyName 'resolvedTag'    -NotePropertyValue $Tag      -Force
+        $manifest | Add-Member -NotePropertyName 'lastSync'       -NotePropertyValue (Get-Date -Format 'yyyy-MM-dd') -Force
+        ($manifest | ConvertTo-Json -Depth 12) | Set-Content -Path $ManifestPath -Encoding UTF8
+        OK "manifest updated: pure=true tag=$Tag resolvedCommit=$resolved"
+        Write-Host ""
+        OK "PURE sync complete. deploy.ps1 sources the pure build from $PureRoot."
+        exit 0
+    }
 
     # 2. Drift report — current HEAD vs target tag
     $head       = (git rev-parse --short HEAD)

@@ -100,13 +100,32 @@ $Items = @(
     "runtimes"
 )
 
-# LSP Server (Clarion Language Server).
-# Source root is the local snapshot of the build output of msarson/Clarion-Extension
-# (server/src/server.ts -> out/server/...) plus our CodeGraph patch + node_modules. The
-# hard-coded local path is gone (GitHub #30): set $env:CLARIONLSP_ROOT to your snapshot
-# dir. Falls back to the legacy H:\DevLaptop\ClarionLSP location for existing dev machines.
-# See CONTRIBUTING.md for where the server source comes from.
-$LspSourceDir = if ($env:CLARIONLSP_ROOT) { $env:CLARIONLSP_ROOT } else { "H:\DevLaptop\ClarionLSP" }
+# LSP Server (Clarion Language Server) — #40: PURE upstream msarson/Clarion-Extension at the pinned tag,
+# with NO CodeGraph overlay. CodeGraph go-to-def / references / completion are served C#-side
+# (SharedLspBridge + CodeGraphProvider), so the bundled server is stock upstream. The pure build is a clean
+# tag checkout produced by lsp-server-sync\Sync-LspServer.ps1 -Pure, cached under .lsp-build\<tag>.
+# $env:CLARIONLSP_ROOT still overrides (dev escape hatch) if you deliberately want a custom server tree.
+function Resolve-LspBuild {
+    if ($env:CLARIONLSP_ROOT) { return $env:CLARIONLSP_ROOT }   # explicit override wins
+    $syncScript = Join-Path $ProjectDir "lsp-server-sync\Sync-LspServer.ps1"
+    $manifest   = Get-Content (Join-Path $ProjectDir "lsp-server-sync\lsp-snapshot.json") -Raw | ConvertFrom-Json
+    $tag        = if ($manifest.resolvedTag) { $manifest.resolvedTag } else { $manifest.targetPin.tag }
+    $pureDir    = Join-Path $ProjectDir (".lsp-build\" + $tag)
+    if (-not (Test-Path (Join-Path $pureDir "out\server\src\server.js"))) {
+        Write-Host "  INFO  pure LSP build for $tag missing — building via Sync-LspServer.ps1 -Pure ..." -ForegroundColor Cyan
+        & $syncScript -Pure -Tag $tag
+        if ($LASTEXITCODE -ne 0) { Write-Host "  WARN  pure LSP build failed (exit $LASTEXITCODE) — LSP copy will be skipped." -ForegroundColor Yellow }
+        # Loud guard: on a from-scratch build the out/ is created mid-run; if it's not visible yet the copy
+        # below would SILENTLY skip and ship an addin with NO server. Fail loudly so the installer never does.
+        elseif (-not (Test-Path (Join-Path $pureDir "out\server\src\server.js"))) {
+            Write-Host "  WARN  pure build reported success but out\server is not visible yet — RE-RUN deploy.ps1 to copy the LSP (first-run timing)." -ForegroundColor Yellow
+        }
+    }
+    return $pureDir
+}
+$LspSourceDir = Resolve-LspBuild
+# Pure v0.9.6 runtime deps only — NO better-sqlite3/bindings/file-uri-to-path (those backed the retired
+# CodeGraph overlay). With better-sqlite3 absent the #42 ABI check below self-skips ("module not deployed").
 $LspNodeModules = @(
     "vscode-jsonrpc"
     "vscode-languageserver"
@@ -116,9 +135,6 @@ $LspNodeModules = @(
     "xml2js"
     "sax"
     "xmlbuilder"
-    "better-sqlite3"
-    "bindings"
-    "file-uri-to-path"
 )
 
 # SQLite DLLs with FTS5 support (from lib/sqlite-fts5 in project)
@@ -322,6 +338,17 @@ foreach ($ver in $TargetVersions) {
                     Copy-Item $modSrc $modDst -Recurse -Force
                     Write-Host "  OK    lsp-server\node_modules\$mod" -ForegroundColor Green
                     $copied++
+                }
+            }
+
+            # #40 pure: purge RETIRED CodeGraph-overlay modules that a prior (codegraph) deploy may have
+            # left in the dest — the node_modules dir isn't wiped wholesale, so stale better-sqlite3 etc.
+            # would otherwise linger (bloat + a misleading "codegraph present" signal in the shipped addin).
+            foreach ($stale in @("better-sqlite3", "bindings", "file-uri-to-path")) {
+                $staleDst = Join-Path $LspDestDir "node_modules\$stale"
+                if (Test-Path $staleDst) {
+                    Remove-Item $staleDst -Recurse -Force
+                    Write-Host "  OK    lsp-server purge stale $stale (retired codegraph dep)" -ForegroundColor DarkYellow
                 }
             }
 
