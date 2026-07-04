@@ -1672,8 +1672,16 @@ namespace ClarionAssistant.Terminal
 
         /// <summary>Synchronously release whatever tab currently holds the live embed (if any). Called from the
         /// live-OPEN path, which runs on the launch delegate (off any event stack), so pumping DoEvents here is
-        /// safe — it guarantees no stale embed is held before we open the next procedure's embed.</summary>
-        internal static void ReleaseLiveInstanceSync()
+        /// safe — it guarantees no stale embed is held before we open the next procedure's embed.
+        ///
+        /// <paramref name="cancelOpenEmbed"/> (default true, for the live-OPEN callers that are ABOUT to open a
+        /// NEW embed): also CancelEmbeditor the currently-open native embed. The poll-detect ATTACH path
+        /// (ticket 4d16b53a, AttachOverlayToOpenEmbed) passes FALSE — the currently-open embed is the one the
+        /// developer just opened via Clarion's own menu and is our DOCK TARGET, so cancelling it would close the
+        /// very embed we're attaching to (symptom: native embed flashes open for ~1s then exits). In the
+        /// single-embeditor model any prior live overlay's embed has already been replaced by this one, so
+        /// detaching the stale overlay (below) without a cancel leaks nothing.</summary>
+        internal static void ReleaseLiveInstanceSync(bool cancelOpenEmbed = true)
         {
             // Bump the acquisition generation FIRST (before the new embed opens): any switch-away release still
             // queued for a previous live tab captured the old gen and will now no-op instead of cancelling the
@@ -1691,6 +1699,8 @@ namespace ClarionAssistant.Terminal
                 // idempotent + a no-op for the tab-mode (non-overlay) live path.
                 if (live._embedOverlay) { try { live.DetachOverlay(); } catch { } }
             }
+            // ATTACH path (4d16b53a): leave the currently-open native embed OPEN — it is our dock target.
+            if (!cancelOpenEmbed) return;
             try
             {
                 var appTree = new AppTreeService();
@@ -1779,7 +1789,19 @@ namespace ClarionAssistant.Terminal
         /// target; <paramref name="genEditor"/> is the ClaGenEditor view content whose Disposed we hook so an
         /// uncontrolled embed close (native cancel / Source-tab close / regen) tears the overlay down before WinForms
         /// cascades disposal into our WebView2.</summary>
-        internal void ShowAsEmbedOverlay(Control host, object genEditor)
+        /// <summary>Ticket 4d16b53a flicker: synchronously drop an opaque cover panel over the embed host BEFORE the
+        /// mirror/WebView2 work, so the native text area is hidden before it paints. The returned panel is later
+        /// ADOPTED by <see cref="ShowAsEmbedOverlay"/> as its cover (kept on top until Monaco's first paint). Cheap
+        /// WinForms only — no WebView2 — so it's safe on any settled turn. Caller removes it if the attach aborts.</summary>
+        internal static Panel AddInstantCover(Control host, bool isDark)
+        {
+            var cover = new Panel { Dock = DockStyle.Fill, BackColor = isDark ? Color.FromArgb(0x1E, 0x1E, 0x1E) : Color.White };
+            host.Controls.Add(cover);
+            cover.BringToFront();
+            return cover;
+        }
+
+        internal void ShowAsEmbedOverlay(Control host, object genEditor, Panel preCover = null)
         {
             if (host == null) throw new ArgumentNullException(nameof(host));
             _embedOverlay = true;
@@ -1794,8 +1816,17 @@ namespace ClarionAssistant.Terminal
 
             // Opaque cover first (hide the native text area before Monaco paints — no flash), then the WebView2 on
             // top, then the cover above it until the page signals its first paint. Mirrors MonacoClarionSourceEditor.
-            _overlayCover = new Panel { Dock = DockStyle.Fill, BackColor = _isDark ? Color.FromArgb(0x1E, 0x1E, 0x1E) : Color.FromArgb(0xEF, 0xF1, 0xF5) };
-            host.Controls.Add(_overlayCover);
+            // ADOPT the instant pre-cover if the caller already docked one (4d16b53a flicker — it went up before the
+            // native paint); otherwise create it now.
+            if (preCover != null)
+            {
+                _overlayCover = preCover;   // already added to host + themed by AddInstantCover
+            }
+            else
+            {
+                _overlayCover = new Panel { Dock = DockStyle.Fill, BackColor = _isDark ? Color.FromArgb(0x1E, 0x1E, 0x1E) : Color.White };
+                host.Controls.Add(_overlayCover);
+            }
             _overlayCover.BringToFront();
 
             _panel.Dock = DockStyle.Fill;

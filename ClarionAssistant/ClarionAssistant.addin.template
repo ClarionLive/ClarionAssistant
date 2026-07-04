@@ -21,8 +21,10 @@
          ("Cannot create object: MonacoClarionEditorDisplayBinding", ticket 0abd79df). -->
     <Class id="ClarionAssistantBindingResolver" class="ClarionAssistant.ClarionBindingAssemblyResolverCommand"/>
     <Class id="ClarionAssistantStartLsp" class="ClarionAssistant.LspAutostartCommand"/>
-    <!-- Right-click proc -> "Open in Modern Embeditor" native hook (ticket 4b82f1de, see RightClickHookService). -->
-    <Class id="ClarionAssistantStartRightClickHook" class="ClarionAssistant.RightClickHookAutostartCommand"/>
+    <!-- Poll-detect: auto-attach the live CA Embeditor overlay when a native PWEE embed opens, incl. via
+         Clarion's own "Embeditor Source" menu (ticket 4d16b53a, see EmbedEditorMonitorService). Replaced the
+         old right-click "Open in CA Embeditor" native-menu-injection hook (ticket 4b82f1de, retired 4d16b53a). -->
+    <Class id="ClarionAssistantStartEmbedMonitor" class="ClarionAssistant.EmbedEditorMonitorAutostartCommand"/>
     <!-- Arm the ApplicationExit shutdown backstop unconditionally (not gated on the chat MCP server). -->
     <Class id="ClarionAssistantArmShutdown" class="ClarionAssistant.ShutdownAutostartCommand"/>
   </Path>
@@ -31,7 +33,7 @@
        WebView2 on the UI thread) runs FIRST so Clarion can close cleanly; then the right-click hook unhooks. -->
   <Path name="/Workspace/Terminate">
     <Class id="ClarionAssistantTerminateShutdown" class="ClarionAssistant.ShutdownTerminateCommand"/>
-    <Class id="ClarionAssistantTerminateRightClickHook" class="ClarionAssistant.RightClickHookTerminateCommand"/>
+    <Class id="ClarionAssistantTerminateEmbedMonitor" class="ClarionAssistant.EmbedEditorMonitorTerminateCommand"/>
   </Path>
 
   <Path name="/SharpDevelop/Workbench/Pads">
