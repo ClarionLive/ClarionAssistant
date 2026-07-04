@@ -59,8 +59,8 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) { Write-Error "ClarionAssistant build failed"; exit 1 }
     Write-Host "  OK" -ForegroundColor Green
 
-    # Build ClarionIndexer
-    $indexerCsproj = 'H:\DevLaptop\ClarionLSP\indexer\ClarionIndexer.csproj'
+    # Build ClarionIndexer (VENDORED into the repo — GitHub #30 — not the old external H:\DevLaptop\ClarionLSP tree)
+    $indexerCsproj = "$repoRoot\ClarionAssistant\indexer\ClarionIndexer.csproj"
     if (Test-Path $indexerCsproj) {
         Write-Host "Building ClarionIndexer..." -ForegroundColor Yellow
         & $msbuild $indexerCsproj /p:Configuration=Debug /p:Platform=AnyCPU /t:Build /v:minimal /nologo /restore
@@ -83,7 +83,7 @@ if ($Sign -and $signtool) {
     Write-Host "`nSigning binaries..." -ForegroundColor Yellow
     $filesToSign = @(
         "$repoRoot\ClarionAssistant\bin\Debug\ClarionAssistant.dll",
-        'H:\DevLaptop\ClarionLSP\indexer\bin\Debug\clarion-indexer.exe',
+        "$repoRoot\ClarionAssistant\indexer\bin\Debug\clarion-indexer.exe",
         'H:\DevLaptop\ClarionIdeCOMPane\ClarionCOMBrowser\bin\Debug\ClarionCOMBrowser.dll'
     )
     foreach ($f in $filesToSign) {

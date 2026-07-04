@@ -1,9 +1,9 @@
-; Clarion Assistant v5.1 Installer
+; Clarion Assistant v5.2 Installer
 ; Inno Setup 6 Script
 ; Supports Clarion 10, 11, 12 — user picks which version(s) to install
 
 #define MyAppName "Clarion Assistant"
-#define MyAppVersion "5.1"
+#define MyAppVersion "5.2"
 #define MyAppPublisher "ClarionLive"
 #define MyAppURL "https://clarionlive.com"
 
@@ -12,7 +12,8 @@
 #define SrcC10 SrcBase + "\bin\Debug-C10"
 #define SrcC11 SrcBase + "\bin\Debug-C11"
 #define SrcC12 SrcBase + "\bin\Debug-C12"
-#define SrcClarionIndexer "H:\DevLaptop\ClarionLSP\indexer\bin\Debug"
+; Indexer is VENDORED into the repo (GitHub #30) — source from ClarionAssistant\indexer, not the old external H:\DevLaptop\ClarionLSP tree.
+#define SrcClarionIndexer SrcBase + "\indexer\bin\Debug"
 #define SrcComForClarion "H:\DevLaptop\ClarionIdeCOMPane\ClarionCOMBrowser\bin\Debug"
 ; Plugin marketplace is no longer bundled by the installer — configure.ps1
 ; installs it from the GitHub repo ClarionLive/clarionassistant-marketplace.
@@ -28,7 +29,10 @@
 #define SrcComDocs "C:\Clarion12\accessory\resources\ComForClarionDocumentation"
 #define SrcClarionCOM "H:\DevLaptop\ClarionCOM\COMTemplate"
 #define SrcFts5 SrcBase + "\lib\sqlite-fts5"
-#define SrcLsp "H:\DevLaptop\ClarionLSP"
+; Bundled LSP is now PURE/stock upstream (GitHub #40) — source from the pinned pure build under
+; .lsp-build\<tag>, NOT the old codegraph-overlay clone. Tag tracks lsp-server-sync\lsp-snapshot.json
+; "resolvedTag"; bump this path when the pin bumps (Sync-LspServer.ps1 -Pure -Tag <tag>).
+#define SrcLsp SrcBase + "\.lsp-build\v0.9.8"
 #define SrcNodeExe "C:\Program Files\nodejs\node.exe"
 #define SrcInstaller "H:\DevLaptop\ClarionAssistant\installer"
 
@@ -134,9 +138,6 @@ Source: "{#SrcLsp}\node_modules\vscode-languageserver-types\*"; DestDir: "{code:
 Source: "{#SrcLsp}\node_modules\xml2js\*"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\xml2js"; Components: clarion10 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\sax\*"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\sax"; Components: clarion10 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\xmlbuilder\*"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\xmlbuilder"; Components: clarion10 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcLsp}\node_modules\better-sqlite3\*"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\better-sqlite3"; Components: clarion10 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcLsp}\node_modules\bindings\*"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\bindings"; Components: clarion10 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcLsp}\node_modules\file-uri-to-path\*"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\file-uri-to-path"; Components: clarion10 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 
 ; --- Clarion 11 Addin ---
 Source: "{#SrcC11}\ClarionAssistant.dll"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
@@ -171,9 +172,6 @@ Source: "{#SrcLsp}\node_modules\vscode-languageserver-types\*"; DestDir: "{code:
 Source: "{#SrcLsp}\node_modules\xml2js\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\xml2js"; Components: clarion11 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\sax\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\sax"; Components: clarion11 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\xmlbuilder\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\xmlbuilder"; Components: clarion11 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcLsp}\node_modules\better-sqlite3\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\better-sqlite3"; Components: clarion11 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcLsp}\node_modules\bindings\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\bindings"; Components: clarion11 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcLsp}\node_modules\file-uri-to-path\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\file-uri-to-path"; Components: clarion11 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 
 ; --- Clarion 12 Addin ---
 Source: "{#SrcC12}\ClarionAssistant.dll"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
@@ -208,9 +206,6 @@ Source: "{#SrcLsp}\node_modules\vscode-languageserver-types\*"; DestDir: "{code:
 Source: "{#SrcLsp}\node_modules\xml2js\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\xml2js"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\sax\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\sax"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\xmlbuilder\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\xmlbuilder"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcLsp}\node_modules\better-sqlite3\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\better-sqlite3"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcLsp}\node_modules\bindings\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\bindings"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SrcLsp}\node_modules\file-uri-to-path\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\file-uri-to-path"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 
 ; --- COM for Clarion: IDE Addin (installs to whichever Clarion version is selected — uses C12 path) ---
 Source: "{#SrcComForClarion}\ClarionCOMBrowser.dll"; DestDir: "{code:GetPrimaryClarionPath}\accessory\addins\ComForClarion"; Components: comforclarion\addin; Flags: ignoreversion
