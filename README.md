@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ClarionLive/ClarionAssistant/releases/tag/v5.1.0"><img src="https://img.shields.io/github/v/release/ClarionLive/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
+  <a href="https://github.com/ClarionLive/ClarionAssistant/releases/tag/v5.2.0"><img src="https://img.shields.io/github/v/release/ClarionLive/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
   <img src="https://img.shields.io/badge/Clarion-10%20%7C%2011%20%7C%2012-blue?style=for-the-badge" alt="Clarion 10 | 11 | 12">
-  <img src="https://img.shields.io/badge/version-5.1-blue?style=for-the-badge" alt="v5.1">
+  <img src="https://img.shields.io/badge/version-5.2-blue?style=for-the-badge" alt="v5.2">
 </p>
 
 ---
@@ -60,6 +60,18 @@ There is no longer a separate **Open in CA Embeditor** popup item. Just open an 
 - **Flicker-free** &mdash; the overlay is placed the instant the embed view opens, before the native editor paints, so you don't see the native embeditor flash first.
 
 *(Thanks to Mark Sarson &mdash; this adopts the auto-detect approach from his [ClarionMonacoEditor](https://github.com/msarson/ClarionMonacoEditor).)*
+
+### Code Snippets in the editor
+
+A full snippet workflow lands in the Monaco source editor and CA Embeditor:
+
+- **Ctrl+J picker** &mdash; theme-aware, with a **live expansion preview** so you see the resulting code (tab-stops visible) before inserting.
+- **Snippets in completion** &mdash; type a trigger and press **Enter** to expand (Clarion Ctrl+J parity), or use **trigger + space** for Clarion-style expansion.
+- **Manage them in the gear panel** &mdash; edit snippets with examples/help, tab-stop mirroring, and case-insensitive extension scoping.
+
+### Pure upstream language server (v0.9.8)
+
+The bundled LSP is now **stock upstream** [msarson/Clarion-Extension](https://github.com/msarson/Clarion-Extension) **v0.9.8** &mdash; CodeGraph intelligence runs entirely on the CA (C#) side, so there is no patched server to drift out of date, and future upstream releases are a clean one-step re-pin.
 
 ### Removed
 
@@ -390,7 +402,7 @@ The installer bundles **COM for Clarion**, a complete toolkit for creating .NET 
 
 ### Install
 
-1. **[Download the latest installer](https://github.com/ClarionLive/ClarionAssistant/releases/tag/v5.1.0)** (code-signed)
+1. **[Download the latest installer](https://github.com/ClarionLive/ClarionAssistant/releases/tag/v5.2.0)** (code-signed)
 2. Close the Clarion IDE
 3. Run the installer &mdash; select which Clarion versions to install for
 4. Restart the Clarion IDE
