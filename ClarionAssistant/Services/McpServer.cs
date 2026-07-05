@@ -25,6 +25,11 @@ namespace ClarionAssistant.Services
         private McpToolRegistry _toolRegistry;
         private int _port;
 
+        // Max time a UI-thread MCP tool may run before the request is abandoned
+        // with a timeout error, so a busy/wedged UI thread can't hold a worker
+        // (and leak the connection as CLOSE_WAIT) indefinitely.
+        private const int UiToolTimeoutSeconds = 30;
+
         // Per-session auth token — regenerated on every Start(). Embedded as
         // `Authorization: Bearer <token>` in the MCP config file so the spawned
         // CLI clients (Claude Code, Copilot CLI) transparently authenticate.
@@ -89,6 +94,17 @@ namespace ClarionAssistant.Services
             if (_running) return true;
             if (_toolRegistry == null)
                 throw new InvalidOperationException("Tool registry must be set before starting");
+
+            // Keep a few worker threads warm so a handful of blocked UI-thread tool
+            // calls can't starve unrelated requests (initialize/health) during the
+            // thread pool's slow ramp-up.
+            try
+            {
+                int workerMin, ioMin;
+                ThreadPool.GetMinThreads(out workerMin, out ioMin);
+                ThreadPool.SetMinThreads(Math.Max(workerMin, 16), ioMin);
+            }
+            catch { }
 
             _sessionToken = GenerateSessionToken();
 
@@ -699,63 +715,68 @@ namespace ClarionAssistant.Services
             var request = context.Request;
             var response = context.Response;
 
-            // Read JSON-RPC request body
-            string body;
-            // JSON-RPC bodies are UTF-8 by spec. HttpListenerRequest.ContentEncoding falls back to
-            // Encoding.Default (system ANSI / Windows-1252) when the request omits a charset, which most
-            // MCP clients do — that decodes UTF-8 bytes as 1252 and mojibakes non-ASCII source (#44:
-            // "på" -> "pÃ¥"). Force UTF-8 to match the response writer.
-            using (var reader = new StreamReader(request.InputStream, new UTF8Encoding(false)))
+            try
             {
-                body = reader.ReadToEnd();
-            }
+                // Read JSON-RPC request body
+                string body;
+                // JSON-RPC bodies are UTF-8 by spec. HttpListenerRequest.ContentEncoding falls back to
+                // Encoding.Default (system ANSI / Windows-1252) when the request omits a charset, which most
+                // MCP clients do — that decodes UTF-8 bytes as 1252 and mojibakes non-ASCII source (#44:
+                // "på" -> "pÃ¥"). Force UTF-8 to match the response writer.
+                using (var reader = new StreamReader(request.InputStream, new UTF8Encoding(false)))
+                {
+                    body = reader.ReadToEnd();
+                }
 
-            // Determine or create session
-            string sessionId = request.Headers["Mcp-Session-Id"];
-            bool isInitialize = body.Contains("\"method\":\"initialize\"");
+                // Determine or create session
+                string sessionId = request.Headers["Mcp-Session-Id"];
+                bool isInitialize = body.Contains("\"method\":\"initialize\"");
 
-            if (isInitialize)
-            {
-                // New session
-                sessionId = Guid.NewGuid().ToString();
+                if (isInitialize)
+                {
+                    // New session
+                    sessionId = Guid.NewGuid().ToString();
+                    _httpSessions[sessionId] = DateTime.UtcNow;
+                }
+                else if (string.IsNullOrEmpty(sessionId) || !_httpSessions.ContainsKey(sessionId))
+                {
+                    // Unknown session — require initialize first
+                    response.StatusCode = 400;
+                    byte[] err = Encoding.UTF8.GetBytes("{\"error\":\"missing or invalid Mcp-Session-Id\"}");
+                    response.ContentType = "application/json";
+                    response.ContentLength64 = err.Length;
+                    response.OutputStream.Write(err, 0, err.Length);
+                    return;
+                }
+
+                // Update last-seen timestamp
                 _httpSessions[sessionId] = DateTime.UtcNow;
-            }
-            else if (string.IsNullOrEmpty(sessionId) || !_httpSessions.ContainsKey(sessionId))
-            {
-                // Unknown session — require initialize first
-                response.StatusCode = 400;
-                byte[] err = Encoding.UTF8.GetBytes("{\"error\":\"missing or invalid Mcp-Session-Id\"}");
+
+                // Process the JSON-RPC request
+                string responseJson = ProcessJsonRpc(body);
+
+                // Check if this is a notification (no id → no response expected)
+                bool isNotification = body.Contains("\"method\":\"notifications/");
+                if (isNotification)
+                {
+                    response.StatusCode = 204;
+                    response.Headers.Add("Mcp-Session-Id", sessionId);
+                    return;
+                }
+
+                // Send JSON-RPC response directly
+                byte[] buffer = Encoding.UTF8.GetBytes(responseJson);
+                response.StatusCode = 200;
                 response.ContentType = "application/json";
-                response.ContentLength64 = err.Length;
-                response.OutputStream.Write(err, 0, err.Length);
-                response.Close();
-                return;
-            }
-
-            // Update last-seen timestamp
-            _httpSessions[sessionId] = DateTime.UtcNow;
-
-            // Process the JSON-RPC request
-            string responseJson = ProcessJsonRpc(body);
-
-            // Check if this is a notification (no id → no response expected)
-            bool isNotification = body.Contains("\"method\":\"notifications/");
-            if (isNotification)
-            {
-                response.StatusCode = 204;
+                response.ContentLength64 = buffer.Length;
                 response.Headers.Add("Mcp-Session-Id", sessionId);
-                response.Close();
-                return;
+                response.OutputStream.Write(buffer, 0, buffer.Length);
             }
-
-            // Send JSON-RPC response directly
-            byte[] buffer = Encoding.UTF8.GetBytes(responseJson);
-            response.StatusCode = 200;
-            response.ContentType = "application/json";
-            response.ContentLength64 = buffer.Length;
-            response.Headers.Add("Mcp-Session-Id", sessionId);
-            response.OutputStream.Write(buffer, 0, buffer.Length);
-            response.Close();
+            finally
+            {
+                // Always release the connection — never leave it half-open (CLOSE_WAIT).
+                try { response.Close(); } catch { }
+            }
         }
 
         private void HandleStreamableHttpDelete(HttpListenerContext context)
@@ -851,11 +872,29 @@ namespace ClarionAssistant.Services
                     object uiResult = null;
                     Exception uiException = null;
 
-                    _uiControl.Invoke((Action)(() =>
+                    // Marshal onto the UI thread WITHOUT blocking the worker forever.
+                    // A synchronous Control.Invoke here deadlocks (and leaks the
+                    // connection as CLOSE_WAIT) whenever the UI thread is busy/wedged.
+                    using (var done = new ManualResetEventSlim(false))
                     {
-                        try { uiResult = _toolRegistry.ExecuteTool(toolName, arguments); }
-                        catch (Exception ex) { uiException = ex; }
-                    }));
+                        _uiControl.BeginInvoke((Action)(() =>
+                        {
+                            try { uiResult = _toolRegistry.ExecuteTool(toolName, arguments); }
+                            catch (Exception ex) { uiException = ex; }
+                            finally { try { done.Set(); } catch { } }
+                        }));
+
+                        // Give the UI thread a bounded window to run the tool. On timeout
+                        // we abandon the delegate (it will complete harmlessly later) and
+                        // return an error instead of holding the worker + connection open.
+                        if (!done.Wait(TimeSpan.FromSeconds(UiToolTimeoutSeconds)))
+                        {
+                            RaiseToolCall(toolName, "TIMEOUT (UI thread busy)");
+                            return McpJsonRpc.SerializeResponse(request.Id, McpJsonRpc.BuildToolResult(
+                                "Error executing tool '" + toolName + "': UI thread did not respond within "
+                                + UiToolTimeoutSeconds + "s (busy or blocked).", true));
+                        }
+                    }
 
                     if (uiException != null) throw uiException;
                     result = uiResult;
