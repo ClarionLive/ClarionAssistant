@@ -44,10 +44,11 @@
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
-  <!-- Resolve the NuGet global-packages folder portably (no per-machine user path). -->
+  <!-- SQLite (FTS5): use the vendored DLLs the main addin ships in ..\lib\sqlite-fts5,
+       instead of the unpublished stub.system.data.sqlite.core.netframework NuGet package
+       (not restorable on a clean checkout). Keeps the indexer self-contained per #30. -->
   <PropertyGroup>
-    <NuGetPackagesRoot Condition=" '$(NuGetPackagesRoot)' == '' ">$(USERPROFILE)\.nuget\packages</NuGetPackagesRoot>
-    <SqliteCorePkg>$(NuGetPackagesRoot)\stub.system.data.sqlite.core.netframework\1.0.118</SqliteCorePkg>
+    <SqliteVendored>$(MSBuildProjectDirectory)\..\lib\sqlite-fts5</SqliteVendored>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System" />
@@ -55,7 +56,7 @@
     <Reference Include="System.Data" />
     <Reference Include="System.Xml" />
     <Reference Include="System.Data.SQLite">
-      <HintPath>$(SqliteCorePkg)\lib\net40\System.Data.SQLite.dll</HintPath>
+      <HintPath>$(SqliteVendored)\System.Data.SQLite.dll</HintPath>
       <Private>True</Private>
     </Reference>
   </ItemGroup>
@@ -82,6 +83,6 @@
   <!-- Copy x86 SQLite.Interop.dll to output directory after build -->
   <Target Name="CopySQLiteInterop" AfterTargets="Build">
     <MakeDir Directories="$(OutputPath)x86" />
-    <Copy SourceFiles="$(SqliteCorePkg)\build\net40\x86\SQLite.Interop.dll" DestinationFolder="$(OutputPath)x86" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(SqliteVendored)\SQLite.Interop.dll" DestinationFolder="$(OutputPath)x86" SkipUnchangedFiles="true" />
   </Target>
 </Project>
