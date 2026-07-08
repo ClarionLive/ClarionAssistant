@@ -1461,12 +1461,22 @@
         }
         return _alwaysKw;
     }
+    // Built-in FUNCTION names (#61): live-cased only at a '(' boundary (i.e. as a call), mirroring
+    // the Ctrl+I formatter's call-position rule.
+    var _builtinFn = null;
+    function builtinFnSet() {
+        if (!_builtinFn) {
+            _builtinFn = Object.create(null);
+            try { (ClarionFormatter.BUILTIN_FUNCTIONS || []).forEach(function (w) { _builtinFn[w] = true; }); } catch (e) { }
+        }
+        return _builtinFn;
+    }
     function installAutoCase(ed) {
         if (!ed || typeof ClarionFormatter === 'undefined' || typeof ed.onDidType !== 'function') return;
         ed.onDidType(function (text) {
             if (text.length !== 1) return;
             if (text === '=') { autoSpaceEquals(ed); return; }              // assignment: normalize to " = "
-            if (' \t(),'.indexOf(text) >= 0) autoCaseWordBefore(ed);        // keyword casing on word boundary
+            if (' \t(),'.indexOf(text) >= 0) autoCaseWordBefore(ed, text);  // keyword casing on word boundary
         });
     }
     // Normalize a just-typed assignment '=' to " = " (2 spaces are applied later by Ctrl+I alignment).
@@ -1591,7 +1601,7 @@
             if (savedPos) ed.setPosition(savedPos);                // keep the cursor on the new line
         } catch (e) { _fmtLineGuard = false; }
     }
-    function autoCaseWordBefore(ed) {
+    function autoCaseWordBefore(ed, boundaryCh) {
         try {
             if (keywordCaseMode === 'asis') return;
             var model = ed.getModel(); if (!model) return;
@@ -1601,7 +1611,14 @@
             var m = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(before);
             if (!m) return;
             var word = m[1];
-            if (!alwaysKwSet()[word.toUpperCase()]) return;                 // only always-safe keywords live
+            // Always-safe keywords case at any boundary; built-in FUNCTIONS only when the boundary
+            // just typed is '(' (a call) and the word isn't a method/prefixed field (.Open / Cus:Name) — #61.
+            var wu = word.toUpperCase();
+            if (!alwaysKwSet()[wu]) {
+                if (boundaryCh !== '(' || !builtinFnSet()[wu]) return;
+                var chBefore = before.charAt(before.length - word.length - 1);
+                if (chBefore === '.' || chBefore === ':') return;
+            }
             var canonical = keywordCaseMode === 'lower' ? word.toLowerCase() : word.toUpperCase();
             if (word === canonical) return;
             var pre = before.substring(0, before.length - word.length);     // line before the word

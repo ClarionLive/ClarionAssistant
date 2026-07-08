@@ -177,6 +177,46 @@
         'REQ', 'IMM', 'RESIZE', 'CENTER', 'MAX', 'MDI', 'SYSTEM', 'STATUS', 'MODAL', 'SEPARATOR', 'EQUATE'
     ]);
 
+    // Built-in FUNCTIONS (GitHub #61): cased only when used as a CALL — the next non-space char is
+    // '(' and the word is not preceded by '.' or ':' (method calls like SELF.Open() and prefixed
+    // fields stay as-written). Clarion is case-insensitive, so a user procedure shadowing a builtin
+    // name gets cased too — same as the native Complete feature. Follows keywordCase (upper/lower/asis).
+    var BUILTIN_FUNC_WORDS = [
+        // math
+        'ABS', 'INT', 'ROUND', 'RANDOM', 'SQRT', 'LOGE', 'LOG10', 'SIN', 'COS', 'TAN', 'ASIN', 'ACOS',
+        'ATAN', 'MODULUS', 'INRANGE', 'MAXIMUM', 'MINIMUM',
+        // bit
+        'BAND', 'BOR', 'BXOR', 'BSHIFT',
+        // string
+        'ALL', 'CENTER', 'CHR', 'CLIP', 'DEFORMAT', 'FORMAT', 'INLIST', 'INSTRING', 'LEFT', 'LEN',
+        'LOWER', 'MATCH', 'NUMERIC', 'QUOTE', 'RIGHT', 'SUB', 'UPPER', 'VAL', 'ISALPHA', 'ISLOWER', 'ISUPPER',
+        // date / time
+        'DATE', 'DAY', 'MONTH', 'YEAR', 'AGE', 'TODAY', 'CLOCK',
+        // window / control / drawing
+        'ACCEPTED', 'ALERT', 'BEEP', 'BLANK', 'BOX', 'CHANGE', 'CHOICE', 'CONTENTS', 'CREATE', 'DESTROY',
+        'DISABLE', 'DISPLAY', 'ELLIPSE', 'ENABLE', 'ERASE', 'EVENT', 'FIELD', 'FIRSTFIELD', 'FOCUS',
+        'GETFONT', 'GETPOSITION', 'HELP', 'HIDE', 'IMAGE', 'INCOMPLETE', 'LASTFIELD', 'LINE', 'MESSAGE',
+        'MOUSEX', 'MOUSEY', 'PENCOLOR', 'PENSTYLE', 'PENWIDTH', 'POPUP', 'POST', 'PRESS', 'PRESSKEY',
+        'SELECT', 'SELECTED', 'SETCURSOR', 'SETFONT', 'SETPOSITION', 'SETTARGET', 'SHOW', 'UNHIDE',
+        'YIELD', 'COLORDIALOG', 'FILEDIALOG', 'FONTDIALOG', 'PRINTERDIALOG', 'NOTIFICATION',
+        'CLIPBOARD', 'SETCLIPBOARD',
+        // keyboard
+        'ALIAS', 'FORWARDKEY', 'KEYBOARD', 'KEYCHAR', 'KEYCODE', 'KEYSTATE', 'SETKEYCODE',
+        // file / view / queue
+        'ADD', 'APPEND', 'BOF', 'BUFFER', 'BUILD', 'BYTES', 'CLOSE', 'COMMIT', 'COPY', 'DELETE',
+        'DUPLICATE', 'EMPTY', 'EOF', 'EXISTS', 'FLUSH', 'FREE', 'GET', 'GETNULLS', 'HOLD', 'LOCK',
+        'LOGOUT', 'NAME', 'NEXT', 'NOMEMO', 'OPEN', 'PACK', 'POINTER', 'POSITION', 'PREVIOUS', 'PUT',
+        'RECORDS', 'REGET', 'RELEASE', 'REMOVE', 'RENAME', 'RESET', 'ROLLBACK', 'SEND', 'SET',
+        'SETNONULL', 'SETNULL', 'SKIP', 'SORT', 'STATUS', 'STREAM', 'TIE', 'UNLOCK', 'UNTIE', 'WATCH',
+        // error
+        'ERROR', 'ERRORCODE', 'ERRORFILE', 'FILEERROR', 'FILEERRORCODE', 'REJECTCODE',
+        // program / environment
+        'ADDRESS', 'BIND', 'CALL', 'CHAIN', 'COMMAND', 'DIRECTORY', 'EVALUATE', 'GETINI', 'GETREG',
+        'HALT', 'IDLE', 'INSTANCE', 'LONGPATH', 'OMITTED', 'PATH', 'PEEK', 'POKE', 'PUTINI', 'PUTREG',
+        'RUN', 'RUNCODE', 'SETPATH', 'SHORTPATH', 'START', 'STOP', 'THREAD', 'UNBIND', 'WHAT', 'WHO'
+    ];
+    var BUILTIN_FUNC_SET = toSet(BUILTIN_FUNC_WORDS);
+
     function applyCase(word, mode) { return mode === 'lower' ? word.toLowerCase() : word.toUpperCase(); }
 
     // Case-normalize a code string (no leading indent assumptions). Walks identifier tokens outside
@@ -194,6 +234,13 @@
                 var upper = word.toUpperCase();
                 var eligiblePos = (tokenIdx === 0 && kwPos) || (prevNonSpace === ',' && depth === 0);
                 var isKeyword = ALWAYS_CASE[upper] || (POSITIONAL_CASE[upper] && eligiblePos);
+                // Built-in function CALL (#61): word( anywhere, unless it's a method (.Open) or a
+                // prefixed field (Cus:Name) — those keep the user's casing.
+                if (!isKeyword && BUILTIN_FUNC_SET[upper] && prevNonSpace !== '.' && prevNonSpace !== ':') {
+                    var k = i + word.length;
+                    while (k < code.length && (code.charAt(k) === ' ' || code.charAt(k) === '\t')) k++;
+                    if (code.charAt(k) === '(') isKeyword = true;
+                }
                 var newWord = word;
                 if (isKeyword) { if (opts.keywordCase !== 'asis') newWord = applyCase(word, opts.keywordCase); }
                 else { if (opts.otherNameCase !== 'asis') newWord = applyCase(word, opts.otherNameCase); }
@@ -573,6 +620,7 @@
         CONTROL_OPENERS: CONTROL_OPENERS, DATA_STRUCT_OPENERS: DATA_STRUCT_OPENERS,
         MID: MID, PREFERRED_KEYWORDS: PREFERRED_KEYWORDS, DEFAULTS: DEFAULTS,
         ALWAYS_KEYWORDS: ALWAYS_CASE_WORDS,   // safe-to-case-anywhere set, for live as-you-type
+        BUILTIN_FUNCTIONS: BUILTIN_FUNC_WORDS,   // cased only as calls (word + '('), for live as-you-type (#61)
         applyCase: function (word, mode) { return applyCase(word, mode); },
         _internal: { stripComment: stripComment, isDataDecl: isDataDecl, splitLabel: splitLabel, classify: classify }
     };

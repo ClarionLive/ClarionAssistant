@@ -77,6 +77,38 @@ console.log('\nKeyword case:');
     ok("keywordCase asis leaves 'of'", F.formatClarion("  of x", { keywordCase: 'asis', alignAssignments: false }).text.indexOf('of') >= 0);
 })();
 
+// ---- Built-in FUNCTION casing (GitHub #61: upper/clip/getini were not cased by Ctrl+I) ----
+console.log('\nBuilt-in function case:');
+(function () {
+    function f(src, o) {
+        var opts = { alignAssignments: false };
+        if (o) for (var k in o) opts[k] = o[k];
+        return F.formatClarion(src, opts).text.replace(/\r\n/g, '\n');
+    }
+    // BoxSoft's exact line from the issue
+    var box = f("    IF upper(clip(GetIni('startup','debug','',clip(GLS:INIFileName)))) = 'ON'");
+    ok('upper( -> UPPER(', box.indexOf('UPPER(') >= 0, box);
+    ok('clip( -> CLIP( (both)', (box.match(/CLIP\(/g) || []).length === 2, box);
+    ok('GetIni( -> GETINI(', box.indexOf('GETINI(') >= 0, box);
+    ok('GLS:INIFileName untouched', box.indexOf('GLS:INIFileName') >= 0, box);
+    ok("string 'ON' untouched", box.indexOf("'ON'") >= 0, box);
+    // call-position gate: same names NOT followed by '(' are variables -> as declared
+    ok("variable 'Len' left as-declared", /=\s+Len\b/.test(f('  x = Len')) && !/=\s+LEN\b/.test(f('  x = Len')));
+    ok("variable 'Date' left as-declared", /=\s+Date\s*\+/.test(f('  x = Date + 1')), f('  x = Date + 1'));
+    // method calls / prefixed fields keep the user's casing
+    ok('SELF.Open( untouched', f('  SELF.Open(win)').indexOf('SELF.Open(') >= 0, f('  SELF.Open(win)'));
+    ok('ThisWindow.Update( untouched', f('  ThisWindow.Update()').indexOf('.Update(') >= 0);
+    ok('Cus:Name( untouched', f('  x = Cus:Name(1)').indexOf('Cus:Name(') >= 0);
+    // space between name and paren still counts as a call
+    ok('upper (x) with space -> UPPER (x)', f('  y = upper (x)').indexOf('UPPER (x)') >= 0, f('  y = upper (x)'));
+    // keywordCase 'lower' flows through to functions
+    var lo = f("    IF UPPER(CLIP(x)) = 'ON'", { keywordCase: 'lower' });
+    ok("lower mode: UPPER( -> upper(", lo.indexOf('upper(') >= 0 && lo.indexOf('clip(') >= 0, lo);
+    // 'asis' leaves function names alone
+    var asis = f('  y = upper(x)', { keywordCase: 'asis' });
+    ok("asis mode leaves 'upper('", asis.indexOf('upper(') >= 0, asis);
+})();
+
 // ---- Single-line range format must look UP to the enclosing structure ----
 // formatClarionRange(text, L, L) must produce, for line L, exactly what a full-buffer format produces
 // for line L — so a lone OF aligns to its CASE, an END to its opener, a body to its depth.
