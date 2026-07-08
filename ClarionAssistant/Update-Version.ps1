@@ -1,4 +1,4 @@
-# Update-Version.ps1
+﻿# Update-Version.ps1
 # Pre-build hook called by ClarionAssistant.csproj.
 # 1. Reads Version.props
 # 2. Increments VersionBuild by 1 (unless -NoIncrement is passed)

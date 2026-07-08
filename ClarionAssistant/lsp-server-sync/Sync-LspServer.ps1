@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Re-pin the bundled Clarion LSP server to a tagged release of msarson/Clarion-Extension
     and rebuild it with our CodeGraph overlay, instead of hand-maintaining a drifting snapshot.
