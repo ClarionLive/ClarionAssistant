@@ -1688,7 +1688,18 @@
     function transformSelection(fn) {
         var ed = activeEd();
         var sel = ed.getSelection();
-        if (!sel || sel.isEmpty()) { showToast('Select text first', false); return; }
+        if (!sel || sel.isEmpty()) {
+            // No selection (#63): transform the character AT the cursor and step forward one column,
+            // so repeated presses walk along the word (classic editor behavior). No-op at end of line.
+            var pos = ed.getPosition(); if (!pos) return;
+            var model = ed.getModel(); if (!model) return;
+            if (pos.column > model.getLineLength(pos.lineNumber)) return;   // at/past EOL — nothing to transform
+            var chRange = new monaco.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column + 1);
+            if (!isEditableRange(chRange)) { editGuardToast(); return; }
+            ed.executeEdits('clarion-case', [{ range: chRange, text: fn(model.getValueInRange(chRange)) }]);
+            ed.setPosition({ lineNumber: pos.lineNumber, column: pos.column + 1 });
+            return;
+        }
         if (!isEditableRange(sel)) { editGuardToast(); return; }
         ed.executeEdits('clarion-case', [{ range: sel, text: fn(ed.getModel().getValueInRange(sel)) }]);
     }
