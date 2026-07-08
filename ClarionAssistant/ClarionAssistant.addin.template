@@ -69,6 +69,25 @@
                  class="ClarionAssistant.ShowModernEmbeditorCommand"/>
   </Path>
 
+  <!-- GitHub #58 (ticket 89a04048): quick-access CA editor-surface toggles on the MAIN IDE toolbar.
+       type="CheckBox" builds an ICSharpCode.Core ToolBarCheckBox whose class MUST implement
+       ICheckableMenuCommand (ours derive from AbstractCheckableMenuCommand). The Compare/Exclude
+       condition gates visibility off a PropertyService key (same trick as ClarionEdge's
+       ShowOpenAppGenSourceItem); the workbench's 500ms toolbar timer re-evaluates it live, so the
+       Editor Surfaces options pane can show/hide the pair without a restart. Default visible. -->
+  <Path name="/SharpDevelop/Workbench/ToolBar/Standard">
+    <Condition name="Compare" string="${property:ClarionAssistant.ShowEditorSurfaceToggles??True}"
+               equals="True" action="Exclude">
+      <ToolbarItem id="CaTogglesSeparator" type="Separator"/>
+      <ToolbarItem id="CaMonacoSourceToggle" type="CheckBox" label="CA Editor"
+                   tooltip="Use the CA source editor for Clarion source files (takes effect on the next file you open)"
+                   class="ClarionAssistant.ToggleMonacoSourceCommand"/>
+      <ToolbarItem id="CaMonacoEmbeditorToggle" type="CheckBox" label="CA Embeditor"
+                   tooltip="Auto-overlay the CA Embeditor when opening an embed (takes effect on the next embed you open)"
+                   class="ClarionAssistant.ToggleMonacoEmbeditorCommand"/>
+    </Condition>
+  </Path>
+
   <!-- SPIKE (task cc8b092f): make our ClarionEditor subclass the DEFAULT editor for Clarion
        source files, winning the binding race ahead of the stock ClarionWinEditor via insertbefore.
        Mirrors the stock primary binding exactly (same supportedformats, no fileNamePattern); the

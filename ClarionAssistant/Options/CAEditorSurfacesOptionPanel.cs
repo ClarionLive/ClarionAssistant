@@ -24,6 +24,7 @@ namespace ClarionAssistant.Options
     {
         private CheckBox _chkSource;
         private CheckBox _chkEmbeditor;
+        private CheckBox _chkShowToolbarToggles;
         private TextBox _txtFileTypes;
         private bool _built;
 
@@ -39,6 +40,7 @@ namespace ClarionAssistant.Options
             // Populate from current settings each time the pane is shown.
             _chkSource.Checked = CaEditorSettings.MonacoSourceEnabled;
             _chkEmbeditor.Checked = CaEditorSettings.MonacoEmbeditorEnabled;
+            _chkShowToolbarToggles.Checked = EditorSurfaceToolbarToggles.ShowOnToolbar;
             _txtFileTypes.Text = CaEditorSettings.MonacoSourceFileTypes;
             UpdateFileTypesEnabled();
         }
@@ -48,6 +50,11 @@ namespace ClarionAssistant.Options
             // Only called on OK. Persist the source + embeditor toggles.
             CaEditorSettings.MonacoSourceEnabled = _chkSource.Checked;
             CaEditorSettings.MonacoEmbeditorEnabled = _chkEmbeditor.Checked;
+
+            // Show/hide of the main-toolbar quick toggles (GitHub #58). PropertyService-backed —
+            // the .addin Compare/Exclude gate reads ${property:...}; the workbench toolbar timer
+            // applies the change within ~500ms, no restart needed.
+            EditorSurfaceToolbarToggles.ShowOnToolbar = _chkShowToolbarToggles.Checked;
 
             // Blank file-types box => "all files"; otherwise keep the user's list verbatim
             // (CaEditorSettings normalizes when filtering).
@@ -71,31 +78,32 @@ namespace ClarionAssistant.Options
                 Padding = new Padding(12),
             };
 
-            var lblHeader = new Label
-            {
-                Text = "Monaco editor surfaces",
-                Font = new Font(Control.DefaultFont, FontStyle.Bold),
-                AutoSize = true,
-                Margin = new Padding(0, 0, 0, 8),
-            };
-
+            // No in-pane header: the Options dialog already titles this pane "Editor Surfaces",
+            // and vertical space is tight — a 4th row clipped the bottom note (GitHub #58 review).
             _chkSource = new CheckBox
             {
-                Text = "Use the Monaco source editor (replaces the native Clarion text editor)",
+                Text = "Use the CA source editor (replaces the native Clarion text editor)",
                 AutoSize = true,
                 Margin = new Padding(0, 2, 0, 2),
             };
 
             _chkEmbeditor = new CheckBox
             {
-                Text = "Use the Monaco embeditor (auto-overlays the CA Embeditor when you open an embed)",
+                Text = "Use the CA Embeditor (auto-overlays it when you open an embed)",
+                AutoSize = true,
+                Margin = new Padding(0, 2, 0, 2),
+            };
+
+            _chkShowToolbarToggles = new CheckBox
+            {
+                Text = "Show CA Editor / CA Embeditor quick toggles on the main toolbar",
                 AutoSize = true,
                 Margin = new Padding(0, 2, 0, 10),
             };
 
             var lblFileTypes = new Label
             {
-                Text = "Apply the Monaco source editor only to these file types (semicolon-separated; blank = all):",
+                Text = "Apply the CA source editor only to these file types (semicolon-separated; blank = all):",
                 AutoSize = true,
                 Margin = new Padding(0, 0, 0, 2),
             };
@@ -117,9 +125,9 @@ namespace ClarionAssistant.Options
             // Grey out the file-types box when the source overlay is off (it has no effect then).
             _chkSource.CheckedChanged += (s, e) => UpdateFileTypesEnabled();
 
-            layout.Controls.Add(lblHeader);
             layout.Controls.Add(_chkSource);
             layout.Controls.Add(_chkEmbeditor);
+            layout.Controls.Add(_chkShowToolbarToggles);
             layout.Controls.Add(lblFileTypes);
             layout.Controls.Add(_txtFileTypes);
             layout.Controls.Add(lblNote);
