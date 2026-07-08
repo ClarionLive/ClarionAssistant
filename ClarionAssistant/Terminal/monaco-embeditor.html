@@ -454,6 +454,20 @@
         <label>Minimap <input type="checkbox" id="setMinimap"></label>
         <label>Complete word on insert key (space . ( ) <input type="checkbox" id="setCompleteOnInsertKey"></label>
         <label>Font size <input type="number" id="setFontSize" min="6" max="48" step="1"></label>
+        <label title="Any installed monospace font. Blank = default (Consolas).">Font family
+            <input type="text" id="setFontFamily" list="fontFamilyList" placeholder="Consolas (default)"
+                   maxlength="64" autocomplete="off" spellcheck="false" style="width:150px"></label>
+        <datalist id="fontFamilyList">
+            <option value="Consolas"></option>
+            <option value="Cascadia Code"></option>
+            <option value="Cascadia Mono"></option>
+            <option value="Courier New"></option>
+            <option value="Fira Code"></option>
+            <option value="JetBrains Mono"></option>
+            <option value="Lucida Console"></option>
+            <option value="Source Code Pro"></option>
+        </datalist>
+        <label title="Highlight all other occurrences of the word at the cursor (and of the selected text).">Highlight matching occurrences <input type="checkbox" id="setOccurrenceHighlight"></label>
         <label>Horizontal scrollbar
             <select id="setHorizontalScrollbar">
                 <option value="auto">Show when needed</option>
@@ -2718,6 +2732,17 @@
         if (!editor) return;
         var opts = {};
         if (typeof s.fontSize === 'number') opts.fontSize = s.fontSize;
+        // Font family (#60): blank = Monaco's Windows default. Monaco falls back per CSS rules if the
+        // named font isn't installed, so a typo degrades gracefully to monospace.
+        var ff = (typeof s.fontFamily === 'string') ? s.fontFamily.trim() : '';
+        opts.fontFamily = ff !== '' ? ff : "Consolas, 'Courier New', monospace";
+        // Same-name highlight (#62): occurrencesHighlight is an ENUM in Monaco 0.37+ ('off'|'singleFile'|
+        // 'multiFile'); selectionHighlight is still a boolean. One toggle drives both. Turning OFF also
+        // needs a manual sweep (below, after updateOptions) — the word/selection highlighter contributions
+        // stop computing new decorations when disabled but LEAVE the current ones on the model, so an
+        // existing double-click highlight would linger forever (John, #62 testing).
+        opts.occurrencesHighlight = (s.occurrenceHighlight === false) ? 'off' : 'singleFile';
+        opts.selectionHighlight = s.occurrenceHighlight !== false;
         opts.wordWrap = s.wordWrap ? 'on' : 'off';
         opts.minimap = { enabled: !!s.minimap };
         opts.scrollbar = { horizontal: s.horizontalScrollbar || 'auto' };   // auto | visible | hidden (task 37e2079f)
@@ -2736,6 +2761,7 @@
         if (typeof s.formatBlockAfterEnd === 'boolean') formatBlockAfterEnd = s.formatBlockAfterEnd;
         editor.updateOptions(opts);
         if (editor2) editor2.updateOptions(opts);   // keep the split pane's editor-options in sync (#15)
+        if (s.occurrenceHighlight === false) { clearOccurrenceDecorations(editor); clearOccurrenceDecorations(editor2); }
         // tabSize / insertSpaces are MODEL options in Monaco, not editor options.
         var model = editor.getModel();
         if (model && typeof s.tabSize === 'number')
@@ -2747,6 +2773,23 @@
             buildKeybindTable();   // reflect into the gear panel (no-op if it isn't built yet)
         }
         // lastSettings was captured at the top (before the editor-ready guard).
+    }
+
+    // Remove any lingering word/selection-occurrence decorations (#62). Monaco's highlighter
+    // contributions don't clear their existing decorations when their option is turned off — they just
+    // stop producing new ones — so we sweep by decoration class name. Removing them behind the
+    // contributions' backs is safe: stale ids are ignored on their next (re-enabled) update.
+    function clearOccurrenceDecorations(ed) {
+        try {
+            var model = ed && ed.getModel(); if (!model) return;
+            var all = model.getAllDecorations();
+            var kill = [];
+            for (var i = 0; i < all.length; i++) {
+                var cn = (all[i].options && all[i].options.className) || '';
+                if (cn.indexOf('wordHighlight') >= 0 || cn.indexOf('selectionHighlight') >= 0) kill.push(all[i].id);
+            }
+            if (kill.length) model.deltaDecorations(kill, []);
+        } catch (e) { }
     }
 
     // Validate a persisted/broadcast keyBindings map before trusting it. The live rebind UI rejects
@@ -2790,6 +2833,8 @@
         if ((el = document.getElementById('setMinimap'))) el.checked = !!s.minimap;
         if ((el = document.getElementById('setCompleteOnInsertKey'))) el.checked = (s.completeOnInsertKey !== false);
         if ((el = document.getElementById('setFontSize')) && typeof s.fontSize === 'number') el.value = s.fontSize;
+        if ((el = document.getElementById('setFontFamily'))) el.value = (typeof s.fontFamily === 'string') ? s.fontFamily : '';
+        if ((el = document.getElementById('setOccurrenceHighlight'))) el.checked = (s.occurrenceHighlight !== false);   // default ON (#62)
         if ((el = document.getElementById('setHorizontalScrollbar'))) el.value = s.horizontalScrollbar || 'auto';
         populateFormatterPanel(s);
     }
@@ -2862,6 +2907,8 @@
             minimap: chk('setMinimap'),
             completeOnInsertKey: chk('setCompleteOnInsertKey'),
             fontSize: num('setFontSize', 13, 6, 48),
+            fontFamily: (function () { var e = document.getElementById('setFontFamily'); return e ? e.value.trim().slice(0, 64) : ''; })(),
+            occurrenceHighlight: (function () { var e = document.getElementById('setOccurrenceHighlight'); return e ? !!e.checked : true; })(),
             horizontalScrollbar: sel('setHorizontalScrollbar', 'auto'),
             // ----- Smart Formatter -----
             preferredColumn: num('setPreferredColumn', D.preferredColumn || 31, 1, 120),
@@ -3140,7 +3187,7 @@
             var p = document.getElementById('settingsPanel');
             if (p) p.classList.toggle('hidden');
         });
-        var ids = ['setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setHorizontalScrollbar',
+        var ids = ['setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setFontFamily', 'setOccurrenceHighlight', 'setHorizontalScrollbar',
             // Smart Formatter controls
             'setPreferredColumn', 'setContLineMultiplier', 'setIndentComments', 'setDontIndentCol1Comments', 'setFormatLineOnEnter',
             'setIndentFromCode', 'setIndentCaseSubKeywords', 'setColonAsLabel', 'setFormatBlockAfterEnd', 'setPreferredKeywordIndent',

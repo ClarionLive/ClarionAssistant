@@ -27,6 +27,12 @@ namespace ClarionAssistant.Services
         // typed char, the way the native Clarion editor does. Default ON. Maps to commitCharacters in Monaco.
         public bool CompleteOnInsertKey = true;
         public int FontSize = 13;
+        // Editor font family (#60). Blank = Monaco's default (Consolas). Free text — Monaco/CSS fall back
+        // to monospace when the named font isn't installed, so an unknown name degrades gracefully.
+        public string FontFamily = "";
+        // Highlight all other occurrences of the word at the cursor / the selection (#62). Default ON
+        // (Monaco's own default); maps to occurrencesHighlight ('singleFile'|'off') + selectionHighlight.
+        public bool OccurrenceHighlight = true;
         // Horizontal scrollbar visibility → Monaco editor option scrollbar.horizontal:
         //   "auto" (show when needed) | "visible" (show always) | "hidden" (show never). Default auto.
         public string HorizontalScrollbar = "auto";
@@ -82,6 +88,8 @@ namespace ClarionAssistant.Services
                 s.Minimap = GetBool(sv, "Minimap", s.Minimap);
                 s.CompleteOnInsertKey = GetBool(sv, "CompleteOnInsertKey", s.CompleteOnInsertKey);
                 s.FontSize = GetInt(sv, "FontSize", s.FontSize, 6, 48);
+                s.FontFamily = SanitizeFontFamily(sv.Get(Prefix + "FontFamily"));
+                s.OccurrenceHighlight = GetBool(sv, "OccurrenceHighlight", s.OccurrenceHighlight);
                 s.HorizontalScrollbar = NormalizeScrollbar(sv.Get(Prefix + "HorizontalScrollbar"));
                 s.KeyBindings = ParseKeyBindings(sv.Get(Prefix + "KeyBindings"));
                 s.Formatter = ParseFormatter(sv.Get(Prefix + "Formatter"));
@@ -101,6 +109,8 @@ namespace ClarionAssistant.Services
             sv.Set(Prefix + "Minimap", Minimap ? "true" : "false");
             sv.Set(Prefix + "CompleteOnInsertKey", CompleteOnInsertKey ? "true" : "false");
             sv.Set(Prefix + "FontSize", Clamp(FontSize, 6, 48).ToString());
+            sv.Set(Prefix + "FontFamily", SanitizeFontFamily(FontFamily));
+            sv.Set(Prefix + "OccurrenceHighlight", OccurrenceHighlight ? "true" : "false");
             sv.Set(Prefix + "HorizontalScrollbar", NormalizeScrollbar(HorizontalScrollbar));
             // Compact JSON, single line — SettingsService rejects CR/LF in values, and the serializer
             // never emits them. Empty map persists as "{}" (clears any prior overrides).
@@ -122,6 +132,10 @@ namespace ClarionAssistant.Services
             s.Minimap = ToBool(d, "minimap", s.Minimap);
             s.CompleteOnInsertKey = ToBool(d, "completeOnInsertKey", s.CompleteOnInsertKey);
             s.FontSize = Clamp(ToInt(d, "fontSize", s.FontSize), 6, 48);
+            object ffv;
+            if (d.TryGetValue("fontFamily", out ffv) && ffv is string)
+                s.FontFamily = SanitizeFontFamily((string)ffv);
+            s.OccurrenceHighlight = ToBool(d, "occurrenceHighlight", s.OccurrenceHighlight);
             object hs;
             if (d.TryGetValue("horizontalScrollbar", out hs) && hs != null)
                 s.HorizontalScrollbar = NormalizeScrollbar(hs.ToString());
@@ -156,6 +170,8 @@ namespace ClarionAssistant.Services
                 { "minimap", Minimap },
                 { "completeOnInsertKey", CompleteOnInsertKey },
                 { "fontSize", FontSize },
+                { "fontFamily", SanitizeFontFamily(FontFamily) },
+                { "occurrenceHighlight", OccurrenceHighlight },
                 { "horizontalScrollbar", HorizontalScrollbar },
                 { "keyBindings", SanitizeBindings(KeyBindings) }
             };
@@ -290,6 +306,21 @@ namespace ClarionAssistant.Services
         }
 
         private static int Clamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+        /// <summary>
+        /// Sanitize the free-text font family (#60): trim, cap at 64 chars, reject CR/LF (would corrupt the
+        /// line-based settings file) and HTML metacharacters (defense in depth, same policy as key chords).
+        /// Anything rejected collapses to "" = Monaco default font.
+        /// </summary>
+        private static string SanitizeFontFamily(string v)
+        {
+            if (string.IsNullOrEmpty(v)) return "";
+            v = v.Trim();
+            if (v.Length > 64) return "";
+            if (v.IndexOf('\r') >= 0 || v.IndexOf('\n') >= 0) return "";
+            if (v.IndexOf('<') >= 0 || v.IndexOf('>') >= 0 || v.IndexOf('"') >= 0) return "";
+            return v;
+        }
 
         /// <summary>Whitelist the horizontal-scrollbar mode to Monaco's three legal scrollbar.horizontal
         /// values ("visible"/"hidden"); anything else (null, missing, or a crafted payload) → "auto".</summary>
