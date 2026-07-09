@@ -101,6 +101,18 @@ namespace ClarionAssistant.Services
             return true;
         }
 
+        /// <summary>Return the 1-based line the native embeditor caret is on, or 0 on failure.</summary>
+        public static int GetNativeCaretLine()
+        {
+            try
+            {
+                var control = GetActiveEmbeditorControl(new StringBuilder());
+                if (control == null) return 0;
+                return control.ActiveTextAreaControl.Caret.Line + 1; // ICSharpCode caret is 0-based
+            }
+            catch { return 0; }
+        }
+
         /// <summary>
         /// Reflection-based locate of the embeditor's ICSharpCode TextEditorControl,
         /// then a typed cast. Mirrors AppTreeService.GetClaGenEditor()'s search.

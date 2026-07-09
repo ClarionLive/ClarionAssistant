@@ -949,8 +949,13 @@ namespace ClarionAssistant.Terminal
             catch { }
         }
 
+        // When set (> 0), overrides the saved cursor position on first open — used by AttachOverlayToOpenEmbed
+        // to land Monaco at the embed point the developer had the native caret on when the overlay fired.
+        private int _initialLine;
+
         public ModernEmbeditorViewContent(string title, string sourceText, List<int[]> editableRanges,
-            string language = "clarion", bool isDark = true, string procedureName = null, bool liveLinked = false)
+            string language = "clarion", bool isDark = true, string procedureName = null, bool liveLinked = false,
+            int initialLine = 0)
         {
             _title = title ?? "Embeditor";
             _sourceText = sourceText ?? "";
@@ -961,6 +966,7 @@ namespace ClarionAssistant.Terminal
             _saveEnabled = !string.IsNullOrWhiteSpace(procedureName);
             _originalSlotTexts = ModernEmbeditorSaver.ExtractSlotTexts(_sourceText, _editableRanges);
             _lspFileName = MakeLspFileName(procedureName);
+            _initialLine = initialLine;
             TitleName = "CA: " + _title;
 
             // Reusable Monaco surface; we are its host (IMonacoEditorHost). It self-inits on HandleCreated.
@@ -2982,6 +2988,10 @@ namespace ClarionAssistant.Terminal
                     bookmarksJson = ModernEmbeditorState.BookmarksJson(bms);
                 }
                 catch { }
+
+                // Native-caret override: when the overlay attached to an already-open native embed, land Monaco
+                // at the embed point the developer was on — not the last-saved cursor for this procedure.
+                if (_initialLine > 0) { cursorLine = _initialLine; cursorColumn = 1; _initialLine = 0; }
 
                 string snippetsJson;
                 try { snippetsJson = SnippetStore.ToJson(SnippetStore.Load()); }
