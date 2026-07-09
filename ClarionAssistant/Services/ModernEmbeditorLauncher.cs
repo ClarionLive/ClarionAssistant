@@ -133,10 +133,16 @@ namespace ClarionAssistant.Services
                 // Warm the LSP now so its background parse overlaps the WebView2/Monaco load. Fire-and-forget.
                 try { EmbeditorCompletionService.LspStarter?.Invoke(); } catch { }
 
+                // Read the native caret position NOW (before the embed closes under us) so Monaco lands at the
+                // embed point the developer had the cursor on — not the last-saved cursor for this procedure.
+                int nativeLine = 0;
+                try { nativeLine = EmbeditorCompletionService.GetNativeCaretLine(); } catch { }
+
                 // Freeze-safe tail — dock on a settled turn. Keep WebView2 async init off any reentrant stack. The
                 // pre-cover is already up over the host; ShowAsEmbedOverlay ADOPTS it (no second cover, no gap).
                 var ctx = WindowsFormsSynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
                 string capProc = procName; string capSrc = source; List<int[]> capRanges = ranges; bool capDark = isDark;
+                int capNativeLine = nativeLine;
                 var capHost = host; var capCover = preCover; var capEditor = appTree.GetOpenClaGenEditor();
                 ctx.Post(_ =>
                 {
@@ -149,7 +155,7 @@ namespace ClarionAssistant.Services
                             System.Diagnostics.Debug.WriteLine("[ModernEmbeditorLauncher] AttachOverlayToOpenEmbed: no ClaGenEditor host — cannot overlay.");
                             return;
                         }
-                        var overlay = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc, false);
+                        var overlay = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc, false, capNativeLine);
                         overlay.ShowAsEmbedOverlay(h, capEditor ?? new AppTreeService().GetOpenClaGenEditor(), capCover);
                     }
                     catch (Exception ex)
