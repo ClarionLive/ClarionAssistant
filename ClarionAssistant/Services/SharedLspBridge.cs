@@ -1313,6 +1313,14 @@ namespace ClarionAssistant.Services
             // CodeGraph (not cross-project) + must reflect unsaved edits, so parse the live buffer. Phase 2.
             if (lines != null) MergeLocalVarCompletions(primary, seen, prefix, lines, line);
 
+            // (1b) Module-scope (file-scope) scalar + group/queue container labels (declared outside any
+            // procedure — in scope module-wide). After locals so a same-named local shadows it. Item #5.
+            if (lines != null) MergeModuleVarCompletions(primary, seen, prefix, lines);
+
+            // (1c) Module-local PROCEDURES — MAP prototypes + in-buffer procedure implementations. Module-
+            // specific, so ranked above the cross-project DB globals below. Item #4.
+            if (lines != null) MergeLocalProcedureCompletions(primary, seen, prefix, lines);
+
             // (2) No-PRE group/queue FIELDS in scope (bare-accessible). PRE'd group fields require their
             // prefix and are offered via the ':' path (MergeQualifiedFieldCompletions) instead.
             if (lines != null)
@@ -1440,6 +1448,8 @@ namespace ClarionAssistant.Services
         // === Local-variable prefix completion (task a47a6cac Phase 2) ===
         // Procedure header: a column-1 label followed by the PROCEDURE keyword (e.g. "ThisWindow.Init PROCEDURE").
         private static readonly Regex CgProcHeaderPattern = new Regex(@"^[A-Za-z_][A-Za-z0-9_.:]*\s+PROCEDURE\b", RegexOptions.IgnoreCase);
+        // Same as above but captures the label (group 1) — used to harvest local procedure names (item #4).
+        private static readonly Regex CgProcHeaderLabel = new Regex(@"^([A-Za-z_][A-Za-z0-9_.:]*)\s+PROCEDURE\b", RegexOptions.IgnoreCase);
         // Routine header: a column-1 label followed by the ROUTINE keyword (e.g. "TestRoutine ROUTINE").
         private static readonly Regex CgRoutineHeaderPattern = new Regex(@"^[A-Za-z_][A-Za-z0-9_.:]*\s+ROUTINE\b", RegexOptions.IgnoreCase);
         // The CODE statement that ends a procedure's DATA section.
@@ -1472,6 +1482,43 @@ namespace ClarionAssistant.Services
             // (b) Enclosing PROCEDURE main locals — in scope everywhere in the proc, incl. its routines.
             for (int i = from; i >= 0; i--)
                 if (CgProcHeaderPattern.IsMatch(lines[i])) { CollectDataLabels(lines, i, prefix, seen, primary, "(local)"); break; }
+        }
+
+        /// <summary>Phase 2 refinement (task a47a6cac item #5): merge module-scope (file-scope) scalar and
+        /// GROUP/QUEUE container labels — declared at column 1 outside any PROCEDURE, visible to every
+        /// procedure in the module. Depth-aware (only depth-0 labels; struct fields are surfaced via the
+        /// field/member paths that share GetScopeDataRanges). Called AFTER the local/routine merge, so a
+        /// same-named proc/routine local shadows the module var via <paramref name="seen"/>. Never throws.</summary>
+        private static void MergeModuleVarCompletions(
+            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen, string prefix, string[] lines)
+        {
+            if (lines == null) return;
+            foreach (var rg in GetModuleDataRanges(lines))
+            {
+                int depth = 0;
+                for (int i = rg[0]; i < rg[1] && i < lines.Length; i++)
+                {
+                    string ln = lines[i];
+                    bool isEnd = CgEndLine.IsMatch(ln) || CgPeriodEnd.IsMatch(ln);
+                    if (depth == 0 && !isEnd)
+                    {
+                        var lm = CgDataLabelPattern.Match(ln);
+                        if (lm.Success)
+                        {
+                            string label = lm.Groups[1].Value;
+                            if (label.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && seen.Add(label))
+                            {
+                                string typeText = CgTrailingComment.Replace(lm.Groups[2].Value, "").Trim();
+                                string detail = string.IsNullOrEmpty(typeText) ? "(module)" : typeText + "  (module)";
+                                primary.Add(new LspClient.CompletionItemInfo
+                                { Label = label, Kind = 6 /*Variable*/, Detail = detail, InsertText = label });
+                            }
+                        }
+                    }
+                    if (CgGroupQueueOpen.IsMatch(ln)) depth++;
+                    else if (isEnd && depth > 0) depth--;
+                }
+            }
         }
 
         /// <summary>Collect column-1 data declarations from <paramref name="headerIdx"/>+1 down to the next
@@ -1515,11 +1562,20 @@ namespace ClarionAssistant.Services
         // === Group/Queue FIELD completion (task a47a6cac Phase 2 refinement) ===
         // Parses GROUP/QUEUE structures (with PRE() + nesting) from the in-scope DATA sections, then offers
         // their fields via PRE prefix ("Cus:"), dotted access ("Group."), and bare labels (no-PRE groups, in
-        // MergeBarePrefixCompletions). Proc + routine scope for now (module-level + global are follow-ups).
+        // MergeBarePrefixCompletions). Proc + routine + module scope (GetScopeDataRanges supplies all three;
+        // cross-file global fields remain a follow-up → ClarionGraph task 6e8f2439).
 
         private static readonly Regex CgGroupQueueOpen = new Regex(@"^([A-Za-z_][A-Za-z0-9_:]*)\s+(GROUP|QUEUE)\b(.*)$", RegexOptions.IgnoreCase);
         private static readonly Regex CgEndLine   = new Regex(@"^\s*END\b", RegexOptions.IgnoreCase);
         private static readonly Regex CgPeriodEnd = new Regex(@"^\s*\.\s*$");
+        // MAP prototype block (module-scope). Its own END (and any nested MODULE(...)...END) is tracked so
+        // GetModuleDataRanges can SKIP prototypes — they are procedure declarations (item #4), not data.
+        private static readonly Regex CgMapOpen       = new Regex(@"^\s*MAP\b", RegexOptions.IgnoreCase);
+        private static readonly Regex CgMapModuleOpen = new Regex(@"^\s*MODULE\b", RegexOptions.IgnoreCase);
+        // Non-prototype lines inside a MAP (directives/comments) — excluded when harvesting local procs (#4).
+        private static readonly Regex CgMapDirective  = new Regex(@"^\s*(INCLUDE|OMIT|COMPILE|SECTION|PRAGMA|!)", RegexOptions.IgnoreCase);
+        // A MAP prototype line: leading procedure name (group 1). Rest of line is the prototype signature.
+        private static readonly Regex CgMapProtoName  = new Regex(@"^\s*([A-Za-z_][A-Za-z0-9_]*)", RegexOptions.IgnoreCase);
         private static readonly Regex CgPreAttr   = new Regex(@",\s*PRE\(\s*([A-Za-z_][A-Za-z0-9_]*)?\s*\)", RegexOptions.IgnoreCase);
         // Qualifier immediately before the cursor: <identifier><':' or '.'><partial>. The identifier may
         // contain ':' so a colon-named container (template queues like "Queue:Browse:1") is matched for
@@ -1550,7 +1606,122 @@ namespace ClarionAssistant.Services
             }
             for (int i = from; i >= 0; i--)   // enclosing procedure
                 if (CgProcHeaderPattern.IsMatch(lines[i])) { ranges.Add(new[] { i + 1, FindCodeAfter(lines, i) }); break; }
+            // Module-scope (file-scope) data is in scope from EVERY procedure in the module, so it is always
+            // appended (cursor-independent). This carries module-level GROUP/QUEUE structures through all the
+            // field/member-access paths that consume GetScopeDataRanges for free. (task a47a6cac item #5)
+            ranges.AddRange(GetModuleDataRanges(lines));
             return ranges;
+        }
+
+        /// <summary>Module-scope (file-scope) DATA line ranges: everything at column 1 outside any PROCEDURE,
+        /// from the top of the module down to the first procedure implementation. MAP prototype blocks are
+        /// excluded (they declare procedures, not data — item #4), so the region is returned as one or more
+        /// sub-ranges split around each MAP block. A data-only file with no procedure header (e.g. a .inc)
+        /// yields a single range covering the whole file. Never throws.</summary>
+        private static List<int[]> GetModuleDataRanges(string[] lines)
+        {
+            var ranges = new List<int[]>();
+            if (lines == null || lines.Length == 0) return ranges;
+            int rangeStart = 0;
+            int mapDepth = 0;
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string ln = lines[i];
+                if (mapDepth == 0)
+                {
+                    // First real procedure implementation → module data ends here.
+                    if (CgProcHeaderPattern.IsMatch(ln))
+                    {
+                        if (i > rangeStart) ranges.Add(new[] { rangeStart, i });
+                        return ranges;
+                    }
+                    // Entering a MAP prototype block → close the data range before it, then skip the block.
+                    if (CgMapOpen.IsMatch(ln))
+                    {
+                        if (i > rangeStart) ranges.Add(new[] { rangeStart, i });
+                        mapDepth = 1;
+                    }
+                }
+                else   // inside a MAP block: count nested MODULE(...)...END so we exit on the MAP's own END
+                {
+                    if (CgMapModuleOpen.IsMatch(ln)) mapDepth++;
+                    else if (CgEndLine.IsMatch(ln) || CgPeriodEnd.IsMatch(ln))
+                    {
+                        mapDepth--;
+                        if (mapDepth == 0) rangeStart = i + 1;   // data resumes after the MAP block
+                    }
+                }
+            }
+            // No procedure header (data-only module/.inc): the trailing region is all module data. A MAP left
+            // unterminated mid-edit (mapDepth > 0) is intentionally dropped rather than emitting prototypes.
+            if (mapDepth == 0 && lines.Length > rangeStart) ranges.Add(new[] { rangeStart, lines.Length });
+            return ranges;
+        }
+
+        /// <summary>Local procedure prototypes declared in the module's MAP block(s) — the procedures private
+        /// to this module (task a47a6cac item #4). Mirrors GetModuleDataRanges' MAP-block walk but keeps the
+        /// prototype lines instead of skipping them: for each MAP...END (nested MODULE(...)...END counted) that
+        /// precedes the first procedure implementation, returns (name, prototype-signature) per prototype line.
+        /// Directive/comment lines (INCLUDE/OMIT/COMPILE/SECTION/PRAGMA/'!') are excluded. Never throws.</summary>
+        private static List<KeyValuePair<string, string>> GetModuleMapProcedures(string[] lines)
+        {
+            var protos = new List<KeyValuePair<string, string>>();
+            if (lines == null || lines.Length == 0) return protos;
+            int mapDepth = 0;
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string ln = lines[i];
+                if (mapDepth == 0)
+                {
+                    if (CgProcHeaderPattern.IsMatch(ln)) break;   // reached the implementations — MAP region done
+                    if (CgMapOpen.IsMatch(ln)) mapDepth = 1;
+                    continue;
+                }
+                // Inside a MAP block: track nesting, then treat every remaining identifier-led line as a proto.
+                if (CgMapModuleOpen.IsMatch(ln)) { mapDepth++; continue; }
+                if (CgEndLine.IsMatch(ln) || CgPeriodEnd.IsMatch(ln)) { mapDepth--; continue; }
+                if (CgMapDirective.IsMatch(ln)) continue;         // INCLUDE/OMIT/COMPILE/comment — not a prototype
+                var m = CgMapProtoName.Match(ln);
+                if (!m.Success) continue;
+                string proto = CgTrailingComment.Replace(ln.Trim(), "").Trim();
+                protos.Add(new KeyValuePair<string, string>(m.Groups[1].Value, proto));
+            }
+            return protos;
+        }
+
+        /// <summary>Merge module-local procedure names into the bare-prefix completion list (item #4). Two
+        /// sources, unioned + deduped: (a) inline MAP prototypes (authoritative — carries the signature in the
+        /// detail), and (b) procedure-implementation headers present in this buffer. Class.Method / prefixed
+        /// implementations are skipped (member-access completion owns those). Prototypes pulled in via an
+        /// INCLUDE'd .inc are NOT in the buffer — that gap is covered by the CodeGraph/ClarionGraph DB merge.
+        /// Never throws.</summary>
+        private static void MergeLocalProcedureCompletions(
+            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen, string prefix, string[] lines)
+        {
+            if (lines == null) return;
+
+            // (a) Inline MAP prototypes — richest source (signature shown in the detail column).
+            foreach (var kv in GetModuleMapProcedures(lines))
+            {
+                string name = kv.Key;
+                if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !seen.Add(name)) continue;
+                string detail = string.IsNullOrEmpty(kv.Value) ? "(local procedure)" : kv.Value + "  (local procedure)";
+                primary.Add(new LspClient.CompletionItemInfo
+                { Label = name, Kind = 3 /*Function*/, Detail = detail, InsertText = name });
+            }
+
+            // (b) Procedure implementations in this buffer. Skip Class.Method / prefixed labels — those are
+            // member-access targets, not bare-callable module procedures.
+            foreach (var ln in lines)
+            {
+                var hm = CgProcHeaderLabel.Match(ln);
+                if (!hm.Success) continue;
+                string name = hm.Groups[1].Value;
+                if (name.IndexOf('.') >= 0 || name.IndexOf(':') >= 0) continue;
+                if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !seen.Add(name)) continue;
+                primary.Add(new LspClient.CompletionItemInfo
+                { Label = name, Kind = 3 /*Function*/, Detail = "(local procedure)", InsertText = name });
+            }
         }
 
         // End a DATA region at its CODE statement, OR at the next procedure/routine header — the latter
