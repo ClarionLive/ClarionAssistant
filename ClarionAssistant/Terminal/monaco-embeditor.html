@@ -452,7 +452,7 @@
         <label>Smart auto-indent <input type="checkbox" id="setAutoIndent"></label>
         <label>Word wrap <input type="checkbox" id="setWordWrap"></label>
         <label>Minimap <input type="checkbox" id="setMinimap"></label>
-        <label>Complete word on insert key (space . ( ) <input type="checkbox" id="setCompleteOnInsertKey"></label>
+        <label>Complete word on insert key (space . ( = {) <input type="checkbox" id="setCompleteOnInsertKey"></label>
         <label>Font size <input type="number" id="setFontSize" min="6" max="48" step="1"></label>
         <label title="Any installed monospace font. Blank = default (Consolas).">Font family
             <input type="text" id="setFontFamily" list="fontFamilyList" placeholder="Consolas (default)"
@@ -1105,8 +1105,9 @@
             // "Complete word on insert key": accept the highlighted item AND insert the typed char.
             // '.' also re-triggers member completion (triggerCharacters); '(' starts a call; ' ' lets you
             // commit a name then keep typing (Myv<space> -> "Myvar "); '=' commits then the onDidType
-            // handler normalizes it to " = " (tes= -> "TestVar = "). Gated by the gear toggle.
-            commitCharacters: commitKeysEnabled ? ['.', '(', ' ', '='] : undefined,
+            // handler normalizes it to " = " (tes= -> "TestVar = "); '{' starts Clarion property syntax
+            // (win{PROP:...}). Gated by the gear toggle.
+            commitCharacters: commitKeysEnabled ? ['.', '(', ' ', '=', '{'] : undefined,
             range: range
         };
     }
@@ -2723,6 +2724,9 @@
                     filterText: tw,
                     sortText: '0kw_' + kw,                             // tiebreak among keywords: alphabetical
                     preselect: exact,                                  // exact full keyword → preselect it
+                    // Same "complete word on insert key" behavior as host items (toMonacoCompletion) —
+                    // without this, proce<space> completed variables but not the selected keyword.
+                    commitCharacters: commitKeysEnabled ? ['.', '(', ' ', '=', '{'] : undefined,
                     range: range
                 });
             }
