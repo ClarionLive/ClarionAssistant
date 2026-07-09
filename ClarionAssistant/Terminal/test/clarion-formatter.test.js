@@ -332,5 +332,53 @@ console.log('\nC#/JS formatter-key list parity:');
     }
 })();
 
+// ---- Keyword-named data labels (ABC "Toolbar ToolbarClass") ----
+// A column-1 LABEL spelled like a data-structure keyword (Toolbar/Menu/Sheet/Tab/Option/Menubar/
+// Form/Report) must be read as a label+type declaration, NOT an unlabeled structure header. Before
+// the fix, "Toolbar ToolbarClass" opened a phantom TOOLBAR structure that never closed, cascading
+// every following ROUTINE and statement out to the data column.
+console.log('\nKeyword-named data labels (label + type, not a structure):');
+(function () {
+    var o = { alignAssignments: false, keywordCase: 'asis', otherNameCase: 'asis' };
+    function fmt(src) { return F.formatClarion(src, o).text.replace(/\r\n/g, '\n').split('\n'); }
+    function lead(l) { return /^ */.exec(l)[0].length; }
+
+    // The exact ABC shape: Toolbar object declaration, procedure CODE, then a ROUTINE with DATA/CODE.
+    var src = ['Main PROCEDURE', 'LocVar LONG', 'Toolbar ToolbarClass', '  CODE',
+        '  LocVar = 1', '', 'MyRtn ROUTINE', '  DATA', 'V LONG', '  CODE', '  V = 2'].join('\n');
+    var out = fmt(src);
+    // The routine's statement (last line) must sit at one tab (4), not blown out to the data column.
+    ok('routine body at one tab after keyword-named label', lead(out[out.length - 1]) === 4,
+        'lead=' + lead(out[out.length - 1]) + '\n      ' + JSON.stringify(out));
+    // The label itself must be preserved as-declared (not uppercased to TOOLBAR by keyword casing).
+    ok('"Toolbar" label preserved (not cased to TOOLBAR)',
+        out.some(function (l) { return /^Toolbar\s+ToolbarClass/.test(l); }), JSON.stringify(out));
+
+    // Structure balance via the classifier: opensId per opened structure, cat==='close' per END.
+    function structDepth(srcLines) {
+        var cls = F._internal.classify(srcLines, F.DEFAULTS, 0);
+        var depth = 0, opened = 0;
+        cls.recs.forEach(function (r) {
+            if (r.opensId) { depth++; opened++; }
+            else if (r.cat === 'close') depth--;
+        });
+        return { finalDepth: depth, opened: opened };
+    }
+    // The Toolbar-label case must open NOTHING (that was the bug — a phantom TOOLBAR structure).
+    var td = structDepth(['Main PROCEDURE', 'Toolbar ToolbarClass', '  CODE', '  x = 1']);
+    ok('"Toolbar ToolbarClass" opens no structure', td.opened === 0 && td.finalDepth === 0, JSON.stringify(td));
+    // A genuinely LABELED structure whose label is spelled like a keyword still opens AND closes.
+    var gd = structDepth(['Main PROCEDURE', 'Group GROUP', 'F1 LONG', 'END', 'After LONG', '  CODE', '  x = 1']);
+    ok('"Group GROUP" opens exactly one structure', gd.opened === 1, JSON.stringify(gd));
+    ok('"Group GROUP" structure closes (depth 0)', gd.finalDepth === 0, JSON.stringify(gd));
+    // Real unlabeled structure headers (comma-attributes) are unaffected: still open and close.
+    var wd = structDepth(['Main PROCEDURE', 'Win WINDOW,AT(0,0,80,80)', 'MENUBAR,USE(?m)', 'ITEM(\'E&xit\'),USE(?x)', 'END', 'END', '  CODE', '  x = 1']);
+    ok('unlabeled WINDOW+MENUBAR open and close (depth 0)', wd.finalDepth === 0 && wd.opened >= 2, JSON.stringify(wd));
+
+    // Control keywords followed by an identifier (IF X, LOOP I) are never mistaken for declarations.
+    var c = fmt(['Main PROCEDURE', 'X LONG', '  CODE', '  IF X = 1', '    DoIt()', '  END'].join('\n'));
+    ok('IF X not treated as a declaration', lead(c[3]) === 4, 'IF lead=' + lead(c[3]) + '\n      ' + JSON.stringify(c));
+})();
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed.');
 process.exit(fail ? 1 : 0);

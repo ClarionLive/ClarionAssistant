@@ -107,12 +107,22 @@
     // The structure/keyword driving a line (uppercased) or ''. If the line begins (column 1) with a
     // non-keyword identifier followed by whitespace, that's a LABEL and the keyword is the next token;
     // otherwise the first token itself is the keyword (handles unlabeled structures like "MENUBAR,USE").
+    // A column-1 token that MATCHES a data-structure keyword but is really a LABEL: it is followed
+    // by whitespace + another identifier (the type), e.g. ABC's "Toolbar ToolbarClass" / "Menu x".
+    // A genuine unlabeled structure header (MENUBAR,USE / TOOLBAR / TOOLBAR,AT()) is followed by a
+    // comma or nothing — never a second identifier — so this stays false for those. Restricted to
+    // DATASTRUCT keywords so statement/control keywords (IF x, LOOP i) are unaffected. Without this,
+    // ABC's "Toolbar ToolbarClass" opens a phantom TOOLBAR structure that never closes, cascading
+    // every following ROUTINE/statement out to the data column (GitHub: keyword-named data labels).
+    function labelLikeStructKeyword(firstTok, code) {
+        return DATASTRUCT_SET[firstTok] && /^[A-Za-z_][A-Za-z0-9_:.]*\s+[A-Za-z_]/.test(code);
+    }
     function structureWord(raw) {
         var code = stripComment(raw);
         var m = /^\s*([A-Za-z_][A-Za-z0-9_:.]*)/.exec(code);
         if (!m) return '';
         var firstTok = m[1].toUpperCase();
-        if (startsInCol1(raw) && !KEYWORD_SET[firstTok]) {
+        if (startsInCol1(raw) && (!KEYWORD_SET[firstTok] || labelLikeStructKeyword(firstTok, code))) {
             var lm = /^([A-Za-z_][A-Za-z0-9_:.]*)\s+(.*)$/.exec(code);
             return lm ? leadingKeyword(lm[2]) : '';   // label + keyword, or label-only
         }
@@ -126,7 +136,10 @@
     function isDataDecl(raw) {
         if (!startsInCol1(raw)) return false;
         var code = stripComment(raw), first = leadingKeyword(code);
-        if (!first || KEYWORD_SET[first]) return false;
+        if (!first) return false;
+        // A keyword-led line is not a declaration UNLESS it's a struct-keyword-spelled LABEL
+        // followed by a type (ABC's "Toolbar ToolbarClass") — that IS a decl.
+        if (KEYWORD_SET[first] && !labelLikeStructKeyword(first, code)) return false;
         var sp = splitLabel(rtrim(code));
         if (!sp) return false;
         var r = sp.rest.charAt(0);
