@@ -683,6 +683,7 @@
     var procFindHistory = [];     // THIS procedure's recent search terms (layered dropdown top group)
     var findCurrentIdx = -1;      // index into findResults of the active (revealed) match
     var lastFindQuery = null;     // the query that produced findResults (for Enter = next)
+    var findModelVersion = -1;    // model version findResults was last synced against (GitHub #65)
     var findOpts = { matchCase: false, wholeWord: false, regex: false, includeReadOnly: true };
     // Monaco's standard word-boundary separators (needed to enable whole-word matching).
 
@@ -3925,6 +3926,7 @@
             });
         }
         lastFindQuery = q;
+        findModelVersion = model.getAlternativeVersionId();   // results are fresh against THIS buffer state
         findCurrentIdx = findResults.length ? 0 : -1;
         addHistory(findHistory, q); addHistory(procFindHistory, q, 10); persistHistory();
         renderResults();
@@ -3950,10 +3952,53 @@
         var decos = findResults.map(function (r, i) {
             return {
                 range: new monaco.Range(r.line, r.startCol, r.endLine, r.endCol),
-                options: { className: (i === findCurrentIdx ? 'find-match-current' : 'find-match') }
+                options: {
+                    className: (i === findCurrentIdx ? 'find-match-current' : 'find-match'),
+                    // Typing at a match edge must not grow the highlight — these decorations double
+                    // as the LIVE position source for navigation/replace (syncFindMatches, #65).
+                    stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
+                }
             };
         });
         findDecorations = editor.getModel().deltaDecorations(findDecorations, decos);   // model-level (both panes)
+    }
+
+    // Buffer edits (deleting/inserting lines, typing) SHIFT match positions, but findResults holds the
+    // line/col numbers captured when the search ran — navigating or replacing from those stale numbers
+    // lands one line off (GitHub #65) or, worse, REPLACES the wrong text. The match decorations painted
+    // above are model-tracked (Monaco moves them with every edit), so before any use of findResults,
+    // re-read the live decoration ranges back into it. Matches whose text was deleted outright
+    // (collapsed decoration) are dropped. No-op when the buffer hasn't changed since the last sync.
+    function syncFindMatches() {
+        if (!editor || !findResults.length) return;
+        var model = editor.getModel(); if (!model) return;
+        var v = model.getAlternativeVersionId();
+        if (v === findModelVersion) return;                        // buffer unchanged since last sync
+        findModelVersion = v;
+        if (findDecorations.length !== findResults.length) return; // can't map 1:1 — leave untouched
+        var keep = [], oldIdx = findCurrentIdx, newIdx = oldIdx, dropped = 0;
+        for (var i = 0; i < findResults.length; i++) {
+            var rg = null;
+            try { rg = model.getDecorationRange(findDecorations[i]); } catch (e) { }
+            var dead = !rg || (rg.startLineNumber === rg.endLineNumber && rg.startColumn === rg.endColumn);
+            if (dead) { dropped++; if (i < oldIdx) newIdx--; continue; }   // match text deleted → drop the row
+            var r = findResults[i];
+            r.line = rg.startLineNumber; r.startCol = rg.startColumn;
+            r.endLine = rg.endLineNumber; r.endCol = rg.endColumn;
+            try { r.text = model.getLineContent(rg.startLineNumber); } catch (e2) { }
+            keep.push(r);
+        }
+        if (dropped) {
+            // findDecorations keeps the FULL old id list on purpose: the next paintHighlights hands it
+            // to deltaDecorations, which removes every old decoration (including the dropped ones).
+            findResults = keep;
+            findCurrentIdx = findResults.length ? Math.max(0, Math.min(newIdx, findResults.length - 1)) : -1;
+            var countEl = document.getElementById('findCount');
+            if (countEl) countEl.textContent = findResults.length
+                ? (findResults.length + ' match' + (findResults.length === 1 ? '' : 'es') + ' (list synced to edits)')
+                : 'No matches';
+        }
+        renderResults();   // refresh the grid's line numbers + text against the live buffer
     }
 
     // ---- Results grid ----
@@ -4001,6 +4046,8 @@
     }
 
     function revealMatch(idx, focusEditor) {
+        syncFindMatches();                                        // remap to live positions first (#65)
+        if (idx >= findResults.length) idx = findResults.length - 1;   // sync may have dropped rows
         if (idx < 0 || idx >= findResults.length) return;
         findCurrentIdx = idx;
         var r = findResults[idx];
@@ -4016,6 +4063,7 @@
 
     // F3 / Shift+F3 cycle through matches (wraps).
     function gotoMatch(dir) {
+        syncFindMatches();   // remap match positions if the buffer changed since the search (#65)
         if (!findResults.length) {
             if (document.getElementById('findInput').value) runFind();
             return;
@@ -4029,6 +4077,10 @@
     // ---- Replace (editable slots only) ----
     function doReplace(onlyChecked) {
         if (!editor || !findResults.length) return;
+        // Replace at LIVE positions — after a buffer edit the captured ranges are stale, and an edit
+        // built from them would replace the WRONG text (one line off / mid-word). (#65)
+        syncFindMatches();
+        if (!findResults.length) { showToast('No matches left to replace (buffer changed)', false); return; }
         var replText = document.getElementById('replInput').value;
         var edits = [], replaced = 0, skippedRo = 0;
         for (var i = 0; i < findResults.length; i++) {
@@ -4187,6 +4239,7 @@
     }
 
     function copyResults() {
+        syncFindMatches();   // copy live line numbers + text, not the pre-edit snapshot (#65)
         var rows = findResults.filter(function (r) { return r.checked; });
         if (!rows.length) rows = findResults;   // nothing checked → copy them all
         var text = rows.map(function (r) { return r.line + ': ' + r.text; }).join('\r\n');
