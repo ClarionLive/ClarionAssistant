@@ -332,5 +332,33 @@ console.log('\nC#/JS formatter-key list parity:');
     }
 })();
 
+// ---- MAP scope: procedure prototypes pin their label to column 1 (task 8933fa05) ----
+console.log('\nMAP prototype indentation:');
+(function () {
+    function f(src) { return F.formatClarion(src, { alignAssignments: false, insertSpaces: true, tabSize: 2, preferredColumn: 3 }).text.replace(/\r\n/g, '\n'); }
+    function lines(src) { return f(src).split('\n'); }
+
+    // A col-1 prototype keeps its label in column 1; PROCEDURE moves to the data column.
+    var a = lines('  MEMBER()\n\n  MAP\nMyProc PROCEDURE(LONG)\n  END\n');
+    ok('MAP: col-1 prototype label stays in col 1', a.indexOf('MyProc  PROCEDURE(LONG)') !== -1, JSON.stringify(a));
+
+    // An INDENTED prototype snaps its label back to column 1.
+    var b = lines('  MEMBER()\n\n  MAP\n      MyProc PROCEDURE(LONG)\n        Another PROCEDURE\n  END\n');
+    ok('MAP: indented prototype label snaps to col 1', b.indexOf('MyProc  PROCEDURE(LONG)') !== -1 && b.indexOf('Another PROCEDURE') !== -1, JSON.stringify(b));
+
+    // The MAP's END aligns to MAP's own column (preferred col), not the members' data column.
+    ok('MAP: END aligns to MAP column', b.indexOf('  END') !== -1 && b.indexOf('        END') === -1, JSON.stringify(b));
+
+    // A directive inside the MAP (INCLUDE) is NOT treated as a prototype (label not pinned to col 1).
+    var c = lines('  MAP\n    INCLUDE("x.inc"),ONCE\n   BoxProc PROCEDURE(STRING pName),STRING\n  END\n');
+    ok('MAP: INCLUDE directive not pinned to col 1', c.some(function (l) { return /^\s+INCLUDE\(/.test(l); }), JSON.stringify(c));
+    ok('MAP: prototype after directive pins to col 1', c.indexOf('BoxProc PROCEDURE(STRING pName),STRING') !== -1, JSON.stringify(c));
+
+    // mapDepth resets after the MAP closes: a real procedure implementation below formats normally.
+    var d = lines('  MEMBER()\n  MAP\nFoo PROCEDURE\n  END\n\nFoo PROCEDURE\nLoc  LONG\n  CODE\n  Loc = 1\n');
+    ok('MAP: real proc header after MAP stays col 1', d.indexOf('Foo PROCEDURE') !== -1, JSON.stringify(d));
+    ok('MAP: proc-local data still indents after MAP block', d.some(function (l) { return /^Loc\s+LONG/.test(l); }), JSON.stringify(d));
+})();
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed.');
 process.exit(fail ? 1 : 0);

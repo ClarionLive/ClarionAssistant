@@ -32,7 +32,10 @@
         'GROUP', 'QUEUE', 'RECORD', 'FILE', 'VIEW', 'REPORT', 'WINDOW', 'APPLICATION',
         'MENUBAR', 'MENU', 'TOOLBAR', 'SHEET', 'TAB', 'OPTION',
         'CLASS', 'INTERFACE', 'MODULE', 'ITEMIZE', 'JOIN', 'OLE',
-        'DETAIL', 'HEADER', 'FOOTER', 'FORM'
+        'DETAIL', 'HEADER', 'FOOTER', 'FORM',
+        // MAP is also a preferred keyword (module-level indent); listing it here as a structure opener lets
+        // the formatter track MAP scope so procedure prototypes inside it pin their label to column 1. (8933fa05)
+        'MAP'
     ];
     var MID = ['ELSE', 'ELSIF', 'OF', 'OROF'];
     var PREFERRED_KEYWORDS = ['PROGRAM', 'MEMBER', 'MAP', 'PRAGMA', 'SECTION'];
@@ -280,6 +283,7 @@
         var section = 'module';
         var routinePending = false;      // just saw ROUTINE; next decides routData vs routCode
         var continuing = false;          // previous logical line ended with a continuation token
+        var mapDepth = 0;                // open MAP structures on the stack (prototypes inside pin to col 1)
 
         function top() { return stack.length ? stack[stack.length - 1] : null; }
         function codeBodyCol() { var t = top(); return (t && t.kind === 'code') ? t.bodyCol : codeBase; }
@@ -342,6 +346,7 @@
             // ---- closers ----
             if (first === 'END' || trimmed === '.') {
                 var closed = stack.pop();
+                if (closed && closed.opener === 'MAP' && mapDepth > 0) mapDepth--;
                 rec.cat = 'close';
                 rec.closedId = closed ? closed.id : 0;
                 recs.push(rec);
@@ -359,8 +364,36 @@
             if (PREFERRED_SET[first] && stack.length === 0) {
                 var pkCol = opts.preferredKeywordIndent ? codeBase : P;   // one indent vs preferred column
                 rec.cat = 'plain'; rec.col = pkCol;
-                if (DATASTRUCT_SET[first] && !isOneLineStructure(code)) openStruct(rec, 'data', pkCol);
+                if (DATASTRUCT_SET[first] && !isOneLineStructure(code)) {
+                    openStruct(rec, 'data', pkCol, first);
+                    // This struct is opened by a preferred-keyword line (not a decl), so pass 2 never assigns
+                    // its column; pin it here so the matching END aligns to the keyword's own column, not the
+                    // members' data column. (8933fa05)
+                    if (rec.opensId) colOfStruct[rec.opensId] = pkCol;
+                }
                 finish(rec, code); continue;
+            }
+
+            // ---- MAP scope: procedure prototypes pin their label to column 1 ----
+            // Inside a MAP, a prototype is "<name> <space> <rest>" whose leading token is a non-keyword
+            // label; its label belongs in column 1 (rest at the data column) regardless of how the line is
+            // currently indented. Directives (INCLUDE/OMIT/COMPILE/MODULE) are keyword-led and fall through
+            // to normal handling. The no-space "Name(params)" prototype form isn't matched here. (8933fa05)
+            if (mapDepth > 0) {
+                var mcode = rtrim(stripComment(raw)).replace(/^\s+/, '');
+                var mlead = leadingKeyword(mcode);
+                if (mlead && !KEYWORD_SET[mlead]) {
+                    var msp = splitLabel(mcode);
+                    if (msp) {
+                        var mrawsp = splitLabel(rtrim(raw).replace(/^\s+/, ''));   // rest from raw keeps a trailing comment
+                        rec.enclosingId = enclosingId();
+                        rec.procInst = procInst;
+                        rec.section = section;
+                        rec.cat = 'decl'; rec.label = msp.label; rec.rest = mrawsp ? mrawsp.rest : msp.rest; rec.labelLen = msp.label.length;
+                        recs.push(rec);
+                        finish(rec, code); continue;
+                    }
+                }
             }
 
             // ---- DATA scope: declarations + unlabeled structure/control members ----
@@ -376,7 +409,7 @@
                 } else {
                     rec.cat = 'dataline'; rec.labelLen = 0;   // unlabeled structure/control line (MENUBAR/ITEM/…)
                 }
-                if (DATASTRUCT_SET[sw] && !isOneLineStructure(code)) { rec.opensData = true; rec.structId = nextIdPeek(); openStruct(rec, 'data', null); }
+                if (DATASTRUCT_SET[sw] && !isOneLineStructure(code)) { rec.opensData = true; rec.structId = nextIdPeek(); openStruct(rec, 'data', null, sw); }
                 recs.push(rec);
                 finish(rec, code); continue;
             }
@@ -417,7 +450,8 @@
                 colOfStruct[id] = col;
                 stack.push({ id: id, kind: 'code', col: midCol, bodyCol: bodyCol });
             }
-            else { stack.push({ id: id, kind: 'data', col: null, bodyCol: null }); }   // data col resolved in pass 2
+            else { stack.push({ id: id, kind: 'data', col: null, bodyCol: null, opener: opener }); }   // data col resolved in pass 2
+            if (opener === 'MAP') mapDepth++;
             rec.opensId = id;
         }
         function emitHeader(rec, code, p) {

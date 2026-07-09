@@ -820,9 +820,15 @@
                     // LSP-backed completion (M3). Use our provider only — no generic word suggestions.
                     quickSuggestions: true,
                     suggestOnTriggerCharacters: true,
-                    // Enter accepts the highlighted suggestion (no newline); only a non-suggest Enter creates a
-                    // newline, which is what triggers format-on-Enter. Prevents the "blank line + OF eve" glitch.
-                    acceptSuggestionOnEnter: 'on',
+                    // 'smart': Enter accepts the highlighted suggestion ONLY when it makes a textual change.
+                    // Typing a full keyword (e.g. END) with the exact-match keyword item preselected is a
+                    // no-op accept → Enter falls through to a newline instead of clobbering END→EndKey (task
+                    // 8933fa05). A partial word still completes on Enter; still triggers format-on-Enter.
+                    acceptSuggestionOnEnter: 'smart',
+                    // 'first' (NOT the default 'recentlyUsed'): Monaco's LRU memory would re-select a
+                    // previously accepted item (EndKey) over our preselected exact keyword match — the
+                    // "typed END but EndKey is highlighted" bug. 'first' honors preselect. (8933fa05)
+                    suggestSelection: 'first',
                     wordBasedSuggestions: 'off',
                     folding: true,
                     showFoldingControls: 'always',
@@ -1092,6 +1098,10 @@
             detail: it.detail || undefined,
             documentation: it.documentation ? { value: it.documentation } : undefined,
             insertText: it.insertText || it.label,
+            // Rank AFTER the injected Clarion keywords ('0kw_*') — keywords first, like the native
+            // Clarion completion list (END above EndKey/ENDPAGE). Tie-break only; fuzzy score still
+            // orders within the group. (8933fa05)
+            sortText: '1_' + (it.label || ''),
             // "Complete word on insert key": accept the highlighted item AND insert the typed char.
             // '.' also re-triggers member completion (triggerCharacters); '(' starts a call; ' ' lets you
             // commit a name then keep typing (Myv<space> -> "Myvar "); '=' commits then the onDidType
@@ -1543,6 +1553,24 @@
             // re-indents the whole enclosing block — supersedes the single-line aid for that keystroke.
             if (formatBlockAfterEnd && (/^END\b/i.test(done) || done === '.')) {
                 Promise.resolve().then(function () { formatBlockNow(ed, L); });
+                return;
+            }
+            // After MAP + Enter, the next line is almost always a procedure prototype whose label sits in
+            // column 1. Monaco's autoIndent copies MAP's (preferred-column) indent onto the new line; strip
+            // it and pin the caret to column 1 so you can type the prototype label directly. (task 8933fa05)
+            if (formatLineOnEnter && /^MAP\b/i.test(done)) {
+                Promise.resolve().then(function () {
+                    formatLineNow(ed, L);
+                    var nl = L + 1;
+                    if (nl > model.getLineCount()) return;
+                    var lead = /^[ \t]*/.exec(model.getLineContent(nl))[0];
+                    if (lead.length) {
+                        _fmtLineGuard = true;
+                        ed.executeEdits('clarion-mapenter', [{ range: new monaco.Range(nl, 1, nl, lead.length + 1), text: '' }]);
+                        _fmtLineGuard = false;
+                    }
+                    ed.setPosition({ lineNumber: nl, column: 1 });
+                });
                 return;
             }
             if (formatLineOnEnter) Promise.resolve().then(function () { formatLineNow(ed, L); });
@@ -2106,6 +2134,8 @@
             multiCursorModifier: 'alt',        // Alt+Click / Ctrl+Alt+Up-Down carets (split pane; same as primary)
             quickSuggestions: true,
             suggestOnTriggerCharacters: true,
+            acceptSuggestionOnEnter: 'smart',   // same as primary: exact keyword + Enter = newline (8933fa05)
+            suggestSelection: 'first',          // same as primary: honor preselect over LRU memory (8933fa05)
             wordBasedSuggestions: 'off',
             folding: true,
             showFoldingControls: 'always',
@@ -2629,6 +2659,75 @@
     }
 
     function registerClarionProviders() {
+        // ----- Column-1 typing = no completion (native Clarion parity, task 8933fa05) -----
+        // Column 1 is label/keyword territory (procedure labels, ROUTINE labels, MAP END...) — the native
+        // Clarion editor does no lookup there, and a popup only invites a wrong accept. Tracked per typing
+        // run: if the word began in column 1 and live formatting then re-indents the line (e.g. END snapping
+        // under its MAP), the SAME word keeps suppressing even though it no longer sits at column 1.
+        var _col1Typing = { line: 0, word: '' };
+        function col1TypingSuppressed(model, position) {
+            var line = model.getLineContent(position.lineNumber);
+            var before = line.substring(0, position.column - 1);
+            var m = /[A-Za-z_][A-Za-z0-9_]*$/.exec(before);
+            if (!m) return false;
+            var word = m[0], startCol = position.column - word.length;
+            if (startCol === 1) { _col1Typing = { line: position.lineNumber, word: word }; return true; }
+            // Continuation after a live re-indent: same line, only whitespace before the word, and the word
+            // extends (or backspaces within) the one we suppressed at column 1.
+            if (_col1Typing.line === position.lineNumber && /^[ \t]*$/.test(before.substring(0, startCol - 1))) {
+                var w = _col1Typing.word;
+                if (w && (word.indexOf(w) === 0 || w.indexOf(word) === 0)) { _col1Typing.word = word; return true; }
+            }
+            if (_col1Typing.line !== position.lineNumber) _col1Typing = { line: 0, word: '' };   // typing moved on — reset
+            return false;
+        }
+
+        // Clarion structure/statement keywords, offered as completion items so typing a full keyword has an
+        // exact-match, preselected item that outranks look-alike equates (END vs EndKey/ENDPAGE). Combined
+        // with acceptSuggestionOnEnter:'smart', an exact keyword match is a no-op accept, so Enter inserts a
+        // newline instead of clobbering the word. (task 8933fa05)
+        var CLARION_KEYWORDS = [
+            'END', 'RETURN', 'EXIT', 'CYCLE', 'BREAK', 'LOOP', 'CASE', 'IF', 'ELSE', 'ELSIF', 'OF', 'OROF',
+            'WHILE', 'UNTIL', 'DO', 'THEN', 'BEGIN', 'EXECUTE', 'ACCEPT', 'CODE', 'DATA', 'MAP', 'MODULE',
+            'CLASS', 'INTERFACE', 'GROUP', 'QUEUE', 'RECORD', 'FILE', 'VIEW', 'WINDOW', 'REPORT',
+            'PROCEDURE', 'FUNCTION', 'ROUTINE', 'MEMBER', 'PROGRAM', 'SECTION'
+        ];
+        var CLARION_KEYWORD_SET = {};
+        CLARION_KEYWORDS.forEach(function (k) { CLARION_KEYWORD_SET[k] = true; });
+        // Build keyword suggestions for the word being typed (bare context only — not after '.'/':' where the
+        // server owns member access). Exact match (case-insensitive) is preselected so it wins over equates.
+        function clarionKeywordSuggestions(before, range, seenLabels) {
+            var typed = /[A-Za-z_][A-Za-z0-9_]*$/.exec(before);
+            var tw = typed ? typed[0] : '';
+            if (tw.length < 2) return [];                              // avoid single-letter keyword spam
+            var chBefore = before.charAt(before.length - tw.length - 1);
+            if (chBefore === '.' || chBefore === ':') return [];       // member/prefixed access → not a keyword
+            var TW = tw.toUpperCase(), out = [];
+            for (var i = 0; i < CLARION_KEYWORDS.length; i++) {
+                var kw = CLARION_KEYWORDS[i];
+                if (kw.indexOf(TW) !== 0) continue;                    // prefix match only
+                var cased = (keywordCaseMode === 'lower') ? kw.toLowerCase() : kw;   // honor keyword-case setting
+                if (seenLabels && seenLabels[cased.toLowerCase()]) continue;         // dedupe vs host items
+                var exact = kw === TW;
+                out.push({
+                    label: cased,
+                    kind: monaco.languages.CompletionItemKind.Keyword,
+                    // Exact full keyword typed: insert the word EXACTLY as typed — acceptance is then a
+                    // textual no-op, so 'smart' Enter falls through to a newline (format-on-Enter cases it).
+                    insertText: exact ? tw : cased,
+                    // Monaco ranks by FUZZY SCORE before sortText, and lowercase typing case-matches
+                    // camelCase equates (ProcedureReturn) better than an ALL-CAPS keyword — which buried
+                    // PROCEDURE at the bottom (John's screenshot). filterText = the word as typed is a
+                    // PERFECT score, so a prefix-matched keyword always ranks (and gets selected) FIRST,
+                    // like the native editor. Only generated when the typed word prefixes the keyword.
+                    filterText: tw,
+                    sortText: '0kw_' + kw,                             // tiebreak among keywords: alphabetical
+                    preselect: exact,                                  // exact full keyword → preselect it
+                    range: range
+                });
+            }
+            return out;
+        }
         monaco.languages.registerCompletionItemProvider('clarion', {
             triggerCharacters: ['.', ':'],
             provideCompletionItems: function (model, position) {
@@ -2638,6 +2737,8 @@
                 // PROP:/PROPPRINT:/EVENT: items send the SUFFIX after the separator as insertText (e.g. "Bevel"
                 // for label "PROP:Bevel"). If the range spanned "PROP:Be", selecting it would replace the
                 // "PROP:" too and leave just "Bevel". Breaking the range on ':' keeps the "PROP:" prefix. (a47a6cac)
+                // Typing that began in column 1 (labels, MAP's END...) never completes — native parity. (8933fa05)
+                if (col1TypingSuppressed(model, position)) return { suggestions: [], incomplete: true };
                 var before = model.getLineContent(position.lineNumber).substring(0, position.column - 1);
                 var pfx = /[A-Za-z0-9_]*$/.exec(before);
                 var startCol = position.column - (pfx ? pfx[0].length : 0);
@@ -2651,7 +2752,36 @@
                         // host-side CodeGraph prefix merge (task a47a6cac) runs live as-you-type — without
                         // it, globals only appear on a forced Ctrl+Space (min-prefix guard suppresses the
                         // 1-char query, then the stale list is filtered and never re-fetched).
-                        return { suggestions: items.map(function (it) { return toMonacoCompletion(it, range); }), incomplete: true };
+                        var sugg = items.map(function (it) { return toMonacoCompletion(it, range); });
+                        // Keywords rank first + exact-typed keyword gets selected. The server ALSO returns
+                        // some keywords (e.g. PROCEDURE) — those dedupe our injected copy away, so the
+                        // promotion must happen on the HOST item too, or ProcedureReturn outscores it and
+                        // stays selected even with the full word typed (John's round-2 report). (8933fa05)
+                        var typedM = /[A-Za-z_][A-Za-z0-9_]*$/.exec(before);
+                        var typedW = typedM ? typedM[0] : '';
+                        var TWU = typedW.toUpperCase();
+                        var seen = {};
+                        for (var s = 0; s < sugg.length; s++) {
+                            var hi = sugg[s]; if (!hi || !hi.label) continue;
+                            var lu = String(hi.label).toUpperCase();
+                            seen[String(hi.label).toLowerCase()] = true;
+                            if (CLARION_KEYWORD_SET[lu]) {
+                                hi.sortText = '0kw_' + lu;             // host keyword ranks with our keywords
+                                // Perfect-score filterText (see clarionKeywordSuggestions) so a host-supplied
+                                // keyword also ranks first — but only when the typed word actually prefixes
+                                // it, else we'd inflate non-matching keywords into the filtered list.
+                                if (typedW && lu.indexOf(TWU) === 0) hi.filterText = typedW;
+                                if (typedW && lu === TWU) {
+                                    hi.preselect = true;               // exact full keyword typed → select it
+                                    // Pure keyword item (insertText == the word): make acceptance a textual
+                                    // no-op so 'smart' Enter inserts a newline instead of re-casing in place.
+                                    if (String(hi.insertText || hi.label).toUpperCase() === lu) hi.insertText = typedW;
+                                }
+                            }
+                        }
+                        var kws = clarionKeywordSuggestions(before, range, seen);
+                        if (kws.length) sugg = sugg.concat(kws);
+                        return { suggestions: sugg, incomplete: true };
                     })
                     .catch(function () { return { suggestions: [], incomplete: true }; });
             }
@@ -2663,6 +2793,8 @@
         monaco.languages.registerCompletionItemProvider('clarion', {
             provideCompletionItems: function (model, position) {
                 if (!snippetsList.length) return { suggestions: [] };
+                // Same column-1 rule as the LSP provider — no popup for col-1 typing runs. (8933fa05)
+                if (col1TypingSuppressed(model, position)) return { suggestions: [] };
                 if (!_snippetInsertCmd && editor) {
                     _snippetInsertCmd = editor.addCommand(0, function () {
                         var a = Array.prototype.slice.call(arguments);
