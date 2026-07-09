@@ -121,7 +121,9 @@ const BASH_RULES = [
   },
   // Gate destructive git operations — user can approve
   {
-    pattern: /\bgit\s+push\s+.*(-f|--force)\b/,
+    // [^&;|]* (not .*) so the scan stops at command separators — a chained
+    // "git push -q && rm -f x" must not read rm's -f as a force-push (GitHub #67).
+    pattern: /\bgit\s+push\s+[^&;|]*(-f\b|--force\b)/,
     action: 'ask',
     reason: 'Force-push detected. This rewrites remote history and can destroy others\' work.'
   },
