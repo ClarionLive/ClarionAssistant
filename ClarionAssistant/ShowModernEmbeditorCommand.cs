@@ -15,8 +15,11 @@ namespace ClarionAssistant
     /// M1 scope: read-only render. Generation/save are untouched; the save round-trip back through
     /// WriteEmbedContentByLine / SaveAndCloseEmbeditor is M2.
     ///
-    /// Registered on the embeditor toolbar (/SoftVelocity/Clarion/ToolBar/EmbedEditor), next to the
-    /// Path A "Completion Test" item.
+    /// RETIRED FROM THE UI (2026-07-09, per John): the /SoftVelocity/Clarion/ToolBar/EmbedEditor
+    /// ToolbarItem was removed from ClarionAssistant.addin. The auto-overlay (4d16b53a) now attaches
+    /// when an embed opens, and pressing this legacy button on top of a live overlay opened a second
+    /// Modern view against the same embed. Class kept unreferenced in case a mirror surface is ever
+    /// wanted again.
     /// </summary>
     public class ShowModernEmbeditorCommand : AbstractMenuCommand
     {

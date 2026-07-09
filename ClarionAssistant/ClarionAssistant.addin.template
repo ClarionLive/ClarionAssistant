@@ -62,12 +62,11 @@
               class="ClarionAssistant.ShowModernDataPadCommand"/>
   </Path>
 
-  <!-- CA Embeditor button on the native embeditor toolbar. -->
-  <Path name="/SoftVelocity/Clarion/ToolBar/EmbedEditor">
-    <ToolbarItem id="ShowModernEmbeditor" label="CA Embeditor"
-                 tooltip="Path B: open the assembled embeditor source in a modern Monaco editor (read-only render)"
-                 class="ClarionAssistant.ShowModernEmbeditorCommand"/>
-  </Path>
+  <!-- RETIRED: the "CA Embeditor" button on the native embeditor toolbar
+       (/SoftVelocity/Clarion/ToolBar/EmbedEditor -> ShowModernEmbeditorCommand). It predates the
+       auto-overlay (4d16b53a): the overlay now attaches itself when an embed opens, and pressing
+       the old Path-B button on top of a live overlay opened a SECOND Modern view against the same
+       embed. Removed per John 2026-07-09; the native "Open Source" button is not ours and stays. -->
 
   <!-- GitHub #58 (ticket 89a04048): quick-access CA editor-surface toggles on the MAIN IDE toolbar.
        type="CheckBox" builds an ICSharpCode.Core ToolBarCheckBox whose class MUST implement
