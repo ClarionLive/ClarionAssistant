@@ -374,7 +374,11 @@
             }
 
             // ---- preferred keywords (module-level): MEMBER/PROGRAM/MAP/PRAGMA/SECTION ----
-            if (PREFERRED_SET[first] && stack.length === 0) {
+            // Same keyword-named-label guard as structureWord/isDataDecl (PR #68): a module-level
+            // variable named like a preferred struct keyword ("Map MapClass") is a DECLARATION, not
+            // the MAP keyword — without this it opened a phantom MAP struct (never closed) and, with
+            // mapDepth tracking, pinned everything after it to column 1 as "prototypes".
+            if (PREFERRED_SET[first] && stack.length === 0 && !labelLikeStructKeyword(first, code)) {
                 var pkCol = opts.preferredKeywordIndent ? codeBase : P;   // one indent vs preferred column
                 rec.cat = 'plain'; rec.col = pkCol;
                 if (DATASTRUCT_SET[first] && !isOneLineStructure(code)) {
@@ -397,6 +401,9 @@
                 var mlead = leadingKeyword(mcode);
                 if (mlead && !KEYWORD_SET[mlead]) {
                     var msp = splitLabel(mcode);
+                    // "name (params)" is a prototype; "name = x" is not (only reachable via a phantom/
+                    // malformed MAP, but don't decl-ify an assignment).
+                    if (msp && msp.rest.charAt(0) === '=') msp = null;
                     if (msp) {
                         var mrawsp = splitLabel(rtrim(raw).replace(/^\s+/, ''));   // rest from raw keeps a trailing comment
                         rec.enclosingId = enclosingId();

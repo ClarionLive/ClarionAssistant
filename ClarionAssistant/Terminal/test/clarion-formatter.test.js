@@ -406,6 +406,15 @@ console.log('\nKeyword-named data labels (label + type, not a structure):');
     // Control keywords followed by an identifier (IF X, LOOP I) are never mistaken for declarations.
     var c = fmt(['Main PROCEDURE', 'X LONG', '  CODE', '  IF X = 1', '    DoIt()', '  END'].join('\n'));
     ok('IF X not treated as a declaration', lead(c[3]) === 4, 'IF lead=' + lead(c[3]) + '\n      ' + JSON.stringify(c));
+
+    // PREFERRED-branch guard (post-#68 hardening): a module-level variable named like a preferred
+    // struct keyword ("Map MapClass") is a declaration — it must NOT become the MAP keyword, open a
+    // phantom MAP struct, or drag later procedure code out of shape.
+    var pv = fmt(['  MEMBER()', '', 'Map MapClass', 'Count LONG', '', 'Foo PROCEDURE', '  CODE', '  Count = 1'].join('\n'));
+    ok('"Map MapClass" label preserved (not cased to MAP)',
+        pv.some(function (l) { return /^Map\s+MapClass/.test(l); }), JSON.stringify(pv));
+    ok('statement after "Map MapClass" still indented (no phantom MAP)',
+        pv.some(function (l) { return /^\s+Count\s*=\s*1/.test(l); }), JSON.stringify(pv));
 })();
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed.');
