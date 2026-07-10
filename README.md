@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ClarionLive/ClarionAssistant/releases/tag/v5.2.0"><img src="https://img.shields.io/github/v/release/ClarionLive/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
+  <a href="https://github.com/ClarionLive/ClarionAssistant/releases/tag/v5.3.0"><img src="https://img.shields.io/github/v/release/ClarionLive/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
   <img src="https://img.shields.io/badge/Clarion-10%20%7C%2011%20%7C%2012-blue?style=for-the-badge" alt="Clarion 10 | 11 | 12">
-  <img src="https://img.shields.io/badge/version-5.2-blue?style=for-the-badge" alt="v5.2">
+  <img src="https://img.shields.io/badge/version-5.3-blue?style=for-the-badge" alt="v5.3">
 </p>
 
 ---
@@ -44,6 +44,46 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 - **Diff viewer** &mdash; Monaco-based side-by-side diffs with syntax highlighting
 - **Knowledge system** &mdash; persistent cross-session memory for decisions, patterns, and gotchas
 - **Zoom persistence** &mdash; Ctrl+mousewheel zoom is saved and restored across sessions
+
+---
+
+## What's New in v5.3
+
+v5.3 is a refinement release &mdash; it sharpens the Monaco editor, Smart Formatter, and completion that landed in v5.1/v5.2, adds editor personalization and one-click surface toggles, and folds in a round of community fixes.
+
+### Editor & Embeditor toggles on the IDE toolbar
+
+Two new buttons on the main Clarion IDE toolbar let you flip the **CA Editor** and **CA Embeditor** overlays on or off without opening Settings &mdash; handy when you want to drop back to the native editor for a moment.
+
+### Editor personalization
+
+The gear panel gains two long-requested settings:
+
+- **Font family** &mdash; pick the typeface for the Monaco source editor and CA Embeditor.
+- **Occurrence highlighting** &mdash; toggle the highlight of other instances of the symbol under the cursor.
+
+### Richer completion
+
+Bare-prefix completion now also surfaces **module-level data** (variables declared outside any procedure) and **module-local procedures** (declared in the module MAP or as in-buffer sibling implementations), each with type/signature detail &mdash; on top of the globals, classes, and procedure locals added in v5.1.
+
+### Smart Formatter & editor fixes
+
+- **Built-in functions in call position** are cased correctly by **Ctrl+I** and as you type.
+- **Keyword-named data labels** (e.g. a variable named like a statement) no longer open a phantom structure during formatting.
+- **MAP formatting** and keyword-first completion behave correctly.
+- **Case commands with no selection** now act on the character at the cursor.
+- **Find matches track live buffer edits** &mdash; F3 and replace land at the correct positions after you've edited the buffer.
+- **Commit-on-insert-key** works for keyword completions, with `{` added as a commit key.
+- **CA Embeditor overlay** navigates to the native caret position when it attaches, so you start where you left off.
+
+### Reliability
+
+- **MCP HTTP listener** no longer deadlocks when the IDE UI thread is busy.
+- **Windows PowerShell 5.1** can parse the bundled scripts (UTF-8 BOM), and the indexer's SQLite reference is fixed.
+
+### Thanks
+
+Community contributions in this release from **Andrew Santarelli** (#71), **Mark Sarson** (#68), **bdinko** (#59), and **Aarhusdk** (#57).
 
 ---
 
@@ -402,7 +442,7 @@ The installer bundles **COM for Clarion**, a complete toolkit for creating .NET 
 
 ### Install
 
-1. **[Download the latest installer](https://github.com/ClarionLive/ClarionAssistant/releases/tag/v5.2.0)** (code-signed)
+1. **[Download the latest installer](https://github.com/ClarionLive/ClarionAssistant/releases/tag/v5.3.0)** (code-signed)
 2. Close the Clarion IDE
 3. Run the installer &mdash; select which Clarion versions to install for
 4. Restart the Clarion IDE
