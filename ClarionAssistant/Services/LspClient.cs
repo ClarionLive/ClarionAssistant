@@ -414,6 +414,23 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// textDocument/signatureHelp - parameter hints for the call site at the position. Buffer-aware
+        /// like GetHover so the hints resolve against live embeditor/editor content.
+        /// </summary>
+        public Dictionary<string, object> GetSignatureHelp(string filePath, int line, int character, string bufferText = null)
+        {
+            TrackRequest("signatureHelp", filePath);
+            try
+            {
+                if (!string.IsNullOrEmpty(bufferText)) EnsureDocumentOpenWithText(filePath, bufferText);
+                else EnsureDocumentOpen(filePath);
+            }
+            catch { }
+            var parms = BuildTextDocumentPosition(filePath, line, character);
+            return SendRequest("textDocument/signatureHelp", parms, 1500);
+        }
+
+        /// <summary>
         /// textDocument/documentSymbol - get all symbols in a document.
         /// </summary>
         public Dictionary<string, object> GetDocumentSymbols(string filePath) { return GetDocumentSymbols(filePath, null); }

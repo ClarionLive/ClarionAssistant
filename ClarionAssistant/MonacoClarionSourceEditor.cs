@@ -483,6 +483,26 @@ namespace ClarionAssistant
             });
         }
 
+        // LSP signature help — parameter hints when typing '(' or ',' at a call site. Same
+        // position/buffer contract as OnHover; the page hides the widget on a null reply.
+        void IMonacoEditorHost.OnSignatureHelp(MonacoEditorControl editor, string rawJson)
+        {
+            int reqId, line, col; string buffer;
+            if (!ParseLspRequest(rawJson, out reqId, out line, out col, out buffer)) return;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                Dictionary<string, object> help = null;
+                try
+                {
+                    EnsureLsp();
+                    if (SharedLspBridge.IsRunning)
+                        help = SharedLspBridge.GetSignatureHelp(_filePath, Math.Max(0, line - 1), Math.Max(0, col - 1), buffer);
+                }
+                catch (Exception ex) { MonacoSpikeLog.Write("overlay signatureHelp error: " + ex.Message); }
+                editor.PostResponse(reqId, new Dictionary<string, object> { { "signatureHelp", help } });
+            });
+        }
+
         // F12 go-to-definition. Resolves the definition via the LSP (shared or bundled) with the C#
         // CodeGraph fallback for cross-project targets, then opens/positions the target with
         // MonacoSourceNavigator (handles same-file reveal AND cross-file open uniformly). #40 / 2ba0ee17.

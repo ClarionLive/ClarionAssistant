@@ -68,6 +68,10 @@ namespace ClarionAssistant.Terminal
         /// <summary>{action:"diagnostics"} — hybrid LSP + slot diagnostics; host replies via PostResponse.</summary>
         void OnDiagnostics(MonacoEditorControl editor, string rawJson);
 
+        /// <summary>{action:"signatureHelp"} — LSP parameter hints at a call site (typing '(' or ',');
+        /// host replies via PostResponse with {signatureHelp: {...}|null}.</summary>
+        void OnSignatureHelp(MonacoEditorControl editor, string rawJson);
+
         /// <summary>{action:"saveSettings"} — persist gear-panel settings + broadcast to all tabs.</summary>
         void OnSaveSettings(MonacoEditorControl editor, string rawJson);
 
@@ -246,6 +250,7 @@ namespace ClarionAssistant.Terminal
                     case "hover":             h.OnHover(this, json); break;
                     case "definition":        h.OnDefinition(this, json); break;
                     case "diagnostics":       h.OnDiagnostics(this, json); break;
+                    case "signatureHelp":     h.OnSignatureHelp(this, json); break;
                     case "saveSettings":      h.OnSaveSettings(this, json); break;
                     case "saveHistory":       h.OnSaveHistory(this, json); break;
                     case "snippetCommand":    h.OnSnippetCommand(this, json); break;
