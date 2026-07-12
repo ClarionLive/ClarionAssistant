@@ -1155,6 +1155,7 @@ namespace ClarionAssistant.Terminal
         void IMonacoEditorHost.OnDefinition(MonacoEditorControl editor, string rawJson) { HandleDefinition(rawJson); }
         void IMonacoEditorHost.OnDiagnostics(MonacoEditorControl editor, string rawJson) { HandleDiagnostics(rawJson); }
         void IMonacoEditorHost.OnSignatureHelp(MonacoEditorControl editor, string rawJson) { HandleSignatureHelp(rawJson); }
+        void IMonacoEditorHost.OnImplementation(MonacoEditorControl editor, string rawJson) { HandleImplementation(rawJson); }
         void IMonacoEditorHost.OnSaveSettings(MonacoEditorControl editor, string rawJson) { HandleSaveSettings(rawJson); }
         void IMonacoEditorHost.OnSaveHistory(MonacoEditorControl editor, string rawJson) { HandleSaveHistory(rawJson); }
         void IMonacoEditorHost.OnSnippetCommand(MonacoEditorControl editor, string rawJson)
@@ -2374,6 +2375,43 @@ namespace ClarionAssistant.Terminal
             }
             catch { }
             return false;
+        }
+
+        /// <summary>Ctrl+F12 go-to-implementation from the embed editor — declaration → implementation
+        /// body (e.g. a method prototype in a CLASS to its .clw body). Mirrors HandleDefinition's
+        /// navigation: a same-file target reveals in-place (unwrapping the #56 header offset), a
+        /// cross-file target opens via MonacoSourceNavigator.</summary>
+        private void HandleImplementation(string json)
+        {
+            int reqId, line, column; string buffer;
+            if (!ParseRequest(json, out reqId, out line, out column, out buffer)) return;
+            Task.Run(() =>
+            {
+                bool navigated = false;
+                try
+                {
+                    EnsureLspStarted();
+                    if (SharedLspBridge.IsRunning)
+                    {
+                        var impl = SharedLspBridge.GetImplementation(_lspFileName, LspLine0(line), Math.Max(0, column - 1), LspBuffer(buffer));
+                        string targetPath; int targetLine0, targetChar0;
+                        if (SharedLspBridge.TryGetFirstLocation(impl, out targetPath, out targetLine0, out targetChar0))
+                        {
+                            if (IsSameLspFile(targetPath))
+                            {
+                                if (_panel != null) _panel.RevealLine(MonacoLine1(targetLine0), targetChar0 + 1);
+                                navigated = _panel != null;
+                            }
+                            else
+                            {
+                                navigated = MonacoSourceNavigator.NavigateToFileAndLine(targetPath, targetLine0 + 1, 1);
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] implementation: " + ex.Message); }
+                PostResponse(reqId, new Dictionary<string, object> { { "navigated", navigated } });
+            });
         }
 
         /// <summary>LSP signature-help request from Monaco (typing '(' or ',' at a call site). Same
