@@ -43,6 +43,11 @@ namespace ClarionAssistant.Services
                 // ~halving it. Idempotent, fire-and-forget.
                 try { EmbeditorCompletionService.LspStarter?.Invoke(); } catch { }
 
+                // #56: capture the real-module LSP context NOW — PweeEditorDetails only exists while the
+                // native embeditor is open, and CancelEmbeditor below tears it down.
+                EmbedLspContext lspCtx = null;
+                try { lspCtx = EmbedLspContext.TryCapture(appTree); } catch { }
+
                 // OpenAndMirror leaves the embeditor open; we made no edits, so discard/close to free the lock.
                 try { appTree.CancelEmbeditor(); } catch { }
                 WaitForEmbedClosed(appTree, 3000);
@@ -57,11 +62,13 @@ namespace ClarionAssistant.Services
                 // and the message/input state drains first — deterministically reproducing that gap.
                 var ctx = WindowsFormsSynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
                 string capProc = procName; string capSrc = source; List<int[]> capRanges = ranges; bool capDark = isDark;
+                EmbedLspContext capLspCtx = lspCtx;
                 ctx.Post(_ =>
                 {
                     try
                     {
-                        var view = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc);
+                        var view = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc,
+                            false, 0, capLspCtx);
                         WorkbenchSingleton.Workbench.ShowView(view);
                     }
                     catch (Exception ex)
@@ -133,6 +140,11 @@ namespace ClarionAssistant.Services
                 // Warm the LSP now so its background parse overlaps the WebView2/Monaco load. Fire-and-forget.
                 try { EmbeditorCompletionService.LspStarter?.Invoke(); } catch { }
 
+                // #56: capture the real-module LSP context from the live embed (it stays open in overlay
+                // mode, but capture eagerly for symmetry with the snapshot path).
+                EmbedLspContext lspCtx = null;
+                try { lspCtx = EmbedLspContext.TryCapture(appTree); } catch { }
+
                 // Read the native caret position NOW (before the embed closes under us) so Monaco lands at the
                 // embed point the developer had the cursor on — not the last-saved cursor for this procedure.
                 int nativeLine = 0;
@@ -143,6 +155,7 @@ namespace ClarionAssistant.Services
                 var ctx = WindowsFormsSynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
                 string capProc = procName; string capSrc = source; List<int[]> capRanges = ranges; bool capDark = isDark;
                 int capNativeLine = nativeLine;
+                EmbedLspContext capLspCtx = lspCtx;
                 var capHost = host; var capCover = preCover; var capEditor = appTree.GetOpenClaGenEditor();
                 ctx.Post(_ =>
                 {
@@ -155,7 +168,7 @@ namespace ClarionAssistant.Services
                             System.Diagnostics.Debug.WriteLine("[ModernEmbeditorLauncher] AttachOverlayToOpenEmbed: no ClaGenEditor host — cannot overlay.");
                             return;
                         }
-                        var overlay = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc, false, capNativeLine);
+                        var overlay = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc, false, capNativeLine, capLspCtx);
                         overlay.ShowAsEmbedOverlay(h, capEditor ?? new AppTreeService().GetOpenClaGenEditor(), capCover);
                     }
                     catch (Exception ex)

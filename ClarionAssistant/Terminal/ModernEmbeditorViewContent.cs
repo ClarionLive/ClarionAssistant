@@ -44,6 +44,9 @@ namespace ClarionAssistant.Terminal
         private List<string> _originalSlotTexts;     // baseline slot contents for change detection
         private readonly bool _saveEnabled;
         private readonly string _lspFileName;        // synthetic .clw URI for LSP completion/hover requests
+        // Real-module LSP context (#56): when captured, _lspFileName is the generated module's REAL path and
+        // every LSP-bound buffer is wrapped with its MEMBER header (+1 line) — Monaco itself is untouched.
+        private readonly Services.EmbedLspContext _lspContext;
 
         // LIVE-LINKED mode (ticket a5bbf005): this tab holds Clarion's native embeditor OPEN underneath the
         // floating Monaco, so save writes straight back into it (no re-open / no locator re-type). At most ONE
@@ -207,7 +210,7 @@ namespace ClarionAssistant.Terminal
             {
                 var lsp = LspClient.Active;
                 if (lsp == null) return result;
-                var resp = lsp.GetDocumentSymbols(_lspFileName, _sourceText);
+                var resp = lsp.GetDocumentSymbols(_lspFileName, LspBuffer(_sourceText));
                 object res = (resp != null && resp.ContainsKey("result")) ? resp["result"] : null;
                 CollectSymbols(res, result);
             }
@@ -955,7 +958,7 @@ namespace ClarionAssistant.Terminal
 
         public ModernEmbeditorViewContent(string title, string sourceText, List<int[]> editableRanges,
             string language = "clarion", bool isDark = true, string procedureName = null, bool liveLinked = false,
-            int initialLine = 0)
+            int initialLine = 0, Services.EmbedLspContext lspContext = null)
         {
             _title = title ?? "Embeditor";
             _sourceText = sourceText ?? "";
@@ -965,7 +968,11 @@ namespace ClarionAssistant.Terminal
             _procedureName = procedureName;
             _saveEnabled = !string.IsNullOrWhiteSpace(procedureName);
             _originalSlotTexts = ModernEmbeditorSaver.ExtractSlotTexts(_sourceText, _editableRanges);
-            _lspFileName = MakeLspFileName(procedureName);
+            // #56: prefer the real generated-module path (captured by the launcher while the native embed
+            // was open) so the LSP resolves the buffer inside the real project dir with PROGRAM scope via
+            // the prepended MEMBER header. Falls back to the classic synthetic name when not captured.
+            _lspContext = lspContext;
+            _lspFileName = (_lspContext != null) ? _lspContext.RealPath : MakeLspFileName(procedureName);
             _initialLine = initialLine;
             TitleName = "CA: " + _title;
 
@@ -2194,6 +2201,22 @@ namespace ClarionAssistant.Terminal
             catch { }
         }
 
+        // #56 helpers — the LSP-facing view of the buffer/positions. With a real-module context the
+        // LSP buffer carries a prepended MEMBER header, so LSP lines run one AHEAD of Monaco lines;
+        // without one these degrade to the classic identity mapping (±1 base conversion only).
+        private string LspBuffer(string buffer)
+        {
+            return (_lspContext != null) ? _lspContext.WrapBuffer(buffer) : buffer;
+        }
+        private int LspLine0(int monacoLine1)
+        {
+            return Math.Max(0, monacoLine1 - 1) + ((_lspContext != null) ? _lspContext.LineOffset : 0);
+        }
+        private int MonacoLine1(int lspLine0)
+        {
+            return Math.Max(1, lspLine0 + 1 - ((_lspContext != null) ? _lspContext.LineOffset : 0));
+        }
+
         private void HandleCompletion(string json)
         {
             int reqId, line, column; string buffer;
@@ -2211,7 +2234,7 @@ namespace ClarionAssistant.Terminal
                     {
                         // Pass the LIVE buffer (mirror HandleHover). Passing null made the shared server complete
                         // against an empty document → always "no suggestions" (John's test; root-caused with Bob).
-                        var comps = SharedLspBridge.GetCompletion(_lspFileName, Math.Max(0, line - 1), Math.Max(0, column - 1), 2500, buffer);
+                        var comps = SharedLspBridge.GetCompletion(_lspFileName, LspLine0(line), Math.Max(0, column - 1), 2500, LspBuffer(buffer));
                         if (comps != null)
                             foreach (var c in comps)
                                 items.Add(new Dictionary<string, object>
@@ -2252,17 +2275,29 @@ namespace ClarionAssistant.Terminal
                     EnsureLspStarted();
                     if (SharedLspBridge.IsRunning)
                     {
-                        var def = SharedLspBridge.GetDefinition(_lspFileName, Math.Max(0, line - 1), Math.Max(0, column - 1), buffer);
+                        var def = SharedLspBridge.GetDefinition(_lspFileName, LspLine0(line), Math.Max(0, column - 1), LspBuffer(buffer));
                         string targetPath; int targetLine0, targetChar0;
                         bool got = SharedLspBridge.TryGetFirstLocation(def, out targetPath, out targetLine0, out targetChar0);
                         // The embeditor's LSP document is a SYNTHETIC file (_lspFileName has no file on disk),
                         // so a SAME-FILE definition resolves to that synthetic path — NavigateToFileAndLine can't
                         // open it and returns false, which is why F12 did nothing. When the LSP resolves in-buffer
                         // (e.g. a local var) its line numbers ARE this buffer's, so reveal in-place. (task 37e2079f)
+                        // With the real-module context (#56) the same-file path is the REAL module path our buffer
+                        // shadows: LSP results are in wrapped-buffer coords (MonacoLine1 unwraps them), but the
+                        // CodeGraph fallback returns ON-DISK module lines that mean nothing in this buffer — for
+                        // routines TryResolveLocalRoutine is authoritative in-buffer, so it wins when it matches.
                         bool sameFile = got && IsSameLspFile(targetPath);
                         if (sameFile)
                         {
-                            if (_panel != null) _panel.RevealLine(targetLine0 + 1, targetChar0 + 1);
+                            int localLine;
+                            if (_lspContext != null && TryResolveLocalRoutine(buffer, line, column, out localLine))
+                            {
+                                if (_panel != null) _panel.RevealLine(localLine, 1);
+                            }
+                            else if (_panel != null)
+                            {
+                                _panel.RevealLine(MonacoLine1(targetLine0), targetChar0 + 1);
+                            }
                             navigated = _panel != null;
                         }
                         else
@@ -2353,7 +2388,7 @@ namespace ClarionAssistant.Terminal
                     EnsureLspStarted();
                     if (SharedLspBridge.IsRunning)
                     {
-                        var resp = SharedLspBridge.GetHover(_lspFileName, Math.Max(0, line - 1), Math.Max(0, column - 1), buffer);
+                        var resp = SharedLspBridge.GetHover(_lspFileName, LspLine0(line), Math.Max(0, column - 1), LspBuffer(buffer));
                         contents = ExtractHoverString(resp);
                     }
                 }
@@ -2383,7 +2418,8 @@ namespace ClarionAssistant.Terminal
                         buffer ?? _sourceText,
                         (ranges != null && ranges.Count > 0) ? ranges : _editableRanges,
                         _procedureName,
-                        embedSlotChecks: !_fileMode);   // file mode: LSP only, skip embed-slot heuristics
+                        embedSlotChecks: !_fileMode,    // file mode: LSP only, skip embed-slot heuristics
+                        lspContext: _lspContext);       // #56: wrap the LSP pass with the MEMBER header
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] diagnostics: " + ex.Message); }
                 PostResponse(reqId, new Dictionary<string, object> { { "markers", markers } });
@@ -3136,6 +3172,10 @@ namespace ClarionAssistant.Terminal
             // confirm MessageBox can't get stuck behind the live WebView2 (the documented native<->WebView2 deadlock).
             bool promptSave = _fileMode && _fileDirty && _fileLiveText != null && !_disposed;
             _disposed = true;
+
+            // #56: while this tab was open, LSP requests shadowed the on-disk generated module under its
+            // real path. No didClose exists, so push the on-disk content back to un-shadow it.
+            try { if (_lspContext != null) _lspContext.RevertShadow(); } catch { }
 
             lock (_instances) { _instances.Remove(this); }
             try { _settingsReg?.Dispose(); } catch { }
