@@ -228,18 +228,9 @@ namespace ClarionAssistant.Services
                             foreach (var p in pars)
                             {
                                 if (p == null) continue;
-                                ps.Add(new Dictionary<string, object>
-                                {
-                                    { "label", ReflProp(p, "Label") as string ?? "" },
-                                    { "documentation", ReflProp(p, "Documentation") as string }
-                                });
+                                ps.Add(SigDict(ReflProp(p, "Label") as string, ReflProp(p, "Documentation") as string, null));
                             }
-                        sigList.Add(new Dictionary<string, object>
-                        {
-                            { "label", ReflProp(s, "Label") as string ?? "" },
-                            { "documentation", ReflProp(s, "Documentation") as string },
-                            { "parameters", ps }
-                        });
+                        sigList.Add(SigDict(ReflProp(s, "Label") as string, ReflProp(s, "Documentation") as string, ps));
                     }
                 }
                 if (sigList.Count == 0) return null;
@@ -266,6 +257,18 @@ namespace ClarionAssistant.Services
                 return p != null ? p.GetValue(obj, null) : null;
             }
             catch { return null; }
+        }
+
+        // Signature/parameter dict for Monaco. The "documentation" key is emitted ONLY when non-empty:
+        // Monaco 0.52's parameter-hints render checks `documentation !== undefined`, so an explicit NULL
+        // enters the markdown-docs path and ABORTS the render mid-way — the overload counter ("1/4")
+        // never gets its text and the widget shows without it. Omitting the key keeps it undefined.
+        private static Dictionary<string, object> SigDict(string label, string documentation, List<object> parameters)
+        {
+            var d = new Dictionary<string, object> { { "label", label ?? "" } };
+            if (!string.IsNullOrEmpty(documentation)) d["documentation"] = documentation;
+            if (parameters != null) d["parameters"] = parameters;
+            return d;
         }
 
         // Raw LSP signatureHelp response → the same Monaco-ready dict as the shared path. Handles the
@@ -302,18 +305,9 @@ namespace ClarionAssistant.Services
                                 if (idx.Count >= 2 && idx[0] >= 0 && idx[1] <= sigLabel.Length && idx[1] > idx[0])
                                     pLabel = sigLabel.Substring(idx[0], idx[1] - idx[0]);
                             }
-                            ps.Add(new Dictionary<string, object>
-                            {
-                                { "label", pLabel ?? "" },
-                                { "documentation", DocString(p.ContainsKey("documentation") ? p["documentation"] : null) }
-                            });
+                            ps.Add(SigDict(pLabel, DocString(p.ContainsKey("documentation") ? p["documentation"] : null), null));
                         }
-                    sigList.Add(new Dictionary<string, object>
-                    {
-                        { "label", sigLabel },
-                        { "documentation", DocString(s.ContainsKey("documentation") ? s["documentation"] : null) },
-                        { "parameters", ps }
-                    });
+                    sigList.Add(SigDict(sigLabel, DocString(s.ContainsKey("documentation") ? s["documentation"] : null), ps));
                 }
             }
             if (sigList.Count == 0) return null;
