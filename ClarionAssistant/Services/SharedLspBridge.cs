@@ -1048,14 +1048,19 @@ namespace ClarionAssistant.Services
             return "file:///" + filePath.Replace("\\", "/").Replace(" ", "%20");
         }
 
-        /// <summary>Inverse of <see cref="FilePathToUri"/>: file:///H:/dir/f.clw -&gt; H:\dir\f.clw.</summary>
+        /// <summary>Inverse of <see cref="FilePathToUri"/>: file:///H:/dir/f.clw -&gt; H:\dir\f.clw.
+        /// Full percent-decoding, not just %20: the server (VS Code URI conventions) encodes the drive
+        /// COLON — file:///c%3A/dir/f.clw — and a %20-only decode left "c%3A\dir\f.clw", which fails
+        /// File.Exists and made navigation (go-to-implementation, any pure-LSP location) silently no-op.</summary>
         public static string UriToFilePath(string uri)
         {
             if (string.IsNullOrEmpty(uri)) return uri;
             string p = uri;
             if (p.StartsWith("file:///", StringComparison.OrdinalIgnoreCase)) p = p.Substring(8);
             else if (p.StartsWith("file://", StringComparison.OrdinalIgnoreCase)) p = p.Substring(7);
-            return p.Replace("/", "\\").Replace("%20", " ");
+            try { p = Uri.UnescapeDataString(p); }
+            catch { p = p.Replace("%3A", ":").Replace("%3a", ":").Replace("%20", " "); }
+            return p.Replace("/", "\\");
         }
 
         /// <summary>Extract the FIRST Location from a definition/references result dict

@@ -1358,8 +1358,15 @@ namespace ClarionAssistant.Services
 
         public static string UriToFilePath(string uri)
         {
+            // Full percent-decoding, not just %20 — the server encodes the drive colon (file:///c%3A/...),
+            // and a %20-only decode leaves "c%3A\..." paths that fail File.Exists (silent nav no-ops).
             if (uri.StartsWith("file:///"))
-                uri = uri.Substring(8).Replace("/", "\\").Replace("%20", " ");
+            {
+                string p = uri.Substring(8);
+                try { p = Uri.UnescapeDataString(p); }
+                catch { p = p.Replace("%3A", ":").Replace("%3a", ":").Replace("%20", " "); }
+                uri = p.Replace("/", "\\");
+            }
             return uri;
         }
 
