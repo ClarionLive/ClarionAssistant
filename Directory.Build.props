@@ -8,8 +8,8 @@
       2. Pass on the command line: msbuild /p:ClarionRoot=C:\YourClarion
       3. Default below (John's machine layout — change to match your install if building without a .user file)
 
-    ClarionVersion (10, 11, or 12) selects the default ClarionRoot when no .user override is present.
-    Pass /p:ClarionVersion=11 to target a different version.
+    ClarionVersion (10, 11, 11.1, or 12) selects the default ClarionRoot when no .user override
+    is present. Pass /p:ClarionVersion=11.1 to target a different version.
   -->
   <!-- Import local developer overrides (gitignored) — must come before defaults so overrides win -->
   <Import Project="$(MSBuildThisFileDirectory)Directory.Build.props.user" Condition="Exists('$(MSBuildThisFileDirectory)Directory.Build.props.user')" />
@@ -22,8 +22,18 @@
   <PropertyGroup Condition="'$(ClarionRoot)' == '' and '$(ClarionVersion)' == '12'">
     <ClarionRoot>C:\Clarion12</ClarionRoot>
   </PropertyGroup>
+  <!-- 11 and 11.1 are DISTINCT Clarion releases with separate install dirs (confirmed via the
+       SoftVelocity registry keys) — never fold one's path into the other's default, since their
+       binding DLLs are version-specific. These per-version defaults are only a last resort for
+       direct `msbuild` invocations; deploy.ps1 resolves roots itself (registry -> these paths ->
+       drive scan) and passes /p:ClarionRoot explicitly, which always wins over these defaults. -->
   <PropertyGroup Condition="'$(ClarionRoot)' == '' and '$(ClarionVersion)' == '11'">
-    <ClarionRoot>C:\Clarion11-13372</ClarionRoot>
+    <ClarionRoot Condition="Exists('C:\Clarion11-13372\bin\ICSharpCode.Core.dll')">C:\Clarion11-13372</ClarionRoot>
+    <ClarionRoot Condition="'$(ClarionRoot)' == '' and Exists('C:\Clarion11\bin\ICSharpCode.Core.dll')">C:\Clarion11</ClarionRoot>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(ClarionRoot)' == '' and '$(ClarionVersion)' == '11.1'">
+    <ClarionRoot Condition="Exists('d:\Clarion11.1EE\bin\ICSharpCode.Core.dll')">d:\Clarion11.1EE</ClarionRoot>
+    <ClarionRoot Condition="'$(ClarionRoot)' == '' and Exists('C:\Clarion11.1\bin\ICSharpCode.Core.dll')">C:\Clarion11.1</ClarionRoot>
   </PropertyGroup>
   <PropertyGroup Condition="'$(ClarionRoot)' == '' and '$(ClarionVersion)' == '10'">
     <ClarionRoot>C:\Clarion10</ClarionRoot>

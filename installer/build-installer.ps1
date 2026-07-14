@@ -17,19 +17,43 @@ $msbuild = $null
 $searchPaths = @(
     'C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe',
     'C:\Program Files\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe',
-    'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe'
+    'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe',
+    'C:\Program Files\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe',
+    'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe',
+    'C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\MSBuild\Current\Bin\MSBuild.exe',
+    'C:\Program Files\Microsoft Visual Studio\18\BuildTools\MSBuild\Current\Bin\MSBuild.exe'
 )
 foreach ($p in $searchPaths) {
     if (Test-Path $p) { $msbuild = $p; break }
 }
 if (-not $msbuild) {
-    Write-Error "MSBuild not found. Install Visual Studio 2022."
+    # Fall back to vswhere, which locates any VS/Build Tools install regardless of year/edition.
+    $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path $vswhere) {
+        $vsInstall = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
+        if ($vsInstall) {
+            foreach ($candidate in @("$vsInstall\MSBuild\Current\Bin\MSBuild.exe", "$vsInstall\MSBuild\Current\Bin\amd64\MSBuild.exe")) {
+                if (Test-Path $candidate) { $msbuild = $candidate; break }
+            }
+        }
+    }
+}
+if (-not $msbuild) {
+    Write-Error "MSBuild not found. Install Visual Studio 2022/2026 (or Build Tools)."
     exit 1
 }
 
-$innoSetup = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
-if (-not (Test-Path $innoSetup)) {
-    Write-Error "Inno Setup 6 not found at $innoSetup"
+$innoSetup = $null
+$innoSearchPaths = @(
+    'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+    'C:\Program Files\Inno Setup 6\ISCC.exe',
+    (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe')
+)
+foreach ($p in $innoSearchPaths) {
+    if (Test-Path $p) { $innoSetup = $p; break }
+}
+if (-not $innoSetup) {
+    Write-Error "Inno Setup 6 not found. Checked: $($innoSearchPaths -join ', ')"
     exit 1
 }
 
@@ -79,7 +103,7 @@ if (-not $SkipBuild) {
     }
 }
 
-# ── Step 1b: Freshness gate — the per-config addin bins (bin\Debug-C10/C11/C12) that the
+# ── Step 1b: Freshness gate — the per-config addin bins (bin\Debug-C10/C11/C11.1/C12) that the
 # .iss packages are built OUT-OF-BAND by deploy.ps1, NOT by this script's build step. With
 # -SkipBuild it's easy to silently ship a STALE config (e.g. C11 left at 5.1.612 while C12 is
 # 5.2.691 — happened for the 5.2 release). Assert every present config bin matches Version.props
@@ -90,7 +114,7 @@ if (Test-Path $versionProps) {
     if ($expected) {
         Write-Host "`nChecking per-config addin freshness (expected $expected)..." -ForegroundColor Yellow
         $stale = @(); $found = 0
-        foreach ($cfg in 'C10','C11','C12') {
+        foreach ($cfg in 'C10','C11','C11.1','C12') {
             $dll = "$repoRoot\ClarionAssistant\bin\Debug-$cfg\ClarionAssistant.dll"
             if (-not (Test-Path $dll)) { Write-Host "  --   ${cfg}: no bin (won't ship this config)" -ForegroundColor DarkGray; continue }
             $found++

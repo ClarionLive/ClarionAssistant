@@ -1,9 +1,9 @@
 ﻿# ClarionAssistant Deploy Script
-# Builds and deploys the addin for Clarion 10, 11, 12, or all.
-# Usage: .\deploy.ps1 [-Version 10|11|12|all] [-NoBuild] [-Kill]
+# Builds and deploys the addin for Clarion 10, 11, 11.1, 12, or all.
+# Usage: .\deploy.ps1 [-Version 10|11|11.1|12|all] [-NoBuild] [-Kill]
 
 param(
-    [ValidateSet("10","11","12","all")]
+    [ValidateSet("10","11","11.1","12","all")]
     [string]$Version = "all",  # Which Clarion version(s) to build/deploy
     [switch]$NoBuild,          # Skip build, just copy
     [switch]$Kill              # Kill Clarion IDE before deploying
@@ -16,7 +16,7 @@ $ErrorActionPreference = "Stop"
 function Resolve-MSBuild {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
     if (Test-Path $vswhere) {
-        $found = & $vswhere -latest -requires Microsoft.Component.MSBuild `
+        $found = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild `
                             -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
         if ($found -and (Test-Path $found)) { return $found }
     }
@@ -45,11 +45,65 @@ $IndexerDir    = if ($env:CLARIONINDEXER_DIR) { $env:CLARIONINDEXER_DIR } else {
 $IndexerFile   = "$IndexerDir\ClarionIndexer.csproj"
 $IndexerOutput = "$IndexerDir\bin\Debug"
 
-# Version-specific config
+# Version-specific config. "Root" entries are last-resort fallback paths only — actual
+# resolution goes registry -> these fallbacks -> drive-root glob scan (Resolve-ClarionRoot).
+# 11 and 11.1 are DISTINCT Clarion releases (confirmed via registry: separate install dirs,
+# not aliases of each other) and must never share a build/deploy target — their binding DLLs
+# (CWBinding.dll etc, see ClarionAssistant.csproj) are version-specific, so building against
+# one and shipping into the other risks an ABI mismatch.
 $Versions = @{
-    "12" = @{ Root = "C:\Clarion12";                           Output = "bin\Debug-C12" }
-    "11" = @{ Root = @("d:\Clarion11.1EE", "C:\Clarion11-13372"); Output = "bin\Debug-C11" }
-    "10" = @{ Root = @("C:\Clarion10", "C:\Clarion10v8");    Output = "bin\Debug-C10" }
+    "12"   = @{ RegistryKeys = @("Clarion12");              Fallbacks = @("C:\Clarion12");                          GlobPatterns = @("Clarion12*");            Output = "bin\Debug-C12" }
+    "11.1" = @{ RegistryKeys = @("Clarion11.1","Clarion111"); Fallbacks = @("d:\Clarion11.1EE", "C:\Clarion11.1");   GlobPatterns = @("Clarion11.1*","Clarion111*"); Output = "bin\Debug-C11.1" }
+    "11"   = @{ RegistryKeys = @("Clarion11");              Fallbacks = @("C:\Clarion11-13372", "C:\Clarion11");    GlobPatterns = @("Clarion11","Clarion11-*"); Output = "bin\Debug-C11" }
+    "10"   = @{ RegistryKeys = @("Clarion10");              Fallbacks = @("C:\Clarion10", "C:\Clarion10v8");        GlobPatterns = @("Clarion10*");            Output = "bin\Debug-C10" }
+}
+
+# Resolve the install root for a Clarion version: registry (authoritative, modern Clarion
+# versions register a "root" value under SoftVelocity\Clarion<key>) -> known fallback paths
+# (other dev machines) -> drive-root glob scan (machines where neither of the above hit).
+function Resolve-ClarionRoot {
+    param(
+        [string[]]$RegistryKeys,
+        [string[]]$Fallbacks,
+        [string[]]$GlobPatterns
+    )
+
+    function Test-ClarionRoot([string]$path) {
+        if (-not $path) { return $false }
+        return Test-Path (Join-Path $path "bin\ICSharpCode.Core.dll")
+    }
+
+    $regHives = @(
+        "HKLM:\SOFTWARE\WOW6432Node\SoftVelocity",
+        "HKLM:\SOFTWARE\SoftVelocity",
+        "HKCU:\SOFTWARE\SoftVelocity"
+    )
+    foreach ($hive in $regHives) {
+        foreach ($key in $RegistryKeys) {
+            $val = (Get-ItemProperty -Path "$hive\$key" -Name root -ErrorAction SilentlyContinue).root
+            if ($val) {
+                $val = $val.TrimEnd('\')
+                if (Test-ClarionRoot $val) { return $val }
+            }
+        }
+    }
+
+    foreach ($p in $Fallbacks) {
+        if (Test-ClarionRoot $p) { return $p }
+    }
+
+    $drives = (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
+                Where-Object { Test-Path $_.Root }).Root
+    foreach ($drive in $drives) {
+        foreach ($pattern in $GlobPatterns) {
+            $hit = Get-ChildItem -Path $drive -Directory -Filter $pattern -ErrorAction SilentlyContinue |
+                    Where-Object { Test-ClarionRoot $_.FullName } |
+                    Select-Object -First 1
+            if ($hit) { return $hit.FullName }
+        }
+    }
+
+    return $null
 }
 
 function Resolve-BuildOutputDir {
@@ -58,20 +112,36 @@ function Resolve-BuildOutputDir {
         [string]$PreferredOutput
     )
 
-    $preferred = Join-Path $ProjectDir $PreferredOutput
-    if (Test-Path $preferred) { return $preferred }
-
-    $fallback = Join-Path $ProjectDir "bin\Debug-C"
-    if (Test-Path $fallback) { return $fallback }
-
-    return $preferred
+    # NOTE: deliberately no fallback to the generic bin\Debug-C folder. That folder is whatever
+    # was last built by a plain `msbuild /p:Configuration=Debug` with no ClarionVersion pinned
+    # (e.g. an ad-hoc build-installer.ps1 run) - it could be built against ANY Clarion version's
+    # binding DLLs. Falling back to it here previously caused a real incident: a Clarion-12-built
+    # DLL got silently deployed into a live Clarion 11.1 install because bin\Debug-C11.1 didn't
+    # exist yet. Missing the real per-version folder must be a clean skip, not a guess.
+    return Join-Path $ProjectDir $PreferredOutput
 }
 
 # Which versions to process
 if ($Version -eq "all") {
-    $TargetVersions = @("12", "11", "10")
+    $TargetVersions = @("12", "11.1", "11", "10")
 } else {
     $TargetVersions = @($Version)
+}
+
+# Resolve install roots up front (needed by both the build and deploy loops below, and
+# independent of -NoBuild). A version with no resolvable install is skipped, not fatal —
+# previously a missing version aborted the whole run because MSBuild's own hardcoded
+# ClarionRoot default in Directory.Build.props errored out mid-build.
+$ResolvedRoots = @{}
+foreach ($ver in $TargetVersions) {
+    $cfg  = $Versions[$ver]
+    $root = Resolve-ClarionRoot -RegistryKeys $cfg.RegistryKeys -Fallbacks $cfg.Fallbacks -GlobPatterns $cfg.GlobPatterns
+    if ($root) {
+        $ResolvedRoots[$ver] = $root
+        Write-Host "Clarion ${ver}: $root" -ForegroundColor DarkGray
+    } else {
+        Write-Host "Clarion ${ver}: no install found (registry / known paths / drive scan) - will skip" -ForegroundColor DarkGray
+    }
 }
 
 # Files and folders to deploy
@@ -149,8 +219,12 @@ if (-not $NoBuild) {
 
     foreach ($ver in $TargetVersions) {
         Write-Host ""
-        Write-Host "Building for Clarion $ver..." -ForegroundColor Cyan
-        & $MSBuild $ProjectFile /p:Configuration=Debug /p:ClarionVersion=$ver /v:minimal
+        if (-not $ResolvedRoots.ContainsKey($ver)) {
+            Write-Host "SKIP  build for Clarion $ver (no install found)" -ForegroundColor DarkGray
+            continue
+        }
+        Write-Host "Building for Clarion $ver ($($ResolvedRoots[$ver]))..." -ForegroundColor Cyan
+        & $MSBuild $ProjectFile /p:Configuration=Debug /p:ClarionVersion=$ver /p:ClarionRoot="$($ResolvedRoots[$ver])" /v:minimal
         if ($LASTEXITCODE -ne 0) { Write-Host "Build failed for Clarion $ver." -ForegroundColor Red; exit 1 }
         Write-Host "Build succeeded for Clarion $ver." -ForegroundColor Green
     }
@@ -179,11 +253,14 @@ if ($Kill) {
 
 # --- Deploy each version ---
 foreach ($ver in $TargetVersions) {
+    if (-not $ResolvedRoots.ContainsKey($ver)) {
+        Write-Host ""
+        Write-Host "=== Skipping Clarion $ver deploy (no install found) ===" -ForegroundColor DarkGray
+        continue
+    }
     $cfg         = $Versions[$ver]
     $BuildOutput = Resolve-BuildOutputDir -ProjectDir $ProjectDir -PreferredOutput $cfg.Output
-
-    # Support single root or array of roots
-    $Roots = @($cfg.Root) | ForEach-Object { $_ }
+    $Roots       = @($ResolvedRoots[$ver])
 
     foreach ($root in $Roots) {
         $DeployDir = Join-Path $root "accessory\addins\ClarionAssistant"
