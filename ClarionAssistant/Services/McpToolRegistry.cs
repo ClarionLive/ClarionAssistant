@@ -69,6 +69,9 @@ namespace ClarionAssistant.Services
             // SharedLspBridge answer cross-project definition/references/workspace-symbol in C#
             // when the LSP returns nothing (needed once we adopt Mark's pure upstream server.js).
             SharedLspBridge.CodeGraphDbPathProvider = () => FindCodeGraphDb();
+            // Same wiring for the dictionary schema DB — lets SharedLspBridge's completion merges resolve
+            // the same .schemagraph.db that query_schema/search_tables/get_table already use.
+            SharedLspBridge.SchemaGraphDbPathProvider = () => FindSchemaGraphDb();
         }
 
         public void SetDiffService(DiffService diffService)

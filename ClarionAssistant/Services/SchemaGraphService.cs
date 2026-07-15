@@ -2067,6 +2067,211 @@ namespace ClarionAssistant.Services
             }
         }
 
+        /// <summary>
+        /// Dictionary-aware qualifier completion for the CA Embeditor: given a table PREFIX (e.g. "Cus"
+        /// from a "Cus:" qualifier typed in the Monaco buffer), returns that table's fields and keys as
+        /// completion items — "Cus:CustomerName" (field, Kind=5) and "Cus:KeyCustName" (key, Kind=20).
+        /// Consumed by SharedLspBridge.MergeDictionaryFieldCompletions. Matches on more than one table
+        /// when multiple ingested dictionaries share a prefix (rare but not prevented by the schema) —
+        /// results carry the owning table name in Detail so the two are distinguishable. Read-only,
+        /// defensive: returns an empty list instead of throwing.
+        /// </summary>
+        public List<LspClient.CompletionItemInfo> GetQualifierCompletions(string prefix, string partial)
+        {
+            var results = new List<LspClient.CompletionItemInfo>();
+            if (string.IsNullOrEmpty(prefix) || !File.Exists(_dbPath)) return results;
+
+            try
+            {
+                using (var conn = OpenConnection(readOnly: true))
+                {
+                    var tables = new List<Tuple<long, string>>();
+                    using (var cmd = new SQLiteCommand(
+                        "SELECT id, name FROM tables WHERE prefix = @p COLLATE NOCASE", conn))
+                    {
+                        cmd.Parameters.AddWithValue("@p", prefix);
+                        using (var reader = cmd.ExecuteReader())
+                            while (reader.Read())
+                                tables.Add(Tuple.Create(reader.GetInt64(0), reader.GetString(1)));
+                    }
+                    if (tables.Count == 0) return results;
+
+                    foreach (var t in tables)
+                    {
+                        using (var cmd = new SQLiteCommand(
+                            @"SELECT name, data_type, size, places, description FROM columns
+                              WHERE table_id = @t ORDER BY ordinal", conn))
+                        {
+                            cmd.Parameters.AddWithValue("@t", t.Item1);
+                            using (var reader = cmd.ExecuteReader())
+                            {
+                                while (reader.Read())
+                                {
+                                    string name = reader.IsDBNull(0) ? null : reader.GetString(0);
+                                    if (string.IsNullOrEmpty(name)) continue;
+                                    if (!string.IsNullOrEmpty(partial) &&
+                                        !name.StartsWith(partial, StringComparison.OrdinalIgnoreCase)) continue;
+                                    string dtype = reader.IsDBNull(1) ? null : reader.GetString(1);
+                                    int size = reader.IsDBNull(2) ? 0 : Convert.ToInt32(reader.GetValue(2));
+                                    int places = reader.IsDBNull(3) ? 0 : Convert.ToInt32(reader.GetValue(3));
+                                    string desc = reader.IsDBNull(4) ? null : reader.GetString(4);
+                                    // Declared TYPE(size[,places]) as it reads after the field name in source —
+                                    // e.g. "DECIMAL(13,2)". Deliberately NOT the picture: a picture like
+                                    // "@n$4.2" is a display/edit format mask, not the field's storage size, and
+                                    // showing it as the size is misleading (a DECIMAL(13,2) can carry any
+                                    // picture, unrelated to its actual 13,2 precision).
+                                    string typeText = FormatColumnType(dtype, size, places);
+                                    // Detail stays short/single-line (Monaco doesn't wrap it); the description
+                                    // goes to Documentation, shown in Monaco's expandable docs panel instead.
+                                    string detail = typeText + "  (table '" + t.Item2 + "' field, dictionary)";
+                                    results.Add(new LspClient.CompletionItemInfo
+                                    {
+                                        Label = prefix + ":" + name,
+                                        Kind = 5, // Field
+                                        Detail = detail,
+                                        Documentation = string.IsNullOrEmpty(desc) ? null : desc,
+                                        InsertText = name
+                                    });
+                                }
+                            }
+                        }
+
+                        using (var cmd = new SQLiteCommand(
+                            "SELECT id, name, is_primary FROM keys WHERE table_id = @t", conn))
+                        {
+                            cmd.Parameters.AddWithValue("@t", t.Item1);
+                            var keyRows = new List<Tuple<long, string, bool>>();
+                            using (var reader = cmd.ExecuteReader())
+                                while (reader.Read())
+                                    keyRows.Add(Tuple.Create(reader.GetInt64(0), reader.GetString(1),
+                                        !reader.IsDBNull(2) && reader.GetInt64(2) != 0));
+
+                            foreach (var k in keyRows)
+                            {
+                                string name = k.Item2;
+                                if (string.IsNullOrEmpty(name)) continue;
+                                if (!string.IsNullOrEmpty(partial) &&
+                                    !name.StartsWith(partial, StringComparison.OrdinalIgnoreCase)) continue;
+                                // Detail stays short (Monaco doesn't wrap it); the field composition — which
+                                // can run long for multi-field keys — goes to Documentation instead, shown in
+                                // Monaco's expandable docs panel.
+                                string composition = GetKeyComposition(conn, k.Item1);
+                                string detail = (k.Item3 ? "primary key" : "key") +
+                                                 "  (table '" + t.Item2 + "', dictionary)";
+                                results.Add(new LspClient.CompletionItemInfo
+                                {
+                                    Label = prefix + ":" + name,
+                                    Kind = 20, // EnumMember — visually distinct from a field
+                                    Detail = detail,
+                                    Documentation = string.IsNullOrEmpty(composition) ? null : "Composition: " + composition,
+                                    InsertText = name
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return results;
+        }
+
+        /// <summary>
+        /// Renders a column's declared type as it reads in Clarion source: "STRING(30)", "DECIMAL(13,2)",
+        /// "LONG" (no parens when size is 0/absent, e.g. LONG/BYTE/DATE). NOT the picture — a picture is a
+        /// display/edit format mask, independent of and not a reliable stand-in for the field's actual size.
+        /// </summary>
+        private static string FormatColumnType(string dataType, int size, int places)
+        {
+            string dt = string.IsNullOrEmpty(dataType) ? "?" : dataType.ToUpperInvariant();
+            if (size <= 0) return dt;
+            return places > 0 ? dt + "(" + size + "," + places + ")" : dt + "(" + size + ")";
+        }
+
+        /// <summary>
+        /// A key's field composition in declared order, e.g. "LastName, FirstName DESC" — joins
+        /// key_columns → columns, ordered by key_columns.ordinal. Returns null on any failure or when the
+        /// key has no components (never throws).
+        /// </summary>
+        private static string GetKeyComposition(SQLiteConnection conn, long keyId)
+        {
+            try
+            {
+                using (var cmd = new SQLiteCommand(
+                    @"SELECT c.name, kc.ascending FROM key_columns kc
+                      JOIN columns c ON c.id = kc.column_id
+                      WHERE kc.key_id = @k ORDER BY kc.ordinal", conn))
+                {
+                    cmd.Parameters.AddWithValue("@k", keyId);
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        var parts = new List<string>();
+                        while (reader.Read())
+                        {
+                            if (reader.IsDBNull(0)) continue;
+                            string name = reader.GetString(0);
+                            bool ascending = reader.IsDBNull(1) || reader.GetInt64(1) != 0;
+                            parts.Add(ascending ? name : name + " DESC");
+                        }
+                        return parts.Count > 0 ? string.Join(", ", parts) : null;
+                    }
+                }
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Dictionary table-name completion for the CA Embeditor: bare-prefix match against ingested
+        /// table names (e.g. typing "Cus" suggests "Customers"). Consumed by SharedLspBridge's bare-prefix
+        /// completion merge. Read-only, defensive: returns an empty list instead of throwing.
+        /// </summary>
+        public List<LspClient.CompletionItemInfo> GetTableNameCompletions(string prefix, int limit = 25)
+        {
+            var results = new List<LspClient.CompletionItemInfo>();
+            if (string.IsNullOrEmpty(prefix) || !File.Exists(_dbPath)) return results;
+
+            try
+            {
+                using (var conn = OpenConnection(readOnly: true))
+                using (var cmd = new SQLiteCommand(
+                    @"SELECT name, prefix, driver, description FROM tables
+                      WHERE name LIKE @p ESCAPE '\' COLLATE NOCASE
+                      ORDER BY name LIMIT @limit", conn))
+                {
+                    cmd.Parameters.AddWithValue("@p", EscapeLike(prefix) + "%");
+                    cmd.Parameters.AddWithValue("@limit", limit);
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            string name = reader.IsDBNull(0) ? null : reader.GetString(0);
+                            if (string.IsNullOrEmpty(name)) continue;
+                            string pre = reader.IsDBNull(1) ? "" : reader.GetString(1);
+                            string driver = reader.IsDBNull(2) ? "" : reader.GetString(2);
+                            string desc = reader.IsDBNull(3) ? "" : reader.GetString(3);
+                            string detail = string.IsNullOrEmpty(driver) ? "table" : driver + " table";
+                            if (!string.IsNullOrEmpty(pre)) detail += "  PRE(" + pre + ")";
+                            detail += "  (dictionary)";
+                            results.Add(new LspClient.CompletionItemInfo
+                            {
+                                Label = name,
+                                Kind = 9, // Module — distinct from Class/Field icons used elsewhere
+                                Detail = detail,
+                                Documentation = string.IsNullOrEmpty(desc) ? null : desc,
+                                InsertText = name
+                            });
+                        }
+                    }
+                }
+            }
+            catch { }
+            return results;
+        }
+
+        private static string EscapeLike(string s)
+        {
+            return (s ?? "").Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+        }
+
         #endregion
 
         #region Helpers
