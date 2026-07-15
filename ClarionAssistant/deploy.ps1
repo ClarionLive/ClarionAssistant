@@ -262,6 +262,15 @@ foreach ($ver in $TargetVersions) {
     $BuildOutput = Resolve-BuildOutputDir -ProjectDir $ProjectDir -PreferredOutput $cfg.Output
     $Roots       = @($ResolvedRoots[$ver])
 
+    # Same no-guessing principle as Resolve-BuildOutputDir: a config that was never built
+    # (-NoBuild, or a fresh checkout) must be a clean skip — otherwise the item loop below
+    # creates the live addin folder and fills it with indexer/LSP/SQLite but NO addin DLL.
+    if (-not (Test-Path $BuildOutput)) {
+        Write-Host ""
+        Write-Host "=== Skipping Clarion $ver deploy (build output missing: $BuildOutput) ===" -ForegroundColor DarkGray
+        continue
+    }
+
     foreach ($root in $Roots) {
         $DeployDir = Join-Path $root "accessory\addins\ClarionAssistant"
 

@@ -13,9 +13,12 @@
 ; SrcAgents/SrcBlankDct resolve via GetEnv to whichever account runs ISCC, not one developer's
 ; profile. The remaining Src* vars point at repos/installs that live OUTSIDE this repo
 ; (ComForClarion, UltimateCOM, ClarionCOM tooling, a Clarion 12 install, Node.js) — override via
-; the env vars noted below if you build those elsewhere. Their [Files]/[Components] entries are
-; #ifexist-guarded, so compiling without them just skips those optional pieces instead of
-; failing outright (same pattern already used for docgraph.db further down).
+; the env vars noted below if you build those elsewhere. Their [Files] entries are guarded by the
+; Have* presence flags defined at the end of this section, so compiling without them skips those
+; optional pieces — LOUDLY, via one #pragma warning each — instead of failing outright.
+; NOTE: ISPP's #ifexist / FileExists match FILES ONLY (a directory yields FALSE even when it
+; exists), so every flag probes a sentinel FILE inside its source; only wildcard-only trees
+; with no stable filename use DirExists.
 #define SrcBase SourcePath + "..\ClarionAssistant"
 #define SrcC10 SrcBase + "\bin\Debug-C10"
 #define SrcC11 SrcBase + "\bin\Debug-C11"
@@ -52,6 +55,56 @@
 #define SrcNodeExe GetEnv("CLARIONLSP_NODE") != "" ? GetEnv("CLARIONLSP_NODE") : "C:\Program Files\nodejs\node.exe"
 ; The directory containing this .iss file itself (SourcePath already ends in "\").
 #define SrcInstaller Copy(SourcePath, 1, Len(SourcePath)-1)
+
+; ---- Optional-source presence flags ----
+; Each probes a sentinel FILE (never a bare directory — ISPP #ifexist/FileExists return FALSE
+; for directories). A missing source drops its [Files] entries and emits exactly one warning
+; below, so the packaging log always shows what was omitted from the installer.
+#define HaveNodeExe FileExists(SrcNodeExe)
+#define HaveLsp FileExists(SrcLsp + "\out\server\src\server.js")
+#define HaveC11_1 FileExists(SrcC11_1 + "\ClarionAssistant.dll")
+#define HaveComForClarion FileExists(SrcComForClarion + "\ClarionCOMBrowser.dll")
+#define HaveUltimateClasses FileExists(SrcUltimateClasses + "\UltimateCOM.inc")
+#define HaveUltimateTemplates FileExists(SrcUltimateTemplates + "\UltimateCOM.tpl")
+#define HaveTemplateDlls FileExists(SrcTemplateDlls + "\UCSelectCOM.dll")
+#define HaveComDocs DirExists(SrcComDocs)
+#define HaveClarionCOM FileExists(SrcClarionCOM + "\version.txt")
+#define HaveBlankDct FileExists(SrcBlankDct + "\blank.dct")
+#define HaveAgents FileExists(SrcAgents + "\code-reviewer.md")
+
+#if !HaveNodeExe
+#pragma message "WARNING: node.exe missing (" + SrcNodeExe + ") - shipping WITHOUT the bundled Node runtime; the LSP server cannot start without it."
+#endif
+#if !HaveLsp
+#pragma message "WARNING: bundled LSP build missing (" + SrcLsp + ") - shipping WITHOUT the Clarion LSP server. Run Sync-LspServer.ps1 -Pure first."
+#endif
+#if !HaveC11_1
+#pragma message "WARNING: bin\Debug-C11.1 missing - shipping WITHOUT the Clarion 11.1 addin (build it via deploy.ps1 -Version 11.1)."
+#endif
+#if !HaveComForClarion
+#pragma message "WARNING: ClarionCOMBrowser build missing (" + SrcComForClarion + ") - shipping WITHOUT the COM for Clarion addin."
+#endif
+#if !HaveUltimateClasses
+#pragma message "WARNING: UltimateCOM classes missing (" + SrcUltimateClasses + ") - shipping WITHOUT UltimateCOM.inc/.clw."
+#endif
+#if !HaveUltimateTemplates
+#pragma message "WARNING: UltimateCOM templates missing (" + SrcUltimateTemplates + ") - shipping WITHOUT UltimateCOM.tpl."
+#endif
+#if !HaveTemplateDlls
+#pragma message "WARNING: UltimateCOM template DLLs missing (" + SrcTemplateDlls + ") - shipping WITHOUT UCSelectCOM/UTFileCopy DLLs."
+#endif
+#if !HaveComDocs
+#pragma message "WARNING: ComForClarion documentation missing (" + SrcComDocs + ") - shipping WITHOUT COM docs."
+#endif
+#if !HaveClarionCOM
+#pragma message "WARNING: ClarionCOM tooling missing (" + SrcClarionCOM + ") - shipping WITHOUT ClarionCOM templates/scripts."
+#endif
+#if !HaveBlankDct
+#pragma message "WARNING: blank.dct missing (" + SrcBlankDct + ") - shipping WITHOUT the blank dictionary + ClassModels."
+#endif
+#if !HaveAgents
+#pragma message "WARNING: Claude agents missing (" + SrcAgents + ") - shipping WITHOUT the quality agents."
+#endif
 
 [Setup]
 AppId={{B7E2F4A1-8C3D-4E5F-9A1B-2C3D4E5F6A7B}
@@ -145,10 +198,10 @@ Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC10Path}\
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion10 and docs; Flags: ignoreversion
 ; --- Clarion 10 LSP Server ---
-#ifexist SrcNodeExe
+#if HaveNodeExe
 Source: "{#SrcNodeExe}"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server"; Components: clarion10 and lsp; Flags: ignoreversion
 #endif
-#ifexist SrcLsp + "\out\server"
+#if HaveLsp
 Source: "{#SrcLsp}\out\server\*"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server\out\server"; Components: clarion10 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\out\common\*"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server\out\common"; Components: clarion10 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\vscode-jsonrpc\*"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\vscode-jsonrpc"; Components: clarion10 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -183,10 +236,10 @@ Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC11Path}\
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion11 and docs; Flags: ignoreversion
 ; --- Clarion 11 LSP Server ---
-#ifexist SrcNodeExe
+#if HaveNodeExe
 Source: "{#SrcNodeExe}"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server"; Components: clarion11 and lsp; Flags: ignoreversion
 #endif
-#ifexist SrcLsp + "\out\server"
+#if HaveLsp
 Source: "{#SrcLsp}\out\server\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server\out\server"; Components: clarion11 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\out\common\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server\out\common"; Components: clarion11 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\vscode-jsonrpc\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\vscode-jsonrpc"; Components: clarion11 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -200,6 +253,10 @@ Source: "{#SrcLsp}\node_modules\xmlbuilder\*"; DestDir: "{code:GetC11Path}\acces
 #endif
 
 ; --- Clarion 11.1 Addin ---
+; Whole block guarded: bin\Debug-C11.1 only exists once the 11.1 config has been built, and
+; build-installer.ps1's freshness gate already treats a missing config bin as "won't ship this
+; config" — without this guard ISCC would hard-fail instead. The HaveC11_1 warning above fires.
+#if HaveC11_1
 Source: "{#SrcC11_1}\ClarionAssistant.dll"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcC11_1}\ClarionAssistant.pdb"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcC11_1}\ClarionAssistant.addin"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
@@ -221,10 +278,10 @@ Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC111Path}
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion111 and docs; Flags: ignoreversion
 ; --- Clarion 11.1 LSP Server ---
-#ifexist SrcNodeExe
+#if HaveNodeExe
 Source: "{#SrcNodeExe}"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server"; Components: clarion111 and lsp; Flags: ignoreversion
 #endif
-#ifexist SrcLsp + "\out\server"
+#if HaveLsp
 Source: "{#SrcLsp}\out\server\*"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server\out\server"; Components: clarion111 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\out\common\*"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server\out\common"; Components: clarion111 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\vscode-jsonrpc\*"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\vscode-jsonrpc"; Components: clarion111 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -235,6 +292,7 @@ Source: "{#SrcLsp}\node_modules\vscode-languageserver-types\*"; DestDir: "{code:
 Source: "{#SrcLsp}\node_modules\xml2js\*"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\xml2js"; Components: clarion111 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\sax\*"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\sax"; Components: clarion111 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\xmlbuilder\*"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\xmlbuilder"; Components: clarion111 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
 #endif
 
 ; --- Clarion 12 Addin ---
@@ -259,10 +317,10 @@ Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC12Path}\
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion12 and docs; Flags: ignoreversion
 ; --- Clarion 12 LSP Server ---
-#ifexist SrcNodeExe
+#if HaveNodeExe
 Source: "{#SrcNodeExe}"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server"; Components: clarion12 and lsp; Flags: ignoreversion
 #endif
-#ifexist SrcLsp + "\out\server"
+#if HaveLsp
 Source: "{#SrcLsp}\out\server\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\out\server"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\out\common\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\out\common"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\vscode-jsonrpc\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\vscode-jsonrpc"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -277,7 +335,7 @@ Source: "{#SrcLsp}\node_modules\xmlbuilder\*"; DestDir: "{code:GetC12Path}\acces
 
 ; --- COM for Clarion: IDE Addin (installs to whichever Clarion version is selected — uses C12 path) ---
 ; ClarionCOMBrowser is a separate repo (see SrcComForClarion above) — skip if not present at compile time.
-#ifexist SrcComForClarion
+#if HaveComForClarion
 Source: "{#SrcComForClarion}\ClarionCOMBrowser.dll"; DestDir: "{code:GetPrimaryClarionPath}\accessory\addins\ComForClarion"; Components: comforclarion\addin; Flags: ignoreversion
 Source: "{#SrcComForClarion}\ClarionCOMBrowser.pdb"; DestDir: "{code:GetPrimaryClarionPath}\accessory\addins\ComForClarion"; Components: comforclarion\addin; Flags: ignoreversion
 Source: "{#SrcComForClarion}\ClarionCOMBrowser.addin"; DestDir: "{code:GetPrimaryClarionPath}\accessory\addins\ComForClarion"; Components: comforclarion\addin; Flags: ignoreversion
@@ -291,26 +349,26 @@ Source: "{#SrcComForClarion}\runtimes\win-x86\native\WebView2Loader.dll"; DestDi
 ; --- COM for Clarion: UltimateCOM Templates & Class ---
 ; Class/template sources and the Clarion-12-built DLLs are independent external dependencies
 ; (see SrcUltimateClasses/SrcUltimateTemplates/SrcTemplateDlls above) — each guarded separately.
-#ifexist SrcUltimateClasses
+#if HaveUltimateClasses
 Source: "{#SrcUltimateClasses}\UltimateCOM.inc"; DestDir: "{code:GetPrimaryClarionPath}\accessory\libsrc\win"; Components: comforclarion\templates; Flags: ignoreversion
 Source: "{#SrcUltimateClasses}\UltimateCOM.clw"; DestDir: "{code:GetPrimaryClarionPath}\accessory\libsrc\win"; Components: comforclarion\templates; Flags: ignoreversion
 #endif
-#ifexist SrcUltimateTemplates
+#if HaveUltimateTemplates
 Source: "{#SrcUltimateTemplates}\UltimateCOM.tpl"; DestDir: "{code:GetPrimaryClarionPath}\accessory\template\win"; Components: comforclarion\templates; Flags: ignoreversion
 #endif
-#ifexist SrcTemplateDlls
+#if HaveTemplateDlls
 Source: "{#SrcTemplateDlls}\UCSelectCOM.dll"; DestDir: "{code:GetPrimaryClarionPath}\accessory\template\win"; Components: comforclarion\templates; Flags: ignoreversion
 Source: "{#SrcTemplateDlls}\UCSelectCOMProgID.dll"; DestDir: "{code:GetPrimaryClarionPath}\accessory\template\win"; Components: comforclarion\templates; Flags: ignoreversion
 Source: "{#SrcTemplateDlls}\UTFileCopy.dll"; DestDir: "{code:GetPrimaryClarionPath}\accessory\template\win"; Components: comforclarion\templates; Flags: ignoreversion
 #endif
 
 ; --- COM for Clarion: Documentation ---
-#ifexist SrcComDocs
+#if HaveComDocs
 Source: "{#SrcComDocs}\*"; DestDir: "{code:GetPrimaryClarionPath}\accessory\resources\ComForClarionDocumentation"; Components: comforclarion\docs; Flags: ignoreversion recursesubdirs createallsubdirs
 #endif
 
 ; --- COM for Clarion: ClarionCOM Tooling ---
-#ifexist SrcClarionCOM
+#if HaveClarionCOM
 Source: "{#SrcClarionCOM}\Template\*"; DestDir: "{userappdata}\ClarionCOM\Templates"; Components: comforclarion\tooling; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcClarionCOM}\.claude\scripts\*"; DestDir: "{userappdata}\ClarionCOM\scripts"; Components: comforclarion\tooling; Flags: ignoreversion
 Source: "{#SrcClarionCOM}\GenerateClarionMetadata.ps1"; DestDir: "{userappdata}\ClarionCOM\scripts"; Components: comforclarion\tooling; Flags: ignoreversion
@@ -338,7 +396,7 @@ Source: "{#SrcClarionCOM}\version.txt"; DestDir: "{userappdata}\ClarionCOM"; Com
 ; --- Blank dictionary template ---
 ; blank.dct / ClassModels are pulled from the packaging machine's own %APPDATA%\clarionassistant
 ; (populated by running ClarionAssistant locally) — skip if that machine hasn't generated it yet.
-#ifexist SrcBlankDct
+#if HaveBlankDct
 Source: "{#SrcBlankDct}\blank.dct"; DestDir: "{userappdata}\clarionassistant"; Components: plugin\skills; Flags: ignoreversion
 
 ; --- Default class model templates ---
@@ -347,7 +405,7 @@ Source: "{#SrcBlankDct}\ClassModels\*.clw"; DestDir: "{userappdata}\clarionassis
 #endif
 
 ; --- Claude Code Quality Agents ---
-#ifexist SrcAgents
+#if HaveAgents
 Source: "{#SrcAgents}\code-reviewer.md"; DestDir: "{%USERPROFILE}\.claude\agents"; Components: agents; Flags: onlyifdoesntexist
 Source: "{#SrcAgents}\verifier.md"; DestDir: "{%USERPROFILE}\.claude\agents"; Components: agents; Flags: onlyifdoesntexist
 Source: "{#SrcAgents}\debugger.md"; DestDir: "{%USERPROFILE}\.claude\agents"; Components: agents; Flags: onlyifdoesntexist
