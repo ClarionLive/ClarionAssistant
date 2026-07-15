@@ -1122,6 +1122,12 @@ namespace ClarionAssistant.Terminal
             // (Was in the old OnHandleCreated; the "ready" message is the equivalent open moment.)
             if (!_fileMode) RefreshPadSources();
             SendSource();
+            // CA Find pad (GitHub #66): this editor becomes findable. Key = stable session identity
+            // (file path in file mode; procedure name otherwise — matches the cursor-persist scoping).
+            Services.CaFindBroker.RegisterHost(this, _panel,
+                () => _fileMode ? (_filePath ?? "") : ("embed::" + (_procedureName ?? "")),
+                () => _fileMode ? System.IO.Path.GetFileName(_filePath ?? "") : (_procedureName ?? "embeditor"),
+                _fileMode ? "CA Editor" : "CA Embeditor");
         }
 
         void IMonacoEditorHost.OnSave(MonacoEditorControl editor, string rawJson) { HandleSave(rawJson); }
@@ -1154,6 +1160,9 @@ namespace ClarionAssistant.Terminal
         void IMonacoEditorHost.OnOpenDesigner(MonacoEditorControl editor, string rawJson) { if (!_fileMode) HandleOpenDesigner(rawJson); }
         void IMonacoEditorHost.OnOpenDesignerCreate(MonacoEditorControl editor, string rawJson) { if (!_fileMode) HandleOpenDesignerCreate(rawJson); }
         void IMonacoEditorHost.OnActivateDesigner(MonacoEditorControl editor) { if (!_fileMode) StructureDesignerService.ActivateCurrent(_panel); }
+
+        // CA Find pad protocol (GitHub #66) — the broker routes to/from the dockable pad.
+        void IMonacoEditorHost.OnCaFind(MonacoEditorControl editor, string action, string rawJson) { Services.CaFindBroker.FromEditor(this, action, rawJson); }
 
         void IMonacoEditorHost.OnEditorNavigationCompleted(MonacoEditorControl editor, bool success) { _isInitialized = success; if (_embedOverlay && success) RemoveOverlayCover(); }
         void IMonacoEditorHost.OnUnknownAction(MonacoEditorControl editor, string action, string rawJson) { }
@@ -3209,6 +3218,10 @@ namespace ClarionAssistant.Terminal
             // confirm MessageBox can't get stuck behind the live WebView2 (the documented native<->WebView2 deadlock).
             bool promptSave = _fileMode && _fileDirty && _fileLiveText != null && !_disposed;
             _disposed = true;
+
+            // CA Find pad (GitHub #66): stop routing find traffic to this editor; if it was the pad's
+            // target the pad drops to idle (sessions survive pad-side for reopen).
+            try { Services.CaFindBroker.UnregisterHost(this); } catch { }
 
             // #56: while this tab was open, LSP requests shadowed the on-disk generated module under its
             // real path. No didClose exists, so push the on-disk content back to un-shadow it.

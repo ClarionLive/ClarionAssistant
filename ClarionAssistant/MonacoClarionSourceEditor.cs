@@ -285,6 +285,12 @@ namespace ClarionAssistant
                 catch (Exception fex) { MonacoSpikeLog.Write("overlay filename error: " + fex.Message); }
                 if (!string.IsNullOrEmpty(_filePath)) _overlayTitle = Path.GetFileName(_filePath);
 
+                // CA Find pad (GitHub #66): this editor becomes findable. Key = the file path.
+                ClarionAssistant.Services.CaFindBroker.RegisterHost(this, _editor,
+                    () => _filePath ?? "",
+                    () => string.IsNullOrEmpty(_filePath) ? "source" : Path.GetFileName(_filePath),
+                    "CA Editor");
+
                 string text = "";
                 try { if (_hostEditor != null && _hostEditor.Document != null) text = _hostEditor.Document.TextContent ?? ""; }
                 catch (Exception rex) { MonacoSpikeLog.Write("overlay read document error: " + rex.Message); }
@@ -722,6 +728,12 @@ namespace ClarionAssistant
 
         // The rest stay inert for now (Step 6 wires Ctrl+D through the embeditor's openDesigner path).
         void IMonacoEditorHost.OnClipboard(MonacoEditorControl editor, string rawJson) { }
+
+        // CA Find pad protocol (GitHub #66) — the broker routes to/from the dockable pad.
+        void IMonacoEditorHost.OnCaFind(MonacoEditorControl editor, string action, string rawJson)
+        {
+            ClarionAssistant.Services.CaFindBroker.FromEditor(this, action, rawJson);
+        }
         // Gear-panel Code Snippets CRUD from the source editor. Persist through the shared store (never a
         // silent no-op — see the dual-host gotcha) and broadcast the updated list to all embeditor tabs.
         void IMonacoEditorHost.OnSnippetCommand(MonacoEditorControl editor, string rawJson)
@@ -1348,6 +1360,7 @@ namespace ClarionAssistant
         {
             StopCaptureTimer();
             UnwireBreakpoints();
+            try { ClarionAssistant.Services.CaFindBroker.UnregisterHost(this); } catch { }
             try { MonacoSourceNavigator.Unregister(_filePath, this); } catch { }
             try { if (_closingEvt != null && _wbWindow != null && _closingHandler != null) _closingEvt.RemoveEventHandler(_wbWindow, _closingHandler); } catch { }
             _wbWindow = null; _closingEvt = null; _closingHandler = null;
