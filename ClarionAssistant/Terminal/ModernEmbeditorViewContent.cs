@@ -1005,7 +1005,7 @@ namespace ClarionAssistant.Terminal
             _fileMode = true;
             _title = Path.GetFileName(_filePath);
             _fileIdentity = CanonicalFileId(_filePath);   // stable identity for dedup/state, survives path aliasing (item 3)
-            _fileEncoding = DetectFileEncoding(_filePath);
+            _fileEncoding = EncodingHelper.DetectFileEncoding(_filePath);
             _sourceText = File.ReadAllText(_filePath, _fileEncoding);
             _fileEol = DetectEol(_sourceText);
             _fileDiskSig = ReadFileSignature(_filePath);
@@ -1097,28 +1097,6 @@ namespace ClarionAssistant.Terminal
 
         /// <summary>Activate this tab (public wrapper over the deferred SelectWindow used elsewhere).</summary>
         public void ActivateTab() { BringToFront(); }
-
-        /// <summary>
-        /// BOM-detect, else ANSI. Clarion source is traditionally Windows-ANSI; decoding it as UTF-8
-        /// would mangle high-bit characters and a save would then write the mangled text back. ReadAllText
-        /// honors a BOM when present, so only the no-BOM default differs from stock behavior.
-        /// </summary>
-        private static Encoding DetectFileEncoding(string path)
-        {
-            try
-            {
-                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                {
-                    var bom = new byte[4];
-                    int n = fs.Read(bom, 0, 4);
-                    if (n >= 3 && bom[0] == 0xEF && bom[1] == 0xBB && bom[2] == 0xBF) return new UTF8Encoding(true);
-                    if (n >= 2 && bom[0] == 0xFF && bom[1] == 0xFE) return Encoding.Unicode;
-                    if (n >= 2 && bom[0] == 0xFE && bom[1] == 0xFF) return Encoding.BigEndianUnicode;
-                }
-            }
-            catch { }
-            return Encoding.Default;
-        }
 
         private static string LanguageForFile(string path)
         {
@@ -1521,7 +1499,7 @@ namespace ClarionAssistant.Terminal
                 // Re-detect encoding + EOL: the file may have been externally rewritten in a different encoding
                 // since open. Reusing the stale open-time encoding would misdecode and a later save would write the
                 // corrupted text back. (pipeline item 4 — adversary)
-                _fileEncoding = DetectFileEncoding(_filePath);
+                _fileEncoding = EncodingHelper.DetectFileEncoding(_filePath);
                 _sourceText = File.ReadAllText(_filePath, _fileEncoding);
                 _fileEol = DetectEol(_sourceText);
                 _fileDiskSig = ReadFileSignature(_filePath);

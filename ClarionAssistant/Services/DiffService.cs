@@ -89,7 +89,7 @@ namespace ClarionAssistant.Services
                 if (!File.Exists(originalFile))
                     return "Error: File not found: " + originalFile;
 
-                string[] allLines = File.ReadAllLines(originalFile);
+                string[] allLines = File.ReadAllLines(originalFile, EncodingHelper.DetectFileEncoding(originalFile));
 
                 // Clamp line range (1-based input)
                 if (startLine < 1) startLine = 1;
@@ -138,7 +138,7 @@ namespace ClarionAssistant.Services
 
         private static string ReadFileRange(string filePath, int startLine, int endLine)
         {
-            string[] allLines = File.ReadAllLines(filePath);
+            string[] allLines = File.ReadAllLines(filePath, EncodingHelper.DetectFileEncoding(filePath));
             if (startLine < 1) startLine = 1;
             if (endLine < 1 || endLine > allLines.Length) endLine = allLines.Length;
             if (startLine > endLine) startLine = 1;
