@@ -1,8 +1,9 @@
 # CodeGraph parser regression fixture
 
-Contributed by [@geircodes](https://github.com/geircodes) alongside issues #79–#90 — a single
-compiling Clarion solution whose procedures each exercise one historical parser/indexer bug.
-This is currently the only regression coverage the CodeGraph parser has; run it after ANY
+Contributed by [@geircodes](https://github.com/geircodes) alongside issues #79–#90, extended for
+a further `LIKE(...)`/`EQUATE`-alias CLASS-member fix (PR pending, no issue number yet) — a
+single compiling Clarion solution whose procedures each exercise one historical parser/indexer
+bug. This is currently the only regression coverage the CodeGraph parser has; run it after ANY
 change to `Parsing/ClarionParser.cs` or `Graph/CodeGraphIndexer.cs` (either synced copy).
 
 ## Run
@@ -11,9 +12,10 @@ change to `Parsing/ClarionParser.cs` or `Graph/CodeGraphIndexer.cs` (either sync
 indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproSolution.sln --db %TEMP%\codegraph-repro.db
 ```
 
-## Expected results (verified 2026-07-14 with all #79–#90 fixes applied)
+## Expected results (verified 2026-07-15 with all #79–#90 fixes applied, plus the pending
+`LIKE(...)`/`EQUATE`-alias CLASS-member fix)
 
-### Callers of `WorkerClass.Sign` — exactly 17 `calls` rows
+### Callers of `WorkerClass.Sign` — exactly 18 `calls` rows
 
 | Caller | Line | Proves issue |
 |---|---|---|
@@ -34,12 +36,13 @@ indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproS
 | GroupQueueLocalTest | 213 | #89 (local after GROUP(Type) two-line) |
 | InlineLocalGroupTest | 228 | #89 (local after GROUP(Type) END inline) |
 | LocalDerivedClassTest | 254 | #90 (attribution after local CLASS(Parent)) |
+| LikeMemberBugClass.CallViaPlainInstanceMember | 271 | pending (call through a reference CLASS member, unaffected control) |
 
 ### Symbols
 
-- 6 `class` symbols: WorkerClass, OwnerClass, DerivableClass, GroupBugClass, PeriodBugClass,
+- 7 `class` symbols: WorkerClass, OwnerClass, DerivableClass, GroupBugClass, PeriodBugClass,
   AfterBugClass (#84: sourced from the `.inc` despite `<None Include>`; #88: the last two
-  vanished entirely before the depth-leak fix).
+  vanished entirely before the depth-leak fix), LikeMemberBugClass (pending fix).
 - `LocalDerived` is a **local variable** of LocalDerivedClassTest typed `DERIVABLECLASS` —
   NOT a global class (#90).
 - `pWorker`: `scope='parameter'`, parent `ParameterTest`, params `&WorkerClass` (#87).
@@ -47,6 +50,15 @@ indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproS
   (#84, #85).
 - `workerRef` (`&WORKERCLASS`), `LocalGroup` / `InlineLocalGroup` (`GROUP(SmallGroupType)`)
   local variables (#85, #89).
+- `LikeMemberBugClass.GenCertData` (`LIKE(SmallGroupType)`) and `LikeMemberBugClass.SomeHandle`
+  (`SMALLHANDLETYPE`, a custom `EQUATE`-aliased scalar synonym): both `scope='class'` — the
+  pending fix's motivating case (LIKE()-declared / EQUATE-alias-typed CLASS members were never
+  captured at all before it). `LikeMemberBugClass.PlainInstanceMember` (`&WorkerClass`) is an
+  unrelated reference member, already handled correctly before this fix — kept as a negative
+  control. An **earlier** version of this repro tried a plain by-value `WorkerClass` instance
+  here instead of the `EQUATE`-alias case, to exercise the same catch-all fallback — that
+  construct does NOT compile at all (confirmed directly); replaced with the actual real-world
+  trigger.
 
 ### Program symbol (#81)
 
@@ -62,5 +74,5 @@ JOIN symbols s1 ON r.to_id=s1.id JOIN symbols s2 ON r.from_id=s2.id
 WHERE s1.name='WorkerClass.Sign' AND r.type='calls' ORDER BY r.line_number;
 
 SELECT name, type, scope, parent_name, params FROM symbols WHERE type='class' OR scope='parameter'
-OR name IN ('LocalDerived','workerRef','LocalGroup','InlineLocalGroup');
+OR name IN ('LocalDerived','workerRef','LocalGroup','InlineLocalGroup','GenCertData','SomeHandle');
 ```

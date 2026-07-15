@@ -258,3 +258,17 @@ LocalDerived.Compute PROCEDURE( LONG pValue )
   CODE
   RETURN pValue * 2
 
+! Bug K repro: GenCertData (LIKE(SmallGroupType)) and SomeHandle (typed via the EQUATE-aliased
+! SmallHandleType synonym) never matched RefVariableDeclRegex/VariableDeclRegex, the only two
+! regexes ParseIncFile's CLASS-member cascade tried -- silently absent from the index. Expected
+! before the fix: neither GenCertData nor SomeHandle exists as a symbol. PlainInstanceMember
+! (&WorkerClass) is unrelated to this fix -- a reference member, already handled correctly
+! before Bug K -- kept only because a call through it was already wired up here.
+LikeMemberBugClass.CallViaPlainInstanceMember PROCEDURE( )
+result   LONG
+  CODE
+  SELF.PlainInstanceMember &= NEW(WorkerClass)
+  result = SELF.PlainInstanceMember.Sign( 50 )
+  DISPOSE( SELF.PlainInstanceMember)
+  RETURN result
+
