@@ -23,6 +23,7 @@ owner        OwnerClass
 groupBug     GroupBugClass
 periodBug    PeriodBugClass
 afterBug     AfterBugClass
+likeMemberBug LikeMemberBugClass
 multiLineGroupBug MultiLineGroupBugClass
 
  CODE
@@ -42,6 +43,7 @@ multiLineGroupBug MultiLineGroupBugClass
     r# = GroupQueueLocalTest()
     r# = InlineLocalGroupTest()
     r# = LocalDerivedClassTest()
+    r# = likeMemberBug.CallViaPlainInstanceMember()
     r# = multiLineGroupBug.CallViaAfterMultiLineGroupMember()
 
 ! Bug A repro: this procedure is implemented directly in the PROGRAM file itself,

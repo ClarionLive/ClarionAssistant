@@ -1006,32 +1006,92 @@ namespace ClarionCodeGraph.Parsing
                         // Strip a trailing inline comment before matching -- see the DATA-section
                         // fix above for why (e.g. "PrivKey &SomeClass !some comment" must still match).
                         string memberForTypeMatch = StripInlineComment(trimmedMember);
+
+                        // Only RefVariableDeclRegex/VariableDeclRegex were ever tried here, unlike
+                        // ParseMemberFile's own DATA-section cascade, which tries six different
+                        // declaration shapes for the identical purpose. A member declared via
+                        // LIKE(OtherType) (e.g. "GenCertData LIKE(GenCertGroupType)", borrowing
+                        // another structure's layout) or typed via a custom EQUATE-aliased scalar
+                        // synonym (e.g. "CRYPT_CONTEXT EQUATE(LONG)") matched neither regex and
+                        // silently never became a symbol at all (issue: LIKE()/EQUATE-alias-typed
+                        // CLASS member never captured). GroupQueueDeclRegex is deliberately NOT
+                        // added here: a GROUP/QUEUE/RECORD-shaped member line is already
+                        // intercepted earlier, by the "Nested END for inner GROUP/QUEUE etc."
+                        // check above, so it can never reach this cascade at all.
+                        string memberName = null;
+                        string memberType = null;
+                        string memberAttrs = "";
+
                         var refMatch = RefVariableDeclRegex.Match(memberForTypeMatch);
-                        var sclMatch = refMatch.Success ? Match.Empty : VariableDeclRegex.Match(memberForTypeMatch);
-                        if (refMatch.Success || sclMatch.Success)
+                        if (refMatch.Success)
                         {
-                            string memberName = (refMatch.Success ? refMatch : sclMatch).Groups[1].Value;
-                            string attrs = refMatch.Success
-                                ? (refMatch.Groups[3].Success ? refMatch.Groups[3].Value : "")
-                                : (sclMatch.Groups[4].Success ? sclMatch.Groups[4].Value : "");
-                            if (attrs.IndexOf("PRIVATE", StringComparison.OrdinalIgnoreCase) < 0)
+                            memberName = refMatch.Groups[1].Value;
+                            memberType = "&" + refMatch.Groups[2].Value;
+                            memberAttrs = refMatch.Groups[3].Success ? refMatch.Groups[3].Value : "";
+                        }
+                        else
+                        {
+                            var sclMatch = VariableDeclRegex.Match(memberForTypeMatch);
+                            if (sclMatch.Success)
                             {
-                                string memberType = refMatch.Success
-                                    ? "&" + refMatch.Groups[2].Value
-                                    : sclMatch.Groups[2].Value.ToUpperInvariant() +
-                                      (sclMatch.Groups[3].Success ? sclMatch.Groups[3].Value : "");
-                                result.Symbols.Add(new ClarionSymbol
-                                {
-                                    Name = currentClassName + "." + memberName,
-                                    Type = "variable",
-                                    FilePath = filePath,
-                                    LineNumber = lineNum,
-                                    ProjectId = projectId,
-                                    Params = memberType,
-                                    ParentName = currentClassName,
-                                    Scope = "class"
-                                });
+                                memberName = sclMatch.Groups[1].Value;
+                                memberType = sclMatch.Groups[2].Value.ToUpperInvariant() +
+                                    (sclMatch.Groups[3].Success ? sclMatch.Groups[3].Value : "");
+                                memberAttrs = sclMatch.Groups[4].Success ? sclMatch.Groups[4].Value : "";
                             }
+                            else
+                            {
+                                var likeMatch = LikeDeclRegex.Match(memberForTypeMatch);
+                                if (likeMatch.Success)
+                                {
+                                    memberName = likeMatch.Groups[1].Value;
+                                    memberType = "LIKE(" + likeMatch.Groups[2].Value + ")";
+                                    memberAttrs = likeMatch.Groups[3].Success ? likeMatch.Groups[3].Value : "";
+                                }
+                                else
+                                {
+                                    var eqMatch = EquateDeclRegex.Match(memberForTypeMatch);
+                                    if (eqMatch.Success)
+                                    {
+                                        memberName = eqMatch.Groups[1].Value;
+                                        memberType = "EQUATE";
+                                    }
+                                    else
+                                    {
+                                        // Catch-all, deliberately last (broadest match): a member
+                                        // typed with any other non-builtin name, e.g. a custom
+                                        // EQUATE-aliased scalar synonym -- mirrors ParseMemberFile's
+                                        // own identical catch-all.
+                                        var classInstMatch = ClassInstanceDeclRegex.Match(memberForTypeMatch);
+                                        if (classInstMatch.Success)
+                                        {
+                                            string ciType = classInstMatch.Groups[2].Value;
+                                            if (!ClarionBuiltins.IsBuiltInOrKeyword(ciType) &&
+                                                !ClarionBuiltins.IsClarionType(ciType))
+                                            {
+                                                memberName = classInstMatch.Groups[1].Value;
+                                                memberType = ciType.ToUpperInvariant();
+                                                memberAttrs = classInstMatch.Groups[3].Success ? classInstMatch.Groups[3].Value : "";
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (memberName != null && memberAttrs.IndexOf("PRIVATE", StringComparison.OrdinalIgnoreCase) < 0)
+                        {
+                            result.Symbols.Add(new ClarionSymbol
+                            {
+                                Name = currentClassName + "." + memberName,
+                                Type = "variable",
+                                FilePath = filePath,
+                                LineNumber = lineNum,
+                                ProjectId = projectId,
+                                Params = memberType,
+                                ParentName = currentClassName,
+                                Scope = "class"
+                            });
                         }
                     }
                     continue;
