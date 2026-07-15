@@ -50,7 +50,7 @@
 ; Bundled LSP is now PURE/stock upstream (GitHub #40) — source from the pinned pure build under
 ; .lsp-build\<tag>, NOT the old codegraph-overlay clone. Tag tracks lsp-server-sync\lsp-snapshot.json
 ; "resolvedTag"; bump this path when the pin bumps (Sync-LspServer.ps1 -Pure -Tag <tag>).
-#define SrcLsp SrcBase + "\.lsp-build\v0.9.8"
+#define SrcLsp SrcBase + "\.lsp-build\v1.0.0"
 ; Bundled node.exe (so end users don't need Node.js installed). Override: CLARIONLSP_NODE
 #define SrcNodeExe GetEnv("CLARIONLSP_NODE") != "" ? GetEnv("CLARIONLSP_NODE") : "C:\Program Files\nodejs\node.exe"
 ; The directory containing this .iss file itself (SourcePath already ends in "\").
@@ -212,6 +212,8 @@ Source: "{#SrcLsp}\node_modules\vscode-languageserver-types\*"; DestDir: "{code:
 Source: "{#SrcLsp}\node_modules\xml2js\*"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\xml2js"; Components: clarion10 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\sax\*"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\sax"; Components: clarion10 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\xmlbuilder\*"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\xmlbuilder"; Components: clarion10 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SrcLsp}\node_modules\iconv-lite\*"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\iconv-lite"; Components: clarion10 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SrcLsp}\node_modules\safer-buffer\*"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\safer-buffer"; Components: clarion10 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 #endif
 
 ; --- Clarion 11 Addin ---
@@ -250,6 +252,8 @@ Source: "{#SrcLsp}\node_modules\vscode-languageserver-types\*"; DestDir: "{code:
 Source: "{#SrcLsp}\node_modules\xml2js\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\xml2js"; Components: clarion11 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\sax\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\sax"; Components: clarion11 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\xmlbuilder\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\xmlbuilder"; Components: clarion11 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SrcLsp}\node_modules\iconv-lite\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\iconv-lite"; Components: clarion11 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SrcLsp}\node_modules\safer-buffer\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\safer-buffer"; Components: clarion11 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 #endif
 
 ; --- Clarion 11.1 Addin ---
@@ -292,6 +296,8 @@ Source: "{#SrcLsp}\node_modules\vscode-languageserver-types\*"; DestDir: "{code:
 Source: "{#SrcLsp}\node_modules\xml2js\*"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\xml2js"; Components: clarion111 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\sax\*"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\sax"; Components: clarion111 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\xmlbuilder\*"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\xmlbuilder"; Components: clarion111 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SrcLsp}\node_modules\iconv-lite\*"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\iconv-lite"; Components: clarion111 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SrcLsp}\node_modules\safer-buffer\*"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\safer-buffer"; Components: clarion111 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 #endif
 #endif
 
@@ -331,6 +337,8 @@ Source: "{#SrcLsp}\node_modules\vscode-languageserver-types\*"; DestDir: "{code:
 Source: "{#SrcLsp}\node_modules\xml2js\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\xml2js"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\sax\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\sax"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcLsp}\node_modules\xmlbuilder\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\xmlbuilder"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SrcLsp}\node_modules\iconv-lite\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\iconv-lite"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SrcLsp}\node_modules\safer-buffer\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\safer-buffer"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 #endif
 
 ; --- COM for Clarion: IDE Addin (installs to whichever Clarion version is selected — uses C12 path) ---

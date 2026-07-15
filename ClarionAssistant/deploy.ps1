@@ -194,8 +194,10 @@ function Resolve-LspBuild {
     return $pureDir
 }
 $LspSourceDir = Resolve-LspBuild
-# Pure v0.9.6 runtime deps only — NO better-sqlite3/bindings/file-uri-to-path (those backed the retired
+# Pure v1.0.0 runtime deps only — NO better-sqlite3/bindings/file-uri-to-path (those backed the retired
 # CodeGraph overlay). With better-sqlite3 absent the #42 ABI check below self-skips ("module not deployed").
+# iconv-lite (+ its dep safer-buffer) is NEW at v1.0.0: UnicodeDiagnostics requires it in the EAGER
+# startup graph — without it the server dies at startup with MODULE_NOT_FOUND (GitHub #77 re-pin).
 $LspNodeModules = @(
     "vscode-jsonrpc"
     "vscode-languageserver"
@@ -205,6 +207,8 @@ $LspNodeModules = @(
     "xml2js"
     "sax"
     "xmlbuilder"
+    "iconv-lite"
+    "safer-buffer"
 )
 
 # SQLite DLLs with FTS5 support (from lib/sqlite-fts5 in project)
