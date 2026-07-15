@@ -393,7 +393,8 @@ namespace ClarionCodeGraph.Parsing
 
                     // Method prototype inside CLASS: indented "MethodName PROCEDURE(...)"
                     // (library mode also allows column-0 names — ABC/library style)
-                    var methodMatch = (LibraryMode ? MethodPrototypeRegexLib : MethodPrototypeRegex).Match(line);
+                    // Strip a trailing inline comment first -- see the DATA-section fix above for why.
+                    var methodMatch = (LibraryMode ? MethodPrototypeRegexLib : MethodPrototypeRegex).Match(StripInlineComment(line));
                     if (methodMatch.Success && currentClassName != null)
                     {
                         string methodName = methodMatch.Groups[1].Value;
@@ -595,8 +596,14 @@ namespace ClarionCodeGraph.Parsing
                     string varScope = currentProcedure != null ? "local" : "module";
                     string varOwner = currentProcedure;
 
+                    // Strip a trailing inline comment before type-matching -- a declaration like
+                    // "PrivKey &SomeClass !some comment" would otherwise never match any of the
+                    // regexes below, since they all anchor at end-of-line (issue: trailing-comment
+                    // member capture gap).
+                    string dataForTypeMatch = StripInlineComment(trimmedData);
+
                     // GROUP/QUEUE declaration
-                    var gqMatch = GroupQueueDeclRegex.Match(trimmedData);
+                    var gqMatch = GroupQueueDeclRegex.Match(dataForTypeMatch);
                     if (gqMatch.Success)
                     {
                         string gqName = gqMatch.Groups[1].Value;
@@ -625,7 +632,7 @@ namespace ClarionCodeGraph.Parsing
                     }
 
                     // Simple variable declaration: VarName TYPE[(size)]
-                    var varMatch = VariableDeclRegex.Match(trimmedData);
+                    var varMatch = VariableDeclRegex.Match(dataForTypeMatch);
                     if (varMatch.Success)
                     {
                         string varName = varMatch.Groups[1].Value;
@@ -647,7 +654,7 @@ namespace ClarionCodeGraph.Parsing
                     }
 
                     // Reference variable: VarName &TYPE
-                    var refMatch = RefVariableDeclRegex.Match(trimmedData);
+                    var refMatch = RefVariableDeclRegex.Match(dataForTypeMatch);
                     if (refMatch.Success)
                     {
                         string refName = refMatch.Groups[1].Value;
@@ -668,7 +675,7 @@ namespace ClarionCodeGraph.Parsing
                     }
 
                     // EQUATE constant
-                    var eqMatch = EquateDeclRegex.Match(trimmedData);
+                    var eqMatch = EquateDeclRegex.Match(dataForTypeMatch);
                     if (eqMatch.Success)
                     {
                         string eqName = eqMatch.Groups[1].Value;
@@ -688,7 +695,7 @@ namespace ClarionCodeGraph.Parsing
                     }
 
                     // LIKE declaration
-                    var likeMatch = LikeDeclRegex.Match(trimmedData);
+                    var likeMatch = LikeDeclRegex.Match(dataForTypeMatch);
                     if (likeMatch.Success)
                     {
                         string likeName = likeMatch.Groups[1].Value;
@@ -710,7 +717,7 @@ namespace ClarionCodeGraph.Parsing
 
                     // Class/interface instance: VarName ClassName [,attributes]
                     // Catch-all after all specific type matchers — captures MyObj SomeClass
-                    var classInstMatch = ClassInstanceDeclRegex.Match(trimmedData);
+                    var classInstMatch = ClassInstanceDeclRegex.Match(dataForTypeMatch);
                     if (classInstMatch.Success)
                     {
                         string ciName = classInstMatch.Groups[1].Value;
@@ -826,7 +833,8 @@ namespace ClarionCodeGraph.Parsing
 
                     // Method prototype inside CLASS/INTERFACE
                     // (library mode also allows column-0 names — ABC/library style)
-                    var methodMatch = (LibraryMode ? MethodPrototypeRegexLib : MethodPrototypeRegex).Match(line);
+                    // Strip a trailing inline comment first -- see the DATA-section fix above for why.
+                    var methodMatch = (LibraryMode ? MethodPrototypeRegexLib : MethodPrototypeRegex).Match(StripInlineComment(line));
                     if (methodMatch.Success && currentClassName != null)
                     {
                         string methodName = methodMatch.Groups[1].Value;
@@ -862,8 +870,11 @@ namespace ClarionCodeGraph.Parsing
                     else if (currentClassName != null && classEndDepth == 1)
                     {
                         string trimmedMember = line.TrimStart();
-                        var refMatch = RefVariableDeclRegex.Match(trimmedMember);
-                        var sclMatch = refMatch.Success ? Match.Empty : VariableDeclRegex.Match(trimmedMember);
+                        // Strip a trailing inline comment before matching -- see the DATA-section
+                        // fix above for why (e.g. "PrivKey &SomeClass !some comment" must still match).
+                        string memberForTypeMatch = StripInlineComment(trimmedMember);
+                        var refMatch = RefVariableDeclRegex.Match(memberForTypeMatch);
+                        var sclMatch = refMatch.Success ? Match.Empty : VariableDeclRegex.Match(memberForTypeMatch);
                         if (refMatch.Success || sclMatch.Success)
                         {
                             string memberName = (refMatch.Success ? refMatch : sclMatch).Groups[1].Value;
