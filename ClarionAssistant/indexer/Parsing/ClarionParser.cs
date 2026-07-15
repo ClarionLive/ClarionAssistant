@@ -429,6 +429,7 @@ namespace ClarionCodeGraph.Parsing
                         MemberOf = memberOf,
                         Scope = "module"
                     });
+                    ExtractNamedParameters(procParams, currentProcedure, filePath, lineNum, projectId, result);
                     continue;
                 }
 
@@ -454,6 +455,7 @@ namespace ClarionCodeGraph.Parsing
                         MemberOf = memberOf,
                         Scope = "module"
                     });
+                    ExtractNamedParameters(funcParams, currentProcedure, filePath, lineNum, projectId, result);
                     continue;
                 }
 
@@ -997,6 +999,121 @@ namespace ClarionCodeGraph.Parsing
                     return line.Substring(0, i);
             }
             return line;
+        }
+
+        // Strips a leading CONST/REF qualifier from a parameter declaration segment (Clarion#
+        // compatibility keywords, see "Prototype Parameter Lists" in the language reference).
+        private static readonly Regex ConstRefPrefixRegex = new Regex(
+            @"^(CONST|REF)\s+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// Splits a PROCEDURE/FUNCTION's raw parameter-list string (as captured by
+        /// ProcedureDefRegex/FunctionDefRegex, including the outer parens) into named,
+        /// typed parameters, emitting each as a "variable" symbol scoped to the owning
+        /// procedure (Scope="parameter", ParentName = the procedure's own full name) so a
+        /// call like "pPrivKey.Sign(...)" inside that procedure's CODE can resolve pPrivKey's
+        /// declared type. Unnamed (prototype-only) parameters -- e.g. "PROCEDURE(*SomeClass)"
+        /// with no trailing label, a legal and commonly-used Clarion style -- are skipped, since
+        /// there's no name for a call site to bind to. By-address parameters ("*Type Name")
+        /// are stored "&amp;Type", matching the existing convention for reference-typed DATA
+        /// declarations, so TryResolveVariableClassType needs no changes to handle them.
+        /// </summary>
+        private void ExtractNamedParameters(string rawParams, string ownerFullName, string filePath, int lineNum, int projectId, ParseResult result)
+        {
+            if (string.IsNullOrEmpty(rawParams)) return;
+
+            string content = rawParams.Trim();
+            if (content.StartsWith("(") && content.EndsWith(")"))
+                content = content.Substring(1, content.Length - 2);
+
+            foreach (string rawSegment in SplitParameterList(content))
+            {
+                string segment = rawSegment.Trim();
+                if (segment.Length == 0) continue;
+
+                // Strip a default value: "Type Name = default" (only valid on simple numeric
+                // types per the language reference, but harmless to strip unconditionally here).
+                int eqIdx = FindTopLevelChar(segment, '=');
+                if (eqIdx >= 0) segment = segment.Substring(0, eqIdx).Trim();
+
+                // Strip omittable-parameter angle brackets: <*Type Name>
+                if (segment.StartsWith("<") && segment.EndsWith(">"))
+                    segment = segment.Substring(1, segment.Length - 2).Trim();
+
+                segment = ConstRefPrefixRegex.Replace(segment, "").TrimStart();
+
+                bool byAddress = false;
+                if (segment.StartsWith("*"))
+                {
+                    byAddress = true;
+                    segment = segment.Substring(1).TrimStart();
+                }
+
+                var tokens = segment.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                if (tokens.Length < 2) continue; // unnamed (prototype-only) parameter -- nothing to bind
+
+                string typeName = tokens[0];
+                string paramName = tokens[tokens.Length - 1];
+                if (!Regex.IsMatch(paramName, @"^[A-Za-z_]\w*$")) continue; // defensive: not a plausible identifier
+
+                string storedType = byAddress ? "&" + typeName : typeName;
+
+                result.Symbols.Add(new ClarionSymbol
+                {
+                    Name = paramName,
+                    Type = "variable",
+                    FilePath = filePath,
+                    LineNumber = lineNum,
+                    ProjectId = projectId,
+                    Params = storedType,
+                    ParentName = ownerFullName,
+                    Scope = "parameter"
+                });
+            }
+        }
+
+        /// <summary>
+        /// Splits a parameter-list body on top-level commas -- respecting nested parens/brackets
+        /// (e.g. array subscript lists) and single-quoted string literals, so a default value
+        /// like "STRING pMsg = 'a, b'" is not incorrectly split on the comma inside the quotes.
+        /// </summary>
+        private static List<string> SplitParameterList(string content)
+        {
+            var results = new List<string>();
+            int depth = 0;
+            bool inString = false;
+            int start = 0;
+            for (int i = 0; i < content.Length; i++)
+            {
+                char c = content[i];
+                if (c == '\'') { inString = !inString; continue; }
+                if (inString) continue;
+                if (c == '(' || c == '[') { depth++; continue; }
+                if (c == ')' || c == ']') { depth--; continue; }
+                if (c == ',' && depth == 0)
+                {
+                    results.Add(content.Substring(start, i - start));
+                    start = i + 1;
+                }
+            }
+            results.Add(content.Substring(start));
+            return results;
+        }
+
+        /// <summary>
+        /// Finds the index of the first top-level (not inside a quoted string) occurrence of a
+        /// character.
+        /// </summary>
+        private static int FindTopLevelChar(string s, char target)
+        {
+            bool inString = false;
+            for (int i = 0; i < s.Length; i++)
+            {
+                char c = s[i];
+                if (c == '\'') { inString = !inString; continue; }
+                if (!inString && c == target) return i;
+            }
+            return -1;
         }
 
         private void StoreCallReference(ParseResult result, string caller, string callee, string type, string filePath, int lineNum)

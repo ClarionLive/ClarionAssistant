@@ -979,16 +979,37 @@ namespace ClarionCodeGraph.Graph
                             bool foundLocalVar = false;
                             if (currentFileVars != null)
                             {
+                                string currentProcNameForParamScope = null;
+                                bool triedCurrentProcNameForParamScope = false;
                                 foreach (var varInfo in currentFileVars)
                                 {
-                                    if (string.Equals(varInfo.Name, objName, StringComparison.OrdinalIgnoreCase))
+                                    if (!string.Equals(varInfo.Name, objName, StringComparison.OrdinalIgnoreCase))
+                                        continue;
+
+                                    // Parameters must match the CURRENT procedure specifically -- the
+                                    // same parameter name can carry a different type in a different
+                                    // procedure in the same file, so the file-wide-by-name matching
+                                    // that's safe for DATA locals (see Bug 1/#54) is not safe here.
+                                    if (string.Equals(varInfo.Scope, "parameter", StringComparison.OrdinalIgnoreCase))
                                     {
-                                        foundLocalVar = true;
-                                        string varTypeName;
-                                        if (TryResolveVariableClassType(varInfo.Params, out varTypeName))
-                                            lookupOwner = varTypeName;
-                                        break;
+                                        if (!triedCurrentProcNameForParamScope)
+                                        {
+                                            triedCurrentProcNameForParamScope = true;
+                                            foreach (var kvp4 in currentFileSymbols)
+                                            {
+                                                if (kvp4.Value == currentProcId) { currentProcNameForParamScope = kvp4.Key; break; }
+                                            }
+                                        }
+                                        if (currentProcNameForParamScope == null ||
+                                            !string.Equals(varInfo.ParentName, currentProcNameForParamScope, StringComparison.OrdinalIgnoreCase))
+                                            continue; // wrong procedure's parameter of the same name -- skip
                                     }
+
+                                    foundLocalVar = true;
+                                    string varTypeName;
+                                    if (TryResolveVariableClassType(varInfo.Params, out varTypeName))
+                                        lookupOwner = varTypeName;
+                                    break;
                                 }
                             }
 
@@ -1072,8 +1093,8 @@ namespace ClarionCodeGraph.Graph
                             {
                                 // Only match variables that are in scope:
                                 // - module-level vars are visible to all procedures in this file
-                                // - local vars are only visible to their owning procedure
-                                if (varInfo.Scope == "local" && varInfo.ParentName != null)
+                                // - local vars and parameters are only visible to their owning procedure
+                                if ((varInfo.Scope == "local" || varInfo.Scope == "parameter") && varInfo.ParentName != null)
                                 {
                                     // Check if this var belongs to the current procedure
                                     // currentProcId must match the procedure that owns this variable
