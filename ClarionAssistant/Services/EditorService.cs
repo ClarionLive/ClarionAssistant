@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Text;
 using System.Windows.Forms;
 using ICSharpCode.SharpDevelop.Gui;
+using ICSharpCode.TextEditor;
 
 namespace ClarionAssistant.Services
 {
@@ -319,15 +320,14 @@ namespace ClarionAssistant.Services
                 if (startOffset < 0 || endOffset < 0)
                     return InsertResult.Failed("Invalid line/column range");
 
-                // Try SetSelection(startOffset, endOffset) or SetSelection(startPos, endPos)
-                // SharpDevelop uses TextLocation-based selection
-                var sharpDevelopAsm = System.Reflection.Assembly.Load("ICSharpCode.TextEditor");
-                if (sharpDevelopAsm == null)
-                    sharpDevelopAsm = System.Reflection.Assembly.Load("ICSharpCode.SharpDevelop");
-
-                // Try the TextLocation approach
+                // SelectionManager has two SetSelection overloads - (ISelection) and (TextLocation, TextLocation).
+                // GetMethod(name, flags) alone is ambiguous between them and throws AmbiguousMatchException;
+                // specifying the parameter types picks the TextLocation-based overload we actually want.
                 var setSelMethod = selMgr.GetType().GetMethod("SetSelection",
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance,
+                    null,
+                    new[] { typeof(TextLocation), typeof(TextLocation) },
+                    null);
 
                 if (setSelMethod != null)
                 {
