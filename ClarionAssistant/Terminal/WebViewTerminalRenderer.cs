@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Reflection;
 using System.Text;
@@ -253,27 +254,41 @@ namespace ClarionAssistant.Terminal
 
         private void OnPasteRequested()
         {
-            if (!Clipboard.ContainsText()) return;
-            string text = Clipboard.GetText();
-            if (string.IsNullOrEmpty(text)) return;
-
-            // Claude Code's prompt UI caps at ~5-6 visible rows; pasting a long
-            // blob makes the prompt unreadable and unscrollable. For pastes over
-            // the threshold, write to a temp file and inject "@<short-path> "
-            // instead — Claude reads the file on submit and the prompt stays
-            // visually compact.
-            if (IsLargePaste(text))
+            if (Clipboard.ContainsText())
             {
-                string cached = WritePasteCacheFile(text);
-                if (cached != null)
+                string text = Clipboard.GetText();
+                if (string.IsNullOrEmpty(text)) return;
+
+                // Claude Code's prompt UI caps at ~5-6 visible rows; pasting a long
+                // blob makes the prompt unreadable and unscrollable. For pastes over
+                // the threshold, write to a temp file and inject "@<short-path> "
+                // instead — Claude reads the file on submit and the prompt stays
+                // visually compact.
+                if (IsLargePaste(text))
                 {
-                    InjectAtReference(cached);
-                    return;
+                    string cached = WritePasteCacheFile(text);
+                    if (cached != null)
+                    {
+                        InjectAtReference(cached);
+                        return;
+                    }
+                    // Cache write failed — fall through to raw paste so the user
+                    // doesn't silently lose their clipboard.
                 }
-                // Cache write failed — fall through to raw paste so the user
-                // doesn't silently lose their clipboard.
+                DataReceived?.Invoke(Encoding.UTF8.GetBytes(text));
+                return;
             }
-            DataReceived?.Invoke(Encoding.UTF8.GetBytes(text));
+
+            // No text on the clipboard, but a screenshot tool (Snipping Tool, Win+Shift+S)
+            // typically puts a bitmap there with no accompanying text. Claude Code reads
+            // image files natively via an @reference, same as the large-text-paste path above.
+            if (Clipboard.ContainsImage())
+            {
+                Image image = Clipboard.GetImage();
+                if (image == null) return;
+                string cached = WriteImagePasteCacheFile(image);
+                if (cached != null) InjectAtReference(cached);
+            }
         }
 
         private void OnContextMenuRequested(int clientX, int clientY, string selectedText, string selectedTextRaw)
@@ -309,7 +324,7 @@ namespace ClarionAssistant.Terminal
                 }
 
                 var pasteItem = new ToolStripMenuItem("Paste");
-                pasteItem.Enabled = Clipboard.ContainsText();
+                pasteItem.Enabled = Clipboard.ContainsText() || Clipboard.ContainsImage();
                 pasteItem.Click += (s, e) => OnPasteRequested();
                 menu.Items.Add(pasteItem);
 
@@ -386,21 +401,8 @@ namespace ClarionAssistant.Terminal
         {
             try
             {
-                string baseDir = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "ClarionAssistant", "paste-cache");
-                if (!Directory.Exists(baseDir)) Directory.CreateDirectory(baseDir);
-
-                // Prune entries older than 24h to keep the cache from accumulating.
-                try
-                {
-                    DateTime cutoff = DateTime.UtcNow.AddHours(-24);
-                    foreach (var f in Directory.GetFiles(baseDir, "paste-*.txt"))
-                    {
-                        try { if (File.GetLastWriteTimeUtc(f) < cutoff) File.Delete(f); } catch { }
-                    }
-                }
-                catch { }
+                string baseDir = PasteCacheDir();
+                PrunePasteCache(baseDir, "paste-*.txt");
 
                 string name = "paste-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff") + ".txt";
                 string full = Path.Combine(baseDir, name);
@@ -408,6 +410,49 @@ namespace ClarionAssistant.Terminal
                 return full;
             }
             catch { return null; }
+        }
+
+        /// <summary>
+        /// Same rationale as WritePasteCacheFile, for images: a pasted screenshot has nowhere
+        /// to go in a text terminal, so save it to the same cache directory as PNG and let the
+        /// caller inject an @reference — Claude Code reads image files natively.
+        /// </summary>
+        private string WriteImagePasteCacheFile(Image image)
+        {
+            try
+            {
+                string baseDir = PasteCacheDir();
+                PrunePasteCache(baseDir, "paste-*.png");
+
+                string name = "paste-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff") + ".png";
+                string full = Path.Combine(baseDir, name);
+                using (image) { image.Save(full, ImageFormat.Png); }
+                return full;
+            }
+            catch { return null; }
+        }
+
+        private static string PasteCacheDir()
+        {
+            string baseDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "ClarionAssistant", "paste-cache");
+            if (!Directory.Exists(baseDir)) Directory.CreateDirectory(baseDir);
+            return baseDir;
+        }
+
+        // Prune entries older than 24h to keep the cache from accumulating.
+        private static void PrunePasteCache(string baseDir, string searchPattern)
+        {
+            try
+            {
+                DateTime cutoff = DateTime.UtcNow.AddHours(-24);
+                foreach (var f in Directory.GetFiles(baseDir, searchPattern))
+                {
+                    try { if (File.GetLastWriteTimeUtc(f) < cutoff) File.Delete(f); } catch { }
+                }
+            }
+            catch { }
         }
 
         private void InjectAtReference(string fullPath)
