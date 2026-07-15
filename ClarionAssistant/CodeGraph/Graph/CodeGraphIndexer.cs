@@ -603,6 +603,12 @@ namespace ClarionCodeGraph.Graph
             // Load variable symbols for reference tracking
             // Build per-file variable lookup: filePath → list of (name, id, parentName/scope)
             var variablesByFile = new Dictionary<string, List<VariableInfo>>(StringComparer.OrdinalIgnoreCase);
+            // Also index by full stored name (e.g. "OwnerClass.MyWorker" for a CLASS data member
+            // declared in an .inc) so dotted-call resolution can find a class's own member even
+            // when it lives in a different file than the .clw doing the calling (issue: cross-file
+            // class-member resolution gap). Last-wins on duplicate names, consistent with
+            // symbolNameToId's existing behavior elsewhere in this method.
+            var variablesByName = new Dictionary<string, VariableInfo>(StringComparer.OrdinalIgnoreCase);
             var allVarDt = _db.ExecuteQuery(
                 "SELECT id, name, file_path, parent_name, scope, params FROM symbols WHERE type = 'variable'");
 
@@ -615,13 +621,17 @@ namespace ClarionCodeGraph.Graph
                 string scope = row["scope"] != DBNull.Value ? row["scope"].ToString() : "local";
                 string varParams = row["params"] != DBNull.Value ? row["params"].ToString() : null;
 
+                var varInfo = new VariableInfo { Name = name, Id = id, ParentName = parentName, Scope = scope, Params = varParams };
+
                 List<VariableInfo> fileVars;
                 if (!variablesByFile.TryGetValue(fp, out fileVars))
                 {
                     fileVars = new List<VariableInfo>();
                     variablesByFile[fp] = fileVars;
                 }
-                fileVars.Add(new VariableInfo { Name = name, Id = id, ParentName = parentName, Scope = scope, Params = varParams });
+                fileVars.Add(varInfo);
+
+                variablesByName[name] = varInfo;
             }
 
             int totalVarCount = allVarDt.Rows.Count;
@@ -966,16 +976,47 @@ namespace ClarionCodeGraph.Graph
                             // literal name so genuine static-style ClassName.Method calls still
                             // resolve (issue #54, Bug 1).
                             string lookupOwner = objName;
+                            bool foundLocalVar = false;
                             if (currentFileVars != null)
                             {
                                 foreach (var varInfo in currentFileVars)
                                 {
                                     if (string.Equals(varInfo.Name, objName, StringComparison.OrdinalIgnoreCase))
                                     {
+                                        foundLocalVar = true;
                                         string varTypeName;
                                         if (TryResolveVariableClassType(varInfo.Params, out varTypeName))
                                             lookupOwner = varTypeName;
                                         break;
+                                    }
+                                }
+                            }
+
+                            // Fall back to a CLASS data member of the current procedure's own class
+                            // (e.g. "SELF.MyWorker.Sign" where MyWorker is declared in the class's
+                            // .inc file). Invisible to the file-scoped lookup above since the member's
+                            // file_path is the .inc, not this .clw. Only tried when no local/module
+                            // variable of this name exists in this file at all -- mirrors the same
+                            // class-name derivation already used for SELF.Method resolution above.
+                            if (!foundLocalVar)
+                            {
+                                string ownerClassName = null;
+                                foreach (var kvp3 in symbolNameToId)
+                                {
+                                    if (kvp3.Value == currentProcId && kvp3.Key.Contains("."))
+                                    {
+                                        ownerClassName = kvp3.Key.Substring(0, kvp3.Key.LastIndexOf('.'));
+                                        break;
+                                    }
+                                }
+                                if (ownerClassName != null)
+                                {
+                                    VariableInfo memberVar;
+                                    if (variablesByName.TryGetValue(ownerClassName + "." + objName, out memberVar))
+                                    {
+                                        string varTypeName;
+                                        if (TryResolveVariableClassType(memberVar.Params, out varTypeName))
+                                            lookupOwner = varTypeName;
                                     }
                                 }
                             }
