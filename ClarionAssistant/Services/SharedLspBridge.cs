@@ -350,6 +350,81 @@ namespace ClarionAssistant.Services
             return CodeGraphDefinition(filePath, line, character, bufferText) ?? primary;
         }
 
+        /// <summary>textDocument/implementation → raw LSP-response-shaped dict (locations), or null.
+        /// Jump from a declaration (e.g. a method prototype in a CLASS) to its implementation body.
+        /// SHARED path goes through REFLECTION: GetImplementationAsync entered the ClarionLsp contracts
+        /// AFTER the vendored copy we compile against (pre-v1.4.0 line), so no static reference is
+        /// possible — same pattern as GetSignatureHelp. The contract method takes no bufferText, so the
+        /// live buffer is synced explicitly first. An older addin (method missing) logs and returns null.</summary>
+        public static Dictionary<string, object> GetImplementation(string filePath, int line, int character, string bufferText = null)
+        {
+            var c = Shared;
+            if (c != null)
+            {
+                MethodInfo m = null;
+                try { m = c.GetType().GetMethod("GetImplementationAsync"); } catch { }
+                if (m == null)
+                {
+                    Debug.WriteLine("[SharedLspBridge] shared client lacks GetImplementationAsync — update the ClarionLsp addin for go-to-implementation.");
+                    return null;
+                }
+                if (!string.IsNullOrEmpty(bufferText)) EnsureBufferSynced(filePath, bufferText);
+                return SharedImplementationViaReflection(c, m, filePath, line, character);
+            }
+            var lsp = LspClient.Active;
+            if (lsp == null) return null;
+            try { return lsp.GetImplementation(filePath, line, character, bufferText); }
+            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] implementation (bundled) failed: " + ex.Message); return null; }
+        }
+
+        // Invoke GetImplementationAsync(string, int, int) reflectively and flatten the LocationResult[]
+        // (types from the ADDIN's newer contracts assembly) into raw LSP location dicts — the shape
+        // TryGetFirstLocation and every navigation consumer already understands.
+        private static Dictionary<string, object> SharedImplementationViaReflection(
+            object client, MethodInfo m, string filePath, int line, int character)
+        {
+            try
+            {
+                object taskObj = m.Invoke(client, new object[] { filePath, line, character });
+                var task = taskObj as System.Threading.Tasks.Task;
+                if (task == null) return null;
+                task.GetAwaiter().GetResult();
+                object r = taskObj.GetType().GetProperty("Result").GetValue(taskObj, null);
+                var list = new System.Collections.ArrayList();
+                if (r is System.Collections.IEnumerable locs)
+                {
+                    foreach (var l in locs)
+                    {
+                        if (l == null) continue;
+                        string fp = ReflProp(l, "FilePath") as string;
+                        if (string.IsNullOrEmpty(fp)) continue;
+                        object rng = ReflProp(l, "Range");
+                        object start = ReflProp(rng, "Start");
+                        object end = ReflProp(rng, "End") ?? start;
+                        int sl = 0, sc = 0, el = 0, ec = 0;
+                        try { sl = Convert.ToInt32(ReflProp(start, "Line") ?? 0); sc = Convert.ToInt32(ReflProp(start, "Character") ?? 0); } catch { }
+                        try { el = Convert.ToInt32(ReflProp(end, "Line") ?? sl); ec = Convert.ToInt32(ReflProp(end, "Character") ?? sc); } catch { }
+                        list.Add(new Dictionary<string, object>
+                        {
+                            { "uri", FilePathToUri(fp) },
+                            { "range", new Dictionary<string, object>
+                                {
+                                    { "start", new Dictionary<string, object> { { "line", sl }, { "character", sc } } },
+                                    { "end",   new Dictionary<string, object> { { "line", el }, { "character", ec } } }
+                                }
+                            }
+                        });
+                    }
+                }
+                return list.Count > 0 ? WrapResult(list) : null;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("[SharedLspBridge] implementation (shared) failed: " + ex.Message);
+                return null;
+            }
+        }
+
         /// <summary>textDocument/references → raw LSP-response-shaped dict. CodeGraph fallback when empty.</summary>
         public static Dictionary<string, object> GetReferences(string filePath, int line, int character)
         {
@@ -973,14 +1048,19 @@ namespace ClarionAssistant.Services
             return "file:///" + filePath.Replace("\\", "/").Replace(" ", "%20");
         }
 
-        /// <summary>Inverse of <see cref="FilePathToUri"/>: file:///H:/dir/f.clw -&gt; H:\dir\f.clw.</summary>
+        /// <summary>Inverse of <see cref="FilePathToUri"/>: file:///H:/dir/f.clw -&gt; H:\dir\f.clw.
+        /// Full percent-decoding, not just %20: the server (VS Code URI conventions) encodes the drive
+        /// COLON — file:///c%3A/dir/f.clw — and a %20-only decode left "c%3A\dir\f.clw", which fails
+        /// File.Exists and made navigation (go-to-implementation, any pure-LSP location) silently no-op.</summary>
         public static string UriToFilePath(string uri)
         {
             if (string.IsNullOrEmpty(uri)) return uri;
             string p = uri;
             if (p.StartsWith("file:///", StringComparison.OrdinalIgnoreCase)) p = p.Substring(8);
             else if (p.StartsWith("file://", StringComparison.OrdinalIgnoreCase)) p = p.Substring(7);
-            return p.Replace("/", "\\").Replace("%20", " ");
+            try { p = Uri.UnescapeDataString(p); }
+            catch { p = p.Replace("%3A", ":").Replace("%3a", ":").Replace("%20", " "); }
+            return p.Replace("/", "\\");
         }
 
         /// <summary>Extract the FIRST Location from a definition/references result dict

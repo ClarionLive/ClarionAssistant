@@ -385,6 +385,22 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// textDocument/implementation - jump from a declaration (e.g. a method prototype in a CLASS)
+        /// to its implementation body. Buffer-aware so the request resolves against live editor content.
+        /// </summary>
+        public Dictionary<string, object> GetImplementation(string filePath, int line, int character, string bufferText = null)
+        {
+            TrackRequest("implementation", filePath);
+            try
+            {
+                if (!string.IsNullOrEmpty(bufferText)) EnsureDocumentOpenWithText(filePath, bufferText);
+                else EnsureDocumentOpen(filePath);
+            }
+            catch { }
+            return SendTextDocumentPositionRequest("textDocument/implementation", filePath, line, character);
+        }
+
+        /// <summary>
         /// textDocument/references - find all references to a symbol.
         /// </summary>
         public Dictionary<string, object> GetReferences(string filePath, int line, int character)
@@ -1342,8 +1358,15 @@ namespace ClarionAssistant.Services
 
         public static string UriToFilePath(string uri)
         {
+            // Full percent-decoding, not just %20 — the server encodes the drive colon (file:///c%3A/...),
+            // and a %20-only decode leaves "c%3A\..." paths that fail File.Exists (silent nav no-ops).
             if (uri.StartsWith("file:///"))
-                uri = uri.Substring(8).Replace("/", "\\").Replace("%20", " ");
+            {
+                string p = uri.Substring(8);
+                try { p = Uri.UnescapeDataString(p); }
+                catch { p = p.Replace("%3A", ":").Replace("%3a", ":").Replace("%20", " "); }
+                uri = p.Replace("/", "\\");
+            }
             return uri;
         }
 

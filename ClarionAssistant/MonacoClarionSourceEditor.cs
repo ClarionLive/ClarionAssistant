@@ -483,6 +483,39 @@ namespace ClarionAssistant
             });
         }
 
+        // Ctrl+F12 go-to-implementation — declaration → implementation body. Same navigation shape
+        // as OnDefinition: same-file targets reveal in-place, cross-file targets open the file.
+        void IMonacoEditorHost.OnImplementation(MonacoEditorControl editor, string rawJson)
+        {
+            int reqId, line, col; string buffer;
+            if (!ParseLspRequest(rawJson, out reqId, out line, out col, out buffer)) return;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                bool navigated = false;
+                try
+                {
+                    EnsureLsp();
+                    if (SharedLspBridge.IsRunning)
+                    {
+                        var impl = SharedLspBridge.GetImplementation(_filePath, Math.Max(0, line - 1), Math.Max(0, col - 1), buffer);
+                        string targetPath; int targetLine0, targetChar0;
+                        if (SharedLspBridge.TryGetFirstLocation(impl, out targetPath, out targetLine0, out targetChar0))
+                        {
+                            if (SameSourceFile(targetPath))
+                            {
+                                if (_editor != null) _editor.RevealLine(targetLine0 + 1, targetChar0 + 1);
+                                navigated = _editor != null;
+                            }
+                            else
+                                navigated = MonacoSourceNavigator.NavigateToFileAndLine(targetPath, targetLine0 + 1, 1);
+                        }
+                    }
+                }
+                catch (Exception ex) { MonacoSpikeLog.Write("overlay implementation error: " + ex.Message); }
+                editor.PostResponse(reqId, new Dictionary<string, object> { { "navigated", navigated } });
+            });
+        }
+
         // LSP signature help — parameter hints when typing '(' or ',' at a call site. Same
         // position/buffer contract as OnHover; the page hides the widget on a null reply.
         void IMonacoEditorHost.OnSignatureHelp(MonacoEditorControl editor, string rawJson)
