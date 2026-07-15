@@ -35,9 +35,8 @@
         padding: 6px 12px; background: var(--toolbar-bg); border-bottom: 1px solid var(--toolbar-border);
         height: 38px; flex-shrink: 0;
     }
-    #toolbar .title { font-size: 13px; color: var(--title-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
+    #toolbar .title { font-size: 13px; color: var(--title-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1 1 0; min-width: 0; }
     #toolbar .title span { color: var(--title-accent); font-weight: 600; }
-    #toolbar .spacer { flex: 1; }
     #toolbar .sep { color: var(--toolbar-border); user-select: none; }
     #toolbar button {
         padding: 3px 10px; border: 1px solid var(--btn-border); border-radius: 4px;
@@ -98,7 +97,6 @@
 <!-- Toolbar -->
 <div id="toolbar">
     <div class="title">Diff: <span id="diff-title">…</span></div>
-    <div class="spacer"></div>
     <button onclick="goPrev()" title="Previous change (Shift+F7)">&#x25B2; Prev</button>
     <span id="diff-counter">--</span>
     <button onclick="goNext()" title="Next change (F7)">Next &#x25BC;</button>
@@ -387,7 +385,10 @@
     // ===== Apply incoming diff data =====
     // Host sends raw original + modified text via virtual-host files; Monaco computes the diff.
     function applyDiff(msg) {
-        document.getElementById('diff-title').textContent = msg.title || 'Untitled';
+        var titleText = msg.title || 'Untitled';
+        document.getElementById('diff-title').textContent = titleText;
+        // Native tooltip so the full title is still readable when the toolbar ellipsis-truncates it.
+        document.querySelector('#toolbar .title').title = 'Diff: ' + titleText;
         var lang = msg.language || 'clarion';
 
         // Theme from message is authoritative, else fall back to persisted preference.
