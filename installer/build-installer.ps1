@@ -17,19 +17,43 @@ $msbuild = $null
 $searchPaths = @(
     'C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe',
     'C:\Program Files\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe',
-    'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe'
+    'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe',
+    'C:\Program Files\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe',
+    'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe',
+    'C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\MSBuild\Current\Bin\MSBuild.exe',
+    'C:\Program Files\Microsoft Visual Studio\18\BuildTools\MSBuild\Current\Bin\MSBuild.exe'
 )
 foreach ($p in $searchPaths) {
     if (Test-Path $p) { $msbuild = $p; break }
 }
 if (-not $msbuild) {
-    Write-Error "MSBuild not found. Install Visual Studio 2022."
+    # Fall back to vswhere, which locates any VS/Build Tools install regardless of year/edition.
+    $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path $vswhere) {
+        $vsInstall = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
+        if ($vsInstall) {
+            foreach ($candidate in @("$vsInstall\MSBuild\Current\Bin\MSBuild.exe", "$vsInstall\MSBuild\Current\Bin\amd64\MSBuild.exe")) {
+                if (Test-Path $candidate) { $msbuild = $candidate; break }
+            }
+        }
+    }
+}
+if (-not $msbuild) {
+    Write-Error "MSBuild not found. Install Visual Studio 2022/2026 (or Build Tools)."
     exit 1
 }
 
-$innoSetup = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
-if (-not (Test-Path $innoSetup)) {
-    Write-Error "Inno Setup 6 not found at $innoSetup"
+$innoSetup = $null
+$innoSearchPaths = @(
+    'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+    'C:\Program Files\Inno Setup 6\ISCC.exe',
+    (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe')
+)
+foreach ($p in $innoSearchPaths) {
+    if (Test-Path $p) { $innoSetup = $p; break }
+}
+if (-not $innoSetup) {
+    Write-Error "Inno Setup 6 not found. Checked: $($innoSearchPaths -join ', ')"
     exit 1
 }
 
@@ -61,10 +85,14 @@ if (-not $SkipBuild) {
     Write-Host "  OK" -ForegroundColor Green
 
     # Build ClarionIndexer (VENDORED into the repo — GitHub #30 — not the old external H:\DevLaptop\ClarionLSP tree)
+    # NOTE: no /p:Platform override here. ClarionIndexer.csproj only defines <OutputPath> for
+    # Platform=x86 (its own default when Platform is unset) — forcing AnyCPU here matches neither
+    # PropertyGroup condition, so MSBuild errors with "BaseOutputPath/OutputPath property is not
+    # set". deploy.ps1 already builds it this way (Platform left unset); mirror that here.
     $indexerCsproj = "$repoRoot\ClarionAssistant\indexer\ClarionIndexer.csproj"
     if (Test-Path $indexerCsproj) {
         Write-Host "Building ClarionIndexer..." -ForegroundColor Yellow
-        & $msbuild $indexerCsproj /p:Configuration=Debug /p:Platform=AnyCPU /t:Build /v:minimal /nologo /restore
+        & $msbuild $indexerCsproj /p:Configuration=Debug /t:Build /v:minimal /nologo /restore
         if ($LASTEXITCODE -ne 0) { Write-Warning "ClarionIndexer build failed (non-fatal)" }
         else { Write-Host "  OK" -ForegroundColor Green }
     }
@@ -79,7 +107,7 @@ if (-not $SkipBuild) {
     }
 }
 
-# ── Step 1b: Freshness gate — the per-config addin bins (bin\Debug-C10/C11/C12) that the
+# ── Step 1b: Freshness gate — the per-config addin bins (bin\Debug-C10/C11/C11.1/C12) that the
 # .iss packages are built OUT-OF-BAND by deploy.ps1, NOT by this script's build step. With
 # -SkipBuild it's easy to silently ship a STALE config (e.g. C11 left at 5.1.612 while C12 is
 # 5.2.691 — happened for the 5.2 release). Assert every present config bin matches Version.props
@@ -90,7 +118,7 @@ if (Test-Path $versionProps) {
     if ($expected) {
         Write-Host "`nChecking per-config addin freshness (expected $expected)..." -ForegroundColor Yellow
         $stale = @(); $found = 0
-        foreach ($cfg in 'C10','C11','C12') {
+        foreach ($cfg in 'C10','C11','C11.1','C12') {
             $dll = "$repoRoot\ClarionAssistant\bin\Debug-$cfg\ClarionAssistant.dll"
             if (-not (Test-Path $dll)) { Write-Host "  --   ${cfg}: no bin (won't ship this config)" -ForegroundColor DarkGray; continue }
             $found++
@@ -148,14 +176,24 @@ if (-not (Test-Path $iconPath)) {
 }
 
 # ── Step 4: Check for DocGraph DB ──
+# ingest_docs() writes the bundled DB to DocGraphService.GetDefaultDbPath(), i.e.
+# %APPDATA%\ClarionAssistant\docgraph.db (Roaming — Environment.SpecialFolder.ApplicationData),
+# NOT this installer folder. Auto-copy it here if present, instead of requiring a manual copy
+# step every release.
 $docGraphPath = Join-Path $scriptDir 'docgraph.db'
 if (-not (Test-Path $docGraphPath) -and -not $NoDocGraph) {
-    Write-Warning "docgraph.db not found in installer directory."
-    Write-Warning "The DocGraph component will be empty. To include it:"
-    Write-Warning "  1. Run ingest_docs() in Clarion Assistant"
-    Write-Warning "  2. Copy the generated docgraph.db to: $scriptDir"
-    Write-Warning ""
-    Write-Warning "Continuing without DocGraph DB..."
+    $defaultDocGraphPath = Join-Path $env:APPDATA 'ClarionAssistant\docgraph.db'
+    if (Test-Path $defaultDocGraphPath) {
+        Copy-Item $defaultDocGraphPath $docGraphPath -Force
+        Write-Host "Copied docgraph.db from $defaultDocGraphPath" -ForegroundColor Green
+    } else {
+        Write-Warning "docgraph.db not found in installer directory or at $defaultDocGraphPath."
+        Write-Warning "The DocGraph component will be empty. To include it:"
+        Write-Warning "  1. Run ingest_docs() in Clarion Assistant"
+        Write-Warning "  2. Re-run this script (it will auto-copy from $defaultDocGraphPath)"
+        Write-Warning ""
+        Write-Warning "Continuing without DocGraph DB..."
+    }
 }
 
 # ── Step 5: Compile Inno Setup installer ──
