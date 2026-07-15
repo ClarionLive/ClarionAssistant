@@ -272,3 +272,20 @@ result   LONG
   DISPOSE( SELF.PlainInstanceMember)
   RETURN result
 
+! Bug L repro: MultiLineGroup (a genuine multi-line GROUP(NamedType) CLASS member, with its own
+! extra field before its own separate closing END) never got a symbol for its own name -- only
+! GroupBugClass.InlineGroup/PeriodBugClass.InlineGroupPeriod above (the self-closing single-line
+! forms) were previously used to prove Bug H's depth-tracking fix, but none of the three ever
+! produced a symbol for the member's OWN name until this fix. HiddenGroupMember (PRIVATE,
+! declared before MultiLineGroup) proves PRIVATE-exclusion also applies to this construct,
+! mirroring HiddenMember for the simple-reference-member case. Expected before the fix: neither
+! MultiLineGroup nor HiddenGroupMember exists as a symbol (the former because no symbol was ever
+! created for this construct at all; the latter for the same reason, so its PRIVATE-exclusion was
+! never actually exercised prior to this fix -- confirmed absent for the right reason, not the
+! wrong one, by inspecting the pre-fix state directly).
+MultiLineGroupBugClass.CallViaAfterMultiLineGroupMember PROCEDURE( )
+result   LONG
+  CODE
+  result = SELF.AfterMultiLineGroupMember.Sign( 60 )
+  RETURN result
+
