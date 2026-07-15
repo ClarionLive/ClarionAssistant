@@ -741,12 +741,28 @@ namespace ClarionAssistant.Services
 
                 foreach (var vc in viewContents)
                 {
-                    var fn = GetProperty(vc, "FileName") ?? GetProperty(vc, "PrimaryFileName");
-                    if (fn != null)
+                    string path = null;
+                    try
                     {
-                        string path = fn.ToString();
-                        if (!string.IsNullOrEmpty(path)) files.Add(path);
+                        var fn = GetProperty(vc, "FileName") ?? GetProperty(vc, "PrimaryFileName");
+                        path = fn?.ToString();
                     }
+                    catch { /* ClarionEditor throws on FileName - fall through */ }
+
+                    if (string.IsNullOrEmpty(path))
+                        path = GetProperty(vc, "TitleName") as string;
+
+                    if (string.IsNullOrEmpty(path)) continue;
+
+                    bool isDirty = false;
+                    try
+                    {
+                        var dirty = GetProperty(vc, "IsDirty") ?? GetProperty(vc, "IsModified");
+                        if (dirty is bool b) isDirty = b;
+                    }
+                    catch { }
+
+                    files.Add(isDirty ? "* " + path : path);
                 }
             }
             catch { }
@@ -1309,14 +1325,16 @@ namespace ClarionAssistant.Services
             return null;
         }
 
+        private const BindingFlags AllInstance = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+
         private object GetProperty(object obj, string name)
         {
             if (obj == null) return null;
             try
             {
-                var prop = obj.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+                var prop = obj.GetType().GetProperty(name, AllInstance);
                 if (prop != null) return prop.GetValue(obj, null);
-                var field = obj.GetType().GetField(name, BindingFlags.Public | BindingFlags.Instance);
+                var field = obj.GetType().GetField(name, AllInstance);
                 return field?.GetValue(obj);
             }
             catch { return null; }
@@ -1326,7 +1344,7 @@ namespace ClarionAssistant.Services
         {
             try
             {
-                var prop = obj?.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+                var prop = obj?.GetType().GetProperty(name, AllInstance);
                 if (prop?.CanWrite == true) prop.SetValue(obj, value, null);
             }
             catch { }
