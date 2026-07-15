@@ -85,10 +85,14 @@ if (-not $SkipBuild) {
     Write-Host "  OK" -ForegroundColor Green
 
     # Build ClarionIndexer (VENDORED into the repo — GitHub #30 — not the old external H:\DevLaptop\ClarionLSP tree)
+    # NOTE: no /p:Platform override here. ClarionIndexer.csproj only defines <OutputPath> for
+    # Platform=x86 (its own default when Platform is unset) — forcing AnyCPU here matches neither
+    # PropertyGroup condition, so MSBuild errors with "BaseOutputPath/OutputPath property is not
+    # set". deploy.ps1 already builds it this way (Platform left unset); mirror that here.
     $indexerCsproj = "$repoRoot\ClarionAssistant\indexer\ClarionIndexer.csproj"
     if (Test-Path $indexerCsproj) {
         Write-Host "Building ClarionIndexer..." -ForegroundColor Yellow
-        & $msbuild $indexerCsproj /p:Configuration=Debug /p:Platform=AnyCPU /t:Build /v:minimal /nologo /restore
+        & $msbuild $indexerCsproj /p:Configuration=Debug /t:Build /v:minimal /nologo /restore
         if ($LASTEXITCODE -ne 0) { Write-Warning "ClarionIndexer build failed (non-fatal)" }
         else { Write-Host "  OK" -ForegroundColor Green }
     }
@@ -172,14 +176,24 @@ if (-not (Test-Path $iconPath)) {
 }
 
 # ── Step 4: Check for DocGraph DB ──
+# ingest_docs() writes the bundled DB to DocGraphService.GetDefaultDbPath(), i.e.
+# %APPDATA%\ClarionAssistant\docgraph.db (Roaming — Environment.SpecialFolder.ApplicationData),
+# NOT this installer folder. Auto-copy it here if present, instead of requiring a manual copy
+# step every release.
 $docGraphPath = Join-Path $scriptDir 'docgraph.db'
 if (-not (Test-Path $docGraphPath) -and -not $NoDocGraph) {
-    Write-Warning "docgraph.db not found in installer directory."
-    Write-Warning "The DocGraph component will be empty. To include it:"
-    Write-Warning "  1. Run ingest_docs() in Clarion Assistant"
-    Write-Warning "  2. Copy the generated docgraph.db to: $scriptDir"
-    Write-Warning ""
-    Write-Warning "Continuing without DocGraph DB..."
+    $defaultDocGraphPath = Join-Path $env:APPDATA 'ClarionAssistant\docgraph.db'
+    if (Test-Path $defaultDocGraphPath) {
+        Copy-Item $defaultDocGraphPath $docGraphPath -Force
+        Write-Host "Copied docgraph.db from $defaultDocGraphPath" -ForegroundColor Green
+    } else {
+        Write-Warning "docgraph.db not found in installer directory or at $defaultDocGraphPath."
+        Write-Warning "The DocGraph component will be empty. To include it:"
+        Write-Warning "  1. Run ingest_docs() in Clarion Assistant"
+        Write-Warning "  2. Re-run this script (it will auto-copy from $defaultDocGraphPath)"
+        Write-Warning ""
+        Write-Warning "Continuing without DocGraph DB..."
+    }
 }
 
 # ── Step 5: Compile Inno Setup installer ──

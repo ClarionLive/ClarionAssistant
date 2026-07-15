@@ -378,7 +378,10 @@ Source: "{#SrcInstaller}\CLAUDE.md"; DestDir: "{%USERPROFILE}\.claude"; DestName
 ; ============================================================
 
 [Dirs]
-Name: "{localappdata}\ClarionAssistant"
+; DocGraphService.GetDefaultDbPath() (the runtime's actual lookup path) uses
+; Environment.SpecialFolder.ApplicationData, i.e. Roaming AppData -- matches {userappdata}
+; below and the docgraph.db [Files] entry above, NOT {localappdata}.
+Name: "{userappdata}\ClarionAssistant"
 ; Marketplace dirs are created by `claude plugin marketplace add` (git clone),
 ; not the installer — see the [Files] note above and configure.ps1.
 Name: "{%USERPROFILE}\.claude\agents"; Components: agents
@@ -395,7 +398,7 @@ Name: "{userappdata}\ClarionCOM\scripts"; Components: comforclarion\tooling
 ; 1. Configure Claude Code settings + env (runs elevated, like the rest of Setup).
 ;    Plugin install is a SEPARATE step (below) so it can run as the original user.
 Filename: "powershell.exe"; \
-  Parameters: "-ExecutionPolicy Bypass -File ""{app}\configure.ps1"" -ClarionRoot ""{code:GetPrimaryClarionPath}"" -DocGraphDb ""{localappdata}\ClarionAssistant\docgraph.db"""; \
+  Parameters: "-ExecutionPolicy Bypass -File ""{app}\configure.ps1"" -ClarionRoot ""{code:GetPrimaryClarionPath}"" -DocGraphDb ""{userappdata}\ClarionAssistant\docgraph.db"""; \
   StatusMsg: "Configuring Claude Code settings..."; \
   Flags: runhidden waituntilterminated
 
