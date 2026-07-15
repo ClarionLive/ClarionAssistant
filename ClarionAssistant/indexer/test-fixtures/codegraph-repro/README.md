@@ -1,10 +1,10 @@
 # CodeGraph parser regression fixture
 
 Contributed by [@geircodes](https://github.com/geircodes) alongside issues #79–#90, extended for
-a further GROUP/QUEUE/RECORD-typed CLASS-member fix (PR pending, no issue number yet) — a single
-compiling Clarion solution whose procedures each exercise one historical parser/indexer bug.
-This is currently the only regression coverage the CodeGraph parser has; run it after ANY
-change to `Parsing/ClarionParser.cs` or `Graph/CodeGraphIndexer.cs` (either synced copy).
+a further GROUP-typed CLASS-member fix (PR #93) — a single compiling Clarion solution whose
+procedures each exercise one historical parser/indexer bug. This is currently the only
+regression coverage the CodeGraph parser has; run it after ANY change to
+`Parsing/ClarionParser.cs` or `Graph/CodeGraphIndexer.cs` (either synced copy).
 
 ## Run
 
@@ -12,8 +12,7 @@ change to `Parsing/ClarionParser.cs` or `Graph/CodeGraphIndexer.cs` (either sync
 indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproSolution.sln --db %TEMP%\codegraph-repro.db
 ```
 
-## Expected results (verified 2026-07-15 with all #79–#90 fixes applied, plus the pending
-GROUP/QUEUE/RECORD-typed CLASS-member fix)
+## Expected results (verified 2026-07-15 with all #79–#90 fixes applied, plus #93)
 
 ### Callers of `WorkerClass.Sign` — exactly 18 `calls` rows
 
@@ -36,13 +35,13 @@ GROUP/QUEUE/RECORD-typed CLASS-member fix)
 | GroupQueueLocalTest | 213 | #89 (local after GROUP(Type) two-line) |
 | InlineLocalGroupTest | 228 | #89 (local after GROUP(Type) END inline) |
 | LocalDerivedClassTest | 254 | #90 (attribution after local CLASS(Parent)) |
-| MultiLineGroupBugClass.CallViaAfterMultiLineGroupMember | 275 | pending (member after multi-line GROUP with its own extra field) |
+| MultiLineGroupBugClass.CallViaAfterMultiLineGroupMember | 275 | #93 (member after multi-line GROUP with its own extra field) |
 
 ### Symbols
 
 - 7 `class` symbols: WorkerClass, OwnerClass, DerivableClass, GroupBugClass, PeriodBugClass,
   AfterBugClass (#84: sourced from the `.inc` despite `<None Include>`; #88: the last two
-  vanished entirely before the depth-leak fix), MultiLineGroupBugClass (pending fix).
+  vanished entirely before the depth-leak fix), MultiLineGroupBugClass (#93).
 - `LocalDerived` is a **local variable** of LocalDerivedClassTest typed `DERIVABLECLASS` —
   NOT a global class (#90).
 - `pWorker`: `scope='parameter'`, parent `ParameterTest`, params `&WorkerClass` (#87).
@@ -52,12 +51,12 @@ GROUP/QUEUE/RECORD-typed CLASS-member fix)
   local variables (#85, #89).
 - `GroupBugClass.InlineGroup` and `PeriodBugClass.InlineGroupPeriod` (both `GROUP(SmallGroupType)`,
   `scope='class'`): previously used only to prove #88's depth-tracking fix, but neither ever
-  produced a symbol for its OWN name until the pending fix — confirmed retroactively fixed by
-  re-running this fixture.
+  produced a symbol for its OWN name until #93 — confirmed retroactively fixed by re-running
+  this fixture.
 - `MultiLineGroupBugClass.MultiLineGroup` (`GROUP(SmallGroupType)`, `scope='class'`): the
   genuine multi-line form (its own extra field, `ExtraField`, before its own separate closing
-  `END`) — the pending fix's motivating case (a CLASS member that is itself a GROUP/QUEUE/RECORD
-  never got a symbol for its own name at all before it, in ANY form: self-closing or multi-line).
+  `END`) — #93's motivating case (a CLASS member that is itself a GROUP instantiation never got
+  a symbol for its own name at all before it, in ANY form: self-closing or multi-line).
   `MultiLineGroupBugClass.HiddenGroupMember` (`PRIVATE`) correctly stays absent, mirroring
   `GroupBugClass.HiddenMember`'s exclusion for the simple-reference-member case.
 
