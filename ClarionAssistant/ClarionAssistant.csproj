@@ -140,6 +140,7 @@
     <Compile Include="Services\AppTreeService.cs" />
     <Compile Include="Services\IdeReflectionService.cs" />
     <Compile Include="Services\EmbeditorCompletionService.cs" />
+    <Compile Include="Services\EmbedLspContext.cs" />
     <Compile Include="ShowModernEmbeditorCommand.cs" />
     <Compile Include="ClarionBindingAssemblyResolver.cs" />
     <Compile Include="LspAutostartCommand.cs" />

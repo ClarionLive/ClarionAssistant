@@ -79,7 +79,7 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static List<Dictionary<string, object>> Compute(
             string lspFileName, string buffer, List<int[]> ranges, string procedureName,
-            bool embedSlotChecks = true)
+            bool embedSlotChecks = true, EmbedLspContext lspContext = null)
         {
             var markers = new List<Dictionary<string, object>>();
             if (string.IsNullOrEmpty(buffer) || ranges == null || ranges.Count == 0) return markers;
@@ -92,7 +92,11 @@ namespace ClarionAssistant.Services
                 // Route through SharedLspBridge: shared ClarionLsp when active, else the bundled LspClient.
                 if (SharedLspBridge.IsRunning && !string.IsNullOrEmpty(lspFileName))
                 {
-                    SharedLspBridge.EnsureBufferSynced(lspFileName, buffer);
+                    // #56: with a real-module context the LSP sees the MEMBER-wrapped buffer, so its line
+                    // numbers run one AHEAD of Monaco's — subtract the offset before clamping to slots.
+                    int off = (lspContext != null) ? lspContext.LineOffset : 0;
+                    SharedLspBridge.EnsureBufferSynced(lspFileName,
+                        (lspContext != null) ? lspContext.WrapBuffer(buffer) : buffer);
                     var wait = SharedLspBridge.WaitForDiagnostics(lspFileName, 1500, true);
                     List<LspClient.DiagnosticEntry> entries =
                         (wait != null && !wait.Pending && wait.Entries != null)
@@ -102,9 +106,10 @@ namespace ClarionAssistant.Services
                     foreach (var d in entries)
                     {
                         // DiagnosticEntry is 0-based; ranges are 1-based inclusive.
-                        int line1 = d.Line + 1;
+                        int line1 = d.Line + 1 - off;
+                        if (line1 < 1) continue; // marker on the injected MEMBER header — not user code
                         if (!InAnyRange(line1, ranges)) continue; // drop generated-line noise / mislocations
-                        markers.Add(Marker(line1, d.Character + 1, d.EndLine + 1, d.EndCharacter + 1,
+                        markers.Add(Marker(line1, d.Character + 1, Math.Max(line1, d.EndLine + 1 - off), d.EndCharacter + 1,
                             string.IsNullOrEmpty(d.Message) ? "Clarion diagnostic" : d.Message,
                             LspSevToMonaco(d.Severity)));
                     }
