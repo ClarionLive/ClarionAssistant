@@ -834,6 +834,43 @@ namespace ClarionCodeGraph.Parsing
                             });
                         }
                     }
+                    // Data member of the CLASS (scalar property like "AutoRefresh BYTE", or a reference like
+                    // "Errors &ErrorClass"). Stored DOTTED ("Class.Member", parent_name=Class) so member-access
+                    // completion lists it AND FindMembersOfParent's dotted-name filter keeps it distinct from
+                    // subclasses (which carry parent_name=Class via inheritance). Only direct members
+                    // (classEndDepth==1, i.e. not inside a nested GROUP/QUEUE). PRIVATE members are skipped —
+                    // they aren't accessible via instance member access, matching native Clarion completion.
+                    else if (currentClassName != null && classEndDepth == 1)
+                    {
+                        string trimmedMember = line.TrimStart();
+                        var refMatch = RefVariableDeclRegex.Match(trimmedMember);
+                        var sclMatch = refMatch.Success ? Match.Empty : VariableDeclRegex.Match(trimmedMember);
+                        if (refMatch.Success || sclMatch.Success)
+                        {
+                            string memberName = (refMatch.Success ? refMatch : sclMatch).Groups[1].Value;
+                            string attrs = refMatch.Success
+                                ? (refMatch.Groups[3].Success ? refMatch.Groups[3].Value : "")
+                                : (sclMatch.Groups[4].Success ? sclMatch.Groups[4].Value : "");
+                            if (attrs.IndexOf("PRIVATE", StringComparison.OrdinalIgnoreCase) < 0)
+                            {
+                                string memberType = refMatch.Success
+                                    ? "&" + refMatch.Groups[2].Value
+                                    : sclMatch.Groups[2].Value.ToUpperInvariant() +
+                                      (sclMatch.Groups[3].Success ? sclMatch.Groups[3].Value : "");
+                                result.Symbols.Add(new ClarionSymbol
+                                {
+                                    Name = currentClassName + "." + memberName,
+                                    Type = "variable",
+                                    FilePath = filePath,
+                                    LineNumber = lineNum,
+                                    ProjectId = projectId,
+                                    Params = memberType,
+                                    ParentName = currentClassName,
+                                    Scope = "class"
+                                });
+                            }
+                        }
+                    }
                     continue;
                 }
 

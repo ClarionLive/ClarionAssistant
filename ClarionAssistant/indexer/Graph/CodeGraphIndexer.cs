@@ -121,6 +121,8 @@ namespace ClarionCodeGraph.Graph
             var memberFiles = new Dictionary<int, List<ResolvedFile>>();
             var incFiles = new Dictionary<int, List<ResolvedFile>>();
             var changedProjects = new HashSet<int>(); // projects that need re-parsing
+            var projectDirs = new Dictionary<int, string>();
+            var discoveredIncludeNames = new Dictionary<int, HashSet<string>>();
 
             foreach (var proj in projects)
             {
@@ -131,6 +133,7 @@ namespace ClarionCodeGraph.Graph
                 }
 
                 string projectDir = Path.GetDirectoryName(proj.CwprojPath);
+                projectDirs[proj.Id] = projectDir;
                 var projResult = _projParser.Parse(proj.CwprojPath);
                 var resolved = _resolver.Resolve(projectDir, projResult.SourceFiles, libraryPaths);
 
@@ -225,6 +228,17 @@ namespace ClarionCodeGraph.Graph
                     {
                         long symId = _db.InsertSymbol(sym);
                         sym.Id = symId;
+
+                        if (sym.Type == "include")
+                        {
+                            HashSet<string> names;
+                            if (!discoveredIncludeNames.TryGetValue(projectId, out names))
+                            {
+                                names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                discoveredIncludeNames[projectId] = names;
+                            }
+                            names.Add(sym.Name);
+                        }
                     }
                     result.SymbolCount += parseResult.Symbols.Count;
                 }
@@ -384,6 +398,17 @@ namespace ClarionCodeGraph.Graph
                         {
                             long symId = _db.InsertSymbol(sym);
                             sym.Id = symId;
+
+                            if (sym.Type == "include")
+                            {
+                                HashSet<string> names;
+                                if (!discoveredIncludeNames.TryGetValue(proj.Id, out names))
+                                {
+                                    names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                    discoveredIncludeNames[proj.Id] = names;
+                                }
+                                names.Add(sym.Name);
+                            }
                         }
                         result.SymbolCount += parseResult.Symbols.Count;
                     }
@@ -400,8 +425,75 @@ namespace ClarionCodeGraph.Graph
                         {
                             long symId = _db.InsertSymbol(sym);
                             sym.Id = symId;
+
+                            if (sym.Type == "include")
+                            {
+                                HashSet<string> names;
+                                if (!discoveredIncludeNames.TryGetValue(proj.Id, out names))
+                                {
+                                    names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                    discoveredIncludeNames[proj.Id] = names;
+                                }
+                                names.Add(sym.Name);
+                            }
                         }
                         result.SymbolCount += tailResult.Symbols.Count;
+                    }
+                }
+
+                txn.Commit();
+            }
+
+            // Pass 2b: Resolve INCLUDE(...) targets discovered in Pass 1/2 that weren't already
+            // known from the .cwproj (neither <Compile Include> nor <None Include>). Real Clarion
+            // projects routinely reach their own class .inc files this way. Only sweep in files
+            // that resolve to a path INSIDE the solution's own directory tree -- anything resolving
+            // outside it (vendor/template folders) is left to the explicit --lib-paths mechanism
+            // rather than being auto-indexed as "project" symbols.
+            ReportProgress("Pass 2b: Resolving INCLUDE() targets not listed in .cwproj...");
+            using (var txn = _db.BeginTransaction())
+            {
+                string slnRootFull = Path.GetFullPath(Path.GetDirectoryName(slnPath))
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+                foreach (var kvp in discoveredIncludeNames)
+                {
+                    int projectId = kvp.Key;
+                    if (!changedProjects.Contains(projectId)) continue;
+
+                    string projectDir;
+                    if (!projectDirs.TryGetValue(projectId, out projectDir)) continue;
+
+                    // Files already known from the .cwproj for this project -- Pass 1 already parsed them.
+                    var alreadyKnown = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    List<ResolvedFile> knownIncs;
+                    if (incFiles.TryGetValue(projectId, out knownIncs))
+                        foreach (var f in knownIncs)
+                            alreadyKnown.Add(f.FileName);
+
+                    foreach (string includeName in kvp.Value)
+                    {
+                        if (!includeName.EndsWith(".inc", StringComparison.OrdinalIgnoreCase)) continue;
+                        if (alreadyKnown.Contains(includeName)) continue;
+
+                        var resolvedList = _resolver.Resolve(projectDir, new List<string> { includeName }, null);
+                        var resolved = resolvedList.Count > 0 ? resolvedList[0] : null;
+                        if (resolved == null || !resolved.Found) continue; // unresolvable -- leave alone
+
+                        string fullPath = Path.GetFullPath(resolved.FullPath);
+                        bool insideSolution =
+                            fullPath.StartsWith(slnRootFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                            fullPath.StartsWith(slnRootFull + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+                        if (!insideSolution) continue; // vendor/template path -- leave to --lib-paths
+
+                        var parseResult = _clarionParser.ParseIncFile(fullPath, projectId);
+                        foreach (var sym in parseResult.Symbols)
+                        {
+                            long symId = _db.InsertSymbol(sym);
+                            sym.Id = symId;
+                        }
+                        result.SymbolCount += parseResult.Symbols.Count;
+                        alreadyKnown.Add(includeName); // avoid double-parse if INCLUDE()'d from multiple files
                     }
                 }
 
