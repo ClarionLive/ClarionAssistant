@@ -42,3 +42,24 @@ DerivableClass CLASS,TYPE, MODULE('WorkerLib.CLW'), LINK('WorkerLib.CLW', 1 ), D
 
 Compute       PROCEDURE( LONG pValue ), LONG, VIRTUAL
             END
+
+! Bug L repro: a CLASS member that is itself a GROUP instantiation never got a
+! symbol for its OWN name -- only classEndDepth bookkeeping happened at its declaration line
+! (needed to correctly skip its body / know when the class itself closes), never symbol
+! creation. GroupBugClass.InlineGroup and PeriodBugClass.InlineGroupPeriod above (both
+! self-closing single-line forms) already exercise this for Bug H's depth-tracking fix, but
+! neither ever produced a symbol for its own name until this fix -- confirmed by direct query
+! (both now correctly appear). MultiLineGroup below additionally covers the genuine multi-line
+! form (its own extra field, ExtraField, before its own separate closing END), and
+! HiddenGroupMember covers PRIVATE-attribute exclusion for this construct, mirroring
+! HiddenMember above for the simple-reference-member case.
+MultiLineGroupBugClass CLASS,TYPE, MODULE('WorkerLib.CLW'), LINK('WorkerLib.CLW', 1 ), DLL( 0 )
+
+HiddenGroupMember      GROUP(SmallGroupType), PRIVATE
+                       END
+MultiLineGroup         GROUP(SmallGroupType)
+ExtraField                LONG
+                       END
+AfterMultiLineGroupMember &WorkerClass
+CallViaAfterMultiLineGroupMember PROCEDURE( ), LONG
+            END

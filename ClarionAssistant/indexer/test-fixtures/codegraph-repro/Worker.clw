@@ -23,6 +23,7 @@ owner        OwnerClass
 groupBug     GroupBugClass
 periodBug    PeriodBugClass
 afterBug     AfterBugClass
+multiLineGroupBug MultiLineGroupBugClass
 
  CODE
     r# = TestSignatureFlow()
@@ -41,6 +42,7 @@ afterBug     AfterBugClass
     r# = GroupQueueLocalTest()
     r# = InlineLocalGroupTest()
     r# = LocalDerivedClassTest()
+    r# = multiLineGroupBug.CallViaAfterMultiLineGroupMember()
 
 ! Bug A repro: this procedure is implemented directly in the PROGRAM file itself,
 ! rather than in a MEMBER file. ParseMainFile only scans the file's PROGRAM marker,

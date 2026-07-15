@@ -79,6 +79,16 @@ namespace ClarionCodeGraph.Parsing
             @"^([\w:]+)\s+(GROUP|QUEUE)\s*(\([^)]*\))?\s*(?:(,.*)|(?<term>END\b\s*|\.\s*))?$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        // CLASS member that is itself a GROUP/QUEUE/RECORD instantiation (also allows RECORD,
+        // unlike GroupQueueDeclRegex above, which only ever needed GROUP/QUEUE for DATA-section
+        // locals). Same shape and same named "term" self-closing group as GroupQueueDeclRegex --
+        // used by ParseIncFile's CLASS-body nested-structure check to ALSO capture a symbol for
+        // the member's own name, not just track nesting depth (issue: GROUP/QUEUE/RECORD CLASS
+        // member's own name never captured as a symbol at all).
+        private static readonly Regex ClassGroupQueueRecordDeclRegex = new Regex(
+            @"^([\w:]+)\s+(GROUP|QUEUE|RECORD)\s*(\([^)]*\))?\s*(?:(,.*)|(?<term>END\b\s*|\.\s*))?$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         // LIKE declaration: VarName LIKE(OtherVar) [,attributes]
         private static readonly Regex LikeDeclRegex = new Regex(
             @"^([\w:]+)\s+LIKE\s*\(([^)]+)\)\s*(,.*)?$",
@@ -881,9 +891,37 @@ namespace ClarionCodeGraph.Parsing
                         continue;
                     }
 
-                    // Nested END for inner GROUP/QUEUE etc.
-                    if (Regex.IsMatch(line.TrimStart(), @"^\w+\s+(GROUP|QUEUE|RECORD)\b", RegexOptions.IgnoreCase))
+                    // Nested END for inner GROUP/QUEUE etc. -- also captures a symbol for the
+                    // member's own name when it's a DIRECT class member (classEndDepth==1),
+                    // mirroring the GROUP/QUEUE(NamedType) local-variable fix. Before this fix, a
+                    // CLASS member that is itself a GROUP/QUEUE/RECORD -- e.g.
+                    // "InlineGroup GROUP(SmallGroupType) END" -- never got a symbol for its OWN
+                    // name at all here; only classEndDepth bookkeeping happened (needed to
+                    // correctly skip the member's nested body and know when the class itself
+                    // closes), never symbol creation (issue: GROUP/QUEUE/RECORD CLASS member's
+                    // own name never captured as a symbol).
+                    var groupMemberMatch = ClassGroupQueueRecordDeclRegex.Match(StripInlineComment(line.TrimStart()));
+                    if (groupMemberMatch.Success)
                     {
+                        if (currentClassName != null && classEndDepth == 1 &&
+                            !Regex.IsMatch(groupMemberMatch.Value, @",\s*PRIVATE\b", RegexOptions.IgnoreCase))
+                        {
+                            string groupMemberName = groupMemberMatch.Groups[1].Value;
+                            string groupMemberType = groupMemberMatch.Groups[2].Value.ToUpperInvariant() +
+                                (groupMemberMatch.Groups[3].Success ? groupMemberMatch.Groups[3].Value : "");
+                            result.Symbols.Add(new ClarionSymbol
+                            {
+                                Name = currentClassName + "." + groupMemberName,
+                                Type = "variable",
+                                FilePath = filePath,
+                                LineNumber = lineNum,
+                                ProjectId = projectId,
+                                Params = groupMemberType,
+                                ParentName = currentClassName,
+                                Scope = "class"
+                            });
+                        }
+
                         // A self-closing single-line form -- e.g. "CertInfo GROUP(CertInfoGroupType) END"
                         // (a named GROUP/QUEUE/RECORD,TYPE instantiated inline, all on one line), or the
                         // same thing terminated with a bare period instead of END (per the language
@@ -894,11 +932,9 @@ namespace ClarionCodeGraph.Parsing
                         // require the terminator to be the ONLY content on the line, and this line has other
                         // content before it. That leak silently breaks every subsequent data member AND every
                         // subsequent CLASS declaration in the rest of the file (issue: classEndDepth leak on
-                        // self-closing inline GROUP/QUEUE/RECORD). Detect the self-closing form (comment
-                        // stripped first) and treat it as a net no-op instead of an unbalanced increment.
-                        string lineForSelfClosingCheck = StripInlineComment(line).TrimEnd();
-                        bool selfClosing = Regex.IsMatch(lineForSelfClosingCheck, @"(\bEND|\.)\s*$", RegexOptions.IgnoreCase);
-                        if (!selfClosing)
+                        // self-closing inline GROUP/QUEUE/RECORD). The regex's own "term" group already
+                        // recognizes the same-line terminator (if any), so no separate re-check is needed.
+                        if (!groupMemberMatch.Groups["term"].Success)
                         {
                             classEndDepth++;
                         }
