@@ -59,6 +59,12 @@ indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproS
   a symbol for its own name at all before it, in ANY form: self-closing or multi-line).
   `MultiLineGroupBugClass.HiddenGroupMember` (`PRIVATE`) correctly stays absent, mirroring
   `GroupBugClass.HiddenMember`'s exclusion for the simple-reference-member case.
+- `MultiLineGroupBugClass.AttrTermGroup` / `.AttrTermGroupPeriod` (both `GROUP(SmallGroupType)`,
+  `scope='class'`): the attrs+same-line-terminator forms (`...,DIM(2) END` / `...,DIM(2).`).
+  The declaration regex's `term` group never matches these (the `,.*` attrs alternative swallows
+  the terminator), so self-closing detection must ALSO re-check the end of the line — without
+  that, `classEndDepth` leaks and every member/class after them vanishes.
+  `CallViaAfterMultiLineGroupMember` still appearing in the callers table above proves no leak.
 
 ### Program symbol (#81)
 
@@ -74,5 +80,5 @@ JOIN symbols s1 ON r.to_id=s1.id JOIN symbols s2 ON r.from_id=s2.id
 WHERE s1.name='WorkerClass.Sign' AND r.type='calls' ORDER BY r.line_number;
 
 SELECT name, type, scope, parent_name, params FROM symbols WHERE type='class' OR scope='parameter'
-OR name IN ('LocalDerived','workerRef','LocalGroup','InlineLocalGroup','InlineGroup','InlineGroupPeriod','MultiLineGroup','HiddenGroupMember');
+OR name IN ('LocalDerived','workerRef','LocalGroup','InlineLocalGroup','InlineGroup','InlineGroupPeriod','MultiLineGroup','HiddenGroupMember','AttrTermGroup','AttrTermGroupPeriod');
 ```

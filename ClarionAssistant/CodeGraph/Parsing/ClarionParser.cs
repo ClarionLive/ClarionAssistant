@@ -950,9 +950,14 @@ namespace ClarionCodeGraph.Parsing
                         // require the terminator to be the ONLY content on the line, and this line has other
                         // content before it. That leak silently breaks every subsequent data member AND every
                         // subsequent CLASS declaration in the rest of the file (issue: classEndDepth leak on
-                        // self-closing inline GROUP/QUEUE/RECORD). The regex's own "term" group already
-                        // recognizes the same-line terminator (if any), so no separate re-check is needed.
-                        if (!groupMemberMatch.Groups["term"].Success)
+                        // self-closing inline GROUP/QUEUE/RECORD). The regex's "term" group only sees a
+                        // terminator that DIRECTLY follows the name/type -- when an attribute list is
+                        // present ("...,DIM(2) END" / "...,DIM(2)."), the ",.*" attrs alternative swallows
+                        // the terminator into itself and "term" never matches -- so ALSO keep the original
+                        // end-of-line re-check to cover the attrs+same-line-terminator form.
+                        bool groupMemberSelfClosing = groupMemberMatch.Groups["term"].Success ||
+                            Regex.IsMatch(groupMemberMatch.Value.TrimEnd(), @"(\bEND|\.)\s*$", RegexOptions.IgnoreCase);
+                        if (!groupMemberSelfClosing)
                         {
                             classEndDepth++;
                         }

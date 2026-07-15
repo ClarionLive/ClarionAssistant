@@ -52,7 +52,11 @@ Compute       PROCEDURE( LONG pValue ), LONG, VIRTUAL
 ! (both now correctly appear). MultiLineGroup below additionally covers the genuine multi-line
 ! form (its own extra field, ExtraField, before its own separate closing END), and
 ! HiddenGroupMember covers PRIVATE-attribute exclusion for this construct, mirroring
-! HiddenMember above for the simple-reference-member case.
+! HiddenMember above for the simple-reference-member case. AttrTermGroup and
+! AttrTermGroupPeriod cover the attrs+same-line-terminator forms ("...,DIM(2) END" /
+! "...,DIM(2)."): the regex's "term" group never matches these (the ",.*" attrs alternative
+! swallows the terminator), so without the end-of-line re-check they'd leak classEndDepth --
+! AfterMultiLineGroupMember declared after them proves no leak (its Sign call still resolves).
 MultiLineGroupBugClass CLASS,TYPE, MODULE('WorkerLib.CLW'), LINK('WorkerLib.CLW', 1 ), DLL( 0 )
 
 HiddenGroupMember      GROUP(SmallGroupType), PRIVATE
@@ -60,6 +64,8 @@ HiddenGroupMember      GROUP(SmallGroupType), PRIVATE
 MultiLineGroup         GROUP(SmallGroupType)
 ExtraField                LONG
                        END
+AttrTermGroup          GROUP(SmallGroupType),DIM(2) END
+AttrTermGroupPeriod    GROUP(SmallGroupType),DIM(2).
 AfterMultiLineGroupMember &WorkerClass
 CallViaAfterMultiLineGroupMember PROCEDURE( ), LONG
             END
