@@ -811,7 +811,24 @@ namespace ClarionCodeGraph.Parsing
                     // Nested END for inner GROUP/QUEUE etc.
                     if (Regex.IsMatch(line.TrimStart(), @"^\w+\s+(GROUP|QUEUE|RECORD)\b", RegexOptions.IgnoreCase))
                     {
-                        classEndDepth++;
+                        // A self-closing single-line form -- e.g. "CertInfo GROUP(CertInfoGroupType) END"
+                        // (a named GROUP/QUEUE/RECORD,TYPE instantiated inline, all on one line), or the
+                        // same thing terminated with a bare period instead of END (per the language
+                        // reference, "." is fully interchangeable with END for terminating any structure,
+                        // not just executable statements) -- opens and closes on the same line. Incrementing
+                        // classEndDepth unconditionally here would leak it permanently: there is no separate
+                        // closing line for the EndRegex/PeriodTermRegex check above to ever match, since both
+                        // require the terminator to be the ONLY content on the line, and this line has other
+                        // content before it. That leak silently breaks every subsequent data member AND every
+                        // subsequent CLASS declaration in the rest of the file (issue: classEndDepth leak on
+                        // self-closing inline GROUP/QUEUE/RECORD). Detect the self-closing form (comment
+                        // stripped first) and treat it as a net no-op instead of an unbalanced increment.
+                        string lineForSelfClosingCheck = StripInlineComment(line).TrimEnd();
+                        bool selfClosing = Regex.IsMatch(lineForSelfClosingCheck, @"(\bEND|\.)\s*$", RegexOptions.IgnoreCase);
+                        if (!selfClosing)
+                        {
+                            classEndDepth++;
+                        }
                         continue;
                     }
 
