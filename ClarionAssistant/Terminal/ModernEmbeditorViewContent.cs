@@ -1154,6 +1154,7 @@ namespace ClarionAssistant.Terminal
         void IMonacoEditorHost.OnHover(MonacoEditorControl editor, string rawJson) { HandleHover(rawJson); }
         void IMonacoEditorHost.OnDefinition(MonacoEditorControl editor, string rawJson) { HandleDefinition(rawJson); }
         void IMonacoEditorHost.OnDiagnostics(MonacoEditorControl editor, string rawJson) { HandleDiagnostics(rawJson); }
+        void IMonacoEditorHost.OnSignatureHelp(MonacoEditorControl editor, string rawJson) { HandleSignatureHelp(rawJson); }
         void IMonacoEditorHost.OnSaveSettings(MonacoEditorControl editor, string rawJson) { HandleSaveSettings(rawJson); }
         void IMonacoEditorHost.OnSaveHistory(MonacoEditorControl editor, string rawJson) { HandleSaveHistory(rawJson); }
         void IMonacoEditorHost.OnSnippetCommand(MonacoEditorControl editor, string rawJson)
@@ -2373,6 +2374,26 @@ namespace ClarionAssistant.Terminal
             }
             catch { }
             return false;
+        }
+
+        /// <summary>LSP signature-help request from Monaco (typing '(' or ',' at a call site). Same
+        /// position/buffer contract as hover; replies {signatureHelp: {...}|null}.</summary>
+        private void HandleSignatureHelp(string json)
+        {
+            int reqId, line, column; string buffer;
+            if (!ParseRequest(json, out reqId, out line, out column, out buffer)) return;
+            Task.Run(() =>
+            {
+                Dictionary<string, object> help = null;
+                try
+                {
+                    EnsureLspStarted();
+                    if (SharedLspBridge.IsRunning)
+                        help = SharedLspBridge.GetSignatureHelp(_lspFileName, LspLine0(line), Math.Max(0, column - 1), LspBuffer(buffer));
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] signatureHelp: " + ex.Message); }
+                PostResponse(reqId, new Dictionary<string, object> { { "signatureHelp", help } });
+            });
         }
 
         /// <summary>LSP hover request from Monaco. Syncs the current buffer (needed to resolve the symbol).</summary>

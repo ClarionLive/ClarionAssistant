@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using ClarionLsp.Contracts;
 using ClarionCodeGraph.Graph;
@@ -173,6 +174,158 @@ namespace ClarionAssistant.Services
                 return (sym != null && mLabel == "ClarionGraph") ? sym : null;
             }
             catch { return null; }
+        }
+
+        /// <summary>textDocument/signatureHelp → a Monaco-ready dict {signatures:[{label, documentation,
+        /// parameters:[{label, documentation}]}], activeSignature, activeParameter}, or null when the call
+        /// site yields no signatures. SHARED path goes through REFLECTION: GetSignatureHelpAsync shipped in
+        /// ClarionLsp contracts v1.4.0, NEWER than the vendored copy we compile against, so no static
+        /// reference is possible (and per the class-header JIT-safety note, none would be safe anyway).
+        /// BUNDLED path parses the raw LSP response shape.</summary>
+        public static Dictionary<string, object> GetSignatureHelp(string filePath, int line, int character, string bufferText = null)
+        {
+            var c = Shared;
+            if (c != null)
+            {
+                MethodInfo m = null;
+                try { m = c.GetType().GetMethod("GetSignatureHelpAsync"); } catch { }
+                if (m == null)
+                {
+                    Debug.WriteLine("[SharedLspBridge] shared client lacks GetSignatureHelpAsync — install ClarionLsp >= 1.4.0 for parameter hints.");
+                    return null;
+                }
+                return SharedSignatureHelpViaReflection(c, m, filePath, line, character, bufferText);
+            }
+            var lsp = LspClient.Active;
+            if (lsp == null) return null;
+            try { return ParseLspSignatureHelp(lsp.GetSignatureHelp(filePath, line, character, bufferText)); }
+            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] signatureHelp (bundled) failed: " + ex.Message); return null; }
+        }
+
+        // Invoke the v1.4.0 GetSignatureHelpAsync(string, int, int, string, int) purely reflectively and
+        // flatten SignatureHelpResult/SignatureInfo/SignatureParameter (types from the ADDIN's newer
+        // contracts assembly, unknown to our compile) into the Monaco-ready dict.
+        private static Dictionary<string, object> SharedSignatureHelpViaReflection(
+            object client, MethodInfo m, string filePath, int line, int character, string bufferText)
+        {
+            try
+            {
+                object taskObj = m.Invoke(client, new object[] { filePath, line, character, bufferText, 2000 });
+                var task = taskObj as System.Threading.Tasks.Task;
+                if (task == null) return null;
+                task.GetAwaiter().GetResult();
+                object r = taskObj.GetType().GetProperty("Result").GetValue(taskObj, null);
+                if (r == null) return null;
+
+                var sigList = new List<object>();
+                if (ReflProp(r, "Signatures") is System.Collections.IEnumerable sigs)
+                {
+                    foreach (var s in sigs)
+                    {
+                        if (s == null) continue;
+                        var ps = new List<object>();
+                        if (ReflProp(s, "Parameters") is System.Collections.IEnumerable pars)
+                            foreach (var p in pars)
+                            {
+                                if (p == null) continue;
+                                ps.Add(SigDict(ReflProp(p, "Label") as string, ReflProp(p, "Documentation") as string, null));
+                            }
+                        sigList.Add(SigDict(ReflProp(s, "Label") as string, ReflProp(s, "Documentation") as string, ps));
+                    }
+                }
+                if (sigList.Count == 0) return null;
+                return new Dictionary<string, object>
+                {
+                    { "signatures", sigList },
+                    { "activeSignature", Convert.ToInt32(ReflProp(r, "ActiveSignature") ?? 0) },
+                    { "activeParameter", Convert.ToInt32(ReflProp(r, "ActiveParameter") ?? 0) }
+                };
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("[SharedLspBridge] signatureHelp (shared) failed: " + ex.Message);
+                return null;
+            }
+        }
+
+        private static object ReflProp(object obj, string name)
+        {
+            if (obj == null) return null;
+            try
+            {
+                var p = obj.GetType().GetProperty(name);
+                return p != null ? p.GetValue(obj, null) : null;
+            }
+            catch { return null; }
+        }
+
+        // Signature/parameter dict for Monaco. The "documentation" key is emitted ONLY when non-empty:
+        // Monaco 0.52's parameter-hints render checks `documentation !== undefined`, so an explicit NULL
+        // enters the markdown-docs path and ABORTS the render mid-way — the overload counter ("1/4")
+        // never gets its text and the widget shows without it. Omitting the key keeps it undefined.
+        private static Dictionary<string, object> SigDict(string label, string documentation, List<object> parameters)
+        {
+            var d = new Dictionary<string, object> { { "label", label ?? "" } };
+            if (!string.IsNullOrEmpty(documentation)) d["documentation"] = documentation;
+            if (parameters != null) d["parameters"] = parameters;
+            return d;
+        }
+
+        // Raw LSP signatureHelp response → the same Monaco-ready dict as the shared path. Handles the
+        // spec's variant shapes: documentation as string OR MarkupContent {kind,value}; parameter label
+        // as string OR [start,end] offsets into the signature label (resolved to the substring).
+        private static Dictionary<string, object> ParseLspSignatureHelp(Dictionary<string, object> resp)
+        {
+            if (resp == null || !resp.ContainsKey("result")) return null;
+            var res = resp["result"] as Dictionary<string, object>;
+            if (res == null || !res.ContainsKey("signatures")) return null;
+
+            var sigList = new List<object>();
+            if (res["signatures"] is System.Collections.IEnumerable sigs)
+            {
+                foreach (var so in sigs)
+                {
+                    var s = so as Dictionary<string, object>;
+                    if (s == null) continue;
+                    string sigLabel = (s.ContainsKey("label") ? s["label"] as string : null) ?? "";
+                    var ps = new List<object>();
+                    if (s.ContainsKey("parameters") && s["parameters"] is System.Collections.IEnumerable pars)
+                        foreach (var po in pars)
+                        {
+                            var p = po as Dictionary<string, object>;
+                            if (p == null) continue;
+                            string pLabel = null;
+                            object rawLabel = p.ContainsKey("label") ? p["label"] : null;
+                            if (rawLabel is string sl) pLabel = sl;
+                            else if (rawLabel is System.Collections.IEnumerable offs)
+                            {
+                                // [start, end] offsets into the signature label
+                                var idx = new List<int>();
+                                foreach (var o in offs) { try { idx.Add(Convert.ToInt32(o)); } catch { } }
+                                if (idx.Count >= 2 && idx[0] >= 0 && idx[1] <= sigLabel.Length && idx[1] > idx[0])
+                                    pLabel = sigLabel.Substring(idx[0], idx[1] - idx[0]);
+                            }
+                            ps.Add(SigDict(pLabel, DocString(p.ContainsKey("documentation") ? p["documentation"] : null), null));
+                        }
+                    sigList.Add(SigDict(sigLabel, DocString(s.ContainsKey("documentation") ? s["documentation"] : null), ps));
+                }
+            }
+            if (sigList.Count == 0) return null;
+            int actSig = 0, actPar = 0;
+            try { if (res.ContainsKey("activeSignature") && res["activeSignature"] != null) actSig = Convert.ToInt32(res["activeSignature"]); } catch { }
+            try { if (res.ContainsKey("activeParameter") && res["activeParameter"] != null) actPar = Convert.ToInt32(res["activeParameter"]); } catch { }
+            return new Dictionary<string, object>
+            {
+                { "signatures", sigList }, { "activeSignature", actSig }, { "activeParameter", actPar }
+            };
+        }
+
+        // LSP documentation is string | MarkupContent {kind, value} — flatten to plain text (or null).
+        private static string DocString(object doc)
+        {
+            if (doc is string s) return s;
+            var d = doc as Dictionary<string, object>;
+            return (d != null && d.ContainsKey("value")) ? d["value"] as string : null;
         }
 
         /// <summary>textDocument/definition → raw LSP-response-shaped dict. Falls back to the C#

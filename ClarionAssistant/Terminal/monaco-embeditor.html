@@ -2852,6 +2852,30 @@
                     .catch(function () { return null; });
             }
         });
+        // Signature help — parameter hints when typing '(' or ',' at a call site (mirrors VS Code).
+        // The host answers {signatureHelp: {signatures, activeSignature, activeParameter}|null}; a null
+        // (comment position, no LSP, bare identifier) simply keeps the widget hidden.
+        monaco.languages.registerSignatureHelpProvider('clarion', {
+            signatureHelpTriggerCharacters: ['(', ','],
+            signatureHelpRetriggerCharacters: [','],
+            provideSignatureHelp: function (model, position, token, context) {
+                if (isInClarionComment(model.getLineContent(position.lineNumber), position.column - 1)) return null;
+                return requestFromHost('signatureHelp', { line: position.lineNumber, column: position.column, buffer: model.getValue() })
+                    .then(function (resp) {
+                        var h = resp && resp.signatureHelp;
+                        if (!h || !h.signatures || !h.signatures.length) return null;
+                        return {
+                            value: {
+                                signatures: h.signatures,
+                                activeSignature: h.activeSignature || 0,
+                                activeParameter: h.activeParameter || 0
+                            },
+                            dispose: function () { }
+                        };
+                    })
+                    .catch(function () { return null; });
+            }
+        });
     }
 
     // Clarion syntax highlighting (Monarch) + language configuration now live in the shared
