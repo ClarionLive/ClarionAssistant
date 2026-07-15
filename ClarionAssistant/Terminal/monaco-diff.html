@@ -62,7 +62,10 @@
     #btn-theme { min-width: 28px; padding: 3px 8px; font-size: 14px; line-height: 1; }
 
     /* ---------- Editor area ---------- */
-    #diff-editor { width: 100%; height: calc(100% - 38px - 44px); }
+    /* --lc-height is toggled by JS (0px / panel's real height) so the editor always fills the
+       remaining space exactly — see toggleLineCompare(). automaticLayout:true on the Monaco diff
+       editor picks up the resulting container resize on its own (ResizeObserver). */
+    #diff-editor { width: 100%; height: calc(100% - 38px - 44px - var(--lc-height, 0px)); }
     #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: var(--counter-color); font-size: 14px; }
 
     /* ---------- Bottom action bar ---------- */
@@ -75,6 +78,20 @@
     .cr-btn.pass:hover { background: #94e2d5; }
     .cr-btn.cancel-btn { background: transparent; color: var(--fg); border: 1px solid var(--btn-border); }
     .cr-btn.cancel-btn:hover { background: var(--btn-hover); }
+
+    /* ---------- Current-line comparison panel (TotalCommander-style full-line view) ---------- */
+    #linecompare {
+        display: none; flex-direction: column; gap: 2px;
+        padding: 5px 12px; background: var(--toolbar-bg); border-top: 1px solid var(--toolbar-border);
+        font-family: 'Cascadia Code','Consolas',monospace; font-size: 12px; flex-shrink: 0;
+        overflow-x: auto; white-space: pre;
+    }
+    #linecompare.lc-visible { display: flex; }
+    .lc-row { display: flex; gap: 8px; }
+    .lc-label { color: var(--counter-color); min-width: 48px; flex-shrink: 0; user-select: none; }
+    .lc-text { color: var(--fg); }
+    .lc-hl { background: rgba(249, 226, 175, 0.4); border-radius: 2px; }
+    body.light .lc-hl { background: rgba(223, 142, 29, 0.28); }
 </style>
 </head>
 <body>
@@ -88,6 +105,7 @@
     <span class="sep">|</span>
     <button id="btn-layout" class="toggle" onclick="toggleLayout()" title="Toggle side-by-side / inline">Inline</button>
     <button id="btn-ws" class="toggle active" onclick="toggleWhitespace()" title="Ignore whitespace changes">Ignore WS</button>
+    <button id="btn-linecompare" class="toggle" onclick="toggleLineCompare()" title="Show full current line (both sides) below the editor, with the exact changed part highlighted">Line View</button>
     <span class="sep">|</span>
     <select id="font-family-select" onchange="applyFontFamily(this.value)" title="Font family">
         <option value="'Cascadia Code','Consolas',monospace">Cascadia Code</option>
@@ -104,6 +122,12 @@
 <!-- Monaco diff editor mounts here -->
 <div id="diff-editor"></div>
 <div id="loading">Loading Monaco…</div>
+
+<!-- Current-line comparison panel (off by default, toggled via "Line View") -->
+<div id="linecompare">
+    <div class="lc-row"><span class="lc-label">Disk</span><span id="lc-original" class="lc-text"></span></div>
+    <div class="lc-row"><span class="lc-label">Buffer</span><span id="lc-modified" class="lc-text"></span></div>
+</div>
 
 <!-- Bottom action bar (preserves the show_diff Approve/Cancel result contract) -->
 <div id="bottom">
@@ -209,9 +233,79 @@
         ed.setPosition({ lineNumber: line, column: 1 });
         ed.focus();
         updateCounter();
+        updateLineCompare(c);
     }
     function goNext() { if (changes.length) revealChange(currentChangeIndex + 1); }
     function goPrev() { if (changes.length) revealChange(currentChangeIndex - 1); }
+
+    // ===== Current-line comparison panel (TotalCommander-style: full line + char-level highlight) =====
+    // Off by default, toggled via the "Line View" button, persisted like the other toolbar toggles.
+    var lineCompareEnabled = (localStorage.getItem('diffLineCompare') === '1');
+
+    function escapeHtml(s) {
+        return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    // Wraps the given 1-based column ranges (each [startCol, endCol), Monaco convention) in a
+    // highlight span, leaving the rest of the line as plain escaped text.
+    function highlightLine(lineText, ranges) {
+        if (!ranges.length) return escapeHtml(lineText);
+        ranges = ranges.slice().sort(function (a, b) { return a[0] - b[0]; });
+        var out = [], pos = 1; // 1-based column cursor
+        for (var i = 0; i < ranges.length; i++) {
+            var s = Math.max(ranges[i][0], pos), e = Math.max(ranges[i][1], s);
+            if (s > pos) out.push(escapeHtml(lineText.substring(pos - 1, s - 1)));
+            out.push('<span class="lc-hl">' + escapeHtml(lineText.substring(s - 1, e - 1)) + '</span>');
+            pos = e;
+        }
+        if (pos - 1 < lineText.length) out.push(escapeHtml(lineText.substring(pos - 1)));
+        return out.join('');
+    }
+    // Populates the panel for one navigated change. Deliberately tied to Prev/Next navigation
+    // (not free cursor movement) — a "change" already pairs up the corresponding original/modified
+    // line numbers and their charChanges, so no separate line-number-mapping logic is needed.
+    function updateLineCompare(change) {
+        var origEl = document.getElementById('lc-original');
+        var modEl = document.getElementById('lc-modified');
+        if (!origEl || !modEl) return;
+        if (!lineCompareEnabled || !change || !diffEditor) return;
+
+        var origModel = diffEditor.getOriginalEditor().getModel();
+        var modModel = diffEditor.getModifiedEditor().getModel();
+        var origLine = change.originalStartLineNumber > 0 ? change.originalStartLineNumber : 0;
+        var modLine = change.modifiedStartLineNumber > 0 ? change.modifiedStartLineNumber : 0;
+        var origText = (origLine && origModel) ? origModel.getLineContent(origLine) : '';
+        var modText = (modLine && modModel) ? modModel.getLineContent(modLine) : '';
+
+        var origRanges = [], modRanges = [];
+        (change.charChanges || []).forEach(function (cc) {
+            if (origLine && cc.originalEndColumn > cc.originalStartColumn) origRanges.push([cc.originalStartColumn, cc.originalEndColumn]);
+            if (modLine && cc.modifiedEndColumn > cc.modifiedStartColumn) modRanges.push([cc.modifiedStartColumn, cc.modifiedEndColumn]);
+        });
+
+        origEl.innerHTML = origLine
+            ? origLine + ': ' + highlightLine(origText, origRanges)
+            : '<i>(line not present on disk — added in buffer)</i>';
+        modEl.innerHTML = modLine
+            ? modLine + ': ' + highlightLine(modText, modRanges)
+            : '<i>(line not present in buffer — removed)</i>';
+    }
+    function applyLineCompareVisibility() {
+        var el = document.getElementById('linecompare');
+        var btn = document.getElementById('btn-linecompare');
+        if (el) el.classList.toggle('lc-visible', lineCompareEnabled);
+        if (btn) btn.classList.toggle('active', lineCompareEnabled);
+        // Reserve/release the panel's space so the Monaco container's automaticLayout resizes it correctly.
+        document.body.style.setProperty('--lc-height', lineCompareEnabled ? '46px' : '0px');
+        if (diffEditor) setTimeout(function () { try { diffEditor.layout(); } catch (e) { } }, 0);
+    }
+    function toggleLineCompare() {
+        lineCompareEnabled = !lineCompareEnabled;
+        localStorage.setItem('diffLineCompare', lineCompareEnabled ? '1' : '0');
+        applyLineCompareVisibility();
+        if (lineCompareEnabled && changes.length) {
+            updateLineCompare(changes[currentChangeIndex >= 0 ? currentChangeIndex : 0]);
+        }
+    }
 
     // ===== Monaco worker shim (cross-origin CDN workers can't load directly) =====
     window.MonacoEnvironment = {
@@ -260,8 +354,17 @@
                 });
                 diffEditor.onDidUpdateDiff(function () {
                     refreshChanges();
-                    if (changes.length && currentChangeIndex < 0) { currentChangeIndex = 0; updateCounter(); }
+                    if (changes.length && currentChangeIndex < 0) {
+                        // Auto-navigate to (reveal + focus) the first change, exactly like pressing
+                        // Next would — keeps the editor viewport, counter, and Line View panel all
+                        // consistent from the moment the diff opens, instead of silently starting on
+                        // "change 0" while the editor still shows line 1.
+                        revealChange(0);
+                    } else {
+                        updateLineCompare(changes.length ? changes[currentChangeIndex] : null);
+                    }
                 });
+                applyLineCompareVisibility();
                 ready = true;
                 var loadingEl = document.getElementById('loading');
                 if (loadingEl) loadingEl.style.display = 'none';
