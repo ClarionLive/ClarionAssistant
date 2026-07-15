@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using System.Windows.Forms;
 using ClarionAssistant.Terminal;
 using ICSharpCode.SharpDevelop.Gui;
@@ -89,18 +90,15 @@ namespace ClarionAssistant.Services
                 if (!File.Exists(originalFile))
                     return "Error: File not found: " + originalFile;
 
-                string[] allLines = File.ReadAllLines(originalFile);
-
-                // Clamp line range (1-based input)
-                if (startLine < 1) startLine = 1;
-                if (endLine < 1 || endLine > allLines.Length) endLine = allLines.Length;
-                if (startLine > endLine)
-                    return "Error: start_line (" + startLine + ") is greater than end_line (" + endLine + ")";
-
-                // Extract the line range (convert 1-based to 0-based)
-                var lines = new string[endLine - startLine + 1];
-                Array.Copy(allLines, startLine - 1, lines, 0, lines.Length);
-                string originalText = string.Join("\n", lines);
+                string originalText;
+                try
+                {
+                    originalText = ReadOriginalText(originalFile, startLine, endLine, EncodingHelper.DetectFileEncoding(originalFile));
+                }
+                catch (ArgumentException ex)
+                {
+                    return "Error: " + ex.Message;
+                }
 
                 return ShowDiff(title, originalText, modifiedText, language, ignoreWhitespace, useMonaco);
             }
@@ -125,8 +123,8 @@ namespace ClarionAssistant.Services
                 if (!File.Exists(modifiedFile))
                     return "Error: Modified file not found: " + modifiedFile;
 
-                string originalText = ReadFileRange(originalFile, origStartLine, origEndLine);
-                string modifiedText = ReadFileRange(modifiedFile, modStartLine, modEndLine);
+                string originalText = ReadOriginalText(originalFile, origStartLine, origEndLine, EncodingHelper.DetectFileEncoding(originalFile));
+                string modifiedText = ReadOriginalText(modifiedFile, modStartLine, modEndLine, EncodingHelper.DetectFileEncoding(modifiedFile));
 
                 return ShowDiff(title, originalText, modifiedText, language, ignoreWhitespace, useMonaco);
             }
@@ -136,12 +134,24 @@ namespace ClarionAssistant.Services
             }
         }
 
-        private static string ReadFileRange(string filePath, int startLine, int endLine)
+        /// <summary>
+        /// Read a file for diffing, preserving its exact text (including any trailing newline)
+        /// when no sub-range is requested (startLine &lt;= 1 and endLine == -1, the "whole file"
+        /// default). A live editor buffer naturally includes the file's trailing EOL, so
+        /// reconstructing the disk side via ReadAllLines+Join (which always drops it) produced a
+        /// spurious "extra blank line" diff that was never a real edit. A genuine sub-range still
+        /// goes through line splitting, since some reconstruction is unavoidable there anyway.
+        /// </summary>
+        private static string ReadOriginalText(string filePath, int startLine, int endLine, Encoding encoding)
         {
-            string[] allLines = File.ReadAllLines(filePath);
+            if (startLine <= 1 && endLine == -1)
+                return File.ReadAllText(filePath, encoding);
+
+            string[] allLines = File.ReadAllLines(filePath, encoding);
             if (startLine < 1) startLine = 1;
             if (endLine < 1 || endLine > allLines.Length) endLine = allLines.Length;
-            if (startLine > endLine) startLine = 1;
+            if (startLine > endLine)
+                throw new ArgumentException("start_line (" + startLine + ") is greater than end_line (" + endLine + ")");
 
             var lines = new string[endLine - startLine + 1];
             Array.Copy(allLines, startLine - 1, lines, 0, lines.Length);
