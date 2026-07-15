@@ -47,6 +47,20 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
+## What's New (Unreleased)
+
+### Dictionary- and CodeGraph-aware completion in the CA Embeditor
+
+The CA Embeditor's completion now reaches into your ingested **SchemaGraph** (dictionary tables/fields/keys) and **CodeGraph** (solution-wide symbols) databases, not just the LSP and the current buffer:
+
+- **Dictionary fields and keys** &mdash; typing a table's `PRE:` prefix (e.g. `Cus:`) now also suggests that table's columns and keys straight from the ingested `.dctx`, with declared type, description, and (for keys) full field composition shown in the completion detail/documentation panel. Shown alongside any same-named in-buffer `GROUP`/`QUEUE` fields, not instead of them.
+- **Dictionary table names** &mdash; bare-prefix completion now also suggests table names from the dictionary (e.g. `Cus` &rarr; `Customers`).
+- **Richer variable detail** &mdash; completion for locals, module-scope variables, and cross-file CodeGraph globals now shows the actual declared type (`STRING(30)`, `DECIMAL(13,2)`, ...), a `!`-comment description when present, and local/global scope &mdash; instead of a generic "variable" label.
+
+Requires a SchemaGraph source to be added and indexed once via the **Schema Sources** panel (Solution Settings &rarr; Schema Sources &rarr; Add Source).
+
+---
+
 ## What's New in v5.3
 
 v5.3 is a refinement release &mdash; it sharpens the Monaco editor, Smart Formatter, and completion that landed in v5.1/v5.2, adds editor personalization and one-click surface toggles, and folds in a round of community fixes.

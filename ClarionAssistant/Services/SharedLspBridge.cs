@@ -499,6 +499,16 @@ namespace ClarionAssistant.Services
             try { MergeQualifiedFieldCompletions(primary, filePath, line, character, bufferText); }
             catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] qualified field completion merge failed: " + ex.Message); }
 
+            // Dictionary table FIELD/KEY completion ("Cus:" → columns + keys of the dictionary table whose
+            // PRE is "Cus", from the ingested .schemagraph.db). Same "<ident>:partial" qualifier context as
+            // MergeQualifiedFieldCompletions above, but a different data source (dictionary, not a GROUP/QUEUE
+            // visible in the current buffer) — a hand-coded FILE structure and a dictionary table can share a
+            // prefix, so this deliberately does NOT dedupe against what MergeQualifiedFieldCompletions already
+            // added; both are shown, distinguished by Detail ("... field, dictionary" vs "... (field)").
+            // Never throws, never overrides.
+            try { MergeDictionaryFieldCompletions(primary, filePath, line, character, bufferText); }
+            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] dictionary field completion merge failed: " + ex.Message); }
+
             // Class member-access (ticket 6e8f2439, item 5b): "oInstance." → that instance's ABC/library
             // methods from ClarionGraph (+ project CodeGraph), resolved by the instance's declared class
             // type. Mark's LSP answers member access for project-local types; this SUPPLEMENTS it for
@@ -1120,6 +1130,11 @@ namespace ClarionAssistant.Services
         /// <c>EmbeditorCompletionService.LspStarter</c>.)</summary>
         public static Func<string> CodeGraphDbPathProvider;
 
+        /// <summary>Set at startup (SetChatControl) to return the active solution's .schemagraph.db path
+        /// — mirrors <see cref="CodeGraphDbPathProvider"/>, same wiring pattern, resolved the same way
+        /// query_schema/search_tables/get_table already do (McpToolRegistry.FindSchemaGraphDb).</summary>
+        public static Func<string> SchemaGraphDbPathProvider;
+
         // Clarion identifier under the cursor — mirrors server.ts getWordAtPosition.
         private static readonly Regex CgWordPattern = new Regex(@"[A-Za-z_][A-Za-z0-9_:.]*");
 
@@ -1157,6 +1172,38 @@ namespace ClarionAssistant.Services
             {
                 if (!string.IsNullOrEmpty(filePathHint))
                     return CodeGraphProvider.FindDatabase(Path.GetDirectoryName(filePathHint));
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>Resolves the active solution's .schemagraph.db, same hook-then-fallback shape as
+        /// <see cref="ResolveCodeGraphDb"/>. The fallback walks up from the request's file path looking
+        /// for a "*.schemagraph.db" — same directory-walk the hook itself does when wired.</summary>
+        private static string ResolveSchemaGraphDb(string filePathHint)
+        {
+            try
+            {
+                var hook = SchemaGraphDbPathProvider;
+                if (hook != null)
+                {
+                    string p = hook();
+                    if (!string.IsNullOrEmpty(p) && File.Exists(p)) return p;
+                }
+            }
+            catch { }
+            try
+            {
+                if (string.IsNullOrEmpty(filePathHint)) return null;
+                string dir = Path.GetDirectoryName(filePathHint);
+                while (!string.IsNullOrEmpty(dir))
+                {
+                    var hits = Directory.GetFiles(dir, "*.schemagraph.db");
+                    if (hits.Length > 0) return hits[0];
+                    var parent = Directory.GetParent(dir);
+                    if (parent == null) break;
+                    dir = parent.FullName;
+                }
             }
             catch { }
             return null;
@@ -1596,6 +1643,22 @@ namespace ClarionAssistant.Services
             // entries are skipped here (they belong to member-access completion). No-op until the version
             // DB is built. Additive + defensive: only ADDS, never overrides an LSP item.
             MergeDbBarePrefix(primary, seen, prefix, ClarionGraphService.ResolveDbPath(), bareNamesOnly: true);
+
+            // (6) Dictionary TABLE names (e.g. "Cus" → "Customers") from the ingested .schemagraph.db.
+            // Deliberately does NOT gate on `seen` — a table name colliding with a code symbol is a rare,
+            // legitimate case the developer should see both sides of (per the field-completion design,
+            // dictionary results are additive, distinguished via Detail, never silently dropped).
+            try
+            {
+                string schemaDb = ResolveSchemaGraphDb(filePath);
+                if (!string.IsNullOrEmpty(schemaDb))
+                {
+                    var service = new SchemaGraphService(schemaDb);
+                    var tables = service.GetTableNameCompletions(prefix);
+                    if (tables != null) primary.AddRange(tables);
+                }
+            }
+            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] dictionary table-name completion merge failed: " + ex.Message); }
         }
 
         /// <summary>
@@ -1672,6 +1735,20 @@ namespace ClarionAssistant.Services
 
         private static string CgCompletionDetail(CodeGraphSymbol s)
         {
+            // Variables: Params holds the ACTUAL declared Clarion type (e.g. "STRING(30)", "DECIMAL(13,2)")
+            // -- s.Type is just the generic symbol kind ("variable") and would show that word instead of the
+            // type. Scope is "local" (procedure/routine-private) or "module" (file-scope, visible solution-
+            // wide via this DB) -- shown as Local/Global per the same wording the live-buffer variable merges
+            // use, so a variable reads the same whether it came from the current buffer or cross-file CodeGraph.
+            if (string.Equals(s.Type, "variable", StringComparison.OrdinalIgnoreCase))
+            {
+                string vt = !string.IsNullOrEmpty(s.Params) ? s.Params : "variable";
+                bool isLocal = string.Equals(s.Scope, "local", StringComparison.OrdinalIgnoreCase);
+                vt += "  (" + (isLocal ? "local" : "global") + ")";
+                if (!string.IsNullOrEmpty(s.ProjectName)) vt += "  (" + s.ProjectName + ")";
+                return vt;
+            }
+
             string t = string.IsNullOrEmpty(s.Type) ? "" : s.Type;
             if (!string.IsNullOrEmpty(s.ReturnType)) t += " : " + s.ReturnType;
             if (!string.IsNullOrEmpty(s.ProjectName)) t += "  (" + s.ProjectName + ")";
@@ -1691,6 +1768,30 @@ namespace ClarionAssistant.Services
         private static readonly Regex CgDataLabelPattern = new Regex(@"^([A-Za-z_][A-Za-z0-9_:]*)\s+(\S.*)$");
         // Trailing Clarion line comment (' ! ...') — stripped from the type shown in the detail column.
         private static readonly Regex CgTrailingComment = new Regex(@"\s+!.*$");
+        // Same trailing comment, but CAPTURING the text after '!' (group 1) — used as the variable's
+        // "description" in completion Detail, since Clarion source has no other description mechanism.
+        private static readonly Regex CgTrailingCommentCapture = new Regex(@"^(.*?)\s+!\s*(.*)$");
+
+        /// <summary>Builds a variable completion's Detail ("TYPE  (scope)" — short, single-line, shown right
+        /// in the suggestion row) and Documentation (the description, if any — shown in Monaco's expandable
+        /// docs panel, which wraps). Split on purpose: Monaco's Detail column doesn't wrap and truncates long
+        /// text, so the trailing '!' comment on a declaration (Clarion's only per-variable description
+        /// mechanism) goes to Documentation instead of being appended to Detail.</summary>
+        private static void BuildVarDetail(string restOfLine, string scopeTag, out string detail, out string documentation)
+        {
+            string typeText = restOfLine ?? "";
+            string description = null;
+            var cm = CgTrailingCommentCapture.Match(typeText);
+            if (cm.Success) { typeText = cm.Groups[1].Value; description = cm.Groups[2].Value.Trim(); }
+            typeText = typeText.Trim();
+            if (description != null && description.Length == 0) description = null;
+
+            var sb = new System.Text.StringBuilder();
+            if (typeText.Length > 0) sb.Append(typeText);
+            if (!string.IsNullOrEmpty(scopeTag)) { if (sb.Length > 0) sb.Append("  "); sb.Append(scopeTag); }
+            detail = sb.Length > 0 ? sb.ToString() : null;
+            documentation = description;
+        }
 
         /// <summary>Phase 2: merge in-scope local variables from the live buffer. Two scopes, most-specific
         /// first: (a) the enclosing ROUTINE's private DATA (visible only inside that routine), then (b) the
@@ -1741,10 +1842,12 @@ namespace ClarionAssistant.Services
                             string label = lm.Groups[1].Value;
                             if (label.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && seen.Add(label))
                             {
-                                string typeText = CgTrailingComment.Replace(lm.Groups[2].Value, "").Trim();
-                                string detail = string.IsNullOrEmpty(typeText) ? "(module)" : typeText + "  (module)";
+                                // Module (file) scope reads as "global" to match the CodeGraph cross-file
+                                // wording below — same TYPE/description/scope shape as CollectDataLabels.
+                                string detail, doc;
+                                BuildVarDetail(lm.Groups[2].Value, "(global)", out detail, out doc);
                                 primary.Add(new LspClient.CompletionItemInfo
-                                { Label = label, Kind = 6 /*Variable*/, Detail = detail, InsertText = label });
+                                { Label = label, Kind = 6 /*Variable*/, Detail = detail, Documentation = doc, InsertText = label });
                             }
                         }
                     }
@@ -1778,12 +1881,13 @@ namespace ClarionAssistant.Services
                         string label = lm.Groups[1].Value;
                         if (label.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && seen.Add(label))
                         {
-                            // Show the declared type (e.g. "STRING(12)", "LONG", "GROUP") in the detail
-                            // column, stripping any trailing line comment. Fall back to the scope marker.
-                            string typeText = CgTrailingComment.Replace(lm.Groups[2].Value, "").Trim();
-                            string detail = string.IsNullOrEmpty(typeText) ? scopeMarker : typeText + "  " + scopeMarker;
+                            // Detail = "TYPE  (scope)" (short, single-line). Documentation = the trailing '!'
+                            // comment, if any (Clarion has no other per-variable description mechanism) —
+                            // shown in Monaco's expandable docs panel instead of the non-wrapping Detail line.
+                            string detail, doc;
+                            BuildVarDetail(lm.Groups[2].Value, scopeMarker, out detail, out doc);
                             primary.Add(new LspClient.CompletionItemInfo
-                            { Label = label, Kind = 6 /*Variable*/, Detail = detail, InsertText = label });
+                            { Label = label, Kind = 6 /*Variable*/, Detail = detail, Documentation = doc, InsertText = label });
                         }
                     }
                 }
@@ -2068,6 +2172,38 @@ namespace ClarionAssistant.Services
                     });
                 }
             }
+        }
+
+        /// <summary>Dictionary table FIELD/KEY completion: "Cus:partial" → columns + keys of the ingested
+        /// dictionary table whose PRE is "Cus" (SchemaGraphService, .schemagraph.db). Only the ':' form
+        /// applies — dictionary fields/keys are always PRE-qualified, never dot-accessed (dot access is
+        /// class/instance member-access, owned by MergeMemberAccessCompletions). Deliberately does NOT
+        /// dedupe against items MergeQualifiedFieldCompletions already added for a same-named in-buffer
+        /// GROUP/QUEUE — a hand-coded structure and a dictionary table can legitimately share a PRE, and
+        /// per design both should surface (Detail distinguishes "(field)" vs "(field, dictionary)"). Never
+        /// throws.</summary>
+        private static void MergeDictionaryFieldCompletions(
+            List<LspClient.CompletionItemInfo> primary, string filePath, int line, int character, string bufferText)
+        {
+            string lineText = CgLineAt(bufferText, filePath, line);
+            if (lineText == null) return;
+            int col = character < 0 ? 0 : (character > lineText.Length ? lineText.Length : character);
+            string upToCursor = lineText.Substring(0, col);
+            if (upToCursor.IndexOf('!') >= 0) return;   // comment
+
+            var q = CgQualifier.Match(upToCursor);
+            if (!q.Success) return;
+            char sep = q.Groups[2].Value[0];
+            if (sep != ':') return;   // dictionary fields/keys are PRE-qualified, never dot-accessed
+            string qualifier = q.Groups[1].Value;
+            string partial = q.Groups[3].Value;
+
+            string db = ResolveSchemaGraphDb(filePath);
+            if (string.IsNullOrEmpty(db)) return;
+
+            var service = new SchemaGraphService(db);
+            var items = service.GetQualifierCompletions(qualifier, partial);
+            if (items != null) primary.AddRange(items);
         }
 
         // === Class member-access completion (ticket 6e8f2439, item 5b) ===
