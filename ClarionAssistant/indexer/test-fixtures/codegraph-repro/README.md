@@ -23,7 +23,7 @@ indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproS
 | ParameterTest | 31 | #87 (call through PROCEDURE parameter) |
 | ReturnTest | 40 | baseline (inline RETURN call shape) |
 | OwnerClass.CallViaMember | 51 | #84+#86 (.inc member, cross-file type) |
-| MainHelperProc | 56 | #81 (procedure in main PROGRAM file) |
+| MainHelperProc | 58 | #81 (procedure in main PROGRAM file) |
 | OwnerClass.CallViaCommentedMember | 67 | #85+#86 (trailing-comment member) |
 | CommentedLocalTest | 83 | #85 (trailing-comment DATA local) |
 | GroupBugClass.CallViaAfterGroupMember | 101 | #88 (member after inline GROUP END) |
