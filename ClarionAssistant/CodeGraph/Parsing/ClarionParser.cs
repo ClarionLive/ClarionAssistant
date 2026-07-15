@@ -66,9 +66,17 @@ namespace ClarionCodeGraph.Parsing
             @"^([\w:]+)\s+EQUATE\s*\(",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-        // GROUP/QUEUE declaration: GrpName GROUP/QUEUE [,PRE(xx)]
+        // GROUP/QUEUE declaration: GrpName GROUP/QUEUE [(NamedType)] [,PRE(xx)] | [END | .]
+        // The optional parenthesized group captures a named GROUP/QUEUE,TYPE instantiated
+        // inline (e.g. "PersonData GROUP(PTJ_PersonDataGroupType)") -- without it, this line
+        // never matched any declaration regex at all and the local variable silently vanished
+        // from the index (issue: GROUP(NamedType) local/DATA-section variable never captured).
+        // The named "term" group additionally recognizes a same-line closing END or bare period
+        // -- a self-closing single-line form, e.g. "InlineGroup GROUP(SmallGroupType) END" --
+        // so the caller can tell it apart from a genuine multi-line group with its own,
+        // separately-appearing closing line (see the "term" self-closing check below).
         private static readonly Regex GroupQueueDeclRegex = new Regex(
-            @"^([\w:]+)\s+(GROUP|QUEUE)\s*(,.*)?$",
+            @"^([\w:]+)\s+(GROUP|QUEUE)\s*(\([^)]*\))?\s*(?:(,.*)|(?<term>END\b\s*|\.\s*))?$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // LIKE declaration: VarName LIKE(OtherVar) [,attributes]
@@ -610,7 +618,8 @@ namespace ClarionCodeGraph.Parsing
                     {
                         string gqName = gqMatch.Groups[1].Value;
                         string gqType = gqMatch.Groups[2].Value.ToUpperInvariant();
-                        string gqAttrs = gqMatch.Groups[3].Success ? gqMatch.Groups[3].Value : "";
+                        string gqNamedType = gqMatch.Groups[3].Success ? gqMatch.Groups[3].Value : "";
+                        string gqAttrs = gqMatch.Groups[4].Success ? gqMatch.Groups[4].Value : "";
 
                         // Extract PRE() attribute if present
                         string prefix = null;
@@ -625,11 +634,24 @@ namespace ClarionCodeGraph.Parsing
                             FilePath = filePath,
                             LineNumber = lineNum,
                             ProjectId = projectId,
-                            Params = gqType + (prefix != null ? ",PRE(" + prefix + ")" : ""),
+                            Params = gqType + gqNamedType + (prefix != null ? ",PRE(" + prefix + ")" : ""),
                             ParentName = varOwner,
                             Scope = varScope
                         });
-                        dataGroupDepth++;
+
+                        // A named-type form (e.g. "PersonData GROUP(PTJ_PersonDataGroupType)") can be
+                        // self-closing on this same line -- "InlineGroup GROUP(SmallGroupType) END" (or
+                        // terminated with a bare "." instead) -- in which case there is no separate
+                        // closing line for the END/period check above to ever match, and incrementing
+                        // dataGroupDepth here would leak it permanently, silently swallowing every
+                        // subsequent local variable in this DATA section (the same class of bug fixed
+                        // for ParseIncFile's classEndDepth -- see the inline-group-depth-leak fix).
+                        // GroupQueueDeclRegex's own "term" group already recognized the same-line
+                        // terminator (if any), so no separate re-check of the line text is needed here.
+                        if (!gqMatch.Groups["term"].Success)
+                        {
+                            dataGroupDepth++;
+                        }
                         continue;
                     }
 
