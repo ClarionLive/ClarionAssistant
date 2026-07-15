@@ -387,6 +387,22 @@ namespace ClarionCodeGraph.Graph
                         }
                         result.SymbolCount += parseResult.Symbols.Count;
                     }
+
+                    // The main PROGRAM file's tail (global CODE + hand-written procedure
+                    // implementations after it) is MEMBER-shaped source that Pass 1 never
+                    // scans — run it through the member-file parser from the boundary.
+                    string tailMainPath;
+                    if (mainFiles.TryGetValue(proj.Id, out tailMainPath))
+                    {
+                        int tailStart = _clarionParser.FindMainTailStart(tailMainPath);
+                        var tailResult = _clarionParser.ParseMemberFile(tailMainPath, proj.Id, null, tailStart);
+                        foreach (var sym in tailResult.Symbols)
+                        {
+                            long symId = _db.InsertSymbol(sym);
+                            sym.Id = symId;
+                        }
+                        result.SymbolCount += tailResult.Symbols.Count;
+                    }
                 }
 
                 txn.Commit();
@@ -397,7 +413,7 @@ namespace ClarionCodeGraph.Graph
             using (var txn = _db.BeginTransaction())
             {
                 _db.ClearRelationships();
-                ResolveRelationships(projects, memberFiles);
+                ResolveRelationships(projects, memberFiles, mainFiles);
                 txn.Commit();
             }
 
@@ -444,7 +460,7 @@ namespace ClarionCodeGraph.Graph
             return false;
         }
 
-        private void ResolveRelationships(List<SolutionProject> projects, Dictionary<int, List<ResolvedFile>> memberFiles)
+        private void ResolveRelationships(List<SolutionProject> projects, Dictionary<int, List<ResolvedFile>> memberFiles, Dictionary<int, string> mainFiles)
         {
             // Load ALL symbols into memory once — eliminates per-line DB queries
             var symbolNameToId = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
@@ -515,6 +531,16 @@ namespace ClarionCodeGraph.Graph
             int totalVarCount = allVarDt.Rows.Count;
             ReportProgress(string.Format("  Loaded {0} variable symbols for reference tracking", totalVarCount));
 
+            // Program symbols (one per PROGRAM file) own the calls made in the main file's
+            // global CODE section. Deliberately kept OUT of symbolNameToId/procNames: the
+            // program's name is the file name (e.g. "Worker"), and letting it act as a
+            // bare-call target would turn every mention of a same-named variable into a
+            // bogus call to the program.
+            var programIdByFile = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            var programDt = _db.ExecuteQuery("SELECT id, file_path FROM symbols WHERE type = 'program'");
+            foreach (System.Data.DataRow row in programDt.Rows)
+                programIdByFile[row["file_path"].ToString()] = Convert.ToInt64(row["id"]);
+
             // Compiled regex patterns (reuse across all files)
             var procDefRegex = new System.Text.RegularExpressions.Regex(
                 @"^([\w.]+)\s+(PROCEDURE|FUNCTION)\s*(\([^)]*\))?",
@@ -532,7 +558,7 @@ namespace ClarionCodeGraph.Graph
                 @"\bSTART\s*\(\s*(\w+)",
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             var omitRegex = new System.Text.RegularExpressions.Regex(
-                @"^\s*(OMIT|COMPILE)\s*\(\s*'([^']+)'\s*\)",
+                @"^\s*(OMIT|COMPILE)\s*\(\s*'([^']+)'\s*(?:,\s*([^)]+?)\s*)?\)",
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             // SELF.Method and PARENT.Method call patterns
             var selfParentCallRegex = new System.Text.RegularExpressions.Regex(
@@ -545,7 +571,12 @@ namespace ClarionCodeGraph.Graph
 
             int fileCount = 0;
             int relCount = 0;
-            // Track inserted relationships to avoid duplicates: "fromId|toId|line"
+            // Track inserted relationships to avoid duplicates. For "calls"/"references" the key
+            // includes the line number ("fromId|toId|type|line") so distinct call/reference sites
+            // in the same procedure are each kept — dedup only collapses the same site being
+            // matched twice (e.g. by more than one regex on the same line). For "inherits"/
+            // "uses_type"/"includes" the key stays "fromId|toId|type": those relationships are
+            // per-pair facts (does A inherit from B at all?), not per-occurrence.
             var insertedRels = new HashSet<string>();
 
             foreach (var proj in projects)
@@ -553,15 +584,39 @@ namespace ClarionCodeGraph.Graph
                 List<ResolvedFile> members;
                 if (!memberFiles.TryGetValue(proj.Id, out members)) continue;
 
+                // Scan list: member files (parent procedure auto-detected from the file),
+                // plus the project's main PROGRAM file tail — everything from the global
+                // CODE section onward. Top-level MAPs can only appear before the global
+                // CODE, so the tail is MEMBER-shaped; its calls belong to the "program"
+                // symbol until the first procedure implementation takes over.
+                var scanTargets = new List<RelScanTarget>();
                 foreach (var file in members)
+                    scanTargets.Add(new RelScanTarget { Path = file.FullPath, StartLine = 0, ForcedParentId = -1 });
+
+                string mainPath;
+                if (mainFiles != null && mainFiles.TryGetValue(proj.Id, out mainPath))
                 {
-                    if (!File.Exists(file.FullPath)) continue;
+                    long programId;
+                    if (programIdByFile.TryGetValue(mainPath, out programId))
+                    {
+                        scanTargets.Add(new RelScanTarget
+                        {
+                            Path = mainPath,
+                            StartLine = _clarionParser.FindMainTailStart(mainPath),
+                            ForcedParentId = programId
+                        });
+                    }
+                }
+
+                foreach (var target in scanTargets)
+                {
+                    if (!File.Exists(target.Path)) continue;
                     fileCount++;
 
                     if (fileCount % 50 == 0)
                         ReportProgress(string.Format("  Resolving calls: {0} files, {1} relationships...", fileCount, relCount));
 
-                    var lines = File.ReadAllLines(file.FullPath);
+                    var lines = File.ReadAllLines(target.Path);
                     bool inCode = false;
                     // The parent (first) procedure in each member file owns all calls
                     long parentProcId = -1;
@@ -570,18 +625,18 @@ namespace ClarionCodeGraph.Graph
 
                     // Get file-specific symbol lookup for this file
                     Dictionary<string, long> currentFileSymbols;
-                    if (!symbolByFile.TryGetValue(file.FullPath, out currentFileSymbols))
+                    if (!symbolByFile.TryGetValue(target.Path, out currentFileSymbols))
                         currentFileSymbols = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
 
                     // Load variables for this file
                     List<VariableInfo> currentFileVars;
-                    if (!variablesByFile.TryGetValue(file.FullPath, out currentFileVars))
+                    if (!variablesByFile.TryGetValue(target.Path, out currentFileVars))
                         currentFileVars = null;
 
                     // Pre-scan: find parent procedure and collect local MAP names
                     bool foundFirstProc = false;
                     bool inLocalMap = false;
-                    for (int p = 0; p < lines.Length; p++)
+                    for (int p = target.StartLine; p < lines.Length; p++)
                     {
                         string scanLine = lines[p].TrimStart();
                         if (!foundFirstProc)
@@ -616,30 +671,46 @@ namespace ClarionCodeGraph.Graph
                             localMapNames.Add(localMatch.Groups[1].Value);
                     }
 
+                    // Main-file tail: the global CODE section's calls belong to the program
+                    // symbol itself, not to whichever procedure implementation appears first.
+                    if (target.ForcedParentId >= 0)
+                        parentProcId = target.ForcedParentId;
+
                     // Skip files where we couldn't find the parent procedure
                     if (parentProcId < 0) continue;
 
                     long currentProcId = parentProcId;
                     bool seenFirstCode = false;
 
-                    for (int i = 0; i < lines.Length; i++)
+                    for (int i = target.StartLine; i < lines.Length; i++)
                     {
                         string line = lines[i];
                         string trimmed = line.TrimStart();
 
-                        // OMIT/COMPILE('terminator') — skip OMIT blocks
+                        // OMIT/COMPILE('terminator'[,expression]) — skip unconditional OMIT blocks
                         var omitMatch = omitRegex.Match(line);
                         if (omitMatch.Success)
                         {
                             string directive = omitMatch.Groups[1].Value.ToUpperInvariant();
                             string terminator = omitMatch.Groups[2].Value;
-                            // Only skip OMIT blocks; COMPILE blocks contain real code
-                            if (directive == "OMIT")
+                            bool hasExpression = omitMatch.Groups[3].Success;
+                            // COMPILE's code is always treated as included (no expression evaluation).
+                            // A conditional OMIT('term', someEquate) is symmetric: whether it's really
+                            // omitted depends on a project-specific EQUATE/Conditional Switch value
+                            // CodeGraph can't know, so it's also always included. Only a bare,
+                            // unconditional OMIT('term') is unambiguously dead code in every build.
+                            if (directive == "OMIT" && !hasExpression)
                             {
                                 i++;
                                 while (i < lines.Length)
                                 {
-                                    if (lines[i].TrimStart().StartsWith(terminator, StringComparison.Ordinal))
+                                    // Per Clarion language reference: the block "ends with the line
+                                    // that contains the same string constant as the terminator" — a
+                                    // substring match anywhere in the line, not a prefix match. The
+                                    // terminator is commonly written as a bare label, a "!label"
+                                    // comment, or embedded in a longer decorative comment (e.g.
+                                    // "!end- COMPILE ('*debug*',_debug_)") — all three are legal.
+                                    if (lines[i].Contains(terminator))
                                         break;
                                     i++;
                                 }
@@ -721,7 +792,7 @@ namespace ClarionCodeGraph.Graph
                             long targetId;
                             if (!localMapNames.Contains(targetProc) && symbolNameToId.TryGetValue(targetProc, out targetId))
                             {
-                                string relKey = string.Format("{0}|{1}|calls", currentProcId, targetId);
+                                string relKey = string.Format("{0}|{1}|calls|{2}", currentProcId, targetId, i + 1);
                                 if (insertedRels.Add(relKey))
                                 {
                                     _db.InsertRelationship(new ClarionRelationship
@@ -729,7 +800,7 @@ namespace ClarionCodeGraph.Graph
                                         FromId = currentProcId,
                                         ToId = targetId,
                                         Type = "calls",
-                                        FilePath = file.FullPath,
+                                        FilePath = target.Path,
                                         LineNumber = i + 1
                                     });
                                     relCount++;
@@ -762,7 +833,7 @@ namespace ClarionCodeGraph.Graph
                                 long targetId;
                                 if (symbolNameToId.TryGetValue(fullMethodName, out targetId))
                                 {
-                                    string relKey = string.Format("{0}|{1}|calls", currentProcId, targetId);
+                                    string relKey = string.Format("{0}|{1}|calls|{2}", currentProcId, targetId, i + 1);
                                     if (insertedRels.Add(relKey))
                                     {
                                         _db.InsertRelationship(new ClarionRelationship
@@ -770,7 +841,7 @@ namespace ClarionCodeGraph.Graph
                                             FromId = currentProcId,
                                             ToId = targetId,
                                             Type = "calls",
-                                            FilePath = file.FullPath,
+                                            FilePath = target.Path,
                                             LineNumber = i + 1
                                         });
                                         relCount++;
@@ -817,7 +888,7 @@ namespace ClarionCodeGraph.Graph
                             long targetId;
                             if (symbolNameToId.TryGetValue(fullName, out targetId))
                             {
-                                string relKey = string.Format("{0}|{1}|calls", currentProcId, targetId);
+                                string relKey = string.Format("{0}|{1}|calls|{2}", currentProcId, targetId, i + 1);
                                 if (insertedRels.Add(relKey))
                                 {
                                     _db.InsertRelationship(new ClarionRelationship
@@ -825,7 +896,7 @@ namespace ClarionCodeGraph.Graph
                                         FromId = currentProcId,
                                         ToId = targetId,
                                         Type = "calls",
-                                        FilePath = file.FullPath,
+                                        FilePath = target.Path,
                                         LineNumber = i + 1
                                     });
                                     relCount++;
@@ -842,7 +913,7 @@ namespace ClarionCodeGraph.Graph
 
                             if (LineContainsCall(line, procName))
                             {
-                                string relKey = string.Format("{0}|{1}|calls", currentProcId, symbolNameToId[procName]);
+                                string relKey = string.Format("{0}|{1}|calls|{2}", currentProcId, symbolNameToId[procName], i + 1);
                                 if (!insertedRels.Add(relKey)) continue;
 
                                 _db.InsertRelationship(new ClarionRelationship
@@ -850,7 +921,7 @@ namespace ClarionCodeGraph.Graph
                                     FromId = currentProcId,
                                     ToId = symbolNameToId[procName],
                                     Type = "calls",
-                                    FilePath = file.FullPath,
+                                    FilePath = target.Path,
                                     LineNumber = i + 1
                                 });
                                 relCount++;
@@ -885,7 +956,7 @@ namespace ClarionCodeGraph.Graph
 
                                 if (LineContainsVariable(trimmed, varInfo.Name))
                                 {
-                                    string relKey = string.Format("{0}|{1}|references", currentProcId, varInfo.Id);
+                                    string relKey = string.Format("{0}|{1}|references|{2}", currentProcId, varInfo.Id, i + 1);
                                     if (insertedRels.Add(relKey))
                                     {
                                         _db.InsertRelationship(new ClarionRelationship
@@ -893,7 +964,7 @@ namespace ClarionCodeGraph.Graph
                                             FromId = currentProcId,
                                             ToId = varInfo.Id,
                                             Type = "references",
-                                            FilePath = file.FullPath,
+                                            FilePath = target.Path,
                                             LineNumber = i + 1
                                         });
                                         relCount++;
@@ -1329,5 +1400,17 @@ namespace ClarionCodeGraph.Graph
         public string ParentName { get; set; }
         public string Scope { get; set; }
         public string Params { get; set; }
+    }
+
+    /// <summary>
+    /// One file (or file tail) to scan for relationships. Member files use StartLine 0 and
+    /// ForcedParentId -1 (parent procedure auto-detected). The main PROGRAM file's tail uses
+    /// the global CODE line as StartLine and the file's "program" symbol as ForcedParentId.
+    /// </summary>
+    internal class RelScanTarget
+    {
+        public string Path { get; set; }
+        public int StartLine { get; set; }
+        public long ForcedParentId { get; set; }
     }
 }

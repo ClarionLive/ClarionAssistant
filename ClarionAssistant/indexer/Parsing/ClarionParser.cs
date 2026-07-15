@@ -47,7 +47,7 @@ namespace ClarionCodeGraph.Parsing
         private static readonly Regex CodeRegex = new Regex(
             @"^\s*CODE\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex OmitCompileRegex = new Regex(
-            @"^\s*(OMIT|COMPILE)\s*\(\s*'([^']+)'\s*\)",
+            @"^\s*(OMIT|COMPILE)\s*\(\s*'([^']+)'\s*(?:,\s*([^)]+?)\s*)?\)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // Variable declaration: VarName TYPE[(size)] [,attributes]
@@ -243,9 +243,73 @@ namespace ClarionCodeGraph.Parsing
         }
 
         /// <summary>
-        /// Pass 2: Parse a MEMBER .clw file for procedure/routine definitions and calls.
+        /// Find the line index where a PROGRAM file's "tail" starts: the global CODE section,
+        /// followed by any hand-written procedure implementations. Per the language reference,
+        /// a MAP can only appear in the declaration section of a PROGRAM/MEMBER module or of a
+        /// PROCEDURE — so once the global CODE statement is reached, no further top-level MAP
+        /// can occur, and everything from there on is MEMBER-shaped source that ParseMemberFile
+        /// understands. Returns lines.Length when no boundary exists (tail scan becomes a no-op).
         /// </summary>
-        public ParseResult ParseMemberFile(string filePath, int projectId, HashSet<string> knownProcedures)
+        public int FindMainTailStart(string filePath)
+        {
+            if (!File.Exists(filePath)) return 0;
+            var lines = File.ReadAllLines(filePath);
+
+            bool inMap = false;
+            bool inModule = false;
+            int mapDepth = 0;
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i];
+
+                int skipped = SkipConditionalBlock(lines, i, line);
+                if (skipped > i) { i = skipped; continue; }
+
+                if (inMap)
+                {
+                    if (EndRegex.IsMatch(line) || PeriodTermRegex.IsMatch(line))
+                    {
+                        if (inModule)
+                            inModule = false;
+                        else
+                        {
+                            mapDepth--;
+                            if (mapDepth <= 0) inMap = false;
+                        }
+                    }
+                    // Looser than ModuleRegex on purpose: MODULE('') (external DLL, no file
+                    // name) must still bump the nesting, or its END would close the MAP early.
+                    else if (Regex.IsMatch(line, @"^\s*MODULE\s*\(", RegexOptions.IgnoreCase))
+                    {
+                        inModule = true;
+                    }
+                    continue;
+                }
+
+                if (MapStartRegex.IsMatch(line))
+                {
+                    inMap = true;
+                    inModule = false;
+                    mapDepth = 1;
+                    continue;
+                }
+
+                // Global CODE — the program's main routine; the tail starts here.
+                if (CodeRegex.IsMatch(line)) return i;
+
+                // Defensive: a column-1 implementation with no global CODE before it.
+                if (ProcedureDefRegex.IsMatch(line) || FunctionDefRegex.IsMatch(line)) return i;
+            }
+
+            return lines.Length;
+        }
+
+        /// <summary>
+        /// Pass 2: Parse a MEMBER .clw file for procedure/routine definitions and calls.
+        /// Pass a non-zero startLine to scan only a PROGRAM file's tail (see FindMainTailStart).
+        /// </summary>
+        public ParseResult ParseMemberFile(string filePath, int projectId, HashSet<string> knownProcedures, int startLine = 0)
         {
             var result = new ParseResult { FilePath = filePath };
             if (!File.Exists(filePath))
@@ -263,7 +327,7 @@ namespace ClarionCodeGraph.Parsing
             bool inClassBody = false;
             int classEndDepth = 0;
 
-            for (int i = 0; i < lines.Length; i++)
+            for (int i = startLine; i < lines.Length; i++)
             {
                 string line = lines[i];
                 int lineNum = i + 1;
@@ -836,8 +900,7 @@ namespace ClarionCodeGraph.Parsing
         }
 
         /// <summary>
-        /// Skip OMIT('term') or COMPILE('term', FALSE) blocks.
-        /// Returns the updated line index (past the terminator).
+        /// Skip an unconditional OMIT('term') block. Returns the updated line index (past the terminator).
         /// </summary>
         private int SkipConditionalBlock(string[] lines, int currentIndex, string currentLine)
         {
@@ -846,16 +909,26 @@ namespace ClarionCodeGraph.Parsing
 
             string directive = match.Groups[1].Value.ToUpperInvariant();
             string terminator = match.Groups[2].Value;
+            bool hasExpression = match.Groups[3].Success;
 
-            // OMIT always skips; COMPILE with a false expression skips
-            // For simplicity, always skip OMIT blocks.
-            // For COMPILE, we'd need expression evaluation — skip for now and include the code.
-            if (directive == "COMPILE") return currentIndex;
+            // COMPILE's code is always treated as included (real conditional-compile evaluation
+            // isn't implemented). A conditional OMIT('term', someEquate) is symmetric: whether it's
+            // really omitted depends on a project-specific EQUATE/Conditional Switch value that
+            // CodeGraph has no way to know, so it's also always treated as included — better to show
+            // a call that might not exist in every build than to hide one that does. Only a bare,
+            // unconditional OMIT('term') (no expression) is unambiguously dead code in every build,
+            // so that's the only case still skipped below.
+            if (directive == "COMPILE" || hasExpression) return currentIndex;
 
             int i = currentIndex + 1;
             while (i < lines.Length)
             {
-                if (lines[i].TrimStart().StartsWith(terminator, StringComparison.Ordinal))
+                // Per Clarion language reference: the block "ends with the line that contains
+                // the same string constant as the terminator" — a substring match anywhere in
+                // the line, not a prefix match. The terminator is commonly written as a bare
+                // label, a "!label" comment, or embedded in a longer decorative comment (e.g.
+                // "!end- COMPILE ('*debug*',_debug_)") — all three are legal and must match.
+                if (lines[i].Contains(terminator))
                     return i;
                 i++;
             }
