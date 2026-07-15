@@ -515,6 +515,57 @@ namespace ClarionCodeGraph.Parsing
                         ? classMatch.Groups[2].Value.Trim('(', ')', ' ')
                         : null;
 
+                    // A CLASS declared inside a procedure's own DATA section -- e.g.
+                    // "InputJson CLASS(jsonClass)" with one of jsonClass's virtual methods
+                    // overridden inline and implemented later in the same procedure via the
+                    // standard "ClassName.MethodName PROCEDURE(...)" syntax -- is a LOCAL
+                    // variable of that procedure, not a top-level/global class declaration.
+                    // Before this fix, this check fired unconditionally regardless of whether
+                    // the parser was currently inside a procedure's own DATA section, so a
+                    // locally-declared derived class was indexed as a phantom global class
+                    // instead of a local variable of the enclosing procedure (issue:
+                    // procedure-local derived-class variable misclassified as a global class).
+                    if (currentProcedure != null)
+                    {
+                        result.Symbols.Add(new ClarionSymbol
+                        {
+                            Name = className,
+                            Type = "variable",
+                            FilePath = filePath,
+                            LineNumber = lineNum,
+                            ProjectId = projectId,
+                            Params = parentClass != null ? parentClass.ToUpperInvariant() : "CLASS",
+                            ParentName = currentProcedure,
+                            Scope = "local"
+                        });
+
+                        // The inline class body (its overridden method prototype(s)) still needs
+                        // to be skipped until its own closing line. This CANNOT reuse
+                        // dataGroupDepth the way a local GROUP/QUEUE body does (see the
+                        // GROUP/QUEUE(NamedType) local-variable fix): a GROUP/QUEUE body only
+                        // ever contains plain data-field lines, but a CLASS body's overridden
+                        // method prototype is itself shaped like "MethodName PROCEDURE(...)" --
+                        // which the unconditional, unanchored "Detect PROCEDURE definition" check
+                        // earlier in this same per-line dispatch loop would intercept BEFORE the
+                        // DATA-section dataGroupDepth-skip logic further down ever runs, silently
+                        // clobbering currentProcedure (and therefore every local variable and
+                        // call attributed to the REAL enclosing procedure for the rest of its
+                        // body) -- confirmed by direct verification against the repro. Instead,
+                        // reuse the SAME inClassBody/classEndDepth mechanism a top-level CLASS
+                        // body already uses, since that check runs at the very top of this loop,
+                        // before "Detect PROCEDURE definition" ever gets a chance to fire.
+                        // Deliberately leave currentClassName unset (still null): the method-
+                        // prototype capture inside "if (inClassBody)" is gated on
+                        // currentClassName != null, so no symbol is created for the inline
+                        // prototype line here -- the real implementation of any overridden
+                        // method is already captured separately via the standard top-level
+                        // "ClassName.MethodName PROCEDURE(...)" syntax elsewhere in the file, so
+                        // capturing this inline prototype too would only risk a duplicate symbol.
+                        inClassBody = true;
+                        classEndDepth = 1;
+                        continue;
+                    }
+
                     result.Symbols.Add(new ClarionSymbol
                     {
                         Name = className,

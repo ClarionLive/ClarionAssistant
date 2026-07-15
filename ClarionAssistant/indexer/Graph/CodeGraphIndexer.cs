@@ -670,6 +670,17 @@ namespace ClarionCodeGraph.Graph
             var dottedCallRegex = new System.Text.RegularExpressions.Regex(
                 @"\b(\w+)\s*\.\s*(\w+)\s*(\(|$)",
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            // A CLASS declared inline in a .clw file's own line stream is always a procedure-local
+            // derived class (e.g. "LocalDerived CLASS(DerivableClass)") -- a genuine top-level
+            // CLASS,TYPE definition lives in an .inc file, never inline in a .clw's own text. Used
+            // to skip such a declaration's body (see below) so its own overridden-method prototype
+            // line doesn't get misread by procDefRegex as an unrelated procedure implementation.
+            var classDefRegex = new System.Text.RegularExpressions.Regex(
+                @"^(\w+)\s+CLASS\s*(\([^)]*\))?\s*(,.*)?$",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            var endOrPeriodRegex = new System.Text.RegularExpressions.Regex(
+                @"^\s*(END\s*([!].*)?|\.)\s*$",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
             int fileCount = 0;
             int relCount = 0;
@@ -720,6 +731,11 @@ namespace ClarionCodeGraph.Graph
 
                     var lines = File.ReadAllLines(target.Path);
                     bool inCode = false;
+                    // Tracks whether the scan is currently inside a procedure-local derived
+                    // class's inline body (see classDefRegex above) -- skipped until its own
+                    // closing END/period, without touching currentProcId.
+                    bool inLocalClassBody = false;
+                    int localClassEndDepth = 0;
                     // The parent (first) procedure in each member file owns all calls
                     long parentProcId = -1;
                     // Track local MAP procedure names — skip these as call targets
@@ -825,6 +841,41 @@ namespace ClarionCodeGraph.Graph
                         {
                             inCode = true;
                             seenFirstCode = true;
+                            continue;
+                        }
+
+                        // Inside a procedure-local derived class's inline body (e.g.
+                        // "LocalDerived CLASS(DerivableClass)", with one of its methods
+                        // overridden and implemented later via the standard
+                        // "ClassName.MethodName PROCEDURE(...)" syntax): skip until its own
+                        // closing END/period, without touching currentProcId. Needed because
+                        // this independent scan has no concept of ParseMemberFile's own
+                        // inClassBody/dataGroupDepth tracking (a separate pass, over the same
+                        // source, used only for symbol extraction) -- without this, the class
+                        // body's own overridden-method PROTOTYPE line (shaped exactly like
+                        // "MethodName PROCEDURE(...)") would fall straight into the procDefRegex
+                        // match just below, which -- since no such symbol was ever created for a
+                        // mere prototype -- resets currentProcId to parentProcId (the file's
+                        // FIRST procedure), silently misattributing every call made for the rest
+                        // of the REAL enclosing procedure to that unrelated first procedure
+                        // instead (confirmed by direct verification against the repro: see the
+                        // procedure-local derived-class-variable fix in ClarionParser.cs for the
+                        // identical concern in the symbol-extraction pass).
+                        if (inLocalClassBody)
+                        {
+                            if (endOrPeriodRegex.IsMatch(line))
+                            {
+                                localClassEndDepth--;
+                                if (localClassEndDepth <= 0)
+                                    inLocalClassBody = false;
+                            }
+                            continue;
+                        }
+                        var localClassMatch = classDefRegex.Match(trimmed);
+                        if (localClassMatch.Success)
+                        {
+                            inLocalClassBody = true;
+                            localClassEndDepth = 1;
                             continue;
                         }
 
