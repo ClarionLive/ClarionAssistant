@@ -39,8 +39,9 @@ namespace ClarionAssistant
 
         public event EventHandler OwnerChanged;
 
-        // Rooted so neither the SolutionLoaded delegate nor the fallback timer is GC'd.
+        // Rooted so neither the SolutionLoaded/SolutionClosed delegates nor the fallback timer are GC'd.
         private static Delegate _solutionLoadedHandler;
+        private static Delegate _solutionClosedHandler;
         private static System.Windows.Forms.Timer _fallbackTimer;
 
         public void Run()
@@ -65,6 +66,12 @@ namespace ClarionAssistant
                 SubscribeSolutionLoaded();
             }
             catch (Exception ex) { Debug.WriteLine("[LspAutostart] SolutionLoaded subscribe failed: " + ex.Message); }
+
+            try
+            {
+                SubscribeSolutionClosed();
+            }
+            catch (Exception ex) { Debug.WriteLine("[LspAutostart] SolutionClosed subscribe failed: " + ex.Message); }
 
             try
             {
@@ -106,6 +113,52 @@ namespace ClarionAssistant
         {
             try { LspService.EnsureRunningInBackground(); }
             catch (Exception ex) { Debug.WriteLine("[LspAutostart] OnSolutionLoaded failed: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// Subscribes to ProjectService.SolutionClosed (a static EventHandler) so we STOP the bundled
+        /// server when the current solution closes. Without this the one LspClient.Active process
+        /// survives a solution switch still rooted at the FIRST solution — EnsureRunning is idempotent and
+        /// "starts ONCE" with no live post-start path update, so the next SolutionLoaded can't re-root it.
+        /// Stopping here lets the SolutionLoaded -> EnsureRunning path start a fresh server for the new
+        /// solution (a new process re-initializes cleanly with the new rootUri). (#106)
+        /// </summary>
+        private void SubscribeSolutionClosed()
+        {
+            var sharpDevelopAsm = Assembly.Load("ICSharpCode.SharpDevelop");
+            if (sharpDevelopAsm == null) return;
+
+            var projectServiceType = sharpDevelopAsm.GetType("ICSharpCode.SharpDevelop.Project.ProjectService");
+            if (projectServiceType == null) return;
+
+            var evt = projectServiceType.GetEvent("SolutionClosed",
+                BindingFlags.Public | BindingFlags.Static);
+            if (evt == null) return;
+
+            MethodInfo handlerMethod = typeof(LspAutostartCommand).GetMethod(
+                "OnSolutionClosed", BindingFlags.NonPublic | BindingFlags.Static);
+            if (handlerMethod == null) return;
+
+            _solutionClosedHandler = Delegate.CreateDelegate(evt.EventHandlerType, handlerMethod);
+            evt.AddEventHandler(null, _solutionClosedHandler);
+        }
+
+        // ProjectService.SolutionClosed is a plain EventHandler(object, EventArgs). Stop the bundled
+        // server (only if it's ours and running) so it re-roots on the next solution. Never touch the
+        // shared ClarionLsp addin — it owns its own lifecycle.
+        private static void OnSolutionClosed(object sender, EventArgs e)
+        {
+            try
+            {
+                if (SharedLspBridge.IsSharedActive) return;
+                var c = LspClient.Active;
+                if (c != null && c.IsRunning)
+                {
+                    Debug.WriteLine("[LspAutostart] Solution closed — stopping the bundled LSP so the next solution re-roots it.");
+                    c.Stop();
+                }
+            }
+            catch (Exception ex) { Debug.WriteLine("[LspAutostart] OnSolutionClosed failed: " + ex.Message); }
         }
 
         /// <summary>
