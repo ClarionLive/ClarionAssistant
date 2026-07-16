@@ -4120,7 +4120,7 @@
         requestFromHost('documentStructure', { buffer: editor.getModel().getValue() })
             .then(function (data) {
                 if (mySeq !== outlineSeq) return;   // a newer refresh superseded this one
-                renderOutline((data && data.symbols) ? data.symbols : []);
+                renderOutline(regroupSymbols((data && data.symbols) ? data.symbols : []));
             })
             .catch(function () {});
     }
@@ -4155,6 +4155,57 @@
             default: return 'misc';
         }
     }
+    // Port of the VS Code extension's StructureViewProvider.regroupFlatSymbols: dotted method
+    // implementations (Class.Method, or Class.Interface.Method) are lifted out of the flat root list and
+    // nested under a faux Class > Methods (or Class > Interface) tree, merged INTO the class' declaration
+    // node when one exists so declarations + implementations sit together. The impl's own children (its
+    // local data) ride along.
+    function regroupSymbols(symbols) {
+        if (!symbols || !symbols.length) return symbols || [];
+        var result = [], classByKey = {};
+        function key(n) { return (n || '').toLowerCase(); }
+        function bareClassName(node) {
+            var m = /class\s*\(\s*([^)]+?)\s*\)/i.exec(node.name || '');
+            return (m ? m[1] : (node.name || '')).trim();
+        }
+        function isImpl(s) {
+            return s.name && s.name.indexOf('.') >= 0
+                && (s.kind === 6 || s.kind === 11 || s.kind === 12)     // Method / Interface / Function
+                && !/STRING\('[^']*\./i.test(s.name);                    // ignore a dot inside a string literal
+        }
+        function childByName(parent, name) {
+            parent.children = parent.children || [];
+            for (var i = 0; i < parent.children.length; i++) if (parent.children[i].name === name) return parent.children[i];
+            return null;
+        }
+        function addChild(parent, name, kind, detail, line) {
+            var e = childByName(parent, name);
+            if (!e) { e = { name: name, detail: detail || '', kind: kind, line: line, children: [] }; parent.children.push(e); }
+            return e;
+        }
+        // Pass 1: index real CLASS declaration nodes so impls merge into them.
+        for (var i = 0; i < symbols.length; i++) if (symbols[i].kind === 5) { var bk = key(bareClassName(symbols[i])); if (!classByKey[bk]) classByKey[bk] = symbols[i]; }
+        // Pass 2: emit in order; route impls into their class' Methods/interface faux node.
+        for (var j = 0; j < symbols.length; j++) {
+            var sym = symbols[j];
+            if (isImpl(sym)) {
+                var parts = sym.name.split('.'), ck = key(parts[0]);
+                var cls = classByKey[ck];
+                if (!cls) { cls = { name: parts[0], detail: 'Class', kind: 5, line: sym.line, children: [] }; classByKey[ck] = cls; result.push(cls); }
+                else if (result.indexOf(cls) < 0) result.push(cls);
+                cls.children = cls.children || [];
+                var method = { name: parts.slice(parts.length >= 3 ? 2 : 1).join('.'), detail: sym.detail || 'Method Implementation', kind: sym.kind, line: sym.line, children: sym.children || [] };
+                if (parts.length >= 3) addChild(cls, parts[1], 11, 'Interface', sym.line).children.push(method);
+                else addChild(cls, 'Methods', 6, '', sym.line).children.push(method);
+            } else if (sym.kind === 5 && classByKey[key(bareClassName(sym))] === sym) {
+                if (result.indexOf(sym) < 0) result.push(sym);   // class decl node — emit once
+            } else {
+                result.push(sym);
+            }
+        }
+        return result;
+    }
+
     function renderOutline(symbols) {
         var list = document.getElementById('outlineList');
         var countEl = document.getElementById('outlineCount');
