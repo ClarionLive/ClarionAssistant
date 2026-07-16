@@ -304,30 +304,116 @@
     :root { --find-accent: #89b4fa; --find-hit: rgba(137,180,250,0.35); --find-hit-border: #89b4fa; --on-fg: #1e1e2e; --find-fz: 12px; }
     body.light { --find-accent: #1e66f5; --find-hit: rgba(30,102,245,0.22); --find-hit-border: #1e66f5; --on-fg: #eff1f5; }
 
+    /* QUICK-FIND mode (default when open): compact overlay pinned to the editor's top-right corner,
+       reserves NO editor space — it floats over the code (VS Code-style). `top` is set in JS
+       (positionFindPanel) to sit just under the toolbar; the rest is CSS. */
     #findPanel {
-        position: absolute; left: 0; right: 0; bottom: var(--status-bar-h); z-index: 15;
-        height: 300px; display: flex; flex-direction: column;
-        background: var(--toolbar-bg); border-top: 2px solid var(--find-accent);
+        position: absolute; right: 20px; left: auto; bottom: auto; z-index: 50;
+        width: auto; max-width: 94%; display: flex; flex-direction: column;
+        background: var(--toolbar-bg); border: 1px solid var(--find-accent); border-radius: 7px;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.32);
         font-size: var(--find-fz); color: var(--fg);
     }
     #findPanel.hidden { display: none; }
-    #findGrip { height: 5px; cursor: ns-resize; background: var(--toolbar-border); flex-shrink: 0; }
+    /* Quick mode hides the results-grid machinery, the row labels and the standalone Find button. */
+    #findPanel:not(.findall) #findGrip,
+    #findPanel:not(.findall) #findTabs,
+    #findPanel:not(.findall) #findGrid,
+    #findPanel:not(.findall) .find-restools,
+    #findPanel:not(.findall) .find-row > label,
+    #findPanel:not(.findall) #findGo,
+    #findPanel:not(.findall) #findHistClear,
+    #findPanel:not(.findall) #replSel,
+    #findPanel:not(.findall) .find-spacer { display: none; }
+    /* Deterministic compact layout: fixed-width input, every control content-sized, panel auto-fits its
+       contents. Nothing grows or shrinks, so the nav buttons can never be pushed out or clipped. */
+    #findPanel:not(.findall) { width: auto; }
+    #findPanel:not(.findall) .find-rows { padding: 6px 8px; gap: 5px; flex: 0 0 auto; }
+    #findPanel:not(.findall) .find-row > * { flex-shrink: 0; }
+    #findPanel:not(.findall) .combo { flex: 0 0 auto; max-width: none; }
+    #findPanel:not(.findall) .combo input { flex: 0 0 150px; width: 150px; }
+    /* Quick overlay: the match count drops onto its own line UNDER the search box, keeping the row compact. */
+    /* Count is a sibling BLOCK under the control row (not a wrapped flex item), so the control row stays
+       single-line and never wraps the nav buttons. Hidden until a search produces text. */
+    #findCount { font-size: 11px; color: var(--title-color); padding: 1px 4px 0; }
+    #findCount:empty { display: none; }
+    /* FIND-ALL mode: re-dock as a left column, full editor height, results grid visible; reserves width. */
+    #findPanel.findall {
+        left: 0; right: auto; bottom: var(--status-bar-h); z-index: 15;
+        width: 340px; max-width: 60%;
+        border: none; border-right: 2px solid var(--find-accent); border-radius: 0;
+        box-shadow: 3px 0 14px rgba(0,0,0,0.22);
+    }
+    /* ===== Find-All column: vertical VS Code Search-view layout; content can't spill past the panel ===== */
+    #findPanel.findall, #findPanel.findall * { box-sizing: border-box; }
+    #findPanel.findall { overflow: hidden; }
+    /* slim header (title · count · close) */
+    #findAllHeader { display: none; }
+    #findPanel.findall #findAllHeader {
+        display: flex; align-items: center; gap: 8px; padding: 7px 10px; flex-shrink: 0;
+        border-bottom: 1px solid var(--toolbar-border);
+    }
+    #findAllHeader .fa-title { font-weight: 600; color: var(--title-accent); letter-spacing: .02em; }
+    #findAllHeader .fa-count { font-size: 11px; color: var(--title-color); }
+    /* search + replace: full-width, stacked; toggles wrap onto their own line */
+    #findPanel.findall .find-head { align-items: stretch; }
+    #findPanel.findall .find-rows { padding: 8px 10px; gap: 8px; width: 100%; min-width: 0; }
+    #findPanel.findall .find-row { flex-wrap: wrap; gap: 6px; width: 100%; min-width: 0; }
+    #findPanel.findall .combo { flex: 1 1 100%; max-width: 100%; min-width: 0; }
+    #findPanel.findall .find-btn { flex: 0 0 auto; }
+    /* hide overlay-only chrome that doesn't belong in the column */
+    #findPanel.findall #findGo,
+    #findPanel.findall #findPrev,
+    #findPanel.findall #findNext,
+    #findPanel.findall #findAllToggle,
+    #findPanel.findall #findClose,
+    #findPanel.findall #findHistClear,
+    #findPanel.findall #replHistClear,
+    #findPanel.findall #replSel,
+    #findPanel.findall #findCount,
+    #findPanel.findall #findTabs,
+    #findPanel.findall .find-restools,
+    #findPanel.findall .find-row > label,
+    #findPanel.findall .find-row .find-spacer,
+    #findPanel.findall .find-grid .c-chk { display: none; }
+    /* results list: fixed layout + ellipsis so a long line never widens the panel */
+    #findPanel.findall .find-grid { flex: 1; border-top: 1px solid var(--toolbar-border); }
+    #findPanel.findall .find-grid table { table-layout: fixed; width: 100%; }
+    #findPanel.findall .find-grid .c-line { width: 40px; }
+    #findPanel.findall .find-grid .c-lock { width: 20px; }
+    #findPanel.findall .find-grid tbody td:last-child {
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono, monospace);
+    }
+    #findPanel.findall .find-grid tbody tr { line-height: 1.7; }
+    #findGrip { display: none; }   /* obsolete: the old bottom-dock resize handle (quick overlay / left column don't use it) */
     .find-rows { padding: 8px 10px 6px; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
     .find-row { display: flex; align-items: center; gap: 8px; }
+    /* VS Code-style replace expander: a chevron on the LEFT that shows/hides the replace row. It rotates
+       to point down when expanded. Replace is hidden unless #findPanel has .show-replace. */
+    .find-head { display: flex; align-items: stretch; }
+    .find-head .find-rows { flex: 1; }
+    .repl-toggle { width: 16px; flex-shrink: 0; border: none; background: transparent; cursor: pointer;
+        color: var(--title-color); display: flex; align-items: center; justify-content: center; padding: 0; }
+    .repl-toggle:hover { background: rgba(127,127,127,0.18); }
+    .repl-toggle .chev { font-size: 10px; line-height: 1; transition: transform 0.12s ease; }
+    #findPanel.show-replace .repl-toggle .chev { transform: rotate(90deg); }
+    #findPanel:not(.show-replace) #replRow { display: none; }
     .find-row > label { width: 80px; color: var(--title-color); flex-shrink: 0; }
     .find-spacer { flex: 1; }
 
-    .combo { position: relative; flex: 1; max-width: 520px; }
-    .combo input { width: 100%; background: var(--bg); color: var(--fg);
-        border: 1px solid var(--toolbar-border); border-radius: 4px; padding: 4px 26px 4px 8px;
-        font-family: inherit; font-size: var(--find-fz); }
-    .combo input:focus { outline: none; border-color: var(--find-accent); }
-    .combo .combo-caret { position: absolute; right: 2px; top: 2px; width: 20px; height: 22px;
+    /* The combo IS the boxed input control (VS Code-style): text field + inline toggles + history caret. */
+    .combo { position: relative; flex: 1; max-width: 520px; display: flex; align-items: center;
+        background: var(--bg); border: 1px solid var(--toolbar-border); border-radius: 4px; }
+    .combo:focus-within { border-color: var(--find-accent); }
+    .combo input { flex: 1; min-width: 0; background: transparent; color: var(--fg);
+        border: none; outline: none; padding: 4px 4px 4px 8px; font-family: inherit; font-size: var(--find-fz); }
+    .combo .toggles { flex-shrink: 0; }
+    .combo .combo-caret { width: 18px; height: 22px; flex-shrink: 0;
         display: flex; align-items: center; justify-content: center; color: var(--title-color);
         cursor: pointer; border-left: 1px solid var(--toolbar-border); user-select: none; font-size: 10px; }
-    .combo-hist { position: absolute; left: 0; right: 0; bottom: 100%; z-index: 40;
+    .combo-hist { position: absolute; left: 0; right: 0; top: 100%; z-index: 40;
         background: var(--toolbar-bg); border: 1px solid var(--toolbar-border);
-        border-radius: 4px 4px 0 0; box-shadow: 0 -6px 16px rgba(0,0,0,0.4); max-height: 180px; overflow: auto; }
+        border-radius: 0 0 4px 4px; box-shadow: 0 6px 16px rgba(0,0,0,0.4); max-height: 180px; overflow: auto; }
     .combo-hist.hidden { display: none; }
     .combo-hist div { padding: 4px 10px; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; }
     .combo-hist div:hover { background: rgba(127,127,127,0.18); }
@@ -338,12 +424,12 @@
         text-transform: uppercase; letter-spacing: .5px; padding: 4px 10px 2px; opacity: .85; }
     .combo-hist .hist-header:hover { background: transparent; }
 
-    .toggles { display: flex; gap: 3px; }
-    .tg { width: 26px; height: 26px; border: 1px solid var(--toolbar-border); background: transparent;
-        color: var(--fg); border-radius: 4px; cursor: pointer; font-size: 11px; font-family: inherit;
+    .toggles { display: flex; gap: 1px; align-items: center; }
+    .tg { width: 22px; height: 20px; border: 1px solid transparent; background: transparent;
+        color: var(--title-color); border-radius: 3px; cursor: pointer; font-size: 11px; font-family: inherit;
         display: flex; align-items: center; justify-content: center; }
     .tg:hover { background: rgba(127,127,127,0.18); }
-    .tg.on { background: var(--find-accent); border-color: var(--find-accent); color: var(--on-fg); }
+    .tg.on { background: var(--find-hit); border-color: var(--find-hit-border); color: var(--fg); }
 
     .find-icon { width: 28px; height: 28px; border: 1px solid var(--toolbar-border); background: transparent;
         color: var(--fg); border-radius: 4px; cursor: pointer; font-size: 13px;
@@ -409,7 +495,7 @@
     body.light .find-rows,
     body.light .find-grid thead th,
     body.light #ftabMenu { background: #ffffff; }
-    body.light .combo input { background: #ffffff; }
+    body.light .combo { background: #ffffff; }
     body.light .find-grid tbody tr:hover { background: #eef2fb; }
     body.light .ftab { background: #f3f5f9; }            /* inactive tabs: a hair off-white so they read as tabs */
     body.light .ftab.active { background: #ffffff; }
@@ -562,27 +648,38 @@
     <div id="findPanel" class="hidden">
         <div id="findGrip" title="Drag to resize"></div>
         <div id="findTabs"></div>
+        <div id="findAllHeader">
+            <span class="fa-title">Find All</span>
+            <span class="fa-count" id="faCount"></span>
+            <span class="find-spacer"></span>
+            <button class="find-icon" id="faClose" title="Close (Esc)">&#10005;</button>
+        </div>
+        <div class="find-head">
+        <button id="replToggle" class="repl-toggle" title="Toggle Replace (Ctrl+H)" aria-expanded="false"><span class="chev">&#10095;</span></button>
         <div class="find-rows">
             <div class="find-row">
                 <label>Find what</label>
                 <div class="combo">
                     <input id="findInput" type="text" autocomplete="off" spellcheck="false" placeholder="Find…">
+                    <div class="toggles">
+                        <button class="tg" id="tgCase" title="Match case">Aa</button>
+                        <button class="tg" id="tgWord" title="Whole word">ab</button>
+                        <button class="tg" id="tgRegex" title="Use regular expression">.*</button>
+                        <button class="tg on" id="tgRo" title="Include read-only (generated) blocks in results">&#128274;</button>
+                    </div>
                     <span class="combo-caret" id="findCaret" title="Search history">&#9662;</span>
                     <div class="combo-hist hidden" id="findHist"></div>
                 </div>
                 <button class="find-icon search" id="findGo" title="Find (Enter)">&#128269;</button>
-                <div class="toggles">
-                    <button class="tg" id="tgCase" title="Match case">Aa</button>
-                    <button class="tg" id="tgWord" title="Whole word">ab</button>
-                    <button class="tg" id="tgRegex" title="Use regular expression">.*</button>
-                    <button class="tg on" id="tgRo" title="Include read-only (generated) blocks in results">&#128274;</button>
-                </div>
-                <span class="find-count" id="findCount"></span>
+                <button class="find-icon" id="findPrev" title="Previous match (Shift+Enter)">&#8249;</button>
+                <button class="find-icon" id="findNext" title="Next match (Enter)">&#8250;</button>
+                <button class="find-icon" id="findAllToggle" title="List all matches (Find All)">&#9776;</button>
                 <span class="find-spacer"></span>
                 <button class="find-icon" id="findHistClear" title="Clear search history">&#129529;</button>
                 <button class="find-icon" id="findClose" title="Close (Esc)">&#10005;</button>
             </div>
-            <div class="find-row">
+            <span class="find-count" id="findCount"></span>
+            <div class="find-row" id="replRow">
                 <label>Replace with</label>
                 <div class="combo">
                     <input id="replInput" type="text" autocomplete="off" spellcheck="false" placeholder="Replace…">
@@ -594,6 +691,7 @@
                 <span class="find-spacer"></span>
                 <button class="find-icon" id="replHistClear" title="Clear replace history">&#129529;</button>
             </div>
+        </div>
         </div>
         <div class="find-restools">
             <span class="find-link" id="selAll" title="Check every replaceable row">&#9638; Select All</span>
@@ -681,6 +779,7 @@
     var findHistory = [];         // solution-wide search terms, most-recent first
     var replHistory = [];         // solution-wide replace terms, most-recent first
     var procFindHistory = [];     // THIS procedure's recent search terms (layered dropdown top group)
+    var findHistIdx = -1;         // ↑/↓ cursor into findHistory while the find box is focused (-1 = live text)
     var findCurrentIdx = -1;      // index into findResults of the active (revealed) match
     var lastFindQuery = null;     // the query that produced findResults (for Enter = next)
     var findModelVersion = -1;    // model version findResults was last synced against (GitHub #65)
@@ -910,6 +1009,10 @@
         embedRanges = msg.editableRanges || [];
         saveEnabled = !!msg.saveEnabled;
         fileMode = !!msg.fileMode;
+        // The "include read-only (generated) blocks" find toggle only means something in PWEE/slot mode.
+        // In file mode the whole buffer is editable — there are no read-only regions — so hide it.
+        var tgRo = document.getElementById('tgRo');
+        if (tgRo) tgRo.style.display = fileMode ? 'none' : '';
         currentFilePath = msg.filePath || '';
         breakpointsEnabled = !!msg.breakpointsEnabled;   // overlay: gutter-click toggles a breakpoint (not a bookmark)
         designerEnabled = !!msg.designerEnabled;         // overlay: Ctrl+D designs structures in plain source files
@@ -2579,9 +2682,33 @@
                 if (!isEditableRange(e.changes[i].range)) { illegal = true; break; }
             }
             if (illegal) {
+                // Monaco applied the whole event atomically. A batch that touches even one read-only
+                // line used to be reverted WHOLESALE — which silently dropped the legal replacements in
+                // a mixed batch. The native find widget's "Replace All" is exactly that: one event whose
+                // matches land in BOTH editable slots and generated code, so it appeared to do nothing.
+                // Revert the atomic edit, then re-apply only the changes that fell inside editable slots.
+                // e.changes carry pre-edit coordinates in reverse-document order, so they stay valid
+                // against the buffer the undo just restored. (Same guard now also salvages multi-cursor
+                // edits that straddle a read-only boundary.)
+                var legal = [];
+                for (var k = 0; k < e.changes.length; k++) {
+                    if (isEditableRange(e.changes[k].range))
+                        legal.push({ range: e.changes[k].range, text: e.changes[k].text });
+                }
                 guarding = true;
                 editor.trigger('readonly-guard', 'undo', null);
+                if (legal.length) {
+                    editor.executeEdits('readonly-guard-reapply', legal);
+                    applyChangesToRanges(legal);
+                    applyEmbedDecorations();
+                }
                 guarding = false;
+                if (legal.length) {
+                    setDirty(true);
+                    if (fileMode) { editSeq++; pushFileState(); }
+                    if (bookmarkDecos.length) scheduleBookmarkPersist();
+                    scheduleDiagnostics();
+                }
                 return;
             }
             // A legal user edit happened (this handler returned early for programmatic loads via
@@ -3467,7 +3594,13 @@
         document.addEventListener('keydown', function (ev) {
             if (capturingKey || snippetPickerOpen) return;   // rebind-capture / snippet picker owns the keyboard
             var ctrl = ev.ctrlKey || ev.metaKey;
-            if (ctrl && (ev.keyCode === 70 || ev.key === 'f' || ev.key === 'F')) {         // Ctrl+F
+            if (ctrl && ev.shiftKey && (ev.keyCode === 70 || ev.key === 'f' || ev.key === 'F')) {   // Ctrl+Shift+F → Find All
+                // Shift branches MUST precede the plain Ctrl+F/Ctrl+H (they also match ctrl+F / ctrl+H). The C#
+                // ProcessCmdKey guard swallows these chords too, so they can't leak to the IDE's Find/Replace-in-Files.
+                ev.preventDefault(); ev.stopImmediatePropagation(); openFindAll(false);
+            } else if (ctrl && ev.shiftKey && (ev.keyCode === 72 || ev.key === 'h' || ev.key === 'H')) {   // Ctrl+Shift+H → Find All + Replace
+                ev.preventDefault(); ev.stopImmediatePropagation(); openFindAll(true);
+            } else if (ctrl && (ev.keyCode === 70 || ev.key === 'f' || ev.key === 'F')) {         // Ctrl+F
                 ev.preventDefault(); ev.stopImmediatePropagation(); openFindPanel(false);
             } else if (ctrl && (ev.keyCode === 72 || ev.key === 'h' || ev.key === 'H')) {   // Ctrl+H
                 ev.preventDefault(); ev.stopImmediatePropagation(); openFindPanel(true);
@@ -3879,12 +4012,100 @@
         return '';
     }
 
+    // ---- Layout: quick-find overlay vs. Find-All left column ----
+    // Pin the panel to the editor's top edge (just under the toolbar). Quick mode floats top-right and
+    // reserves no editor space; Find-All mode is a left column that pushes the editor right by its width.
+    function positionFindPanel() {
+        var panel = document.getElementById('findPanel');
+        var ed = document.getElementById('editor');
+        if (!panel || !ed) return;
+        var top = ed.offsetTop;
+        panel.style.top = (panel.classList.contains('findall') ? top : top + 6) + 'px';
+        setEditorInsets();
+    }
+    function setEditorInsets() {
+        var panel = document.getElementById('findPanel');
+        var findAll = panel && !panel.classList.contains('hidden') && panel.classList.contains('findall');
+        var left = findAll ? (panel.offsetWidth + 'px') : '0px';
+        var ed = document.getElementById('editor'); if (ed) ed.style.left = left;
+        var e2 = document.getElementById('editor2'); if (e2) e2.style.left = left;
+    }
+    // Header result count for the Find-All column (short form; the in-row count is hidden there).
+    function setFaCount() {
+        var el = document.getElementById('faCount');
+        if (!el) return;
+        var n = findResults.length;
+        if (!n) { el.textContent = document.getElementById('findInput').value ? 'No matches' : ''; return; }
+        var ro = 0;
+        for (var i = 0; i < n; i++) if (!findResults[i].editable) ro++;
+        el.textContent = n + (n === 1 ? ' match' : ' matches') + (ro ? ' · ' + ro + ' read-only' : '');
+    }
+    // Incremental find lands on the first match at/after the caret; wraps to the first if none follow.
+    function firstIdxFromCursor() {
+        if (!editor || !findResults.length) return 0;
+        var pos = editor.getPosition(); if (!pos) return 0;
+        for (var i = 0; i < findResults.length; i++) {
+            var r = findResults[i];
+            if (r.line > pos.lineNumber || (r.line === pos.lineNumber && r.startCol >= pos.column)) return i;
+        }
+        return 0;
+    }
+    // Commit the current term to the persisted, cross-tab history (runFind no longer does — it's incremental).
+    function commitFindHistory() {
+        var q = document.getElementById('findInput').value;
+        if (!q) return;
+        addHistory(findHistory, q); addHistory(procFindHistory, q, 10); persistHistory();
+    }
+    // ↑/↓ in the find box walk the PERSISTED history — survives tab close / reopen (the whole point).
+    function cycleFindHistory(dir) {
+        if (!findHistory.length) return;
+        findHistIdx += dir;
+        var el = document.getElementById('findInput');
+        if (findHistIdx < 0) { findHistIdx = -1; el.value = ''; runFind(); return; }
+        if (findHistIdx >= findHistory.length) findHistIdx = findHistory.length - 1;
+        el.value = findHistory[findHistIdx]; el.select(); runFind();
+    }
+    // Show / hide the replace row (VS Code left chevron). Only the replace chords (Ctrl+H / Ctrl+Shift+H)
+    // and the chevron itself expand it; the find chords leave it collapsed on a fresh open.
+    function setReplaceVisible(show) {
+        var panel = document.getElementById('findPanel');
+        if (!panel) return;
+        panel.classList.toggle('show-replace', show);
+        var t = document.getElementById('replToggle');
+        if (t) t.setAttribute('aria-expanded', show ? 'true' : 'false');
+        positionFindPanel();   // panel height changed
+    }
+    // Find-All: reveal the left results column, reusing the existing grid/tabs machinery. focusReplace
+    // (Ctrl+Shift+H) opens it with the replace row expanded + focused.
+    function openFindAll(focusReplace) {
+        var panel = document.getElementById('findPanel');
+        var wasFindAll = !panel.classList.contains('hidden') && panel.classList.contains('findall');
+        if (panel.classList.contains('hidden')) openFindPanel(false);
+        panel.classList.add('findall');
+        if (!wasFindAll) setReplaceVisible(!!focusReplace);
+        else if (focusReplace) setReplaceVisible(true);
+        positionFindPanel();
+        if (!findTabs.length) createTab(null);
+        if (document.getElementById('findInput').value) runFind();
+        renderResults();
+        (focusReplace ? document.getElementById('replInput') : document.getElementById('findInput')).focus();
+    }
+    function toggleFindAll() {
+        var panel = document.getElementById('findPanel');
+        if (panel.classList.contains('hidden') || !panel.classList.contains('findall')) { openFindAll(false); return; }
+        panel.classList.remove('findall'); positionFindPanel();
+        document.getElementById('findInput').focus();
+    }
+
     function openFindPanel(focusReplace) {
         var panel = document.getElementById('findPanel');
         if (!panel) return;
         var wasHidden = panel.classList.contains('hidden');
         panel.classList.remove('hidden');
-        setEditorBottom(panel.offsetHeight);
+        panel.classList.remove('findall');    // open compact (quick-find); Find-All is an explicit toggle
+        if (wasHidden) setReplaceVisible(!!focusReplace);   // fresh open: replace only on Ctrl+H
+        else if (focusReplace) setReplaceVisible(true);     // already open + Ctrl+H expands; else keep manual state
+        positionFindPanel();                  // pin under the toolbar; reserves no editor space
         if (!findTabs.length) createTab(null);   // always have at least one tab
 
         var input = document.getElementById('findInput');
@@ -3910,9 +4131,11 @@
     function closeFindPanel() {
         var panel = document.getElementById('findPanel');
         if (!panel) return;
+        commitFindHistory();              // record the search term on close (runFind no longer does)
         saveActiveTab();                  // persist the active tab's query/replace/opts for reopen
         panel.classList.add('hidden');
-        setEditorBottom(0);
+        panel.classList.remove('findall');
+        setEditorInsets();                // release any Find-All left-column width
         clearFindHighlights();
         hideHist('findHist'); hideHist('replHist'); hideTabMenu();
         if (editor) editor.focus();
@@ -3929,7 +4152,7 @@
         var countEl = document.getElementById('findCount');
         if (!q) {
             findResults = []; lastFindQuery = null; findCurrentIdx = -1;
-            renderResults(); clearFindHighlights(); countEl.textContent = '';
+            renderResults(); clearFindHighlights(); countEl.textContent = ''; setFaCount();
             if (activeTab >= 0 && findTabs[activeTab]) { findTabs[activeTab].query = ''; refreshTabLabels(); }
             return;
         }
@@ -3958,8 +4181,10 @@
         }
         lastFindQuery = q;
         findModelVersion = model.getAlternativeVersionId();   // results are fresh against THIS buffer state
-        findCurrentIdx = findResults.length ? 0 : -1;
-        addHistory(findHistory, q); addHistory(procFindHistory, q, 10); persistHistory();
+        // Incremental find: land on the first match at/after the caret (VS Code-style), not always #0.
+        findCurrentIdx = findResults.length ? firstIdxFromCursor() : -1;
+        // History is NOT recorded here — runFind fires on every keystroke now (incremental). A term is
+        // committed to the persisted, cross-tab history on Enter / close instead (commitFindHistory).
         renderResults();
         paintHighlights();
         var lines = countLines(findResults);
@@ -3969,7 +4194,8 @@
                ' · ' + lines + ' line' + (lines === 1 ? '' : 's') + (ro ? ' · ' + ro + ' read-only' : ''))
             : 'No matches';
         if (activeTab >= 0 && findTabs[activeTab]) { findTabs[activeTab].query = q; refreshTabLabels(); }
-        if (findResults.length) revealMatch(0, false);
+        setFaCount();
+        if (findResults.length) revealMatch(findCurrentIdx, false);
     }
 
     function countLines(arr) {
@@ -4083,7 +4309,7 @@
         findCurrentIdx = idx;
         var r = findResults[idx];
         var range = new monaco.Range(r.line, r.startCol, r.endLine, r.endCol);
-        editor.revealRangeInCenter(range);
+        editor.revealRangeInCenterIfOutsideViewport(range);   // gentle: only scrolls when off-screen (incremental)
         editor.setSelection(range);
         paintHighlights();
         var rows = document.querySelectorAll('#findResults tr');
@@ -4441,18 +4667,39 @@
 
         var fi = document.getElementById('findInput');
         document.getElementById('findGo').addEventListener('click', runFind);
+        // Incremental: search as you type (debounced), landing on the first match after the caret.
+        fi.addEventListener('input', function () {
+            findHistIdx = -1;
+            clearTimeout(fi._incT); fi._incT = setTimeout(runFind, 120);
+        });
         fi.addEventListener('keydown', function (ev) {
             if (ev.key === 'Enter') {
                 ev.preventDefault();
                 if (ev.target.value === lastFindQuery && findResults.length) gotoMatch(ev.shiftKey ? -1 : 1);
                 else runFind();
+                commitFindHistory();
             } else if (ev.key === 'Escape') { ev.preventDefault(); closeFindPanel(); }
+            else if (ev.key === 'ArrowUp') { ev.preventDefault(); cycleFindHistory(1); }
+            else if (ev.key === 'ArrowDown') { ev.preventDefault(); cycleFindHistory(-1); }
+        });
+        document.getElementById('findPrev').addEventListener('click', function () { gotoMatch(-1); });
+        document.getElementById('findNext').addEventListener('click', function () { gotoMatch(1); });
+        document.getElementById('findAllToggle').addEventListener('click', toggleFindAll);
+        window.addEventListener('resize', function () {
+            var p = document.getElementById('findPanel');
+            if (p && !p.classList.contains('hidden')) positionFindPanel();
         });
         document.getElementById('replInput').addEventListener('keydown', function (ev) {
             if (ev.key === 'Enter') { ev.preventDefault(); doReplace(true); }
             else if (ev.key === 'Escape') { ev.preventDefault(); closeFindPanel(); }
         });
         document.getElementById('findClose').addEventListener('click', closeFindPanel);
+        document.getElementById('replToggle').addEventListener('click', function () {
+            var show = !document.getElementById('findPanel').classList.contains('show-replace');
+            setReplaceVisible(show);
+            (show ? document.getElementById('replInput') : document.getElementById('findInput')).focus();
+        });
+        document.getElementById('faClose').addEventListener('click', closeFindPanel);
 
         function tg(id, key) {
             document.getElementById(id).addEventListener('click', function () {
