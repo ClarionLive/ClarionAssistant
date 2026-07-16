@@ -58,6 +58,9 @@ namespace ClarionAssistant.Terminal
             _ignoreWhitespace = ignoreWhitespace;
             _isDark = isDark;
             TitleName = "Diff: " + _title;
+            // No Save()/SaveAs() implementation exists for this view — without this, SharpDevelop
+            // treats it as a normal, saveable, filename-less document (enables Save, then throws when invoked).
+            IsViewOnly = true;
 
             _panel = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(30, 30, 46) };
             _webView = new ZoomableWebView2 { Dock = DockStyle.Fill };
