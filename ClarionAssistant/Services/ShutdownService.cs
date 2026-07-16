@@ -118,6 +118,7 @@ namespace ClarionAssistant.Services
             DisposeWebView2("monaco diff", MonacoDiffViewContent.DisposeAllForShutdown);
             DisposeWebView2("board", TaskLifecycleBoardForm.DisposeAllForShutdown);
             DisposeWebView2("data pad", ModernDataPad.DisposeAllForShutdown);   // Explorer pad (GAP 2)
+            DisposeWebView2("find pad", CaFindPad.DisposeAllForShutdown);       // CA Find/Replace pad (#66)
             DisposeWebView2("chat pad", AssistantChatControl.DisposeAllForShutdown); // owns HUD header + home view (GAP 2)
 
             // Also release the WebView2 inside any MODELESS top-level dialog open at shutdown (settings, cheat

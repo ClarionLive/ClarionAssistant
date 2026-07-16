@@ -74,6 +74,11 @@ namespace ClarionAssistant
         private System.Reflection.EventInfo _closingEvt;
         private System.ComponentModel.CancelEventHandler _closingHandler;
         private bool _closeHooked;
+        // Tab-activation hook (#66 follow-up): WindowSelected fires when this tab becomes active — claim
+        // the CA Find pad and hand Monaco focus (the IDE doesn't focus a WebView2 view on tab switch).
+        private System.Reflection.EventInfo _selectedEvt;
+        private EventHandler _selectedHandler;
+        private Timer _hookRetry;        // OnReady-time hook attach: retries until the workbench window is realized
 
         // Cover that hides the native editor until Monaco paints. Light (#eff1f5) to match the page's DEFAULT
         // light theme. (It cannot hide the WebView2 itself — a native HWND always paints over WinForms siblings,
@@ -285,6 +290,12 @@ namespace ClarionAssistant
                 catch (Exception fex) { MonacoSpikeLog.Write("overlay filename error: " + fex.Message); }
                 if (!string.IsNullOrEmpty(_filePath)) _overlayTitle = Path.GetFileName(_filePath);
 
+                // CA Find pad (GitHub #66): this editor becomes findable. Key = the file path.
+                ClarionAssistant.Services.CaFindBroker.RegisterHost(this, _editor,
+                    () => _filePath ?? "",
+                    () => string.IsNullOrEmpty(_filePath) ? "source" : Path.GetFileName(_filePath),
+                    "CA Editor");
+
                 string text = "";
                 try { if (_hostEditor != null && _hostEditor.Document != null) text = _hostEditor.Document.TextContent ?? ""; }
                 catch (Exception rex) { MonacoSpikeLog.Write("overlay read document error: " + rex.Message); }
@@ -361,6 +372,10 @@ namespace ClarionAssistant
                 // that was parked while loading. The cold-open target is already seeded into setSource above; the
                 // RevealLine here is a redundant safety net (idempotent) for a nav that lands after this point.
                 _pageReady = true;
+                // #66 round-2: attach the ClosingEvent/WindowSelected hooks NOW — waiting for the first
+                // fileState (= first EDIT) left never-edited tabs unhooked, so switching to them neither
+                // retargeted the CA Find pad nor focused the editor.
+                EnsureCloseHookWithRetry();
                 MonacoSourceNavigator.Register(_filePath, this);
                 if (_navPendingLine >= 1) { _editor.RevealLine(_navPendingLine, _navPendingCol); _navPendingLine = 0; }
                 if (navLine >= 1) _editor.RevealLine(navLine, navCol);
@@ -722,6 +737,12 @@ namespace ClarionAssistant
 
         // The rest stay inert for now (Step 6 wires Ctrl+D through the embeditor's openDesigner path).
         void IMonacoEditorHost.OnClipboard(MonacoEditorControl editor, string rawJson) { }
+
+        // CA Find pad protocol (GitHub #66) — the broker routes to/from the dockable pad.
+        void IMonacoEditorHost.OnCaFind(MonacoEditorControl editor, string action, string rawJson)
+        {
+            ClarionAssistant.Services.CaFindBroker.FromEditor(this, action, rawJson);
+        }
         // Gear-panel Code Snippets CRUD from the source editor. Persist through the shared store (never a
         // silent no-op — see the dual-host gotcha) and broadcast the updated list to all embeditor tabs.
         void IMonacoEditorHost.OnSnippetCommand(MonacoEditorControl editor, string rawJson)
@@ -1003,7 +1024,47 @@ namespace ClarionAssistant
         }
         // 'Show designer' on the lock overlay → bring the scratch designer tab back to front.
         void IMonacoEditorHost.OnActivateDesigner(MonacoEditorControl editor) { StructureDesignerService.ActivateCurrent(_editor); }
-        void IMonacoEditorHost.OnEditorNavigationCompleted(MonacoEditorControl editor, bool success) { MonacoSpikeLog.Write("overlay nav completed success=" + success); RemoveCover(); }
+        void IMonacoEditorHost.OnEditorNavigationCompleted(MonacoEditorControl editor, bool success)
+        {
+            MonacoSpikeLog.Write("overlay nav completed success=" + success);
+            RemoveCover();
+            FocusIfActiveTab();   // #66 round-3: the INITIAL open never fires WindowSelected (the tab is born selected)
+        }
+
+        /// <summary>Hand the freshly loaded Monaco page keyboard focus + claim the CA Find pad — but only
+        /// if OUR tab is the active document. A newly opened tab is already selected, so WindowSelected
+        /// never fires for it and nothing focused the editor (John's round-3 find: arrows dead until the
+        /// first tab SWITCH). The active-window guard keeps a background open (CA Explorer opens .inc AND
+        /// .clw together) from stealing focus off the displayed one.</summary>
+        private void FocusIfActiveTab()
+        {
+            try
+            {
+                object myWin = null;
+                try { myWin = GetType().GetProperty("WorkbenchWindow")?.GetValue(this, null); } catch { }
+                object wb = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
+                object aw = ReflectProp(wb, "ActiveWorkbenchWindow");
+                bool isActive = myWin != null && ReferenceEquals(myWin, aw);
+                MonacoSpikeLog.Write("initial-open focus: active=" + isActive + " (" + (_filePath ?? "?") + ")");
+                if (!isActive || _editor == null) return;
+                ClarionAssistant.Services.CaFindBroker.NotifyActivity(this);
+                _editor.FocusEditor();
+                _editor.PostJson("{\"type\":\"focusEditor\"}");
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("initial-open focus error: " + ex.Message); }
+        }
+
+        private static object ReflectProp(object obj, string name)
+        {
+            if (obj == null) return null;
+            try
+            {
+                var p = obj.GetType().GetProperty(name,
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                return (p != null && p.GetIndexParameters().Length == 0) ? p.GetValue(obj, null) : null;
+            }
+            catch { return null; }
+        }
         void IMonacoEditorHost.OnUnknownAction(MonacoEditorControl editor, string action, string rawJson)
         {
             if (action != "toggleBreakpoint") return;
@@ -1292,6 +1353,29 @@ namespace ClarionAssistant
         // raises ClosingEvent (CancelEventHandler); FormClosing never fires on a tab close here. Reflect the
         // event (IDE-internal) off the runtime type or its interfaces. Self-healing: if the window isn't
         // realized yet, stay unhooked and retry on the next file-state signal.
+        // The workbench window may not be assigned yet when the page signals ready (OnReady can beat the
+        // window realization); poll briefly instead of giving up. OnFileState still calls EnsureCloseHook
+        // directly as a backstop.
+        private void EnsureCloseHookWithRetry()
+        {
+            EnsureCloseHook();
+            if (_closeHooked || _hookRetry != null) return;
+            int tries = 0;
+            _hookRetry = new Timer { Interval = 500 };
+            _hookRetry.Tick += (s, e) =>
+            {
+                tries++;
+                EnsureCloseHook();
+                if (_closeHooked || tries >= 20)
+                {
+                    var t = _hookRetry; _hookRetry = null;
+                    try { t.Stop(); t.Dispose(); } catch { }
+                    if (!_closeHooked) MonacoSpikeLog.Write("hook retry gave up: WorkbenchWindow never realized (" + (_filePath ?? "?") + ")");
+                }
+            };
+            _hookRetry.Start();
+        }
+
         private void EnsureCloseHook()
         {
             if (_closeHooked) return;
@@ -1312,6 +1396,23 @@ namespace ClarionAssistant
                 evt.AddEventHandler(wbw, _closingHandler);
                 _wbWindow = wbw; _closingEvt = evt;
                 MonacoSpikeLog.Write("close-hook attached (ClosingEvent) to " + wbw.GetType().FullName);
+
+                // Same window, second event: WindowSelected (plain EventHandler) fires when this tab is
+                // switched to — claim the CA Find pad + focus Monaco (#66 follow-up). Best-effort.
+                try
+                {
+                    var selEvt = wbw.GetType().GetEvent("WindowSelected");
+                    if (selEvt == null)
+                        foreach (var itf in wbw.GetType().GetInterfaces()) { selEvt = itf.GetEvent("WindowSelected"); if (selEvt != null) break; }
+                    if (selEvt != null)
+                    {
+                        _selectedHandler = new EventHandler(OnWorkbenchWindowSelected);
+                        selEvt.AddEventHandler(wbw, _selectedHandler);
+                        _selectedEvt = selEvt;
+                        MonacoSpikeLog.Write("select-hook attached (WindowSelected) to " + wbw.GetType().FullName);
+                    }
+                }
+                catch (Exception sex) { MonacoSpikeLog.Write("select-hook attach error: " + sex.Message); }
             }
             catch (Exception ex) { MonacoSpikeLog.Write("close-hook attach error: " + ex.Message); }
         }
@@ -1320,6 +1421,24 @@ namespace ClarionAssistant
         // BEFORE Dispose, so the tab closes in one click. A decision clears _overlayDirty so the Dispose
         // safety-net won't re-write. (Forced shutdown closes skip ClosingEvent, so no modal hangs shutdown —
         // Dispose's silent fallback persists the edits instead. See project_shutdown_hang.)
+        /// <summary>This tab became the active document: retarget the CA Find pad and hand the Monaco
+        /// overlay real focus — WebView2 (Windows level) + editor.focus() (Monaco level). Without this
+        /// only a click into the buffer switched the pad (#66 validation, John).</summary>
+        private void OnWorkbenchWindowSelected(object sender, EventArgs e)
+        {
+            try
+            {
+                MonacoSpikeLog.Write("select-hook fired: claim CA Find pad + focus (" + (_filePath ?? "?") + ")");
+                ClarionAssistant.Services.CaFindBroker.NotifyActivity(this);
+                if (_editor != null)
+                {
+                    _editor.FocusEditor();
+                    _editor.PostJson("{\"type\":\"focusEditor\"}");
+                }
+            }
+            catch { }
+        }
+
         private void OnWorkbenchClosing(object sender, System.ComponentModel.CancelEventArgs e)
         {
             try
@@ -1347,10 +1466,13 @@ namespace ClarionAssistant
         public override void Dispose()
         {
             StopCaptureTimer();
+            try { if (_hookRetry != null) { _hookRetry.Stop(); _hookRetry.Dispose(); _hookRetry = null; } } catch { }
             UnwireBreakpoints();
+            try { ClarionAssistant.Services.CaFindBroker.UnregisterHost(this); } catch { }
             try { MonacoSourceNavigator.Unregister(_filePath, this); } catch { }
             try { if (_closingEvt != null && _wbWindow != null && _closingHandler != null) _closingEvt.RemoveEventHandler(_wbWindow, _closingHandler); } catch { }
-            _wbWindow = null; _closingEvt = null; _closingHandler = null;
+            try { if (_selectedEvt != null && _wbWindow != null && _selectedHandler != null) _selectedEvt.RemoveEventHandler(_wbWindow, _selectedHandler); } catch { }
+            _wbWindow = null; _closingEvt = null; _closingHandler = null; _selectedEvt = null; _selectedHandler = null;
 
             // The interactive save prompt lives in OnWorkbenchFormClosing (cancellable, pre-teardown). This is
             // only a SILENT safety net for disposal paths that bypass FormClosing (solution close / shutdown):

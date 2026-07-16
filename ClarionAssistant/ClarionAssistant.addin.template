@@ -49,6 +49,9 @@
     <Pad id="ModernData" category="Tools" title="CA Explorer"
          icon="PadIcons.Output" shortcut="Control|Alt|D"
          class="ClarionAssistant.ModernDataPad"/>
+    <Pad id="CaFind" category="Tools" title="CA Find/Replace"
+         icon="PadIcons.Output" shortcut="Control|Alt|F"
+         class="ClarionAssistant.CaFindPad"/>
   </Path>
 
   <Path name="/Workspace/Tools">
@@ -60,6 +63,8 @@
               class="ClarionAssistant.ShowAgentPanelCommand"/>
     <MenuItem id="ShowModernDataPad" label="CA Explorer"
               class="ClarionAssistant.ShowModernDataPadCommand"/>
+    <MenuItem id="ShowCaFindPad" label="CA Find/Replace"
+              class="ClarionAssistant.ShowCaFindPadCommand"/>
   </Path>
 
   <!-- RETIRED: the "CA Embeditor" button on the native embeditor toolbar

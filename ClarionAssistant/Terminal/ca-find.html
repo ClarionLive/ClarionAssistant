@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>CA Find/Replace</title>
+<style>
+    /* CA Find/Replace pad (GitHub #66, ticket 91e6ecac).
+       The find UI extracted from monaco-embeditor.html's bottom panel, restyled to fill a dockable
+       SharpDevelop pad. The match/replace ENGINE stays in the editor pages; this page is a remote
+       control routed through CaFindBroker. Colors mirror the editor page (Catppuccin Mocha/Latte). */
+    :root {
+        --bg: #181825; --alt: #1e1e2e; --line: #313244; --fg: #cdd6f4; --muted: #7f849c;
+        --accent: #89b4fa; --hit: rgba(137,180,250,0.35); --on-accent: #1e1e2e;
+        --live: #a6e3a1; --idle: #585b70;
+        --find-fz: 12px;
+    }
+    body.light {
+        --bg: #ffffff; --alt: #f6f7fb; --line: #d9dce6; --fg: #4c4f69; --muted: #8087a2;
+        --accent: #1e66f5; --hit: rgba(30,102,245,0.22); --on-accent: #ffffff;
+        --live: #40a02b; --idle: #9ca0b0;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin: 0; background: var(--bg); color: var(--fg);
+        font: var(--find-fz)/1.45 "Segoe UI", system-ui, sans-serif; overflow: hidden;
+        display: flex; flex-direction: column; container-type: inline-size; }
+
+    /* Target strip — which editor this pad is driving (green = live, grey = idle). */
+    #target { flex-shrink: 0; display: flex; align-items: center; gap: 7px; padding: 4px 10px;
+        font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--line); background: var(--alt); }
+    #target .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--live); flex-shrink: 0; }
+    #target.idle .dot { background: var(--idle); }
+    #target b { color: var(--fg); font-weight: 600; max-width: 45%; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap; }
+    #target .spacer { flex: 1; }
+    #target .tbtn { background: transparent; border: 1px solid var(--line); color: var(--muted);
+        border-radius: 4px; min-width: 24px; height: 20px; font-size: 10px; cursor: pointer; padding: 0 5px; }
+    #target .tbtn:hover { border-color: var(--accent); color: var(--fg); }
+
+    /* Find tabs — independent search sessions of the current editor. */
+    #findTabs { flex-shrink: 0; display: flex; align-items: flex-end; gap: 2px; padding: 5px 8px 0;
+        overflow-x: auto; scrollbar-width: none; }
+    .ftab { background: var(--alt); color: var(--muted); border: 1px solid var(--line);
+        border-bottom: none; border-radius: 5px 5px 0 0; padding: 2px 9px; font-size: 11px;
+        cursor: pointer; white-space: nowrap; display: flex; gap: 6px; align-items: center; max-width: 160px; }
+    .ftab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ftab.active { background: var(--bg); color: var(--accent); border-color: var(--accent); }
+    .ftab-x { opacity: 0.55; cursor: pointer; }
+    .ftab-x:hover { opacity: 1; color: var(--accent); }
+    .ftab-add { border: 1px dashed var(--line); border-bottom: none; border-radius: 5px 5px 0 0;
+        color: var(--muted); padding: 2px 8px; font-size: 11px; cursor: pointer; }
+    .ftab-add:hover { color: var(--accent); border-color: var(--accent); }
+
+    /* Input rows. */
+    .find-rows { padding: 8px 10px 6px; display: flex; flex-direction: column; gap: 6px;
+        flex-shrink: 0; border-bottom: 1px solid var(--line); }
+    .find-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .find-row > label { width: 80px; color: var(--muted); flex-shrink: 0; }
+    .find-spacer { flex: 1; }
+    .combo { position: relative; flex: 1; min-width: 140px; max-width: 520px; }
+    .combo input { width: 100%; background: var(--bg); color: var(--fg);
+        border: 1px solid var(--line); border-radius: 4px; padding: 4px 26px 4px 8px;
+        font-family: inherit; font-size: var(--find-fz); }
+    .combo input:focus { outline: none; border-color: var(--accent); }
+    .combo-caret { position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
+        color: var(--muted); cursor: pointer; user-select: none; }
+    .combo-hist { position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 30;
+        background: var(--alt); border: 1px solid var(--line); border-radius: 4px;
+        max-height: 220px; overflow-y: auto; box-shadow: 0 6px 18px rgba(0,0,0,0.35); }
+    .combo-hist.hidden { display: none; }
+    .combo-hist > div { padding: 3px 8px; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+    .combo-hist > div:hover { background: var(--hit); }
+    .combo-hist .hx { margin-left: auto; opacity: 0.5; }
+    .combo-hist .hx:hover { opacity: 1; color: var(--accent); }
+    .combo-hist .hist-header { color: var(--accent); cursor: default; font-size: 10px;
+        text-transform: uppercase; letter-spacing: 0.05em; }
+    .combo-hist .hist-header:hover { background: transparent; }
+    .combo-hist .hist-empty { color: var(--muted); cursor: default; }
+    .combo-hist .hist-empty:hover { background: transparent; }
+
+    .toggles { display: flex; gap: 4px; }
+    .tg { background: var(--alt); border: 1px solid var(--line); color: var(--fg);
+        border-radius: 4px; min-width: 26px; height: 24px; font-size: 11px; cursor: pointer; }
+    .tg.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+    .find-icon { width: 28px; height: 26px; border: 1px solid var(--line); background: transparent;
+        border-radius: 4px; cursor: pointer; color: var(--fg); font-size: 12px; }
+    .find-icon:hover { background: rgba(127,127,127,0.18); }
+    .find-icon.search { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+    .find-btn { background: transparent; color: var(--fg); border: 1px solid var(--line);
+        border-radius: 4px; padding: 3px 10px; font: inherit; font-size: var(--find-fz);
+        cursor: pointer; white-space: nowrap; }
+    .find-btn:hover { background: rgba(127,127,127,0.18); }
+    .find-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+    .find-count { color: var(--muted); white-space: nowrap; }
+
+    /* Result tools + grid. */
+    .find-restools { flex-shrink: 0; display: flex; align-items: center; gap: 14px; padding: 4px 10px;
+        border-bottom: 1px solid var(--line); }
+    .find-link { color: var(--accent); cursor: pointer; white-space: nowrap; user-select: none;
+        font-size: 11px; }
+    .find-link:hover { text-decoration: underline; }
+    .find-grid { flex: 1; overflow: auto; min-height: 0; }
+    .find-grid table { width: 100%; border-collapse: collapse; font-size: var(--find-fz); }
+    .find-grid thead th { position: sticky; top: 0; background: var(--alt); color: var(--muted);
+        text-align: left; font-weight: 600; padding: 3px 8px; border-bottom: 1px solid var(--line); z-index: 5; }
+    .find-grid tbody td { padding: 2px 8px; border-bottom: 1px solid var(--line);
+        font-family: Consolas, "Cascadia Mono", monospace; white-space: pre; }
+    .find-grid tbody tr { cursor: pointer; }
+    .find-grid tbody tr:hover { background: rgba(127,127,127,0.12); }
+    .find-grid tbody tr.active td { background: var(--hit); }
+    .find-grid .c-chk { width: 26px; text-align: center; }
+    .find-grid .c-line { width: 56px; color: var(--muted); text-align: right;
+        font-family: Consolas, "Cascadia Mono", monospace; }
+    .find-grid .c-lock { width: 22px; text-align: center; }
+    .find-grid .hl { background: var(--hit); border-radius: 2px; }
+    .find-empty { padding: 16px; text-align: center; color: var(--muted); }
+    .idle-msg { padding: 26px 16px; text-align: center; color: var(--muted); }
+    .idle-msg b { color: var(--fg); }
+
+    /* Tab context menu. */
+    #ftabMenu { position: fixed; z-index: 60; background: var(--alt); border: 1px solid var(--line);
+        border-radius: 4px; box-shadow: 0 6px 18px rgba(0,0,0,0.4); min-width: 170px; font-size: 11px; }
+    #ftabMenu.hidden { display: none; }
+    .ftab-menu-item { padding: 4px 12px; cursor: pointer; }
+    .ftab-menu-item:hover { background: var(--accent); color: var(--on-accent); }
+    .ftab-menu-item.disabled { opacity: 0.4; cursor: default; }
+    .ftab-menu-item.disabled:hover { background: transparent; color: inherit; }
+
+    /* Narrow (side-docked) reflow: labels stack above the inputs. */
+    @container (max-width: 430px) {
+        .find-row > label { width: 100%; margin-bottom: -2px; font-size: 10px;
+            text-transform: uppercase; letter-spacing: 0.06em; }
+        .combo { min-width: 100%; max-width: none; }
+        .find-grid .c-line { width: 44px; }
+    }
+
+    #toast { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+        background: var(--alt); color: var(--fg); border: 1px solid var(--accent);
+        border-radius: 5px; padding: 5px 14px; font-size: 11px; z-index: 80;
+        opacity: 0; transition: opacity 0.2s; pointer-events: none; max-width: 90%; }
+    #toast.show { opacity: 1; }
+    #toast.err { border-color: #e64553; }
+</style>
+</head>
+<body>
+    <div id="target" class="idle">
+        <span class="dot"></span>
+        <span id="targetText">No CA editor active — open a source file or embeditor to search</span>
+        <span class="spacer"></span>
+        <button class="tbtn" id="fzMinus" title="Smaller text">A−</button>
+        <button class="tbtn" id="fzPlus" title="Larger text">A+</button>
+        <button class="tbtn" id="themeBtn" title="Toggle light/dark">◐</button>
+    </div>
+    <div id="findTabs"></div>
+    <div class="find-rows">
+        <div class="find-row">
+            <label>Find what</label>
+            <div class="combo">
+                <input id="findInput" type="text" autocomplete="off" spellcheck="false" placeholder="Find…">
+                <span class="combo-caret" id="findCaret" title="Search history">&#9662;</span>
+                <div class="combo-hist hidden" id="findHist"></div>
+            </div>
+            <button class="find-icon search" id="findGo" title="Find (Enter)">&#128269;</button>
+            <div class="toggles">
+                <button class="tg" id="tgCase" title="Match case">Aa</button>
+                <button class="tg" id="tgWord" title="Whole word">ab</button>
+                <button class="tg" id="tgRegex" title="Use regular expression">.*</button>
+                <button class="tg on" id="tgRo" title="Include read-only (generated) blocks in results">&#128274;</button>
+            </div>
+            <span class="find-count" id="findCount"></span>
+            <span class="find-spacer"></span>
+            <button class="find-icon" id="findHistClear" title="Clear search history">&#129529;</button>
+        </div>
+        <div class="find-row">
+            <label>Replace with</label>
+            <div class="combo">
+                <input id="replInput" type="text" autocomplete="off" spellcheck="false" placeholder="Replace…">
+                <span class="combo-caret" id="replCaret" title="Replace history">&#9662;</span>
+                <div class="combo-hist hidden" id="replHist"></div>
+            </div>
+            <button class="find-btn" id="replSel" title="Replace checked rows (editable slots only)">Replace Selected</button>
+            <button class="find-btn primary" id="replAll" title="Replace every editable match">Replace All</button>
+            <span class="find-spacer"></span>
+            <button class="find-icon" id="replHistClear" title="Clear replace history">&#129529;</button>
+        </div>
+    </div>
+    <div class="find-restools">
+        <span class="find-link" id="selAll" title="Check every replaceable row">&#9638; Select All</span>
+        <span class="find-link" id="selNone" title="Uncheck every row">&#9634; Select None</span>
+        <span class="find-spacer" style="flex:1"></span>
+        <span class="find-link" id="copyRes" title="Copy checked rows (or all if none checked)">&#10697; Copy</span>
+        <span class="find-link" id="clearRes" title="Clear results">&#129529; Clear results</span>
+    </div>
+    <div class="find-grid" id="findGrid">
+        <table>
+            <thead><tr><th class="c-chk"></th><th class="c-line">Line</th><th class="c-lock"></th><th>Code</th></tr></thead>
+            <tbody id="findResults"></tbody>
+        </table>
+        <div class="find-empty" id="findEmpty">No results.</div>
+        <div class="idle-msg hidden" id="idleMsg" style="display:none">
+            Open a CA editor or CA Embeditor, then press <b>Ctrl+F</b> there — or type a search here once one is active.
+        </div>
+    </div>
+    <div id="ftabMenu" class="hidden"></div>
+    <div id="toast"></div>
+
+<script>
+    // ───────────────────────────── State ─────────────────────────────
+    // Per-editor sessions, keyed by the broker's editor key. Each session:
+    //   { tabs: [{id, query, replaceText, opts}], activeTab, procHistory: [] }
+    // The live results (matches array from the editor) belong to the ACTIVE tab only and are NOT
+    // persisted — the editor re-derives them on every search so they always reflect the live buffer.
+    var editors = {};              // key -> session
+    var activeKey = null;          // broker's current active editor key (null = idle)
+    var activeTitle = '', activeKind = '';
+    var findHistory = [], replHistory = [];   // global (all editors), persisted
+    var fzPx = 12, themeDark = true;
+    var tabSeq = 0;
+
+    // Live working copy (active editor + active tab)
+    var matches = [];              // [{line,startCol,endLine,endCol,text,editable,checked}]
+    var currentIdx = -1;
+    var lastQuery = null;          // last query we sent that produced `matches`
+
+    function postToHost(obj) {
+        try { window.chrome.webview.postMessage(JSON.stringify(obj)); } catch (e) { }
+    }
+    function fwd(obj) { postToHost({ action: 'caFindFwd', fwd: obj }); }
+    function byId(id) { return document.getElementById(id); }
+    function escHtml(s) {
+        return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // ───────────────────────────── Sessions ─────────────────────────────
+    function blankTab() {
+        return { id: ++tabSeq, query: '', replaceText: '',
+                 opts: { matchCase: false, wholeWord: false, regex: false, includeReadOnly: true } };
+    }
+    function sessionFor(key) {
+        if (!editors[key]) editors[key] = { tabs: [blankTab()], activeTab: 0, procHistory: [] };
+        var s = editors[key];
+        if (!s.tabs.length) { s.tabs = [blankTab()]; s.activeTab = 0; }
+        if (s.activeTab < 0 || s.activeTab >= s.tabs.length) s.activeTab = 0;
+        return s;
+    }
+    function activeSession() { return activeKey ? sessionFor(activeKey) : null; }
+    function activeTabObj() {
+        var s = activeSession();
+        return s ? s.tabs[s.activeTab] : null;
+    }
+
+    // Persist the pad's durable state (sessions WITHOUT results, histories, look prefs), debounced.
+    var _saveTimer = null;
+    function persistState() {
+        if (_saveTimer) clearTimeout(_saveTimer);
+        _saveTimer = setTimeout(function () {
+            postToHost({ action: 'saveState', state: {
+                editors: editors, findHistory: findHistory, replHistory: replHistory,
+                fzPx: fzPx, themeDark: themeDark
+            }});
+        }, 500);
+    }
+
+    function applyState(st) {
+        try {
+            if (!st) return;
+            if (st.editors && typeof st.editors === 'object') {
+                editors = st.editors;
+                // Re-seed tabSeq above every restored id so new tabs never collide.
+                for (var k in editors) {
+                    var t = editors[k] && editors[k].tabs;
+                    if (t) for (var i = 0; i < t.length; i++) if (t[i].id > tabSeq) tabSeq = t[i].id;
+                }
+            }
+            if (st.findHistory) findHistory = st.findHistory;
+            if (st.replHistory) replHistory = st.replHistory;
+            if (st.fzPx) { fzPx = st.fzPx; applyFont(); }
+            if (st.themeDark !== undefined) { themeDark = !!st.themeDark; applyTheme(); }
+        } catch (e) { }
+    }
+
+    // ───────────────────────────── Look ─────────────────────────────
+    function applyFont() {
+        fzPx = Math.max(10, Math.min(17, fzPx));
+        document.documentElement.style.setProperty('--find-fz', fzPx + 'px');
+    }
+    function applyTheme() { document.body.classList.toggle('light', !themeDark); }
+
+    var _toastTimer = null;
+    function showToast(message, ok) {
+        var t = byId('toast');
+        t.textContent = message;
+        t.className = ok ? 'show' : 'show err';
+        if (_toastTimer) clearTimeout(_toastTimer);
+        _toastTimer = setTimeout(function () { t.className = ''; }, 2500);
+    }
+
+    // ───────────────────────────── Target strip ─────────────────────────────
+    function renderTarget() {
+        var el = byId('target'), txt = byId('targetText');
+        if (!activeKey) {
+            el.classList.add('idle');
+            txt.textContent = 'No CA editor active — open a source file or embeditor to search';
+        } else {
+            el.classList.remove('idle');
+            txt.innerHTML = 'Searching <b title="' + escHtml(activeKey) + '">' + escHtml(activeTitle || activeKey) +
+                            '</b>&nbsp;— ' + escHtml(activeKind || 'editor');
+        }
+        byId('idleMsg').style.display = activeKey ? 'none' : '';
+        byId('findEmpty').style.display = (activeKey && !matches.length) ? '' : 'none';
+    }
+
+    // ───────────────────────────── Options toggles ─────────────────────────────
+    function setToggle(id, on) { byId(id).classList.toggle('on', on); }
+    function loadOptsToUi(opts) {
+        setToggle('tgCase', opts.matchCase); setToggle('tgWord', opts.wholeWord);
+        setToggle('tgRegex', opts.regex); setToggle('tgRo', opts.includeReadOnly);
+    }
+
+    // ───────────────────────────── Search / commands ─────────────────────────────
+    function saveActiveTabInputs() {
+        var t = activeTabObj();
+        if (!t) return;
+        t.query = byId('findInput').value;
+        t.replaceText = byId('replInput').value;
+        persistState();
+    }
+
+    function runSearch() {
+        var t = activeTabObj();
+        if (!t || !activeKey) { showToast('No CA editor is active', false); return; }
+        saveActiveTabInputs();
+        var q = t.query;
+        if (!q) {
+            matches = []; currentIdx = -1; lastQuery = null;
+            renderResults(); byId('findCount').textContent = '';
+            fwd({ type: 'caFind', op: 'clear' });
+            refreshTabLabels();
+            return;
+        }
+        addHistory(findHistory, q, 25);
+        var s = activeSession();
+        if (s) addHistory(s.procHistory, q, 10);
+        persistState();
+        fwd({ type: 'caFind', op: 'search', query: q, opts: t.opts });
+        refreshTabLabels();
+    }
+
+    function navMatch(dir) {
+        if (!lastQuery) { runSearch(); return; }
+        fwd({ type: 'caFind', op: 'nav', dir: dir });
+    }
+
+    function doReplace(onlyChecked) {
+        var t = activeTabObj();
+        if (!t || !activeKey || !matches.length) { showToast('Nothing to replace', false); return; }
+        saveActiveTabInputs();
+        var replText = t.replaceText || '';
+        if (replText) { addHistory(replHistory, replText, 25); persistState(); }
+        fwd({ type: 'caFind', op: 'replace', replText: replText, onlyChecked: !!onlyChecked });
+    }
+
+    // ───────────────────────────── Results grid ─────────────────────────────
+    function highlightLine(text, startCol, endCol, line, endLine) {
+        var s = startCol - 1;
+        var e = (endLine === line) ? endCol - 1 : text.length;
+        if (s < 0) s = 0;
+        if (e > text.length) e = text.length;
+        if (e < s) e = s;
+        return escHtml(text.slice(0, s)) + '<span class="hl">' + escHtml(text.slice(s, e)) + '</span>' + escHtml(text.slice(e));
+    }
+
+    function renderResults() {
+        var tb = byId('findResults');
+        tb.innerHTML = '';
+        byId('findEmpty').style.display = (activeKey && !matches.length) ? '' : 'none';
+        for (var i = 0; i < matches.length; i++) {
+            var r = matches[i];
+            var tr = document.createElement('tr');
+            tr.className = (i === currentIdx ? 'active' : '');
+            tr.setAttribute('data-idx', i);
+            var tdChk = document.createElement('td'); tdChk.className = 'c-chk';
+            var cb = document.createElement('input'); cb.type = 'checkbox';
+            cb.checked = !!r.checked; cb.disabled = !r.editable; cb.setAttribute('data-idx', i);
+            cb.addEventListener('click', function (ev) { ev.stopPropagation(); });
+            cb.addEventListener('change', function (ev) {
+                var idx = +ev.target.getAttribute('data-idx');
+                matches[idx].checked = ev.target.checked;
+                fwd({ type: 'caFind', op: 'setChecked', idx: idx, checked: ev.target.checked });
+            });
+            tdChk.appendChild(cb);
+            var tdLine = document.createElement('td'); tdLine.className = 'c-line'; tdLine.textContent = r.line;
+            var tdLock = document.createElement('td'); tdLock.className = 'c-lock';
+            if (!r.editable) { tdLock.textContent = '🔒'; tdLock.title = 'Read-only (generated) — not replaceable'; }
+            var tdCode = document.createElement('td');
+            tdCode.innerHTML = highlightLine(r.text || '', r.startCol, r.endCol, r.line, r.endLine);
+            tr.appendChild(tdChk); tr.appendChild(tdLine); tr.appendChild(tdLock); tr.appendChild(tdCode);
+            tr.addEventListener('click', function (ev) {
+                var idx = +ev.currentTarget.getAttribute('data-idx');
+                markActiveRow(idx);
+                fwd({ type: 'caFind', op: 'reveal', idx: idx, focus: true });
+            });
+            tb.appendChild(tr);
+        }
+    }
+
+    function markActiveRow(idx) {
+        currentIdx = idx;
+        var rows = byId('findResults').getElementsByTagName('tr');
+        for (var i = 0; i < rows.length; i++) rows[i].className = (i === idx ? 'active' : '');
+        if (rows[idx] && rows[idx].scrollIntoView) rows[idx].scrollIntoView({ block: 'nearest' });
+    }
+
+    function renderCount(u) {
+        var el = byId('findCount');
+        if (u.invalidRegex) { el.textContent = 'Invalid regex'; return; }
+        if (!matches.length) { el.textContent = u.query ? 'No matches' : ''; return; }
+        var ro = 0, seen = {}, lines = 0;
+        for (var i = 0; i < matches.length; i++) {
+            if (!matches[i].editable) ro++;
+            if (!seen[matches[i].line]) { seen[matches[i].line] = 1; lines++; }
+        }
+        el.textContent = matches.length + ' match' + (matches.length === 1 ? '' : 'es') +
+            ' · ' + lines + ' line' + (lines === 1 ? '' : 's') + (ro ? ' · ' + ro + ' read-only' : '');
+    }
+
+    function setAllChecked(on) {
+        for (var i = 0; i < matches.length; i++) {
+            if (!matches[i].editable) continue;
+            matches[i].checked = on;
+            fwd({ type: 'caFind', op: 'setChecked', idx: i, checked: on });
+        }
+        var cbs = byId('findResults').querySelectorAll('input[type=checkbox]');
+        for (var j = 0; j < cbs.length; j++) if (!cbs[j].disabled) cbs[j].checked = on;
+    }
+
+    function copyResults() {
+        var rows = [];
+        for (var i = 0; i < matches.length; i++) if (matches[i].checked) rows.push(matches[i]);
+        if (!rows.length) rows = matches;
+        if (!rows.length) return;
+        var text = rows.map(function (r) { return r.line + ': ' + r.text; }).join('\r\n');
+        postToHost({ action: 'clipboard', text: text });   // host-side Clipboard.SetText (file:// clipboard gotcha)
+        showToast('Copied ' + rows.length + ' line' + (rows.length === 1 ? '' : 's'), true);
+    }
+
+    function clearResults() {
+        matches = []; currentIdx = -1; lastQuery = null;
+        renderResults(); byId('findCount').textContent = '';
+        fwd({ type: 'caFind', op: 'clear' });
+    }
+
+    // ───────────────────────────── Tabs ─────────────────────────────
+    function loadTab(i, autoSearch) {
+        var s = activeSession();
+        if (!s || i < 0 || i >= s.tabs.length) return;
+        s.activeTab = i;
+        var t = s.tabs[i];
+        byId('findInput').value = t.query;
+        byId('replInput').value = t.replaceText;
+        loadOptsToUi(t.opts);
+        matches = []; currentIdx = -1; lastQuery = null;
+        renderResults(); byId('findCount').textContent = '';
+        renderTabs();
+        if (autoSearch !== false && t.query) runSearch();
+    }
+
+    function createTab(seedQuery) {
+        var s = activeSession();
+        if (!s) return;
+        saveActiveTabInputs();
+        var t = blankTab();
+        var cur = s.tabs[s.activeTab];
+        if (cur) t.opts = { matchCase: cur.opts.matchCase, wholeWord: cur.opts.wholeWord,
+                            regex: cur.opts.regex, includeReadOnly: cur.opts.includeReadOnly };
+        if (seedQuery) t.query = seedQuery;
+        s.tabs.push(t);
+        loadTab(s.tabs.length - 1);
+        persistState();
+    }
+
+    function closeTab(i) {
+        var s = activeSession();
+        if (!s || i < 0 || i >= s.tabs.length) return;
+        var wasActive = (i === s.activeTab);
+        s.tabs.splice(i, 1);
+        if (!s.tabs.length) { s.tabs = [blankTab()]; s.activeTab = 0; loadTab(0, false); persistState(); return; }
+        if (wasActive) loadTab(Math.min(i, s.tabs.length - 1));
+        else { if (s.activeTab > i) s.activeTab--; renderTabs(); }
+        persistState();
+    }
+
+    function tabIndexByQuery(q) {
+        var s = activeSession();
+        if (!s) return -1;
+        for (var i = 0; i < s.tabs.length; i++) if (s.tabs[i].query === q) return i;
+        return -1;
+    }
+
+    function refreshTabLabels() {
+        var s = activeSession();
+        if (!s) return;
+        var tabs = byId('findTabs').getElementsByClassName('ftab');
+        for (var i = 0; i < tabs.length && i < s.tabs.length; i++) {
+            var lbl = tabs[i].getElementsByClassName('ftab-label')[0];
+            var q = s.tabs[i].query || 'untitled';
+            if (lbl) lbl.textContent = q;
+            tabs[i].title = q;
+            tabs[i].className = 'ftab' + (i === s.activeTab ? ' active' : '');
+        }
+    }
+
+    function renderTabs() {
+        var strip = byId('findTabs');
+        strip.innerHTML = '';
+        var s = activeSession();
+        if (!s) return;
+        s.tabs.forEach(function (t, idx) {
+            var tab = document.createElement('div');
+            tab.className = 'ftab' + (idx === s.activeTab ? ' active' : '');
+            tab.title = t.query || 'untitled';
+            var label = document.createElement('span');
+            label.className = 'ftab-label'; label.textContent = t.query || 'untitled';
+            var x = document.createElement('span');
+            x.className = 'ftab-x'; x.textContent = '✕'; x.title = 'Close tab';
+            tab.appendChild(label); tab.appendChild(x);
+            tab.addEventListener('click', function (ev) {
+                if (ev.target === x) { ev.stopPropagation(); closeTab(idx); return; }
+                if (idx !== s.activeTab) { saveActiveTabInputs(); loadTab(idx); byId('findInput').focus(); }
+            });
+            tab.addEventListener('contextmenu', function (ev) {
+                ev.preventDefault(); showTabMenu(ev.clientX, ev.clientY, idx);
+            });
+            strip.appendChild(tab);
+        });
+        var add = document.createElement('div');
+        add.className = 'ftab-add'; add.textContent = '+'; add.title = 'New find tab';
+        add.addEventListener('click', function () { createTab(null); byId('findInput').focus(); });
+        strip.appendChild(add);
+    }
+
+    function showTabMenu(x, y, idx) {
+        var menu = byId('ftabMenu');
+        var s = activeSession();
+        if (!menu || !s) return;
+        menu.innerHTML = '';
+        var multi = s.tabs.length > 1;
+        var hasRight = idx < s.tabs.length - 1;
+        var items = [
+            ['Close tab', true, function () { closeTab(idx); }],
+            ['Close other tabs', multi, function () { var keep = s.tabs[idx]; s.tabs = [keep]; s.activeTab = -1; loadTab(0); persistState(); }],
+            ['Close tabs to the right', hasRight, function () { s.tabs.splice(idx + 1); if (s.activeTab > idx) loadTab(idx); else renderTabs(); persistState(); }],
+            ['Close all tabs', true, function () { s.tabs = []; s.activeTab = -1; s.tabs = [blankTab()]; s.activeTab = 0; loadTab(0, false); persistState(); }]
+        ];
+        items.forEach(function (it) {
+            var d = document.createElement('div');
+            d.className = 'ftab-menu-item' + (it[1] ? '' : ' disabled');
+            d.textContent = it[0];
+            if (it[1]) d.addEventListener('click', function () { hideTabMenu(); it[2](); });
+            menu.appendChild(d);
+        });
+        menu.style.left = Math.min(x, window.innerWidth - 190) + 'px';
+        menu.style.top = Math.min(y, window.innerHeight - 130) + 'px';
+        menu.classList.remove('hidden');
+    }
+    function hideTabMenu() { byId('ftabMenu').classList.add('hidden'); }
+
+    // ───────────────────────────── History ─────────────────────────────
+    function addHistory(arr, val, cap) {
+        if (!val) return;
+        cap = cap || 25;
+        for (var i = arr.length - 1; i >= 0; i--) if (arr[i] === val) arr.splice(i, 1);
+        arr.unshift(val);
+        if (arr.length > cap) arr.length = cap;
+    }
+
+    function appendHistItem(box, term, inputId, onDelete) {
+        var row = document.createElement('div');
+        var label = document.createElement('span'); label.textContent = term;
+        var x = document.createElement('span'); x.className = 'hx'; x.textContent = '✕';
+        x.title = 'Remove from history';
+        row.appendChild(label); row.appendChild(x);
+        row.addEventListener('click', function (ev) {
+            if (ev.target === x) { ev.stopPropagation(); onDelete(term); return; }
+            byId(inputId).value = term;
+            hideHist(inputId === 'findInput' ? 'findHist' : 'replHist');
+            if (inputId === 'findInput') runSearch();
+            else byId('replInput').focus();
+        });
+        box.appendChild(row);
+    }
+    function appendHistHeader(box, text) {
+        var h = document.createElement('div');
+        h.className = 'hist-header'; h.textContent = text;
+        box.appendChild(h);
+    }
+    function appendHistEmpty(box) {
+        var none = document.createElement('div'); none.className = 'hist-empty';
+        none.textContent = '(no history)'; box.appendChild(none);
+    }
+
+    function showFindHist() {
+        var box = byId('findHist');
+        box.innerHTML = '';
+        var s = activeSession();
+        var proc = (s && s.procHistory) ? s.procHistory : [];
+        function delEverywhere(t) {
+            var k = proc.indexOf(t); if (k >= 0) proc.splice(k, 1);
+            var j = findHistory.indexOf(t); if (j >= 0) findHistory.splice(j, 1);
+            showFindHist(); persistState();
+        }
+        if (proc.length) {
+            appendHistHeader(box, 'This editor');
+            proc.forEach(function (term) { appendHistItem(box, term, 'findInput', delEverywhere); });
+        }
+        var solOnly = findHistory.filter(function (t) { return proc.indexOf(t) < 0; });
+        if (solOnly.length) {
+            if (proc.length) appendHistHeader(box, 'Everywhere');
+            solOnly.forEach(function (term) { appendHistItem(box, term, 'findInput', delEverywhere); });
+        }
+        if (!proc.length && !solOnly.length) appendHistEmpty(box);
+        box.classList.remove('hidden');
+    }
+
+    function showReplHist() {
+        var box = byId('replHist');
+        box.innerHTML = '';
+        if (!replHistory.length) appendHistEmpty(box);
+        else replHistory.forEach(function (term) {
+            appendHistItem(box, term, 'replInput', function (t) {
+                var k = replHistory.indexOf(t); if (k >= 0) replHistory.splice(k, 1);
+                showReplHist(); persistState();
+            });
+        });
+        box.classList.remove('hidden');
+    }
+    function hideHist(id) { byId(id).classList.add('hidden'); }
+
+    // ───────────────────────────── Host messages ─────────────────────────────
+    function onActiveEditor(msg) {
+        var newKey = msg.key || null;
+        if (newKey === activeKey) {
+            activeTitle = msg.title || activeTitle; activeKind = msg.kind || activeKind;
+            renderTarget(); return;
+        }
+        saveActiveTabInputs();
+        activeKey = newKey;
+        activeTitle = msg.title || '';
+        activeKind = msg.kind || '';
+        matches = []; currentIdx = -1; lastQuery = null;
+        renderTarget();
+        if (!activeKey) { renderTabs(); renderResults(); byId('findCount').textContent = ''; return; }
+        var s = sessionFor(activeKey);
+        loadTab(s.activeTab);   // restores inputs/opts and re-runs the active tab's search on the new buffer
+    }
+
+    function onEditorMsg(env) {
+        // Ignore stray updates from a non-active editor (e.g. its page pushed a late sync).
+        if (!env || env.key !== activeKey || !env.msg) return;
+        var m = env.msg;
+        if (m.action === 'caFindUpdate') {
+            matches = m.matches || [];
+            currentIdx = (typeof m.currentIdx === 'number') ? m.currentIdx : (matches.length ? 0 : -1);
+            lastQuery = m.query || null;
+            renderResults();
+            renderCount(m);
+            if (currentIdx >= 0) markActiveRow(currentIdx);
+            if (m.replaced !== undefined) {
+                showToast('Replaced ' + m.replaced + ' match' + (m.replaced === 1 ? '' : 'es') +
+                    (m.skippedRo ? ' (' + m.skippedRo + ' read-only skipped)' : ''), true);
+            }
+        } else if (m.action === 'caFindOpen') {
+            handleOpenRequest(m.seed || '', !!m.replace);
+        }
+    }
+
+    // Ctrl+F/Ctrl+H in the editor — replicate the shipped panel's seed logic against the pad's tabs.
+    function handleOpenRequest(seed, focusReplace) {
+        var s = activeSession();
+        if (!s) return;
+        var input = byId('findInput');
+        if (seed) {
+            var existing = tabIndexByQuery(seed);
+            if (existing >= 0) {
+                if (existing !== s.activeTab) { saveActiveTabInputs(); loadTab(existing); }
+                else runSearch();
+            } else if (!input.value && !matches.length) {
+                input.value = seed;
+                var t = activeTabObj(); if (t) t.query = seed;
+                runSearch();
+            } else {
+                createTab(seed);
+            }
+        } else if (input.value && !matches.length) {
+            runSearch();
+        }
+        var focusEl = focusReplace ? byId('replInput') : input;
+        try { focusEl.focus(); focusEl.select(); } catch (e) { }
+    }
+
+    window.chrome.webview.addEventListener('message', function (event) {
+        var msg = event.data;   // PostWebMessageAsJson → already an object
+        if (!msg || !msg.type) return;
+        try {
+            if (msg.type === 'applyState') applyState(msg.state);
+            else if (msg.type === 'activeEditor') onActiveEditor(msg);
+            else if (msg.type === 'caFindFromEditor') onEditorMsg(msg);
+        } catch (e) { }
+    });
+
+    // ───────────────────────────── Wiring ─────────────────────────────
+    (function wire() {
+        var fi = byId('findInput');
+        byId('findGo').addEventListener('click', runSearch);
+        fi.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Enter') {
+                ev.preventDefault();
+                if (ev.target.value === lastQuery && matches.length) navMatch(ev.shiftKey ? -1 : 1);
+                else runSearch();
+            } else if (ev.key === 'F3') { ev.preventDefault(); navMatch(ev.shiftKey ? -1 : 1); }
+        });
+        byId('replInput').addEventListener('keydown', function (ev) {
+            if (ev.key === 'Enter') { ev.preventDefault(); doReplace(true); }
+        });
+
+        function tg(id, key) {
+            byId(id).addEventListener('click', function () {
+                var t = activeTabObj();
+                if (!t) return;
+                t.opts[key] = !t.opts[key];
+                setToggle(id, t.opts[key]);
+                persistState();
+                if (byId('findInput').value) runSearch();
+            });
+        }
+        tg('tgCase', 'matchCase'); tg('tgWord', 'wholeWord');
+        tg('tgRegex', 'regex'); tg('tgRo', 'includeReadOnly');
+
+        byId('replSel').addEventListener('click', function () { doReplace(true); });
+        byId('replAll').addEventListener('click', function () { doReplace(false); });
+        byId('selAll').addEventListener('click', function () { setAllChecked(true); });
+        byId('selNone').addEventListener('click', function () { setAllChecked(false); });
+        byId('copyRes').addEventListener('click', copyResults);
+        byId('clearRes').addEventListener('click', clearResults);
+
+        byId('findCaret').addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            var box = byId('findHist');
+            if (box.classList.contains('hidden')) { hideHist('replHist'); showFindHist(); } else hideHist('findHist');
+        });
+        byId('replCaret').addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            var box = byId('replHist');
+            if (box.classList.contains('hidden')) { hideHist('findHist'); showReplHist(); } else hideHist('replHist');
+        });
+        byId('findHistClear').addEventListener('click', function () {
+            findHistory = [];
+            var s = activeSession(); if (s) s.procHistory = [];
+            hideHist('findHist'); persistState(); showToast('Search history cleared', true);
+        });
+        byId('replHistClear').addEventListener('click', function () {
+            replHistory = []; hideHist('replHist'); persistState(); showToast('Replace history cleared', true);
+        });
+
+        byId('fzMinus').addEventListener('click', function () { fzPx--; applyFont(); persistState(); });
+        byId('fzPlus').addEventListener('click', function () { fzPx++; applyFont(); persistState(); });
+        byId('themeBtn').addEventListener('click', function () { themeDark = !themeDark; applyTheme(); persistState(); });
+
+        document.addEventListener('click', function (ev) {
+            if (!ev.target.closest('.combo')) { hideHist('findHist'); hideHist('replHist'); }
+            if (!ev.target.closest('#ftabMenu')) hideTabMenu();
+        });
+        byId('findInput').addEventListener('input', function () { /* labels update on search */ });
+        byId('findInput').addEventListener('change', saveActiveTabInputs);
+        byId('replInput').addEventListener('change', saveActiveTabInputs);
+    })();
+
+    renderTarget();
+    renderTabs();
+    postToHost({ action: 'ready' });
+</script>
+</body>
+</html>

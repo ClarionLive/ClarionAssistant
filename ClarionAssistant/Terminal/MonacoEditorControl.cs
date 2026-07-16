@@ -114,6 +114,11 @@ namespace ClarionAssistant.Terminal
         /// <summary>{action:"activateDesigner"} — 'Show designer' on the modal lock overlay.</summary>
         void OnActivateDesigner(MonacoEditorControl editor);
 
+        /// <summary>{action:"caFindUpdate"|"caFindOpen"|"caFindActivity"} — CA Find pad protocol
+        /// (GitHub #66): results push / Ctrl+F open request / editor-focus activity. Hosts forward to
+        /// <c>CaFindBroker.FromEditor</c> with their own identity; the broker routes to the pad.</summary>
+        void OnCaFind(MonacoEditorControl editor, string action, string rawJson);
+
         /// <summary>Navigation to the Monaco page completed (IsSuccess). Optional liveness hook.</summary>
         void OnEditorNavigationCompleted(MonacoEditorControl editor, bool success);
 
@@ -268,6 +273,9 @@ namespace ClarionAssistant.Terminal
                     case "openDesigner":      h.OnOpenDesigner(this, json); break;
                     case "openDesignerCreate":h.OnOpenDesignerCreate(this, json); break;
                     case "activateDesigner":  h.OnActivateDesigner(this); break;
+                    case "caFindUpdate":
+                    case "caFindOpen":
+                    case "caFindActivity":    h.OnCaFind(this, action, json); break;
                     default:                  h.OnUnknownAction(this, action, json); break;
                 }
             }
@@ -368,7 +376,57 @@ namespace ClarionAssistant.Terminal
             try
             {
                 if (_webView == null || !_webView.IsHandleCreated) return;
-                _webView.BeginInvoke((Action)(() => { try { _webView.Focus(); } catch { } }));
+                _webView.BeginInvoke((Action)(() => FocusAttempt(0)));
+            }
+            catch { }
+        }
+
+        // #66 round-2: a single _webView.Focus() is not enough on an IDE tab switch. The WinForms
+        // WebView2 only forwards focus into Chromium from its GotFocus handler, so when the host HWND
+        // already holds Win32 focus (or the workbench re-focuses its own control a beat AFTER us),
+        // the render widget never gets the keyboard. MoveFocus() is the authoritative hand-off, and
+        // the verify+retry beats whatever late focus routing the workbench does on tab activation.
+        private void FocusAttempt(int attempt)
+        {
+            try
+            {
+                if (_webView == null || _webView.IsDisposed || !_webView.IsHandleCreated) return;
+                if (_webView.Visible)
+                {
+                    _webView.Focus();
+                    TryMoveFocusIntoChromium();
+                }
+                if (attempt < 3 && !_webView.ContainsFocus)
+                {
+                    var t = new Timer { Interval = 80 };
+                    t.Tick += (s, e) =>
+                    {
+                        try { t.Stop(); t.Dispose(); } catch { }
+                        FocusAttempt(attempt + 1);
+                    };
+                    t.Start();
+                }
+                else if (!_webView.ContainsFocus)
+                {
+                    ClarionAssistant.MonacoSpikeLog.Write("FocusEditor: focus never landed after retries (focused control elsewhere)");
+                }
+            }
+            catch { }
+        }
+
+        // The WinForms wrapper doesn't expose CoreWebView2Controller publicly; reflect it and call
+        // MoveFocus(Programmatic) — the only API that reliably puts the keyboard in the render widget.
+        private void TryMoveFocusIntoChromium()
+        {
+            try
+            {
+                object ctl =
+                    _webView.GetType().GetProperty("CoreWebView2Controller",
+                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(_webView, null)
+                    ?? _webView.GetType().GetField("_coreWebView2Controller",
+                        BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(_webView);
+                var controller = ctl as CoreWebView2Controller;
+                if (controller != null) controller.MoveFocus(CoreWebView2MoveFocusReason.Programmatic);
             }
             catch { }
         }

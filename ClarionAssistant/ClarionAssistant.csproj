@@ -152,6 +152,9 @@
     <Compile Include="Terminal\ModernDataPad.cs" />
     <Compile Include="Terminal\DataPadSettingsWindow.cs" />
     <Compile Include="Terminal\ModernDataPadState.cs" />
+    <Compile Include="CaFindPad.cs" />
+    <Compile Include="Terminal\CaFindPadState.cs" />
+    <Compile Include="Services\CaFindBroker.cs" />
     <Compile Include="Services\ModernEmbeditorLauncher.cs" />
     <Compile Include="Services\ModernEmbeditorSaver.cs" />
     <Compile Include="Services\ModernEmbeditorDiagnostics.cs" />
@@ -251,6 +254,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Terminal\modern-data-pad.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Terminal\ca-find.html">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Terminal\settings.html">
