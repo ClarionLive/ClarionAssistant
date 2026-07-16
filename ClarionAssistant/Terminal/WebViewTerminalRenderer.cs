@@ -284,7 +284,9 @@ namespace ClarionAssistant.Terminal
             // image files natively via an @reference, same as the large-text-paste path above.
             if (Clipboard.ContainsImage())
             {
-                Image image = Clipboard.GetImage();
+                Image image;
+                try { image = Clipboard.GetImage(); }
+                catch { return; } // clipboard transiently locked by another process — same exposure GetText() already has
                 if (image == null) return;
                 string cached = WriteImagePasteCacheFile(image);
                 if (cached != null) InjectAtReference(cached);
@@ -402,7 +404,7 @@ namespace ClarionAssistant.Terminal
             try
             {
                 string baseDir = PasteCacheDir();
-                PrunePasteCache(baseDir, "paste-*.txt");
+                PrunePasteCache(baseDir);
 
                 string name = "paste-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff") + ".txt";
                 string full = Path.Combine(baseDir, name);
@@ -422,7 +424,7 @@ namespace ClarionAssistant.Terminal
             try
             {
                 string baseDir = PasteCacheDir();
-                PrunePasteCache(baseDir, "paste-*.png");
+                PrunePasteCache(baseDir);
 
                 string name = "paste-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff") + ".png";
                 string full = Path.Combine(baseDir, name);
@@ -441,15 +443,21 @@ namespace ClarionAssistant.Terminal
             return baseDir;
         }
 
-        // Prune entries older than 24h to keep the cache from accumulating.
-        private static void PrunePasteCache(string baseDir, string searchPattern)
+        // Prune entries older than 24h to keep the cache from accumulating. Sweeps both
+        // extensions regardless of which paste type triggered it, so a lone screenshot (or a
+        // lone text paste) doesn't linger past 24h just because the other type hasn't been
+        // pasted again to trigger its own prune.
+        private static void PrunePasteCache(string baseDir)
         {
             try
             {
                 DateTime cutoff = DateTime.UtcNow.AddHours(-24);
-                foreach (var f in Directory.GetFiles(baseDir, searchPattern))
+                foreach (var pattern in new[] { "paste-*.txt", "paste-*.png" })
                 {
-                    try { if (File.GetLastWriteTimeUtc(f) < cutoff) File.Delete(f); } catch { }
+                    foreach (var f in Directory.GetFiles(baseDir, pattern))
+                    {
+                        try { if (File.GetLastWriteTimeUtc(f) < cutoff) File.Delete(f); } catch { }
+                    }
                 }
             }
             catch { }
