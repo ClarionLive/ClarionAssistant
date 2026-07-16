@@ -373,6 +373,35 @@ namespace ClarionAssistant.Terminal
             catch { }
         }
 
+        // ── Keep editor accelerators inside Monaco (issue #66 / native-find leak) ────────────────
+        // OVERLAY REALITY: this Monaco WebView2 is docked FILL on top of Clarion's still-open native
+        // embeditor (ClaGenEditor) — its chrome is only hidden (ModernEmbeditorViewContent.HideNativeChrome),
+        // the native text editor is alive underneath as the write-back target. With
+        // AreBrowserAcceleratorKeysEnabled=false the WebView still delivers Ctrl+F to the DOM (our page
+        // opens Monaco's own find), but it ALSO forwards the accelerator up to the host. SharpDevelop's
+        // form-level ProcessCmdKey (DefaultWorkbench) then runs its Find menu-shortcut against the ACTIVE
+        // view content — the hidden native editor — so its search bottom-bar leaks up on top of Monaco's.
+        // This control sits BELOW the workbench form in the parent chain, so returning true here consumes
+        // the forwarded key before the form can dispatch. The DOM keydown already reached the page, so we
+        // only swallow the host-side leak; we don't re-trigger the find here.
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (_webView != null && _webView.ContainsFocus)
+            {
+                switch (keyData)
+                {
+                    case Keys.Control | Keys.F:                 // Find
+                    case Keys.Control | Keys.Shift | Keys.F:    // Find All (Ctrl+Shift+F) — else it leaks to Find-in-Files
+                    case Keys.Control | Keys.H:                 // Replace
+                    case Keys.Control | Keys.Shift | Keys.H:    // Find All + Replace (Ctrl+Shift+H) — else leaks to Replace-in-Files
+                    case Keys.F3:                               // Find next
+                    case Keys.Shift | Keys.F3:                  // Find previous
+                        return true;               // handled — don't let the workbench run its native Find
+                }
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
         /// <summary>Reply to an LSP/request message: {type:"response", reqId, data}.</summary>
         public void PostResponse(int reqId, IDictionary<string, object> data)
         {
