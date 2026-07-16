@@ -354,7 +354,14 @@
     #outlineList { flex: 1; overflow: auto; padding: 4px 0; }
     .ol-row { display: flex; align-items: center; gap: 6px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
     .ol-row:hover { background: rgba(127,127,127,0.14); }
-    .ol-row .ol-kind { width: 15px; flex-shrink: 0; text-align: center; color: var(--find-accent); font-size: 11px; }
+    .ol-row .ol-kind { width: 18px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; color: var(--find-accent); }
+    #outlineList .ol-kind.codicon { font-size: 15px; }
+    /* VS Code symbol colours (dark-theme palette; readable in light too) */
+    #outlineList .codicon-symbol-method, #outlineList .codicon-symbol-constructor { color: #b180d7; }
+    #outlineList .codicon-symbol-field, #outlineList .codicon-symbol-property, #outlineList .codicon-symbol-variable { color: #75beff; }
+    #outlineList .codicon-symbol-class, #outlineList .codicon-symbol-struct, #outlineList .codicon-symbol-interface,
+    #outlineList .codicon-symbol-enum, #outlineList .codicon-symbol-enum-member { color: #ee9d28; }
+    #outlineList .codicon-symbol-namespace { color: #cccccc; }
     .ol-row .ol-name { overflow: hidden; text-overflow: ellipsis; }
     .ol-row .ol-detail { color: var(--title-color); opacity: .65; overflow: hidden; text-overflow: ellipsis; }
     .ol-empty { padding: 16px 12px; text-align: center; color: var(--title-color); }
@@ -4110,20 +4117,35 @@
             })
             .catch(function () {});
     }
-    // LSP SymbolKind (1-based) -> a compact glyph for the row.
-    function outlineGlyph(kind) {
+    // LSP SymbolKind (1-based) -> a VS Code codicon symbol name. Monaco already loads the codicon font
+    // (its suggest/find widgets use it), so `codicon codicon-symbol-<name>` renders the exact icons VS Code
+    // shows in its Outline — no extra assets. Unknown kinds fall back to codicon-symbol-misc.
+    function outlineIcon(kind) {
         switch (kind) {
-            case 2:  return 'M';    // Module (root)
-            case 5:  return 'C';    // Class
-            case 6:  return 'm';    // Method (ROUTINE / class method)
-            case 8:  return '·';    // Field
-            case 10: return 'e';    // Enum (MENU)
-            case 11: return '▢'; // Interface (WINDOW/APPLICATION)
-            case 12: return 'ƒ'; // Function (PROCEDURE)
-            case 13: return 'v';    // Variable
-            case 18: return '[]';   // Array (QUEUE/VIEW/LIST)
-            case 23: return '{}';   // Struct (GROUP/RECORD/FILE)
-            default: return '•';
+            case 1:  return 'file';
+            case 2:  case 3: case 4: return 'namespace';   // Module / Namespace / Package
+            case 5:  return 'class';
+            case 6:  return 'method';                      // Method / ROUTINE
+            case 7:  return 'property';
+            case 8:  return 'field';
+            case 9:  return 'constructor';
+            case 10: return 'enum';                        // MENU
+            case 11: return 'interface';                   // WINDOW / APPLICATION
+            case 12: return 'method';                      // Function / PROCEDURE
+            case 13: return 'variable';
+            case 14: return 'constant';
+            case 15: return 'string';
+            case 16: return 'number';
+            case 17: return 'boolean';
+            case 18: return 'array';                       // QUEUE / VIEW / LIST
+            case 19: return 'object';
+            case 20: return 'key';
+            case 22: return 'enum-member';                 // TAB / ITEM
+            case 23: return 'struct';                      // GROUP / RECORD / FILE
+            case 24: return 'event';
+            case 25: return 'operator';
+            case 26: return 'type-parameter';
+            default: return 'misc';
         }
     }
     function renderOutline(symbols) {
@@ -4138,7 +4160,7 @@
                 var row = document.createElement('div');
                 row.className = 'ol-row';
                 row.style.paddingLeft = (8 + depth * 14) + 'px';
-                var k = document.createElement('span'); k.className = 'ol-kind'; k.textContent = outlineGlyph(s.kind);
+                var k = document.createElement('span'); k.className = 'ol-kind codicon codicon-symbol-' + outlineIcon(s.kind);
                 var nm = document.createElement('span'); nm.className = 'ol-name'; nm.textContent = s.name || '';
                 row.appendChild(k); row.appendChild(nm);
                 if (s.detail) { var dt = document.createElement('span'); dt.className = 'ol-detail'; dt.textContent = ' ' + s.detail; row.appendChild(dt); }
