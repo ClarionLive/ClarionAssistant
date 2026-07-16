@@ -365,7 +365,10 @@
         border-radius: 4px; padding: 3px 6px; font-family: inherit; font-size: var(--find-fz); outline: none; }
     #outlineFilterInput:focus { border-color: var(--find-accent); }
     #outlineList { flex: 1; overflow: auto; padding: 4px 0; }
-    .ol-row { display: flex; align-items: center; gap: 6px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
+    /* Let the tree scroll horizontally instead of clipping names: nodes/rows size to their content. */
+    #outlineList .ol-node, #outlineList .ol-children { min-width: max-content; }
+    .ol-row { display: flex; align-items: center; gap: 6px; padding: 2px 8px; cursor: pointer; white-space: nowrap;
+        min-width: 100%; }
     .ol-row:hover { background: rgba(127,127,127,0.14); }
     .ol-row .ol-kind { width: 18px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; color: var(--find-accent); }
     #outlineList .ol-kind.codicon { font-size: 15px; }
@@ -381,8 +384,8 @@
         font-size: 14px; color: var(--title-color); cursor: pointer; }
     .ol-row .ol-twisty.ol-leaf { cursor: default; }
     .ol-row .ol-twisty:not(.ol-leaf):hover { color: var(--find-accent); }
-    .ol-row .ol-name { overflow: hidden; text-overflow: ellipsis; }
-    .ol-row .ol-detail { color: var(--title-color); opacity: .65; overflow: hidden; text-overflow: ellipsis; }
+    .ol-row .ol-name { flex-shrink: 0; }
+    .ol-row .ol-detail { color: var(--title-color); opacity: .65; flex-shrink: 0; }
     .ol-empty { padding: 16px 12px; text-align: center; color: var(--title-color); }
 
     #findPanel.findall {
@@ -4109,6 +4112,7 @@
     var outlineCollapsed = {};   // path -> true when collapsed; survives refreshes so typing doesn't reset the tree
     var outlineSymbols = [];     // last regrouped (unfiltered) tree — filter/expand-all re-render off this
     var outlineFilter = '';      // active filter text ('' = none)
+    var outlineRenderedPaths = [];   // exact container paths from the last render (single source of truth for collapse-all)
     function positionOutline() {
         var op = document.getElementById('outlinePanel'), ed = document.getElementById('editor');
         if (!op || !ed) return;
@@ -4167,21 +4171,11 @@
         if (self || kids.length) return { name: node.name, detail: node.detail, kind: node.kind, line: node.line, children: kids };
         return null;
     }
-    // Every container's collapse-path (mirrors renderOutline's path key) — for collapse-all.
-    function outlineContainerPaths(nodes, prefix, acc) {
-        acc = acc || [];
-        for (var i = 0; i < nodes.length; i++) {
-            var s = nodes[i], path = (prefix || '') + (s.name || '') + '#' + s.kind;
-            if (s.children && s.children.length) { acc.push(path); outlineContainerPaths(s.children, path, acc); }
-        }
-        return acc;
-    }
     // NB: names must NOT match the button element ids (outlineExpandAll/outlineCollapseAll) — a named
     // element global shadows the function, so addEventListener would silently bind the DOM node instead.
     function expandOutlineAll() { outlineCollapsed = {}; renderOutlineCurrent(); }
     function collapseOutlineAll() {
-        var paths = outlineContainerPaths(outlineSymbols, '', []);
-        for (var i = 0; i < paths.length; i++) outlineCollapsed[paths[i]] = true;
+        for (var i = 0; i < outlineRenderedPaths.length; i++) outlineCollapsed[outlineRenderedPaths[i]] = true;
         renderOutlineCurrent();
     }
     function toggleOutlineFilter() {
@@ -4281,6 +4275,7 @@
         if (!list) return;
         list.innerHTML = '';
         var n = 0;
+        outlineRenderedPaths = [];
 
         function buildNode(s, depth, pathPrefix) {
             n++;
@@ -4318,6 +4313,7 @@
             node.appendChild(row);
 
             if (hasKids) {
+                outlineRenderedPaths.push(path);   // record the exact key this render uses
                 var kidsBox = document.createElement('div');
                 kidsBox.className = 'ol-children';
                 for (var i = 0; i < s.children.length; i++) kidsBox.appendChild(buildNode(s.children[i], depth + 1, path));
