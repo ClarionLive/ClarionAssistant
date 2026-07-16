@@ -347,10 +347,23 @@
     }
     #outlinePanel.hidden { display: none; }
     #outlinePanel * { box-sizing: border-box; }
-    #outlineHeader { display: flex; align-items: center; gap: 8px; padding: 7px 10px; flex-shrink: 0;
+    #outlineHeader { display: flex; align-items: center; gap: 2px; padding: 4px 6px; flex-shrink: 0;
         border-bottom: 1px solid var(--toolbar-border); }
-    #outlineHeader .ol-title { font-weight: 600; color: var(--title-accent); letter-spacing: .02em; }
-    #outlineHeader .ol-count { font-size: 11px; color: var(--title-color); }
+    #outlineHeader .ol-count { font-size: 11px; color: var(--title-color); padding: 0 4px; }
+    /* outline toolbar buttons (codicon icons) */
+    .ol-tbtn { width: 24px; height: 22px; border: 1px solid transparent; background: transparent; color: var(--title-color);
+        border-radius: 3px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+    .ol-tbtn .codicon { font-size: 15px; }
+    .ol-tbtn:hover { background: rgba(127,127,127,0.18); }
+    .ol-tbtn.active { background: var(--find-hit); border-color: var(--find-hit-border); color: var(--fg); }
+    /* filter row */
+    #outlineFilterRow { display: flex; align-items: center; gap: 5px; padding: 5px 8px; flex-shrink: 0;
+        border-bottom: 1px solid var(--toolbar-border); }
+    #outlineFilterRow.hidden { display: none; }
+    #outlineFilterRow .ol-filter-ico { color: var(--title-color); font-size: 13px; flex-shrink: 0; }
+    #outlineFilterInput { flex: 1; min-width: 0; background: var(--bg); color: var(--fg); border: 1px solid var(--toolbar-border);
+        border-radius: 4px; padding: 3px 6px; font-family: inherit; font-size: var(--find-fz); outline: none; }
+    #outlineFilterInput:focus { border-color: var(--find-accent); }
     #outlineList { flex: 1; overflow: auto; padding: 4px 0; }
     .ol-row { display: flex; align-items: center; gap: 6px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
     .ol-row:hover { background: rgba(127,127,127,0.14); }
@@ -683,10 +696,17 @@
     <!-- Document structure fly-out (left column, Phase-1 outline prototype). -->
     <div id="outlinePanel" class="hidden">
         <div id="outlineHeader">
-            <span class="ol-title">Structure</span>
-            <span class="ol-count" id="outlineCount"></span>
+            <button class="ol-tbtn" id="outlineExpandAll" title="Expand all"><span class="codicon codicon-expand-all"></span></button>
+            <button class="ol-tbtn" id="outlineCollapseAll" title="Collapse all"><span class="codicon codicon-collapse-all"></span></button>
+            <button class="ol-tbtn" id="outlineFilterBtn" title="Filter symbols"><span class="codicon codicon-filter"></span></button>
             <span class="find-spacer"></span>
-            <button class="find-icon" id="outlineClose" title="Close">&#10005;</button>
+            <span class="ol-count" id="outlineCount"></span>
+            <button class="ol-tbtn" id="outlineClose" title="Close"><span class="codicon codicon-close"></span></button>
+        </div>
+        <div id="outlineFilterRow" class="hidden">
+            <span class="codicon codicon-filter ol-filter-ico"></span>
+            <input id="outlineFilterInput" type="text" placeholder="Filter… (e.g. ThisWindow)" autocomplete="off" spellcheck="false">
+            <button class="ol-tbtn" id="outlineFilterClear" title="Clear filter (Esc)"><span class="codicon codicon-close"></span></button>
         </div>
         <div id="outlineList"><div class="ol-empty">No structure.</div></div>
     </div>
@@ -4087,6 +4107,8 @@
     var outlineSeq = 0;
     var _outlineDebounce = null;
     var outlineCollapsed = {};   // path -> true when collapsed; survives refreshes so typing doesn't reset the tree
+    var outlineSymbols = [];     // last regrouped (unfiltered) tree — filter/expand-all re-render off this
+    var outlineFilter = '';      // active filter text ('' = none)
     function positionOutline() {
         var op = document.getElementById('outlinePanel'), ed = document.getElementById('editor');
         if (!op || !ed) return;
@@ -4120,9 +4142,54 @@
         requestFromHost('documentStructure', { buffer: editor.getModel().getValue() })
             .then(function (data) {
                 if (mySeq !== outlineSeq) return;   // a newer refresh superseded this one
-                renderOutline(regroupSymbols((data && data.symbols) ? data.symbols : []));
+                outlineSymbols = regroupSymbols((data && data.symbols) ? data.symbols : []);
+                renderOutlineCurrent();
             })
             .catch(function () {});
+    }
+    // Render the cached tree, applying the active filter (force-expanded so matches are visible).
+    function renderOutlineCurrent() {
+        var f = (outlineFilter || '').trim().toLowerCase();
+        if (f) renderOutline(filterOutline(outlineSymbols, f), true);
+        else renderOutline(outlineSymbols, false);
+    }
+    // Keep a node if it (or an ancestor) matches — then its whole subtree rides along — or if a descendant
+    // matches (kept as a path node). Returns a filtered copy or null.
+    function filterOutline(nodes, f) {
+        var out = [];
+        for (var i = 0; i < nodes.length; i++) { var k = filterNode(nodes[i], f, false); if (k) out.push(k); }
+        return out;
+    }
+    function filterNode(node, f, ancestorMatch) {
+        var self = ancestorMatch || (node.name || '').toLowerCase().indexOf(f) >= 0;
+        var kids = [];
+        if (node.children) for (var i = 0; i < node.children.length; i++) { var kc = filterNode(node.children[i], f, self); if (kc) kids.push(kc); }
+        if (self || kids.length) return { name: node.name, detail: node.detail, kind: node.kind, line: node.line, children: kids };
+        return null;
+    }
+    // Every container's collapse-path (mirrors renderOutline's path key) — for collapse-all.
+    function outlineContainerPaths(nodes, prefix, acc) {
+        acc = acc || [];
+        for (var i = 0; i < nodes.length; i++) {
+            var s = nodes[i], path = (prefix || '') + (s.name || '') + '#' + s.kind;
+            if (s.children && s.children.length) { acc.push(path); outlineContainerPaths(s.children, path, acc); }
+        }
+        return acc;
+    }
+    function outlineExpandAll() { outlineCollapsed = {}; renderOutlineCurrent(); }
+    function outlineCollapseAll() {
+        var paths = outlineContainerPaths(outlineSymbols, '', []);
+        for (var i = 0; i < paths.length; i++) outlineCollapsed[paths[i]] = true;
+        renderOutlineCurrent();
+    }
+    function toggleOutlineFilter() {
+        var row = document.getElementById('outlineFilterRow');
+        var btn = document.getElementById('outlineFilterBtn');
+        var nowHidden = row.classList.toggle('hidden');
+        var visible = !nowHidden;
+        btn.classList.toggle('active', visible);
+        if (visible) { var inp = document.getElementById('outlineFilterInput'); inp.focus(); inp.select(); }
+        else if (outlineFilter) { outlineFilter = ''; document.getElementById('outlineFilterInput').value = ''; renderOutlineCurrent(); }
     }
     // LSP SymbolKind (1-based) -> a VS Code codicon symbol name. Monaco already loads the codicon font
     // (its suggest/find widgets use it), so `codicon codicon-symbol-<name>` renders the exact icons VS Code
@@ -4206,7 +4273,7 @@
         return result;
     }
 
-    function renderOutline(symbols) {
+    function renderOutline(symbols, forceExpand) {
         var list = document.getElementById('outlineList');
         var countEl = document.getElementById('outlineCount');
         if (!list) return;
@@ -4259,7 +4326,7 @@
                     tw.classList.toggle('codicon-chevron-right', collapsed);
                     tw.classList.toggle('codicon-chevron-down', !collapsed);
                 };
-                if (outlineCollapsed[path]) apply(true);
+                if (!forceExpand && outlineCollapsed[path]) apply(true);
                 tw.addEventListener('click', function (ev) {
                     ev.stopPropagation();   // toggle only — don't navigate
                     var collapsed = !node.classList.contains('collapsed');
@@ -4908,6 +4975,16 @@
         document.getElementById('findBtn').addEventListener('click', function () { openFindPanel(false); });
         document.getElementById('outlineBtn').addEventListener('click', toggleOutline);
         document.getElementById('outlineClose').addEventListener('click', closeOutline);
+        document.getElementById('outlineExpandAll').addEventListener('click', outlineExpandAll);
+        document.getElementById('outlineCollapseAll').addEventListener('click', outlineCollapseAll);
+        document.getElementById('outlineFilterBtn').addEventListener('click', toggleOutlineFilter);
+        document.getElementById('outlineFilterClear').addEventListener('click', function () {
+            var inp = document.getElementById('outlineFilterInput'); inp.value = ''; outlineFilter = ''; renderOutlineCurrent(); inp.focus();
+        });
+        document.getElementById('outlineFilterInput').addEventListener('input', function () { outlineFilter = this.value; renderOutlineCurrent(); });
+        document.getElementById('outlineFilterInput').addEventListener('keydown', function (ev) {
+            if (ev.key === 'Escape') { ev.preventDefault(); toggleOutlineFilter(); }
+        });
         window.addEventListener('resize', function () {
             var op = document.getElementById('outlinePanel');
             if (op && !op.classList.contains('hidden')) positionOutline();
