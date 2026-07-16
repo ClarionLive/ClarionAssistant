@@ -1183,7 +1183,31 @@ namespace ClarionAssistant.Terminal
             catch { }
         }
 
-        void IMonacoEditorHost.OnEditorNavigationCompleted(MonacoEditorControl editor, bool success) { _isInitialized = success; if (_embedOverlay && success) RemoveOverlayCover(); }
+        void IMonacoEditorHost.OnEditorNavigationCompleted(MonacoEditorControl editor, bool success)
+        {
+            _isInitialized = success;
+            if (_embedOverlay && success) RemoveOverlayCover();
+            FocusIfActiveTab();   // #66 round-4: the INITIAL open never fires SwitchedTo (the tab is born selected)
+        }
+
+        /// <summary>Hand the freshly loaded Monaco page keyboard focus + claim the CA Find pad — but only
+        /// if OUR tab is the active document (same initial-open gap the CA Editor had: a new tab is born
+        /// selected, so SwitchedTo never fires for it and nothing focused the page).</summary>
+        private void FocusIfActiveTab()
+        {
+            try
+            {
+                if (_panel == null) return;
+                // Overlay mode floats over the just-opened NATIVE embeditor (not a workbench tab), so the
+                // FocusedModernView identity check can't apply — the native window is foreground by
+                // definition on open. Tab mode guards against background opens stealing focus.
+                if (!_embedOverlay && FocusedModernView() != this) return;
+                Services.CaFindBroker.NotifyActivity(this);
+                _panel.FocusEditor();
+                _panel.PostJson("{\"type\":\"focusEditor\"}");
+            }
+            catch { }
+        }
         void IMonacoEditorHost.OnUnknownAction(MonacoEditorControl editor, string action, string rawJson) { }
 
         /// <summary>Persist the user's edits: parse the per-slot payload and run the save round-trip.</summary>
