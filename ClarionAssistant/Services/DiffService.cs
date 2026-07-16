@@ -23,6 +23,15 @@ namespace ClarionAssistant.Services
         private string _lastAction; // "apply", "cancel", "notes", or null (pending)
         private bool _isDark = true;
 
+        // Cache of the exact inputs to the most recent ShowDiff call, for get_diff_content.
+        // Guarded by _cacheLock since ShowDiff runs on the UI thread while get_diff_content
+        // (RequiresUiThread=false) can be dispatched concurrently on a thread-pool thread.
+        private readonly object _cacheLock = new object();
+        private string _lastOriginalText;
+        private string _lastModifiedText;
+        private string _lastDiffTitle;
+        private bool _lastIgnoreWhitespace;
+
         public void SetTheme(bool isDark) { _isDark = isDark; }
 
         /// <summary>
@@ -36,6 +45,14 @@ namespace ClarionAssistant.Services
             _lastResult = null;
             _lastNotes = null;
             _lastAction = null;
+
+            lock (_cacheLock)
+            {
+                _lastOriginalText = originalText ?? "";
+                _lastModifiedText = modifiedText ?? "";
+                _lastDiffTitle = title;
+                _lastIgnoreWhitespace = ignoreWhitespace;
+            }
 
             try
             {
@@ -215,6 +232,40 @@ namespace ClarionAssistant.Services
 
         /// <summary>Check if a diff viewer is currently open and pending user action.</summary>
         public bool IsPending { get { return _currentDiff != null && _lastAction == null; } }
+
+        /// <summary>
+        /// Get the unified diff text for the most recently shown diff, computed via
+        /// UnifiedDiffGenerator from the exact text passed to the last ShowDiff call —
+        /// the same generator DiffViewContent itself uses to render the classic view,
+        /// so this can never disagree with what that view shows.
+        /// Safe for very large files: response size scales with the size of the changes,
+        /// not the file size.
+        /// </summary>
+        public Dictionary<string, object> GetContent()
+        {
+            string originalText, modifiedText, title;
+            bool ignoreWhitespace;
+
+            lock (_cacheLock)
+            {
+                if (_lastOriginalText == null && _lastModifiedText == null)
+                    return new Dictionary<string, object> { { "error", "No diff has been shown yet." } };
+
+                originalText = _lastOriginalText;
+                modifiedText = _lastModifiedText;
+                title = _lastDiffTitle;
+                ignoreWhitespace = _lastIgnoreWhitespace;
+            }
+
+            string diff = UnifiedDiffGenerator.Generate(originalText, modifiedText, ignoreWhitespace);
+
+            return new Dictionary<string, object>
+            {
+                { "title", title },
+                { "diff", diff },
+                { "isPending", IsPending }
+            };
+        }
 
         private void CloseDiff()
         {
