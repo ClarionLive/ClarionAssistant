@@ -3982,6 +3982,11 @@
                 setBreakpointLines(msg.lines);
             } else if (msg.type === 'revealLine') {
                 revealLineFromHost(msg);
+            } else if (msg.type === 'focusEditor') {
+                // Tab activation (#66 follow-up): Monaco-internal focus so typing/F3 work immediately —
+                // this also fires onDidFocusEditorText, which posts caFindActivity (belt-and-braces with
+                // the host's direct NotifyActivity).
+                try { if (editor) activeEd().focus(); } catch (fe) { }
             } else if (msg.type === 'caFind') {
                 // CA Find pad command (search/reveal/nav/replace/setChecked/clear) routed via CaFindBroker (#66).
                 handleCaFindOp(msg);

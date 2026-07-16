@@ -1164,6 +1164,25 @@ namespace ClarionAssistant.Terminal
         // CA Find pad protocol (GitHub #66) — the broker routes to/from the dockable pad.
         void IMonacoEditorHost.OnCaFind(MonacoEditorControl editor, string action, string rawJson) { Services.CaFindBroker.FromEditor(this, action, rawJson); }
 
+        /// <summary>Tab switched to this view: claim the CA Find pad and hand the Monaco surface real
+        /// focus. The IDE does NOT focus a WebView2-hosted view on a tab switch, so the page's
+        /// onDidFocusEditorText never fired and the pad kept targeting the previous editor (John,
+        /// #66 validation). Focus goes both levels: WebView2 (Windows) + editor.focus() (Monaco).</summary>
+        public override void SwitchedTo()
+        {
+            base.SwitchedTo();
+            try
+            {
+                Services.CaFindBroker.NotifyActivity(this);
+                if (_panel != null)
+                {
+                    _panel.FocusEditor();
+                    _panel.PostJson("{\"type\":\"focusEditor\"}");
+                }
+            }
+            catch { }
+        }
+
         void IMonacoEditorHost.OnEditorNavigationCompleted(MonacoEditorControl editor, bool success) { _isInitialized = success; if (_embedOverlay && success) RemoveOverlayCover(); }
         void IMonacoEditorHost.OnUnknownAction(MonacoEditorControl editor, string action, string rawJson) { }
 

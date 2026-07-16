@@ -74,6 +74,10 @@ namespace ClarionAssistant
         private System.Reflection.EventInfo _closingEvt;
         private System.ComponentModel.CancelEventHandler _closingHandler;
         private bool _closeHooked;
+        // Tab-activation hook (#66 follow-up): WindowSelected fires when this tab becomes active — claim
+        // the CA Find pad and hand Monaco focus (the IDE doesn't focus a WebView2 view on tab switch).
+        private System.Reflection.EventInfo _selectedEvt;
+        private EventHandler _selectedHandler;
 
         // Cover that hides the native editor until Monaco paints. Light (#eff1f5) to match the page's DEFAULT
         // light theme. (It cannot hide the WebView2 itself — a native HWND always paints over WinForms siblings,
@@ -1324,6 +1328,23 @@ namespace ClarionAssistant
                 evt.AddEventHandler(wbw, _closingHandler);
                 _wbWindow = wbw; _closingEvt = evt;
                 MonacoSpikeLog.Write("close-hook attached (ClosingEvent) to " + wbw.GetType().FullName);
+
+                // Same window, second event: WindowSelected (plain EventHandler) fires when this tab is
+                // switched to — claim the CA Find pad + focus Monaco (#66 follow-up). Best-effort.
+                try
+                {
+                    var selEvt = wbw.GetType().GetEvent("WindowSelected");
+                    if (selEvt == null)
+                        foreach (var itf in wbw.GetType().GetInterfaces()) { selEvt = itf.GetEvent("WindowSelected"); if (selEvt != null) break; }
+                    if (selEvt != null)
+                    {
+                        _selectedHandler = new EventHandler(OnWorkbenchWindowSelected);
+                        selEvt.AddEventHandler(wbw, _selectedHandler);
+                        _selectedEvt = selEvt;
+                        MonacoSpikeLog.Write("select-hook attached (WindowSelected) to " + wbw.GetType().FullName);
+                    }
+                }
+                catch (Exception sex) { MonacoSpikeLog.Write("select-hook attach error: " + sex.Message); }
             }
             catch (Exception ex) { MonacoSpikeLog.Write("close-hook attach error: " + ex.Message); }
         }
@@ -1332,6 +1353,23 @@ namespace ClarionAssistant
         // BEFORE Dispose, so the tab closes in one click. A decision clears _overlayDirty so the Dispose
         // safety-net won't re-write. (Forced shutdown closes skip ClosingEvent, so no modal hangs shutdown —
         // Dispose's silent fallback persists the edits instead. See project_shutdown_hang.)
+        /// <summary>This tab became the active document: retarget the CA Find pad and hand the Monaco
+        /// overlay real focus — WebView2 (Windows level) + editor.focus() (Monaco level). Without this
+        /// only a click into the buffer switched the pad (#66 validation, John).</summary>
+        private void OnWorkbenchWindowSelected(object sender, EventArgs e)
+        {
+            try
+            {
+                ClarionAssistant.Services.CaFindBroker.NotifyActivity(this);
+                if (_editor != null)
+                {
+                    _editor.FocusEditor();
+                    _editor.PostJson("{\"type\":\"focusEditor\"}");
+                }
+            }
+            catch { }
+        }
+
         private void OnWorkbenchClosing(object sender, System.ComponentModel.CancelEventArgs e)
         {
             try
@@ -1363,7 +1401,8 @@ namespace ClarionAssistant
             try { ClarionAssistant.Services.CaFindBroker.UnregisterHost(this); } catch { }
             try { MonacoSourceNavigator.Unregister(_filePath, this); } catch { }
             try { if (_closingEvt != null && _wbWindow != null && _closingHandler != null) _closingEvt.RemoveEventHandler(_wbWindow, _closingHandler); } catch { }
-            _wbWindow = null; _closingEvt = null; _closingHandler = null;
+            try { if (_selectedEvt != null && _wbWindow != null && _selectedHandler != null) _selectedEvt.RemoveEventHandler(_wbWindow, _selectedHandler); } catch { }
+            _wbWindow = null; _closingEvt = null; _closingHandler = null; _selectedEvt = null; _selectedHandler = null;
 
             // The interactive save prompt lives in OnWorkbenchFormClosing (cancellable, pre-teardown). This is
             // only a SILENT safety net for disposal paths that bypass FormClosing (solution close / shutdown):
