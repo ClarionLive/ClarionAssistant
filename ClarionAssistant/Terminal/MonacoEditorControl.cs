@@ -376,7 +376,57 @@ namespace ClarionAssistant.Terminal
             try
             {
                 if (_webView == null || !_webView.IsHandleCreated) return;
-                _webView.BeginInvoke((Action)(() => { try { _webView.Focus(); } catch { } }));
+                _webView.BeginInvoke((Action)(() => FocusAttempt(0)));
+            }
+            catch { }
+        }
+
+        // #66 round-2: a single _webView.Focus() is not enough on an IDE tab switch. The WinForms
+        // WebView2 only forwards focus into Chromium from its GotFocus handler, so when the host HWND
+        // already holds Win32 focus (or the workbench re-focuses its own control a beat AFTER us),
+        // the render widget never gets the keyboard. MoveFocus() is the authoritative hand-off, and
+        // the verify+retry beats whatever late focus routing the workbench does on tab activation.
+        private void FocusAttempt(int attempt)
+        {
+            try
+            {
+                if (_webView == null || _webView.IsDisposed || !_webView.IsHandleCreated) return;
+                if (_webView.Visible)
+                {
+                    _webView.Focus();
+                    TryMoveFocusIntoChromium();
+                }
+                if (attempt < 3 && !_webView.ContainsFocus)
+                {
+                    var t = new Timer { Interval = 80 };
+                    t.Tick += (s, e) =>
+                    {
+                        try { t.Stop(); t.Dispose(); } catch { }
+                        FocusAttempt(attempt + 1);
+                    };
+                    t.Start();
+                }
+                else if (!_webView.ContainsFocus)
+                {
+                    ClarionAssistant.MonacoSpikeLog.Write("FocusEditor: focus never landed after retries (focused control elsewhere)");
+                }
+            }
+            catch { }
+        }
+
+        // The WinForms wrapper doesn't expose CoreWebView2Controller publicly; reflect it and call
+        // MoveFocus(Programmatic) — the only API that reliably puts the keyboard in the render widget.
+        private void TryMoveFocusIntoChromium()
+        {
+            try
+            {
+                object ctl =
+                    _webView.GetType().GetProperty("CoreWebView2Controller",
+                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(_webView, null)
+                    ?? _webView.GetType().GetField("_coreWebView2Controller",
+                        BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(_webView);
+                var controller = ctl as CoreWebView2Controller;
+                if (controller != null) controller.MoveFocus(CoreWebView2MoveFocusReason.Programmatic);
             }
             catch { }
         }

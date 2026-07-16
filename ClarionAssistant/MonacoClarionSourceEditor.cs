@@ -78,6 +78,7 @@ namespace ClarionAssistant
         // the CA Find pad and hand Monaco focus (the IDE doesn't focus a WebView2 view on tab switch).
         private System.Reflection.EventInfo _selectedEvt;
         private EventHandler _selectedHandler;
+        private Timer _hookRetry;        // OnReady-time hook attach: retries until the workbench window is realized
 
         // Cover that hides the native editor until Monaco paints. Light (#eff1f5) to match the page's DEFAULT
         // light theme. (It cannot hide the WebView2 itself — a native HWND always paints over WinForms siblings,
@@ -371,6 +372,10 @@ namespace ClarionAssistant
                 // that was parked while loading. The cold-open target is already seeded into setSource above; the
                 // RevealLine here is a redundant safety net (idempotent) for a nav that lands after this point.
                 _pageReady = true;
+                // #66 round-2: attach the ClosingEvent/WindowSelected hooks NOW — waiting for the first
+                // fileState (= first EDIT) left never-edited tabs unhooked, so switching to them neither
+                // retargeted the CA Find pad nor focused the editor.
+                EnsureCloseHookWithRetry();
                 MonacoSourceNavigator.Register(_filePath, this);
                 if (_navPendingLine >= 1) { _editor.RevealLine(_navPendingLine, _navPendingCol); _navPendingLine = 0; }
                 if (navLine >= 1) _editor.RevealLine(navLine, navCol);
@@ -1308,6 +1313,29 @@ namespace ClarionAssistant
         // raises ClosingEvent (CancelEventHandler); FormClosing never fires on a tab close here. Reflect the
         // event (IDE-internal) off the runtime type or its interfaces. Self-healing: if the window isn't
         // realized yet, stay unhooked and retry on the next file-state signal.
+        // The workbench window may not be assigned yet when the page signals ready (OnReady can beat the
+        // window realization); poll briefly instead of giving up. OnFileState still calls EnsureCloseHook
+        // directly as a backstop.
+        private void EnsureCloseHookWithRetry()
+        {
+            EnsureCloseHook();
+            if (_closeHooked || _hookRetry != null) return;
+            int tries = 0;
+            _hookRetry = new Timer { Interval = 500 };
+            _hookRetry.Tick += (s, e) =>
+            {
+                tries++;
+                EnsureCloseHook();
+                if (_closeHooked || tries >= 20)
+                {
+                    var t = _hookRetry; _hookRetry = null;
+                    try { t.Stop(); t.Dispose(); } catch { }
+                    if (!_closeHooked) MonacoSpikeLog.Write("hook retry gave up: WorkbenchWindow never realized (" + (_filePath ?? "?") + ")");
+                }
+            };
+            _hookRetry.Start();
+        }
+
         private void EnsureCloseHook()
         {
             if (_closeHooked) return;
@@ -1360,6 +1388,7 @@ namespace ClarionAssistant
         {
             try
             {
+                MonacoSpikeLog.Write("select-hook fired: claim CA Find pad + focus (" + (_filePath ?? "?") + ")");
                 ClarionAssistant.Services.CaFindBroker.NotifyActivity(this);
                 if (_editor != null)
                 {
@@ -1397,6 +1426,7 @@ namespace ClarionAssistant
         public override void Dispose()
         {
             StopCaptureTimer();
+            try { if (_hookRetry != null) { _hookRetry.Stop(); _hookRetry.Dispose(); _hookRetry = null; } } catch { }
             UnwireBreakpoints();
             try { ClarionAssistant.Services.CaFindBroker.UnregisterHost(this); } catch { }
             try { MonacoSourceNavigator.Unregister(_filePath, this); } catch { }
