@@ -3729,7 +3729,10 @@
     }
 
     // Run a search for the pad: q + findOpts (set by the caFind 'search' op) against the live buffer.
-    function runFind(q, extra) {
+    // navigate === false → passive refresh (highlights + grid only): an AUTOMATIC re-search (pad session
+    // restore on retarget) must never move the caret/scroll — only a deliberate user search reveals
+    // match #1 (d4635694 follow-up).
+    function runFind(q, extra, navigate) {
         if (!editor) return;
         if (!q) {
             findResults = []; lastFindQuery = null; findCurrentIdx = -1;
@@ -3765,7 +3768,7 @@
         findModelVersion = model.getAlternativeVersionId();   // results are fresh against THIS buffer state
         findCurrentIdx = findResults.length ? 0 : -1;
         paintHighlights();
-        if (findResults.length) revealMatch(0, false, true);   // quiet: the single update below carries idx
+        if (findResults.length && navigate !== false) revealMatch(0, false, true);   // quiet: the single update below carries idx
         postCaFindUpdate(extra);
     }
 
@@ -3890,7 +3893,7 @@
                         matchCase: !!msg.opts.matchCase, wholeWord: !!msg.opts.wholeWord,
                         regex: !!msg.opts.regex, includeReadOnly: msg.opts.includeReadOnly !== false
                     };
-                    runFind(msg.query || '');
+                    runFind(msg.query || '', undefined, msg.navigate !== false);
                     break;
                 case 'reveal':     revealMatch(+msg.idx, !!msg.focus); break;
                 case 'nav':        gotoMatch(msg.dir < 0 ? -1 : 1); break;

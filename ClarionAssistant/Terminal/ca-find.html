@@ -326,7 +326,11 @@
         persistState();
     }
 
-    function runSearch() {
+    // passive=true → refresh decorations + grid only, do NOT move the editor's cursor/scroll to the
+    // first match. Used by automatic re-searches (session restore on retarget, pad tab load) — only a
+    // deliberate user search may navigate (d4635694 follow-up: a restore was yanking the caret to
+    // match #1 the moment the user clicked back into the editor).
+    function runSearch(passive) {
         var t = activeTabObj();
         if (!t || !activeKey) { showToast('No CA editor is active', false); return; }
         saveActiveTabInputs();
@@ -342,7 +346,7 @@
         var s = activeSession();
         if (s) addHistory(s.procHistory, q, 10);
         persistState();
-        fwd({ type: 'caFind', op: 'search', query: q, opts: t.opts });
+        fwd({ type: 'caFind', op: 'search', query: q, opts: t.opts, navigate: !passive });
         refreshTabLabels();
     }
 
@@ -462,7 +466,7 @@
         matches = []; currentIdx = -1; lastQuery = null;
         renderResults(); byId('findCount').textContent = '';
         renderTabs();
-        if (autoSearch !== false && t.query) runSearch();
+        if (autoSearch !== false && t.query) runSearch(true);   // auto re-run is PASSIVE — never moves the caret
     }
 
     function createTab(seedQuery) {

@@ -129,8 +129,11 @@ namespace ClarionAssistant.Services
             {
                 var c = sender as Control;
                 if (c != null && !c.Visible) return;   // attach only when the embed view is shown, not hidden
-                if (_uiCtx != null) _uiCtx.Post(_ => TryAttachIfNewEmbed("visible"), null);
-                else TryAttachIfNewEmbed("visible");
+                // TryAttachIfNewEmbed no-ops for an embed we already overlaid (dedup) — that's the tab-back
+                // case, where the overlay survives hidden but nothing re-focuses it (no SwitchedTo for an
+                // overlay). OnEmbedHostShown hands it the keyboard + re-claims the CA Find pad (d4635694).
+                if (_uiCtx != null) _uiCtx.Post(_ => { TryAttachIfNewEmbed("visible"); ClarionAssistant.Terminal.ModernEmbeditorViewContent.OnEmbedHostShown(c); }, null);
+                else { TryAttachIfNewEmbed("visible"); ClarionAssistant.Terminal.ModernEmbeditorViewContent.OnEmbedHostShown(c); }
             }
             catch (Exception ex) { Log("OnHostVisibleChanged: " + ex.Message); }
         }

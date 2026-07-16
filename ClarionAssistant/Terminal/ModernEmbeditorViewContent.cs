@@ -1839,6 +1839,28 @@ namespace ClarionAssistant.Terminal
         /// mirror/WebView2 work, so the native text area is hidden before it paints. The returned panel is later
         /// ADOPTED by <see cref="ShowAsEmbedOverlay"/> as its cover (kept on top until Monaco's first paint). Cheap
         /// WinForms only — no WebView2 — so it's safe on any settled turn. Caller removes it if the attach aborts.</summary>
+        /// <summary>d4635694 follow-up — the embed host panel became visible again (tab-back to the app
+        /// window's embed view). An overlay is NOT a workbench tab, so no SwitchedTo fires for it, and with
+        /// the duplicate re-attach now correctly suppressed nothing else hands the keyboard over (John:
+        /// arrows dead after tab-back, edits intact). If OUR live overlay is docked on this host, re-claim
+        /// the CA Find pad and focus Monaco — exactly what a tab switch does for the tab-mode editors.</summary>
+        internal static void OnEmbedHostShown(Control host)
+        {
+            try
+            {
+                var live = _liveInstance;
+                if (live == null || !live._embedOverlay || live._overlayDetached || host == null) return;
+                if (!ReferenceEquals(live._overlayHost, host)) return;
+                Services.CaFindBroker.NotifyActivity(live);
+                if (live._panel != null)
+                {
+                    live._panel.FocusEditor();
+                    live._panel.PostJson("{\"type\":\"focusEditor\"}");
+                }
+            }
+            catch { }
+        }
+
         /// <summary>d4635694 — TRUE when the live overlay is STILL docked on <paramref name="host"/> for the
         /// same open PWEE: the caller's attach request is a duplicate trigger (e.g. the embed monitor re-firing
         /// after a tab-away/tab-back), not a new embed. A rebuild on a duplicate would discard the overlay's
