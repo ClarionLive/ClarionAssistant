@@ -76,6 +76,10 @@ namespace ClarionAssistant.Terminal
         /// host navigates (same- or cross-file) then replies via PostResponse with {navigated:bool}.</summary>
         void OnImplementation(MonacoEditorControl editor, string rawJson);
 
+        /// <summary>{action:"documentStructure"} — outline/document-symbol tree for the current buffer;
+        /// host replies via PostResponse with {symbols:[{name,kind,detail,line,children}], fileMode}.</summary>
+        void OnDocumentStructure(MonacoEditorControl editor, string rawJson);
+
         /// <summary>{action:"saveSettings"} — persist gear-panel settings + broadcast to all tabs.</summary>
         void OnSaveSettings(MonacoEditorControl editor, string rawJson);
 
@@ -256,6 +260,7 @@ namespace ClarionAssistant.Terminal
                     case "diagnostics":       h.OnDiagnostics(this, json); break;
                     case "signatureHelp":     h.OnSignatureHelp(this, json); break;
                     case "implementation":    h.OnImplementation(this, json); break;
+                    case "documentStructure": h.OnDocumentStructure(this, json); break;
                     case "saveSettings":      h.OnSaveSettings(this, json); break;
                     case "saveHistory":       h.OnSaveHistory(this, json); break;
                     case "snippetCommand":    h.OnSnippetCommand(this, json); break;

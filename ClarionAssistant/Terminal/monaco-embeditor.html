@@ -338,6 +338,27 @@
     #findCount { font-size: 11px; color: var(--title-color); padding: 1px 4px 0; }
     #findCount:empty { display: none; }
     /* FIND-ALL mode: re-dock as a left column, full editor height, results grid visible; reserves width. */
+    /* ===== Document structure fly-out (left column, same left-inset mechanism as Find-All) ===== */
+    #outlinePanel {
+        position: absolute; left: 0; right: auto; bottom: var(--status-bar-h); z-index: 16;
+        width: 260px; max-width: 60%; display: flex; flex-direction: column; overflow: hidden; box-sizing: border-box;
+        background: var(--toolbar-bg); border-right: 2px solid var(--find-accent);
+        box-shadow: 3px 0 14px rgba(0,0,0,0.22); font-size: var(--find-fz); color: var(--fg);
+    }
+    #outlinePanel.hidden { display: none; }
+    #outlinePanel * { box-sizing: border-box; }
+    #outlineHeader { display: flex; align-items: center; gap: 8px; padding: 7px 10px; flex-shrink: 0;
+        border-bottom: 1px solid var(--toolbar-border); }
+    #outlineHeader .ol-title { font-weight: 600; color: var(--title-accent); letter-spacing: .02em; }
+    #outlineHeader .ol-count { font-size: 11px; color: var(--title-color); }
+    #outlineList { flex: 1; overflow: auto; padding: 4px 0; }
+    .ol-row { display: flex; align-items: center; gap: 6px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
+    .ol-row:hover { background: rgba(127,127,127,0.14); }
+    .ol-row .ol-kind { width: 15px; flex-shrink: 0; text-align: center; color: var(--find-accent); font-size: 11px; }
+    .ol-row .ol-name { overflow: hidden; text-overflow: ellipsis; }
+    .ol-row .ol-detail { color: var(--title-color); opacity: .65; overflow: hidden; text-overflow: ellipsis; }
+    .ol-empty { padding: 16px 12px; text-align: center; color: var(--title-color); }
+
     #findPanel.findall {
         left: 0; right: auto; bottom: var(--status-bar-h); z-index: 15;
         width: 340px; max-width: 60%;
@@ -519,6 +540,7 @@
         <button id="navFwdBtn" class="embed-nav" title="Navigate Forward (Alt+Right)"><svg class="fico-sm" viewBox="0 0 20 20" fill="none" stroke="#475569" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 10 H15"/><path d="M10.5 5 L15.5 10 L10.5 15"/></svg></button>
         <span class="tb-sep"></span>
         <button id="findBtn" title="Find &amp; Replace"><svg class="fico-sm" viewBox="0 0 20 20" fill="none" stroke="#2563eb" stroke-width="2.2" stroke-linecap="round"><circle cx="8.5" cy="8.5" r="5"/><path d="M12.6 12.6 L17 17"/></svg></button>
+        <button id="outlineBtn" title="Document structure (outline)"><svg class="fico-sm" viewBox="0 0 20 20" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 5 H16 M7 10 H16 M7 15 H16"/><circle cx="3.6" cy="5" r="1.1" fill="#2563eb" stroke="none"/><circle cx="3.6" cy="10" r="1.1" fill="#2563eb" stroke="none"/><circle cx="3.6" cy="15" r="1.1" fill="#2563eb" stroke="none"/></svg></button>
         <button id="splitBtn" title="Split editor — two panes of the same file (compare/copy between areas)"><svg class="fico-sm" viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="1.6" fill="none" stroke="#475569" stroke-width="2"/><rect x="10" y="4" width="7" height="12" fill="#475569" opacity="0.22"/><path d="M10 4 V16" stroke="#475569" stroke-width="2"/></svg></button>
         <button id="settingsBtn" title="Editor settings"><svg class="fico-sm" viewBox="0 0 24 24" fill="#475569"><path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54a7 7 0 0 0-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.31 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96a7 7 0 0 0 1.62.94l.36 2.54a.5.5 0 0 0 .5.42h3.8a.5.5 0 0 0 .5-.42l.36-2.54a7 7 0 0 0 1.62-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64z" /><circle cx="12" cy="12" r="3.1" fill="#fff"/></svg></button>
         <button id="themeBtn" class="theme-toggle" title="Toggle light / dark"><svg class="tgl" width="34" height="16" viewBox="0 0 34 16"><rect x="0.5" y="0.5" width="33" height="15" rx="7.5" fill="#9aa5b5" stroke="rgba(0,0,0,0.3)"/><circle class="tgl-knob" cx="25" cy="8" r="6"/></svg></button>
@@ -645,6 +667,16 @@
     <div id="editor"></div>
     <div id="editor2"></div>
     <div id="statusBar"></div>
+    <!-- Document structure fly-out (left column, Phase-1 outline prototype). -->
+    <div id="outlinePanel" class="hidden">
+        <div id="outlineHeader">
+            <span class="ol-title">Structure</span>
+            <span class="ol-count" id="outlineCount"></span>
+            <span class="find-spacer"></span>
+            <button class="find-icon" id="outlineClose" title="Close">&#10005;</button>
+        </div>
+        <div id="outlineList"><div class="ol-empty">No structure.</div></div>
+    </div>
     <div id="findPanel" class="hidden">
         <div id="findGrip" title="Drag to resize"></div>
         <div id="findTabs"></div>
@@ -966,6 +998,11 @@
                 var _redoBtn = document.getElementById('redoBtn');
                 if (_redoBtn) _redoBtn.addEventListener('click', function () { var e = activeEd(); e.focus(); e.trigger('toolbar', 'redo', null); updateUndoRedo(); });
                 editor.onDidChangeModelContent(updateUndoRedo);   // keep Undo/Redo enabled-state in sync with the edit stack
+                // Refresh the structure outline (debounced) while it's open — Phase-1 pull-on-change.
+                editor.onDidChangeModelContent(function () {
+                    var op = document.getElementById('outlinePanel');
+                    if (op && !op.classList.contains('hidden')) { clearTimeout(_outlineDebounce); _outlineDebounce = setTimeout(refreshOutline, 600); }
+                });
                 updateUndoRedo();
                 var _embHeader = document.getElementById('embHeader');
                 if (_embHeader) _embHeader.addEventListener('click', function () { postToHost({ action: 'openSource' }); });
@@ -4024,12 +4061,104 @@
         setEditorInsets();
     }
     function setEditorInsets() {
-        var panel = document.getElementById('findPanel');
-        var findAll = panel && !panel.classList.contains('hidden') && panel.classList.contains('findall');
-        var left = findAll ? (panel.offsetWidth + 'px') : '0px';
+        var fp = document.getElementById('findPanel');
+        var op = document.getElementById('outlinePanel');
+        var findAll = fp && !fp.classList.contains('hidden') && fp.classList.contains('findall');
+        var outline = op && !op.classList.contains('hidden');
+        // Both are left columns; the outline takes precedence if somehow both are open.
+        var left = outline ? (op.offsetWidth + 'px') : (findAll ? (fp.offsetWidth + 'px') : '0px');
         var ed = document.getElementById('editor'); if (ed) ed.style.left = left;
         var e2 = document.getElementById('editor2'); if (e2) e2.style.left = left;
     }
+    // ---- Document structure fly-out (Phase-1 outline prototype) ----
+    var outlineSeq = 0;
+    var _outlineDebounce = null;
+    function positionOutline() {
+        var op = document.getElementById('outlinePanel'), ed = document.getElementById('editor');
+        if (!op || !ed) return;
+        op.style.top = ed.offsetTop + 'px';   // sit under the toolbar, aligned to the editor
+        setEditorInsets();
+    }
+    function openOutline() {
+        var fp = document.getElementById('findPanel');
+        if (fp && !fp.classList.contains('hidden') && fp.classList.contains('findall')) closeFindPanel();  // never two left columns
+        var op = document.getElementById('outlinePanel');
+        if (!op) return;
+        op.classList.remove('hidden');
+        positionOutline();
+        refreshOutline();
+    }
+    function closeOutline() {
+        var op = document.getElementById('outlinePanel');
+        if (op) op.classList.add('hidden');
+        setEditorInsets();
+        if (editor) editor.focus();
+    }
+    function toggleOutline() {
+        var op = document.getElementById('outlinePanel');
+        if (!op) return;
+        if (op.classList.contains('hidden')) openOutline(); else closeOutline();
+    }
+    function refreshOutline() {
+        var op = document.getElementById('outlinePanel');
+        if (!op || op.classList.contains('hidden') || !editor) return;
+        var mySeq = ++outlineSeq;
+        requestFromHost('documentStructure', { buffer: editor.getModel().getValue() })
+            .then(function (data) {
+                if (mySeq !== outlineSeq) return;   // a newer refresh superseded this one
+                renderOutline((data && data.symbols) ? data.symbols : []);
+            })
+            .catch(function () {});
+    }
+    // LSP SymbolKind (1-based) -> a compact glyph for the row.
+    function outlineGlyph(kind) {
+        switch (kind) {
+            case 2:  return 'M';    // Module (root)
+            case 5:  return 'C';    // Class
+            case 6:  return 'm';    // Method (ROUTINE / class method)
+            case 8:  return '·';    // Field
+            case 10: return 'e';    // Enum (MENU)
+            case 11: return '▢'; // Interface (WINDOW/APPLICATION)
+            case 12: return 'ƒ'; // Function (PROCEDURE)
+            case 13: return 'v';    // Variable
+            case 18: return '[]';   // Array (QUEUE/VIEW/LIST)
+            case 23: return '{}';   // Struct (GROUP/RECORD/FILE)
+            default: return '•';
+        }
+    }
+    function renderOutline(symbols) {
+        var list = document.getElementById('outlineList');
+        var countEl = document.getElementById('outlineCount');
+        if (!list) return;
+        list.innerHTML = '';
+        var n = 0;
+        function add(nodes, depth) {
+            for (var i = 0; i < nodes.length; i++) {
+                var s = nodes[i]; n++;
+                var row = document.createElement('div');
+                row.className = 'ol-row';
+                row.style.paddingLeft = (8 + depth * 14) + 'px';
+                var k = document.createElement('span'); k.className = 'ol-kind'; k.textContent = outlineGlyph(s.kind);
+                var nm = document.createElement('span'); nm.className = 'ol-name'; nm.textContent = s.name || '';
+                row.appendChild(k); row.appendChild(nm);
+                if (s.detail) { var dt = document.createElement('span'); dt.className = 'ol-detail'; dt.textContent = ' ' + s.detail; row.appendChild(dt); }
+                (function (ln) {
+                    row.addEventListener('click', function () {
+                        if (!ln || !editor) return;
+                        editor.revealLineInCenter(ln);
+                        editor.setPosition({ lineNumber: ln, column: 1 });
+                        editor.focus();
+                    });
+                })(s.line);
+                list.appendChild(row);
+                if (s.children && s.children.length) add(s.children, depth + 1);
+            }
+        }
+        if (!symbols || !symbols.length) { list.innerHTML = '<div class="ol-empty">No structure.</div>'; }
+        else add(symbols, 0);
+        if (countEl) countEl.textContent = n ? (n + (n === 1 ? ' symbol' : ' symbols')) : '';
+    }
+
     // Header result count for the Find-All column (short form; the in-row count is hidden there).
     function setFaCount() {
         var el = document.getElementById('faCount');
@@ -4078,6 +4207,8 @@
     // Find-All: reveal the left results column, reusing the existing grid/tabs machinery. focusReplace
     // (Ctrl+Shift+H) opens it with the replace row expanded + focused.
     function openFindAll(focusReplace) {
+        var op = document.getElementById('outlinePanel');
+        if (op && !op.classList.contains('hidden')) closeOutline();   // never two left columns
         var panel = document.getElementById('findPanel');
         var wasFindAll = !panel.classList.contains('hidden') && panel.classList.contains('findall');
         if (panel.classList.contains('hidden')) openFindPanel(false);
@@ -4659,6 +4790,12 @@
     function wireFindPanel() {
         // Toolbar buttons: Find & Replace + theme toggle + embed-slot navigation.
         document.getElementById('findBtn').addEventListener('click', function () { openFindPanel(false); });
+        document.getElementById('outlineBtn').addEventListener('click', toggleOutline);
+        document.getElementById('outlineClose').addEventListener('click', closeOutline);
+        window.addEventListener('resize', function () {
+            var op = document.getElementById('outlinePanel');
+            if (op && !op.classList.contains('hidden')) positionOutline();
+        });
         document.getElementById('themeBtn').addEventListener('click', toggleTheme);
         document.getElementById('prevEmbedBtn').addEventListener('click', function () { navEmbed(-1, false); });
         document.getElementById('nextEmbedBtn').addEventListener('click', function () { navEmbed(1, false); });

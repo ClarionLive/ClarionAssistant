@@ -589,6 +589,28 @@ namespace ClarionAssistant
             });
         }
 
+        // {action:"documentStructure"} — outline tree for the whole source file (this overlay always edits a
+        // real file 1:1, so LSP line 0-based -> Monaco 1-based is simple +1). Feeds the structure fly-out.
+        void IMonacoEditorHost.OnDocumentStructure(MonacoEditorControl editor, string rawJson)
+        {
+            int reqId, line, col; string buffer;
+            if (!ParseLspRequest(rawJson, out reqId, out line, out col, out buffer)) return;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var symbols = new List<Dictionary<string, object>>();
+                try
+                {
+                    EnsureLsp();
+                    var resp = SharedLspBridge.GetDocumentSymbols(_filePath, buffer);
+                    object res = (resp != null && resp.ContainsKey("result")) ? resp["result"] : null;
+                    symbols = DocumentOutlineBuilder.Build(res, lsp0 => lsp0 + 1);
+                }
+                catch (Exception ex) { MonacoSpikeLog.Write("overlay documentStructure error: " + ex.Message); }
+                try { editor.PostResponse(reqId, new Dictionary<string, object> { { "symbols", symbols }, { "fileMode", true } }); }
+                catch { }
+            });
+        }
+
         /// <summary>Capture the active Clarion IDE theme's toolbar gradient (SerenityBlue/OfficeXP/Win10Blue/…)
         /// into _chromeBg1/_chromeBg2/_chromeFg so our overlay toolbar chrome follows it — the same colors the
         /// embeditor reads off its native ToolStrip, but sourced from the global ToolStripManager.Renderer (the IDE
