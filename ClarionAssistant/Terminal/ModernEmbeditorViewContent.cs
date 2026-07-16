@@ -77,6 +77,7 @@ namespace ClarionAssistant.Terminal
         private Panel _overlayCover;           // opaque shim hiding the native text area until Monaco paints (anti-flash)
         private Timer _overlayCoverSafety;     // backstop: drop the cover even if navigation-completed never arrives
         private object _overlayGenEditor;      // the ClaGenEditor view content, for the Disposed teardown backstop
+        private object _overlayPwee;           // the PweeEditorDetails we attached FOR — duplicate-trigger identity (d4635694)
         private EventHandler _overlayDisposedHandler; // our subscription to ClaGenEditor.Disposed (removed on detach)
         private bool _overlayDetached;         // idempotent guard so teardown runs exactly once
         // The native embeditor chrome (its ~24px Dock=Top toolbar strip: green-check save / red-X cancel /
@@ -1786,6 +1787,25 @@ namespace ClarionAssistant.Terminal
         /// mirror/WebView2 work, so the native text area is hidden before it paints. The returned panel is later
         /// ADOPTED by <see cref="ShowAsEmbedOverlay"/> as its cover (kept on top until Monaco's first paint). Cheap
         /// WinForms only — no WebView2 — so it's safe on any settled turn. Caller removes it if the attach aborts.</summary>
+        /// <summary>d4635694 — TRUE when the live overlay is STILL docked on <paramref name="host"/> for the
+        /// same open PWEE: the caller's attach request is a duplicate trigger (e.g. the embed monitor re-firing
+        /// after a tab-away/tab-back), not a new embed. A rebuild on a duplicate would discard the overlay's
+        /// unsaved Monaco buffer — the caller must no-op instead.</summary>
+        internal static bool IsLiveOverlayCurrent(Control host, object pwee)
+        {
+            try
+            {
+                var live = _liveInstance;
+                if (live == null || !live._embedOverlay || live._overlayDetached) return false;
+                if (host == null || pwee == null) return false;
+                if (!ReferenceEquals(live._overlayHost, host)) return false;
+                if (!ReferenceEquals(live._overlayPwee, pwee)) return false;
+                // Belt: the Monaco surface must still actually sit in the host's control tree.
+                return live._panel != null && !live._panel.IsDisposed && ReferenceEquals(live._panel.Parent, host);
+            }
+            catch { return false; }
+        }
+
         internal static Panel AddInstantCover(Control host, bool isDark)
         {
             var cover = new Panel { Dock = DockStyle.Fill, BackColor = isDark ? Color.FromArgb(0x1E, 0x1E, 0x1E) : Color.White };
@@ -1794,12 +1814,13 @@ namespace ClarionAssistant.Terminal
             return cover;
         }
 
-        internal void ShowAsEmbedOverlay(Control host, object genEditor, Panel preCover = null)
+        internal void ShowAsEmbedOverlay(Control host, object genEditor, Panel preCover = null, object pwee = null)
         {
             if (host == null) throw new ArgumentNullException(nameof(host));
             _embedOverlay = true;
             _overlayHost = host;
             _overlayGenEditor = genEditor;
+            _overlayPwee = pwee;
 
             // Route saves through the live fast path (SaveLive writes into the still-open embed) WITHOUT the tab
             // switch-away watch: the overlay lives inside the embed's own document, so there is no "switch away" to

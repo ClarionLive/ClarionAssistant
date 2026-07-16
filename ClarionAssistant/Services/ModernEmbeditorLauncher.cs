@@ -106,6 +106,14 @@ namespace ClarionAssistant.Services
                 if (appTree.GetOpenClaGenEditor() == null)
                     return "No native embeditor is open.";
 
+                // d4635694 idempotence guard — a DUPLICATE trigger for the SAME still-open embed (the monitor
+                // re-firing on tab-away/tab-back) must no-op BEFORE the release below: ReleaseLiveInstanceSync
+                // would discard the live overlay's unsaved Monaco buffer (John's lost-edits repro). Same pwee
+                // identity + overlay still docked on this host = same embed, nothing to attach.
+                var openPwee = appTree.GetOpenPweeDetails();
+                if (ModernEmbeditorViewContent.IsLiveOverlayCurrent(appTree.GetClaGenEditorHost(), openPwee))
+                    return "live overlay already current for this embed (duplicate trigger) — kept as-is";
+
                 // Single-live-overlay (a5bbf005): release the previous overlay's hold before attaching a new one.
                 // cancelOpenEmbed:FALSE is load-bearing — the currently-open native embed is the one the developer
                 // just opened via Clarion's own menu and is our DOCK TARGET; the default (true) would CancelEmbeditor
@@ -157,6 +165,7 @@ namespace ClarionAssistant.Services
                 int capNativeLine = nativeLine;
                 EmbedLspContext capLspCtx = lspCtx;
                 var capHost = host; var capCover = preCover; var capEditor = appTree.GetOpenClaGenEditor();
+                var capPwee = openPwee;
                 ctx.Post(_ =>
                 {
                     try
@@ -169,7 +178,8 @@ namespace ClarionAssistant.Services
                             return;
                         }
                         var overlay = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc, false, capNativeLine, capLspCtx);
-                        overlay.ShowAsEmbedOverlay(h, capEditor ?? new AppTreeService().GetOpenClaGenEditor(), capCover);
+                        overlay.ShowAsEmbedOverlay(h, capEditor ?? new AppTreeService().GetOpenClaGenEditor(), capCover,
+                            capPwee ?? new AppTreeService().GetOpenPweeDetails());
                     }
                     catch (Exception ex)
                     {

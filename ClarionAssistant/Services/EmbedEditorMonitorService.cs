@@ -49,6 +49,14 @@ namespace ClarionAssistant.Services
 
         private static void Log(string msg) => Debug.WriteLine("[EmbedEditorMonitor] " + msg);
 
+        // d4635694 — durable diagnostics for the attach/dedup decisions (Debug.WriteLine is invisible in a
+        // deployed IDE; this made the tab-away/tab-back lost-edits repro undiagnosable). Transition-gated by
+        // the callers, so the 300ms poll can't spam the file.
+        private static void FileLog(string msg) => MonacoSpikeLog.Write("[embed-monitor] " + msg);
+
+        private static string IdOf(object o) =>
+            o == null ? "null" : "#" + System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(o).ToString("x8");
+
         /// <summary>Start the monitor (called from /Workspace/Autostart). Idempotent; defers until the workbench is up.</summary>
         public static void Start()
         {
@@ -140,19 +148,33 @@ namespace ClarionAssistant.Services
 
                 var at = new AppTreeService();
                 var editor = at.GetOpenClaGenEditor();
-                if (editor == null) { _lastEditor = null; _lastPwee = null; return; }   // embed closed → reset dedup
+                if (editor == null)
+                {
+                    // Embed closed → reset dedup. d4635694: log the transition (once, not per poll tick) —
+                    // a reset while an overlay holds unsaved edits is the lost-edits smoking gun.
+                    if (_lastEditor != null) FileLog("dedup reset — editor no longer found (" + source + ")");
+                    _lastEditor = null; _lastPwee = null; return;
+                }
 
                 var pwee = at.GetOpenPweeDetails();
-                if (pwee == null) { _lastEditor = null; _lastPwee = null; return; }      // editor but no PWEE loaded
+                if (pwee == null)
+                {
+                    if (_lastPwee != null) FileLog("dedup reset — pwee gone, editor alive (" + source + ")");
+                    _lastEditor = null; _lastPwee = null; return;      // editor but no PWEE loaded
+                }
 
                 // Same embed + same proc we already handled → nothing to do.
                 if (ReferenceEquals(editor, _lastEditor) && ReferenceEquals(pwee, _lastPwee)) return;
+
+                FileLog("attach trigger (" + source + "): editor " + IdOf(_lastEditor) + "→" + IdOf(editor)
+                        + " pwee " + IdOf(_lastPwee) + "→" + IdOf(pwee));
 
                 // New embed / proc-change → (re)attach. Record BEFORE attaching so a re-entrant call can't double-fire.
                 _lastEditor = editor; _lastPwee = pwee;
 
                 string err = ModernEmbeditorLauncher.AttachOverlayToOpenEmbed(isDark: false);
                 Log(err != null ? ("attach skipped (" + source + "): " + err) : ("attached via " + source));
+                FileLog(err != null ? ("attach skipped (" + source + "): " + err) : ("attached via " + source));
             }
             catch (Exception ex)
             {

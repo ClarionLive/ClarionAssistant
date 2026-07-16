@@ -396,7 +396,13 @@ namespace ClarionAssistant.Services
                     if (editor != null) return editor;
                 }
 
-                // Search all open windows (same pattern as FindAppViewContent)
+                // Search all open view contents. d4635694: this fork's IWorkbench has NO
+                // WorkbenchWindowCollection — ViewContentCollection is a List<IViewContent>, so each item
+                // IS a view content, not a window (verified by reflection against C12's
+                // ICSharpCode.SharpDevelop.dll). The old window-shaped probe (GetProp "ViewContent") was
+                // always null here, making this sweep dead code: the embeditor was only found via the
+                // ACTIVE window, so it "vanished" whenever another tab was active — which reset the embed
+                // monitor's dedup and re-attached (= reloaded, edits lost) the overlay on tab-return.
                 var windows = GetProp(workbench, "WorkbenchWindowCollection")
                            ?? GetProp(workbench, "ViewContentCollection");
                 if (windows is System.Collections.IEnumerable enumerable)
@@ -404,7 +410,8 @@ namespace ClarionAssistant.Services
                     foreach (var win in enumerable)
                     {
                         var vc = GetProp(win, "ViewContent")
-                              ?? GetProp(win, "ActiveViewContent");
+                              ?? GetProp(win, "ActiveViewContent")
+                              ?? win;   // ViewContentCollection items ARE the view contents
                         var editor = SearchViewContent(vc);
                         if (editor != null) return editor;
                     }
