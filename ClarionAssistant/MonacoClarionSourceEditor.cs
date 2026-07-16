@@ -1024,7 +1024,47 @@ namespace ClarionAssistant
         }
         // 'Show designer' on the lock overlay → bring the scratch designer tab back to front.
         void IMonacoEditorHost.OnActivateDesigner(MonacoEditorControl editor) { StructureDesignerService.ActivateCurrent(_editor); }
-        void IMonacoEditorHost.OnEditorNavigationCompleted(MonacoEditorControl editor, bool success) { MonacoSpikeLog.Write("overlay nav completed success=" + success); RemoveCover(); }
+        void IMonacoEditorHost.OnEditorNavigationCompleted(MonacoEditorControl editor, bool success)
+        {
+            MonacoSpikeLog.Write("overlay nav completed success=" + success);
+            RemoveCover();
+            FocusIfActiveTab();   // #66 round-3: the INITIAL open never fires WindowSelected (the tab is born selected)
+        }
+
+        /// <summary>Hand the freshly loaded Monaco page keyboard focus + claim the CA Find pad — but only
+        /// if OUR tab is the active document. A newly opened tab is already selected, so WindowSelected
+        /// never fires for it and nothing focused the editor (John's round-3 find: arrows dead until the
+        /// first tab SWITCH). The active-window guard keeps a background open (CA Explorer opens .inc AND
+        /// .clw together) from stealing focus off the displayed one.</summary>
+        private void FocusIfActiveTab()
+        {
+            try
+            {
+                object myWin = null;
+                try { myWin = GetType().GetProperty("WorkbenchWindow")?.GetValue(this, null); } catch { }
+                object wb = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
+                object aw = ReflectProp(wb, "ActiveWorkbenchWindow");
+                bool isActive = myWin != null && ReferenceEquals(myWin, aw);
+                MonacoSpikeLog.Write("initial-open focus: active=" + isActive + " (" + (_filePath ?? "?") + ")");
+                if (!isActive || _editor == null) return;
+                ClarionAssistant.Services.CaFindBroker.NotifyActivity(this);
+                _editor.FocusEditor();
+                _editor.PostJson("{\"type\":\"focusEditor\"}");
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("initial-open focus error: " + ex.Message); }
+        }
+
+        private static object ReflectProp(object obj, string name)
+        {
+            if (obj == null) return null;
+            try
+            {
+                var p = obj.GetType().GetProperty(name,
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                return (p != null && p.GetIndexParameters().Length == 0) ? p.GetValue(obj, null) : null;
+            }
+            catch { return null; }
+        }
         void IMonacoEditorHost.OnUnknownAction(MonacoEditorControl editor, string action, string rawJson)
         {
             if (action != "toggleBreakpoint") return;
