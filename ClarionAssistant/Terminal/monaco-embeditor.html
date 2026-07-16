@@ -2481,6 +2481,22 @@
         return false;
     }
 
+    // True when 0-based column `col0` sits INSIDE an open single-quoted string literal. Same
+    // quote-toggle walk as isInClarionComment — Clarion's doubled-quote escape ('can''t') toggles
+    // out-and-back-in, which nets to "still inside", so it needs no special case. Completion must
+    // never fire in a string: typing  IF MyVar = 'Tes  popped suggestions for "Tes" (683ded6c).
+    function isInClarionString(text, col0) {
+        if (!text) return false;
+        var inStr = false;
+        var n = Math.min(col0, text.length);
+        for (var i = 0; i < n; i++) {
+            var ch = text[i];
+            if (ch === "'") inStr = !inStr;
+            else if (ch === '!' && !inStr) return false;   // unquoted '!' — comment from here, not a string
+        }
+        return inStr;
+    }
+
     function registerClarionProviders() {
         // ----- Column-1 typing = no completion (native Clarion parity, task 8933fa05) -----
         // Column 1 is label/keyword territory (procedure labels, ROUTINE labels, MAP END...) — the native
@@ -2565,6 +2581,11 @@
                 // "PROP:" too and leave just "Bevel". Breaking the range on ':' keeps the "PROP:" prefix. (a47a6cac)
                 // Typing that began in column 1 (labels, MAP's END...) never completes — native parity. (8933fa05)
                 if (col1TypingSuppressed(model, position)) return { suggestions: [], incomplete: true };
+                // No completion inside a string literal or a comment (683ded6c): the caret after
+                // IF MyVar = 'Tes  is string text, not an identifier — a popup only invites a wrong accept.
+                var lineText = model.getLineContent(position.lineNumber);
+                if (isInClarionString(lineText, position.column - 1) || isInClarionComment(lineText, position.column - 1))
+                    return { suggestions: [], incomplete: true };
                 var before = model.getLineContent(position.lineNumber).substring(0, position.column - 1);
                 var pfx = /[A-Za-z0-9_]*$/.exec(before);
                 var startCol = position.column - (pfx ? pfx[0].length : 0);
@@ -2621,6 +2642,10 @@
                 if (!snippetsList.length) return { suggestions: [] };
                 // Same column-1 rule as the LSP provider — no popup for col-1 typing runs. (8933fa05)
                 if (col1TypingSuppressed(model, position)) return { suggestions: [] };
+                // Same string/comment rule as the LSP provider (683ded6c) — no snippets mid-string either.
+                var snipLine = model.getLineContent(position.lineNumber);
+                if (isInClarionString(snipLine, position.column - 1) || isInClarionComment(snipLine, position.column - 1))
+                    return { suggestions: [] };
                 if (!_snippetInsertCmd && editor) {
                     _snippetInsertCmd = editor.addCommand(0, function () {
                         var a = Array.prototype.slice.call(arguments);
@@ -2680,7 +2705,9 @@
             signatureHelpTriggerCharacters: ['(', ','],
             signatureHelpRetriggerCharacters: [','],
             provideSignatureHelp: function (model, position, token, context) {
-                if (isInClarionComment(model.getLineContent(position.lineNumber), position.column - 1)) return null;
+                var sigLine = model.getLineContent(position.lineNumber);
+                // A '(' or ',' typed inside a string/comment is text, not a call site (683ded6c).
+                if (isInClarionComment(sigLine, position.column - 1) || isInClarionString(sigLine, position.column - 1)) return null;
                 return requestFromHost('signatureHelp', { line: position.lineNumber, column: position.column, buffer: model.getValue() })
                     .then(function (resp) {
                         var h = resp && resp.signatureHelp;
