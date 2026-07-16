@@ -4176,8 +4176,10 @@
         }
         return acc;
     }
-    function outlineExpandAll() { outlineCollapsed = {}; renderOutlineCurrent(); }
-    function outlineCollapseAll() {
+    // NB: names must NOT match the button element ids (outlineExpandAll/outlineCollapseAll) — a named
+    // element global shadows the function, so addEventListener would silently bind the DOM node instead.
+    function expandOutlineAll() { outlineCollapsed = {}; renderOutlineCurrent(); }
+    function collapseOutlineAll() {
         var paths = outlineContainerPaths(outlineSymbols, '', []);
         for (var i = 0; i < paths.length; i++) outlineCollapsed[paths[i]] = true;
         renderOutlineCurrent();
@@ -4975,8 +4977,8 @@
         document.getElementById('findBtn').addEventListener('click', function () { openFindPanel(false); });
         document.getElementById('outlineBtn').addEventListener('click', toggleOutline);
         document.getElementById('outlineClose').addEventListener('click', closeOutline);
-        document.getElementById('outlineExpandAll').addEventListener('click', outlineExpandAll);
-        document.getElementById('outlineCollapseAll').addEventListener('click', outlineCollapseAll);
+        document.getElementById('outlineExpandAll').addEventListener('click', expandOutlineAll);
+        document.getElementById('outlineCollapseAll').addEventListener('click', collapseOutlineAll);
         document.getElementById('outlineFilterBtn').addEventListener('click', toggleOutlineFilter);
         document.getElementById('outlineFilterClear').addEventListener('click', function () {
             var inp = document.getElementById('outlineFilterInput'); inp.value = ''; outlineFilter = ''; renderOutlineCurrent(); inp.focus();
