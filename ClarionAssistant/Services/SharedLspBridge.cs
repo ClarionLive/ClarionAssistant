@@ -897,6 +897,24 @@ namespace ClarionAssistant.Services
                     if (rng != null) loc["range"] = rng;
                     sym["location"] = loc;
                 }
+                // Detail + Children come from a NEWER ClarionLsp.Contracts SymbolResult (hierarchical outline).
+                // Read via REFLECTION so CA still compiles/loads against the older vendored contract — the
+                // outline stays flat when these are absent and becomes a tree once the newer addin + contract
+                // are deployed (first-load-wins binds whichever ClarionLsp.Contracts.dll is present).
+                var t = s.GetType();
+                var detailProp = t.GetProperty("Detail");
+                if (detailProp != null) { var dv = detailProp.GetValue(s) as string; if (!string.IsNullOrEmpty(dv)) sym["detail"] = dv; }
+                var childrenProp = t.GetProperty("Children");
+                if (childrenProp != null)
+                {
+                    var kidsEnum = childrenProp.GetValue(s) as System.Collections.IEnumerable;
+                    if (kidsEnum != null)
+                    {
+                        var kids = new List<LspModels.SymbolResult>();
+                        foreach (var k in kidsEnum) { var ks = k as LspModels.SymbolResult; if (ks != null) kids.Add(ks); }
+                        if (kids.Count > 0) sym["children"] = SymbolsToList(kids.ToArray());
+                    }
+                }
                 list.Add(sym);
             }
             return list;
