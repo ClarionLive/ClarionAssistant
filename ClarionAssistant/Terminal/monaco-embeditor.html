@@ -362,6 +362,12 @@
     #outlineList .codicon-symbol-class, #outlineList .codicon-symbol-struct, #outlineList .codicon-symbol-interface,
     #outlineList .codicon-symbol-enum, #outlineList .codicon-symbol-enum-member { color: #ee9d28; }
     #outlineList .codicon-symbol-namespace { color: #cccccc; }
+    /* collapsible tree */
+    .ol-node.collapsed > .ol-children { display: none; }
+    .ol-row .ol-twisty { width: 14px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+        font-size: 14px; color: var(--title-color); cursor: pointer; }
+    .ol-row .ol-twisty.ol-leaf { cursor: default; }
+    .ol-row .ol-twisty:not(.ol-leaf):hover { color: var(--find-accent); }
     .ol-row .ol-name { overflow: hidden; text-overflow: ellipsis; }
     .ol-row .ol-detail { color: var(--title-color); opacity: .65; overflow: hidden; text-overflow: ellipsis; }
     .ol-empty { padding: 16px 12px; text-align: center; color: var(--title-color); }
@@ -4080,6 +4086,7 @@
     // ---- Document structure fly-out (Phase-1 outline prototype) ----
     var outlineSeq = 0;
     var _outlineDebounce = null;
+    var outlineCollapsed = {};   // path -> true when collapsed; survives refreshes so typing doesn't reset the tree
     function positionOutline() {
         var op = document.getElementById('outlinePanel'), ed = document.getElementById('editor');
         if (!op || !ed) return;
@@ -4154,30 +4161,66 @@
         if (!list) return;
         list.innerHTML = '';
         var n = 0;
-        function add(nodes, depth) {
-            for (var i = 0; i < nodes.length; i++) {
-                var s = nodes[i]; n++;
-                var row = document.createElement('div');
-                row.className = 'ol-row';
-                row.style.paddingLeft = (8 + depth * 14) + 'px';
-                var k = document.createElement('span'); k.className = 'ol-kind codicon codicon-symbol-' + outlineIcon(s.kind);
-                var nm = document.createElement('span'); nm.className = 'ol-name'; nm.textContent = s.name || '';
-                row.appendChild(k); row.appendChild(nm);
-                if (s.detail) { var dt = document.createElement('span'); dt.className = 'ol-detail'; dt.textContent = ' ' + s.detail; row.appendChild(dt); }
-                (function (ln) {
-                    row.addEventListener('click', function () {
-                        if (!ln || !editor) return;
-                        editor.revealLineInCenter(ln);
-                        editor.setPosition({ lineNumber: ln, column: 1 });
-                        editor.focus();
-                    });
-                })(s.line);
-                list.appendChild(row);
-                if (s.children && s.children.length) add(s.children, depth + 1);
+
+        function buildNode(s, depth, pathPrefix) {
+            n++;
+            var path = pathPrefix + '' + (s.name || '') + '#' + s.kind;
+            var hasKids = s.children && s.children.length;
+
+            var node = document.createElement('div');
+            node.className = 'ol-node';
+
+            var row = document.createElement('div');
+            row.className = 'ol-row';
+            row.style.paddingLeft = (6 + depth * 14) + 'px';
+
+            var tw = document.createElement('span');
+            tw.className = hasKids ? 'ol-twisty codicon codicon-chevron-down' : 'ol-twisty ol-leaf';
+            row.appendChild(tw);
+
+            var k = document.createElement('span');
+            k.className = 'ol-kind codicon codicon-symbol-' + outlineIcon(s.kind);
+            row.appendChild(k);
+
+            var nm = document.createElement('span');
+            nm.className = 'ol-name'; nm.textContent = s.name || '';
+            row.appendChild(nm);
+            if (s.detail) { var dt = document.createElement('span'); dt.className = 'ol-detail'; dt.textContent = ' ' + s.detail; row.appendChild(dt); }
+
+            (function (ln) {
+                row.addEventListener('click', function () {
+                    if (!ln || !editor) return;
+                    editor.revealLineInCenter(ln);
+                    editor.setPosition({ lineNumber: ln, column: 1 });
+                    editor.focus();
+                });
+            })(s.line);
+            node.appendChild(row);
+
+            if (hasKids) {
+                var kidsBox = document.createElement('div');
+                kidsBox.className = 'ol-children';
+                for (var i = 0; i < s.children.length; i++) kidsBox.appendChild(buildNode(s.children[i], depth + 1, path));
+                node.appendChild(kidsBox);
+
+                var apply = function (collapsed) {
+                    node.classList.toggle('collapsed', collapsed);
+                    tw.classList.toggle('codicon-chevron-right', collapsed);
+                    tw.classList.toggle('codicon-chevron-down', !collapsed);
+                };
+                if (outlineCollapsed[path]) apply(true);
+                tw.addEventListener('click', function (ev) {
+                    ev.stopPropagation();   // toggle only — don't navigate
+                    var collapsed = !node.classList.contains('collapsed');
+                    if (collapsed) outlineCollapsed[path] = true; else delete outlineCollapsed[path];
+                    apply(collapsed);
+                });
             }
+            return node;
         }
+
         if (!symbols || !symbols.length) { list.innerHTML = '<div class="ol-empty">No structure.</div>'; }
-        else add(symbols, 0);
+        else for (var i = 0; i < symbols.length; i++) list.appendChild(buildNode(symbols[i], 0, ''));
         if (countEl) countEl.textContent = n ? (n + (n === 1 ? ' symbol' : ' symbols')) : '';
     }
 
