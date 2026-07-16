@@ -412,6 +412,9 @@ foreach ($ver in $TargetVersions) {
                 elseif (Get-Command node -ErrorAction SilentlyContinue) { (Get-Command node).Source }
                 else { "C:\Program Files\nodejs\node.exe" }
             if (Test-Path $NodeExeSrc) {
+                # $LspDestDir is only created by the server-output copy above; when that was SKIPped
+                # (no LSP build output) a fresh target has no lsp-server dir and this copy would die.
+                New-Item -Path $LspDestDir -ItemType Directory -Force | Out-Null
                 Copy-Item $NodeExeSrc (Join-Path $LspDestDir "node.exe") -Force
                 Write-Host "  OK    lsp-server\node.exe" -ForegroundColor Green
                 $copied++
