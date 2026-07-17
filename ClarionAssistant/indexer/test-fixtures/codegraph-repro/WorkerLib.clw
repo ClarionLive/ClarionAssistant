@@ -6,16 +6,28 @@ WorkerClass.Sign PROCEDURE( LONG pData )
   CODE
   RETURN 0
 
+! Bug N repro (NOT YET FIXED): see WorkerLib.inc for the full root-cause writeup. Ask is
+! identical in shape to Sign above -- only its name differs, and that name happens to collide
+! with the Clarion built-in ASK() keyword.
+WorkerClass.Ask PROCEDURE( LONG pData )
+  CODE
+  RETURN 0
+
 
 
 ! Bug C repro: worker is a local DATA-section variable, and Sign() is called on it
-! twice from this same procedure. Before the fix, only the line-9 call survived 
+! twice from this same procedure. Before the fix, only the line-9 call survived
 ! line 10 was silently dropped as a "duplicate" (same fromId/toId, no line in the key).
 TestSignatureFlow PROCEDURE()
 worker    WorkerClass
 result    LONG
   CODE
   result = worker.Sign( 1 )
+! Bug N repro (NOT YET FIXED, local-variable path): worker.Ask( 1 ), right next to
+! worker.Sign( 1 ) above -- same object, same file, same DATA-section-local resolution path.
+! Sign resolves; Ask does not, purely because of its name. Expected: zero calls rows to
+! WorkerClass.Ask from here until Bug N is fixed.
+  result = worker.Ask( 1 )
   result = worker.Sign( 2 )
   Result = ParameterTest( Worker )
   RETURN result
@@ -49,6 +61,12 @@ OwnerClass.CallViaMember PROCEDURE( )
 result   LONG
   CODE
   result = SELF.MyWorker.Sign( 10 )
+! Bug N repro (NOT YET FIXED, class-member path): SELF.MyWorker.Ask( 10 ), right next to
+! SELF.MyWorker.Sign( 10 ) above -- same member, same class, same cross-file class-member
+! resolution path (#84/#86, and Bug M's inheritance walk when applicable). Proves Bug N is
+! independent of Bug M/D/E: the member's type resolves correctly either way (Sign proves
+! that), Ask is skipped purely because of its name, before type resolution is even reached.
+  result = SELF.MyWorker.Ask( 10 )
   RETURN result
 
 ! Bug F repro: CommentedWorker is declared with a trailing inline comment in

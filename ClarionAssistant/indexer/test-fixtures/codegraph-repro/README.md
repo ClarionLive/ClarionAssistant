@@ -2,10 +2,15 @@
 
 Contributed by [@geircodes](https://github.com/geircodes) alongside issues #79–#90, extended for
 the `LIKE(...)`/`EQUATE`-alias CLASS-member fix (PR #92), the GROUP-typed CLASS-member fix
-(PR #93), and the inherited-CLASS-member dotted-call resolution fix (PR TBD) — a single
+(PR #93), and the inherited-CLASS-member dotted-call resolution fix (PR #112) — a single
 compiling Clarion solution whose procedures each exercise one historical parser/indexer bug.
 This is currently the only regression coverage the CodeGraph parser has; run it after ANY change
 to `Parsing/ClarionParser.cs` or `Graph/CodeGraphIndexer.cs` (either synced copy).
+
+Also documents one **known, not-yet-fixed** gap (Bug N, see below) as a deliberate negative
+control: `WorkerClass.Ask` is expected to have **zero** `calls` rows until Bug N is fixed. Don't
+"fix" the fixture by making it pass — re-run it after any attempt at Bug N and expect this count
+to change from 0, not stay at 0.
 
 ## Run
 
@@ -13,33 +18,61 @@ to `Parsing/ClarionParser.cs` or `Graph/CodeGraphIndexer.cs` (either synced copy
 indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproSolution.sln --db %TEMP%\codegraph-repro.db
 ```
 
-## Expected results (verified 2026-07-17 with all #79–#90 fixes applied, plus #92, #93, and the
-inherited-CLASS-member dotted-call resolution fix)
+## Expected results (verified 2026-07-17 with all #79–#90 fixes applied, plus #92, #93, and #112;
+line numbers below reflect the fixture AFTER Bug N's `Ask()` additions)
 
 ### Callers of `WorkerClass.Sign` — exactly 20 `calls` rows
 
 | Caller | Line | Proves issue |
 |---|---|---|
-| TestSignatureFlow | 18 | baseline (direct call) |
-| TestSignatureFlow | 19 | baseline (second call shape) |
-| ParameterTest | 31 | #87 (call through PROCEDURE parameter) |
-| ReturnTest | 40 | baseline (inline RETURN call shape) |
-| OwnerClass.CallViaMember | 51 | #84+#86 (.inc member, cross-file type) |
+| TestSignatureFlow | 25 | baseline (direct call) |
+| TestSignatureFlow | 31 | baseline (second call shape) |
+| ParameterTest | 43 | #87 (call through PROCEDURE parameter) |
+| ReturnTest | 52 | baseline (inline RETURN call shape) |
 | MainHelperProc | 62 | #81 (procedure in main PROGRAM file) |
-| OwnerClass.CallViaCommentedMember | 67 | #85+#86 (trailing-comment member) |
-| CommentedLocalTest | 83 | #85 (trailing-comment DATA local) |
-| GroupBugClass.CallViaAfterGroupMember | 101 | #88 (member after inline GROUP END) |
-| PeriodBugClass.CallViaAfterPeriodMember | 117 | #88 (member after inline GROUP period) |
-| OmitTest | 154 | #79 (call after OMIT block) |
-| AfterOmitProc | 163 | #79 (procedure after OMIT block) |
-| CommentEmbeddedTest | 180 | #80 (call with embedded comment) |
-| ConditionalOmitTest | 194 | #79 (conditional OMIT/COMPILE) |
-| GroupQueueLocalTest | 213 | #89 (local after GROUP(Type) two-line) |
-| InlineLocalGroupTest | 228 | #89 (local after GROUP(Type) END inline) |
-| LocalDerivedClassTest | 254 | #90 (attribution after local CLASS(Parent)) |
-| LikeMemberBugClass.CallViaPlainInstanceMember | 271 | #92 (call through a reference CLASS member, unaffected control) |
-| MultiLineGroupBugClass.CallViaAfterMultiLineGroupMember | 289 | #93 (member after multi-line GROUP with its own extra field) |
-| DerivedWorkerClass.CallViaInheritedMember | 300 | this PR (member declared on a BASE class, accessed via SELF. from a DERIVED class's own method) |
+| OwnerClass.CallViaMember | 63 | #84+#86 (.inc member, cross-file type) |
+| OwnerClass.CallViaCommentedMember | 85 | #85+#86 (trailing-comment member) |
+| CommentedLocalTest | 101 | #85 (trailing-comment DATA local) |
+| GroupBugClass.CallViaAfterGroupMember | 119 | #88 (member after inline GROUP END) |
+| PeriodBugClass.CallViaAfterPeriodMember | 135 | #88 (member after inline GROUP period) |
+| OmitTest | 172 | #79 (call after OMIT block) |
+| AfterOmitProc | 181 | #79 (procedure after OMIT block) |
+| CommentEmbeddedTest | 198 | #80 (call with embedded comment) |
+| ConditionalOmitTest | 212 | #79 (conditional OMIT/COMPILE) |
+| GroupQueueLocalTest | 231 | #89 (local after GROUP(Type) two-line) |
+| InlineLocalGroupTest | 246 | #89 (local after GROUP(Type) END inline) |
+| LocalDerivedClassTest | 272 | #90 (attribution after local CLASS(Parent)) |
+| LikeMemberBugClass.CallViaPlainInstanceMember | 289 | #92 (call through a reference CLASS member, unaffected control) |
+| MultiLineGroupBugClass.CallViaAfterMultiLineGroupMember | 307 | #93 (member after multi-line GROUP with its own extra field) |
+| DerivedWorkerClass.CallViaInheritedMember | 318 | #112 (member declared on a BASE class, accessed via SELF. from a DERIVED class's own method) |
+
+### Callers of `WorkerClass.Ask` — exactly 0 `calls` rows (Bug N, **not yet fixed**)
+
+`Ask` is identical in shape to `Sign` (same class, same signature) — the only difference is its
+name, which happens to collide with the Clarion built-in `ASK()` window/UI statement. Both call
+sites below sit directly next to an equivalent, resolving `Sign` call on the SAME object, at the
+SAME call site, so the two can be compared line-for-line:
+
+| Caller | Line | Same-site `Sign` call (for comparison) | Path proven broken |
+|---|---|---|---|
+| TestSignatureFlow | 30 | line 25 (`worker.Sign( 1 )`) | DATA-section local variable (baseline path) |
+| OwnerClass.CallViaMember | 69 | line 63 (`SELF.MyWorker.Sign( 10 )`) | cross-file CLASS member (#84/#86, and #112's inheritance walk when applicable) |
+
+**Root cause**: `"ASK"` is in `ClarionBuiltins.cs`'s `_builtins` set (window/UI statement). Both
+the `SELF.Method` and the dotted `ObjectName.Method` call-detection loops in
+`CodeGraphIndexer.cs` unconditionally `continue` past any method name matched by
+`IsBuiltInOrKeyword(...)`, before any type resolution is attempted — with no way to tell a bare
+built-in statement (`ASK(...)`) apart from a class method call that merely shares its name
+(`worker.Ask(...)`). Confirmed independent of #112 (inheritance): the class-member call site
+above resolves the member's type correctly (`Sign` proves that at the very same call site) —
+`Ask` is skipped purely by name, before that type resolution is ever reached.
+
+Real-world confirmation (not reproduced in this fixture, referred to generically): the same
+built-in/keyword collision was confirmed against a production Clarion solution across at least
+19 distinct real class-method names beyond `Open`/`Close`/`Ask` (e.g. `Delete`, `Send`, `Post`,
+`Empty`, `Reset`, `Get`, `Put`, `Update`, `Destroy` — all real Clarion built-in keywords also used
+as ordinary ABC-style class method names), suggesting a substantial number of currently-invisible
+calls solution-wide, not a narrow edge case.
 
 ### Symbols
 
@@ -88,6 +121,10 @@ inherited-CLASS-member dotted-call resolution fix)
   calling method live on two different, both top-level, `.inc`-declared classes joined only by
   `CLASS(BaseClass)` inheritance. Proves the dotted-call resolver's class-member fallback walks
   the `inherits` chain instead of only ever checking the calling method's own class name.
+- `WorkerClass.Ask` (Bug N, **not yet fixed**): a `procedure` symbol, parsed and stored exactly
+  as correctly as `WorkerClass.Sign` right next to it (proving the symbol/parsing side is
+  unaffected) — the gap is entirely in call-site resolution, not symbol capture. Compare against
+  the "Callers of `WorkerClass.Ask`" table above.
 
 ### Program symbol (#81)
 
@@ -101,6 +138,12 @@ inherited-CLASS-member dotted-call resolution fix)
 SELECT s2.name, r.line_number FROM relationships r
 JOIN symbols s1 ON r.to_id=s1.id JOIN symbols s2 ON r.from_id=s2.id
 WHERE s1.name='WorkerClass.Sign' AND r.type='calls' ORDER BY r.line_number;
+
+-- Bug N, not yet fixed: expect 0 rows. Re-run after any attempt at Bug N and expect this
+-- to become 2 rows (TestSignatureFlow line 30, OwnerClass.CallViaMember line 69), not stay at 0.
+SELECT s2.name, r.line_number FROM relationships r
+JOIN symbols s1 ON r.to_id=s1.id JOIN symbols s2 ON r.from_id=s2.id
+WHERE s1.name='WorkerClass.Ask' AND r.type='calls' ORDER BY r.line_number;
 
 SELECT name, type, scope, parent_name, params FROM symbols WHERE type='class' OR scope='parameter'
 OR name IN ('LocalDerived','workerRef','LocalGroup','InlineLocalGroup','GenCertData','SomeHandle','InlineGroup','InlineGroupPeriod','MultiLineGroup','HiddenGroupMember','AttrTermGroup','AttrTermGroupPeriod','BaseWorker');

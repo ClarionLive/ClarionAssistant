@@ -981,7 +981,16 @@ namespace ClarionCodeGraph.Graph
                         foreach (System.Text.RegularExpressions.Match spm in selfParentMatches)
                         {
                             string methodName = spm.Groups[2].Value;
-                            if (ClarionBuiltins.IsBuiltInOrKeyword(methodName)) continue;
+                            // Bug N: deliberately do NOT skip built-in/keyword method names here. A
+                            // genuine Clarion built-in statement (e.g. OPEN(SomeFile), ASK()) is always
+                            // a plain, unqualified call -- Clarion has no "object.OPEN(...)" form for the
+                            // language built-in -- so "SELF.Open(...)"/"PARENT.Ask(...)" unambiguously
+                            // means a class method call, even when the method's name collides with a
+                            // built-in keyword (Open/Close/Ask/Delete/Send/Get/... -- ABC itself defines
+                            // methods with these exact names on WindowManager/FileManager/etc.). The
+                            // symbolNameToId lookup below only ever succeeds against a real user-defined
+                            // procedure symbol, so this can't manufacture a false "calls" edge -- it only
+                            // stops erasing real ones.
 
                             // Try to resolve as ClassName.MethodName using the current procedure's class
                             string callerName = null;
@@ -1024,11 +1033,15 @@ namespace ClarionCodeGraph.Graph
                         {
                             string objName = dm.Groups[1].Value;
                             string methodName = dm.Groups[2].Value;
-                            // Skip SELF/PARENT (handled above) and built-ins
+                            // Skip SELF/PARENT (handled above -- see loop 1)
                             if (string.Equals(objName, "SELF", StringComparison.OrdinalIgnoreCase) ||
                                 string.Equals(objName, "PARENT", StringComparison.OrdinalIgnoreCase))
                                 continue;
-                            if (ClarionBuiltins.IsBuiltInOrKeyword(methodName)) continue;
+                            // Bug N: deliberately do NOT skip built-in/keyword method names here either,
+                            // for the same reason as loop 1 above -- "Object.Method(...)" dot notation is
+                            // never how a real Clarion built-in statement is invoked, so this can't be
+                            // confused with one; it only stops erasing real method calls whose name
+                            // happens to collide with a built-in keyword.
 
                             // Resolve the object name through its declared class type when it is a
                             // typed variable (e.g. "Worker.Sign" where Worker is a WorkerClass →
