@@ -475,22 +475,98 @@ namespace ClarionAssistant.Services
                 var fileServiceType = sharpDevelopAsm.GetType("ICSharpCode.SharpDevelop.FileService");
                 if (fileServiceType == null) return;
 
+                // JumpToFilePosition opens the file (which restores the last remembered caret/
+                // scroll position via the workbench's memento mechanism) and then explicitly
+                // overrides the caret to the requested line, in one synchronous call, in the
+                // correct order. Calling OpenFile + setting the caret ourselves afterward raced
+                // against that memento restore and lost.
+                var jumpMethod = fileServiceType.GetMethod("JumpToFilePosition",
+                    BindingFlags.Public | BindingFlags.Static, null,
+                    new[] { typeof(string), typeof(int), typeof(int) }, null);
+                if (jumpMethod == null) return;
+
+                // JumpTo takes 0-based line/column in this SharpDevelop version
+                // (Math.Max(0, ...) internally) — lineNumber here is 1-based.
+                // A newer SharpDevelop source diff describes IPositionable.JumpTo also centering
+                // the view itself via a deferred SafeThreadAsyncCall -> CenterViewOn. Tested directly
+                // against THIS build (2.1.0.2447), including a deliberate 800ms wait before checking:
+                // no such centering ever happens here — the view stays pinned exactly at the jump
+                // target. So that behavior either isn't present in this exact build or isn't reachable
+                // through this call path; we can't rely on it and must center ourselves.
+                jumpMethod.Invoke(null, new object[] { filePath, lineNumber - 1, 0 });
+                DeferCenterViewOnLine(lineNumber - 1);
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Run CenterViewOnLine after a short delay instead of immediately. A brand-new tab's text
+        /// area doesn't have a valid height/VisibleLineCount until its layout pass completes, and
+        /// something (native "ensure caret visible" handling, tied to the new control settling in)
+        /// resets an immediate scroll attempt — confirmed by testing: a single queued BeginInvoke
+        /// (next UI-thread message-loop turn) was NOT enough to land after that reset, producing an
+        /// inconsistent, partially-reset scroll position. A short real-time Timer delay reliably runs
+        /// after the new tab has finished settling. Re-fetches the active text area at invocation
+        /// time rather than capturing it now, since the active view could change before this runs.
+        /// </summary>
+        private void DeferCenterViewOnLine(int lineNumber0Based)
+        {
+            var timer = new Timer { Interval = 150 };
+            timer.Tick += (s, e) =>
+            {
+                timer.Stop();
+                timer.Dispose();
+                CenterViewOnLine(GetActiveTextArea(), lineNumber0Based);
+            };
+            timer.Start();
+        }
+
+        /// <summary>
+        /// Open a file WITHOUT navigating anywhere — leaves the workbench's own memento restore
+        /// (last remembered caret/scroll position for this file, if any) in effect.
+        /// </summary>
+        public void OpenFileOnly(string filePath)
+        {
+            try
+            {
+                var sharpDevelopAsm = Assembly.Load("ICSharpCode.SharpDevelop");
+                if (sharpDevelopAsm == null) return;
+
+                var fileServiceType = sharpDevelopAsm.GetType("ICSharpCode.SharpDevelop.FileService");
+                if (fileServiceType == null) return;
+
                 var openFileMethod = fileServiceType.GetMethod("OpenFile",
                     BindingFlags.Public | BindingFlags.Static, null, new Type[] { typeof(string) }, null);
-                if (openFileMethod != null)
+                openFileMethod?.Invoke(null, new object[] { filePath });
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Scroll a SPECIFIC text area so the given 0-based line sits roughly centered in the
+        /// viewport, instead of pinned to the very top. Computes the target first-visible line
+        /// from TextView.VisibleLineCount, but always applies it via the TextArea's own ScrollTo
+        /// method — setting TextView.FirstVisibleLine directly gets silently overridden (it's a
+        /// cache synced FROM the scrollbar, not the other way around).
+        /// </summary>
+        private void CenterViewOnLine(object textArea, int lineNumber0Based)
+        {
+            try
+            {
+                if (textArea == null) return;
+
+                int firstVisible = lineNumber0Based;
+                var textView = GetProperty(textArea, "TextView");
+                object visibleLineCountObj = textView != null ? GetProperty(textView, "VisibleLineCount") : null;
+                if (visibleLineCountObj is int)
                 {
-                    openFileMethod.Invoke(null, new object[] { filePath });
-                    if (lineNumber > 0)
-                    {
-                        var textArea = GetActiveTextArea();
-                        if (textArea != null)
-                        {
-                            var caret = GetProperty(textArea, "Caret");
-                            SetProperty(caret, "Line", lineNumber - 1);
-                            SetProperty(caret, "Column", 0);
-                        }
-                    }
+                    int visibleLineCount = (int)visibleLineCountObj;
+                    if (visibleLineCount > 0)
+                        firstVisible = Math.Max(0, lineNumber0Based - visibleLineCount / 2);
                 }
+
+                var scrollToMethod = textArea.GetType().GetMethod("ScrollTo", new[] { typeof(int) });
+                scrollToMethod?.Invoke(textArea, new object[] { firstVisible });
             }
             catch { }
         }
@@ -565,15 +641,7 @@ namespace ClarionAssistant.Services
                 SetProperty(caret, "Line", lineNumber - 1); // 0-based internally
                 SetProperty(caret, "Column", 0);
 
-                // Scroll to make the line visible
-                try
-                {
-                    var scrollToMethod = textArea.GetType().GetMethod("ScrollTo",
-                        new[] { typeof(int) });
-                    if (scrollToMethod != null)
-                        scrollToMethod.Invoke(textArea, new object[] { lineNumber - 1 });
-                }
-                catch { }
+                CenterViewOnLine(textArea, lineNumber - 1);
 
                 return true;
             }

@@ -1131,21 +1131,31 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "open_file",
-                Description = "Open a file in the Clarion IDE editor and optionally navigate to a specific line number",
+                Description = "Open a file in the Clarion IDE editor and optionally navigate to a specific line number. " +
+                              "If 'line' is omitted entirely, the file opens at whatever position the IDE last remembered for it " +
+                              "(its own memento/reopen behavior) instead of being forced to line 1.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
                         { "path", "Absolute path to the file to open" },
-                        { "line", "Line number to navigate to (optional, 1-based)" }
+                        { "line", "Line number to navigate to (optional, 1-based). Omit to leave the IDE's remembered last position untouched." }
                     },
                     new[] { "path" }),
                 RequiresUiThread = true,
                 Handler = args =>
                 {
                     string path = McpJsonRpc.GetString(args, "path");
-                    int line = McpJsonRpc.GetInt(args, "line", 1);
                     if (!File.Exists(path))
                         return "Error: file not found: " + path;
+
+                    bool lineProvided = args != null && args.ContainsKey("line") && args["line"] != null;
+                    if (!lineProvided)
+                    {
+                        _editorService.OpenFileOnly(path);
+                        return "Opened " + path;
+                    }
+
+                    int line = McpJsonRpc.GetInt(args, "line", 1);
                     _editorService.NavigateToFileAndLine(path, line);
                     return "Opened " + path + " at line " + line;
                 }
