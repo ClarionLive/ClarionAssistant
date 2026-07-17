@@ -4683,6 +4683,22 @@
     // ---- Replace (editable slots only; replText comes from the pad) ----
     function doReplace(onlyChecked, replText) {
         if (!editor || !findResults.length) return;
+        // OVERLAY-ORIGIN replace (no explicit replText): the visible query must match the results being
+        // replaced — the pad may have retargeted the shared engine, or the user edited the find box inside
+        // the 120ms debounce window (cross-model adversary, run 2). Re-run the visible query first;
+        // checked-row replaces bail for reconfirmation because a re-search resets the row checkboxes.
+        if (replText === undefined || replText === null) {
+            var panelR = document.getElementById('findPanel');
+            if (panelR && !panelR.classList.contains('hidden')) {
+                var fiR = document.getElementById('findInput');
+                if (fiR && fiR._incT) { clearTimeout(fiR._incT); fiR._incT = null; }
+                if (fiR && (fiR.value || '') !== (lastFindQuery || '')) {
+                    runFind(fiR.value);   // synchronous — findResults now match the visible query
+                    if (!fiR.value || !findResults.length) { showToast('No matches to replace', false); return; }
+                    if (onlyChecked) { showToast('Results refreshed — review the list and Replace Selected again', false); return; }
+                }
+            }
+        }
         // Replace at LIVE positions — after a buffer edit the captured ranges are stale, and an edit
         // built from them would replace the WRONG text (one line off / mid-word). (#65)
         syncFindMatches();

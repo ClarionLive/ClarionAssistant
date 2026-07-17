@@ -370,6 +370,17 @@
         var t = activeTabObj();
         if (!t || !activeKey || !matches.length) { showToast('Nothing to replace', false); return; }
         saveActiveTabInputs();
+        // The engine may hold ANOTHER surface's results — an overlay search updates matches/lastQuery
+        // here without touching this pad's input (cross-model adversary, run 2). Never replace results
+        // for a query this pad isn't displaying: re-run OUR query first (the editor processes the
+        // search op before the replace op — WebView2 messages are ordered), and checked-row replaces
+        // bail for reconfirmation because a re-search resets the row checkboxes.
+        var fiVal = byId('findInput').value || '';
+        if (fiVal !== (lastQuery || '')) {
+            runSearch(true);   // passive refresh with the pad's own query/opts
+            if (!fiVal) { showToast('Nothing to replace', false); return; }
+            if (onlyChecked) { showToast('Results refreshed for the current query — review and Replace Selected again', false); return; }
+        }
         var replText = t.replaceText || '';
         if (replText) { addHistory(replHistory, replText, 25); persistState(); persistSharedHistory(); }
         fwd({ type: 'caFind', op: 'replace', replText: replText, onlyChecked: !!onlyChecked });
