@@ -475,48 +475,26 @@ namespace ClarionAssistant.Services
                 var fileServiceType = sharpDevelopAsm.GetType("ICSharpCode.SharpDevelop.FileService");
                 if (fileServiceType == null) return;
 
-                // Prefer JumpToFilePosition — it opens the file (which restores the last
-                // remembered caret/scroll position via the workbench's memento mechanism)
-                // and then explicitly overrides the caret to the requested line, in one
-                // synchronous call. Calling OpenFile + setting the caret ourselves afterward
-                // raced against that memento restore and lost.
+                // JumpToFilePosition opens the file (which restores the last remembered caret/
+                // scroll position via the workbench's memento mechanism) and then explicitly
+                // overrides the caret to the requested line, in one synchronous call, in the
+                // correct order. Calling OpenFile + setting the caret ourselves afterward raced
+                // against that memento restore and lost.
                 var jumpMethod = fileServiceType.GetMethod("JumpToFilePosition",
                     BindingFlags.Public | BindingFlags.Static, null,
                     new[] { typeof(string), typeof(int), typeof(int) }, null);
+                if (jumpMethod == null) return;
 
-                if (jumpMethod != null)
-                {
-                    // JumpTo takes 0-based line/column in this SharpDevelop version
-                    // (Math.Max(0, ...) internally) — lineNumber here is 1-based.
-                    // A newer SharpDevelop source diff describes IPositionable.JumpTo also centering
-                    // the view itself via a deferred SafeThreadAsyncCall -> CenterViewOn. Tested directly
-                    // against THIS build (2.1.0.2447), including a deliberate 800ms wait before checking:
-                    // no such centering ever happens here — the view stays pinned exactly at the jump
-                    // target. So that behavior either isn't present in this exact build or isn't reachable
-                    // through this call path; we can't rely on it and must center ourselves.
-                    jumpMethod.Invoke(null, new object[] { filePath, lineNumber - 1, 0 });
-                    DeferCenterViewOnLine(lineNumber - 1);
-                    return;
-                }
-
-                // Fallback for versions where JumpToFilePosition isn't found this way.
-                var openFileMethod = fileServiceType.GetMethod("OpenFile",
-                    BindingFlags.Public | BindingFlags.Static, null, new Type[] { typeof(string) }, null);
-                if (openFileMethod != null)
-                {
-                    openFileMethod.Invoke(null, new object[] { filePath });
-                    if (lineNumber > 0)
-                    {
-                        var textArea = GetActiveTextArea();
-                        if (textArea != null)
-                        {
-                            var caret = GetProperty(textArea, "Caret");
-                            SetProperty(caret, "Line", lineNumber - 1);
-                            SetProperty(caret, "Column", 0);
-                        }
-                        DeferCenterViewOnLine(lineNumber - 1);
-                    }
-                }
+                // JumpTo takes 0-based line/column in this SharpDevelop version
+                // (Math.Max(0, ...) internally) — lineNumber here is 1-based.
+                // A newer SharpDevelop source diff describes IPositionable.JumpTo also centering
+                // the view itself via a deferred SafeThreadAsyncCall -> CenterViewOn. Tested directly
+                // against THIS build (2.1.0.2447), including a deliberate 800ms wait before checking:
+                // no such centering ever happens here — the view stays pinned exactly at the jump
+                // target. So that behavior either isn't present in this exact build or isn't reachable
+                // through this call path; we can't rely on it and must center ourselves.
+                jumpMethod.Invoke(null, new object[] { filePath, lineNumber - 1, 0 });
+                DeferCenterViewOnLine(lineNumber - 1);
             }
             catch { }
         }
