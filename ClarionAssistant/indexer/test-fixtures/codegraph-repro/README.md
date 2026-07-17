@@ -2,15 +2,17 @@
 
 Contributed by [@geircodes](https://github.com/geircodes) alongside issues #79–#90, extended for
 the `LIKE(...)`/`EQUATE`-alias CLASS-member fix (PR #92), the GROUP-typed CLASS-member fix
-(PR #93), and the inherited-CLASS-member dotted-call resolution fix (PR #112) — a single
-compiling Clarion solution whose procedures each exercise one historical parser/indexer bug.
-This is currently the only regression coverage the CodeGraph parser has; run it after ANY change
-to `Parsing/ClarionParser.cs` or `Graph/CodeGraphIndexer.cs` (either synced copy).
+(PR #93), the inherited-CLASS-member dotted-call resolution fix (PR #112), and the
+built-in-name-collision fix (PR #118) — a single compiling Clarion solution whose procedures each
+exercise one historical parser/indexer bug. This is currently the only regression coverage the
+CodeGraph parser has; run it after ANY change to `Parsing/ClarionParser.cs` or
+`Graph/CodeGraphIndexer.cs` (either synced copy).
 
-Also documents one **known, not-yet-fixed** gap (Bug N, see below) as a deliberate negative
-control: `WorkerClass.Ask` is expected to have **zero** `calls` rows until Bug N is fixed. Don't
-"fix" the fixture by making it pass — re-run it after any attempt at Bug N and expect this count
-to change from 0, not stay at 0.
+Includes `WorkerClass.Ask` — a method whose name collides with the Clarion built-in `ASK()`
+statement — as coverage for Bug N (PR #118). Before that fix its two call sites resolved to
+**zero** `calls` rows (the dotted/`SELF.` call-detection loops skipped any built-in-named method);
+after it, they resolve to the expected **2**. If that count ever drops back to 0, Bug N has
+regressed.
 
 ## Run
 
@@ -18,8 +20,8 @@ to change from 0, not stay at 0.
 indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproSolution.sln --db %TEMP%\codegraph-repro.db
 ```
 
-## Expected results (verified 2026-07-17 with all #79–#90 fixes applied, plus #92, #93, and #112;
-line numbers below reflect the fixture AFTER Bug N's `Ask()` additions)
+## Expected results (verified 2026-07-17 with all #79–#90 fixes applied, plus #92, #93, #112, and
+#118; line numbers below reflect the fixture AFTER Bug N's `Ask()` additions)
 
 ### Callers of `WorkerClass.Sign` — exactly 20 `calls` rows
 
@@ -46,26 +48,27 @@ line numbers below reflect the fixture AFTER Bug N's `Ask()` additions)
 | MultiLineGroupBugClass.CallViaAfterMultiLineGroupMember | 307 | #93 (member after multi-line GROUP with its own extra field) |
 | DerivedWorkerClass.CallViaInheritedMember | 318 | #112 (member declared on a BASE class, accessed via SELF. from a DERIVED class's own method) |
 
-### Callers of `WorkerClass.Ask` — exactly 0 `calls` rows (Bug N, **not yet fixed**)
+### Callers of `WorkerClass.Ask` — exactly 2 `calls` rows (Bug N, **fixed in #118**)
 
 `Ask` is identical in shape to `Sign` (same class, same signature) — the only difference is its
 name, which happens to collide with the Clarion built-in `ASK()` window/UI statement. Both call
 sites below sit directly next to an equivalent, resolving `Sign` call on the SAME object, at the
 SAME call site, so the two can be compared line-for-line:
 
-| Caller | Line | Same-site `Sign` call (for comparison) | Path proven broken |
+| Caller | Line | Same-site `Sign` call (for comparison) | Path proven fixed |
 |---|---|---|---|
 | TestSignatureFlow | 30 | line 25 (`worker.Sign( 1 )`) | DATA-section local variable (baseline path) |
 | OwnerClass.CallViaMember | 69 | line 63 (`SELF.MyWorker.Sign( 10 )`) | cross-file CLASS member (#84/#86, and #112's inheritance walk when applicable) |
 
-**Root cause**: `"ASK"` is in `ClarionBuiltins.cs`'s `_builtins` set (window/UI statement). Both
-the `SELF.Method` and the dotted `ObjectName.Method` call-detection loops in
-`CodeGraphIndexer.cs` unconditionally `continue` past any method name matched by
-`IsBuiltInOrKeyword(...)`, before any type resolution is attempted — with no way to tell a bare
-built-in statement (`ASK(...)`) apart from a class method call that merely shares its name
-(`worker.Ask(...)`). Confirmed independent of #112 (inheritance): the class-member call site
-above resolves the member's type correctly (`Sign` proves that at the very same call site) —
-`Ask` is skipped purely by name, before that type resolution is ever reached.
+**Root cause (fixed by #118)**: `"ASK"` is in `ClarionBuiltins.cs`'s `_builtins` set (window/UI
+statement). Before #118 both the `SELF.Method` and the dotted `ObjectName.Method` call-detection
+loops in `CodeGraphIndexer.cs` unconditionally `continue`d past any method name matched by
+`IsBuiltInOrKeyword(...)`, before any type resolution was attempted — erasing the call. #118
+removed those two guards: a dotted call (`worker.Ask(...)` / `SELF.Ask(...)`) is syntactically
+never how a bare built-in statement (`ASK(...)`) is written, so the collision can't actually
+occur at these two sites. Independent of #112 (inheritance): the class-member call site above
+resolves the member's type correctly (`Sign` proves that at the very same call site) — `Ask` was
+skipped purely by name, before that type resolution was ever reached.
 
 Real-world confirmation (not reproduced in this fixture, referred to generically): the same
 built-in/keyword collision was confirmed against a production Clarion solution across at least
@@ -121,9 +124,9 @@ calls solution-wide, not a narrow edge case.
   calling method live on two different, both top-level, `.inc`-declared classes joined only by
   `CLASS(BaseClass)` inheritance. Proves the dotted-call resolver's class-member fallback walks
   the `inherits` chain instead of only ever checking the calling method's own class name.
-- `WorkerClass.Ask` (Bug N, **not yet fixed**): a `procedure` symbol, parsed and stored exactly
-  as correctly as `WorkerClass.Sign` right next to it (proving the symbol/parsing side is
-  unaffected) — the gap is entirely in call-site resolution, not symbol capture. Compare against
+- `WorkerClass.Ask` (Bug N, **fixed in #118**): a `procedure` symbol, parsed and stored exactly
+  as correctly as `WorkerClass.Sign` right next to it (proving the symbol/parsing side was always
+  unaffected) — the bug was entirely in call-site resolution, not symbol capture. Compare against
   the "Callers of `WorkerClass.Ask`" table above.
 
 ### Program symbol (#81)
@@ -139,8 +142,9 @@ SELECT s2.name, r.line_number FROM relationships r
 JOIN symbols s1 ON r.to_id=s1.id JOIN symbols s2 ON r.from_id=s2.id
 WHERE s1.name='WorkerClass.Sign' AND r.type='calls' ORDER BY r.line_number;
 
--- Bug N, not yet fixed: expect 0 rows. Re-run after any attempt at Bug N and expect this
--- to become 2 rows (TestSignatureFlow line 30, OwnerClass.CallViaMember line 69), not stay at 0.
+-- Bug N (fixed in #118): expect 2 rows (TestSignatureFlow line 30, OwnerClass.CallViaMember
+-- line 69). If this drops back to 0, Bug N has regressed — the built-in-named method is being
+-- erased at the dotted/SELF. call sites again.
 SELECT s2.name, r.line_number FROM relationships r
 JOIN symbols s1 ON r.to_id=s1.id JOIN symbols s2 ON r.from_id=s2.id
 WHERE s1.name='WorkerClass.Ask' AND r.type='calls' ORDER BY r.line_number;

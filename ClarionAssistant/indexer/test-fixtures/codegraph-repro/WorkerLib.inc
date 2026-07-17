@@ -1,16 +1,16 @@
 WorkerClass CLASS,TYPE, MODULE('WorkerLib.CLW'), LINK('WorkerLib.CLW', 1 ), DLL( 0 )
 
 Sign          PROCEDURE( LONG pData ), LONG
-! Bug N repro (NOT YET FIXED): Ask is an ordinary class method with the exact same shape as
+! Bug N repro (FIXED in #118): Ask is an ordinary class method with the exact same shape as
 ! Sign above -- the only difference is its name. "ASK" is also a hardcoded Clarion built-in
-! keyword (the window/UI ASK() statement) in ClarionBuiltins.cs's _builtins set. Both the
+! keyword (the window/UI ASK() statement) in ClarionBuiltins.cs's _builtins set. Before #118 the
 ! SELF.Method and the dotted ObjectName.Method call-detection loops in CodeGraphIndexer.cs
-! unconditionally skip any method name matched by IsBuiltInOrKeyword(...) before any type
-! resolution is attempted -- with no way to tell a bare built-in statement (ASK(...)) apart
-! from a class method call that merely shares its name (worker.Ask(...)). Placed directly next
-! to Sign in both this declaration and every call site in WorkerLib.clw, so the two can be
-! compared side by side: Sign resolves, Ask does not, at the exact same call sites. See
-! WorkerLib.clw for the call sites and README.md for the full writeup.
+! unconditionally skipped any method name matched by IsBuiltInOrKeyword(...) before any type
+! resolution -- erasing the call, since they couldn't tell a bare built-in statement (ASK(...))
+! from a class method call that merely shares its name (worker.Ask(...)). #118 removed those two
+! guards (a dotted call is never a bare built-in). Placed directly next to Sign in both this
+! declaration and every call site in WorkerLib.clw, so the two can be compared side by side: both
+! resolve now. See WorkerLib.clw for the call sites and README.md for the full writeup.
 Ask           PROCEDURE( LONG pData ), LONG
             END
 
