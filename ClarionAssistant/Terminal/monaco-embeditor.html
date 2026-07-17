@@ -338,6 +338,56 @@
     #findCount { font-size: 11px; color: var(--title-color); padding: 1px 4px 0; }
     #findCount:empty { display: none; }
     /* FIND-ALL mode: re-dock as a left column, full editor height, results grid visible; reserves width. */
+    /* ===== Document structure fly-out (left column, same left-inset mechanism as Find-All) ===== */
+    #outlinePanel {
+        position: absolute; left: 0; right: auto; bottom: var(--status-bar-h); z-index: 16;
+        width: 260px; max-width: 60%; display: flex; flex-direction: column; overflow: hidden; box-sizing: border-box;
+        background: var(--toolbar-bg); border-right: 2px solid var(--find-accent);
+        box-shadow: 3px 0 14px rgba(0,0,0,0.22); font-size: var(--find-fz); color: var(--fg);
+    }
+    #outlinePanel.hidden { display: none; }
+    #outlinePanel * { box-sizing: border-box; }
+    #outlineHeader { display: flex; align-items: center; gap: 2px; padding: 4px 6px; flex-shrink: 0;
+        border-bottom: 1px solid var(--toolbar-border); }
+    #outlineHeader .ol-count { font-size: 11px; color: var(--title-color); padding: 0 4px; }
+    /* outline toolbar buttons (codicon icons) */
+    .ol-tbtn { width: 24px; height: 22px; border: 1px solid transparent; background: transparent; color: var(--title-color);
+        border-radius: 3px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+    .ol-tbtn .codicon { font-size: 15px; }
+    .ol-tbtn:hover { background: rgba(127,127,127,0.18); }
+    .ol-tbtn.active { background: var(--find-hit); border-color: var(--find-hit-border); color: var(--fg); }
+    /* filter row */
+    #outlineFilterRow { display: flex; align-items: center; gap: 5px; padding: 5px 8px; flex-shrink: 0;
+        border-bottom: 1px solid var(--toolbar-border); }
+    #outlineFilterRow.hidden { display: none; }
+    #outlineFilterRow .ol-filter-ico { color: var(--title-color); font-size: 13px; flex-shrink: 0; }
+    #outlineFilterInput { flex: 1; min-width: 0; background: var(--bg); color: var(--fg); border: 1px solid var(--toolbar-border);
+        border-radius: 4px; padding: 3px 6px; font-family: inherit; font-size: var(--find-fz); outline: none; }
+    #outlineFilterInput:focus { border-color: var(--find-accent); }
+    #outlineList { flex: 1; overflow: auto; padding: 4px 0; }
+    /* Let the tree scroll horizontally instead of clipping names: nodes/rows size to their content. */
+    #outlineList .ol-node, #outlineList .ol-children { min-width: max-content; }
+    .ol-row { display: flex; align-items: center; gap: 6px; padding: 2px 8px; cursor: pointer; white-space: nowrap;
+        min-width: 100%; }
+    .ol-row:hover { background: rgba(127,127,127,0.14); }
+    .ol-row .ol-kind { width: 18px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; color: var(--find-accent); }
+    #outlineList .ol-kind.codicon { font-size: 15px; }
+    /* VS Code symbol colours (dark-theme palette; readable in light too) */
+    #outlineList .codicon-symbol-method, #outlineList .codicon-symbol-constructor { color: #b180d7; }
+    #outlineList .codicon-symbol-field, #outlineList .codicon-symbol-property, #outlineList .codicon-symbol-variable { color: #75beff; }
+    #outlineList .codicon-symbol-class, #outlineList .codicon-symbol-struct, #outlineList .codicon-symbol-interface,
+    #outlineList .codicon-symbol-enum, #outlineList .codicon-symbol-enum-member { color: #ee9d28; }
+    #outlineList .codicon-symbol-namespace { color: #cccccc; }
+    /* collapsible tree */
+    .ol-node.collapsed > .ol-children { display: none; }
+    .ol-row .ol-twisty { width: 14px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+        font-size: 14px; color: var(--title-color); cursor: pointer; }
+    .ol-row .ol-twisty.ol-leaf { cursor: default; }
+    .ol-row .ol-twisty:not(.ol-leaf):hover { color: var(--find-accent); }
+    .ol-row .ol-name { flex-shrink: 0; }
+    .ol-row .ol-detail { color: var(--title-color); opacity: .65; flex-shrink: 0; }
+    .ol-empty { padding: 16px 12px; text-align: center; color: var(--title-color); }
+
     #findPanel.findall {
         left: 0; right: auto; bottom: var(--status-bar-h); z-index: 15;
         width: 340px; max-width: 60%;
@@ -519,6 +569,7 @@
         <button id="navFwdBtn" class="embed-nav" title="Navigate Forward (Alt+Right)"><svg class="fico-sm" viewBox="0 0 20 20" fill="none" stroke="#475569" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 10 H15"/><path d="M10.5 5 L15.5 10 L10.5 15"/></svg></button>
         <span class="tb-sep"></span>
         <button id="findBtn" title="Find &amp; Replace"><svg class="fico-sm" viewBox="0 0 20 20" fill="none" stroke="#2563eb" stroke-width="2.2" stroke-linecap="round"><circle cx="8.5" cy="8.5" r="5"/><path d="M12.6 12.6 L17 17"/></svg></button>
+        <button id="outlineBtn" title="Document structure (outline)"><svg class="fico-sm" viewBox="0 0 20 20" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 5 H16 M7 10 H16 M7 15 H16"/><circle cx="3.6" cy="5" r="1.1" fill="#2563eb" stroke="none"/><circle cx="3.6" cy="10" r="1.1" fill="#2563eb" stroke="none"/><circle cx="3.6" cy="15" r="1.1" fill="#2563eb" stroke="none"/></svg></button>
         <button id="splitBtn" title="Split editor — two panes of the same file (compare/copy between areas)"><svg class="fico-sm" viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="1.6" fill="none" stroke="#475569" stroke-width="2"/><rect x="10" y="4" width="7" height="12" fill="#475569" opacity="0.22"/><path d="M10 4 V16" stroke="#475569" stroke-width="2"/></svg></button>
         <button id="settingsBtn" title="Editor settings"><svg class="fico-sm" viewBox="0 0 24 24" fill="#475569"><path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54a7 7 0 0 0-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.31 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96a7 7 0 0 0 1.62.94l.36 2.54a.5.5 0 0 0 .5.42h3.8a.5.5 0 0 0 .5-.42l.36-2.54a7 7 0 0 0 1.62-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64z" /><circle cx="12" cy="12" r="3.1" fill="#fff"/></svg></button>
         <button id="themeBtn" class="theme-toggle" title="Toggle light / dark"><svg class="tgl" width="34" height="16" viewBox="0 0 34 16"><rect x="0.5" y="0.5" width="33" height="15" rx="7.5" fill="#9aa5b5" stroke="rgba(0,0,0,0.3)"/><circle class="tgl-knob" cx="25" cy="8" r="6"/></svg></button>
@@ -645,6 +696,23 @@
     <div id="editor"></div>
     <div id="editor2"></div>
     <div id="statusBar"></div>
+    <!-- Document structure fly-out (left column, Phase-1 outline prototype). -->
+    <div id="outlinePanel" class="hidden">
+        <div id="outlineHeader">
+            <button class="ol-tbtn" id="outlineExpandAll" title="Expand all"><span class="codicon codicon-expand-all"></span></button>
+            <button class="ol-tbtn" id="outlineCollapseAll" title="Collapse all"><span class="codicon codicon-collapse-all"></span></button>
+            <button class="ol-tbtn" id="outlineFilterBtn" title="Filter symbols"><span class="codicon codicon-filter"></span></button>
+            <span class="find-spacer"></span>
+            <span class="ol-count" id="outlineCount"></span>
+            <button class="ol-tbtn" id="outlineClose" title="Close"><span class="codicon codicon-close"></span></button>
+        </div>
+        <div id="outlineFilterRow" class="hidden">
+            <span class="codicon codicon-filter ol-filter-ico"></span>
+            <input id="outlineFilterInput" type="text" placeholder="Filter… (e.g. ThisWindow)" autocomplete="off" spellcheck="false">
+            <button class="ol-tbtn" id="outlineFilterClear" title="Clear filter (Esc)"><span class="codicon codicon-close"></span></button>
+        </div>
+        <div id="outlineList"><div class="ol-empty">No structure.</div></div>
+    </div>
     <div id="findPanel" class="hidden">
         <div id="findGrip" title="Drag to resize"></div>
         <div id="findTabs"></div>
@@ -851,6 +919,24 @@
         } catch (e) { }
     }
 
+    // Find-pane font size (Ctrl+mousewheel over the Find panel), persisted — mirrors the editor's zoom.
+    // (Restored with #110: the #66 pad integration dropped these definitions but left the wheel
+    // handler's bumpFindFont call behind — Ctrl+wheel over the overlay find panel threw.)
+    var findFontPx = 12;
+    (function () { try { var v = parseInt(localStorage.getItem('modernEmbeditor.findFontPx'), 10); if (!isNaN(v)) findFontPx = Math.max(8, Math.min(28, v)); } catch (e) { } })();
+    var _findFontTimer = null;
+    function applyFindFont() { document.documentElement.style.setProperty('--find-fz', findFontPx + 'px'); }
+    function bumpFindFont(delta) {
+        var n = Math.max(8, Math.min(28, findFontPx + delta));
+        if (n === findFontPx) return;
+        findFontPx = n;
+        applyFindFont();
+        if (_findFontTimer) clearTimeout(_findFontTimer);
+        _findFontTimer = setTimeout(function () {
+            try { localStorage.setItem('modernEmbeditor.findFontPx', String(findFontPx)); } catch (e) { }
+        }, 300);
+    }
+
     // Cross-origin web-worker shim: Monaco workers can't load directly from a
     // different origin, so proxy through a data: URL that importScripts the CDN worker.
     window.MonacoEnvironment = {
@@ -953,6 +1039,11 @@
                 var _redoBtn = document.getElementById('redoBtn');
                 if (_redoBtn) _redoBtn.addEventListener('click', function () { var e = activeEd(); e.focus(); e.trigger('toolbar', 'redo', null); updateUndoRedo(); });
                 editor.onDidChangeModelContent(updateUndoRedo);   // keep Undo/Redo enabled-state in sync with the edit stack
+                // Refresh the structure outline (debounced) while it's open — Phase-1 pull-on-change.
+                editor.onDidChangeModelContent(function () {
+                    var op = document.getElementById('outlinePanel');
+                    if (op && !op.classList.contains('hidden')) { clearTimeout(_outlineDebounce); _outlineDebounce = setTimeout(refreshOutline, 600); }
+                });
                 updateUndoRedo();
                 var _embHeader = document.getElementById('embHeader');
                 if (_embHeader) _embHeader.addEventListener('click', function () { postToHost({ action: 'openSource' }); });
@@ -977,6 +1068,7 @@
                 wireFindPanel();
                 setTheme(themePrefDark);   // apply the user's persisted background choice (default light)
                 updateThemeBtn();
+                applyFindFont();           // apply the persisted Find-pane font size
                 ready = true;
                 document.getElementById('loading').classList.add('hidden');
                 if (pending) { applySource(pending); pending = null; }
@@ -4384,11 +4476,247 @@
         setEditorInsets();
     }
     function setEditorInsets() {
-        var panel = document.getElementById('findPanel');
-        var findAll = panel && !panel.classList.contains('hidden') && panel.classList.contains('findall');
-        var left = findAll ? (panel.offsetWidth + 'px') : '0px';
+        var fp = document.getElementById('findPanel');
+        var op = document.getElementById('outlinePanel');
+        var findAll = fp && !fp.classList.contains('hidden') && fp.classList.contains('findall');
+        var outline = op && !op.classList.contains('hidden');
+        // Both are left columns; the outline takes precedence if somehow both are open.
+        var left = outline ? (op.offsetWidth + 'px') : (findAll ? (fp.offsetWidth + 'px') : '0px');
         var ed = document.getElementById('editor'); if (ed) ed.style.left = left;
         var e2 = document.getElementById('editor2'); if (e2) e2.style.left = left;
+    }
+    // ---- Document structure fly-out (Phase-1 outline prototype) ----
+    var outlineSeq = 0;
+    var _outlineDebounce = null;
+    var outlineCollapsed = {};   // path -> true when collapsed; survives refreshes so typing doesn't reset the tree
+    var outlineSymbols = [];     // last regrouped (unfiltered) tree — filter/expand-all re-render off this
+    var outlineFilter = '';      // active filter text ('' = none)
+    var outlineRenderedPaths = [];   // exact container paths from the last render (single source of truth for collapse-all)
+    function positionOutline() {
+        var op = document.getElementById('outlinePanel'), ed = document.getElementById('editor');
+        if (!op || !ed) return;
+        op.style.top = ed.offsetTop + 'px';   // sit under the toolbar, aligned to the editor
+        setEditorInsets();
+    }
+    function openOutline() {
+        var fp = document.getElementById('findPanel');
+        if (fp && !fp.classList.contains('hidden') && fp.classList.contains('findall')) closeFindPanel();  // never two left columns
+        var op = document.getElementById('outlinePanel');
+        if (!op) return;
+        op.classList.remove('hidden');
+        positionOutline();
+        refreshOutline();
+    }
+    function closeOutline() {
+        var op = document.getElementById('outlinePanel');
+        if (op) op.classList.add('hidden');
+        setEditorInsets();
+        if (editor) editor.focus();
+    }
+    function toggleOutline() {
+        var op = document.getElementById('outlinePanel');
+        if (!op) return;
+        if (op.classList.contains('hidden')) openOutline(); else closeOutline();
+    }
+    function refreshOutline() {
+        var op = document.getElementById('outlinePanel');
+        if (!op || op.classList.contains('hidden') || !editor) return;
+        var mySeq = ++outlineSeq;
+        requestFromHost('documentStructure', { buffer: editor.getModel().getValue() })
+            .then(function (data) {
+                if (mySeq !== outlineSeq) return;   // a newer refresh superseded this one
+                outlineSymbols = regroupSymbols((data && data.symbols) ? data.symbols : []);
+                renderOutlineCurrent();
+            })
+            .catch(function () {});
+    }
+    // Render the cached tree, applying the active filter (force-expanded so matches are visible).
+    function renderOutlineCurrent() {
+        var f = (outlineFilter || '').trim().toLowerCase();
+        if (f) renderOutline(filterOutline(outlineSymbols, f), true);
+        else renderOutline(outlineSymbols, false);
+    }
+    // Keep a node if it (or an ancestor) matches — then its whole subtree rides along — or if a descendant
+    // matches (kept as a path node). Returns a filtered copy or null.
+    function filterOutline(nodes, f) {
+        var out = [];
+        for (var i = 0; i < nodes.length; i++) { var k = filterNode(nodes[i], f, false); if (k) out.push(k); }
+        return out;
+    }
+    function filterNode(node, f, ancestorMatch) {
+        var self = ancestorMatch || (node.name || '').toLowerCase().indexOf(f) >= 0;
+        var kids = [];
+        if (node.children) for (var i = 0; i < node.children.length; i++) { var kc = filterNode(node.children[i], f, self); if (kc) kids.push(kc); }
+        if (self || kids.length) return { name: node.name, detail: node.detail, kind: node.kind, line: node.line, children: kids };
+        return null;
+    }
+    // NB: names must NOT match the button element ids (outlineExpandAll/outlineCollapseAll) — a named
+    // element global shadows the function, so addEventListener would silently bind the DOM node instead.
+    function expandOutlineAll() { outlineCollapsed = {}; renderOutlineCurrent(); }
+    function collapseOutlineAll() {
+        for (var i = 0; i < outlineRenderedPaths.length; i++) outlineCollapsed[outlineRenderedPaths[i]] = true;
+        renderOutlineCurrent();
+    }
+    function toggleOutlineFilter() {
+        var row = document.getElementById('outlineFilterRow');
+        var btn = document.getElementById('outlineFilterBtn');
+        var nowHidden = row.classList.toggle('hidden');
+        var visible = !nowHidden;
+        btn.classList.toggle('active', visible);
+        if (visible) { var inp = document.getElementById('outlineFilterInput'); inp.focus(); inp.select(); }
+        else if (outlineFilter) { outlineFilter = ''; document.getElementById('outlineFilterInput').value = ''; renderOutlineCurrent(); }
+    }
+    // LSP SymbolKind (1-based) -> a VS Code codicon symbol name. Monaco already loads the codicon font
+    // (its suggest/find widgets use it), so `codicon codicon-symbol-<name>` renders the exact icons VS Code
+    // shows in its Outline — no extra assets. Unknown kinds fall back to codicon-symbol-misc.
+    function outlineIcon(kind) {
+        switch (kind) {
+            case 1:  return 'file';
+            case 2:  case 3: case 4: return 'namespace';   // Module / Namespace / Package
+            case 5:  return 'class';
+            case 6:  return 'method';                      // Method / ROUTINE
+            case 7:  return 'property';
+            case 8:  return 'field';
+            case 9:  return 'constructor';
+            case 10: return 'enum';                        // MENU
+            case 11: return 'interface';                   // WINDOW / APPLICATION
+            case 12: return 'method';                      // Function / PROCEDURE
+            case 13: return 'variable';
+            case 14: return 'constant';
+            case 15: return 'string';
+            case 16: return 'number';
+            case 17: return 'boolean';
+            case 18: return 'array';                       // QUEUE / VIEW / LIST
+            case 19: return 'object';
+            case 20: return 'key';
+            case 22: return 'enum-member';                 // TAB / ITEM
+            case 23: return 'struct';                      // GROUP / RECORD / FILE
+            case 24: return 'event';
+            case 25: return 'operator';
+            case 26: return 'type-parameter';
+            default: return 'misc';
+        }
+    }
+    // Port of the VS Code extension's StructureViewProvider.regroupFlatSymbols: dotted method
+    // implementations (Class.Method, or Class.Interface.Method) are lifted out of the flat root list and
+    // nested under a faux Class > Methods (or Class > Interface) tree, merged INTO the class' declaration
+    // node when one exists so declarations + implementations sit together. The impl's own children (its
+    // local data) ride along.
+    function regroupSymbols(symbols) {
+        if (!symbols || !symbols.length) return symbols || [];
+        var result = [], classByKey = {};
+        function key(n) { return (n || '').toLowerCase(); }
+        function bareClassName(node) {
+            var m = /class\s*\(\s*([^)]+?)\s*\)/i.exec(node.name || '');
+            return (m ? m[1] : (node.name || '')).trim();
+        }
+        function isImpl(s) {
+            return s.name && s.name.indexOf('.') >= 0
+                && (s.kind === 6 || s.kind === 11 || s.kind === 12)     // Method / Interface / Function
+                && !/STRING\('[^']*\./i.test(s.name);                    // ignore a dot inside a string literal
+        }
+        function childByName(parent, name) {
+            parent.children = parent.children || [];
+            for (var i = 0; i < parent.children.length; i++) if (parent.children[i].name === name) return parent.children[i];
+            return null;
+        }
+        function addChild(parent, name, kind, detail, line) {
+            var e = childByName(parent, name);
+            if (!e) { e = { name: name, detail: detail || '', kind: kind, line: line, children: [] }; parent.children.push(e); }
+            return e;
+        }
+        // Pass 1: index real CLASS declaration nodes so impls merge into them.
+        for (var i = 0; i < symbols.length; i++) if (symbols[i].kind === 5) { var bk = key(bareClassName(symbols[i])); if (!classByKey[bk]) classByKey[bk] = symbols[i]; }
+        // Pass 2: emit in order; route impls into their class' Methods/interface faux node.
+        for (var j = 0; j < symbols.length; j++) {
+            var sym = symbols[j];
+            if (isImpl(sym)) {
+                var parts = sym.name.split('.'), ck = key(parts[0]);
+                var cls = classByKey[ck];
+                if (!cls) { cls = { name: parts[0], detail: 'Class', kind: 5, line: sym.line, children: [] }; classByKey[ck] = cls; result.push(cls); }
+                else if (result.indexOf(cls) < 0) result.push(cls);
+                cls.children = cls.children || [];
+                var method = { name: parts.slice(parts.length >= 3 ? 2 : 1).join('.'), detail: sym.detail || 'Method Implementation', kind: sym.kind, line: sym.line, children: sym.children || [] };
+                if (parts.length >= 3) addChild(cls, parts[1], 11, 'Interface', sym.line).children.push(method);
+                else addChild(cls, 'Methods', 6, '', sym.line).children.push(method);
+            } else if (sym.kind === 5 && classByKey[key(bareClassName(sym))] === sym) {
+                if (result.indexOf(sym) < 0) result.push(sym);   // class decl node — emit once
+            } else {
+                result.push(sym);
+            }
+        }
+        return result;
+    }
+
+    function renderOutline(symbols, forceExpand) {
+        var list = document.getElementById('outlineList');
+        var countEl = document.getElementById('outlineCount');
+        if (!list) return;
+        list.innerHTML = '';
+        var n = 0;
+        outlineRenderedPaths = [];
+
+        function buildNode(s, depth, pathPrefix) {
+            n++;
+            var path = pathPrefix + '' + (s.name || '') + '#' + s.kind;
+            var hasKids = s.children && s.children.length;
+
+            var node = document.createElement('div');
+            node.className = 'ol-node';
+
+            var row = document.createElement('div');
+            row.className = 'ol-row';
+            row.style.paddingLeft = (6 + depth * 14) + 'px';
+
+            var tw = document.createElement('span');
+            tw.className = hasKids ? 'ol-twisty codicon codicon-chevron-down' : 'ol-twisty ol-leaf';
+            row.appendChild(tw);
+
+            var k = document.createElement('span');
+            k.className = 'ol-kind codicon codicon-symbol-' + outlineIcon(s.kind);
+            row.appendChild(k);
+
+            var nm = document.createElement('span');
+            nm.className = 'ol-name'; nm.textContent = s.name || '';
+            row.appendChild(nm);
+            if (s.detail) { var dt = document.createElement('span'); dt.className = 'ol-detail'; dt.textContent = ' ' + s.detail; row.appendChild(dt); }
+
+            (function (ln) {
+                row.addEventListener('click', function () {
+                    if (!ln || !editor) return;
+                    editor.revealLineInCenter(ln);
+                    editor.setPosition({ lineNumber: ln, column: 1 });
+                    editor.focus();
+                });
+            })(s.line);
+            node.appendChild(row);
+
+            if (hasKids) {
+                outlineRenderedPaths.push(path);   // record the exact key this render uses
+                var kidsBox = document.createElement('div');
+                kidsBox.className = 'ol-children';
+                for (var i = 0; i < s.children.length; i++) kidsBox.appendChild(buildNode(s.children[i], depth + 1, path));
+                node.appendChild(kidsBox);
+
+                var apply = function (collapsed) {
+                    node.classList.toggle('collapsed', collapsed);
+                    tw.classList.toggle('codicon-chevron-right', collapsed);
+                    tw.classList.toggle('codicon-chevron-down', !collapsed);
+                };
+                if (!forceExpand && outlineCollapsed[path]) apply(true);
+                tw.addEventListener('click', function (ev) {
+                    ev.stopPropagation();   // toggle only — don't navigate
+                    var collapsed = !node.classList.contains('collapsed');
+                    if (collapsed) outlineCollapsed[path] = true; else delete outlineCollapsed[path];
+                    apply(collapsed);
+                });
+            }
+            return node;
+        }
+
+        if (!symbols || !symbols.length) { list.innerHTML = '<div class="ol-empty">No structure.</div>'; }
+        else for (var i = 0; i < symbols.length; i++) list.appendChild(buildNode(symbols[i], 0, ''));
+        if (countEl) countEl.textContent = n ? (n + (n === 1 ? ' symbol' : ' symbols')) : '';
     }
     // Header result count for the Find-All column (short form; the in-row count is hidden there).
     function setFaCount() {
@@ -4438,6 +4766,8 @@
     // Find-All: reveal the left results column, reusing the existing grid/tabs machinery. focusReplace
     // (Ctrl+Shift+H) opens it with the replace row expanded + focused.
     function openFindAll(focusReplace) {
+        var op = document.getElementById('outlinePanel');
+        if (op && !op.classList.contains('hidden')) closeOutline();   // never two left columns
         var panel = document.getElementById('findPanel');
         var wasFindAll = !panel.classList.contains('hidden') && panel.classList.contains('findall');
         if (panel.classList.contains('hidden')) openFindPanel(false);
@@ -4796,6 +5126,22 @@
     function wireFindPanel() {
         // Toolbar buttons: Find & Replace (raises the CA Find pad, #66) + theme toggle + embed-slot navigation.
         document.getElementById('findBtn').addEventListener('click', function () { openFindUi(false); });
+        document.getElementById('outlineBtn').addEventListener('click', toggleOutline);
+        document.getElementById('outlineClose').addEventListener('click', closeOutline);
+        document.getElementById('outlineExpandAll').addEventListener('click', expandOutlineAll);
+        document.getElementById('outlineCollapseAll').addEventListener('click', collapseOutlineAll);
+        document.getElementById('outlineFilterBtn').addEventListener('click', toggleOutlineFilter);
+        document.getElementById('outlineFilterClear').addEventListener('click', function () {
+            var inp = document.getElementById('outlineFilterInput'); inp.value = ''; outlineFilter = ''; renderOutlineCurrent(); inp.focus();
+        });
+        document.getElementById('outlineFilterInput').addEventListener('input', function () { outlineFilter = this.value; renderOutlineCurrent(); });
+        document.getElementById('outlineFilterInput').addEventListener('keydown', function (ev) {
+            if (ev.key === 'Escape') { ev.preventDefault(); toggleOutlineFilter(); }
+        });
+        window.addEventListener('resize', function () {
+            var op = document.getElementById('outlinePanel');
+            if (op && !op.classList.contains('hidden')) positionOutline();
+        });
         document.getElementById('themeBtn').addEventListener('click', toggleTheme);
         document.getElementById('prevEmbedBtn').addEventListener('click', function () { navEmbed(-1, false); });
         document.getElementById('nextEmbedBtn').addEventListener('click', function () { navEmbed(1, false); });

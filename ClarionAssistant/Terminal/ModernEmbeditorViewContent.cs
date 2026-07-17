@@ -219,6 +219,27 @@ namespace ClarionAssistant.Terminal
             return result;
         }
 
+        // {action:"documentStructure"} — outline tree for the current buffer, for the structure fly-out.
+        // In file mode this is the whole module (reliable). In embed/slot mode the buffer is a procedure
+        // slice with a MEMBER header, so the outline is partial — the page decides what to show via fileMode.
+        private void HandleDocumentStructure(string json)
+        {
+            int reqId, line, column; string buffer;
+            if (!ParseRequest(json, out reqId, out line, out column, out buffer)) return;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var symbols = new List<Dictionary<string, object>>();
+                try
+                {
+                    var resp = SharedLspBridge.GetDocumentSymbols(_lspFileName, LspBuffer(buffer));
+                    object res = (resp != null && resp.ContainsKey("result")) ? resp["result"] : null;
+                    symbols = DocumentOutlineBuilder.Build(res, MonacoLine1);
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] HandleDocumentStructure: " + ex.Message); }
+                PostResponse(reqId, new Dictionary<string, object> { { "symbols", symbols }, { "fileMode", _fileMode } });
+            });
+        }
+
         // LSP documentSymbol returns either DocumentSymbol[] (hierarchical, has children) or
         // SymbolInformation[] (flat). Collect leaf names + kinds from either shape.
         private static void CollectSymbols(object node, List<Dictionary<string, object>> into)
@@ -1141,6 +1162,7 @@ namespace ClarionAssistant.Terminal
         void IMonacoEditorHost.OnDiagnostics(MonacoEditorControl editor, string rawJson) { HandleDiagnostics(rawJson); }
         void IMonacoEditorHost.OnSignatureHelp(MonacoEditorControl editor, string rawJson) { HandleSignatureHelp(rawJson); }
         void IMonacoEditorHost.OnImplementation(MonacoEditorControl editor, string rawJson) { HandleImplementation(rawJson); }
+        void IMonacoEditorHost.OnDocumentStructure(MonacoEditorControl editor, string rawJson) { HandleDocumentStructure(rawJson); }
         void IMonacoEditorHost.OnSaveSettings(MonacoEditorControl editor, string rawJson) { HandleSaveSettings(rawJson); }
         void IMonacoEditorHost.OnSaveHistory(MonacoEditorControl editor, string rawJson) { HandleSaveHistory(rawJson); }
         void IMonacoEditorHost.OnSnippetCommand(MonacoEditorControl editor, string rawJson)
