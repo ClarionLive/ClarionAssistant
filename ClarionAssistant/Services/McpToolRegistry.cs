@@ -2387,16 +2387,18 @@ COMMON QUERIES:
                 Name = "show_diff",
                 Description = "Open a unified diff viewer in the IDE editor panel. Shows color-coded additions/removals with a changes sidebar and inline code review notes. " +
                     "The developer can add severity-tagged notes (BLOCKER/SUGGESTION/NITPICK/QUESTION) on any line. " +
-                    "You can provide text directly via original_text/modified_text, OR provide file paths via original_file/modified_file to load from disk (avoids encoding issues with large files). " +
+                    "You can provide text directly via original_text/modified_text, OR provide file paths via original_file/modified_file to load from disk (avoids encoding issues with large files), " +
+                    "OR set modified_from_active_editor='true' to diff the IDE's current (possibly unsaved) editor buffer directly, in-process — no MCP text transport, so it works regardless of file size and costs no extra tokens. " +
                     "Use ignore_whitespace to suppress trivial whitespace-only differences. Use get_diff_result to check the outcome.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
                         { "title", "Title for the diff tab (e.g. procedure name or file name)" },
                         { "original_text", "The original (before) text. Not needed if original_file is provided." },
-                        { "modified_text", "The modified (after) text. Not needed if modified_file is provided." },
+                        { "modified_text", "The modified (after) text. Not needed if modified_file or modified_from_active_editor is provided." },
                         { "original_file", "Path to a file to load as the original (left) side. Overrides original_text." },
                         { "modified_file", "Path to a file to load as the modified (right) side. Overrides modified_text. Preferred for large files." },
+                        { "modified_from_active_editor", "Set to 'true' to use the live content of the file currently open in the IDE editor as the modified (right) side — fetched directly in-process, bypassing MCP text transport entirely (no size limit, no extra tokens). Overrides modified_text/modified_file. If original_file is also omitted, defaults to the active document's own path, so a bare modified_from_active_editor='true' diffs \"what's on screen\" against \"what's on disk\" in one call." },
                         { "original_start_line", "First line to include from original_file (1-based, default: 1)" },
                         { "original_end_line", "Last line to include from original_file (1-based, default: end of file)" },
                         { "modified_start_line", "First line to include from modified_file (1-based, default: 1)" },
@@ -2424,6 +2426,28 @@ COMMON QUERIES:
 
                     string originalFile = McpJsonRpc.GetString(args, "original_file");
                     string modifiedFile = McpJsonRpc.GetString(args, "modified_file");
+
+                    // modified_from_active_editor — fetch the live editor buffer in-process (same source
+                    // get_active_file uses) instead of requiring the caller to round-trip the content
+                    // through MCP text transport. Avoids the token-limit dump-to-file dance entirely for
+                    // large unsaved buffers. Defaults original_file to the active document's own disk path
+                    // when the caller doesn't specify one, so callers can diff "what's on screen right now"
+                    // against disk with just this one flag.
+                    if (McpJsonRpc.GetString(args, "modified_from_active_editor") == "true")
+                    {
+                        string activeContent = _editorService.GetActiveDocumentContent();
+                        if (activeContent == null)
+                            return "Error: No active editor content available.";
+
+                        if (string.IsNullOrEmpty(originalFile))
+                            originalFile = _editorService.GetActiveDocumentPath();
+                        if (string.IsNullOrEmpty(originalFile))
+                            return "Error: Could not determine the active document's file path for comparison.";
+
+                        int activeStart = McpJsonRpc.GetInt(args, "original_start_line", 1);
+                        int activeEnd = McpJsonRpc.GetInt(args, "original_end_line", -1);
+                        return _diffService.ShowDiffFromFile(title, originalFile, activeStart, activeEnd, activeContent, language, ignoreWs, useMonaco);
+                    }
 
                     // Both files provided — load both from disk (best path, avoids MCP text encoding issues)
                     if (!string.IsNullOrEmpty(originalFile) && !string.IsNullOrEmpty(modifiedFile))
