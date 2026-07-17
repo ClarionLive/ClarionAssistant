@@ -107,6 +107,22 @@ namespace ClarionAssistant.Terminal
 
         #region Job Object API
 
+        // Open an existing process by PID to get a handle we can assign to a job. WebView2's browser process
+        // is shared and spawned by WebView2 (not us), so unlike ConPty we don't own a CreateProcess handle —
+        // we open one by BrowserProcessId. PROCESS_SET_QUOTA is required for AssignProcessToJobObject.
+        [DllImport("kernel32.dll", SetLastError = true)]
+        internal static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+
+        internal const uint PROCESS_TERMINATE = 0x0001;
+        internal const uint PROCESS_SET_QUOTA = 0x0100;
+        internal const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+
+        // Used to confirm a PID we opened is still the WebView2 browser before assigning it to the
+        // kill-on-close job (guards the GetProcessInfos → OpenProcess PID-reuse window).
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        internal static extern bool QueryFullProcessImageName(
+            IntPtr hProcess, uint dwFlags, System.Text.StringBuilder lpExeName, ref uint lpdwSize);
+
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         internal static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string lpName);
 
