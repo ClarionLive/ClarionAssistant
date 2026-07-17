@@ -780,6 +780,7 @@
     var replHistory = [];         // solution-wide replace terms, most-recent first
     var procFindHistory = [];     // THIS procedure's recent search terms (layered dropdown top group)
     var findHistIdx = -1;         // ↑/↓ cursor into findHistory while the find box is focused (-1 = live text)
+    var findUiMode = 'pad';      // 'pad' (dockable CA Find pad, default) | 'overlay' (in-editor quick find) — from setSource (#66 phase 2)
 
     // ----- Find TABS: each tab is an independent search session {query, replaceText, opts}. The live
     // globals above (findResults/findOpts/findCurrentIdx/lastFindQuery + the input fields) are the
@@ -994,6 +995,7 @@
         embedRanges = msg.editableRanges || [];
         saveEnabled = !!msg.saveEnabled;
         fileMode = !!msg.fileMode;
+        if (msg.findUiMode) findUiMode = (msg.findUiMode === 'overlay') ? 'overlay' : 'pad';   // which UI answers Ctrl+F/Ctrl+H
         // The "include read-only (generated) blocks" find toggle only means something in PWEE/slot mode.
         // In file mode the whole buffer is editable — there are no read-only regions — so hide it.
         var tgRo = document.getElementById('tgRo');
@@ -3611,13 +3613,13 @@
             if (ctrl && ev.shiftKey && (ev.keyCode === 70 || ev.key === 'f' || ev.key === 'F')) {   // Ctrl+Shift+F → Find All
                 // Shift branches MUST precede the plain Ctrl+F/Ctrl+H (they also match ctrl+F / ctrl+H). The C#
                 // ProcessCmdKey guard swallows these chords too, so they can't leak to the IDE's Find/Replace-in-Files.
-                ev.preventDefault(); ev.stopImmediatePropagation(); openFindAll(false);
+                ev.preventDefault(); ev.stopImmediatePropagation(); if (findUiMode === 'overlay') openFindAll(false); else postCaFindOpen(false);
             } else if (ctrl && ev.shiftKey && (ev.keyCode === 72 || ev.key === 'h' || ev.key === 'H')) {   // Ctrl+Shift+H → Find All + Replace
-                ev.preventDefault(); ev.stopImmediatePropagation(); openFindAll(true);
+                ev.preventDefault(); ev.stopImmediatePropagation(); if (findUiMode === 'overlay') openFindAll(true); else postCaFindOpen(true);
             } else if (ctrl && (ev.keyCode === 70 || ev.key === 'f' || ev.key === 'F')) {         // Ctrl+F
-                ev.preventDefault(); ev.stopImmediatePropagation(); openFindPanel(false);
+                ev.preventDefault(); ev.stopImmediatePropagation(); openFindUi(false);
             } else if (ctrl && (ev.keyCode === 72 || ev.key === 'h' || ev.key === 'H')) {   // Ctrl+H
-                ev.preventDefault(); ev.stopImmediatePropagation(); openFindPanel(true);
+                ev.preventDefault(); ev.stopImmediatePropagation(); openFindUi(true);
             } else if (ev.keyCode === 114 || ev.key === 'F3') {                             // F3 / Shift+F3
                 ev.preventDefault(); ev.stopImmediatePropagation(); gotoMatch(ev.shiftKey ? -1 : 1);
             } else if (ctrl && (ev.keyCode === 123 || ev.key === 'F12')) {                  // Ctrl+F12 → go to implementation (declaration → body)
@@ -4031,6 +4033,13 @@
     // tabs/history/inputs and drives this page's engine remotely via {type:'caFind'} commands.
     function postCaFindOpen(focusReplace) {
         postToHost({ action: 'caFindOpen', seed: selectionWord(), replace: !!focusReplace });
+    }
+
+    // Mode dispatch (#66 phase 2): 'pad' raises the dockable CA Find pad (via the host), 'overlay'
+    // opens the in-editor panel locally. Both drive the same engine below.
+    function openFindUi(focusReplace) {
+        if (findUiMode === 'overlay') openFindPanel(!!focusReplace);
+        else postCaFindOpen(!!focusReplace);
     }
 
     // ---- Results grid ----
@@ -4743,7 +4752,7 @@
     // ---- Wiring ----
     function wireFindPanel() {
         // Toolbar buttons: Find & Replace (raises the CA Find pad, #66) + theme toggle + embed-slot navigation.
-        document.getElementById('findBtn').addEventListener('click', function () { postCaFindOpen(false); });
+        document.getElementById('findBtn').addEventListener('click', function () { openFindUi(false); });
         document.getElementById('themeBtn').addEventListener('click', toggleTheme);
         document.getElementById('prevEmbedBtn').addEventListener('click', function () { navEmbed(-1, false); });
         document.getElementById('nextEmbedBtn').addEventListener('click', function () { navEmbed(1, false); });

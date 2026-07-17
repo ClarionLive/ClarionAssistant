@@ -3172,6 +3172,7 @@ namespace ClarionAssistant.Terminal
                     "\"fileMode\":" + (_fileMode ? "true" : "false") + "," +
                     "\"filePath\":" + JsonString(_filePath ?? "") + "," +
                     "\"saveEnabled\":" + (_saveEnabled ? "true" : "false") + "," +
+                    "\"findUiMode\":\"" + Services.CaFindSettings.FindUiModeForPage + "\"," +   // Pad vs in-editor Overlay (#66 phase 2)
                     "\"liveLinked\":" + (_liveLinked ? "true" : "false") + "," +   // live mode: relabel Save → "Save and Exit" (a5bbf005)
                     "\"embedOverlay\":" + (_embedOverlay ? "true" : "false") + "," +   // overlay: Clarion-faithful toolbar + clickable header (b1e05287)
                     "\"headerText\":" + JsonString(_nativeHeaderText ?? "") + "," +    // native "Proc - Embeditor - (clw)" → our clickable header

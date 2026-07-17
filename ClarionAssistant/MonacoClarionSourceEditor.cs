@@ -357,6 +357,7 @@ namespace ClarionAssistant
                     + "\"designerEnabled\":true,"
                     + "\"filePath\":" + MonacoEditorControl.JsonString(_filePath ?? "") + ","
                     + "\"saveEnabled\":" + (fileReadOnly ? "false" : "true") + ","
+                    + "\"findUiMode\":\"" + Services.CaFindSettings.FindUiModeForPage + "\","
                     + "\"editableRanges\":[],"
                     + "\"settings\":" + settingsJson + ","
                     + "\"findHistory\":" + findHistJson + ",\"replaceHistory\":" + replHistJson + ",\"procHistory\":" + procHistJson + ","

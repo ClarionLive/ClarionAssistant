@@ -118,6 +118,7 @@
     <Compile Include="Services\ClarionSourceText.cs" />
     <Compile Include="Services\SettingsService.cs" />
     <Compile Include="Services\CaEditorSettings.cs" />
+    <Compile Include="Services\CaFindSettings.cs" />
     <Compile Include="Options\CAEditorSurfacesOptionPanel.cs" />
     <Compile Include="Services\McpServer.cs" />
     <Compile Include="Services\McpJsonRpc.cs" />

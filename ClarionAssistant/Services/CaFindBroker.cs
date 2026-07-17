@@ -119,6 +119,10 @@ namespace ClarionAssistant.Services
                 if (action == "caFindOpen")
                 {
                     NotifyActivity(host);
+                    // #66 phase 2: in Overlay mode the page opens its own in-editor panel and never posts
+                    // caFindOpen — this gate only defends against a STALE page (cached pre-switch HTML)
+                    // still asking for the pad. Ctrl+Alt+F / Tools menu (ShowCaFindPadCommand) bypass it.
+                    if (CaFindSettings.FindUiMode == CaFindSettings.ModeOverlay) return;
                     ShowPad();   // create/raise the pad; it restores this editor's session on activeEditor
                 }
                 HostEntry e; Action<string> pad;
