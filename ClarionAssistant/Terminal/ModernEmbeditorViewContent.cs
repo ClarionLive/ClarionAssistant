@@ -2248,6 +2248,18 @@ namespace ClarionAssistant.Terminal
             if (_overlayDetached) return;
             _overlayDetached = true;
             UnhookOverlayTeardown();
+
+            // #56: while this embed session was up, every LSP request pushed the wrapped embed buffer to the
+            // server under the module's REAL path, overriding the on-disk file in the server's view. There is
+            // no didClose in the transport, so RevertShadow (pushing the on-disk content back) is the only
+            // thing that un-shadows it.
+            //
+            // Dispose() already does this — but overlay mode never GETS Dispose(): it is never ShowView'd, so
+            // the workbench does not own this view and never disposes it. DetachOverlay IS the teardown. Without
+            // this call the server keeps answering hover/definition/references for that .clw from a buffer that
+            // is no longer open, silently, for the rest of the session.
+            try { if (_lspContext != null) _lspContext.RevertShadow(); } catch { }
+
             RestoreNativeChrome();
             RemoveOverlayCover();
             try
