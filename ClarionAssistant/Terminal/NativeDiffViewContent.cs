@@ -53,6 +53,9 @@ namespace ClarionAssistant.Terminal
             string language = "clarion", bool ignoreWhitespace = false)
         {
             TitleName = "Diff: " + (title ?? "Untitled");
+            // No Save()/SaveAs() implementation exists for this view — without this, SharpDevelop
+            // treats it as a normal, saveable, filename-less document (enables Save, then throws when invoked).
+            IsViewOnly = true;
             _panel = new Panel { Dock = DockStyle.Fill, BackColor = BgColor };
 
             BuildToolbar(title);
