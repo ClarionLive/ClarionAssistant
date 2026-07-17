@@ -118,9 +118,11 @@ namespace ClarionAssistant.Terminal
         /// <summary>{action:"activateDesigner"} — 'Show designer' on the modal lock overlay.</summary>
         void OnActivateDesigner(MonacoEditorControl editor);
 
-        /// <summary>{action:"caFindUpdate"|"caFindOpen"|"caFindActivity"} — CA Find pad protocol
-        /// (GitHub #66): results push / Ctrl+F open request / editor-focus activity. Hosts forward to
-        /// <c>CaFindBroker.FromEditor</c> with their own identity; the broker routes to the pad.</summary>
+        /// <summary>{action:"caFindUpdate"|"caFindOpen"|"caFindOpenDoc"|"caFindActivity"} — CA Find pad
+        /// protocol (GitHub #66): results push / Ctrl+F open request / open-results-in-editor / editor-focus
+        /// activity. Hosts forward to <c>CaFindBroker.FromEditor</c> with their own identity; the broker
+        /// routes to the pad — except caFindOpenDoc, which it turns into a SearchResultsViewContent tab
+        /// stamped with the sending host's key. Hosts stay identical for all four; no per-host logic.</summary>
         void OnCaFind(MonacoEditorControl editor, string action, string rawJson);
 
         /// <summary>Navigation to the Monaco page completed (IsSuccess). Optional liveness hook.</summary>
@@ -280,6 +282,7 @@ namespace ClarionAssistant.Terminal
                     case "activateDesigner":  h.OnActivateDesigner(this); break;
                     case "caFindUpdate":
                     case "caFindOpen":
+                    case "caFindOpenDoc":
                     case "caFindActivity":    h.OnCaFind(this, action, json); break;
                     default:                  h.OnUnknownAction(this, action, json); break;
                 }

@@ -1974,6 +1974,7 @@ namespace ClarionAssistant
             }
             Terminal.DiffViewContent.ApplyThemeToAll(_isDarkTheme);
             Terminal.MonacoDiffViewContent.ApplyThemeToAll(_isDarkTheme);
+            Terminal.SearchResultsViewContent.ApplyThemeToAll(_isDarkTheme);
             _diffService?.SetTheme(_isDarkTheme);
         }
 

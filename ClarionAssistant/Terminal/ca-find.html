@@ -188,6 +188,7 @@
         <span class="find-link" id="selAll" title="Check every replaceable row">&#9638; Select All</span>
         <span class="find-link" id="selNone" title="Uncheck every row">&#9634; Select None</span>
         <span class="find-spacer" style="flex:1"></span>
+        <span class="find-link" id="openInDoc" title="Open all results in an editor tab, with context">&#8663; Open in editor</span>
         <span class="find-link" id="copyRes" title="Copy checked rows (or all if none checked)">&#10697; Copy</span>
         <span class="find-link" id="clearRes" title="Clear results">&#129529; Clear results</span>
     </div>
@@ -483,6 +484,14 @@
         matches = []; currentIdx = -1; lastQuery = null; lastOpts = null;
         renderResults(); byId('findCount').textContent = '';
         fwd({ type: 'caFind', op: 'clear' });
+    }
+
+    // "Open in editor": the pad holds no context lines and no model, so it cannot build the results
+    // document itself — it asks the engine, which posts caFindOpenDoc to ITS host. Same path the overlay
+    // takes, so the tab is identical from either surface (and lands on the right editor either way).
+    function openResultsInDoc() {
+        if (!matches.length) { showToast('No results to open — run a search first', false); return; }
+        fwd({ type: 'caFind', op: 'openInDoc' });
     }
 
     // ───────────────────────────── Tabs ─────────────────────────────
@@ -789,6 +798,7 @@
         byId('replAll').addEventListener('click', function () { doReplace(false); });
         byId('selAll').addEventListener('click', function () { setAllChecked(true); });
         byId('selNone').addEventListener('click', function () { setAllChecked(false); });
+        byId('openInDoc').addEventListener('click', openResultsInDoc);
         byId('copyRes').addEventListener('click', copyResults);
         byId('clearRes').addEventListener('click', clearResults);
 

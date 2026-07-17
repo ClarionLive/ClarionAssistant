@@ -720,6 +720,9 @@
             <span class="fa-title">Find All</span>
             <span class="fa-count" id="faCount"></span>
             <span class="find-spacer"></span>
+            <!-- Lives HERE, not in .find-restools: that row is display:none in BOTH panel modes (see the
+                 :not(.findall) and .findall rules above), so it never renders in the overlay. -->
+            <button class="find-icon" id="openInDoc" title="Open results in an editor tab (with context)">&#8663;</button>
             <button class="find-icon" id="faClose" title="Close (Esc)">&#10005;</button>
         </div>
         <div class="find-head">
@@ -4861,6 +4864,58 @@
         postToHost(payload);
     }
 
+    // ---- "Open results in editor" — the search-results TAB (both surfaces drive this one function) ----
+    // Builds the whole result set for the document: every match plus context lines either side, read from
+    // the LIVE model (only the engine has it — the overlay and the pad both go through here).
+    //
+    // Rows carry the engine's ARRAY INDEX and nothing else navigational. The document never stores a
+    // position: clicking a row sends {op:'reveal', idx} back here, and revealMatch resolves it against the
+    // live decorations (#65). That's the pad's existing contract, so buffer edits can't make the tab jump
+    // to the wrong line — the numbers it PRINTS may age, but its navigation cannot.
+    var FIND_DOC_CONTEXT = 2;     // lines of context either side of a match
+    var FIND_DOC_MAX = 1000;      // payload cap; the page reports the remainder rather than hiding it
+
+    function openResultsInDoc() {
+        if (!editor) return;
+        syncFindMatches();                        // fresh positions/text against the live buffer first (#65)
+        if (!findResults.length) { showToast('No results to open — run a search first', false); return; }
+        var model = editor.getModel(); if (!model) return;
+        var lineCount = model.getLineCount();
+        var n = Math.min(findResults.length, FIND_DOC_MAX);
+        var rows = [];
+        for (var i = 0; i < n; i++) {
+            var r = findResults[i];
+            var before = [], after = [];
+            for (var b = Math.max(1, r.line - FIND_DOC_CONTEXT); b < r.line; b++)
+                before.push({ line: b, text: safeLineContent(model, b) });
+            for (var a = r.endLine + 1; a <= Math.min(lineCount, r.endLine + FIND_DOC_CONTEXT); a++)
+                after.push({ line: a, text: safeLineContent(model, a) });
+            rows.push({
+                idx: i,                           // engine index — the ONLY handle the document navigates by
+                line: r.line, startCol: r.startCol, endLine: r.endLine, endCol: r.endCol,
+                text: r.text, editable: !!r.editable,
+                before: before, after: after
+            });
+        }
+        postToHost({
+            action: 'caFindOpenDoc',
+            query: lastFindQuery || '',
+            opts: { matchCase: !!findOpts.matchCase, wholeWord: !!findOpts.wholeWord,
+                    regex: !!findOpts.regex, includeReadOnly: findOpts.includeReadOnly !== false },
+            total: findResults.length,
+            shown: n,
+            truncated: findResults.length - n,   // >0 → the page says so; a silent cap reads as "that's all of them"
+            lines: countLines(findResults),
+            readOnly: findResults.filter(function (r) { return !r.editable; }).length,
+            context: FIND_DOC_CONTEXT,
+            matches: rows
+        });
+    }
+
+    function safeLineContent(model, n) {
+        try { return model.getLineContent(n); } catch (e) { return ''; }
+    }
+
     // Run a search for the pad: q + findOpts (set by the caFind 'search' op) against the live buffer.
     // navigate === false → passive refresh (highlights + grid only): an AUTOMATIC re-search (pad session
     // restore on retarget) must never move the caret/scroll — only a deliberate user search reveals
@@ -5060,6 +5115,55 @@
         runFind(lastFindQuery, { replaced: replaced, skippedRo: skippedRo });
     }
 
+    // Does THIS engine still hold the search that produced the caller's result set? Same full-identity test
+    // as the pad/overlay replace guard (#66 phase 2): query text AND options, because same-text/different-
+    // options searches are distinct result sets.
+    function sameFindIdentity(q, o) {
+        if ((lastFindQuery || '') !== (q || '')) return false;
+        if (!o) return true;
+        return !!findOpts.matchCase === !!o.matchCase
+            && !!findOpts.wholeWord === !!o.wholeWord
+            && !!findOpts.regex === !!o.regex
+            && (findOpts.includeReadOnly !== false) === (o.includeReadOnly !== false);
+    }
+
+    // Reveal a raw position with no dependence on findResults. Used when an index can't be trusted (see
+    // handleRevealOp) — it only moves the caret/viewport; it never touches the engine's result state.
+    function revealAtLine(line, col, endLine, endCol, focusEditor) {
+        if (!editor) return false;
+        var model = editor.getModel(); if (!model) return false;
+        var max = model.getLineCount();
+        if (!(line > 0)) return false;
+        if (line > max) line = max;
+        if (!(endLine > 0) || endLine > max) endLine = line;
+        var range = new monaco.Range(line, col > 0 ? col : 1, endLine, endCol > 0 ? endCol : (col > 0 ? col : 1));
+        editor.revealRangeInCenterIfOutsideViewport(range);
+        editor.setSelection(range);
+        if (focusEditor) editor.focus();
+        return true;
+    }
+
+    // A reveal request from a SEARCH RESULTS DOCUMENT (op:'reveal' with docQuery/docOpts). Unlike the pad —
+    // which is always in lock-step with the engine — a results tab OUTLIVES its search:
+    //
+    //   * its editor was closed and re-opened  -> same broker key, but a FRESH page whose findResults is empty
+    //     (revealMatch would return silently and the user just sees the reopened buffer sitting at line 1);
+    //   * a different search has been run since -> findResults is full of SOMEONE ELSE'S matches, and idx N
+    //     would jump confidently to the wrong code. That is the desync class the pad/overlay replace guards
+    //     were added for (9e2a617) — silent and wrong is worse than visibly degraded.
+    //
+    // So idx is honoured ONLY while the engine still holds that exact search; otherwise fall back to the
+    // line/col the document recorded. That's a snapshot (right unless the buffer changed since), which is the
+    // same bargain the reopened-source-file path already makes.
+    function handleRevealOp(msg) {
+        var idx = +msg.idx;
+        var identityKnown = (msg.docQuery !== undefined && msg.docQuery !== null);
+        var trustIdx = findResults.length > 0 && idx >= 0 && idx < findResults.length
+                       && (!identityKnown || sameFindIdentity(msg.docQuery, msg.docOpts));
+        if (trustIdx) { revealMatch(idx, !!msg.focus); return; }
+        revealAtLine(+msg.line, +msg.col, +msg.endLine, +msg.endCol, !!msg.focus);
+    }
+
     // ---- CA Find pad commands ({type:'caFind'} from the host router, GitHub #66) ----
     function handleCaFindOp(msg) {
         try {
@@ -5072,7 +5176,8 @@
                     mirrorPadStateIntoOverlay(msg.query || '');
                     runFind(msg.query || '', undefined, msg.navigate !== false);
                     break;
-                case 'reveal':     revealMatch(+msg.idx, !!msg.focus); break;
+                case 'reveal':     handleRevealOp(msg); break;
+                case 'openInDoc':  openResultsInDoc(); break;   // pad's "Open in editor" — same fn as the overlay's
                 case 'nav':        gotoMatch(msg.dir < 0 ? -1 : 1); break;
                 case 'setChecked':
                     if (msg.idx >= 0 && msg.idx < findResults.length && findResults[msg.idx].editable)
@@ -5216,6 +5321,7 @@
 
         document.getElementById('selAll').addEventListener('click', function () { setAllChecked(true); });
         document.getElementById('selNone').addEventListener('click', function () { setAllChecked(false); });
+        document.getElementById('openInDoc').addEventListener('click', openResultsInDoc);
         document.getElementById('copyRes').addEventListener('click', copyResults);
         document.getElementById('clearRes').addEventListener('click', function () {
             findResults = []; findCurrentIdx = -1; lastFindQuery = null;

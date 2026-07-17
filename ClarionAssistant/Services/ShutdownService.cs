@@ -116,6 +116,7 @@ namespace ClarionAssistant.Services
             DisposeWebView2("embeditor", ModernEmbeditorViewContent.DisposeAllForShutdown);
             DisposeWebView2("diff", DiffViewContent.DisposeAllForShutdown);
             DisposeWebView2("monaco diff", MonacoDiffViewContent.DisposeAllForShutdown);
+            DisposeWebView2("search results", SearchResultsViewContent.DisposeAllForShutdown);   // Find-All results tab
             DisposeWebView2("board", TaskLifecycleBoardForm.DisposeAllForShutdown);
             DisposeWebView2("data pad", ModernDataPad.DisposeAllForShutdown);   // Explorer pad (GAP 2)
             DisposeWebView2("find pad", CaFindPad.DisposeAllForShutdown);       // CA Find/Replace pad (#66)
