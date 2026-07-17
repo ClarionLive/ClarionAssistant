@@ -92,3 +92,24 @@ AttrTermGroupPeriod    GROUP(SmallGroupType),DIM(2).
 AfterMultiLineGroupMember &WorkerClass
 CallViaAfterMultiLineGroupMember PROCEDURE( ), LONG
             END
+
+! Bug M repro (inherited-member gap): BaseWorker is a CLASS data member declared here, on
+! this BASE class, never redeclared on DerivedWorkerClass below. variablesByName only ever
+! stores it as "BaseWorkerClass.BaseWorker" (keyed by the DECLARING class), and the
+! dotted-call resolver's class-member fallback only ever tried "<currentClass>.<objName>" --
+! i.e. "DerivedWorkerClass.BaseWorker" for a call made from DerivedWorkerClass's own method --
+! which never exists, so the lookup silently missed. Expected before the fix:
+! SELF.BaseWorker.Sign(...) in DerivedWorkerClass.CallViaInheritedMember (WorkerLib.clw) is
+! invisible to CodeGraph, even though BaseWorker is a perfectly ordinary inherited member from
+! Clarion's own point of view (the class already compiles and runs correctly). Expected after
+! the fix: the resolver walks the inherits chain (DerivedWorkerClass -> BaseWorkerClass) when
+! the direct same-class lookup misses, and the call resolves.
+BaseWorkerClass CLASS,TYPE, MODULE('WorkerLib.CLW'), LINK('WorkerLib.CLW', 1 ), DLL( 0 )
+
+BaseWorker    &WorkerClass
+            END
+
+DerivedWorkerClass CLASS(BaseWorkerClass),TYPE, MODULE('WorkerLib.CLW'), LINK('WorkerLib.CLW', 1 ), DLL( 0 )
+
+CallViaInheritedMember PROCEDURE( ), LONG
+            END

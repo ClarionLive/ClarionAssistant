@@ -25,6 +25,7 @@ periodBug    PeriodBugClass
 afterBug     AfterBugClass
 likeMemberBug LikeMemberBugClass
 multiLineGroupBug MultiLineGroupBugClass
+derivedWorker DerivedWorkerClass
 
  CODE
     r# = TestSignatureFlow()
@@ -45,6 +46,7 @@ multiLineGroupBug MultiLineGroupBugClass
     r# = LocalDerivedClassTest()
     r# = likeMemberBug.CallViaPlainInstanceMember()
     r# = multiLineGroupBug.CallViaAfterMultiLineGroupMember()
+    r# = derivedWorker.CallViaInheritedMember()
 
 ! Bug A repro: this procedure is implemented directly in the PROGRAM file itself,
 ! rather than in a MEMBER file. ParseMainFile only scans the file's PROGRAM marker,

@@ -1,11 +1,11 @@
 # CodeGraph parser regression fixture
 
 Contributed by [@geircodes](https://github.com/geircodes) alongside issues #79–#90, extended for
-the `LIKE(...)`/`EQUATE`-alias CLASS-member fix (PR #92) and the GROUP-typed CLASS-member fix
-(PR #93) — a single compiling Clarion solution whose procedures each exercise one historical
-parser/indexer bug. This is currently the only regression coverage the CodeGraph parser has; run
-it after ANY change to `Parsing/ClarionParser.cs` or `Graph/CodeGraphIndexer.cs` (either synced
-copy).
+the `LIKE(...)`/`EQUATE`-alias CLASS-member fix (PR #92), the GROUP-typed CLASS-member fix
+(PR #93), and the inherited-CLASS-member dotted-call resolution fix (PR TBD) — a single
+compiling Clarion solution whose procedures each exercise one historical parser/indexer bug.
+This is currently the only regression coverage the CodeGraph parser has; run it after ANY change
+to `Parsing/ClarionParser.cs` or `Graph/CodeGraphIndexer.cs` (either synced copy).
 
 ## Run
 
@@ -13,9 +13,10 @@ copy).
 indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproSolution.sln --db %TEMP%\codegraph-repro.db
 ```
 
-## Expected results (verified 2026-07-15 with all #79–#90 fixes applied, plus #92 and #93)
+## Expected results (verified 2026-07-17 with all #79–#90 fixes applied, plus #92, #93, and the
+inherited-CLASS-member dotted-call resolution fix)
 
-### Callers of `WorkerClass.Sign` — exactly 19 `calls` rows
+### Callers of `WorkerClass.Sign` — exactly 20 `calls` rows
 
 | Caller | Line | Proves issue |
 |---|---|---|
@@ -24,7 +25,7 @@ indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproS
 | ParameterTest | 31 | #87 (call through PROCEDURE parameter) |
 | ReturnTest | 40 | baseline (inline RETURN call shape) |
 | OwnerClass.CallViaMember | 51 | #84+#86 (.inc member, cross-file type) |
-| MainHelperProc | 60 | #81 (procedure in main PROGRAM file) |
+| MainHelperProc | 62 | #81 (procedure in main PROGRAM file) |
 | OwnerClass.CallViaCommentedMember | 67 | #85+#86 (trailing-comment member) |
 | CommentedLocalTest | 83 | #85 (trailing-comment DATA local) |
 | GroupBugClass.CallViaAfterGroupMember | 101 | #88 (member after inline GROUP END) |
@@ -38,13 +39,14 @@ indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproS
 | LocalDerivedClassTest | 254 | #90 (attribution after local CLASS(Parent)) |
 | LikeMemberBugClass.CallViaPlainInstanceMember | 271 | #92 (call through a reference CLASS member, unaffected control) |
 | MultiLineGroupBugClass.CallViaAfterMultiLineGroupMember | 289 | #93 (member after multi-line GROUP with its own extra field) |
+| DerivedWorkerClass.CallViaInheritedMember | 300 | this PR (member declared on a BASE class, accessed via SELF. from a DERIVED class's own method) |
 
 ### Symbols
 
-- 8 `class` symbols: WorkerClass, OwnerClass, DerivableClass, GroupBugClass, PeriodBugClass,
+- 10 `class` symbols: WorkerClass, OwnerClass, DerivableClass, GroupBugClass, PeriodBugClass,
   AfterBugClass (#84: sourced from the `.inc` despite `<None Include>`; #88: the last two
   vanished entirely before the depth-leak fix), LikeMemberBugClass (#92),
-  MultiLineGroupBugClass (#93).
+  MultiLineGroupBugClass (#93), BaseWorkerClass and DerivedWorkerClass (this PR).
 - `LocalDerived` is a **local variable** of LocalDerivedClassTest typed `DERIVABLECLASS` —
   NOT a global class (#90).
 - `pWorker`: `scope='parameter'`, parent `ParameterTest`, params `&WorkerClass` (#87).
@@ -78,6 +80,15 @@ indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproS
   that, `classEndDepth` leaks and every member/class after them vanishes.
   `CallViaAfterMultiLineGroupMember` still appearing in the callers table above proves no leak.
 
+- `BaseWorkerClass.BaseWorker` (`&WorkerClass`, `scope='class'`): declared once, on the BASE
+  class. `DerivedWorkerClass` (`parent_name='BaseWorkerClass'`) never redeclares it. This is
+  distinct from the earlier `OwnerClass.MyWorker` case (#84/#86, a member accessed from a method
+  on the SAME class that declares it) and from the `LocalDerived` case (#90, a class declared
+  and overridden entirely inside one procedure's own DATA section) — here the member and the
+  calling method live on two different, both top-level, `.inc`-declared classes joined only by
+  `CLASS(BaseClass)` inheritance. Proves the dotted-call resolver's class-member fallback walks
+  the `inherits` chain instead of only ever checking the calling method's own class name.
+
 ### Program symbol (#81)
 
 - `Worker` (`type='program'`) has `calls` rows to every procedure invoked from the global
@@ -92,5 +103,5 @@ JOIN symbols s1 ON r.to_id=s1.id JOIN symbols s2 ON r.from_id=s2.id
 WHERE s1.name='WorkerClass.Sign' AND r.type='calls' ORDER BY r.line_number;
 
 SELECT name, type, scope, parent_name, params FROM symbols WHERE type='class' OR scope='parameter'
-OR name IN ('LocalDerived','workerRef','LocalGroup','InlineLocalGroup','GenCertData','SomeHandle','InlineGroup','InlineGroupPeriod','MultiLineGroup','HiddenGroupMember','AttrTermGroup','AttrTermGroupPeriod');
+OR name IN ('LocalDerived','workerRef','LocalGroup','InlineLocalGroup','GenCertData','SomeHandle','InlineGroup','InlineGroupPeriod','MultiLineGroup','HiddenGroupMember','AttrTermGroup','AttrTermGroupPeriod','BaseWorker');
 ```

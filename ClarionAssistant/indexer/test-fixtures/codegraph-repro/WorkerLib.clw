@@ -289,3 +289,15 @@ result   LONG
   result = SELF.AfterMultiLineGroupMember.Sign( 60 )
   RETURN result
 
+! Bug M repro: see WorkerLib.inc for the full root-cause writeup. BaseWorker is declared on
+! BaseWorkerClass; DerivedWorkerClass inherits it without redeclaring it. This method lives on
+! DerivedWorkerClass itself, so the resolver must walk DerivedWorkerClass -> BaseWorkerClass to
+! find BaseWorker's declared type before it can resolve BaseWorker.Sign(...) to WorkerClass.Sign.
+DerivedWorkerClass.CallViaInheritedMember PROCEDURE( )
+result   LONG
+  CODE
+  SELF.BaseWorker &= NEW(WorkerClass)
+  result = SELF.BaseWorker.Sign( 70 )
+  DISPOSE( SELF.BaseWorker )
+  RETURN result
+
