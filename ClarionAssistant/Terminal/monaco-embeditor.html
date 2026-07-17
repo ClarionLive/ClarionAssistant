@@ -4719,6 +4719,7 @@
                         matchCase: !!msg.opts.matchCase, wholeWord: !!msg.opts.wholeWord,
                         regex: !!msg.opts.regex, includeReadOnly: msg.opts.includeReadOnly !== false
                     };
+                    mirrorPadStateIntoOverlay(msg.query || '');
                     runFind(msg.query || '', undefined, msg.navigate !== false);
                     break;
                 case 'reveal':     revealMatch(+msg.idx, !!msg.focus); break;
@@ -4729,11 +4730,26 @@
                     break;
                 case 'replace':    doReplace(!!msg.onlyChecked, msg.replText || ''); break;
                 case 'clear':
-                    findResults = []; findCurrentIdx = -1; lastFindQuery = null;
-                    clearFindHighlights();
+                    mirrorPadStateIntoOverlay('');
+                    runFind('');   // resets results/highlights AND refreshes the overlay grid/count when visible
                     break;
             }
         } catch (e) { }
+    }
+
+    // The pad and the overlay drive ONE engine (findResults/lastFindQuery are shared). If the overlay
+    // panel is visible when a pad command retargets the engine, the overlay's inputs must follow —
+    // otherwise the panel shows query A while the engine holds query B's matches, and the overlay's
+    // Replace All would silently rewrite the WRONG matches (cross-model adversary finding, run 1).
+    function mirrorPadStateIntoOverlay(q) {
+        var panel = document.getElementById('findPanel');
+        if (!panel || panel.classList.contains('hidden')) return;   // overlay not visible — nothing to sync
+        var fi = document.getElementById('findInput');
+        if (fi && fi._incT) { clearTimeout(fi._incT); fi._incT = null; }   // cancel any pending overlay search
+        if (fi) fi.value = q;
+        setToggle('tgCase', findOpts.matchCase); setToggle('tgWord', findOpts.wholeWord);
+        setToggle('tgRegex', findOpts.regex); setToggle('tgRo', findOpts.includeReadOnly);
+        // Grid/count/tab labels refresh inside runFind's render tail; empty q clears them there too.
     }
 
     // Buffer edits shift match positions; when the pad holds results, push a synced refresh so its

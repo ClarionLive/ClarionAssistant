@@ -119,10 +119,11 @@ namespace ClarionAssistant.Services
                 if (action == "caFindOpen")
                 {
                     NotifyActivity(host);
-                    // #66 phase 2: in Overlay mode the page opens its own in-editor panel and never posts
-                    // caFindOpen — this gate only defends against a STALE page (cached pre-switch HTML)
-                    // still asking for the pad. Ctrl+Alt+F / Tools menu (ShowCaFindPadCommand) bypass it.
-                    if (CaFindSettings.FindUiMode == CaFindSettings.ModeOverlay) return;
+                    // #66 phase 2: NO FindUiMode gate here — trust the page. A page that posts caFindOpen
+                    // loaded in Pad mode (or predates the overlay entirely) and the pad is the right answer
+                    // for it even if the GLOBAL setting has since flipped to Overlay; gating on the mutable
+                    // setting made Ctrl+F go dead in already-open pad-mode editors after a switch
+                    // (cross-model adversary finding, run 1). New pages in Overlay mode never post this.
                     ShowPad();   // create/raise the pad; it restores this editor's session on activeEditor
                 }
                 HostEntry e; Action<string> pad;
