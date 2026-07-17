@@ -221,6 +221,7 @@
     var matches = [];              // [{line,startCol,endLine,endCol,text,editable,checked}]
     var currentIdx = -1;
     var lastQuery = null;          // last query we sent that produced `matches`
+    var lastOpts = null;           // options that produced `matches` (full search identity, adversary run 3)
 
     function postToHost(obj) {
         try { window.chrome.webview.postMessage(JSON.stringify(obj)); } catch (e) { }
@@ -259,6 +260,17 @@
                 fzPx: fzPx, themeDark: themeDark
             }});
         }, 500);
+    }
+
+    // Shared history (#66 phase 2): the solution-wide find/replace lists ALSO live in the host's
+    // per-solution store (ModernEmbeditorHistory) so the pad, the in-editor overlay and both CA
+    // editors converge. Persist mutations there too (debounced); incoming applyHistory overwrites.
+    var _histTimer = null;
+    function persistSharedHistory() {
+        if (_histTimer) clearTimeout(_histTimer);
+        _histTimer = setTimeout(function () {
+            postToHost({ action: 'saveHistory', find: findHistory, replace: replHistory });
+        }, 400);
     }
 
     function applyState(st) {
@@ -336,13 +348,13 @@
         saveActiveTabInputs();
         var q = t.query;
         if (!q) {
-            matches = []; currentIdx = -1; lastQuery = null;
+            matches = []; currentIdx = -1; lastQuery = null; lastOpts = null;
             renderResults(); byId('findCount').textContent = '';
             fwd({ type: 'caFind', op: 'clear' });
             refreshTabLabels();
             return;
         }
-        addHistory(findHistory, q, 25);
+        addHistory(findHistory, q, 25); persistSharedHistory();
         var s = activeSession();
         if (s) addHistory(s.procHistory, q, 10);
         persistState();
@@ -355,12 +367,31 @@
         fwd({ type: 'caFind', op: 'nav', dir: dir });
     }
 
+    // Two result sets are interchangeable only when BOTH the query text and every option match —
+    // same-text/different-options searches are distinct (adversary run 3).
+    function sameSearchOpts(a, b) {
+        if (!a || !b) return false;
+        return !!a.matchCase === !!b.matchCase && !!a.wholeWord === !!b.wholeWord &&
+               !!a.regex === !!b.regex && (a.includeReadOnly !== false) === (b.includeReadOnly !== false);
+    }
+
     function doReplace(onlyChecked) {
         var t = activeTabObj();
         if (!t || !activeKey || !matches.length) { showToast('Nothing to replace', false); return; }
         saveActiveTabInputs();
+        // The engine may hold ANOTHER surface's results — an overlay search updates matches/lastQuery
+        // here without touching this pad's input (cross-model adversary, run 2). Never replace results
+        // for a query this pad isn't displaying: re-run OUR query first (the editor processes the
+        // search op before the replace op — WebView2 messages are ordered), and checked-row replaces
+        // bail for reconfirmation because a re-search resets the row checkboxes.
+        var fiVal = byId('findInput').value || '';
+        if (fiVal !== (lastQuery || '') || !sameSearchOpts(t.opts, lastOpts)) {
+            runSearch(true);   // passive refresh with the pad's own query/opts
+            if (!fiVal) { showToast('Nothing to replace', false); return; }
+            if (onlyChecked) { showToast('Results refreshed for the current query — review and Replace Selected again', false); return; }
+        }
         var replText = t.replaceText || '';
-        if (replText) { addHistory(replHistory, replText, 25); persistState(); }
+        if (replText) { addHistory(replHistory, replText, 25); persistState(); persistSharedHistory(); }
         fwd({ type: 'caFind', op: 'replace', replText: replText, onlyChecked: !!onlyChecked });
     }
 
@@ -449,7 +480,7 @@
     }
 
     function clearResults() {
-        matches = []; currentIdx = -1; lastQuery = null;
+        matches = []; currentIdx = -1; lastQuery = null; lastOpts = null;
         renderResults(); byId('findCount').textContent = '';
         fwd({ type: 'caFind', op: 'clear' });
     }
@@ -463,7 +494,7 @@
         byId('findInput').value = t.query;
         byId('replInput').value = t.replaceText;
         loadOptsToUi(t.opts);
-        matches = []; currentIdx = -1; lastQuery = null;
+        matches = []; currentIdx = -1; lastQuery = null; lastOpts = null;
         renderResults(); byId('findCount').textContent = '';
         renderTabs();
         if (autoSearch !== false && t.query) runSearch(true);   // auto re-run is PASSIVE — never moves the caret
@@ -610,7 +641,7 @@
         var proc = (s && s.procHistory) ? s.procHistory : [];
         function delEverywhere(t) {
             var k = proc.indexOf(t); if (k >= 0) proc.splice(k, 1);
-            var j = findHistory.indexOf(t); if (j >= 0) findHistory.splice(j, 1);
+            var j = findHistory.indexOf(t); if (j >= 0) { findHistory.splice(j, 1); persistSharedHistory(); }
             showFindHist(); persistState();
         }
         if (proc.length) {
@@ -632,7 +663,7 @@
         if (!replHistory.length) appendHistEmpty(box);
         else replHistory.forEach(function (term) {
             appendHistItem(box, term, 'replInput', function (t) {
-                var k = replHistory.indexOf(t); if (k >= 0) replHistory.splice(k, 1);
+                var k = replHistory.indexOf(t); if (k >= 0) { replHistory.splice(k, 1); persistSharedHistory(); }
                 showReplHist(); persistState();
             });
         });
@@ -651,7 +682,7 @@
         activeKey = newKey;
         activeTitle = msg.title || '';
         activeKind = msg.kind || '';
-        matches = []; currentIdx = -1; lastQuery = null;
+        matches = []; currentIdx = -1; lastQuery = null; lastOpts = null;
         renderTarget();
         if (!activeKey) { renderTabs(); renderResults(); byId('findCount').textContent = ''; return; }
         var s = sessionFor(activeKey);
@@ -666,6 +697,7 @@
             matches = m.matches || [];
             currentIdx = (typeof m.currentIdx === 'number') ? m.currentIdx : (matches.length ? 0 : -1);
             lastQuery = m.query || null;
+            lastOpts = m.opts || null;
             renderResults();
             renderCount(m);
             if (currentIdx >= 0) markActiveRow(currentIdx);
@@ -709,6 +741,19 @@
             if (msg.type === 'applyState') applyState(msg.state);
             else if (msg.type === 'activeEditor') onActiveEditor(msg);
             else if (msg.type === 'caFindFromEditor') onEditorMsg(msg);
+            else if (msg.type === 'applyHistory') {
+                // Another surface (editor page or overlay) saved the shared lists — converge, unless the
+                // store is empty and we still hold legacy blob lists (first run after the unification):
+                // then seed the store from ours instead of clobbering them.
+                var inF = msg.find || [], inR = msg.replace || [];
+                if (!inF.length && !inR.length && (findHistory.length || replHistory.length)) { persistSharedHistory(); }
+                else {
+                    findHistory = inF; replHistory = inR;
+                    var fh = document.getElementById('findHist'); if (fh && !fh.classList.contains('hidden')) showFindHist();
+                    var rh = document.getElementById('replHist'); if (rh && !rh.classList.contains('hidden')) showReplHist();
+                    persistState();   // keep the blob's legacy copies in step
+                }
+            }
         } catch (e) { }
     });
 
@@ -758,12 +803,12 @@
             if (box.classList.contains('hidden')) { hideHist('findHist'); showReplHist(); } else hideHist('replHist');
         });
         byId('findHistClear').addEventListener('click', function () {
-            findHistory = [];
+            findHistory = []; persistSharedHistory();
             var s = activeSession(); if (s) s.procHistory = [];
             hideHist('findHist'); persistState(); showToast('Search history cleared', true);
         });
         byId('replHistClear').addEventListener('click', function () {
-            replHistory = []; hideHist('replHist'); persistState(); showToast('Replace history cleared', true);
+            replHistory = []; hideHist('replHist'); persistState(); persistSharedHistory(); showToast('Replace history cleared', true);
         });
 
         byId('fzMinus').addEventListener('click', function () { fzPx--; applyFont(); persistState(); });

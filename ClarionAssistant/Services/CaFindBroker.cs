@@ -119,6 +119,11 @@ namespace ClarionAssistant.Services
                 if (action == "caFindOpen")
                 {
                     NotifyActivity(host);
+                    // #66 phase 2: NO FindUiMode gate here — trust the page. A page that posts caFindOpen
+                    // loaded in Pad mode (or predates the overlay entirely) and the pad is the right answer
+                    // for it even if the GLOBAL setting has since flipped to Overlay; gating on the mutable
+                    // setting made Ctrl+F go dead in already-open pad-mode editors after a switch
+                    // (cross-model adversary finding, run 1). New pages in Overlay mode never post this.
                     ShowPad();   // create/raise the pad; it restores this editor's session on activeEditor
                 }
                 HostEntry e; Action<string> pad;
@@ -202,6 +207,30 @@ namespace ClarionAssistant.Services
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[CaFindBroker] ShowPad: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// One history bus for every Find/Replace surface (#66 phase 2): push the saved solution-wide
+        /// find/replace lists to EVERY live Monaco page (CA Editor + CA Embeditor, both read
+        /// {type:'applyHistory'}) AND the CA Find pad. Callers: both hosts' saveHistory handlers and
+        /// the pad's — whoever saved last, all surfaces converge on the same lists.
+        /// </summary>
+        public static void BroadcastHistory(System.Collections.Generic.IList<string> find,
+                                            System.Collections.Generic.IList<string> replace)
+        {
+            try
+            {
+                string json = "{\"type\":\"applyHistory\",\"find\":" + ModernEmbeditorHistory.ToJson(find)
+                            + ",\"replace\":" + ModernEmbeditorHistory.ToJson(replace) + "}";
+                System.Collections.Generic.List<HostEntry> hosts; Action<string> pad;
+                lock (_lock) { hosts = new System.Collections.Generic.List<HostEntry>(_hosts); pad = _padPoster; }
+                foreach (var e in hosts)
+                {
+                    try { if (e.Control != null) e.Control.PostJson(json); } catch { }
+                }
+                try { if (pad != null) pad(json); } catch { }
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[CaFindBroker] BroadcastHistory: " + ex.Message); }
         }
     }
 }

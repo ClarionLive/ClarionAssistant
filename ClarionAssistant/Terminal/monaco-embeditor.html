@@ -300,13 +300,205 @@
     .embed-readonly-line { background: rgba(0, 0, 0, 0.06); }
     body:not(.light) .embed-readonly-line { background: rgba(255, 255, 255, 0.05); }
 
-    /* ---------- Find & Replace: in-editor match decorations only ----------
-       The find UI (rows/tabs/grid) moved to the dockable CA Find/Replace pad (ca-find.html, #66);
-       this page keeps just the Monaco decoration classes its engine paints. */
-    :root { --find-hit: rgba(137,180,250,0.35); --find-hit-border: #89b4fa; }
-    body.light { --find-hit: rgba(30,102,245,0.22); --find-hit-border: #1e66f5; }
+    /* ---------- Find & Replace panel (Clarion-style: results grid of every match) ---------- */
+    :root { --find-accent: #89b4fa; --find-hit: rgba(137,180,250,0.35); --find-hit-border: #89b4fa; --on-fg: #1e1e2e; --find-fz: 12px; }
+    body.light { --find-accent: #1e66f5; --find-hit: rgba(30,102,245,0.22); --find-hit-border: #1e66f5; --on-fg: #eff1f5; }
+
+    /* QUICK-FIND mode (default when open): compact overlay pinned to the editor's top-right corner,
+       reserves NO editor space — it floats over the code (VS Code-style). `top` is set in JS
+       (positionFindPanel) to sit just under the toolbar; the rest is CSS. */
+    #findPanel {
+        position: absolute; right: 20px; left: auto; bottom: auto; z-index: 50;
+        width: auto; max-width: 94%; display: flex; flex-direction: column;
+        background: var(--toolbar-bg); border: 1px solid var(--find-accent); border-radius: 7px;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.32);
+        font-size: var(--find-fz); color: var(--fg);
+    }
+    #findPanel.hidden { display: none; }
+    /* Quick mode hides the results-grid machinery, the row labels and the standalone Find button. */
+    #findPanel:not(.findall) #findGrip,
+    #findPanel:not(.findall) #findTabs,
+    #findPanel:not(.findall) #findGrid,
+    #findPanel:not(.findall) .find-restools,
+    #findPanel:not(.findall) .find-row > label,
+    #findPanel:not(.findall) #findGo,
+    #findPanel:not(.findall) #findHistClear,
+    #findPanel:not(.findall) #replSel,
+    #findPanel:not(.findall) .find-spacer { display: none; }
+    /* Deterministic compact layout: fixed-width input, every control content-sized, panel auto-fits its
+       contents. Nothing grows or shrinks, so the nav buttons can never be pushed out or clipped. */
+    #findPanel:not(.findall) { width: auto; }
+    #findPanel:not(.findall) .find-rows { padding: 6px 8px; gap: 5px; flex: 0 0 auto; }
+    #findPanel:not(.findall) .find-row > * { flex-shrink: 0; }
+    #findPanel:not(.findall) .combo { flex: 0 0 auto; max-width: none; }
+    #findPanel:not(.findall) .combo input { flex: 0 0 150px; width: 150px; }
+    /* Quick overlay: the match count drops onto its own line UNDER the search box, keeping the row compact. */
+    /* Count is a sibling BLOCK under the control row (not a wrapped flex item), so the control row stays
+       single-line and never wraps the nav buttons. Hidden until a search produces text. */
+    #findCount { font-size: 11px; color: var(--title-color); padding: 1px 4px 0; }
+    #findCount:empty { display: none; }
+    /* FIND-ALL mode: re-dock as a left column, full editor height, results grid visible; reserves width. */
+    #findPanel.findall {
+        left: 0; right: auto; bottom: var(--status-bar-h); z-index: 15;
+        width: 340px; max-width: 60%;
+        border: none; border-right: 2px solid var(--find-accent); border-radius: 0;
+        box-shadow: 3px 0 14px rgba(0,0,0,0.22);
+    }
+    /* ===== Find-All column: vertical VS Code Search-view layout; content can't spill past the panel ===== */
+    #findPanel.findall, #findPanel.findall * { box-sizing: border-box; }
+    #findPanel.findall { overflow: hidden; }
+    /* slim header (title · count · close) */
+    #findAllHeader { display: none; }
+    #findPanel.findall #findAllHeader {
+        display: flex; align-items: center; gap: 8px; padding: 7px 10px; flex-shrink: 0;
+        border-bottom: 1px solid var(--toolbar-border);
+    }
+    #findAllHeader .fa-title { font-weight: 600; color: var(--title-accent); letter-spacing: .02em; }
+    #findAllHeader .fa-count { font-size: 11px; color: var(--title-color); }
+    /* search + replace: full-width, stacked; toggles wrap onto their own line */
+    #findPanel.findall .find-head { align-items: stretch; }
+    #findPanel.findall .find-rows { padding: 8px 10px; gap: 8px; width: 100%; min-width: 0; }
+    #findPanel.findall .find-row { flex-wrap: wrap; gap: 6px; width: 100%; min-width: 0; }
+    #findPanel.findall .combo { flex: 1 1 100%; max-width: 100%; min-width: 0; }
+    #findPanel.findall .find-btn { flex: 0 0 auto; }
+    /* hide overlay-only chrome that doesn't belong in the column */
+    #findPanel.findall #findGo,
+    #findPanel.findall #findPrev,
+    #findPanel.findall #findNext,
+    #findPanel.findall #findAllToggle,
+    #findPanel.findall #findClose,
+    #findPanel.findall #findHistClear,
+    #findPanel.findall #replHistClear,
+    #findPanel.findall #replSel,
+    #findPanel.findall #findCount,
+    #findPanel.findall #findTabs,
+    #findPanel.findall .find-restools,
+    #findPanel.findall .find-row > label,
+    #findPanel.findall .find-row .find-spacer,
+    #findPanel.findall .find-grid .c-chk { display: none; }
+    /* results list: fixed layout + ellipsis so a long line never widens the panel */
+    #findPanel.findall .find-grid { flex: 1; border-top: 1px solid var(--toolbar-border); }
+    #findPanel.findall .find-grid table { table-layout: fixed; width: 100%; }
+    #findPanel.findall .find-grid .c-line { width: 40px; }
+    #findPanel.findall .find-grid .c-lock { width: 20px; }
+    #findPanel.findall .find-grid tbody td:last-child {
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono, monospace);
+    }
+    #findPanel.findall .find-grid tbody tr { line-height: 1.7; }
+    #findGrip { display: none; }   /* obsolete: the old bottom-dock resize handle (quick overlay / left column don't use it) */
+    .find-rows { padding: 8px 10px 6px; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+    .find-row { display: flex; align-items: center; gap: 8px; }
+    /* VS Code-style replace expander: a chevron on the LEFT that shows/hides the replace row. It rotates
+       to point down when expanded. Replace is hidden unless #findPanel has .show-replace. */
+    .find-head { display: flex; align-items: stretch; }
+    .find-head .find-rows { flex: 1; }
+    .repl-toggle { width: 16px; flex-shrink: 0; border: none; background: transparent; cursor: pointer;
+        color: var(--title-color); display: flex; align-items: center; justify-content: center; padding: 0; }
+    .repl-toggle:hover { background: rgba(127,127,127,0.18); }
+    .repl-toggle .chev { font-size: 10px; line-height: 1; transition: transform 0.12s ease; }
+    #findPanel.show-replace .repl-toggle .chev { transform: rotate(90deg); }
+    #findPanel:not(.show-replace) #replRow { display: none; }
+    .find-row > label { width: 80px; color: var(--title-color); flex-shrink: 0; }
+    .find-spacer { flex: 1; }
+
+    /* The combo IS the boxed input control (VS Code-style): text field + inline toggles + history caret. */
+    .combo { position: relative; flex: 1; max-width: 520px; display: flex; align-items: center;
+        background: var(--bg); border: 1px solid var(--toolbar-border); border-radius: 4px; }
+    .combo:focus-within { border-color: var(--find-accent); }
+    .combo input { flex: 1; min-width: 0; background: transparent; color: var(--fg);
+        border: none; outline: none; padding: 4px 4px 4px 8px; font-family: inherit; font-size: var(--find-fz); }
+    .combo .toggles { flex-shrink: 0; }
+    .combo .combo-caret { width: 18px; height: 22px; flex-shrink: 0;
+        display: flex; align-items: center; justify-content: center; color: var(--title-color);
+        cursor: pointer; border-left: 1px solid var(--toolbar-border); user-select: none; font-size: 10px; }
+    .combo-hist { position: absolute; left: 0; right: 0; top: 100%; z-index: 40;
+        background: var(--toolbar-bg); border: 1px solid var(--toolbar-border);
+        border-radius: 0 0 4px 4px; box-shadow: 0 6px 16px rgba(0,0,0,0.4); max-height: 180px; overflow: auto; }
+    .combo-hist.hidden { display: none; }
+    .combo-hist div { padding: 4px 10px; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; }
+    .combo-hist div:hover { background: rgba(127,127,127,0.18); }
+    .combo-hist div .hx { color: var(--title-color); }
+    .combo-hist .hist-empty { color: var(--title-color); cursor: default; }
+    .combo-hist .hist-empty:hover { background: transparent; }
+    .combo-hist .hist-header { color: var(--find-accent); cursor: default; font-size: 10px;
+        text-transform: uppercase; letter-spacing: .5px; padding: 4px 10px 2px; opacity: .85; }
+    .combo-hist .hist-header:hover { background: transparent; }
+
+    .toggles { display: flex; gap: 1px; align-items: center; }
+    .tg { width: 22px; height: 20px; border: 1px solid transparent; background: transparent;
+        color: var(--title-color); border-radius: 3px; cursor: pointer; font-size: 11px; font-family: inherit;
+        display: flex; align-items: center; justify-content: center; }
+    .tg:hover { background: rgba(127,127,127,0.18); }
+    .tg.on { background: var(--find-hit); border-color: var(--find-hit-border); color: var(--fg); }
+
+    .find-icon { width: 28px; height: 28px; border: 1px solid var(--toolbar-border); background: transparent;
+        color: var(--fg); border-radius: 4px; cursor: pointer; font-size: 13px;
+        display: flex; align-items: center; justify-content: center; }
+    .find-icon:hover { background: rgba(127,127,127,0.18); }
+    .find-icon.search { background: var(--find-accent); border-color: var(--find-accent); color: var(--on-fg); }
+    .find-btn { background: transparent; color: var(--fg); border: 1px solid var(--toolbar-border);
+        border-radius: 4px; padding: 4px 10px; cursor: pointer; font-family: inherit; font-size: 12px; }
+    .find-btn:hover { background: rgba(127,127,127,0.18); }
+    .find-btn.primary { background: var(--find-accent); border-color: var(--find-accent); color: var(--on-fg); }
+    .find-count { color: var(--title-color); white-space: nowrap; }
+
+    .find-restools { display: flex; align-items: center; gap: 14px; padding: 4px 10px;
+        border-top: 1px solid var(--toolbar-border); flex-shrink: 0; }
+    .find-link { color: var(--find-accent); cursor: pointer; white-space: nowrap; user-select: none; }
+    .find-link:hover { text-decoration: underline; }
+
+    .find-grid { flex: 1; overflow: auto; }
+    .find-grid table { width: 100%; border-collapse: collapse; }
+    .find-grid thead th { position: sticky; top: 0; background: var(--toolbar-bg); color: var(--title-color);
+        text-align: left; font-weight: 600; padding: 4px 8px; border-bottom: 1px solid var(--toolbar-border); }
+    .find-grid tbody td { padding: 2px 8px; border-bottom: 1px solid var(--toolbar-border);
+        font-family: 'Consolas', 'Courier New', monospace; white-space: pre; }
+    .find-grid tbody tr { cursor: pointer; }
+    .find-grid tbody tr:hover { background: rgba(127,127,127,0.12); }
+    .find-grid tbody tr.active { background: var(--find-hit); }
+    .find-grid .c-chk { width: 26px; text-align: center; }
+    .find-grid .c-line { width: 56px; color: var(--title-color); text-align: right;
+        font-family: 'Consolas', 'Courier New', monospace; }
+    .find-grid .c-lock { width: 22px; text-align: center; }
+    .find-grid .hl { background: var(--find-hit); border-radius: 2px; }
+    .find-empty { padding: 16px; text-align: center; color: var(--title-color); }
+
+    /* in-editor match decorations */
     .find-match { background: var(--find-hit); }
     .find-match-current { background: var(--find-hit); outline: 1px solid var(--find-hit-border); }
+
+    /* Find tabs — each tab is an independent search session */
+    #findTabs { display: flex; align-items: flex-end; gap: 2px; padding: 4px 8px 0; overflow-x: auto;
+        flex-shrink: 0; }
+    .ftab { display: flex; align-items: center; gap: 6px; padding: 3px 8px; max-width: 170px;
+        border: 1px solid var(--toolbar-border); border-bottom: none; border-radius: 5px 5px 0 0;
+        background: var(--bg); color: var(--title-color); cursor: pointer; font-size: 11px;
+        white-space: nowrap; }
+    .ftab.active { background: var(--toolbar-bg); color: var(--title-accent); border-color: var(--find-accent); }
+    .ftab-label { overflow: hidden; text-overflow: ellipsis; max-width: 130px; }
+    .ftab-x { opacity: .55; font-size: 10px; }
+    .ftab-x:hover { opacity: 1; color: var(--find-accent); }
+    .ftab-add { padding: 2px 9px; border: 1px dashed var(--toolbar-border); border-radius: 5px;
+        cursor: pointer; color: var(--title-color); font-size: 14px; line-height: 1; flex-shrink: 0; }
+    .ftab-add:hover { background: rgba(127,127,127,0.18); color: var(--title-accent); }
+    #ftabMenu { position: fixed; z-index: 60; background: var(--toolbar-bg); border: 1px solid var(--toolbar-border);
+        border-radius: 5px; box-shadow: 0 6px 18px rgba(0,0,0,0.45); min-width: 180px; padding: 4px 0; font-size: 12px; }
+    #ftabMenu.hidden { display: none; }
+    .ftab-menu-item { padding: 5px 14px; cursor: pointer; color: var(--fg); white-space: nowrap; }
+    .ftab-menu-item:hover { background: var(--find-accent); color: var(--on-fg); }
+    .ftab-menu-item.disabled { color: var(--title-color); pointer-events: none; opacity: .5; }
+
+    /* Light mode: make the Find panel WHITE (the default Latte greys were hard to read).
+       Borders/separators keep their grey so structure is still visible on white. */
+    body.light #findPanel,
+    body.light #findTabs,
+    body.light .find-rows,
+    body.light .find-grid thead th,
+    body.light #ftabMenu { background: #ffffff; }
+    body.light .combo { background: #ffffff; }
+    body.light .find-grid tbody tr:hover { background: #eef2fb; }
+    body.light .ftab { background: #f3f5f9; }            /* inactive tabs: a hair off-white so they read as tabs */
+    body.light .ftab.active { background: #ffffff; }
 </style>
 </head>
 <body>
@@ -453,9 +645,70 @@
     <div id="editor"></div>
     <div id="editor2"></div>
     <div id="statusBar"></div>
-    <!-- Find & Replace moved to the dockable CA Find/Replace pad (ca-find.html, GitHub #66).
-         This page keeps the match/replace ENGINE (decoration-tracked results, #65) and is driven
-         remotely via {type:'caFind'} commands routed through CaFindBroker. -->
+    <div id="findPanel" class="hidden">
+        <div id="findGrip" title="Drag to resize"></div>
+        <div id="findTabs"></div>
+        <div id="findAllHeader">
+            <span class="fa-title">Find All</span>
+            <span class="fa-count" id="faCount"></span>
+            <span class="find-spacer"></span>
+            <button class="find-icon" id="faClose" title="Close (Esc)">&#10005;</button>
+        </div>
+        <div class="find-head">
+        <button id="replToggle" class="repl-toggle" title="Toggle Replace (Ctrl+H)" aria-expanded="false"><span class="chev">&#10095;</span></button>
+        <div class="find-rows">
+            <div class="find-row">
+                <label>Find what</label>
+                <div class="combo">
+                    <input id="findInput" type="text" autocomplete="off" spellcheck="false" placeholder="Find…">
+                    <div class="toggles">
+                        <button class="tg" id="tgCase" title="Match case">Aa</button>
+                        <button class="tg" id="tgWord" title="Whole word">ab</button>
+                        <button class="tg" id="tgRegex" title="Use regular expression">.*</button>
+                        <button class="tg on" id="tgRo" title="Include read-only (generated) blocks in results">&#128274;</button>
+                    </div>
+                    <span class="combo-caret" id="findCaret" title="Search history">&#9662;</span>
+                    <div class="combo-hist hidden" id="findHist"></div>
+                </div>
+                <button class="find-icon search" id="findGo" title="Find (Enter)">&#128269;</button>
+                <button class="find-icon" id="findPrev" title="Previous match (Shift+Enter)">&#8249;</button>
+                <button class="find-icon" id="findNext" title="Next match (Enter)">&#8250;</button>
+                <button class="find-icon" id="findAllToggle" title="List all matches (Find All)">&#9776;</button>
+                <span class="find-spacer"></span>
+                <button class="find-icon" id="findHistClear" title="Clear search history">&#129529;</button>
+                <button class="find-icon" id="findClose" title="Close (Esc)">&#10005;</button>
+            </div>
+            <span class="find-count" id="findCount"></span>
+            <div class="find-row" id="replRow">
+                <label>Replace with</label>
+                <div class="combo">
+                    <input id="replInput" type="text" autocomplete="off" spellcheck="false" placeholder="Replace…">
+                    <span class="combo-caret" id="replCaret" title="Replace history">&#9662;</span>
+                    <div class="combo-hist hidden" id="replHist"></div>
+                </div>
+                <button class="find-btn" id="replSel" title="Replace checked rows (editable slots only)">Replace Selected</button>
+                <button class="find-btn primary" id="replAll" title="Replace every editable match">Replace All</button>
+                <span class="find-spacer"></span>
+                <button class="find-icon" id="replHistClear" title="Clear replace history">&#129529;</button>
+            </div>
+        </div>
+        </div>
+        <div class="find-restools">
+            <span class="find-link" id="selAll" title="Check every replaceable row">&#9638; Select All</span>
+            <span class="find-link" id="selNone" title="Uncheck every row">&#9634; Select None</span>
+            <span class="find-spacer"></span>
+            <span class="find-link" id="copyRes" title="Copy checked rows (or all if none checked)">&#10697; Copy</span>
+            <span class="find-link" id="clearRes" title="Clear results">&#129529; Clear results</span>
+        </div>
+        <div class="find-grid" id="findGrid">
+            <table>
+                <thead><tr><th class="c-chk"></th><th class="c-line">Line</th><th class="c-lock"></th><th>Code</th></tr></thead>
+                <tbody id="findResults"></tbody>
+            </table>
+            <div class="find-empty" id="findEmpty">No results.</div>
+        </div>
+        <div id="ftabMenu" class="hidden"></div>
+    </div>
     <div id="loading">Loading editor…</div>
     <div id="toast"></div>
 
@@ -523,6 +776,19 @@
     // ----- Find & Replace ENGINE state (UI/tabs/history live in the CA Find pad, GitHub #66) -----
     var findResults = [];         // [{line,startCol,endCol,text,editable,checked,matches}]
     var findDecorations = [];     // in-editor match-highlight decoration ids — the LIVE position source (#65)
+    var findHistory = [];         // solution-wide search terms, most-recent first
+    var replHistory = [];         // solution-wide replace terms, most-recent first
+    var procFindHistory = [];     // THIS procedure's recent search terms (layered dropdown top group)
+    var findHistIdx = -1;         // ↑/↓ cursor into findHistory while the find box is focused (-1 = live text)
+    var findUiMode = 'pad';      // 'pad' (dockable CA Find pad, default) | 'overlay' (in-editor quick find) — from setSource (#66 phase 2)
+
+    // ----- Find TABS: each tab is an independent search session {query, replaceText, opts}. The live
+    // globals above (findResults/findOpts/findCurrentIdx/lastFindQuery + the input fields) are the
+    // ACTIVE tab's working copy; switching a tab re-runs its search fresh so results always reflect the
+    // current buffer. Search/replace HISTORY stays global (shared across all tabs).
+    var findTabs = [];     // [{id, query, replaceText, opts}]
+    var activeTab = -1;
+    var tabSeq = 0;
     var findCurrentIdx = -1;      // index into findResults of the active (revealed) match
     var lastFindQuery = null;     // the query that produced findResults (F3 = next)
     var findModelVersion = -1;    // model version findResults was last synced against (GitHub #65)
@@ -729,6 +995,11 @@
         embedRanges = msg.editableRanges || [];
         saveEnabled = !!msg.saveEnabled;
         fileMode = !!msg.fileMode;
+        if (msg.findUiMode) findUiMode = (msg.findUiMode === 'overlay') ? 'overlay' : 'pad';   // which UI answers Ctrl+F/Ctrl+H
+        // The "include read-only (generated) blocks" find toggle only means something in PWEE/slot mode.
+        // In file mode the whole buffer is editable — there are no read-only regions — so hide it.
+        var tgRo = document.getElementById('tgRo');
+        if (tgRo) tgRo.style.display = fileMode ? 'none' : '';
         currentFilePath = msg.filePath || '';
         breakpointsEnabled = !!msg.breakpointsEnabled;   // overlay: gutter-click toggles a breakpoint (not a bookmark)
         designerEnabled = !!msg.designerEnabled;         // overlay: Ctrl+D designs structures in plain source files
@@ -2399,9 +2670,33 @@
                 if (!isEditableRange(e.changes[i].range)) { illegal = true; break; }
             }
             if (illegal) {
+                // Monaco applied the whole event atomically. A batch that touches even one read-only
+                // line used to be reverted WHOLESALE — which silently dropped the legal replacements in
+                // a mixed batch. The native find widget's "Replace All" is exactly that: one event whose
+                // matches land in BOTH editable slots and generated code, so it appeared to do nothing.
+                // Revert the atomic edit, then re-apply only the changes that fell inside editable slots.
+                // e.changes carry pre-edit coordinates in reverse-document order, so they stay valid
+                // against the buffer the undo just restored. (Same guard now also salvages multi-cursor
+                // edits that straddle a read-only boundary.)
+                var legal = [];
+                for (var k = 0; k < e.changes.length; k++) {
+                    if (isEditableRange(e.changes[k].range))
+                        legal.push({ range: e.changes[k].range, text: e.changes[k].text });
+                }
                 guarding = true;
                 editor.trigger('readonly-guard', 'undo', null);
+                if (legal.length) {
+                    editor.executeEdits('readonly-guard-reapply', legal);
+                    applyChangesToRanges(legal);
+                    applyEmbedDecorations();
+                }
                 guarding = false;
+                if (legal.length) {
+                    setDirty(true);
+                    if (fileMode) { editSeq++; pushFileState(); }
+                    if (bookmarkDecos.length) scheduleBookmarkPersist();
+                    scheduleDiagnostics();
+                }
                 return;
             }
             // A legal user edit happened (this handler returned early for programmatic loads via
@@ -3315,10 +3610,16 @@
         document.addEventListener('keydown', function (ev) {
             if (capturingKey || snippetPickerOpen) return;   // rebind-capture / snippet picker owns the keyboard
             var ctrl = ev.ctrlKey || ev.metaKey;
-            if (ctrl && (ev.keyCode === 70 || ev.key === 'f' || ev.key === 'F')) {         // Ctrl+F
-                ev.preventDefault(); ev.stopImmediatePropagation(); postCaFindOpen(false);
+            if (ctrl && ev.shiftKey && (ev.keyCode === 70 || ev.key === 'f' || ev.key === 'F')) {   // Ctrl+Shift+F → Find All
+                // Shift branches MUST precede the plain Ctrl+F/Ctrl+H (they also match ctrl+F / ctrl+H). The C#
+                // ProcessCmdKey guard swallows these chords too, so they can't leak to the IDE's Find/Replace-in-Files.
+                ev.preventDefault(); ev.stopImmediatePropagation(); if (findUiMode === 'overlay') openFindAll(false); else postCaFindOpen(false);
+            } else if (ctrl && ev.shiftKey && (ev.keyCode === 72 || ev.key === 'h' || ev.key === 'H')) {   // Ctrl+Shift+H → Find All + Replace
+                ev.preventDefault(); ev.stopImmediatePropagation(); if (findUiMode === 'overlay') openFindAll(true); else postCaFindOpen(true);
+            } else if (ctrl && (ev.keyCode === 70 || ev.key === 'f' || ev.key === 'F')) {         // Ctrl+F
+                ev.preventDefault(); ev.stopImmediatePropagation(); openFindUi(false);
             } else if (ctrl && (ev.keyCode === 72 || ev.key === 'h' || ev.key === 'H')) {   // Ctrl+H
-                ev.preventDefault(); ev.stopImmediatePropagation(); postCaFindOpen(true);
+                ev.preventDefault(); ev.stopImmediatePropagation(); openFindUi(true);
             } else if (ev.keyCode === 114 || ev.key === 'F3') {                             // F3 / Shift+F3
                 ev.preventDefault(); ev.stopImmediatePropagation(); gotoMatch(ev.shiftKey ? -1 : 1);
             } else if (ctrl && (ev.keyCode === 123 || ev.key === 'F12')) {                  // Ctrl+F12 → go to implementation (declaration → body)
@@ -3734,6 +4035,477 @@
         postToHost({ action: 'caFindOpen', seed: selectionWord(), replace: !!focusReplace });
     }
 
+    // Mode dispatch (#66 phase 2): 'pad' raises the dockable CA Find pad (via the host), 'overlay'
+    // opens the in-editor panel locally. Both drive the same engine below.
+    function openFindUi(focusReplace) {
+        if (findUiMode === 'overlay') openFindPanel(!!focusReplace);
+        else postCaFindOpen(!!focusReplace);
+    }
+
+    // ---- Results grid ----
+    function renderResults() {
+        var tb = document.getElementById('findResults');
+        var empty = document.getElementById('findEmpty');
+        tb.innerHTML = '';
+        if (!findResults.length) { empty.style.display = ''; return; }
+        empty.style.display = 'none';
+        for (var i = 0; i < findResults.length; i++) {
+            var r = findResults[i];
+            var tr = document.createElement('tr');
+            tr.className = (i === findCurrentIdx ? 'active' : '');
+            tr.setAttribute('data-idx', i);
+            var tdChk = document.createElement('td'); tdChk.className = 'c-chk';
+            var cb = document.createElement('input'); cb.type = 'checkbox';
+            cb.checked = r.checked; cb.disabled = !r.editable; cb.setAttribute('data-idx', i);
+            cb.addEventListener('click', function (ev) { ev.stopPropagation(); });
+            cb.addEventListener('change', function (ev) {
+                findResults[+ev.target.getAttribute('data-idx')].checked = ev.target.checked;
+            });
+            tdChk.appendChild(cb);
+            var tdLine = document.createElement('td'); tdLine.className = 'c-line'; tdLine.textContent = r.line;
+            var tdLock = document.createElement('td'); tdLock.className = 'c-lock';
+            if (!r.editable) { tdLock.textContent = '🔒'; tdLock.title = 'Read-only (generated) — not replaceable'; }
+            var tdCode = document.createElement('td');
+            tdCode.innerHTML = highlightLine(r.text, r.startCol, r.endCol, r.line, r.endLine);
+            tr.appendChild(tdChk); tr.appendChild(tdLine); tr.appendChild(tdLock); tr.appendChild(tdCode);
+            tr.addEventListener('click', function (ev) { revealMatch(+ev.currentTarget.getAttribute('data-idx'), true); });
+            tb.appendChild(tr);
+        }
+    }
+
+    // Highlight the matched substring within the displayed line. Single-line matches use exact columns;
+    // a multi-line (regex) match just highlights from startCol to end of the first line.
+    function highlightLine(text, startCol, endCol, line, endLine) {
+        var s = startCol - 1;
+        var e = (endLine === line) ? endCol - 1 : text.length;
+        if (s < 0) s = 0;
+        if (e > text.length) e = text.length;
+        if (e < s) e = s;
+        return escHtml(text.slice(0, s)) +
+            '<span class="hl">' + escHtml(text.slice(s, e)) + '</span>' +
+            escHtml(text.slice(e));
+    }
+
+    // ---- History dropdowns ----
+    function addHistory(arr, val, cap) {
+        if (!val) return;
+        cap = cap || 25;
+        for (var i = arr.length - 1; i >= 0; i--) if (arr[i] === val) arr.splice(i, 1);
+        arr.unshift(val);
+        if (arr.length > cap) arr.length = cap;
+    }
+
+    // Replace an array's contents in place (keeps the same object reference the closures captured).
+    function replaceArray(arr, src) {
+        arr.length = 0;
+        for (var i = 0; i < src.length; i++) arr.push(src[i]);
+    }
+
+    // Persist Find/Replace history to the host (%APPDATA%), debounced. The host stores it authoritatively
+    // and broadcasts the saved lists back (applyHistory) so all open tabs converge.
+    var _histSaveTimer = null;
+    function persistHistory() {
+        if (_histSaveTimer) clearTimeout(_histSaveTimer);
+        _histSaveTimer = setTimeout(function () {
+            postToHost({ action: 'saveHistory', find: findHistory, replace: replHistory, proc: procFindHistory });
+        }, 400);
+    }
+
+    // One clickable history row. onDelete(term) removes it from the backing store(s) then re-renders.
+    function appendHistItem(box, term, inputId, onDelete) {
+        var row = document.createElement('div');
+        var label = document.createElement('span'); label.textContent = term;
+        var x = document.createElement('span'); x.className = 'hx'; x.textContent = '✕';
+        x.title = 'Remove from history';
+        row.appendChild(label); row.appendChild(x);
+        row.addEventListener('click', function (ev) {
+            if (ev.target === x) { ev.stopPropagation(); onDelete(term); return; }
+            document.getElementById(inputId).value = term;
+            hideHist(inputId === 'findInput' ? 'findHist' : 'replHist');
+            if (inputId === 'findInput') runFind();   // picking a search term searches immediately
+            else document.getElementById('replInput').focus();
+        });
+        box.appendChild(row);
+    }
+
+    function appendHistHeader(box, text) {
+        var h = document.createElement('div');
+        h.className = 'hist-header'; h.textContent = text;
+        box.appendChild(h);
+    }
+
+    function appendHistEmpty(box) {
+        var none = document.createElement('div'); none.className = 'hist-empty';
+        none.textContent = '(no history)'; box.appendChild(none);
+    }
+
+    // Replace-history dropdown — single solution-wide list.
+    function showReplHist() {
+        var box = document.getElementById('replHist');
+        box.innerHTML = '';
+        if (!replHistory.length) appendHistEmpty(box);
+        else replHistory.forEach(function (term) {
+            appendHistItem(box, term, 'replInput', function (t) {
+                var k = replHistory.indexOf(t); if (k >= 0) replHistory.splice(k, 1);
+                showReplHist(); persistHistory();
+            });
+        });
+        box.classList.remove('hidden');
+    }
+
+    // Find-history dropdown — LAYERED: "This procedure" group (procFindHistory) on top, then the full
+    // solution-wide list (findHistory minus the proc duplicates). Deleting forgets a term everywhere.
+    function showFindHist() {
+        var box = document.getElementById('findHist');
+        box.innerHTML = '';
+        function delEverywhere(t) {
+            var k = procFindHistory.indexOf(t); if (k >= 0) procFindHistory.splice(k, 1);
+            var j = findHistory.indexOf(t); if (j >= 0) findHistory.splice(j, 1);
+            showFindHist(); persistHistory();
+        }
+        var hasProc = procFindHistory.length > 0;
+        if (hasProc) {
+            appendHistHeader(box, 'This procedure');
+            procFindHistory.forEach(function (term) { appendHistItem(box, term, 'findInput', delEverywhere); });
+        }
+        var solOnly = findHistory.filter(function (t) { return procFindHistory.indexOf(t) < 0; });
+        if (solOnly.length) {
+            if (hasProc) appendHistHeader(box, 'Solution');
+            solOnly.forEach(function (term) { appendHistItem(box, term, 'findInput', delEverywhere); });
+        }
+        if (!hasProc && !solOnly.length) appendHistEmpty(box);
+        box.classList.remove('hidden');
+    }
+
+    function hideHist(histId) {
+        var box = document.getElementById(histId);
+        if (box) box.classList.add('hidden');
+    }
+
+    function setToggle(id, on) {
+        var el = document.getElementById(id);
+        if (el) el.classList.toggle('on', on);
+    }
+
+    // ---- Grip resize ----
+    function startGripDrag(ev) {
+        ev.preventDefault();
+        var panel = document.getElementById('findPanel');
+        var startY = ev.clientY, startH = panel.offsetHeight;
+        function move(e) {
+            var h = Math.max(150, Math.min(window.innerHeight * 0.75, startH + (startY - e.clientY)));
+            panel.style.height = h + 'px';
+            setEditorBottom(h);
+        }
+        function up() {
+            document.removeEventListener('mousemove', move);
+            document.removeEventListener('mouseup', up);
+        }
+        document.addEventListener('mousemove', move);
+        document.addEventListener('mouseup', up);
+    }
+
+    function setAllChecked(on) {
+        for (var i = 0; i < findResults.length; i++)
+            if (findResults[i].editable) findResults[i].checked = on;
+        var cbs = document.querySelectorAll('#findResults input[type=checkbox]');
+        for (var j = 0; j < cbs.length; j++) if (!cbs[j].disabled) cbs[j].checked = on;
+    }
+
+    function copyResults() {
+        syncFindMatches();   // copy live line numbers + text, not the pre-edit snapshot (#65)
+        var rows = findResults.filter(function (r) { return r.checked; });
+        if (!rows.length) rows = findResults;   // nothing checked → copy them all
+        var text = rows.map(function (r) { return r.line + ': ' + r.text; }).join('\r\n');
+        if (!text) return;
+        postToHost({ action: 'clipboard', text: text });
+        showToast('Copied ' + rows.length + ' line' + (rows.length === 1 ? '' : 's'), true);
+    }
+
+    // ---- Find tabs ----
+    function cloneOpts(o) {
+        return { matchCase: o.matchCase, wholeWord: o.wholeWord, regex: o.regex, includeReadOnly: o.includeReadOnly };
+    }
+
+    function blankSession() {
+        return {
+            id: ++tabSeq, query: '', replaceText: '',
+            opts: { matchCase: false, wholeWord: false, regex: false, includeReadOnly: true }
+        };
+    }
+
+    function tabIndexByQuery(q) {
+        for (var i = 0; i < findTabs.length; i++) if (findTabs[i].query === q) return i;
+        return -1;
+    }
+
+    // Persist the live working state (inputs + toggles) into the active session. Results are NOT stored
+    // — they're re-derived on load so every tab reflects the current buffer.
+    function saveActiveTab() {
+        if (activeTab < 0 || !findTabs[activeTab]) return;
+        var s = findTabs[activeTab];
+        s.query = document.getElementById('findInput').value;
+        s.replaceText = document.getElementById('replInput').value;
+        s.opts = cloneOpts(findOpts);
+    }
+
+    // Make tab i active: restore its inputs/toggles into the live globals, then re-run its search fresh.
+    function loadTab(i) {
+        if (i < 0 || i >= findTabs.length) return;
+        activeTab = i;
+        var s = findTabs[i];
+        document.getElementById('findInput').value = s.query;
+        document.getElementById('replInput').value = s.replaceText;
+        findOpts = cloneOpts(s.opts);
+        setToggle('tgCase', findOpts.matchCase); setToggle('tgWord', findOpts.wholeWord);
+        setToggle('tgRegex', findOpts.regex); setToggle('tgRo', findOpts.includeReadOnly);
+        if (s.query) {
+            runFind();   // rebuilds results/highlights/count against the live buffer
+        } else {
+            findResults = []; findCurrentIdx = -1; lastFindQuery = null;
+            renderResults(); clearFindHighlights();
+            document.getElementById('findCount').textContent = '';
+        }
+        renderTabs();
+    }
+
+    // Create a new tab (optionally seeded with a query) and make it active.
+    function createTab(seedQuery) {
+        if (activeTab >= 0) saveActiveTab();
+        var s = blankSession();
+        if (activeTab >= 0 && findTabs[activeTab]) s.opts = cloneOpts(findTabs[activeTab].opts); // carry toggles
+        findTabs.push(s);
+        loadTab(findTabs.length - 1);
+        if (seedQuery) { document.getElementById('findInput').value = seedQuery; runFind(); }
+    }
+
+    function closeTab(i) {
+        if (i < 0 || i >= findTabs.length) return;
+        var wasActive = (i === activeTab);
+        findTabs.splice(i, 1);
+        if (!findTabs.length) { activeTab = -1; createTab(null); return; }   // never zero tabs
+        if (wasActive) { activeTab = -1; loadTab(Math.min(i, findTabs.length - 1)); }
+        else { if (activeTab > i) activeTab--; renderTabs(); }
+    }
+
+    function closeOthers(i) {
+        if (i < 0 || i >= findTabs.length) return;
+        var keep = findTabs[i];
+        findTabs = [keep]; activeTab = -1; loadTab(0);
+    }
+
+    function closeRight(i) {
+        if (i < 0 || i >= findTabs.length - 1) return;
+        findTabs.splice(i + 1);
+        if (activeTab > i) { activeTab = -1; loadTab(i); } else renderTabs();
+    }
+
+    function closeAllTabs() { findTabs = []; activeTab = -1; createTab(null); }
+
+    // Light label refresh (no listener rebuild) — called after each search.
+    function refreshTabLabels() {
+        var tabs = document.getElementById('findTabs').getElementsByClassName('ftab');
+        for (var i = 0; i < tabs.length && i < findTabs.length; i++) {
+            var lbl = tabs[i].getElementsByClassName('ftab-label')[0];
+            var q = findTabs[i].query || 'untitled';
+            if (lbl) lbl.textContent = q;
+            tabs[i].title = q;
+            tabs[i].className = 'ftab' + (i === activeTab ? ' active' : '');
+        }
+    }
+
+    function renderTabs() {
+        var strip = document.getElementById('findTabs');
+        if (!strip) return;
+        strip.innerHTML = '';
+        findTabs.forEach(function (s, idx) {
+            var tab = document.createElement('div');
+            tab.className = 'ftab' + (idx === activeTab ? ' active' : '');
+            tab.title = s.query || 'untitled';
+            var label = document.createElement('span');
+            label.className = 'ftab-label'; label.textContent = s.query || 'untitled';
+            var x = document.createElement('span');
+            x.className = 'ftab-x'; x.textContent = '✕'; x.title = 'Close tab';
+            tab.appendChild(label); tab.appendChild(x);
+            tab.addEventListener('click', function (ev) {
+                if (ev.target === x) { ev.stopPropagation(); closeTab(idx); return; }
+                if (idx !== activeTab) { saveActiveTab(); loadTab(idx); document.getElementById('findInput').focus(); }
+            });
+            tab.addEventListener('contextmenu', function (ev) {
+                ev.preventDefault(); showTabMenu(ev.clientX, ev.clientY, idx);
+            });
+            strip.appendChild(tab);
+        });
+        var add = document.createElement('div');
+        add.className = 'ftab-add'; add.textContent = '+'; add.title = 'New find tab';
+        add.addEventListener('click', function () { createTab(null); document.getElementById('findInput').focus(); });
+        strip.appendChild(add);
+    }
+
+    function showTabMenu(x, y, idx) {
+        var menu = document.getElementById('ftabMenu');
+        if (!menu) return;
+        menu.innerHTML = '';
+        var multi = findTabs.length > 1;
+        var hasRight = idx < findTabs.length - 1;
+        var items = [
+            ['Close tab', true, function () { closeTab(idx); }],
+            ['Close other tabs', multi, function () { closeOthers(idx); }],
+            ['Close tabs to the right', hasRight, function () { closeRight(idx); }],
+            ['Close all tabs', true, function () { closeAllTabs(); }]
+        ];
+        items.forEach(function (it) {
+            var d = document.createElement('div');
+            d.className = 'ftab-menu-item' + (it[1] ? '' : ' disabled');
+            d.textContent = it[0];
+            if (it[1]) d.addEventListener('click', function () { hideTabMenu(); it[2](); });
+            menu.appendChild(d);
+        });
+        // keep the menu on-screen
+        menu.style.left = Math.min(x, window.innerWidth - 190) + 'px';
+        menu.style.top = Math.min(y, window.innerHeight - 130) + 'px';
+        menu.classList.remove('hidden');
+    }
+
+    function hideTabMenu() {
+        var m = document.getElementById('ftabMenu');
+        if (m) m.classList.add('hidden');
+    }
+
+    // ---- Layout: quick-find overlay vs. Find-All left column ----
+    // Pin the panel to the editor's top edge (just under the toolbar). Quick mode floats top-right and
+    // reserves no editor space; Find-All mode is a left column that pushes the editor right by its width.
+    function positionFindPanel() {
+        var panel = document.getElementById('findPanel');
+        var ed = document.getElementById('editor');
+        if (!panel || !ed) return;
+        var top = ed.offsetTop;
+        panel.style.top = (panel.classList.contains('findall') ? top : top + 6) + 'px';
+        setEditorInsets();
+    }
+    function setEditorInsets() {
+        var panel = document.getElementById('findPanel');
+        var findAll = panel && !panel.classList.contains('hidden') && panel.classList.contains('findall');
+        var left = findAll ? (panel.offsetWidth + 'px') : '0px';
+        var ed = document.getElementById('editor'); if (ed) ed.style.left = left;
+        var e2 = document.getElementById('editor2'); if (e2) e2.style.left = left;
+    }
+    // Header result count for the Find-All column (short form; the in-row count is hidden there).
+    function setFaCount() {
+        var el = document.getElementById('faCount');
+        if (!el) return;
+        var n = findResults.length;
+        if (!n) { el.textContent = document.getElementById('findInput').value ? 'No matches' : ''; return; }
+        var ro = 0;
+        for (var i = 0; i < n; i++) if (!findResults[i].editable) ro++;
+        el.textContent = n + (n === 1 ? ' match' : ' matches') + (ro ? ' · ' + ro + ' read-only' : '');
+    }
+    // Incremental find lands on the first match at/after the caret; wraps to the first if none follow.
+    function firstIdxFromCursor() {
+        if (!editor || !findResults.length) return 0;
+        var pos = editor.getPosition(); if (!pos) return 0;
+        for (var i = 0; i < findResults.length; i++) {
+            var r = findResults[i];
+            if (r.line > pos.lineNumber || (r.line === pos.lineNumber && r.startCol >= pos.column)) return i;
+        }
+        return 0;
+    }
+    // Commit the current term to the persisted, cross-tab history (runFind no longer does — it's incremental).
+    function commitFindHistory() {
+        var q = document.getElementById('findInput').value;
+        if (!q) return;
+        addHistory(findHistory, q); addHistory(procFindHistory, q, 10); persistHistory();
+    }
+    // ↑/↓ in the find box walk the PERSISTED history — survives tab close / reopen (the whole point).
+    function cycleFindHistory(dir) {
+        if (!findHistory.length) return;
+        findHistIdx += dir;
+        var el = document.getElementById('findInput');
+        if (findHistIdx < 0) { findHistIdx = -1; el.value = ''; runFind(); return; }
+        if (findHistIdx >= findHistory.length) findHistIdx = findHistory.length - 1;
+        el.value = findHistory[findHistIdx]; el.select(); runFind();
+    }
+    // Show / hide the replace row (VS Code left chevron). Only the replace chords (Ctrl+H / Ctrl+Shift+H)
+    // and the chevron itself expand it; the find chords leave it collapsed on a fresh open.
+    function setReplaceVisible(show) {
+        var panel = document.getElementById('findPanel');
+        if (!panel) return;
+        panel.classList.toggle('show-replace', show);
+        var t = document.getElementById('replToggle');
+        if (t) t.setAttribute('aria-expanded', show ? 'true' : 'false');
+        positionFindPanel();   // panel height changed
+    }
+    // Find-All: reveal the left results column, reusing the existing grid/tabs machinery. focusReplace
+    // (Ctrl+Shift+H) opens it with the replace row expanded + focused.
+    function openFindAll(focusReplace) {
+        var panel = document.getElementById('findPanel');
+        var wasFindAll = !panel.classList.contains('hidden') && panel.classList.contains('findall');
+        if (panel.classList.contains('hidden')) openFindPanel(false);
+        panel.classList.add('findall');
+        if (!wasFindAll) setReplaceVisible(!!focusReplace);
+        else if (focusReplace) setReplaceVisible(true);
+        positionFindPanel();
+        if (!findTabs.length) createTab(null);
+        if (document.getElementById('findInput').value) runFind();
+        renderResults();
+        (focusReplace ? document.getElementById('replInput') : document.getElementById('findInput')).focus();
+    }
+    function toggleFindAll() {
+        var panel = document.getElementById('findPanel');
+        if (panel.classList.contains('hidden') || !panel.classList.contains('findall')) { openFindAll(false); return; }
+        panel.classList.remove('findall'); positionFindPanel();
+        document.getElementById('findInput').focus();
+    }
+
+    function openFindPanel(focusReplace) {
+        var panel = document.getElementById('findPanel');
+        if (!panel) return;
+        var wasHidden = panel.classList.contains('hidden');
+        panel.classList.remove('hidden');
+        panel.classList.remove('findall');    // open compact (quick-find); Find-All is an explicit toggle
+        if (wasHidden) setReplaceVisible(!!focusReplace);   // fresh open: replace only on Ctrl+H
+        else if (focusReplace) setReplaceVisible(true);     // already open + Ctrl+H expands; else keep manual state
+        positionFindPanel();                  // pin under the toolbar; reserves no editor space
+        if (!findTabs.length) createTab(null);   // always have at least one tab
+
+        var input = document.getElementById('findInput');
+        var sel = selectionWord();
+        if (sel) {
+            var existing = tabIndexByQuery(sel);
+            if (existing >= 0) {                          // a tab already searches this word → activate it
+                if (existing !== activeTab) { saveActiveTab(); loadTab(existing); }
+                input.value = sel; runFind();
+            } else if (!input.value && !findResults.length) {
+                input.value = sel; runFind();             // reuse the current blank/unused tab
+            } else {
+                createTab(sel);                           // open a NEW tab for the new word
+            }
+        } else if (wasHidden && input.value) {
+            runFind();                                    // reopening with no selection → refresh active tab
+        }
+
+        var focusEl = focusReplace ? document.getElementById('replInput') : input;
+        focusEl.focus(); focusEl.select();
+    }
+
+    function closeFindPanel() {
+        var panel = document.getElementById('findPanel');
+        if (!panel) return;
+        // Kill any pending incremental-search timer: type-then-Escape within the 120ms debounce would
+        // otherwise re-run runFind AFTER the highlights are cleared, stranding stale highlights in the
+        // editor with no panel visible (pipeline debugger finding, run 1).
+        var fiClose = document.getElementById('findInput');
+        if (fiClose && fiClose._incT) { clearTimeout(fiClose._incT); fiClose._incT = null; }
+        commitFindHistory();              // record the search term on close (runFind no longer does)
+        saveActiveTab();                  // persist the active tab's query/replace/opts for reopen
+        panel.classList.add('hidden');
+        panel.classList.remove('findall');
+        setEditorInsets();                // release any Find-All left-column width
+        clearFindHighlights();
+        hideHist('findHist'); hideHist('replHist'); hideTabMenu();
+        if (editor) editor.focus();
+    }
+
     function clearFindHighlights() {
         if (editor) findDecorations = editor.getModel().deltaDecorations(findDecorations, []);   // model-level (both panes)
     }
@@ -3745,6 +4517,10 @@
         var payload = {
             action: 'caFindUpdate',
             query: lastFindQuery,
+            // Full search identity: the pad must know which OPTIONS produced these matches, not just the
+            // query text — same-text/different-options searches are distinct result sets (adversary run 3).
+            opts: { matchCase: !!findOpts.matchCase, wholeWord: !!findOpts.wholeWord,
+                    regex: !!findOpts.regex, includeReadOnly: findOpts.includeReadOnly !== false },
             currentIdx: findCurrentIdx,
             matches: findResults.map(function (r) {
                 return { line: r.line, startCol: r.startCol, endLine: r.endLine, endCol: r.endCol,
@@ -3761,10 +4537,15 @@
     // match #1 (d4635694 follow-up).
     function runFind(q, extra, navigate) {
         if (!editor) return;
+        // Overlay callers invoke runFind() bare (or as a DOM event handler, so q may be an Event);
+        // fall back to the find box. The CA Find pad passes q explicitly (caFind 'search' op).
+        if (typeof q !== 'string') { q = (document.getElementById('findInput') || { value: '' }).value; extra = undefined; navigate = undefined; }
+        var countEl = document.getElementById('findCount');
         if (!q) {
             findResults = []; lastFindQuery = null; findCurrentIdx = -1;
-            clearFindHighlights();
-            postCaFindUpdate(extra);
+            renderResults(); clearFindHighlights(); countEl.textContent = ''; setFaCount();
+            if (activeTab >= 0 && findTabs[activeTab]) { findTabs[activeTab].query = ''; refreshTabLabels(); }
+            postCaFindUpdate(extra);   // pad mirror: keep the CA Find pad grid in sync too
             return;
         }
         var model = editor.getModel();
@@ -3793,10 +4574,24 @@
         }
         lastFindQuery = q;
         findModelVersion = model.getAlternativeVersionId();   // results are fresh against THIS buffer state
-        findCurrentIdx = findResults.length ? 0 : -1;
+        // Incremental find (OVERLAY only): land on the first match at/after the caret (VS Code-style).
+        // Pad-driven searches keep the shipped behavior — reveal match #0 — since this shared engine
+        // also serves the pad's caFind 'search' ops (pipeline debugger finding, run 1).
+        findCurrentIdx = findResults.length ? (findUiMode === 'overlay' ? firstIdxFromCursor() : 0) : -1;
+        // History is NOT recorded here — runFind fires on every keystroke now (incremental). A term is
+        // committed to the persisted, cross-tab history on Enter / close instead (commitFindHistory).
+        renderResults();
         paintHighlights();
-        if (findResults.length && navigate !== false) revealMatch(0, false, true);   // quiet: the single update below carries idx
-        postCaFindUpdate(extra);
+        var lines = countLines(findResults);
+        var ro = findResults.filter(function (r) { return !r.editable; }).length;
+        countEl.textContent = findResults.length
+            ? (findResults.length + ' match' + (findResults.length === 1 ? '' : 'es') +
+               ' · ' + lines + ' line' + (lines === 1 ? '' : 's') + (ro ? ' · ' + ro + ' read-only' : ''))
+            : 'No matches';
+        if (activeTab >= 0 && findTabs[activeTab]) { findTabs[activeTab].query = q; refreshTabLabels(); }
+        setFaCount();
+        if (findResults.length && navigate !== false) revealMatch(findCurrentIdx, false, true);   // quiet: caFindUpdate below carries idx; navigate===false = passive pad re-search (d4635694)
+        postCaFindUpdate(extra);   // pad mirror: grid + counts in the CA Find pad
     }
 
     function countLines(arr) {
@@ -3864,9 +4659,13 @@
         findCurrentIdx = idx;
         var r = findResults[idx];
         var range = new monaco.Range(r.line, r.startCol, r.endLine, r.endCol);
-        editor.revealRangeInCenter(range);
+        editor.revealRangeInCenterIfOutsideViewport(range);   // gentle: only scrolls when off-screen (incremental)
         editor.setSelection(range);
         paintHighlights();
+        // Find-All column (overlay mode): mark + scroll the grid's current row. No-op when the grid is empty.
+        var rows = document.querySelectorAll('#findResults tr');
+        for (var ri = 0; ri < rows.length; ri++) rows[ri].className = (ri === idx ? 'active' : '');
+        if (rows[idx] && rows[idx].scrollIntoView) rows[idx].scrollIntoView({ block: 'nearest' });
         if (focusEditor) editor.focus();
         if (!quiet) postCaFindUpdate();
     }
@@ -3876,6 +4675,7 @@
         syncFindMatches();   // remap match positions if the buffer changed since the search (#65)
         if (!findResults.length) {
             if (lastFindQuery) runFind(lastFindQuery);
+            else if (document.getElementById('findInput') && document.getElementById('findInput').value) runFind();   // overlay: search box may hold an uncommitted term
             return;
         }
         var idx = findCurrentIdx + dir;
@@ -3887,10 +4687,28 @@
     // ---- Replace (editable slots only; replText comes from the pad) ----
     function doReplace(onlyChecked, replText) {
         if (!editor || !findResults.length) return;
+        // OVERLAY-ORIGIN replace (no explicit replText): the visible query must match the results being
+        // replaced — the pad may have retargeted the shared engine, or the user edited the find box inside
+        // the 120ms debounce window (cross-model adversary, run 2). Re-run the visible query first;
+        // checked-row replaces bail for reconfirmation because a re-search resets the row checkboxes.
+        if (replText === undefined || replText === null) {
+            var panelR = document.getElementById('findPanel');
+            if (panelR && !panelR.classList.contains('hidden')) {
+                var fiR = document.getElementById('findInput');
+                if (fiR && fiR._incT) { clearTimeout(fiR._incT); fiR._incT = null; }
+                if (fiR && (fiR.value || '') !== (lastFindQuery || '')) {
+                    runFind(fiR.value);   // synchronous — findResults now match the visible query
+                    if (!fiR.value || !findResults.length) { showToast('No matches to replace', false); return; }
+                    if (onlyChecked) { showToast('Results refreshed — review the list and Replace Selected again', false); return; }
+                }
+            }
+        }
         // Replace at LIVE positions — after a buffer edit the captured ranges are stale, and an edit
         // built from them would replace the WRONG text (one line off / mid-word). (#65)
         syncFindMatches();
         if (!findResults.length) { showToast('No matches left to replace (buffer changed)', false); return; }
+        // Pad passes replText explicitly; overlay callers (Replace Selected/All buttons) omit it — read the box.
+        if (replText === undefined || replText === null) replText = (document.getElementById('replInput') || { value: '' }).value;
         replText = replText || '';
         var edits = [], replaced = 0, skippedRo = 0;
         for (var i = 0; i < findResults.length; i++) {
@@ -3905,6 +4723,7 @@
         // One atomic edit — Monaco adjusts the non-overlapping ranges itself. The read-only guard sees
         // these as edits inside editable slots, allows them, and keeps embedRanges in sync.
         editor.executeEdits('find-replace', edits);
+        if (replText) { addHistory(replHistory, replText); persistHistory(); }   // both UIs share the persisted replace history
         showToast('Replaced ' + replaced + ' match' + (replaced === 1 ? '' : 'es') +
             (skippedRo ? ' (' + skippedRo + ' read-only skipped)' : ''), true);
         // Refresh against the new buffer; the update carries the replace outcome for the pad's toast.
@@ -3920,6 +4739,7 @@
                         matchCase: !!msg.opts.matchCase, wholeWord: !!msg.opts.wholeWord,
                         regex: !!msg.opts.regex, includeReadOnly: msg.opts.includeReadOnly !== false
                     };
+                    mirrorPadStateIntoOverlay(msg.query || '');
                     runFind(msg.query || '', undefined, msg.navigate !== false);
                     break;
                 case 'reveal':     revealMatch(+msg.idx, !!msg.focus); break;
@@ -3930,11 +4750,26 @@
                     break;
                 case 'replace':    doReplace(!!msg.onlyChecked, msg.replText || ''); break;
                 case 'clear':
-                    findResults = []; findCurrentIdx = -1; lastFindQuery = null;
-                    clearFindHighlights();
+                    mirrorPadStateIntoOverlay('');
+                    runFind('');   // resets results/highlights AND refreshes the overlay grid/count when visible
                     break;
             }
         } catch (e) { }
+    }
+
+    // The pad and the overlay drive ONE engine (findResults/lastFindQuery are shared). If the overlay
+    // panel is visible when a pad command retargets the engine, the overlay's inputs must follow —
+    // otherwise the panel shows query A while the engine holds query B's matches, and the overlay's
+    // Replace All would silently rewrite the WRONG matches (cross-model adversary finding, run 1).
+    function mirrorPadStateIntoOverlay(q) {
+        var panel = document.getElementById('findPanel');
+        if (!panel || panel.classList.contains('hidden')) return;   // overlay not visible — nothing to sync
+        var fi = document.getElementById('findInput');
+        if (fi && fi._incT) { clearTimeout(fi._incT); fi._incT = null; }   // cancel any pending overlay search
+        if (fi) fi.value = q;
+        setToggle('tgCase', findOpts.matchCase); setToggle('tgWord', findOpts.wholeWord);
+        setToggle('tgRegex', findOpts.regex); setToggle('tgRo', findOpts.includeReadOnly);
+        // Grid/count/tab labels refresh inside runFind's render tail; empty q clears them there too.
     }
 
     // Buffer edits shift match positions; when the pad holds results, push a synced refresh so its
@@ -3960,12 +4795,101 @@
     // ---- Wiring ----
     function wireFindPanel() {
         // Toolbar buttons: Find & Replace (raises the CA Find pad, #66) + theme toggle + embed-slot navigation.
-        document.getElementById('findBtn').addEventListener('click', function () { postCaFindOpen(false); });
+        document.getElementById('findBtn').addEventListener('click', function () { openFindUi(false); });
         document.getElementById('themeBtn').addEventListener('click', toggleTheme);
         document.getElementById('prevEmbedBtn').addEventListener('click', function () { navEmbed(-1, false); });
         document.getElementById('nextEmbedBtn').addEventListener('click', function () { navEmbed(1, false); });
         document.getElementById('prevFilledBtn').addEventListener('click', function () { navEmbed(-1, true); });
         document.getElementById('nextFilledBtn').addEventListener('click', function () { navEmbed(1, true); });
+
+        var fi = document.getElementById('findInput');
+        document.getElementById('findGo').addEventListener('click', runFind);
+        // Incremental: search as you type (debounced), landing on the first match after the caret.
+        fi.addEventListener('input', function () {
+            findHistIdx = -1;
+            clearTimeout(fi._incT); fi._incT = setTimeout(runFind, 120);
+        });
+        fi.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Enter') {
+                ev.preventDefault();
+                if (ev.target.value === lastFindQuery && findResults.length) gotoMatch(ev.shiftKey ? -1 : 1);
+                else runFind();
+                commitFindHistory();
+            } else if (ev.key === 'Escape') { ev.preventDefault(); closeFindPanel(); }
+            else if (ev.key === 'ArrowUp') { ev.preventDefault(); cycleFindHistory(1); }
+            else if (ev.key === 'ArrowDown') { ev.preventDefault(); cycleFindHistory(-1); }
+        });
+        document.getElementById('findPrev').addEventListener('click', function () { gotoMatch(-1); });
+        document.getElementById('findNext').addEventListener('click', function () { gotoMatch(1); });
+        document.getElementById('findAllToggle').addEventListener('click', toggleFindAll);
+        window.addEventListener('resize', function () {
+            var p = document.getElementById('findPanel');
+            if (p && !p.classList.contains('hidden')) positionFindPanel();
+        });
+        document.getElementById('replInput').addEventListener('keydown', function (ev) {
+            if (ev.key === 'Enter') { ev.preventDefault(); doReplace(true); }
+            else if (ev.key === 'Escape') { ev.preventDefault(); closeFindPanel(); }
+        });
+        document.getElementById('findClose').addEventListener('click', closeFindPanel);
+        document.getElementById('replToggle').addEventListener('click', function () {
+            var show = !document.getElementById('findPanel').classList.contains('show-replace');
+            setReplaceVisible(show);
+            (show ? document.getElementById('replInput') : document.getElementById('findInput')).focus();
+        });
+        document.getElementById('faClose').addEventListener('click', closeFindPanel);
+
+        function tg(id, key) {
+            document.getElementById(id).addEventListener('click', function () {
+                findOpts[key] = !findOpts[key];
+                setToggle(id, findOpts[key]);
+                if (document.getElementById('findInput').value) runFind();
+            });
+        }
+        tg('tgCase', 'matchCase'); tg('tgWord', 'wholeWord');
+        tg('tgRegex', 'regex'); tg('tgRo', 'includeReadOnly');
+
+        document.getElementById('findCaret').addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            var box = document.getElementById('findHist');
+            if (box.classList.contains('hidden')) showFindHist(); else hideHist('findHist');
+        });
+        document.getElementById('replCaret').addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            var box = document.getElementById('replHist');
+            if (box.classList.contains('hidden')) showReplHist(); else hideHist('replHist');
+        });
+        document.getElementById('findHistClear').addEventListener('click', function () {
+            findHistory.length = 0; procFindHistory.length = 0; hideHist('findHist'); persistHistory(); showToast('Search history cleared', true);
+        });
+        document.getElementById('replHistClear').addEventListener('click', function () {
+            replHistory.length = 0; hideHist('replHist'); persistHistory(); showToast('Replace history cleared', true);
+        });
+
+        document.getElementById('replSel').addEventListener('click', function () { doReplace(true); });
+        document.getElementById('replAll').addEventListener('click', function () { doReplace(false); });
+
+        document.getElementById('selAll').addEventListener('click', function () { setAllChecked(true); });
+        document.getElementById('selNone').addEventListener('click', function () { setAllChecked(false); });
+        document.getElementById('copyRes').addEventListener('click', copyResults);
+        document.getElementById('clearRes').addEventListener('click', function () {
+            findResults = []; findCurrentIdx = -1; lastFindQuery = null;
+            renderResults(); clearFindHighlights(); document.getElementById('findCount').textContent = '';
+        });
+
+        document.getElementById('findGrip').addEventListener('mousedown', startGripDrag);
+
+        // Ctrl+mousewheel over the Find pane changes its font size (mirrors the editor's Ctrl+wheel zoom).
+        document.getElementById('findPanel').addEventListener('wheel', function (ev) {
+            if (!ev.ctrlKey) return;
+            ev.preventDefault();
+            bumpFindFont(ev.deltaY < 0 ? 1 : -1);
+        }, { passive: false });
+
+        // Close the history popups + tab context-menu on any click outside them.
+        document.addEventListener('click', function (ev) {
+            if (!ev.target.closest || !ev.target.closest('.combo')) { hideHist('findHist'); hideHist('replHist'); }
+            if (!ev.target.closest || !ev.target.closest('#ftabMenu')) hideTabMenu();
+        });
     }
 
     // ----- Messages from C# host -----
@@ -4020,6 +4944,17 @@
             } else if (msg.type === 'caFind') {
                 // CA Find pad command (search/reveal/nav/replace/setChecked/clear) routed via CaFindBroker (#66).
                 handleCaFindOp(msg);
+            } else if (msg.type === 'applyHistory') {
+                // No empty-store seeding guard here (unlike ca-find.html): this page's lists are seeded
+                // from the SAME shared store via setSource on every load, so an empty broadcast can only
+                // mean the store is genuinely empty — mirror it.
+                if (msg.find) replaceArray(findHistory, msg.find);
+                if (msg.replace) replaceArray(replHistory, msg.replace);
+                // Solution-wide lists only — this tab keeps its own procedure's recent terms.
+                var fh = document.getElementById('findHist');
+                if (fh && !fh.classList.contains('hidden')) showFindHist();
+                var rh = document.getElementById('replHist');
+                if (rh && !rh.classList.contains('hidden')) showReplHist();
             } else if (msg.type === 'applySnippets') {
                 snippetsList = msg.snippets || [];
                 if (snippetPickerOpen) renderSnippetPickerList();   // keep an open picker live if Settings was edited concurrently

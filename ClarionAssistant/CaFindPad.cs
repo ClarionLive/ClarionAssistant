@@ -104,7 +104,17 @@ namespace ClarionAssistant
                     string state = Terminal.CaFindPadState.Load();
                     if (!string.IsNullOrEmpty(state))
                         PostJson("{\"type\":\"applyState\",\"state\":" + state + "}");
+                    // Shared history AFTER the state blob: the solution-wide find/replace lists live in
+                    // ModernEmbeditorHistory (one store for pad + overlay + both editors, #66 phase 2),
+                    // so they override the blob's legacy copies when present.
+                    PushSharedHistory();
                     CaFindBroker.SetPadPoster(PostJson);
+                }
+                else if (action == "saveHistory")
+                {
+                    // The pad mutated the shared find/replace history (new term, delete, clear): persist to
+                    // the SAME per-solution store the editors use, then converge every surface via the bus.
+                    HandleSaveHistory(json);
                 }
                 else if (action == "caFindFwd")
                 {
@@ -133,6 +143,57 @@ namespace ClarionAssistant
             {
                 System.Diagnostics.Debug.WriteLine("[CaFindPad] Message error: " + ex.Message);
             }
+        }
+
+        /// <summary>
+        /// Load the solution-wide find/replace lists from the shared per-solution store
+        /// (<see cref="ModernEmbeditorHistory"/> — the same file the CA editors persist to) and push
+        /// them to the pad page as {type:'applyHistory'}. Sent on ready, after the state blob, so the
+        /// shared lists override the blob's legacy copies (#66 phase 2 unified history).
+        /// </summary>
+        private void PushSharedHistory()
+        {
+            try
+            {
+                string sol = null;
+                try { sol = EditorService.GetOpenSolutionPath(); } catch { }
+                List<string> find, replace, proc;
+                ModernEmbeditorHistory.Load(sol, null, out find, out replace, out proc);
+                if (find.Count == 0 && replace.Count == 0) return;   // nothing saved yet — keep the blob's lists
+                PostJson("{\"type\":\"applyHistory\",\"find\":" + ModernEmbeditorHistory.ToJson(find)
+                       + ",\"replace\":" + ModernEmbeditorHistory.ToJson(replace) + "}");
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[CaFindPad] PushSharedHistory: " + ex.Message); }
+        }
+
+        /// <summary>Persist a pad-side history mutation to the shared store and converge all surfaces.</summary>
+        private void HandleSaveHistory(string json)
+        {
+            try
+            {
+                var data = new System.Web.Script.Serialization.JavaScriptSerializer { MaxJsonLength = int.MaxValue }
+                    .DeserializeObject(json) as Dictionary<string, object>;
+                if (data == null) return;
+                var find = JsonStringList(data, "find");
+                var replace = JsonStringList(data, "replace");
+                string sol = null;
+                try { sol = EditorService.GetOpenSolutionPath(); } catch { }
+                List<string> savedFind, savedReplace;
+                // No procKey: the pad's per-procedure recents stay in its own state blob; only the
+                // solution-wide lists are shared.
+                ModernEmbeditorHistory.Save(sol, null, find, replace, null, out savedFind, out savedReplace);
+                CaFindBroker.BroadcastHistory(savedFind, savedReplace);
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[CaFindPad] HandleSaveHistory: " + ex.Message); }
+        }
+
+        private static List<string> JsonStringList(Dictionary<string, object> data, string key)
+        {
+            var outp = new List<string>();
+            object o;
+            if (data != null && data.TryGetValue(key, out o) && o is object[])
+                foreach (var item in (object[])o) if (item != null) outp.Add(item.ToString());
+            return outp;
         }
 
         /// <summary>Post a JSON message into the pad page, marshalled to the UI thread. This is the

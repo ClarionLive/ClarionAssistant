@@ -2842,7 +2842,8 @@ namespace ClarionAssistant.Terminal
                 List<string> savedFind, savedReplace;
                 ModernEmbeditorHistory.Save(_histSolutionPath, _histProcKey, find, replace, proc, out savedFind, out savedReplace);
                 // Broadcast solution-wide lists only — each tab keeps its own procedure's recent terms.
-                ApplyHistoryToAll(savedFind, savedReplace);
+                // Via the broker bus so CA Editor tabs AND the CA Find pad converge too (#66 phase 2).
+                Services.CaFindBroker.BroadcastHistory(savedFind, savedReplace);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] saveHistory: " + ex.Message); }
         }
@@ -2997,20 +2998,6 @@ namespace ClarionAssistant.Terminal
                     if (item != null) res.Add(item.ToString());
             }
             return res;
-        }
-
-        /// <summary>Push Find/Replace history to this tab's dropdowns.</summary>
-        public void ApplyHistory(IList<string> find, IList<string> replace)
-        {
-            string fj = ModernEmbeditorHistory.ToJson(find);
-            string rj = ModernEmbeditorHistory.ToJson(replace);
-            _panel?.PostJson("{\"type\":\"applyHistory\",\"find\":" + fj + ",\"replace\":" + rj + "}");
-        }
-
-        /// <summary>Broadcast Find/Replace history to all open Modern Embeditor tabs.</summary>
-        public static void ApplyHistoryToAll(IList<string> find, IList<string> replace)
-        {
-            lock (_instances) { foreach (var inst in _instances) inst.ApplyHistory(find, replace); }
         }
 
         private bool ParseRequest(string json, out int reqId, out int line, out int column, out string buffer)
@@ -3172,6 +3159,7 @@ namespace ClarionAssistant.Terminal
                     "\"fileMode\":" + (_fileMode ? "true" : "false") + "," +
                     "\"filePath\":" + JsonString(_filePath ?? "") + "," +
                     "\"saveEnabled\":" + (_saveEnabled ? "true" : "false") + "," +
+                    "\"findUiMode\":\"" + Services.CaFindSettings.FindUiModeForPage + "\"," +   // Pad vs in-editor Overlay (#66 phase 2)
                     "\"liveLinked\":" + (_liveLinked ? "true" : "false") + "," +   // live mode: relabel Save → "Save and Exit" (a5bbf005)
                     "\"embedOverlay\":" + (_embedOverlay ? "true" : "false") + "," +   // overlay: Clarion-faithful toolbar + clickable header (b1e05287)
                     "\"headerText\":" + JsonString(_nativeHeaderText ?? "") + "," +    // native "Proc - Embeditor - (clw)" → our clickable header

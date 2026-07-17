@@ -407,6 +407,10 @@ namespace ClarionAssistant.Services
         /// Persist solution-wide find/replace (authoritative) and this procedure's recent terms (merged into
         /// the procFind map, preserving every other procedure's list). Outputs the cleaned solution-wide
         /// lists for the cross-tab broadcast.
+        /// KNOWN SEMANTICS: solution-wide lists are LAST-WRITER-WINS — each surface saves its whole local
+        /// list, so two surfaces adding different terms inside the same debounce window lose one of them
+        /// (deliberate: authoritative saves are what make per-term delete and "clear history" stick).
+        /// Merge-safe op-based saves are a filed follow-up (#66 phase 2 pipeline, adversary finding 3).
         /// </summary>
         public static void Save(string solutionPath, string procKey,
             IList<string> find, IList<string> replace, IList<string> proc,
