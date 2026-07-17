@@ -67,6 +67,18 @@ namespace ClarionAssistant.Terminal
                 userDataFolder: userDataFolder,
                 options: options);
 
+            // #109: bind the shared browser process to a kill-on-close job so the OS reaps the whole WebView2
+            // tree if Clarion crashes (the graceful ShutdownService path can't cover a crash). The browser
+            // process spawns lazily with the first CoreWebView2, so it usually isn't up yet here — the live
+            // subscription binds it when ProcessInfosChanged fires, and re-binds if WebView2 relaunches it after
+            // a browser crash. The immediate call covers the case where a browser is already present. Best-effort.
+            try
+            {
+                _environment.ProcessInfosChanged += (s, e) => Services.WebView2ProcessReaper.BindBrowser(_environment);
+                Services.WebView2ProcessReaper.BindBrowser(_environment);
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[WebView2Cache] reaper wire: " + ex.Message); }
+
             return _environment;
         }
     }

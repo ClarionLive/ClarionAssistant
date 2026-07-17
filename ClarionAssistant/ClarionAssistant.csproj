@@ -132,6 +132,7 @@
     <Compile Include="Services\EmbedEditorMonitorService.cs" />
     <Compile Include="Services\ShutdownLog.cs" />
     <Compile Include="Services\ShutdownService.cs" />
+    <Compile Include="Services\WebView2ProcessReaper.cs" />
     <Compile Include="Services\KnowledgeService.cs" />
     <Compile Include="Services\ClarionVersionService.cs" />
     <Compile Include="Services\RedFileService.cs" />
