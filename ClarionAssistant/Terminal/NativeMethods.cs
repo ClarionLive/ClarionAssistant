@@ -115,6 +115,13 @@ namespace ClarionAssistant.Terminal
 
         internal const uint PROCESS_TERMINATE = 0x0001;
         internal const uint PROCESS_SET_QUOTA = 0x0100;
+        internal const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+
+        // Used to confirm a PID we opened is still the WebView2 browser before assigning it to the
+        // kill-on-close job (guards the GetProcessInfos → OpenProcess PID-reuse window).
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        internal static extern bool QueryFullProcessImageName(
+            IntPtr hProcess, uint dwFlags, System.Text.StringBuilder lpExeName, ref uint lpdwSize);
 
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         internal static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string lpName);

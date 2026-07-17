@@ -49,12 +49,23 @@ namespace ClarionAssistant.Services
                     if (!EnsureJobLocked()) return;               // job unavailable — graceful path still applies
 
                     IntPtr h = NativeMethods.OpenProcess(
-                        NativeMethods.PROCESS_SET_QUOTA | NativeMethods.PROCESS_TERMINATE, false, pid);
+                        NativeMethods.PROCESS_SET_QUOTA | NativeMethods.PROCESS_TERMINATE
+                            | NativeMethods.PROCESS_QUERY_LIMITED_INFORMATION,
+                        false, pid);
                     if (h == IntPtr.Zero) return;
                     try
                     {
+                        // Between GetProcessInfos and OpenProcess the browser could die and Windows could
+                        // recycle the PID onto an unrelated process — which we'd then kill at Clarion exit.
+                        // Tiny window, but the failure mode is severe, so confirm the image name first.
+                        // Fail-closed: a later ProcessInfosChanged retries with a fresh PID.
+                        if (!IsWebView2Image(h)) return;
+
                         if (NativeMethods.AssignProcessToJobObject(_job, h))
+                        {
                             _boundPid = pid;
+                            ShutdownLog.Log("[reaper] WebView2 browser pid=" + pid + " bound to kill-on-close job");
+                        }
                         // else: leave _boundPid so a later fire retries; assign can fail transiently.
                     }
                     finally
@@ -70,6 +81,11 @@ namespace ClarionAssistant.Services
             }
         }
 
+        // Only the BROWSER process is ever assigned to the job — deliberately. Children spawned after the
+        // assignment (renderers/gpu/utility) inherit job membership automatically, and any spawned before it
+        // self-exit when their browser dies (Chromium children hold a channel to the browser and terminate
+        // when it drops). Do NOT "fix" this by assigning every PID in GetProcessInfos — that just adds
+        // OpenProcess/assign churn on every process churn event for no coverage gain.
         private static uint FindBrowserPid(CoreWebView2Environment env)
         {
             try
@@ -87,6 +103,26 @@ namespace ClarionAssistant.Services
                 System.Diagnostics.Debug.WriteLine("[WebView2Reaper] FindBrowserPid: " + ex.Message);
             }
             return 0;
+        }
+
+        /// <summary>True if the opened process's image is msedgewebview2.exe. Guards the PID-reuse window
+        /// between GetProcessInfos and OpenProcess (see call site). Handle needs PROCESS_QUERY_LIMITED_INFORMATION.</summary>
+        private static bool IsWebView2Image(IntPtr h)
+        {
+            try
+            {
+                var sb = new System.Text.StringBuilder(1024);
+                uint size = (uint)sb.Capacity;
+                if (!NativeMethods.QueryFullProcessImageName(h, 0, sb, ref size))
+                    return false;
+                string name = System.IO.Path.GetFileName(sb.ToString(0, (int)size));
+                return string.Equals(name, "msedgewebview2.exe", StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[WebView2Reaper] IsWebView2Image: " + ex.Message);
+                return false;
+            }
         }
 
         /// <summary>Create the kill-on-close job once. Mirrors ConPtyTerminal.CreateJobAndAssignProcess. Caller
