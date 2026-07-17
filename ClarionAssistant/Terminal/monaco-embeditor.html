@@ -4517,6 +4517,10 @@
         var payload = {
             action: 'caFindUpdate',
             query: lastFindQuery,
+            // Full search identity: the pad must know which OPTIONS produced these matches, not just the
+            // query text — same-text/different-options searches are distinct result sets (adversary run 3).
+            opts: { matchCase: !!findOpts.matchCase, wholeWord: !!findOpts.wholeWord,
+                    regex: !!findOpts.regex, includeReadOnly: findOpts.includeReadOnly !== false },
             currentIdx: findCurrentIdx,
             matches: findResults.map(function (r) {
                 return { line: r.line, startCol: r.startCol, endLine: r.endLine, endCol: r.endCol,
