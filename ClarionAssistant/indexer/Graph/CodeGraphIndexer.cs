@@ -633,6 +633,21 @@ namespace ClarionCodeGraph.Graph
             int totalVarCount = allVarDt.Rows.Count;
             ReportProgress(string.Format("  Loaded {0} variable symbols for reference tracking", totalVarCount));
 
+            // Class name -> immediate parent class name (from parent_name on the class's own
+            // symbol row), used below to walk the inheritance chain when a class data member
+            // is declared on a BASE class but accessed via SELF.Member from a DERIVED class's
+            // method (inherited-member gap: the member is only ever stored as
+            // "<DeclaringClass>.<MemberName>" in variablesByName, never re-keyed per subclass).
+            // Deliberately a separate query from the later "Insert inheritance relationships"
+            // block below (which needs symbol ids, not names) -- not a duplicate to dedupe.
+            var classParentByName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var classParentDt = _db.ExecuteQuery(
+                "SELECT name, parent_name FROM symbols WHERE type = 'class' AND parent_name IS NOT NULL");
+            foreach (System.Data.DataRow row in classParentDt.Rows)
+            {
+                classParentByName[row["name"].ToString()] = row["parent_name"].ToString();
+            }
+
             // Program symbols (one per PROGRAM file) own the calls made in the main file's
             // global CODE section. Deliberately kept OUT of symbolNameToId/procNames: the
             // program's name is the file name (e.g. "Worker"), and letting it act as a
@@ -1079,8 +1094,26 @@ namespace ClarionCodeGraph.Graph
                                 }
                                 if (ownerClassName != null)
                                 {
-                                    VariableInfo memberVar;
-                                    if (variablesByName.TryGetValue(ownerClassName + "." + objName, out memberVar))
+                                    // Walk the inheritance chain: try the current class first, then
+                                    // each ancestor in turn, since the member may be declared on a
+                                    // base class rather than the derived class doing the calling.
+                                    // Hop limit guards against bad/cyclic parent_name data.
+                                    VariableInfo memberVar = null;
+                                    string searchClassName = ownerClassName;
+                                    int hops = 0;
+                                    while (searchClassName != null && hops < 25)
+                                    {
+                                        if (variablesByName.TryGetValue(searchClassName + "." + objName, out memberVar))
+                                            break;
+                                        memberVar = null;
+                                        string parentClassName;
+                                        if (!classParentByName.TryGetValue(searchClassName, out parentClassName) ||
+                                            string.Equals(parentClassName, searchClassName, StringComparison.OrdinalIgnoreCase))
+                                            break;
+                                        searchClassName = parentClassName;
+                                        hops++;
+                                    }
+                                    if (memberVar != null)
                                     {
                                         string varTypeName;
                                         if (TryResolveVariableClassType(memberVar.Params, out varTypeName))
