@@ -261,6 +261,17 @@
         }, 500);
     }
 
+    // Shared history (#66 phase 2): the solution-wide find/replace lists ALSO live in the host's
+    // per-solution store (ModernEmbeditorHistory) so the pad, the in-editor overlay and both CA
+    // editors converge. Persist mutations there too (debounced); incoming applyHistory overwrites.
+    var _histTimer = null;
+    function persistSharedHistory() {
+        if (_histTimer) clearTimeout(_histTimer);
+        _histTimer = setTimeout(function () {
+            postToHost({ action: 'saveHistory', find: findHistory, replace: replHistory });
+        }, 400);
+    }
+
     function applyState(st) {
         try {
             if (!st) return;
@@ -342,7 +353,7 @@
             refreshTabLabels();
             return;
         }
-        addHistory(findHistory, q, 25);
+        addHistory(findHistory, q, 25); persistSharedHistory();
         var s = activeSession();
         if (s) addHistory(s.procHistory, q, 10);
         persistState();
@@ -360,7 +371,7 @@
         if (!t || !activeKey || !matches.length) { showToast('Nothing to replace', false); return; }
         saveActiveTabInputs();
         var replText = t.replaceText || '';
-        if (replText) { addHistory(replHistory, replText, 25); persistState(); }
+        if (replText) { addHistory(replHistory, replText, 25); persistState(); persistSharedHistory(); }
         fwd({ type: 'caFind', op: 'replace', replText: replText, onlyChecked: !!onlyChecked });
     }
 
@@ -610,7 +621,7 @@
         var proc = (s && s.procHistory) ? s.procHistory : [];
         function delEverywhere(t) {
             var k = proc.indexOf(t); if (k >= 0) proc.splice(k, 1);
-            var j = findHistory.indexOf(t); if (j >= 0) findHistory.splice(j, 1);
+            var j = findHistory.indexOf(t); if (j >= 0) { findHistory.splice(j, 1); persistSharedHistory(); }
             showFindHist(); persistState();
         }
         if (proc.length) {
@@ -632,7 +643,7 @@
         if (!replHistory.length) appendHistEmpty(box);
         else replHistory.forEach(function (term) {
             appendHistItem(box, term, 'replInput', function (t) {
-                var k = replHistory.indexOf(t); if (k >= 0) replHistory.splice(k, 1);
+                var k = replHistory.indexOf(t); if (k >= 0) { replHistory.splice(k, 1); persistSharedHistory(); }
                 showReplHist(); persistState();
             });
         });
@@ -709,6 +720,19 @@
             if (msg.type === 'applyState') applyState(msg.state);
             else if (msg.type === 'activeEditor') onActiveEditor(msg);
             else if (msg.type === 'caFindFromEditor') onEditorMsg(msg);
+            else if (msg.type === 'applyHistory') {
+                // Another surface (editor page or overlay) saved the shared lists — converge, unless the
+                // store is empty and we still hold legacy blob lists (first run after the unification):
+                // then seed the store from ours instead of clobbering them.
+                var inF = msg.find || [], inR = msg.replace || [];
+                if (!inF.length && !inR.length && (findHistory.length || replHistory.length)) { persistSharedHistory(); }
+                else {
+                    findHistory = inF; replHistory = inR;
+                    var fh = document.getElementById('findHist'); if (fh && !fh.classList.contains('hidden')) showFindHist();
+                    var rh = document.getElementById('replHist'); if (rh && !rh.classList.contains('hidden')) showReplHist();
+                    persistState();   // keep the blob's legacy copies in step
+                }
+            }
         } catch (e) { }
     });
 
@@ -758,12 +782,12 @@
             if (box.classList.contains('hidden')) { hideHist('findHist'); showReplHist(); } else hideHist('replHist');
         });
         byId('findHistClear').addEventListener('click', function () {
-            findHistory = [];
+            findHistory = []; persistSharedHistory();
             var s = activeSession(); if (s) s.procHistory = [];
             hideHist('findHist'); persistState(); showToast('Search history cleared', true);
         });
         byId('replHistClear').addEventListener('click', function () {
-            replHistory = []; hideHist('replHist'); persistState(); showToast('Replace history cleared', true);
+            replHistory = []; hideHist('replHist'); persistState(); persistSharedHistory(); showToast('Replace history cleared', true);
         });
 
         byId('fzMinus').addEventListener('click', function () { fzPx--; applyFont(); persistState(); });

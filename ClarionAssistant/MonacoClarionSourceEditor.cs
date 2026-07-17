@@ -775,6 +775,9 @@ namespace ClarionAssistant
                 string sol, key; ResolveHistoryScope(out sol, out key);
                 List<string> savedFind, savedReplace;
                 ModernEmbeditorHistory.Save(sol, key, HistList(data, "find"), HistList(data, "replace"), HistList(data, "proc"), out savedFind, out savedReplace);
+                // Converge every other surface (embeditor tabs, other CA editors, the CA Find pad) on the
+                // saved lists. This host never broadcast before — its saves were invisible until a reopen.
+                Services.CaFindBroker.BroadcastHistory(savedFind, savedReplace);
             }
             catch (Exception ex) { MonacoSpikeLog.Write("overlay saveHistory error: " + ex.Message); }
         }
