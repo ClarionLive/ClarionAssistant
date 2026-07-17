@@ -114,6 +114,8 @@
     <DialogPanel id="ClarionAssistantOptions" label="Clarion Assistant">
       <DialogPanel id="CAEditorSurfaces" label="Editor Surfaces"
                    class="ClarionAssistant.Options.CAEditorSurfacesOptionPanel"/>
+      <DialogPanel id="CAFindOptions" label="Find / Replace"
+                   class="ClarionAssistant.Options.CAFindOptionPanel"/>
     </DialogPanel>
   </Path>
 </AddIn>
