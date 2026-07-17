@@ -4491,6 +4491,11 @@
     function closeFindPanel() {
         var panel = document.getElementById('findPanel');
         if (!panel) return;
+        // Kill any pending incremental-search timer: type-then-Escape within the 120ms debounce would
+        // otherwise re-run runFind AFTER the highlights are cleared, stranding stale highlights in the
+        // editor with no panel visible (pipeline debugger finding, run 1).
+        var fiClose = document.getElementById('findInput');
+        if (fiClose && fiClose._incT) { clearTimeout(fiClose._incT); fiClose._incT = null; }
         commitFindHistory();              // record the search term on close (runFind no longer does)
         saveActiveTab();                  // persist the active tab's query/replace/opts for reopen
         panel.classList.add('hidden');
@@ -4565,8 +4570,10 @@
         }
         lastFindQuery = q;
         findModelVersion = model.getAlternativeVersionId();   // results are fresh against THIS buffer state
-        // Incremental find: land on the first match at/after the caret (VS Code-style), not always #0.
-        findCurrentIdx = findResults.length ? firstIdxFromCursor() : -1;
+        // Incremental find (OVERLAY only): land on the first match at/after the caret (VS Code-style).
+        // Pad-driven searches keep the shipped behavior — reveal match #0 — since this shared engine
+        // also serves the pad's caFind 'search' ops (pipeline debugger finding, run 1).
+        findCurrentIdx = findResults.length ? (findUiMode === 'overlay' ? firstIdxFromCursor() : 0) : -1;
         // History is NOT recorded here — runFind fires on every keystroke now (incremental). A term is
         // committed to the persisted, cross-tab history on Enter / close instead (commitFindHistory).
         renderResults();
@@ -4902,6 +4909,9 @@
                 // CA Find pad command (search/reveal/nav/replace/setChecked/clear) routed via CaFindBroker (#66).
                 handleCaFindOp(msg);
             } else if (msg.type === 'applyHistory') {
+                // No empty-store seeding guard here (unlike ca-find.html): this page's lists are seeded
+                // from the SAME shared store via setSource on every load, so an empty broadcast can only
+                // mean the store is genuinely empty — mirror it.
                 if (msg.find) replaceArray(findHistory, msg.find);
                 if (msg.replace) replaceArray(replHistory, msg.replace);
                 // Solution-wide lists only — this tab keeps its own procedure's recent terms.

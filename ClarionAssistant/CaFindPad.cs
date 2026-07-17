@@ -145,8 +145,6 @@ namespace ClarionAssistant
             }
         }
 
-        /// <summary>Post a JSON message into the pad page, marshalled to the UI thread. This is the
-        /// delegate handed to <see cref="CaFindBroker.SetPadPoster"/>.</summary>
         /// <summary>
         /// Load the solution-wide find/replace lists from the shared per-solution store
         /// (<see cref="ModernEmbeditorHistory"/> — the same file the CA editors persist to) and push
@@ -198,6 +196,8 @@ namespace ClarionAssistant
             return outp;
         }
 
+        /// <summary>Post a JSON message into the pad page, marshalled to the UI thread. This is the
+        /// delegate handed to <see cref="CaFindBroker.SetPadPoster"/>.</summary>
         private void PostJson(string json)
         {
             Action post = () =>
