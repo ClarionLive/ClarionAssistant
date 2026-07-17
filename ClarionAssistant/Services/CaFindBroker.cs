@@ -116,6 +116,20 @@ namespace ClarionAssistant.Services
             try
             {
                 if (action == "caFindActivity") { NotifyActivity(host); return; }
+                if (action == "caFindOpenDoc")
+                {
+                    // "Open results in editor": the page has already built the full payload (matches +
+                    // context lines) from the engine's findResults. This never reaches the pad — it opens
+                    // a SearchResultsViewContent TAB instead. Both surfaces route here: the overlay's
+                    // button posts it directly, the pad's button forwards caFind op:'openInDoc' which the
+                    // engine turns into this same post. The origin editor's KEY is stamped into the view so
+                    // its row clicks come back to THIS buffer, not whatever is active later (see ForwardTo).
+                    HostEntry oe;
+                    lock (_lock) { oe = FindLocked(host); }
+                    if (oe == null) return;
+                    Terminal.SearchResultsViewContent.ShowFor(SafeKey(oe), SafeCall(oe.Title), oe.Kind, rawJson);
+                    return;
+                }
                 if (action == "caFindOpen")
                 {
                     NotifyActivity(host);
@@ -157,6 +171,45 @@ namespace ClarionAssistant.Services
                 return true;
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[CaFindBroker] FromPad: " + ex.Message); return false; }
+        }
+
+        /// <summary>
+        /// Post a page-bound message to a SPECIFIC host by session key, regardless of what is active.
+        ///
+        /// This is deliberately NOT <see cref="FromPad"/>. The pad follows focus, so posting to _active is
+        /// correct for it. A search-results TAB is the opposite: it is a snapshot of one search against one
+        /// buffer, so its row clicks must reveal in the editor it was opened FROM. Routing those through
+        /// _active would reveal match #7 of the embeditor's search inside whatever file the user happened to
+        /// click into afterwards. Returns false when that editor is gone (its tab was closed) — callers
+        /// surface that as a stale/orphaned results tab rather than silently doing nothing.
+        /// </summary>
+        public static bool ForwardTo(string key, string json)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(key) || string.IsNullOrEmpty(json)) return false;
+                HostEntry target = null;
+                lock (_lock)
+                {
+                    // Newest-first, skipping disposed controls. A session key is NOT unique over time: close and
+                    // re-open the same procedure's embed and you get a second live host under the same
+                    // "embed::<proc>" key. Taking the first forward match would hand back whichever registered
+                    // EARLIEST — i.e. the one most likely to be dead. Registration order is our recency proxy;
+                    // the IsDisposed test is the belt to that braces, since a host whose teardown path forgets to
+                    // unregister would otherwise swallow traffic silently forever.
+                    for (int i = _hosts.Count - 1; i >= 0; i--)
+                    {
+                        var h = _hosts[i];
+                        if (!string.Equals(SafeKey(h), key, StringComparison.OrdinalIgnoreCase)) continue;
+                        if (h.Control == null || h.Control.IsDisposed) continue;
+                        target = h; break;
+                    }
+                }
+                if (target == null || target.Control == null) return false;
+                target.Control.PostJson(json);
+                return true;
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[CaFindBroker] ForwardTo: " + ex.Message); return false; }
         }
 
         /// <summary>Tell the pad which editor it is targeting now (key=null -> idle). Sent on activity

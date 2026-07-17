@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Search Results</title>
+<style>
+    /* Catppuccin-ish, matching the embeditor/diff views. Both themes; the host pushes applyTheme. */
+    :root {
+        --bg: #1e1e2e; --fg: #cdd6f4; --dim: #6c7086; --line: #313244;
+        --accent: #89b4fa; --hit: #f9e2af; --hit-bg: rgba(249, 226, 175, 0.22);
+        --row: #181825; --row-hover: #313244; --ro: #45475a; --warn: #f38ba8;
+    }
+    body.light {
+        --bg: #eff1f5; --fg: #4c4f69; --dim: #8c8fa1; --line: #ccd0da;
+        --accent: #1e66f5; --hit: #df8e1d; --hit-bg: rgba(223, 142, 29, 0.22);
+        --row: #e6e9ef; --row-hover: #dce0e8; --ro: #bcc0cc; --warn: #d20f39;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+        background: var(--bg); color: var(--fg);
+        font-family: 'Segoe UI', system-ui, sans-serif; font-size: 13px;
+        display: flex; flex-direction: column; overflow: hidden;
+    }
+    #head {
+        padding: 10px 14px; border-bottom: 1px solid var(--line);
+        display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; flex: none;
+    }
+    #title { font-size: 15px; font-weight: 600; }
+    #title .q { color: var(--hit); }
+    #meta { color: var(--dim); font-size: 12px; }
+    #origin { color: var(--dim); font-size: 12px; margin-left: auto; }
+    #opts { display: flex; gap: 5px; }
+    .chip {
+        border: 1px solid var(--line); border-radius: 3px; padding: 1px 6px;
+        font-size: 11px; color: var(--dim);
+    }
+    .chip.on { color: var(--accent); border-color: var(--accent); }
+    /* Filter toolbar. Everything here is client-side over the loaded payload — no host round trip, so it
+       stays instant even on a 1000-row result set. */
+    #tools {
+        padding: 7px 14px; border-bottom: 1px solid var(--line); flex: none;
+        display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    }
+    .fbox { position: relative; display: flex; align-items: center; flex: 1 1 220px; min-width: 180px; }
+    #filter {
+        width: 100%; padding: 4px 74px 4px 8px; font-size: 12px;
+        background: var(--row); color: var(--fg);
+        border: 1px solid var(--line); border-radius: 3px; outline: none;
+    }
+    #filter:focus { border-color: var(--accent); }
+    #filter.bad { border-color: var(--warn); }
+    .ftoggles { position: absolute; right: 3px; display: flex; gap: 2px; }
+    .tg {
+        min-width: 20px; height: 20px; padding: 0 4px; font-size: 11px; line-height: 1;
+        background: transparent; color: var(--dim);
+        border: 1px solid transparent; border-radius: 3px; cursor: pointer;
+    }
+    .tg:hover { background: var(--row-hover); }
+    .tg.on { color: var(--accent); border-color: var(--accent); }
+    .seg { display: flex; }
+    .sg {
+        padding: 3px 9px; font-size: 11px; background: var(--row); color: var(--dim);
+        border: 1px solid var(--line); cursor: pointer;
+    }
+    .sg:first-child { border-radius: 3px 0 0 3px; }
+    .sg:last-child { border-radius: 0 3px 3px 0; }
+    .sg + .sg { border-left: none; }
+    .sg:hover { background: var(--row-hover); }
+    .sg.on { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+    #shown { color: var(--dim); font-size: 12px; margin-left: auto; }
+    #banner {
+        padding: 7px 14px; background: var(--hit-bg); color: var(--fg);
+        border-bottom: 1px solid var(--line); font-size: 12px; flex: none;
+    }
+    #banner.gone { background: var(--warn); color: var(--bg); font-weight: 600; }
+    #banner.hidden { display: none; }
+    #list { flex: 1; overflow: auto; padding: 6px 0 24px; }
+    .hit {
+        margin: 0 10px 8px; border: 1px solid var(--line); border-radius: 4px;
+        background: var(--row); overflow: hidden; cursor: pointer;
+    }
+    .hit:hover { border-color: var(--accent); }
+    .hit:hover .hit-head { background: var(--row-hover); }
+    .hit-head {
+        display: flex; align-items: center; gap: 8px;
+        padding: 4px 9px; border-bottom: 1px solid var(--line); font-size: 11px; color: var(--dim);
+    }
+    .hit-n { color: var(--accent); font-weight: 600; }
+    .lock { color: var(--ro); }
+    .hit-go { margin-left: auto; color: var(--dim); }
+    .hit:hover .hit-go { color: var(--accent); }
+    pre.code {
+        margin: 0; padding: 5px 0;
+        font-family: Consolas, 'Cascadia Mono', monospace; font-size: 12.5px; line-height: 1.5;
+        overflow-x: auto;   /* long generated lines scroll here, never the page */
+    }
+    .cl { display: flex; white-space: pre; }
+    .cl .ln {
+        flex: none; width: 58px; padding-right: 10px; text-align: right;
+        color: var(--dim); user-select: none;
+    }
+    .cl.ctx { opacity: 0.62; }
+    .cl.match .ln { color: var(--hit); font-weight: 600; }
+    .cl .src { flex: 1; padding-right: 12px; }
+    mark { background: var(--hit-bg); color: var(--hit); font-weight: 600; border-radius: 2px; }
+    #empty { padding: 40px; text-align: center; color: var(--dim); }
+    #empty.hidden { display: none; }
+</style>
+</head>
+<body>
+    <div id="head">
+        <span id="title">Search results</span>
+        <span id="meta"></span>
+        <span id="origin"></span>
+    </div>
+    <div id="tools">
+        <div class="fbox">
+            <input id="filter" type="text" autocomplete="off" spellcheck="false" placeholder="Filter these results…">
+            <div class="ftoggles">
+                <button class="tg" id="tgCase" title="Match case">Aa</button>
+                <button class="tg" id="tgRe" title="Regular expression">.*</button>
+                <button class="tg" id="tgInv" title="Invert — show only rows that do NOT match">&#8800;</button>
+            </div>
+        </div>
+        <span class="seg" id="scope">
+            <button class="sg on" data-scope="all" id="sgAll">All</button>
+            <button class="sg" data-scope="editable" id="sgEd">Editable</button>
+            <button class="sg" data-scope="readonly" id="sgRo">Read-only</button>
+        </span>
+        <span id="shown"></span>
+    </div>
+    <div id="banner" class="hidden"></div>
+    <div id="list"></div>
+    <div id="empty" class="hidden">No results.</div>
+
+<script>
+    // Search-results document (VS Code's "open in editor" for Find-All).
+    //
+    // This page is a VIEW ONLY. Every row holds the engine's array index (`idx`) and nothing else
+    // navigational; clicking one posts {action:'reveal', idx} and the HOST forwards it to the origin
+    // editor, whose engine resolves the index against its live Monaco decorations. The line numbers
+    // printed here are a snapshot and may age as the buffer is edited — the navigation cannot, which is
+    // why nothing here ever tries to be clever about positions.
+    var payload = null;
+
+    // Client-side refinement over the loaded payload. Modelled on KSSOpen's Find-and-Delete (filter text +
+    // match/do-NOT-match + simple/regex + case), but NON-destructive: it hides rows and reports the count
+    // instead of deleting them, so narrowing is always reversible.
+    //
+    // Filtering NEVER renumbers anything: rows keep the engine's `idx`, which is the only thing click-through
+    // uses. A filtered view is a view, not a new result set.
+    var view = { filter: '', invert: false, matchCase: false, regex: false, scope: 'all' };
+
+    function byId(id) { return document.getElementById(id); }
+    function postToHost(o) { try { window.chrome.webview.postMessage(JSON.stringify(o)); } catch (e) { } }
+    function esc(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // Highlight the matched span using the engine's columns (1-based, end exclusive). Multi-line matches
+    // highlight from startCol to end-of-line on the first line — the context lines below carry the rest.
+    function renderMatchLine(m) {
+        var text = m.text == null ? '' : m.text;
+        var s = Math.max(0, (m.startCol || 1) - 1);
+        var e = (m.endLine === m.line) ? Math.max(s, (m.endCol || 1) - 1) : text.length;
+        if (s >= text.length) return esc(text);
+        return esc(text.slice(0, s)) + '<mark>' + esc(text.slice(s, e)) + '</mark>' + esc(text.slice(e));
+    }
+
+    function ctxLine(l) {
+        return '<div class="cl ctx"><span class="ln">' + l.line + '</span><span class="src">' + esc(l.text) + '</span></div>';
+    }
+
+    // Build the filter predicate once per render rather than per row. Returns null when the filter is empty
+    // (i.e. everything passes) and marks the box red on an invalid regex instead of silently showing nothing.
+    function filterPredicate() {
+        var q = view.filter;
+        byId('filter').className = '';
+        if (!q) return null;
+        if (view.regex) {
+            var re;
+            try { re = new RegExp(q, view.matchCase ? '' : 'i'); }
+            catch (e) { byId('filter').className = 'bad'; return null; }   // invalid pattern: don't hide anything
+            return function (t) { return re.test(t || ''); };
+        }
+        var needle = view.matchCase ? q : q.toLowerCase();
+        return function (t) {
+            t = t || '';
+            return (view.matchCase ? t : t.toLowerCase()).indexOf(needle) >= 0;
+        };
+    }
+
+    // Filter on the match's own line only — KSSOpen's "Match In" defaults to the Text column for the same
+    // reason: matching against context lines would surface rows whose own text has nothing to do with the term.
+    function visibleMatches() {
+        if (!payload || !payload.matches) return [];
+        var pred = filterPredicate();
+        var out = [];
+        for (var i = 0; i < payload.matches.length; i++) {
+            var m = payload.matches[i];
+            if (view.scope === 'editable' && !m.editable) continue;
+            if (view.scope === 'readonly' && m.editable) continue;
+            if (pred) {
+                var hit = pred(m.text);
+                if (view.invert ? hit : !hit) continue;
+            }
+            out.push(m);
+        }
+        return out;
+    }
+
+    function matchByIdx(idx) {
+        if (!payload || !payload.matches) return null;
+        // Rows are built in engine order, so matches[idx] is the common hit; fall back to a scan rather than
+        // trusting position (a future filtered/partial payload would break the assumption silently).
+        var m = payload.matches[idx];
+        if (m && m.idx === idx) return m;
+        for (var i = 0; i < payload.matches.length; i++) if (payload.matches[i].idx === idx) return payload.matches[i];
+        return null;
+    }
+
+    function render() {
+        var list = byId('list');
+        if (!payload || !payload.matches || !payload.matches.length) {
+            list.innerHTML = '';
+            byId('empty').textContent = 'No results.';
+            byId('empty').className = '';
+            renderCounts([]);
+            return;
+        }
+
+        var rows = visibleMatches();
+        renderCounts(rows);
+        if (!rows.length) {
+            list.innerHTML = '';
+            // Distinct from "no results": the search DID find things, the filter is hiding them. Saying
+            // "No results" here would send you back to re-run a search that was fine.
+            byId('empty').textContent = 'No rows match this filter — ' + payload.matches.length + ' hidden.';
+            byId('empty').className = '';
+            return;
+        }
+        byId('empty').className = 'hidden';
+
+        var html = [];
+        for (var i = 0; i < rows.length; i++) {
+            var m = rows[i];
+            var body = [];
+            for (var b = 0; b < (m.before || []).length; b++) body.push(ctxLine(m.before[b]));
+            body.push('<div class="cl match"><span class="ln">' + m.line + '</span><span class="src">' +
+                      renderMatchLine(m) + '</span></div>');
+            for (var a = 0; a < (m.after || []).length; a++) body.push(ctxLine(m.after[a]));
+
+            html.push(
+                '<div class="hit" data-idx="' + m.idx + '" title="Click to reveal in the editor">' +
+                    '<div class="hit-head">' +
+                        '<span class="hit-n">#' + (m.idx + 1) + '</span>' +
+                        '<span>line ' + m.line + '</span>' +
+                        (m.editable ? '' : '<span class="lock" title="Generated / read-only code">&#128274; read-only</span>') +
+                        '<span class="hit-go">&#8663;</span>' +
+                    '</div>' +
+                    '<pre class="code">' + body.join('') + '</pre>' +
+                '</div>');
+        }
+        list.innerHTML = html.join('');
+
+        var hits = list.querySelectorAll('.hit');
+        for (var h = 0; h < hits.length; h++) {
+            hits[h].addEventListener('click', function (ev) {
+                var idx = parseInt(ev.currentTarget.getAttribute('data-idx'), 10);
+                if (isNaN(idx) || idx < 0) return;
+                var m = matchByIdx(idx);
+                // We build the complete editor-bound message and the host forwards it verbatim (the pad's
+                // 'fwd' pattern). idx addresses the engine's LIVE result set, so it ships with the search
+                // identity that produced this document — the engine honours idx only while it still holds
+                // that same search, and otherwise falls back to the coords recorded here. Top-level line/col
+                // are for the host's own fallback: reopening a CLOSED source file, where no engine exists yet.
+                postToHost({
+                    action: 'reveal',
+                    line: m ? m.line : 0,
+                    col: m ? m.startCol : 1,
+                    fwd: {
+                        type: 'caFind', op: 'reveal', focus: true,
+                        idx: idx,
+                        line: m ? m.line : 0, col: m ? m.startCol : 1,
+                        endLine: m ? m.endLine : 0, endCol: m ? m.endCol : 0,
+                        docQuery: (payload && payload.query) || '',
+                        docOpts: (payload && payload.opts) || {}
+                    }
+                });
+            });
+        }
+    }
+
+    // Chip counts answer "what would I get if I clicked this?", so the text filter applies to them but the
+    // SCOPE doesn't — otherwise clicking Editable would zero out the other two and you'd lose your way back.
+    //
+    // Counts are over the LOADED rows, not payload.total: with a truncated payload those differ, and the
+    // truncation banner is what tells that story. Putting `total` on the chips would make them lie.
+    function renderCounts(rows) {
+        var all = (payload && payload.matches) ? payload.matches : [];
+        var pred = filterPredicate();
+        var nAll = 0, nEd = 0, nRo = 0;
+        for (var i = 0; i < all.length; i++) {
+            if (pred) {
+                var hit = pred(all[i].text);
+                if (view.invert ? hit : !hit) continue;
+            }
+            nAll++;
+            if (all[i].editable) nEd++; else nRo++;
+        }
+        byId('sgAll').textContent = 'All (' + nAll + ')';
+        byId('sgEd').textContent = 'Editable (' + nEd + ')';
+        byId('sgRo').textContent = 'Read-only (' + nRo + ')';
+        byId('shown').textContent = (rows.length === all.length)
+            ? '' : 'showing ' + rows.length + ' of ' + all.length;
+    }
+
+    function applyView() { render(); }
+
+    function wireTools() {
+        var fi = byId('filter'), t = null;
+        fi.addEventListener('input', function () {
+            // Debounced: re-rendering up to 1000 cards on every keystroke is what would make this feel slow.
+            if (t) clearTimeout(t);
+            t = setTimeout(function () { view.filter = fi.value; applyView(); }, 120);
+        });
+        fi.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Escape') { fi.value = ''; view.filter = ''; applyView(); }
+        });
+
+        function toggle(id, key) {
+            byId(id).addEventListener('click', function () {
+                view[key] = !view[key];
+                byId(id).className = 'tg' + (view[key] ? ' on' : '');
+                applyView();
+            });
+        }
+        toggle('tgCase', 'matchCase');
+        toggle('tgRe', 'regex');
+        toggle('tgInv', 'invert');
+
+        var sgs = byId('scope').querySelectorAll('.sg');
+        for (var i = 0; i < sgs.length; i++) {
+            sgs[i].addEventListener('click', function (ev) {
+                view.scope = ev.currentTarget.getAttribute('data-scope');
+                for (var j = 0; j < sgs.length; j++)
+                    sgs[j].className = 'sg' + (sgs[j] === ev.currentTarget ? ' on' : '');
+                applyView();
+            });
+        }
+    }
+
+    function renderHead() {
+        if (!payload) return;
+        var q = payload.query || '';
+        var t = byId('title');
+        t.innerHTML = 'Results for <span class="q">' + esc(q) + '</span>';
+
+        // The search's options aren't shown as chips (they were visual noise on a line that just needs to say
+        // what you searched for) — but they still identify WHICH search produced this set, so they live in the
+        // title's tooltip rather than being thrown away.
+        var o = payload.opts || {}, on = [];
+        if (o.matchCase) on.push('match case');
+        if (o.wholeWord) on.push('whole word');
+        if (o.regex) on.push('regex');
+        on.push(o.includeReadOnly ? 'incl. read-only' : 'editable only');
+        t.title = 'Searched for "' + q + '" (' + on.join(', ') + ')';
+
+        var total = payload.total || 0;
+        var bits = [total + ' match' + (total === 1 ? '' : 'es')];
+        if (payload.lines) bits.push(payload.lines + ' line' + (payload.lines === 1 ? '' : 's'));
+        if (payload.readOnly) bits.push(payload.readOnly + ' read-only');
+        byId('meta').textContent = bits.join(' · ');
+
+        var kind = payload.originKind ? (payload.originKind + ' · ') : '';
+        byId('origin').textContent = kind + (payload.originTitle || '');
+
+        // Never let a cap read as "that's everything" — say what was dropped.
+        var banner = byId('banner');
+        if (payload.truncated > 0) {
+            banner.className = '';
+            banner.textContent = 'Showing the first ' + payload.shown + ' of ' + total +
+                ' matches — ' + payload.truncated + ' more not listed. Narrow the search to see the rest.';
+        } else {
+            banner.className = 'hidden';
+        }
+    }
+
+    function setTheme(isDark) { document.body.className = isDark ? '' : 'light'; }
+
+    // Reveal had nowhere to land. A click that silently does nothing reads as a broken feature, so say what
+    // happened AND what to do about it. Only reached when recovery already failed host-side: a closed source
+    // file gets reopened instead of ever landing here.
+    function markOriginGone(kind, name) {
+        var banner = byId('banner');
+        banner.className = 'gone';
+        banner.textContent = (kind === 'embed')
+            ? 'The embeditor for ' + (name || 'this procedure') + ' is closed, so results can’t be revealed. '
+              + 'Re-open that procedure’s embeditor and click again — or re-run the search there for a live list.'
+            : 'Couldn’t open ' + (name || 'the source file') + ' — it may have been moved, renamed or deleted. '
+              + 'Re-run the search for a live list.';
+    }
+
+    window.chrome.webview.addEventListener('message', function (ev) {
+        // WebView2 delivers a parsed object here — do NOT JSON.parse.
+        var msg = ev.data;
+        if (!msg || !msg.type) return;
+        if (msg.type === 'applyTheme') { setTheme(!!msg.isDark); return; }
+        if (msg.type === 'originGone') { markOriginGone(msg.kind, msg.name); return; }
+        if (msg.type === 'setResults') {
+            setTheme(msg.isDark !== false);
+            // The payload can be MBs (every match + its context), so it arrives over the virtual host as a
+            // file rather than inside this message.
+            fetch(msg.resultsUrl)
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    payload = data || {};
+                    payload.originTitle = msg.originTitle || '';
+                    payload.originKind = msg.originKind || '';
+                    resetView();      // a fresh search must not arrive pre-filtered by the last one's leftovers
+                    renderHead();
+                    render();
+                })
+                .catch(function (e) {
+                    byId('list').innerHTML = '';
+                    byId('empty').className = '';
+                    byId('empty').textContent = 'Could not load results: ' + e;
+                });
+        }
+    });
+
+    function resetView() {
+        view = { filter: '', invert: false, matchCase: false, regex: false, scope: 'all' };
+        var fi = byId('filter'); if (fi) { fi.value = ''; fi.className = ''; }
+        byId('tgCase').className = 'tg'; byId('tgRe').className = 'tg'; byId('tgInv').className = 'tg';
+        var sgs = byId('scope').querySelectorAll('.sg');
+        for (var i = 0; i < sgs.length; i++)
+            sgs[i].className = 'sg' + (sgs[i].getAttribute('data-scope') === 'all' ? ' on' : '');
+    }
+
+    wireTools();
+    postToHost({ action: 'ready' });
+</script>
+</body>
+</html>

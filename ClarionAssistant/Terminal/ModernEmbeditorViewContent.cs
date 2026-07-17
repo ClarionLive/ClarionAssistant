@@ -830,6 +830,55 @@ namespace ClarionAssistant.Terminal
             _panel?.GotoRoutine(name);
         }
 
+        /// <summary>
+        /// Raise the workbench TAB this embed session actually lives in, for this procedure. Returns true if a
+        /// session was found.
+        ///
+        /// Distinct from <see cref="TryFocusExisting"/> on purpose. That one ends in BringToFront, which in
+        /// OVERLAY mode only re-asserts Monaco's z-order inside the native embeditor's host panel — correct when
+        /// the embed document is already the foreground tab (its original caller is the save path), useless to a
+        /// caller sitting on a DIFFERENT document, who sees nothing happen. Search results are exactly that
+        /// caller: the user is on the results tab and expects the click to take them to the code.
+        /// </summary>
+        public static bool TryFocusOwningTab(string procName)
+        {
+            if (string.IsNullOrWhiteSpace(procName)) return false;
+            ModernEmbeditorViewContent found = null;
+            lock (_instances)
+            {
+                foreach (var inst in _instances)
+                    if (string.Equals(inst._procedureName, procName, StringComparison.OrdinalIgnoreCase)) { found = inst; break; }
+            }
+            if (found == null) return false;
+            found.FocusOwningTab();
+            return true;
+        }
+
+        /// <summary>Raise whichever tab owns this session: our own view content in tab mode, or the NATIVE gen
+        /// editor we are docked over in overlay mode (we aren't a tab at all there).</summary>
+        private void FocusOwningTab()
+        {
+            // Tab mode: our own view IS the tab, and BringToFront already defers the SelectWindow safely.
+            if (!_embedOverlay) { BringToFront(); return; }
+
+            var ed = _overlayGenEditor;
+            if (ed == null) { BringToFront(); return; }   // nothing better available — z-order at least
+            Action raise = () =>
+            {
+                try
+                {
+                    var ww = ed.GetType().GetProperty("WorkbenchWindow")?.GetValue(ed, null);
+                    if (ww != null) ww.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(ww, null);
+                    try { if (_panel != null) _panel.BringToFront(); } catch { }   // Monaco back on top inside that host
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] FocusOwningTab: " + ex.Message); }
+            };
+            // Same deferral posture as BringToFront: re-activating a WebView2-bearing document synchronously on a
+            // reentrant stack is the deadlock we guard against everywhere else here.
+            var ctx = System.Threading.SynchronizationContext.Current;
+            if (ctx != null) ctx.Post(_ => raise(), null); else raise();
+        }
+
         /// <summary>If a Modern Embeditor tab for this procedure is already open, focus it. Returns true if found.</summary>
         public static bool TryFocusExisting(string procName)
         {
@@ -2248,6 +2297,13 @@ namespace ClarionAssistant.Terminal
             if (_overlayDetached) return;
             _overlayDetached = true;
             UnhookOverlayTeardown();
+            // Overlay mode is never ShowView'd, so the workbench never calls our Dispose() — this IS the
+            // teardown. Without unregistering here, the broker keeps a DEAD entry under this session's key
+            // (embed::<proc>) forever; re-opening the same procedure then registers a second, live entry
+            // under the SAME key and any key-based lookup can pick the corpse and post into a disposed
+            // control. FromPad never saw it (it routes via _active, which focus refreshes), but the search
+            // results tab routes by key and lands on the dead one — click does nothing. (#66 / results tab)
+            try { Services.CaFindBroker.UnregisterHost(this); } catch { }
             RestoreNativeChrome();
             RemoveOverlayCover();
             try
