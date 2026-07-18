@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ClarionLive/ClarionAssistant/releases/tag/v5.3.0"><img src="https://img.shields.io/github/v/release/ClarionLive/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
-  <img src="https://img.shields.io/badge/Clarion-10%20%7C%2011%20%7C%2012-blue?style=for-the-badge" alt="Clarion 10 | 11 | 12">
-  <img src="https://img.shields.io/badge/version-5.3-blue?style=for-the-badge" alt="v5.3">
+  <a href="https://github.com/ClarionLive/ClarionAssistant/releases/tag/v5.4.0"><img src="https://img.shields.io/github/v/release/ClarionLive/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
+  <img src="https://img.shields.io/badge/Clarion-10%20%7C%2011%20%7C%2011.1%20%7C%2012-blue?style=for-the-badge" alt="Clarion 10 | 11 | 11.1 | 12">
+  <img src="https://img.shields.io/badge/version-5.4-blue?style=for-the-badge" alt="v5.4">
 </p>
 
 ---
@@ -41,23 +41,47 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 - **Code Snippets (Ctrl+J)** &mdash; classic Clarion template-picker parity: insert reusable code with tab-stops and a `${SELECTED}` placeholder, managed from Settings &rarr; Snippets
 - **CA Explorer** &mdash; docked pad showing the active CA Embeditor tab's Local, Module &amp; Global Data, Declared Tables, Other Files, and their Keys, Columns, and Relations; drag a field to the editor or Window designer, copy/paste variables native-style, and a Cheat Sheet tab of editor shortcuts
 - **Evaluate Code** &mdash; interactive code review for entire apps, procedures, open files, or selected code
-- **Diff viewer** &mdash; Monaco-based side-by-side diffs with syntax highlighting
+- **CA Find & Replace** &mdash; dockable Find pad or classic in-editor overlay (your pick), Find-All with results in their own editor tab, and one shared history across every CA surface
+- **Document Structure** &mdash; fly-out outline of the current buffer with symbol icons, Class &#9656; Methods regrouping, and filtering; click to navigate
+- **Diff viewer** &mdash; Monaco-based side-by-side diffs with syntax highlighting, live-buffer diffing, and a current-line comparison panel
 - **Knowledge system** &mdash; persistent cross-session memory for decisions, patterns, and gotchas
 - **Zoom persistence** &mdash; Ctrl+mousewheel zoom is saved and restored across sessions
 
 ---
 
-## What's New (Unreleased)
+## What's New in v5.4
+
+v5.4 is the biggest community cycle yet. Full notes: [docs/releases/v5.4.0.md](docs/releases/v5.4.0.md).
+
+### CA Find & Replace suite (#66)
+Find & Replace becomes a first-class subsystem: a dockable **CA Find pad** (the default for Ctrl+F/Ctrl+H), an optional classic **in-editor overlay** (Options &rarr; Clarion Assistant &rarr; Find / Replace), a **Find-All** column whose results can open in their own editor tab with context, click-through, and filtering (#113/#114), and **one shared find/replace history** across every CA surface with a per-procedure recent group.
+
+### Document Structure outline
+A fly-out outline of the current buffer &mdash; procedures, routines, classes and data with VS Code's symbol icons, Class &#9656; Methods regrouping, filtering, and expand/collapse-all. Click to jump; Navigate Back returns you.
+
+### Parameter hints, Ctrl+F12, real-scope embeds
+Signature help while typing a call (#75) and go-to-implementation (#78) in both Monaco surfaces. The embed buffer is now presented to the language server as a real MEMBER module of your PROGRAM, so completion/hover/F12 inside embeds see your global data (#74). `:` triggers completion like `.` (#52).
 
 ### Dictionary- and CodeGraph-aware completion in the CA Embeditor
+Completion reaches into your ingested **SchemaGraph** (dictionary tables/fields/keys) and **CodeGraph** (solution-wide symbols) databases (#99): `PRE:` prefixes suggest that table's columns and keys with declared types and descriptions; bare prefixes suggest dictionary table names; variable completions show real declared types and scope. Requires a SchemaGraph source indexed once via Solution Settings &rarr; Schema Sources.
 
-The CA Embeditor's completion now reaches into your ingested **SchemaGraph** (dictionary tables/fields/keys) and **CodeGraph** (solution-wide symbols) databases, not just the LSP and the current buffer:
+### Navigation history that keeps its promises
+Back/Forward reliably return to the position the editor opened at, outline jump targets, go-to-definition origins, and host-driven jumps &mdash; explicit targets are pinned so a follow-up click can't erase them.
 
-- **Dictionary fields and keys** &mdash; typing a table's `PRE:` prefix (e.g. `Cus:`) now also suggests that table's columns and keys straight from the ingested `.dctx`, with declared type, description, and (for keys) full field composition shown in the completion detail/documentation panel. Shown alongside any same-named in-buffer `GROUP`/`QUEUE` fields, not instead of them.
-- **Dictionary table names** &mdash; bare-prefix completion now also suggests table names from the dictionary (e.g. `Cus` &rarr; `Customers`).
-- **Richer variable detail** &mdash; completion for locals, module-scope variables, and cross-file CodeGraph globals now shows the actual declared type (`STRING(30)`, `DECIMAL(13,2)`, ...), a `!`-comment description when present, and local/global scope &mdash; instead of a generic "variable" label.
+### Dark mode & accessibility
+No white flash opening the embeditor in dark mode; contrast-guarded toolbar text on dark IDE chrome; Monaco's High Contrast toggle persists across sessions with visibly shaded read-only sections; CA Explorer tooltips drawn in-page (fixes a stuck-tooltip bug, #108).
 
-Requires a SchemaGraph source to be added and indexed once via the **Schema Sources** panel (Solution Settings &rarr; Schema Sources &rarr; Add Source).
+### CodeGraph accuracy campaign
+~20 indexer fixes driven by real production code (#79&ndash;#93, #97, #112, #118): INCLUDE discovery, typed PROCEDURE parameters, cross-file and inherited member call resolution, every GROUP/QUEUE/CLASS declaration spelling, built-in name collisions &mdash; with the repro solution vendored as a regression fixture.
+
+### Clarion 11.1, VS2026, portable installs (#91)
+Clarion **11.1** is a distinct build/deploy/install target; the build supports VS2026 Build Tools; installer paths are portable.
+
+### Diff, terminal & reliability
+Live-buffer diffs with encoding detection (#94), a current-line comparison panel (#96), clipboard-image paste as @-reference (#95); embeditor tab-switch no longer reloads/loses edits (#76), WebView2 crash process reaping (#109/#120), bundled LSP re-pinned to Clarion-Extension v1.0.0 (#77 &mdash; the per-configuration redirection fix), server re-root on solution switch (#106).
+
+### Thanks
+Community contributions from **Mark Sarson**, **geircodes**, **Andrew Santarelli**, **OkayPlunk**, plus reports from **BoxSoft** and **Bill Atchison**.
 
 ---
 
