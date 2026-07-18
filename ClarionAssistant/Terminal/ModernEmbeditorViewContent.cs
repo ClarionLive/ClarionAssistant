@@ -111,6 +111,7 @@ namespace ClarionAssistant.Terminal
         private string _fileLiveText;
         private bool _fileDirty;
         private bool _disposed;
+        private bool _sessionTornDown;               // idempotent guard for TeardownSession (#119)
 
         private const string VIRTUAL_HOST = "clarion-embeditor-data";
 
@@ -2289,6 +2290,39 @@ namespace ClarionAssistant.Terminal
             catch { try { DetachOverlay(); } catch { } }
         }
 
+        /// <summary>Teardown responsibilities shared by BOTH close paths — tab mode (Dispose, called by the
+        /// workbench) and overlay mode (DetachOverlay — an overlay session is never ShowView'd, so the workbench
+        /// never calls Dispose and DetachOverlay IS the entire teardown). Idempotent: whichever path runs first
+        /// does the work; a later double-call is a no-op.
+        ///
+        /// ADD NEW both-modes teardown responsibilities HERE, not in Dispose()/DetachOverlay() directly — the
+        /// two lists were kept in sync by hand and drifted twice in one day (#114: dead CaFindBroker entry,
+        /// #115: LSP module shadow never reverted). Mode-specific work (native chrome restore, WebView2
+        /// detach ordering per the a5bbf005 freeze-safe rules, live-linked cancel, save prompt) stays in the
+        /// respective caller. (#119)</summary>
+        private void TeardownSession()
+        {
+            if (_sessionTornDown) return;
+            _sessionTornDown = true;
+
+            // CA Find pad (#66): stop routing find traffic to this editor. Without this the broker keeps a
+            // DEAD entry under this session's key (embed::<proc> / file path) forever; re-opening the same
+            // procedure registers a second, live entry under the SAME key and any key-based lookup (the
+            // search results tab) can pick the corpse and post into a disposed control — click does nothing.
+            try { Services.CaFindBroker.UnregisterHost(this); } catch { }
+
+            // #56: while this session was up, every LSP request pushed the wrapped embed buffer to the server
+            // under the generated module's REAL path, overriding the on-disk file in the server's view. There
+            // is no didClose in the transport, so RevertShadow (pushing the on-disk content back) is the only
+            // thing that un-shadows it — without it the server keeps answering hover/definition/references
+            // for that .clw from a closed buffer, silently, for the rest of the session.
+            try { if (_lspContext != null) _lspContext.RevertShadow(); } catch { }
+
+            lock (_instances) { _instances.Remove(this); }
+            try { _settingsReg?.Dispose(); } catch { }
+            _settingsReg = null;
+        }
+
         /// <summary>Remove the Monaco surface (and cover) from the embeditor host and dispose it. Idempotent. The
         /// native embed itself is closed by whoever triggered teardown (SaveLive's save-and-close, native cancel, or
         /// the host's own disposal) — we only own the overlay controls.</summary>
@@ -2298,23 +2332,8 @@ namespace ClarionAssistant.Terminal
             _overlayDetached = true;
             UnhookOverlayTeardown();
             // Overlay mode is never ShowView'd, so the workbench never calls our Dispose() — this IS the
-            // teardown. Without unregistering here, the broker keeps a DEAD entry under this session's key
-            // (embed::<proc>) forever; re-opening the same procedure then registers a second, live entry
-            // under the SAME key and any key-based lookup can pick the corpse and post into a disposed
-            // control. FromPad never saw it (it routes via _active, which focus refreshes), but the search
-            // results tab routes by key and lands on the dead one — click does nothing. (#66 / results tab)
-            try { Services.CaFindBroker.UnregisterHost(this); } catch { }
-
-            // #56: while this embed session was up, every LSP request pushed the wrapped embed buffer to the
-            // server under the module's REAL path, overriding the on-disk file in the server's view. There is
-            // no didClose in the transport, so RevertShadow (pushing the on-disk content back) is the only
-            // thing that un-shadows it.
-            //
-            // Dispose() already does this — but overlay mode never GETS Dispose(): it is never ShowView'd, so
-            // the workbench does not own this view and never disposes it. DetachOverlay IS the teardown. Without
-            // this call the server keeps answering hover/definition/references for that .clw from a buffer that
-            // is no longer open, silently, for the rest of the session.
-            try { if (_lspContext != null) _lspContext.RevertShadow(); } catch { }
+            // teardown for the shared session-scoped state too (broker entry, LSP shadow, instance list). (#119)
+            TeardownSession();
 
             RestoreNativeChrome();
             RemoveOverlayCover();
@@ -2330,9 +2349,6 @@ namespace ClarionAssistant.Terminal
                 }
             }
             catch { }
-            try { _settingsReg?.Dispose(); } catch { }
-            _settingsReg = null;
-            lock (_instances) { _instances.Remove(this); }
             if (ReferenceEquals(_liveInstance, this)) _liveInstance = null;
             _liveLinked = false;
             _embedOverlay = false;
@@ -3383,17 +3399,10 @@ namespace ClarionAssistant.Terminal
             bool promptSave = _fileMode && _fileDirty && _fileLiveText != null && !_disposed;
             _disposed = true;
 
-            // CA Find pad (GitHub #66): stop routing find traffic to this editor; if it was the pad's
-            // target the pad drops to idle (sessions survive pad-side for reopen).
-            try { Services.CaFindBroker.UnregisterHost(this); } catch { }
+            // Shared session teardown (broker unregister, LSP shadow revert, instance list) — one path
+            // with DetachOverlay so the two lists can't drift again. (#119)
+            TeardownSession();
 
-            // #56: while this tab was open, LSP requests shadowed the on-disk generated module under its
-            // real path. No didClose exists, so push the on-disk content back to un-shadow it.
-            try { if (_lspContext != null) _lspContext.RevertShadow(); } catch { }
-
-            lock (_instances) { _instances.Remove(this); }
-            try { _settingsReg?.Dispose(); } catch { }
-            _settingsReg = null;
             // Dispose the editor control (its WebView2 + temp dir) FIRST so the confirm MessageBox below
             // can't get stuck behind a live WebView2 (the documented native<->WebView2 focus deadlock).
             if (_panel != null)
