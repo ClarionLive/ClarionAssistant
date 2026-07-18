@@ -299,6 +299,17 @@
        is retained (invisible) so the read-only guard can query live decoration ranges. */
     .embed-readonly-line { background: rgba(0, 0, 0, 0.06); }
     body:not(.light) .embed-readonly-line { background: rgba(255, 255, 255, 0.05); }
+    /* Windows High Contrast (forced-colors): the subtle alpha washes above are stripped/imperceptible on
+       the forced canvas, so read-only (generated) lines became indistinguishable from editable ones
+       (John's report). Opt the decoration out of color forcing and use a stronger neutral wash plus a
+       left edge cue — mid-gray reads on both black- and white-based HC themes. */
+    @media (forced-colors: active) {
+        .embed-readonly-line {
+            forced-color-adjust: none;
+            background: rgba(127, 127, 127, 0.28);
+            box-shadow: inset 3px 0 0 0 rgba(127, 127, 127, 0.9);
+        }
+    }
 
     /* ---------- Find & Replace panel (Clarion-style: results grid of every match) ---------- */
     :root { --find-accent: #89b4fa; --find-hit: rgba(137,180,250,0.35); --find-hit-border: #89b4fa; --on-fg: #1e1e2e; --find-fz: 12px; }
@@ -882,6 +893,16 @@
         }
     }
 
+    // Relative luminance (0..1) of a "#rrggbb" color; null for anything unparseable. Used by the
+    // chrome contrast guard (dark-IDE toolbars) — cheap perceptual weighting, not full WCAG gamma.
+    function hexLum(h) {
+        if (!h) return null;
+        var m = /^#?([0-9a-fA-F]{6})$/.exec(String(h).trim());
+        if (!m) return null;
+        var n = parseInt(m[1], 16);
+        return (0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)) / 255;
+    }
+
     // User background preference (light/dark). Defaults to LIGHT (white) per John's request 2026-06-02;
     // persisted in localStorage and toggled from the toolbar. This wins over the host's IDE theme so the
     // editor stays the color the user picked regardless of the IDE's dark/light mode.
@@ -1132,7 +1153,21 @@
             var bs = document.body.style;
             if (msg.chromeBg1) bs.setProperty('--chrome-bg1', msg.chromeBg1); else bs.removeProperty('--chrome-bg1');
             if (msg.chromeBg2) bs.setProperty('--chrome-bg2', msg.chromeBg2); else bs.removeProperty('--chrome-bg2');
-            if (msg.chromeFg)  bs.setProperty('--chrome-fg',  msg.chromeFg);  else bs.removeProperty('--chrome-fg');
+            // CONTRAST GUARD (John's dark-IDE report: Reload/Save + title unreadable): the captured fg has no
+            // contrast guarantee against the captured gradient — the source editor sends no fg at all (the
+            // ProfessionalColorTable has no text color, so the page falls back to its own theme color, which
+            // tracks the PAGE pref, not the IDE gradient), and the embeditor's strip.ForeColor can still be
+            // ControlText black on a dark IDE theme. If the fg is missing or sits on the same side of the
+            // luminance midpoint as the gradient, substitute a computed readable one instead.
+            var chromeFg = msg.chromeFg;
+            if (msg.chromeBg1) {
+                var lum1 = hexLum(msg.chromeBg1), lum2 = hexLum(msg.chromeBg2);
+                var bgLum = (lum1 !== null && lum2 !== null) ? (lum1 + lum2) / 2 : (lum1 !== null ? lum1 : lum2);
+                var fgLum = hexLum(chromeFg);
+                if (bgLum !== null && (fgLum === null || Math.abs(fgLum - bgLum) < 0.3))
+                    chromeFg = (bgLum < 0.5) ? '#e8e8f0' : '#1a1a24';
+            }
+            if (chromeFg) bs.setProperty('--chrome-fg', chromeFg); else bs.removeProperty('--chrome-fg');
             document.body.classList.toggle('has-chrome', !!msg.chromeBg1);
             // Clickable header strip mimicking the native "Proc - Embeditor - (module.clw)" line — EMBEDITOR ONLY
             // (needs the captured native header text); click opens the generated source. b1e05287
