@@ -2244,8 +2244,13 @@
             // the caret when focused; without this the cursor is invisible and arrow keys do nothing).
             // Deferred a tick so it lands after the view finishes its initial layout/attach.
             setTimeout(function () { try { editor.focus(); } catch (e) { } }, 0);
+            // Seed the nav history with the restored position (pinned). The debounced recorder only ever
+            // captures where a move lands, so without a seed the FIRST jump pushes only its target and
+            // Navigate Back has no way home to the position the tab opened at (John's nav repro #1).
+            recordNavAt(cl, Math.max(1, cc));
         } else {
             editor.revealLine(1);
+            recordNavAt(1, 1);   // same seed, cold-open case — first jump can navigate Back to the top
         }
     }
 
@@ -2388,7 +2393,13 @@
     // line"). A new jump truncates the forward tail and pushes; capped at NAV_CAP. Back/Forward move the
     // FOCUSED pane and never record (navSuppress). Session-scoped (not persisted). The ▾ dropdown lists
     // the history so the dev can jump back/forward several moves at once.
-    var navStack = [];         // [{line, column, label}] oldest→newest
+    //
+    // PINNED entries (John's nav repros): entries created by recordNavAt — the open-position seed and
+    // explicit jumps (outline click, Ctrl+Click origin, host-driven reveal, routine go-to) — carry
+    // pinned:true and are exempt from drifting. Without the pin, the first small click after an explicit
+    // jump silently REPLACED the jump target in the stack, so Back skipped the place you deliberately
+    // navigated to. A small move on a pinned anchor pushes a fresh (driftable) entry instead.
+    var navStack = [];         // [{line, column, label, pinned}] oldest→newest
     var navIndex = -1;         // pointer into navStack (current position)
     var navSuppress = false;   // true while WE move the cursor (Back/Forward/jump) — don't record
     var _navRecordTimer = null;
@@ -2480,7 +2491,10 @@
         if (navIndex >= 0) {
             var cur = navStack[navIndex];
             if (cur.line === line) { cur.column = col; cur.label = navLabel(line); updateNavUI(); return; }
-            if (Math.abs(line - cur.line) < NAV_JUMP_MIN) {       // small move → drift the anchor in place
+            // Small move → drift the anchor in place — but NEVER a pinned one (open seed / explicit jump
+            // target): drifting it erased the very position Back exists to return to. Fall through to a
+            // push instead, so the pinned entry survives and the new position becomes a fresh anchor.
+            if (Math.abs(line - cur.line) < NAV_JUMP_MIN && !cur.pinned) {
                 cur.line = line; cur.column = col; cur.label = navLabel(line); updateNavUI(); return;
             }
         }
@@ -2490,17 +2504,19 @@
         navIndex = navStack.length - 1;
         updateNavUI();
     }
-    // Record an entry at (line,col) IMMEDIATELY, bypassing the 250ms debounce. Used right before a
-    // programmatic go-to-definition jump (Ctrl+Click / F12) so the origin is captured before the fast
-    // origin→target cursor move would otherwise clear its pending record — i.e. Navigate Back returns
-    // to where you jumped FROM, making Ctrl+Click behave like a normal click for history. (#40)
+    // Record an entry at (line,col) IMMEDIATELY, bypassing the 250ms debounce. Used for the origin
+    // and/or target of every EXPLICIT navigation — Ctrl+Click / F12 origins (#40), outline clicks,
+    // host-driven reveals, routine go-tos — and for the open-position seed. Entries recorded here are
+    // PINNED: a later small cursor move must not drift them away (see recordNavPosition), so Navigate
+    // Back reliably returns to a place the developer deliberately navigated from/to.
     function recordNavAt(line, col) {
         if (_navRecordTimer) { clearTimeout(_navRecordTimer); _navRecordTimer = null; }
         if (navIndex >= 0 && navStack[navIndex] && navStack[navIndex].line === line) {
-            navStack[navIndex].column = col; navStack[navIndex].label = navLabel(line); updateNavUI(); return;
+            navStack[navIndex].column = col; navStack[navIndex].label = navLabel(line);
+            navStack[navIndex].pinned = true; updateNavUI(); return;
         }
         navStack = navStack.slice(0, navIndex + 1);
-        navStack.push({ line: line, column: col, label: navLabel(line) });
+        navStack.push({ line: line, column: col, label: navLabel(line), pinned: true });
         if (navStack.length > NAV_CAP) navStack.shift();
         navIndex = navStack.length - 1;
         updateNavUI();
@@ -2519,8 +2535,13 @@
         var col = Math.max(1, parseInt(msg && msg.column, 10) || 1);
         var ed = activeEd();
         ln = clampLine(ln);
+        // Host-driven jump (debugger / breakpoint list / search results) = explicit navigation:
+        // record origin + target (pinned) so Back retraces it. See recordNavAt.
+        var p = ed.getPosition();
+        if (p) recordNavAt(p.lineNumber, p.column);
         ed.setPosition({ lineNumber: ln, column: col });
         ed.revealLineInCenter(ln);
+        recordNavAt(ln, col);
         try { ed.focus(); } catch (e) { }
     }
     function navMoveTo(index) {
@@ -2622,8 +2643,12 @@
             if (m[1].length === 0) { firstAny = ln; break; }   // column-0 body outside any MAP; take it
         }
         if (firstAny > 0) {
+            // Explicit navigation (Data pad go-to) — record origin + target (pinned) for Back/Forward.
+            var p = ed.getPosition();
+            if (p) recordNavAt(p.lineNumber, p.column);
             ed.revealLineInCenter(firstAny);
             ed.setPosition({ lineNumber: firstAny, column: 1 });
+            recordNavAt(firstAny, 1);
             ed.focus();
             return;
         }
@@ -4687,8 +4712,15 @@
             (function (ln) {
                 row.addEventListener('click', function () {
                     if (!ln || !editor) return;
+                    // Explicit navigation → record BOTH ends immediately (pinned): the origin so Back
+                    // returns to where you were, and the target so a later Back returns to the symbol
+                    // you picked here — the debounced recorder alone let the target drift away on the
+                    // next nearby click (John's nav repro #2).
+                    var p = editor.getPosition();
+                    if (p) recordNavAt(p.lineNumber, p.column);
                     editor.revealLineInCenter(ln);
                     editor.setPosition({ lineNumber: ln, column: 1 });
+                    recordNavAt(ln, 1);
                     editor.focus();
                 });
             })(s.line);
