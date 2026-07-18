@@ -21,9 +21,10 @@ indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproS
 ```
 
 ## Expected results (verified 2026-07-17 with all #79–#90 fixes applied, plus #92, #93, #112, and
-#118; line numbers below reflect the fixture AFTER Bug N's `Ask()` additions)
+#118, then re-verified with #97; line numbers below reflect the fixture AFTER #97's
+`AttrTermLocalGroupTest` addition)
 
-### Callers of `WorkerClass.Sign` — exactly 20 `calls` rows
+### Callers of `WorkerClass.Sign` — exactly 21 `calls` rows
 
 | Caller | Line | Proves issue |
 |---|---|---|
@@ -31,7 +32,7 @@ indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproS
 | TestSignatureFlow | 31 | baseline (second call shape) |
 | ParameterTest | 43 | #87 (call through PROCEDURE parameter) |
 | ReturnTest | 52 | baseline (inline RETURN call shape) |
-| MainHelperProc | 62 | #81 (procedure in main PROGRAM file) |
+| MainHelperProc | 64 | #81 (procedure in main PROGRAM file) |
 | OwnerClass.CallViaMember | 63 | #84+#86 (.inc member, cross-file type) |
 | OwnerClass.CallViaCommentedMember | 85 | #85+#86 (trailing-comment member) |
 | CommentedLocalTest | 101 | #85 (trailing-comment DATA local) |
@@ -43,10 +44,11 @@ indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproS
 | ConditionalOmitTest | 212 | #79 (conditional OMIT/COMPILE) |
 | GroupQueueLocalTest | 231 | #89 (local after GROUP(Type) two-line) |
 | InlineLocalGroupTest | 246 | #89 (local after GROUP(Type) END inline) |
-| LocalDerivedClassTest | 272 | #90 (attribution after local CLASS(Parent)) |
-| LikeMemberBugClass.CallViaPlainInstanceMember | 289 | #92 (call through a reference CLASS member, unaffected control) |
-| MultiLineGroupBugClass.CallViaAfterMultiLineGroupMember | 307 | #93 (member after multi-line GROUP with its own extra field) |
-| DerivedWorkerClass.CallViaInheritedMember | 318 | #112 (member declared on a BASE class, accessed via SELF. from a DERIVED class's own method) |
+| AttrTermLocalGroupTest | 266 | #97 (local after GROUP(Type),attrs + same-line terminator) |
+| LocalDerivedClassTest | 292 | #90 (attribution after local CLASS(Parent)) |
+| LikeMemberBugClass.CallViaPlainInstanceMember | 309 | #92 (call through a reference CLASS member, unaffected control) |
+| MultiLineGroupBugClass.CallViaAfterMultiLineGroupMember | 327 | #93 (member after multi-line GROUP with its own extra field) |
+| DerivedWorkerClass.CallViaInheritedMember | 338 | #112 (member declared on a BASE class, accessed via SELF. from a DERIVED class's own method) |
 
 ### Callers of `WorkerClass.Ask` — exactly 2 `calls` rows (Bug N, **fixed in #118**)
 
