@@ -470,6 +470,16 @@
     body.settings-mode .panel { position: static; top: auto; right: auto; width: 100%; height: 100vh;
         max-height: none; border: none; border-radius: 0; box-shadow: none; }
     body.settings-mode .panel-hdr { display: none; }
+
+    /* Page-drawn tooltip (GitHub #108): replaces native title="" tooltips. Chromium/WebView2 draws those
+       in a SEPARATE top-level popup window, which can be orphaned (stuck on screen until the browser
+       process exits) if the hosting pane is hidden/docked mid-hover. This div lives inside the page, so
+       it can never outlive it. Light default + body.dark override, matching the pad's theming pattern. */
+    #caTip { display: none; position: fixed; z-index: 99999; max-width: 340px; padding: 4px 8px;
+        font-size: 12px; line-height: 1.35; color: #333; background: #f5f5fa;
+        border: 1px solid #b8b8c8; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,.18);
+        pointer-events: none; white-space: pre-line; overflow-wrap: break-word; }
+    body.dark #caTip { color: #cdd6f4; background: #2a2a3c; border-color: #45475a; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
 </style>
 </head>
 <body>
@@ -2926,6 +2936,73 @@
                 rcopy.textContent = 'Copied'; setTimeout(function () { rcopy.textContent = 'Copy'; }, 1200);
             } catch (ex) {}
         });
+    })();
+
+    // ===== Page-drawn tooltips (GitHub #108) =====
+    // WebView2/Chromium renders title="" tooltips as a SEPARATE top-level popup window; if the hosting
+    // pane is hidden, docked, or covered mid-hover, that popup can be orphaned and stays on screen until
+    // the browser process exits (BoxSoft's stuck "Smaller font" tooltip). Never let Chromium create it:
+    // on hover we move title -> data-tip BEFORE the ~500ms native tooltip delay elapses, and draw our own
+    // tooltip inside the page. Delegated on document, so dynamically-created elements (rows, chips, the
+    // settings panel) are covered with no per-call-site changes — later `el.title = ...` assignments are
+    // re-stripped on the next hover and their fresh value wins.
+    (function () {
+        var tipEl = null, tipTimer = null, tipAnchor = null;
+        var SHOW_DELAY = 450;   // ms, ~native feel
+        function hideTip() {
+            if (tipTimer) { clearTimeout(tipTimer); tipTimer = null; }
+            tipAnchor = null;
+            if (tipEl) tipEl.style.display = 'none';
+        }
+        function showTip(anchor, x, y) {
+            var text = anchor.getAttribute('data-tip');
+            if (!text) return;
+            if (!tipEl) { tipEl = document.createElement('div'); tipEl.id = 'caTip'; document.body.appendChild(tipEl); }
+            tipEl.textContent = text;
+            tipEl.style.left = '0px'; tipEl.style.top = '0px';   // reset before measuring
+            tipEl.style.display = 'block';
+            var w = tipEl.offsetWidth, h = tipEl.offsetHeight;
+            var px = x + 12, py = y + 18;                        // below-right of the cursor, like native
+            if (px + w > window.innerWidth - 4) px = Math.max(4, window.innerWidth - w - 4);
+            if (py + h > window.innerHeight - 4) py = y - h - 8; // flip above when it would clip
+            if (py < 4) py = 4;
+            tipEl.style.left = px + 'px'; tipEl.style.top = py + 'px';
+        }
+        document.addEventListener('mouseover', function (e) {
+            // Strip native titles on the whole hover chain first — this must beat Chromium's tooltip delay.
+            var n = e.target, tipNode = null;
+            while (n && n.getAttribute) {
+                if (n.hasAttribute('title')) {
+                    var v = n.getAttribute('title');
+                    n.removeAttribute('title');
+                    if (v) {
+                        n.setAttribute('data-tip', v);
+                        // title was the accessible name for glyph-only controls (×, ⚙) — keep that job.
+                        if (!n.hasAttribute('aria-label') && !(n.textContent || '').trim()) n.setAttribute('aria-label', v);
+                    }
+                }
+                if (!tipNode && n.hasAttribute('data-tip')) tipNode = n;   // innermost data-tip wins
+                n = n.parentNode;
+            }
+            if (!tipNode) { hideTip(); return; }
+            if (tipNode === tipAnchor) return;   // moving within the same anchor — keep current state
+            hideTip();
+            tipAnchor = tipNode;
+            var x = e.clientX, y = e.clientY;
+            tipTimer = setTimeout(function () { showTip(tipNode, x, y); }, SHOW_DELAY);
+        }, true);
+        document.addEventListener('mouseout', function (e) {
+            if (!tipAnchor) return;
+            // Only hide when truly leaving the anchor (not moving into one of its children).
+            var to = e.relatedTarget;
+            while (to && to !== tipAnchor) to = to.parentNode;
+            if (to !== tipAnchor) hideTip();
+        }, true);
+        document.addEventListener('mousedown', hideTip, true);
+        document.addEventListener('wheel', hideTip, true);
+        document.addEventListener('keydown', hideTip, true);
+        window.addEventListener('blur', hideTip);
+        document.addEventListener('visibilitychange', hideTip);
     })();
 
     postToHost({ action: 'ready' });
