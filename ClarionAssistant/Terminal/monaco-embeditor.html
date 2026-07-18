@@ -299,6 +299,24 @@
        is retained (invisible) so the read-only guard can query live decoration ranges. */
     .embed-readonly-line { background: rgba(0, 0, 0, 0.06); }
     body:not(.light) .embed-readonly-line { background: rgba(255, 255, 255, 0.05); }
+    /* Monaco's built-in "Toggle High Contrast Theme" (editor context menu) applies theme class hc-black
+       (hc-light on newer builds) to the editor root — the pure-black canvas makes the 5%-alpha washes
+       above imperceptible, so read-only (generated) lines became indistinguishable from editable ones
+       (John's report, screenshot 2). Stronger neutral wash + a left edge cue; mid-gray reads on both. */
+    .monaco-editor.hc-black .embed-readonly-line,
+    .monaco-editor.hc-light .embed-readonly-line {
+        background: rgba(127, 127, 127, 0.28);
+        box-shadow: inset 3px 0 0 0 rgba(127, 127, 127, 0.9);
+    }
+    /* Windows High Contrast (OS forced-colors) strips the alpha washes the same way — same treatment,
+       plus opting the decoration out of color forcing. */
+    @media (forced-colors: active) {
+        .embed-readonly-line {
+            forced-color-adjust: none;
+            background: rgba(127, 127, 127, 0.28);
+            box-shadow: inset 3px 0 0 0 rgba(127, 127, 127, 0.9);
+        }
+    }
 
     /* ---------- Find & Replace panel (Clarion-style: results grid of every match) ---------- */
     :root { --find-accent: #89b4fa; --find-hit: rgba(137,180,250,0.35); --find-hit-border: #89b4fa; --on-fg: #1e1e2e; --find-fz: 12px; }
@@ -882,6 +900,44 @@
         }
     }
 
+    // Relative luminance (0..1) of a "#rrggbb" color; null for anything unparseable. Used by the
+    // chrome contrast guard (dark-IDE toolbars) — cheap perceptual weighting, not full WCAG gamma.
+    function hexLum(h) {
+        if (!h) return null;
+        var m = /^#?([0-9a-fA-F]{6})$/.exec(String(h).trim());
+        if (!m) return null;
+        var n = parseInt(m[1], 16);
+        return (0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)) / 255;
+    }
+
+    // ----- Monaco's built-in High Contrast toggle: persist + restore (John's report) -----
+    // The context-menu "Toggle High Contrast Theme" is Monaco's own action and flips the theme in MEMORY
+    // only — it saves nothing anywhere, so it silently reverted on every reopen. Persist it ourselves:
+    // watch the theme class on the editor root (hc-black / hc-light — the only theme signal Monaco
+    // exposes without private APIs), store it beside the dark pref, and re-apply on boot by triggering
+    // Monaco's OWN toggle action so the right hc flavor for this Monaco build applies (no theme-name
+    // guessing). Toggling the light/dark pill while HC is on exits HC (setTheme sets a base theme) —
+    // the observer sees that class change and persists the exit, so the states can't fight.
+    function isHcNode(node) {
+        var c = ' ' + (node && node.className || '') + ' ';
+        return c.indexOf(' hc-black ') >= 0 || c.indexOf(' hc-light ') >= 0;
+    }
+    function installHcPersistence(ed) {
+        try {
+            var node = ed && ed.getDomNode ? ed.getDomNode() : null;
+            if (!node) return;
+            var saved = null;
+            try { saved = localStorage.getItem('modernEmbeditor.themeHC'); } catch (e) { }
+            if (saved === '1' && !isHcNode(node)) {
+                try { ed.trigger('ca', 'editor.action.toggleHighContrast', null); } catch (e) { }
+            }
+            // Observe AFTER the restore so a pre-restore mutation can't overwrite the saved flag with 0.
+            new MutationObserver(function () {
+                try { localStorage.setItem('modernEmbeditor.themeHC', isHcNode(node) ? '1' : '0'); } catch (e) { }
+            }).observe(node, { attributes: true, attributeFilter: ['class'] });
+        } catch (e) { }
+    }
+
     // User background preference (light/dark). Defaults to LIGHT (white) per John's request 2026-06-02;
     // persisted in localStorage and toggled from the toolbar. This wins over the host's IDE theme so the
     // editor stays the color the user picked regardless of the IDE's dark/light mode.
@@ -1078,6 +1134,7 @@
                 wireFindPanel();
                 setTheme(themePrefDark);   // apply the user's persisted background choice (default light)
                 updateThemeBtn();
+                installHcPersistence(editor);   // restore + persist Monaco's High Contrast toggle (after the base theme)
                 applyFindFont();           // apply the persisted Find-pane font size
                 ready = true;
                 document.getElementById('loading').classList.add('hidden');
@@ -1139,7 +1196,21 @@
             var bs = document.body.style;
             if (msg.chromeBg1) bs.setProperty('--chrome-bg1', msg.chromeBg1); else bs.removeProperty('--chrome-bg1');
             if (msg.chromeBg2) bs.setProperty('--chrome-bg2', msg.chromeBg2); else bs.removeProperty('--chrome-bg2');
-            if (msg.chromeFg)  bs.setProperty('--chrome-fg',  msg.chromeFg);  else bs.removeProperty('--chrome-fg');
+            // CONTRAST GUARD (John's dark-IDE report: Reload/Save + title unreadable): the captured fg has no
+            // contrast guarantee against the captured gradient — the source editor sends no fg at all (the
+            // ProfessionalColorTable has no text color, so the page falls back to its own theme color, which
+            // tracks the PAGE pref, not the IDE gradient), and the embeditor's strip.ForeColor can still be
+            // ControlText black on a dark IDE theme. If the fg is missing or sits on the same side of the
+            // luminance midpoint as the gradient, substitute a computed readable one instead.
+            var chromeFg = msg.chromeFg;
+            if (msg.chromeBg1) {
+                var lum1 = hexLum(msg.chromeBg1), lum2 = hexLum(msg.chromeBg2);
+                var bgLum = (lum1 !== null && lum2 !== null) ? (lum1 + lum2) / 2 : (lum1 !== null ? lum1 : lum2);
+                var fgLum = hexLum(chromeFg);
+                if (bgLum !== null && (fgLum === null || Math.abs(fgLum - bgLum) < 0.3))
+                    chromeFg = (bgLum < 0.5) ? '#e8e8f0' : '#1a1a24';
+            }
+            if (chromeFg) bs.setProperty('--chrome-fg', chromeFg); else bs.removeProperty('--chrome-fg');
             document.body.classList.toggle('has-chrome', !!msg.chromeBg1);
             // Clickable header strip mimicking the native "Proc - Embeditor - (module.clw)" line — EMBEDITOR ONLY
             // (needs the captured native header text); click opens the generated source. b1e05287
