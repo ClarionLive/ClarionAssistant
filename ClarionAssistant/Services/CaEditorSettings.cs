@@ -23,6 +23,7 @@ namespace ClarionAssistant.Services
         private const string KeySourceEnabled       = "ClarionAssistant.MonacoSourceEnabled";
         private const string KeyEmbeditorEnabled    = "ClarionAssistant.MonacoEmbeditorEnabled";
         private const string KeySourceFileTypes     = "ClarionAssistant.MonacoSourceFileTypes";
+        private const string KeyThemeDark           = "ClarionAssistant.MonacoThemeDark";
 
         /// <summary>Default extensions the Monaco SOURCE overlay applies to (when enabled).</summary>
         public const string DefaultSourceFileTypes = ".clw;.inc;.equ;.txa";
@@ -82,6 +83,32 @@ namespace ClarionAssistant.Services
                 catch { return true; }
             }
             set { TrySet(KeyEmbeditorEnabled, value ? "true" : "false"); }
+        }
+
+        /// <summary>
+        /// Host-side MIRROR of the Monaco page's persisted light/dark preference. The page owns the
+        /// authoritative value (localStorage "modernEmbeditor.themeDark", default LIGHT per John
+        /// 2026-06-02) and pushes a "themeChanged" bridge message on boot and on every toolbar theme
+        /// toggle; MonacoEditorControl persists it here. This exists so the pre-paint surfaces created
+        /// BEFORE any WebView2 is alive — the instant cover dropped over the native embeditor, the
+        /// control backdrop, WebView2.DefaultBackgroundColor — can match the theme the page will paint,
+        /// instead of hardcoding light and flashing WHITE for a dark-mode user on every embeditor open.
+        /// May lag the page by one toggle on a machine whose localStorage was cleared externally — the
+        /// boot push re-converges it on the next open, and the cost of a mismatch is one soft flash.
+        /// </summary>
+        public static bool MonacoThemeDark
+        {
+            get
+            {
+                try
+                {
+                    string raw = new SettingsService().Get(KeyThemeDark);
+                    if (raw == null) return false;   // default LIGHT — matches the page's default pref
+                    return ParseBool(raw, false);
+                }
+                catch { return false; }
+            }
+            set { TrySet(KeyThemeDark, value ? "true" : "false"); }
         }
 
         /// <summary>
