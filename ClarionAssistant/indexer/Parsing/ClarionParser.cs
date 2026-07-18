@@ -689,9 +689,14 @@ namespace ClarionCodeGraph.Parsing
                         // dataGroupDepth here would leak it permanently, silently swallowing every
                         // subsequent local variable in this DATA section (the same class of bug fixed
                         // for ParseIncFile's classEndDepth -- see the inline-group-depth-leak fix).
-                        // GroupQueueDeclRegex's own "term" group already recognized the same-line
-                        // terminator (if any), so no separate re-check of the line text is needed here.
-                        if (!gqMatch.Groups["term"].Success)
+                        // GroupQueueDeclRegex's "term" group only sees a terminator that DIRECTLY
+                        // follows the name/type -- when an attribute list is present ("...,DIM(2) END" /
+                        // "...,DIM(2)."), the ",.*" attrs alternative swallows the terminator into itself
+                        // and "term" never matches -- so ALSO re-check the end of the line to cover the
+                        // attrs+same-line-terminator form (GitHub #97, mirroring ae9805b's CLASS-body fix).
+                        bool gqSelfClosing = gqMatch.Groups["term"].Success ||
+                            Regex.IsMatch(gqMatch.Value.TrimEnd(), @"(\bEND|\.)\s*$", RegexOptions.IgnoreCase);
+                        if (!gqSelfClosing)
                         {
                             dataGroupDepth++;
                         }

@@ -246,6 +246,26 @@ AfterInlineLocalGroup &WorkerClass
   result = AfterInlineLocalGroup.Sign( 31 )
   RETURN result
 
+! Bug O repro (#97): attrs + same-line terminator on a DATA-section GROUP local. A legal
+! single-line declaration like "LocalAttrGroup GROUP(SmallGroupType),DIM(2) END" (or the
+! period form ",DIM(2).") is self-closing, but GroupQueueDeclRegex's "term" group only
+! recognizes a terminator that DIRECTLY follows the name/type -- the ",.*" attrs alternative
+! swallows the terminator, "term" never matches, and the line was treated as opening a
+! multi-line body: dataGroupDepth leaked (contained to this DATA section -- CODE resets it),
+! silently skipping every subsequent local. AfterAttrLocalGroup below must still be captured
+! and its Sign call must resolve, proving no leak. Identical mechanism to the CLASS-body
+! variant fixed in ae9805b for #93 (MultiLineGroupBugClass.AttrTermGroup in WorkerLib.inc).
+! NOTE (#97 discussion): the ",attrs END" spelling is undocumented-but-working; if the Clarion
+! compiler rejects it, fall back to the doc-blessed period form for BOTH lines.
+AttrTermLocalGroupTest PROCEDURE( )
+result                 LONG
+LocalAttrGroup         GROUP(SmallGroupType),DIM(2) END
+LocalAttrGroupPeriod   GROUP(SmallGroupType),DIM(2).
+AfterAttrLocalGroup    &WorkerClass
+  CODE
+  result = AfterAttrLocalGroup.Sign( 32 )
+  RETURN result
+
 DerivableClass.Compute PROCEDURE( LONG pValue )
   CODE
   RETURN pValue

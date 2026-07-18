@@ -12,6 +12,7 @@ ConditionalOmitTest PROCEDURE, LONG
 CommentedLocalTest PROCEDURE, LONG
 GroupQueueLocalTest PROCEDURE, LONG
 InlineLocalGroupTest PROCEDURE, LONG
+AttrTermLocalGroupTest PROCEDURE, LONG
 LocalDerivedClassTest PROCEDURE, LONG
     END
 MainHelperProc     PROCEDURE, LONG
@@ -43,6 +44,7 @@ derivedWorker DerivedWorkerClass
     r# = afterBug.CallSomethingElse()
     r# = GroupQueueLocalTest()
     r# = InlineLocalGroupTest()
+    r# = AttrTermLocalGroupTest()
     r# = LocalDerivedClassTest()
     r# = likeMemberBug.CallViaPlainInstanceMember()
     r# = multiLineGroupBug.CallViaAfterMultiLineGroupMember()
