@@ -45,8 +45,10 @@ namespace ClarionAssistant
                     return;
                 }
 
-                // Light by default to match the Clarion IDE; auto-following the IDE theme is M3 polish.
-                var view = new ModernEmbeditorViewContent(title ?? "Embeditor", source, editableRanges, "clarion", isDark: false);
+                // Pre-paint backdrop follows the mirrored Monaco theme pref (the page owns the real
+                // choice and repaints itself) — hardcoded light flashed white for dark-mode users.
+                var view = new ModernEmbeditorViewContent(title ?? "Embeditor", source, editableRanges, "clarion",
+                    isDark: Services.CaEditorSettings.MonacoThemeDark);
                 WorkbenchSingleton.Workbench.ShowView(view);
             }
             catch (Exception ex)

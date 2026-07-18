@@ -256,6 +256,14 @@ namespace ClarionAssistant.Terminal
 
                 switch (action)
                 {
+                    case "themeChanged":
+                        // Page → host mirror of the persisted light/dark pref (localStorage is authoritative;
+                        // see CaEditorSettings.MonacoThemeDark). Handled here — not on IMonacoEditorHost — so
+                        // every Monaco surface mirrors it without each host implementing anything. Payload is
+                        // our own tiny fixed message, so a literal match beats a JSON round-trip.
+                        try { Services.CaEditorSettings.MonacoThemeDark = json.IndexOf("\"dark\":true", StringComparison.Ordinal) >= 0; }
+                        catch { }
+                        break;
                     case "ready":             h.OnReady(this); break;
                     case "save":              h.OnSave(this, json); break;
                     case "cancel":            h.OnCancel(this); break;

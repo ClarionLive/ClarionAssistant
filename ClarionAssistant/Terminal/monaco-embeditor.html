@@ -894,6 +894,11 @@
         try { document.documentElement.style.background = themePrefDark ? '#1e1e2e' : '#eff1f5'; } catch (e) { }
         function applyEarlyTheme() { try { document.body.classList.toggle('light', !themePrefDark); } catch (e) { } }
         if (document.body) applyEarlyTheme(); else document.addEventListener('DOMContentLoaded', applyEarlyTheme);
+        // Mirror the effective pref to the host (settings.txt) so the NEXT open's pre-paint surfaces —
+        // the C# instant cover over the native embeditor, the control backdrop, the WebView2 default
+        // background — match this theme instead of hardcoding light. localStorage stays authoritative;
+        // pushing on every boot re-converges the mirror if the two ever diverge (e.g. cleared profile).
+        try { postToHost({ action: 'themeChanged', dark: themePrefDark }); } catch (e) { }
     })();
 
     function updateThemeBtn() {
@@ -909,6 +914,8 @@
         try { localStorage.setItem('modernEmbeditor.themeDark', themePrefDark ? '1' : '0'); } catch (e) { }
         setTheme(themePrefDark);
         updateThemeBtn();
+        // Keep the host-side mirror current (see the boot push above) so the next open's pre-cover matches.
+        try { postToHost({ action: 'themeChanged', dark: themePrefDark }); } catch (e) { }
     }
 
     // Grey out Undo/Redo when the focused editor's model has nothing to undo/redo. Best-effort: if the Monaco

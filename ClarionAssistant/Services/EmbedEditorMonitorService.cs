@@ -175,7 +175,9 @@ namespace ClarionAssistant.Services
                 // New embed / proc-change → (re)attach. Record BEFORE attaching so a re-entrant call can't double-fire.
                 _lastEditor = editor; _lastPwee = pwee;
 
-                string err = ModernEmbeditorLauncher.AttachOverlayToOpenEmbed(isDark: false);
+                // Theme the pre-cover (and the control backdrop behind it) from the mirrored Monaco pref —
+                // hardcoding light here flashed a WHITE cover on every embeditor open for dark-mode users.
+                string err = ModernEmbeditorLauncher.AttachOverlayToOpenEmbed(isDark: CaEditorSettings.MonacoThemeDark);
                 Log(err != null ? ("attach skipped (" + source + "): " + err) : ("attached via " + source));
                 FileLog(err != null ? ("attach skipped (" + source + "): " + err) : ("attached via " + source));
             }

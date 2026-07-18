@@ -189,10 +189,11 @@ namespace ClarionAssistant
                 if (_editor != null) return;
                 // Reuse the rich embeditor Monaco surface (colorize/minimap/find/keymap come free) instead of
                 // the bespoke monaco-source.html page. We are its host; it renders a read-only fileMode mirror.
-                // isDark:false → the control backdrop + the WebView2 DefaultBackgroundColor are LIGHT, matching
-                // the page's default light theme (the page itself owns the actual light/dark choice via its
-                // persisted pref; this only sets the pre-paint backdrop so there's no dark flash on a light load).
-                _editor = new MonacoEditorControl(this, false, "monaco-embeditor.html", "clarion-embeditor-data");
+                // The control backdrop + WebView2 DefaultBackgroundColor follow the MIRRORED Monaco theme pref
+                // (CaEditorSettings.MonacoThemeDark — the page still owns the actual light/dark choice via its
+                // persisted localStorage pref; this only sets the pre-paint backdrop so there's no flash of the
+                // WRONG color on load, in either theme).
+                _editor = new MonacoEditorControl(this, Services.CaEditorSettings.MonacoThemeDark, "monaco-embeditor.html", "clarion-embeditor-data");
                 host.Controls.Add(_editor);
                 _editor.BringToFront();
                 HideNativeNavBar(host);   // hide the native class/members drop-down bar so it doesn't peek through the overlay top
