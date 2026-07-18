@@ -27,16 +27,14 @@
     ]
   },
   "currentPin": {
-    "note": "STATE AS OBSERVED 2026-07-03 in $CLARIONLSP_ROOT. The deployed snapshot is built from an UNTAGGED dev branch that forked near the 0.8.7 line — it is 318 commits BEHIND the v0.9.6 tag with only 2 experimental commits on top. This is the exact drift #40 tracks: the bundle is ~0.8.7-era code, well behind upstream v0.9.6 and the shared clarion-lsp addin v1.4.0.",
-    "branch": "feat/lsp-member-completion",
-    "commit": "383ef95",
-    "commitDate": "2026-06-13",
-    "behindLatestTagBy": 318,
-    "aheadOfLatestTagBy": 2
+    "note": "AUTO-UPDATED by Sync-LspServer.ps1 on each successful sync -- the observed state of the just-synced checkout. Historical hand-audit notes live in git history (pre-#77 revisions of this file).",
+    "tag": "v1.0.0",
+    "commit": "571ffcee",
+    "commitDate": "2026-07-11"
   },
   "targetPin": {
-    "note": "Recommended anchor to sync toward. As of the 2026-07-03 fetch the available tags are v0.9.6 (2026-04-23), v0.9.7 and v0.9.8 — v0.9.8 is the newest. Sync-LspServer.ps1 reports exact drift against whatever tag is chosen (-Tag), so confirm the cadence with @msarson and pick the newest STABLE tag. Pinning to any of these DROPS the 2 experimental member-completion commits (383ef95, 643b269) that are not on a tag — per issue #51 the equivalent capability ships in the public extension, so this is expected and desirable (it also pulls the bundle forward off the ~0.8.7-era branch). If the member-completion prototype must be retained, ask @msarson to cut a tag at/after 383ef95 and set that tag here instead.",
-    "tag": "v0.9.8"
+    "note": "Tag to sync toward; -Tag overrides. AUTO-UPDATED to the last successfully synced tag by Sync-LspServer.ps1 -- edit by hand only to stage a pin to a NEWER release before running the sync.",
+    "tag": "v1.0.0"
   },
   "pure": true,
   "resolvedCommit": "571ffcee",

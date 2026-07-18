@@ -79,6 +79,25 @@ function Info($m) { Line 'INFO' $m 'Cyan' }
 function Warn($m) { Line 'WARN' $m 'Yellow' }
 function Fail($m) { Line 'FAIL' $m 'Red' }
 
+# Keep ALL pin fields honest on a successful sync (#77 housekeeping): the sync used to update only
+# resolvedTag/resolvedCommit/lastSync, leaving targetPin/currentPin frozen at whatever hand-written
+# audit they last held -- after the v1.0.0 re-pin the manifest still reported targetPin v0.9.8 and a
+# June currentPin, so a first read said "behind" when the bundle was current. One writer, all fields.
+function Update-PinFields($manifest, $Tag, $repoRoot) {
+    $commit     = (git -C $repoRoot rev-parse --short HEAD)
+    $commitDate = (git -C $repoRoot show -s --format=%cs HEAD)
+    $manifest | Add-Member -NotePropertyName 'targetPin' -NotePropertyValue ([pscustomobject]@{
+        note = "Tag to sync toward; -Tag overrides. AUTO-UPDATED to the last successfully synced tag by Sync-LspServer.ps1 -- edit by hand only to stage a pin to a NEWER release before running the sync."
+        tag  = $Tag
+    }) -Force
+    $manifest | Add-Member -NotePropertyName 'currentPin' -NotePropertyValue ([pscustomobject]@{
+        note       = "AUTO-UPDATED by Sync-LspServer.ps1 on each successful sync -- the observed state of the just-synced checkout. Historical hand-audit notes live in git history (pre-#77 revisions of this file)."
+        tag        = $Tag
+        commit     = $commit
+        commitDate = $commitDate
+    }) -Force
+}
+
 # --- Resolve inputs -------------------------------------------------------------------
 if (-not (Test-Path $ManifestPath)) { throw "Manifest not found: $ManifestPath" }
 $manifest = Get-Content $ManifestPath -Raw | ConvertFrom-Json
@@ -177,8 +196,9 @@ try {
             Fail "Expected build output not found: $builtServer"; exit 6
         }
 
-        # Record the pure pin
+        # Record the pure pin (targetPin/currentPin included -- see Update-PinFields)
         $resolved = (git -C $PureRoot rev-parse --short HEAD 2>$null)
+        Update-PinFields $manifest $Tag $PureRoot
         $manifest | Add-Member -NotePropertyName 'pure'           -NotePropertyValue $true   -Force
         $manifest | Add-Member -NotePropertyName 'resolvedCommit' -NotePropertyValue $resolved -Force
         $manifest | Add-Member -NotePropertyName 'resolvedTag'    -NotePropertyValue $Tag      -Force
@@ -279,9 +299,11 @@ try {
         Fail "Expected build output not found: $builtServer"; exit 5
     }
 
-    # 5. Record the resolved pin back into the manifest
+    # 5. Record the resolved pin back into the manifest (targetPin/currentPin included)
     $resolved = (git rev-parse --short HEAD)
+    Update-PinFields $manifest $Tag '.'
     $manifest.resolvedCommit = $resolved
+    $manifest | Add-Member -NotePropertyName 'resolvedTag' -NotePropertyValue $Tag -Force
     $manifest.lastSync = (Get-Date -Format 'yyyy-MM-dd')
     ($manifest | ConvertTo-Json -Depth 12) | Set-Content -Path $ManifestPath -Encoding UTF8
     OK "manifest updated: resolvedCommit=$resolved lastSync=$($manifest.lastSync)"
