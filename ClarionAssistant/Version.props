@@ -9,9 +9,9 @@
   -->
   <PropertyGroup>
     <VersionMajor>5</VersionMajor>
-    <VersionMinor>3</VersionMinor>
+    <VersionMinor>4</VersionMinor>
     <VersionBuild>787</VersionBuild>
-    <FullVersion>5.3.787</FullVersion>
-    <AssemblyFullVersion>5.3.787.0</AssemblyFullVersion>
+    <FullVersion>5.4.787</FullVersion>
+    <AssemblyFullVersion>5.4.787.0</AssemblyFullVersion>
   </PropertyGroup>
 </Project>
