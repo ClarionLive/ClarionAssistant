@@ -439,6 +439,7 @@
   <nav class="sidebar">
     <h3>What's New</h3>
     <a href="#whats-new">Release Notes</a>
+    <a href="#whats-new-54" class="sub">v5.4</a>
     <a href="#whats-new-50" class="sub">v5.1</a>
     <a href="#whats-new-snippets" class="sub">Code Snippets (Ctrl+J)</a>
     <a href="#whats-new-sidecar" class="sub">Custom MCP Servers</a>
@@ -470,6 +471,8 @@
     <a href="#ca-monaco-editor" class="sub">Monaco Source Editor</a>
     <a href="#ca-snippets" class="sub">Code Snippets (Ctrl+J)</a>
     <a href="#ca-data-pad" class="sub">CA Explorer</a>
+    <a href="#ca-find" class="sub">Find &amp; Replace</a>
+    <a href="#ca-outline" class="sub">Document Structure</a>
 
     <h3>Class Helper</h3>
     <a href="#class-helper">Overview</a>
@@ -523,6 +526,26 @@
 <!-- ════════════════════════════════════════════════════ -->
 <section id="whats-new" class="doc-section">
   <h2>What's New</h2>
+
+  <h3 id="whats-new-54">v5.4 &mdash; Find &amp; Replace Suite, Document Structure, Dark Mode Polish</h3>
+
+  <p>
+    v5.4 is the biggest community release cycle yet. <a href="#ca-find"><strong>Find &amp; Replace</strong></a>
+    becomes a full subsystem &mdash; a dockable CA Find pad (the default for <kbd>Ctrl</kbd>+<kbd>F</kbd> /
+    <kbd>Ctrl</kbd>+<kbd>H</kbd>), an optional classic in-editor overlay, Find-All results in their own
+    editor tab, and one shared history across every CA surface. The new
+    <a href="#ca-outline"><strong>Document Structure</strong></a> fly-out shows an outline of the current
+    buffer with click-to-navigate. The editor gains <strong>signature help</strong> (parameter hints),
+    <strong>Ctrl+F12 go-to-implementation</strong>, and dictionary/CodeGraph-aware completion; embeds are
+    presented to the language server in your app's <em>real</em> scope, so completion and F12 inside an
+    embed see your global data. Navigation history now reliably returns to where the editor opened and to
+    outline jump targets. Dark-mode users get flash-free embeditor opens, readable toolbar chrome, and a
+    persisted High Contrast toggle with visible read-only shading. CodeGraph accuracy improves with ~20
+    parser fixes driven by real production code, and <strong>Clarion 11.1</strong> joins 10/11/12 as a
+    distinct install target. Full notes:
+    <a href="https://github.com/ClarionLive/ClarionAssistant/blob/master/docs/releases/v5.4.0.md">v5.4.0 release notes</a>
+    (v5.2 and v5.3 notes are on GitHub as well).
+  </p>
 
   <h3 id="whats-new-50">v5.1 &mdash; CA Embeditor, CA Explorer &amp; Monaco Editor</h3>
 
@@ -1582,6 +1605,46 @@
       shortcuts.
     </li>
   </ul>
+
+  <h3 id="ca-find">Find &amp; Replace</h3>
+  <p>
+    <kbd>Ctrl</kbd>+<kbd>F</kbd> / <kbd>Ctrl</kbd>+<kbd>H</kbd> in a CA editor open the
+    <strong>CA Find pad</strong> &mdash; a dockable IDE pad that follows whichever CA Editor or
+    CA Embeditor tab is active. Prefer the classic in-editor find box? Switch to the
+    <strong>Overlay</strong> style under <strong>Options &rarr; Clarion Assistant &rarr;
+    Find / Replace</strong>.
+  </p>
+  <ul>
+    <li>
+      <strong>Find-All</strong> &mdash; list every match in a results column, or open the results in
+      their <em>own editor tab</em> with surrounding context lines, click-through navigation to each
+      match, and filtering.
+    </li>
+    <li>
+      <strong>Shared history</strong> &mdash; find and replace terms are shared across the pad, the
+      overlay, and every CA editor tab, with this procedure's recent terms grouped on top.
+    </li>
+    <li>
+      <strong>Embeditor-aware replace</strong> &mdash; in the CA Embeditor, replace respects
+      read-only generated code; an "include read-only blocks" toggle controls whether generated
+      lines appear in the results at all.
+    </li>
+    <li>
+      <strong>Live positions</strong> &mdash; matches track your edits, so <kbd>F3</kbd> and
+      Replace land where the match is <em>now</em>, not where it was when you searched.
+    </li>
+  </ul>
+
+  <h3 id="ca-outline">Document Structure</h3>
+  <p>
+    The <strong>Document Structure</strong> fly-out (toolbar button in the CA Editor and
+    CA Embeditor) shows an outline of the current buffer &mdash; procedures, routines, classes,
+    and data &mdash; using the same symbol icons VS Code uses, with classes regrouped as
+    <strong>Class &#9656; Methods</strong>. Type in the filter box to narrow the tree; matches
+    stay expanded. Click any symbol to jump to it &mdash; and <strong>Navigate Back</strong>
+    (<kbd>Alt</kbd>+<kbd>Left</kbd>) returns you to where you were, with the jump target kept
+    in the navigation history dropdown.
+  </p>
 </section>
 
 <!-- ════════════════════════════════════════════════════ -->
