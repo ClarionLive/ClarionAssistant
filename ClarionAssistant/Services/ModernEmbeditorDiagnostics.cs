@@ -197,15 +197,19 @@ namespace ClarionAssistant.Services
 
                         if (openMatch != null && openMatch.Success)
                         {
-                            // ✅ FIX: if the matched keyword is a declaration-structure keyword AND
-                            // nothing but whitespace precedes it on the line, the optional label group
-                            // backtracked to empty — meaning this word IS the label itself (e.g. "Report"
-                            // in "Report          &STRING"), not a structure type in second position.
-                            // Skip it so it falls through as a plain statement instead of pushing a
-                            // bogus, never-closed opener that would swallow a later real END and make an
-                            // unrelated, genuinely-terminated structure misreport as unterminated.
+                            // ✅ FIX: if the matched keyword is a declaration-structure keyword AND it's at
+                            // column 0 of this (already-trimmed) line, the optional label group backtracked
+                            // to empty — meaning this word IS the label itself (e.g. "Report" in
+                            // "Report          &STRING"), not a structure type in second position. A Clarion
+                            // label always starts at column 0 (confirmed directly against the compiler:
+                            // indenting a label desyncs the parser and produces unrelated errors on the
+                            // following tokens), so a match at column 0 can only be the label — a real
+                            // structure type always has a label before it. Skip it so it falls through as a
+                            // plain statement instead of pushing a bogus, never-closed opener that would
+                            // swallow a later real END and make an unrelated, genuinely-terminated structure
+                            // misreport as unterminated.
                             string keyword = openMatch.Groups[1].Value;
-                            bool keywordIsFirstWord = u.Substring(0, openMatch.Groups[1].Index).Trim().Length == 0;
+                            bool keywordIsFirstWord = openMatch.Groups[1].Index == 0;
                             bool usedAsLabel = keywordIsFirstWord && DeclarationStructKeywords.Contains(keyword);
 
                             if (!usedAsLabel)
