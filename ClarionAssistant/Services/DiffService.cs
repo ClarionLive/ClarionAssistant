@@ -254,6 +254,8 @@ namespace ClarionAssistant.Services
                 originalText = _lastOriginalText;
                 modifiedText = _lastModifiedText;
                 title = _lastDiffTitle;
+                // Resolved value from that ShowDiff call (e.g. Monaco's ignore-whitespace-on-by-default
+                // already applied) — not the raw parameter as the caller passed it.
                 ignoreWhitespace = _lastIgnoreWhitespace;
             }
 

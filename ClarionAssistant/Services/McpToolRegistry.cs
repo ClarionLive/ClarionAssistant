@@ -2515,7 +2515,9 @@ COMMON QUERIES:
                     "not read back from the Monaco/WebView2 buffer. Response size scales with the size of the changes, " +
                     "not the file size, so it's safe for very large files. For renderer='monaco', this diff is computed " +
                     "independently of what Monaco displays (Monaco computes its own diff client-side) — same underlying " +
-                    "changed lines, but hunk grouping may not be pixel-identical to the on-screen view.",
+                    "changed lines, but hunk grouping may not be pixel-identical to the on-screen view. " +
+                    "ignore_whitespace is cached as the resolved value from that show_diff call (already accounting for " +
+                    "the renderer-dependent default, e.g. Monaco's ignore-whitespace-on-by-default), not re-resolved here.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>(),
                     new string[0]),
