@@ -57,6 +57,25 @@ namespace ClarionAssistant.Services
         private static readonly Regex BandOpen = new Regex(
             @"^\s*(?:[A-Za-z_][A-Za-z0-9_:]*\s+)?(HEADER|FOOTER|FORM|DETAIL)\s*(?:[,(]|$)",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        // Declaration structures that declare a NAMED INSTANCE always require a preceding label
+        // ("Label STRUCTURETYPE,attrs") — these keywords are NOT reserved words in Clarion, so a
+        // variable/label legally named e.g. "Report" or "Window" (declared as "Report &STRING") must
+        // not be mistaken for the keyword itself. Deliberately narrow: only keywords confirmed to
+        // ALWAYS take a label are gated here. Excluded on purpose — these are legitimately written
+        // BARE, with no preceding label, and gating them caused a real regression (confirmed live:
+        // "MAP" / "MODULE('')" in a plain MAP...END prototype block):
+        //   MAP, MODULE       — namespace-like scoping constructs, never labeled.
+        //   ITEMIZE, JOIN     — nested inside LIST/VIEW bodies, never labeled.
+        //   HEADER, FOOTER, FORM, DETAIL, MENUBAR, MENU, TOOLBAR, SHEET, TAB, OPTION
+        //                     — nested inside WINDOW/REPORT bodies; identified by an optional
+        //                       ?field-equate via USE(), not a plain leading label.
+        // Execution structures (LOOP/CASE/BEGIN/EXECUTE/ACCEPT) legitimately have no preceding label
+        // either and were never in this set.
+        private static readonly HashSet<string> DeclarationStructKeywords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "GROUP", "QUEUE", "RECORD", "FILE", "VIEW", "REPORT", "WINDOW", "APPLICATION",
+            "CLASS", "INTERFACE"
+        };
         private static readonly Regex EndRx = new Regex(@"^END\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex IfRx = new Regex(@"^IF\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         // 'DO RoutineName' — DO must start the statement (line start, whitespace, or after ';').
@@ -170,12 +189,33 @@ namespace ClarionAssistant.Services
                         if (!oneLiner) open.Push(new[] { ln, FirstNonWs(code) + 1 });
                         // fall through so a 'DO' on the same line is still checked
                     }
-                    else if (StructOpen.IsMatch(u) || BandOpen.IsMatch(u))
+                    else
                     {
-                        // Skip a self-terminated inline structure (trailing '.' or an END later on the
-                        // same line, e.g. "EXECUTE n; a; b END") — only multi-line openers are tracked.
-                        bool selfTerminated = TrailingDot.IsMatch(trimmed) || InlineEnd.IsMatch(u);
-                        if (!selfTerminated) open.Push(new[] { ln, FirstNonWs(code) + 1 });
+                        Match structMatch = StructOpen.Match(u);
+                        Match bandMatch = structMatch.Success ? null : BandOpen.Match(u);
+                        Match openMatch = structMatch.Success ? structMatch : bandMatch;
+
+                        if (openMatch != null && openMatch.Success)
+                        {
+                            // ✅ FIX: if the matched keyword is a declaration-structure keyword AND
+                            // nothing but whitespace precedes it on the line, the optional label group
+                            // backtracked to empty — meaning this word IS the label itself (e.g. "Report"
+                            // in "Report          &STRING"), not a structure type in second position.
+                            // Skip it so it falls through as a plain statement instead of pushing a
+                            // bogus, never-closed opener that would swallow a later real END and make an
+                            // unrelated, genuinely-terminated structure misreport as unterminated.
+                            string keyword = openMatch.Groups[1].Value;
+                            bool keywordIsFirstWord = u.Substring(0, openMatch.Groups[1].Index).Trim().Length == 0;
+                            bool usedAsLabel = keywordIsFirstWord && DeclarationStructKeywords.Contains(keyword);
+
+                            if (!usedAsLabel)
+                            {
+                                // Skip a self-terminated inline structure (trailing '.' or an END later on the
+                                // same line, e.g. "EXECUTE n; a; b END") — only multi-line openers are tracked.
+                                bool selfTerminated = TrailingDot.IsMatch(trimmed) || InlineEnd.IsMatch(u);
+                                if (!selfTerminated) open.Push(new[] { ln, FirstNonWs(code) + 1 });
+                            }
+                        }
                     }
 
                     // Undefined routine: DO <name>
