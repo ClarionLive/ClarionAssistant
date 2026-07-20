@@ -347,7 +347,26 @@ namespace ClarionAssistant.Services
                 ? (LspClient.Active != null ? LspClient.Active.GetDefinition(filePath, line, character) : null)
                 : SharedGetDefinition(c, filePath, line, character);
             if (!IsEmptyResult(primary)) return primary;
-            return CodeGraphDefinition(filePath, line, character, bufferText) ?? primary;
+
+            var cgResult = CodeGraphDefinition(filePath, line, character, bufferText);
+            if (IsSelfReferential(cgResult, filePath, line)) return primary;
+            return cgResult ?? primary;
+        }
+
+        /// <summary>True when a CodeGraph-fallback definition result resolves back to the EXACT same
+        /// file+line the query started from — e.g. F12 on a method's own PROCEDURE implementation
+        /// header, where the LSP deliberately returns empty ("already at the definition, nothing to
+        /// navigate to") but CodeGraph's flat symbol table has only the implementation row (no
+        /// separate .inc prototype symbol) and so "resolves" the bare name back to itself. Such a
+        /// result is never useful — return null instead of a bogus self-referential jump.</summary>
+        private static bool IsSelfReferential(Dictionary<string, object> result, string queryFilePath, int queryLine)
+        {
+            if (result == null) return false;
+            string foundFile; int foundLine, foundChar;
+            if (!TryGetFirstLocation(result, out foundFile, out foundLine, out foundChar)) return false;
+            if (foundLine != queryLine || string.IsNullOrEmpty(foundFile)) return false;
+            try { return string.Equals(Path.GetFullPath(foundFile), Path.GetFullPath(queryFilePath), StringComparison.OrdinalIgnoreCase); }
+            catch { return false; }
         }
 
         /// <summary>textDocument/implementation → raw LSP-response-shaped dict (locations), or null.
