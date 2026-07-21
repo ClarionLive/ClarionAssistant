@@ -86,8 +86,15 @@ namespace ClarionAssistant
         // keeps the native ClaTextAreaControl from peeking through underneath.)
         private static readonly Color CoverColor = Color.FromArgb(0xEF, 0xF1, 0xF5);
 
+        // Every live tab, so a build-triggered save (SaveAllDirtyBeforeBuild) can reach all of them. This
+        // class has no other central registry — unlike ModernEmbeditorViewContent's own _instances — because
+        // until now nothing outside a single instance's own close/dispose path ever needed to reach it.
+        private static readonly List<MonacoClarionEditor> _instances = new List<MonacoClarionEditor>();
+
         public MonacoClarionEditor()
         {
+            lock (_instances) { _instances.Add(this); }
+
             // The text area isn't necessarily realized at ctor time (the wrapper builds it as the
             // view loads). Poll on the UI thread until Control exists + has a handle, then capture.
             try
@@ -97,6 +104,43 @@ namespace ClarionAssistant
                 _captureTimer.Start();
             }
             catch (Exception ex) { MonacoSpikeLog.Write("MonacoClarionEditor ctor timer error: " + ex.Message); }
+        }
+
+        /// <summary>Called from SaveSourceEditorsBeforeBuildCommand just before a build starts. The Monaco
+        /// overlay saves straight to disk itself and deliberately never touches the native ClarionEditor's
+        /// own buffer/IsDirty (see AttachOverlay/OnSave's doc comments) — so it stays invisible to the native
+        /// IDE's own save-before-build (SaveAllFiles.SaveAll, which only reaches AbstractViewContent.IsDirty).
+        /// Without this, "Build Solution" can silently compile a stale on-disk version of a file being
+        /// edited in the CA Editor. Best-effort per tab; one tab's failure must not stop the others.</summary>
+        internal static void SaveAllDirtyBeforeBuild()
+        {
+            List<MonacoClarionEditor> snapshot;
+            lock (_instances) { snapshot = new List<MonacoClarionEditor>(_instances); }
+            foreach (var inst in snapshot)
+            {
+                try { inst.SaveDirtyBeforeBuild(); }
+                catch (Exception ex) { MonacoSpikeLog.Write("SaveAllDirtyBeforeBuild per-instance error: " + ex.Message); }
+            }
+        }
+
+        /// <summary>Same write path + dirty guard as OnWorkbenchClosing/Dispose's save-on-close, minus the
+        /// close: writes the overlay's live buffer to disk if there are unsaved edits, then clears the dirty
+        /// flag so a subsequent close doesn't prompt again for something already safely on disk. Does NOT
+        /// touch the page's own ● dirty indicator — same accepted cosmetic gap as the embeditor's equivalent
+        /// (the host doesn't track Monaco's edit-sequence counter, so it can't safely clear it). Silently
+        /// skips a read-only file rather than throwing (matches OnSave's own guard) — the build will simply
+        /// compile the file as it already is on disk.</summary>
+        private void SaveDirtyBeforeBuild()
+        {
+            try
+            {
+                if (!(_overlayDirty && _overlayLiveText != null && !string.IsNullOrEmpty(_filePath))) return;
+                if (IsFileReadOnly()) return;
+                int n = WriteToDisk(_overlayLiveText);
+                _overlayDirty = false;
+                MonacoSpikeLog.Write("overlay build-triggered save wrote: " + _filePath + " (" + n + " chars)");
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("overlay build-triggered save error: " + ex.Message); }
         }
 
         private void CaptureTick(object sender, EventArgs e)
@@ -1492,6 +1536,7 @@ namespace ClarionAssistant
 
         public override void Dispose()
         {
+            lock (_instances) { _instances.Remove(this); }
             StopCaptureTimer();
             try { if (_hookRetry != null) { _hookRetry.Stop(); _hookRetry.Dispose(); _hookRetry = null; } } catch { }
             UnwireBreakpoints();
