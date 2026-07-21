@@ -44,7 +44,17 @@ namespace ClarionAssistant.Services
         // The lookahead (not [,(]|$ like BandOpen) deliberately allows code structures that take an
         // expression: LOOP I = 1 TO 10, CASE SomeVar, EXECUTE n.
         private static readonly Regex StructOpen = new Regex(
-            @"^\s*(?:[A-Za-z_][A-Za-z0-9_:]*\s+)?(GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|TOOLBAR|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)(?=\s|,|\(|$)",
+            @"^\s*(?:[A-Za-z_][A-Za-z0-9_:]*\s+)?(GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)(?=\s|,|\(|$)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        // TOOLBAR is nested inside WINDOW/APPLICATION bodies and legitimately written bare
+        // ("TOOLBAR,USE(?Toolbar1)"), so StructOpen's generic lookahead (which accepts any
+        // whitespace after the keyword) also matches "Toolbar              ToolbarClass" —
+        // the ABC toolbar template's own instance-variable declaration (label "Toolbar",
+        // type "ToolbarClass"). Give TOOLBAR its own tight lookahead requiring '(', ',',
+        // '!' or end-of-line — mirrors msarson/Clarion-Extension's TokenPatterns.ts
+        // TOOLBAR pattern (PR #378's companion fix in the real LSP).
+        private static readonly Regex ToolbarOpen = new Regex(
+            @"^\s*TOOLBAR\b(?=\s*(?:[(,!]|$))",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex StructWordRx = new Regex(
             @"\b(IF|GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|TOOLBAR|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)\b",
@@ -170,7 +180,7 @@ namespace ClarionAssistant.Services
                         if (!oneLiner) open.Push(new[] { ln, FirstNonWs(code) + 1 });
                         // fall through so a 'DO' on the same line is still checked
                     }
-                    else if (StructOpen.IsMatch(u) || BandOpen.IsMatch(u))
+                    else if (StructOpen.IsMatch(u) || BandOpen.IsMatch(u) || ToolbarOpen.IsMatch(u))
                     {
                         // Skip a self-terminated inline structure (trailing '.' or an END later on the
                         // same line, e.g. "EXECUTE n; a; b END") — only multi-line openers are tracked.
