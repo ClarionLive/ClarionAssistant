@@ -885,13 +885,17 @@ namespace ClarionAssistant
         // Was a no-op since the very first Monaco-converge commit (748c150) that stubbed the whole
         // IMonacoEditorHost interface — confirmed via `git log -S"OnReload"`, never implemented since.
         //
-        // Deliberately sends cursorLine/cursorColumn=1/1 and an empty bookmarks array, not a persisted
-        // position: the page's restoreEmbedState is one-shot (monaco-embeditor.html) — once a tab has
-        // restored its cursor/bookmarks on first open, a LATER setSource (this one) is ignored for
-        // cursor/scroll/bookmark purposes and the page reveals line 1 regardless of what's sent here.
-        // Computing/sending a persisted value would be dead code pretending to do something it can't;
-        // fixing that for real is a page-side (JS) change, out of scope for this fix (whose bug was that
-        // this C# method never ran at all).
+        // Sends the LIVE cursor position (_lastCursorLine/_lastCursorCol, kept current by
+        // OnSelectionChanged) plus a "reload":true flag, which monaco-embeditor.html's
+        // restoreEmbedState() checks FIRST — bypassing its one-shot "already restored" guard that would
+        // otherwise ignore cursorLine/cursorColumn on any setSource after the tab's first open (landing
+        // on line 1 regardless). That flag is CA-Editor-only by construction: nothing in
+        // ModernEmbeditorViewContent's own save/reload path ever sets it, so the CA Embeditor's reload
+        // behavior is completely unchanged by this. Scope note: the embeditor's reload has the exact
+        // same "lands on line 1" limitation today — deliberately NOT touched here; extending this to
+        // embed mode would need its own look first (a saved/live line can drift outside an editable
+        // embed slot after a regenerate, which lineInEditable's fileMode-always-true fast path never
+        // has to consider for a plain source file).
         //
         // KEEP IN SYNC: this setSource JSON is an independent copy of OnReady's, not shared code (see
         // above) — if a field is added/removed/renamed in OnReady's setSource, mirror it here too.
@@ -935,7 +939,10 @@ namespace ClarionAssistant
                 CaptureIdeChromeColors();
                 bool fileReadOnly = IsFileReadOnly();
                 string pageTitle = fileReadOnly ? (_overlayTitle + " (read-only)") : _overlayTitle;
+                int curLine = _lastCursorLine >= 1 ? _lastCursorLine : 1;
+                int curCol = _lastCursorCol >= 1 ? _lastCursorCol : 1;
                 string json = "{\"type\":\"setSource\","
+                    + "\"reload\":true,"
                     + "\"title\":" + MonacoEditorControl.JsonString(pageTitle) + ","
                     + "\"language\":\"clarion\","
                     + "\"isDark\":false,"
@@ -951,7 +958,7 @@ namespace ClarionAssistant
                     + "\"editableRanges\":[],"
                     + "\"settings\":" + settingsJson + ","
                     + "\"findHistory\":" + findHistJson + ",\"replaceHistory\":" + replHistJson + ",\"procHistory\":" + procHistJson + ","
-                    + "\"cursorLine\":1,\"cursorColumn\":1,"
+                    + "\"cursorLine\":" + curLine + ",\"cursorColumn\":" + curCol + ","
                     + "\"bookmarks\":[],"
                     + "\"snippets\":" + Services.SnippetStore.ToJson(Services.SnippetStore.Load()) + ","
                     + "\"breakpoints\":[" + bpCsv + "],"
