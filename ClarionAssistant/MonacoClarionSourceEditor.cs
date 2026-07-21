@@ -1455,8 +1455,19 @@ namespace ClarionAssistant
         {
             try
             {
-                MonacoSpikeLog.Write("select-hook fired: claim CA Find pad + focus (" + (_filePath ?? "?") + ")");
                 ClarionAssistant.Services.CaFindBroker.NotifyActivity(this);
+                // A just-opened CA Find pad is actively fighting for focus right now (its own
+                // FocusAttempt schedule, CaFindPad.cs) — this hook fires repeatedly while that
+                // pad's panel is being docked/laid out for the first time, and stealing focus back
+                // to the editor here is exactly what was losing that fight (see CaFindBroker.
+                // SuppressEditorFocusSteal for the full story). Stand down for this short window;
+                // NotifyActivity above still runs so find/replace routing stays correct either way.
+                if (ClarionAssistant.Services.CaFindBroker.SuppressEditorFocusSteal)
+                {
+                    MonacoSpikeLog.Write("select-hook fired: SUPPRESSED (CA Find pad claiming focus) (" + (_filePath ?? "?") + ")");
+                    return;
+                }
+                MonacoSpikeLog.Write("select-hook fired: claim CA Find pad + focus (" + (_filePath ?? "?") + ")");
                 if (_editor != null)
                 {
                     _editor.FocusEditor();
