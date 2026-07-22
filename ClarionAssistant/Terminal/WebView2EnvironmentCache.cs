@@ -42,9 +42,17 @@ namespace ClarionAssistant.Terminal
 
         private static async Task<CoreWebView2Environment> CreateEnvironmentAsync()
         {
+            // Suffixed per-process (PID) so each Clarion IDE instance gets its OWN WebView2 browser
+            // process instead of sharing one across every open instance. Sharing a userDataFolder makes
+            // WebView2 share a single msedgewebview2.exe browser process across host processes, and
+            // WebView2ProcessReaper (below) binds THAT browser PID to a per-process kill-on-close job —
+            // so closing one Clarion instance was killing the shared browser and blacking out every
+            // other open instance's WebView2 pads. Isolating the folder per PID isolates the browser
+            // process too, so each instance's reaper can only ever kill its own.
+            string pidSuffix = System.Diagnostics.Process.GetCurrentProcess().Id.ToString();
             string userDataFolder = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "ClarionAssistant", "WebView2Data");
+                "ClarionAssistant", "WebView2Data_" + pidSuffix);
 
             try
             {
@@ -53,7 +61,7 @@ namespace ClarionAssistant.Terminal
             }
             catch
             {
-                userDataFolder = Path.Combine(Path.GetTempPath(), "ClarionAssistant", "WebView2Data");
+                userDataFolder = Path.Combine(Path.GetTempPath(), "ClarionAssistant", "WebView2Data_" + pidSuffix);
                 Directory.CreateDirectory(userDataFolder);
             }
 
