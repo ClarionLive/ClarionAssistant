@@ -636,6 +636,8 @@
         <label>Indent comments <input type="checkbox" id="setIndentComments"></label>
         <label>Keep column-1 comments in column 1 <input type="checkbox" id="setDontIndentCol1Comments"></label>
         <label>Format line on Enter <input type="checkbox" id="setFormatLineOnEnter"></label>
+        <label title="When you type '=' after a name, normalize it to ' = ' as you type. (GH #138)">Auto-space assignments (=) <input type="checkbox" id="setAutoSpaceEquals"></label>
+        <label title="UPPER/lower-case a keyword the moment you finish typing it. Full casing still applies on Ctrl+I. (GH #138)">Live keyword casing <input type="checkbox" id="setLiveKeywordCase"></label>
 
         <h4>Smart Formatter — Code Statements</h4>
         <label title="Indent OF/OROF/ELSE/ELSIF one tab from their CASE/IF opener; statement bodies indent a further tab. END stays aligned to the opener.">Indent OF/ELSE from CASE/IF <input type="checkbox" id="setIndentFromCode"></label>
@@ -822,6 +824,7 @@
     var readonlyDecorations = []; // decoration ids for the grey read-only (generated) lines
     var guarding = false;         // re-entrancy/suppression flag for the read-only guard
     var saveEnabled = false;      // true when opened from the picker (bound to a procedure)
+    var liveLinked = false;       // true when THIS tab holds the native embed open — its save is already save-and-exit
     var fileMode = false;         // true when the tab edits a plain source FILE — whole buffer editable,
                                   // no slot guard/decorations, save posts full text, embed nav disabled
     var reloadArmed = false;      // two-click confirm for Reload (discards edits)
@@ -1166,8 +1169,9 @@
         if (sb) sb.style.display = saveEnabled ? '' : 'none';
         // Live-linked mode: Save writes straight back into the still-open native embed AND closes the tab
         // (save-and-exit), so label it as such. Snapshot mode keeps the plain "Save". (a5bbf005)
+        liveLinked = !!msg.liveLinked;
         if (sb) {
-            var live = !!msg.liveLinked;
+            var live = liveLinked;
             var overlay = !!msg.embedOverlay;   // in-place overlay → Clarion-faithful toolbar + clickable header
             // Live/overlay mode hides the native embeditor toolbar (with its red-X cancel), so surface our own
             // Cancel/Discard. Snapshot/file mode keeps closing via the tab, so no Cancel button there. (a5bbf005)
@@ -1426,6 +1430,49 @@
         postToHost({ action: 'cancel' });
     }
 
+    // ----- Ctrl+Q: native-embeditor-style save-and-exit (GH #137) -----
+    // Muscle memory from Clarion's embeditor: Ctrl+Q raises the exit prompt, Enter answers "yes, save".
+    // Dirty buffer → in-page confirm (Enter/Y = save+exit, N = exit WITHOUT saving, Esc = keep editing);
+    // clean buffer → just exit. The confirm deliberately mirrors the native two-step: it also ABSORBS the
+    // trailing Enter keyboard-centric users type by habit — an instant close would let that Enter land as
+    // a stray newline in whatever surface takes focus next.
+    var _exitAfterSave = false;   // Ctrl+Q Yes on a path whose save does NOT close the surface itself
+    function cmdSaveAndExit() {
+        if (document.getElementById('sxConfirm')) return;              // confirm already up
+        if (!isDirty || !saveEnabled) { doCancel(); return; }          // nothing to save (or can't) — just exit
+        var ov = document.createElement('div');
+        ov.id = 'sxConfirm';
+        ov.tabIndex = -1;
+        ov.style.cssText = 'position:fixed;inset:0;z-index:1001;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;outline:none;';
+        ov.innerHTML =
+            '<div style="background:#2d2d30;color:#eee;padding:18px 26px;border-radius:8px;font-family:Segoe UI,sans-serif;font-size:13px;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.5);">' +
+            '<div style="font-size:14px;margin-bottom:10px;">Save changes?</div>' +
+            '<div style="opacity:.8;margin-bottom:14px;">Enter = save and exit &middot; N = exit without saving &middot; Esc = keep editing</div>' +
+            '<button id="sxYes" style="margin-right:8px;padding:5px 14px;cursor:pointer;">Save and exit</button>' +
+            '<button id="sxNo" style="margin-right:8px;padding:5px 14px;cursor:pointer;">Don&#39;t save</button>' +
+            '<button id="sxStay" style="padding:5px 14px;cursor:pointer;">Cancel</button></div>';
+        document.body.appendChild(ov);
+        function close() { ov.remove(); try { activeEd().focus(); } catch (e) { } }
+        function yes() {
+            close();
+            // Live-linked saves close the surface host-side (SaveLive save-and-exit); every other path
+            // (snapshot tab, file mode) needs the page to close itself once the saveResult confirms.
+            _exitAfterSave = !liveLinked;
+            doSave();
+        }
+        function no() { close(); doCancel(); }
+        document.getElementById('sxYes').onclick = yes;
+        document.getElementById('sxNo').onclick = no;
+        document.getElementById('sxStay').onclick = function () { close(); };
+        ov.addEventListener('keydown', function (e) {
+            e.preventDefault(); e.stopPropagation();
+            if (e.key === 'Enter' || e.key === 'y' || e.key === 'Y') yes();
+            else if (e.key === 'n' || e.key === 'N') no();
+            else if (e.key === 'Escape') close();
+        }, true);
+        ov.focus();
+    }
+
     // Surface the language-server state when completion comes back empty, so a down/starting LSP is
     // visible instead of a silent "no suggestions". Throttled so auto-trigger completion can't spam it.
     var _lastLspReport = 0;
@@ -1530,7 +1577,9 @@
         { id: 'navigateBack',      label: 'Navigate Back',        def: 'Alt+Left',     run: cmdNavBack },
         { id: 'navigateForward',   label: 'Navigate Forward',     def: 'Alt+Right',    run: cmdNavForward },
         // Format selected block (or current line) with the Clarion Smart Formatter — the native Ctrl+I gesture.
-        { id: 'formatLine',        label: 'Format Selection',      def: 'Ctrl+I',       run: cmdFormat }
+        { id: 'formatLine',        label: 'Format Selection',      def: 'Ctrl+I',       run: cmdFormat },
+        // Native-embeditor exit gesture (GH #137): Ctrl+Q then Enter = save and exit.
+        { id: 'saveAndExit',       label: 'Save and Exit',         def: 'Ctrl+Q',       run: cmdSaveAndExit }
     ];
 
     function defOf(id) {
@@ -1668,8 +1717,9 @@
     // Smart Formatter option keys persisted in the gear panel (everything except tabSize/insertSpaces,
     // which come live from the Monaco model). Merged into formatterOptions() so Ctrl+I and the
     // as-you-type aids honor the panel. The engine's mergeOptions() fills any absent key from DEFAULTS.
-    // DRIFT: the C# host mirrors this list as ModernEmbeditorSettings.FormatterKeys (plus formatLineOnEnter)
-    // to persist + broadcast these across tabs — keep both in sync when adding/removing an option.
+    // DRIFT: the C# host mirrors this list as ModernEmbeditorSettings.FormatterKeys (plus formatLineOnEnter,
+    // autoSpaceEquals, liveKeywordCase) to persist + broadcast these across tabs — keep both in sync when
+    // adding/removing an option.
     var FORMATTER_SETTING_KEYS = [
         'preferredColumn', 'contLineMultiplier', 'indentComments', 'dontIndentCol1Comments',
         'indentFromCode', 'indentCaseSubKeywords', 'colonAsLabel', 'formatBlockAfterEnd', 'preferredKeywordIndent',
@@ -1761,12 +1811,16 @@
         }
         return _builtinFn;
     }
+    // Per-aid opt-outs (GH #138): every as-you-type aid that makes characters appear the user didn't
+    // type must be individually switchable. Wired from settings in applyEditorSettings; default ON.
+    var autoSpaceEqualsOn = true;    // settings.autoSpaceEquals — '=' -> ' = ' normalization
+    var liveKeywordCaseOn = true;    // settings.liveKeywordCase — keyword casing on word boundary
     function installAutoCase(ed) {
         if (!ed || typeof ClarionFormatter === 'undefined' || typeof ed.onDidType !== 'function') return;
         ed.onDidType(function (text) {
             if (text.length !== 1) return;
-            if (text === '=') { autoSpaceEquals(ed); return; }              // assignment: normalize to " = "
-            if (' \t(),'.indexOf(text) >= 0) autoCaseWordBefore(ed, text);  // keyword casing on word boundary
+            if (text === '=') { if (autoSpaceEqualsOn) autoSpaceEquals(ed); return; }  // assignment: normalize to " = "
+            if (' \t(),'.indexOf(text) >= 0 && liveKeywordCaseOn) autoCaseWordBefore(ed, text);  // keyword casing on word boundary
         });
     }
     // Normalize a just-typed assignment '=' to " = " (2 spaces are applied later by Ctrl+I alignment).
@@ -3261,6 +3315,8 @@
         else if (s.keywordCase !== undefined) keywordCaseMode = 'upper';
         if (typeof s.formatLineOnEnter === 'boolean') formatLineOnEnter = s.formatLineOnEnter;
         if (typeof s.formatBlockAfterEnd === 'boolean') formatBlockAfterEnd = s.formatBlockAfterEnd;
+        if (typeof s.autoSpaceEquals === 'boolean') autoSpaceEqualsOn = s.autoSpaceEquals;      // GH #138
+        if (typeof s.liveKeywordCase === 'boolean') liveKeywordCaseOn = s.liveKeywordCase;      // GH #138
         editor.updateOptions(opts);
         if (editor2) editor2.updateOptions(opts);   // keep the split pane's editor-options in sync (#15)
         if (s.occurrenceHighlight === false) { clearOccurrenceDecorations(editor); clearOccurrenceDecorations(editor2); }
@@ -3390,6 +3446,11 @@
         // Format-line-on-Enter is an editor-side aid (not an engine option), default ON when absent.
         var fe = document.getElementById('setFormatLineOnEnter');
         if (fe) fe.checked = (s && s.formatLineOnEnter !== undefined) ? !!s.formatLineOnEnter : true;
+        // As-you-type aids (GH #138) — editor-side, default ON when absent.
+        var ae = document.getElementById('setAutoSpaceEquals');
+        if (ae) ae.checked = (s && s.autoSpaceEquals !== undefined) ? !!s.autoSpaceEquals : true;
+        var lk = document.getElementById('setLiveKeywordCase');
+        if (lk) lk.checked = (s && s.liveKeywordCase !== undefined) ? !!s.liveKeywordCase : true;
     }
 
     function readSettingsPanel() {
@@ -3430,8 +3491,10 @@
             alignScope: sel('setAlignScope', D.alignScope || 'global'),
             keywordCase: sel('setKeywordCase', D.keywordCase || 'upper'),
             otherNameCase: sel('setOtherNameCase', D.otherNameCase || 'asis'),
-            // Editor-side aid (not an engine key): live on-Enter line format.
-            formatLineOnEnter: chk('setFormatLineOnEnter')
+            // Editor-side aids (not engine keys): live on-Enter line format + as-you-type aids (GH #138).
+            formatLineOnEnter: chk('setFormatLineOnEnter'),
+            autoSpaceEquals: chk('setAutoSpaceEquals'),
+            liveKeywordCase: chk('setLiveKeywordCase')
         };
     }
 
@@ -3692,6 +3755,7 @@
         var ids = ['setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setFontFamily', 'setOccurrenceHighlight', 'setHorizontalScrollbar',
             // Smart Formatter controls
             'setPreferredColumn', 'setContLineMultiplier', 'setIndentComments', 'setDontIndentCol1Comments', 'setFormatLineOnEnter',
+            'setAutoSpaceEquals', 'setLiveKeywordCase',
             'setIndentFromCode', 'setIndentCaseSubKeywords', 'setColonAsLabel', 'setFormatBlockAfterEnd', 'setPreferredKeywordIndent',
             'setAlignAssignments', 'setSpacesBeforeAssignment', 'setSpacesAfterAssignment', 'setTreatBlankAsContiguous',
             'setTreatCommentAsContiguous', 'setAlignScope', 'setKeywordCase', 'setOtherNameCase'];
@@ -5474,8 +5538,18 @@
                     // made during the save round-trip would be falsely marked clean. (pipeline item 6)
                     if (msg.savedSeq == null || msg.savedSeq === editSeq) setDirty(false);
                     if (fileMode) pushFileState();   // keep the host's mirror in sync with the post-save dirty state
+                } else {
+                    _exitAfterSave = false;   // failed save never auto-closes
                 }
                 showToast(msg.message, msg.ok);
+                // Ctrl+Q deferred exit (GH #137): close once the save is confirmed — but NOT if edits landed
+                // during the round-trip (savedSeq mismatch): closing then would silently discard them. The
+                // toast runs first so a "staying open" warning isn't overwritten by the generic result.
+                if (msg.ok && _exitAfterSave) {
+                    _exitAfterSave = false;
+                    if (msg.savedSeq == null || msg.savedSeq === editSeq) doCancel();
+                    else showToast('Saved, but you edited during the save — staying open so those edits aren\'t lost.', false);
+                }
             } else if (msg.type === 'response' && msg.reqId != null) {
                 var resolver = pendingRequests[msg.reqId];
                 if (resolver) { delete pendingRequests[msg.reqId]; resolver(msg.data); }

@@ -56,13 +56,15 @@ namespace ClarionAssistant.Services
         /// </summary>
         public Dictionary<string, object> Formatter = new Dictionary<string, object>(StringComparer.Ordinal);
 
-        // The 18 formatter option keys the gear panel round-trips (mirrors FORMATTER_SETTING_KEYS +
-        // formatLineOnEnter in monaco-embeditor.html). Keep in sync if the panel gains/loses an option.
+        // The 20 formatter option keys the gear panel round-trips (mirrors FORMATTER_SETTING_KEYS +
+        // formatLineOnEnter/autoSpaceEquals/liveKeywordCase in monaco-embeditor.html). Keep in sync if
+        // the panel gains/loses an option.
         private static readonly string[] FormatterKeys = {
             "preferredColumn", "contLineMultiplier", "indentComments", "dontIndentCol1Comments",
             "indentFromCode", "indentCaseSubKeywords", "colonAsLabel", "formatBlockAfterEnd", "preferredKeywordIndent",
             "alignAssignments", "spacesBeforeAssignment", "spacesAfterAssignment", "treatBlankAsContiguous",
-            "treatCommentAsContiguous", "alignScope", "keywordCase", "otherNameCase", "formatLineOnEnter"
+            "treatCommentAsContiguous", "alignScope", "keywordCase", "otherNameCase", "formatLineOnEnter",
+            "autoSpaceEquals", "liveKeywordCase"
         };
         private static readonly HashSet<string> FormatterKeySet = new HashSet<string>(FormatterKeys, StringComparer.Ordinal);
         private const int MaxFormatterStringLen = 32;
