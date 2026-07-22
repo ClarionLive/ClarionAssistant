@@ -26,18 +26,18 @@
       "CodeGraphBridge"
     ]
   },
+  "targetPin": {
+    "note": "Tag to sync toward; -Tag overrides. AUTO-UPDATED to the last successfully synced tag by Sync-LspServer.ps1 -- edit by hand only to stage a pin to a NEWER release before running the sync.",
+    "tag": "v1.0.0"
+  },
   "currentPin": {
     "note": "AUTO-UPDATED by Sync-LspServer.ps1 on each successful sync -- the observed state of the just-synced checkout. Historical hand-audit notes live in git history (pre-#77 revisions of this file).",
     "tag": "v1.0.0",
     "commit": "571ffcee",
     "commitDate": "2026-07-11"
   },
-  "targetPin": {
-    "note": "Tag to sync toward; -Tag overrides. AUTO-UPDATED to the last successfully synced tag by Sync-LspServer.ps1 -- edit by hand only to stage a pin to a NEWER release before running the sync.",
-    "tag": "v1.0.0"
-  },
   "pure": true,
   "resolvedCommit": "571ffcee",
   "resolvedTag": "v1.0.0",
-  "lastSync": "2026-07-16"
+  "lastSync": "2026-07-22"
 }
