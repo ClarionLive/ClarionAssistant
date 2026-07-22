@@ -222,9 +222,16 @@ namespace ClarionAssistant.Services
                     Application.DoEvents();
                     System.Threading.Thread.Sleep(8);
                     // Caret-follow: nudge the editor caret to the pointer when it has moved (debounced on position).
+                    // Follow in Cursor.Position space, NOT the hook's _trackPt: the LL hook reports SYSTEM-physical
+                    // pixels, while every consumer of the follow point (RectangleToScreen hit-tests, PointToScreen
+                    // offset math in the Monaco hosts) lives in this process's possibly-virtualized mixed-DPI space —
+                    // the same divergence that threw the DragGhost right on a scaled monitor (see MoveTo). Feeding
+                    // physical coords here put the follow caret BELOW the pointer, and the page's edge-scroll then
+                    // chased the phantom position — a runaway scroll.
                     if (onMove != null)
                     {
-                        POINT cur = _trackPt;
+                        var cp = Cursor.Position;
+                        POINT cur = new POINT { X = cp.X, Y = cp.Y };
                         if (cur.X != lastFollow.X || cur.Y != lastFollow.Y) { lastFollow = cur; onMove(cur); }
                     }
                     // Belt: if the button is already up and we somehow missed the hook event, finish.
@@ -242,6 +249,11 @@ namespace ClarionAssistant.Services
                 try { Cursor.Current = prevCursor; } catch { }
             }
 
+            // Release point in the SAME (process/virtualized) space as the routing hit-tests and the Monaco
+            // offset math — the hook's WM_LBUTTONUP point is physical and diverges on scaled monitors (see
+            // the onMove note above). The cursor hasn't moved meaningfully in the <=8ms since the up event,
+            // and the missed-buttonup belt already read GetCursorPos, so this also makes both exits agree.
+            if (!_trackCancelled) GetCursorPos(out _trackPt);
             releasePt = _trackPt;
             cancelled = _trackCancelled;
             return true;
