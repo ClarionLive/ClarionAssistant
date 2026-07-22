@@ -567,6 +567,14 @@
     body.light .find-grid tbody tr:hover { background: #eef2fb; }
     body.light .ftab { background: #f3f5f9; }            /* inactive tabs: a hair off-white so they read as tabs */
     body.light .ftab.active { background: #ffffff; }
+
+    /* Data-pad drag-over feedback: Monaco hides the real caret while the editor is unfocused (it IS
+       unfocused during a pad drag — the pad owns focus), so the caret-follow setPosition is invisible.
+       Render an explicit insertion bar at the would-be drop point (VS Code's own dnd-target technique)
+       and switch the pointer to copy / no-drop while follow messages are arriving. */
+    .monaco-editor .ca-dnd-target { border-right: 2px solid var(--find-accent); }
+    body.ca-dragging, body.ca-dragging * { cursor: copy !important; }
+    body.ca-dragging.ca-drag-blocked, body.ca-dragging.ca-drag-blocked * { cursor: no-drop !important; }
 </style>
 </head>
 <body>
@@ -2768,7 +2776,36 @@
             if (!ed) return;
             var dpr = window.devicePixelRatio || 1;
             var target = ed.getTargetAtClientPoint(px / dpr, py / dpr);
-            if (target && target.position) ed.setPosition(target.position);
+            if (target && target.position) {
+                var pos = target.position;
+                ed.setPosition(pos);
+                ed.revealPosition(pos);   // dragging near an edge scrolls the buffer
+                // Visible drop feedback: Monaco's caret is hidden while the editor is unfocused (the
+                // pad owns focus during the drag), so render an explicit insertion bar + copy/no-drop
+                // pointer. Blocked = outside an editable embed slot (mirrors insertTextAtPoint's gate).
+                var r = new monaco.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column);
+                var ok = isEditableRange(r);
+                dragCaretDecos = ed.deltaDecorations(dragCaretDecos, ok ? [{
+                    range: r, options: { className: 'ca-dnd-target' }
+                }] : []);
+                document.body.classList.add('ca-dragging');
+                document.body.classList.toggle('ca-drag-blocked', !ok);
+            }
+            // Self-expiring: follow messages stop on drop, cancel, or the pointer leaving this webview
+            // — no host "drag ended" signal exists, so the feedback clears itself shortly after.
+            if (dragFeedbackTimer) clearTimeout(dragFeedbackTimer);
+            dragFeedbackTimer = setTimeout(clearDragFeedback, 400);
+        } catch (e) {}
+    }
+
+    var dragCaretDecos = [];
+    var dragFeedbackTimer = null;
+    function clearDragFeedback() {
+        try {
+            if (dragFeedbackTimer) { clearTimeout(dragFeedbackTimer); dragFeedbackTimer = null; }
+            if (editor && dragCaretDecos.length) dragCaretDecos = activeEd().deltaDecorations(dragCaretDecos, []);
+            document.body.classList.remove('ca-dragging');
+            document.body.classList.remove('ca-drag-blocked');
         } catch (e) {}
     }
 
@@ -2779,6 +2816,7 @@
     // only if the point resolves to nothing.
     function insertTextAtPoint(text, px, py) {
         if (!editor || !text) return;
+        clearDragFeedback();   // the drop ends the drag — kill the insertion bar / copy cursor now
         var ed = activeEd();
         var pos = null;
         try {
@@ -2796,6 +2834,7 @@
 
     function insertTextAtCursor(text) {
         if (!editor || !text) return;
+        clearDragFeedback();   // may be the landing path of a drag as well (host fallback)
         var ed = activeEd();
         var pos = ed.getPosition();
         var range = new monaco.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column);
