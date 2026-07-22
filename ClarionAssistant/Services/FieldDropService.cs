@@ -108,7 +108,10 @@ namespace ClarionAssistant.Services
                         if (ghost != null) ghost.MoveTo(p.X, p.Y);
                         if (string.IsNullOrEmpty(text)) return;
                         long now = caretClock.ElapsedMilliseconds;
-                        if (now - lastCaretMs < 50) return;          // ~20 caret updates/sec — keeps the async queue from backing up
+                        // ~60 updates/sec. Safe now that the page rAF-coalesces follow messages (bursts
+                        // overwrite a pending point; one update per display frame), so a flood can't back
+                        // the async queue up and trail the mouse — 50ms was visibly steppy/sluggish.
+                        if (now - lastCaretMs < 15) return;
                         lastCaretMs = now;
                         if (Terminal.ModernEmbeditorViewContent.TryMoveMonacoCaretAt(p.X, p.Y)) return;  // CA embeditor(s)
                         TryMoveCaretViaViewContent(activeVcAtStart, p.X, p.Y);                            // Monaco-default-editor

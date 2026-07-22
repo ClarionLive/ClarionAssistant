@@ -2770,7 +2770,29 @@
     // webview client origin; we divide by devicePixelRatio for Monaco's CSS-px getTargetAtClientPoint). Used during
     // a Data-pad field DRAG so the caret tracks the mouse — the drop then lands exactly where the pointer is (parity
     // with the native data pad). No focus steal: just reposition the visible caret.
+    // rAF-coalesced: bursts of follow messages just overwrite the pending point and one update runs per
+    // display frame — the queue can never back up, so the host is free to send at mouse-move rate.
+    var pendingDragPt = null, dragRafQueued = false;
     function moveCaretToClientPoint(px, py) {
+        pendingDragPt = { x: px, y: py };
+        if (dragRafQueued) return;
+        dragRafQueued = true;
+        try {
+            requestAnimationFrame(function () {
+                dragRafQueued = false;
+                var p = pendingDragPt;
+                pendingDragPt = null;
+                if (p) applyDragCaretPoint(p.x, p.y);
+            });
+        } catch (e) {
+            dragRafQueued = false;
+            var p2 = pendingDragPt;
+            pendingDragPt = null;
+            if (p2) applyDragCaretPoint(p2.x, p2.y);
+        }
+    }
+
+    function applyDragCaretPoint(px, py) {
         try {
             var ed = activeEd();
             if (!ed) return;
