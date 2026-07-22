@@ -179,7 +179,7 @@ namespace ClarionAssistant.Services
                     // the authoritative editable buffer over an inert native shell — inserting the native text area
                     // is invisible. Drive its Monaco overlay first; fall back to the native text area otherwise.
                     if (!TryInsertViaViewContentMonaco(activeVc, text, pt.X, pt.Y))
-                        InsertIntoEditor(editor, text);
+                        InsertIntoEditor(editor, text, pt.X, pt.Y);
                     return res;
                 }
 
@@ -353,15 +353,25 @@ namespace ClarionAssistant.Services
         // knows the native PWEE embeditor + the CA Modern view, so _renderCtx.Insert was a no-op for it). The
         // generic EditorService.InsertTextAtCaret reflects over Document/Caret, so it works for any ICSharpCode
         // surface. Falls back to the active text area if the hit-tested control isn't itself an editable surface.
-        private static void InsertIntoEditor(Control editor, string text)
+        private static void InsertIntoEditor(Control editor, string text, int screenX, int screenY)
         {
             try
             {
                 var es = new EditorService();
+                // Point-drop: move the caret to the character under the release point first, so the
+                // reference lands where the user dropped (parity with the Monaco editors). On false the
+                // insert simply stays at the current caret — the drop must never break.
+                bool caretMoved = es.SetCaretFromScreenPoint(editor, screenX, screenY);
+                Log("point-drop caret via hit editor: " + caretMoved);
                 var r = es.InsertTextAtCaret(editor, text);
                 if (r == null || !r.Success)
                 {
                     Log("editor insert (hit-tested) failed: " + (r == null ? "null" : r.ErrorMessage) + " -> active-text-area fallback");
+                    if (!caretMoved)
+                    {
+                        caretMoved = es.SetCaretFromScreenPoint(screenX, screenY);
+                        Log("point-drop caret via active text area: " + caretMoved);
+                    }
                     r = es.InsertTextAtCaret(text);
                 }
                 Log("editor insert ok=" + (r != null && r.Success) + (r != null && !r.Success ? " err=" + r.ErrorMessage : ""));
