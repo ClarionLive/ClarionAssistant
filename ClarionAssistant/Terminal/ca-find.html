@@ -217,6 +217,13 @@
     var findHistory = [], replHistory = [];   // global (all editors), persisted
     var fzPx = 12, themeDark = true;
     var tabSeq = 0;
+    // The first onActiveEditor of a fresh page load carries over whatever tab/query was active in
+    // the PERSISTED state (from a previous session, possibly long ago) — pre-filling the box and
+    // silently re-running that stale search (passive re-run still populates matches/results) the
+    // instant the pad opens, before the developer's own Ctrl+F seed is even processed. Cleared after
+    // the first activation; later activations (switching between files WITHIN this same running pad
+    // session) restore their tab normally — that's the intended, wanted behavior.
+    var firstActivation = true;
 
     // Live working copy (active editor + active tab)
     var matches = [];              // [{line,startCol,endLine,endCol,text,editable,checked}]
@@ -695,7 +702,16 @@
         renderTarget();
         if (!activeKey) { renderTabs(); renderResults(); byId('findCount').textContent = ''; return; }
         var s = sessionFor(activeKey);
-        loadTab(s.activeTab);   // restores inputs/opts and re-runs the active tab's search on the new buffer
+        if (firstActivation) {
+            firstActivation = false;
+            // Don't carry over a possibly-stale saved query the first time this pad opens in a
+            // session — start the active tab blank instead of silently pre-filling + re-searching.
+            var t0 = s.tabs[s.activeTab];
+            if (t0) { t0.query = ''; t0.replaceText = ''; }
+            loadTab(s.activeTab, false);
+        } else {
+            loadTab(s.activeTab);   // restores inputs/opts and re-runs the active tab's search on the new buffer
+        }
     }
 
     function onEditorMsg(env) {

@@ -1123,6 +1123,12 @@
                         return;
                     }
                     reloadArmed = false;
+                    // The "click again to confirm" toast (shown on the first click, 8s auto-dismiss since
+                    // it's an err-styled toast) is now stale the instant the confirm click lands — clear it
+                    // immediately instead of leaving it on screen for the rest of its timeout.
+                    var toastEl = document.getElementById('toast');
+                    if (toastEl) toastEl.className = '';
+                    if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
                     postToHost({ action: 'reload' });
                 });
                 var splitBtn = document.getElementById('splitBtn');
@@ -2299,6 +2305,24 @@
     // numbers are valid. Subsequent setSource calls (if any) just reveal line 1 without re-restoring.
     var stateRestored = false;
     function restoreEmbedState(msg) {
+        // CA Editor Reload only (msg.reload, opt-in): re-apply the position the C# host tells us to,
+        // bypassing the one-shot guard below entirely — a reload is not a fresh tab open, so it must
+        // NOT flip `stateRestored` or re-run the bookmark restore. The CA Embeditor never sends this
+        // flag (its own reload path is untouched by this branch, still lands on line 1 as before), so
+        // this is strictly additive for the plain source-file editor. Deliberately skips recordNavAt —
+        // a reload isn't a new navigation, so it shouldn't push a Navigate-Back entry.
+        if (msg && msg.reload) {
+            var rModel = editor.getModel(), rLc = rModel.getLineCount();
+            var rl = msg.cursorLine, rc = msg.cursorColumn || 1;
+            if (rl && rl >= 1 && rl <= rLc && lineInEditable(rl)) {
+                editor.setPosition({ lineNumber: rl, column: Math.max(1, rc) });
+                editor.revealLineInCenter(rl);
+                setTimeout(function () { try { editor.focus(); } catch (e) { } }, 0);
+            } else {
+                editor.revealLine(1);
+            }
+            return;
+        }
         if (stateRestored) { editor.revealLine(1); return; }
         stateRestored = true;
         var model = editor.getModel(), lc = model.getLineCount();

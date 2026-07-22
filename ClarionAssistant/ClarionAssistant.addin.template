@@ -27,6 +27,9 @@
     <Class id="ClarionAssistantStartEmbedMonitor" class="ClarionAssistant.EmbedEditorMonitorAutostartCommand"/>
     <!-- Arm the ApplicationExit shutdown backstop unconditionally (not gated on the chat MCP server). -->
     <Class id="ClarionAssistantArmShutdown" class="ClarionAssistant.ShutdownAutostartCommand"/>
+    <!-- Save every dirty CA Editor (Monaco) tab right before a build starts — the native IDE's own
+         save-before-build has no visibility into this WebView2-hosted editor (see SaveSourceEditorsBeforeBuildCommand). -->
+    <Class id="ClarionAssistantSaveSourceEditorsBeforeBuild" class="ClarionAssistant.SaveSourceEditorsBeforeBuildCommand"/>
   </Path>
 
   <!-- Ordered addin teardown at shutdown. Our heavy teardown (stop MCP, kill ConPty child trees, dispose
