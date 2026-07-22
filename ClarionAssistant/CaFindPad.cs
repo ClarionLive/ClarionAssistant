@@ -109,6 +109,15 @@ namespace ClarionAssistant
                     // so they override the blob's legacy copies when present.
                     PushSharedHistory();
                     CaFindBroker.SetPadPoster(PostJson);
+                    // Same WebView2-in-WinForms focus race as #66 round-2 (see
+                    // MonacoEditorControl.FocusEditor/FocusAttempt, which this mirrors): on the VERY
+                    // FIRST Ctrl+F this pad didn't exist yet, so CaFindBroker.ShowPad's
+                    // BringPadToFront() ran before CoreWebView2/this page finished loading, and a
+                    // lone Focus() isn't enough to pull real Win32 keyboard focus into the browser
+                    // content afterward. See CaFindBroker.SuppressEditorFocusSteal for the other
+                    // half of this fix — MonacoClarionSourceEditor's WindowSelected hook was
+                    // actively fighting this same claim during first-time pad layout.
+                    FocusAttempt(0);
                 }
                 else if (action == "saveHistory")
                 {
@@ -194,6 +203,61 @@ namespace ClarionAssistant
             if (data != null && data.TryGetValue(key, out o) && o is object[])
                 foreach (var item in (object[])o) if (item != null) outp.Add(item.ToString());
             return outp;
+        }
+
+        // #66 round-2 (same bug as MonacoEditorControl.FocusAttempt): a single _webView.Focus() is
+        // not enough right after this page finishes loading. The WinForms WebView2 only forwards
+        // focus into Chromium from its GotFocus handler, so when the host HWND already holds Win32
+        // focus, the render widget never gets the keyboard. MoveFocus() is the authoritative
+        // hand-off. Root cause of the original flakiness was MonacoClarionSourceEditor's
+        // WindowSelected hook fighting this same claim during first-time pad layout (now dampened
+        // via CaFindBroker.SuppressEditorFocusSteal) — with that fixed, a normal stop-on-success
+        // retry (matching MonacoEditorControl's own cadence) is enough; no need to keep re-asserting
+        // after we've already won, which was only ever needed to survive that fight and produced a
+        // visible focus-flicker of its own once the fight was gone.
+        private void FocusAttempt(int attempt)
+        {
+            try
+            {
+                if (_webView == null || _webView.IsDisposed || !_webView.IsHandleCreated) return;
+                if (_webView.Visible)
+                {
+                    _webView.Focus();
+                    TryMoveFocusIntoChromium();
+                }
+                if (attempt < 3 && !_webView.ContainsFocus)
+                {
+                    var t = new Timer { Interval = 80 };
+                    t.Tick += (s, e) =>
+                    {
+                        try { t.Stop(); t.Dispose(); } catch { }
+                        FocusAttempt(attempt + 1);
+                    };
+                    t.Start();
+                }
+                else if (!_webView.ContainsFocus)
+                {
+                    MonacoSpikeLog.Write("[CaFindPad] FocusAttempt: focus never landed after retries (focused control elsewhere)");
+                }
+            }
+            catch { }
+        }
+
+        // The WinForms wrapper doesn't expose CoreWebView2Controller publicly; reflect it and call
+        // MoveFocus(Programmatic) — the only API that reliably puts the keyboard in the render widget.
+        private void TryMoveFocusIntoChromium()
+        {
+            try
+            {
+                object ctl =
+                    _webView.GetType().GetProperty("CoreWebView2Controller",
+                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(_webView, null)
+                    ?? _webView.GetType().GetField("_coreWebView2Controller",
+                        BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(_webView);
+                var controller = ctl as CoreWebView2Controller;
+                if (controller != null) controller.MoveFocus(CoreWebView2MoveFocusReason.Programmatic);
+            }
+            catch { }
         }
 
         /// <summary>Post a JSON message into the pad page, marshalled to the UI thread. This is the

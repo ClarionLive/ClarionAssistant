@@ -108,7 +108,10 @@ namespace ClarionAssistant.Services
                         if (ghost != null) ghost.MoveTo(p.X, p.Y);
                         if (string.IsNullOrEmpty(text)) return;
                         long now = caretClock.ElapsedMilliseconds;
-                        if (now - lastCaretMs < 50) return;          // ~20 caret updates/sec — keeps the async queue from backing up
+                        // ~60 updates/sec. Safe now that the page rAF-coalesces follow messages (bursts
+                        // overwrite a pending point; one update per display frame), so a flood can't back
+                        // the async queue up and trail the mouse — 50ms was visibly steppy/sluggish.
+                        if (now - lastCaretMs < 15) return;
                         lastCaretMs = now;
                         if (Terminal.ModernEmbeditorViewContent.TryMoveMonacoCaretAt(p.X, p.Y)) return;  // CA embeditor(s)
                         TryMoveCaretViaViewContent(activeVcAtStart, p.X, p.Y);                            // Monaco-default-editor
@@ -179,7 +182,7 @@ namespace ClarionAssistant.Services
                     // the authoritative editable buffer over an inert native shell — inserting the native text area
                     // is invisible. Drive its Monaco overlay first; fall back to the native text area otherwise.
                     if (!TryInsertViaViewContentMonaco(activeVc, text, pt.X, pt.Y))
-                        InsertIntoEditor(editor, text);
+                        InsertIntoEditor(editor, text, pt.X, pt.Y);
                     return res;
                 }
 
@@ -222,9 +225,16 @@ namespace ClarionAssistant.Services
                     Application.DoEvents();
                     System.Threading.Thread.Sleep(8);
                     // Caret-follow: nudge the editor caret to the pointer when it has moved (debounced on position).
+                    // Follow in Cursor.Position space, NOT the hook's _trackPt: the LL hook reports SYSTEM-physical
+                    // pixels, while every consumer of the follow point (RectangleToScreen hit-tests, PointToScreen
+                    // offset math in the Monaco hosts) lives in this process's possibly-virtualized mixed-DPI space —
+                    // the same divergence that threw the DragGhost right on a scaled monitor (see MoveTo). Feeding
+                    // physical coords here put the follow caret BELOW the pointer, and the page's edge-scroll then
+                    // chased the phantom position — a runaway scroll.
                     if (onMove != null)
                     {
-                        POINT cur = _trackPt;
+                        var cp = Cursor.Position;
+                        POINT cur = new POINT { X = cp.X, Y = cp.Y };
                         if (cur.X != lastFollow.X || cur.Y != lastFollow.Y) { lastFollow = cur; onMove(cur); }
                     }
                     // Belt: if the button is already up and we somehow missed the hook event, finish.
@@ -242,6 +252,11 @@ namespace ClarionAssistant.Services
                 try { Cursor.Current = prevCursor; } catch { }
             }
 
+            // Release point in the SAME (process/virtualized) space as the routing hit-tests and the Monaco
+            // offset math — the hook's WM_LBUTTONUP point is physical and diverges on scaled monitors (see
+            // the onMove note above). The cursor hasn't moved meaningfully in the <=8ms since the up event,
+            // and the missed-buttonup belt already read GetCursorPos, so this also makes both exits agree.
+            if (!_trackCancelled) GetCursorPos(out _trackPt);
             releasePt = _trackPt;
             cancelled = _trackCancelled;
             return true;
@@ -353,15 +368,25 @@ namespace ClarionAssistant.Services
         // knows the native PWEE embeditor + the CA Modern view, so _renderCtx.Insert was a no-op for it). The
         // generic EditorService.InsertTextAtCaret reflects over Document/Caret, so it works for any ICSharpCode
         // surface. Falls back to the active text area if the hit-tested control isn't itself an editable surface.
-        private static void InsertIntoEditor(Control editor, string text)
+        private static void InsertIntoEditor(Control editor, string text, int screenX, int screenY)
         {
             try
             {
                 var es = new EditorService();
+                // Point-drop: move the caret to the character under the release point first, so the
+                // reference lands where the user dropped (parity with the Monaco editors). On false the
+                // insert simply stays at the current caret — the drop must never break.
+                bool caretMoved = es.SetCaretFromScreenPoint(editor, screenX, screenY);
+                Log("point-drop caret via hit editor: " + caretMoved);
                 var r = es.InsertTextAtCaret(editor, text);
                 if (r == null || !r.Success)
                 {
                     Log("editor insert (hit-tested) failed: " + (r == null ? "null" : r.ErrorMessage) + " -> active-text-area fallback");
+                    if (!caretMoved)
+                    {
+                        caretMoved = es.SetCaretFromScreenPoint(screenX, screenY);
+                        Log("point-drop caret via active text area: " + caretMoved);
+                    }
                     r = es.InsertTextAtCaret(text);
                 }
                 Log("editor insert ok=" + (r != null && r.Success) + (r != null && !r.Success ? " err=" + r.ErrorMessage : ""));

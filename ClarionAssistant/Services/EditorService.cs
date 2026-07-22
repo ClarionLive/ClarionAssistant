@@ -173,6 +173,75 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// Move a text area's caret to the character under a SCREEN point (e.g. a drag-drop release
+        /// position), so a subsequent InsertTextAtCaret lands where the user dropped instead of at the
+        /// old caret. Mirrors the native editor's own click handling: client point → minus
+        /// TextView.DrawingPosition (gutter/fold margins + horizontal scroll handling live in there) →
+        /// TextView.GetLogicalPosition(visualX, visualY) → Caret.Position. Returns false on ANY
+        /// failure so callers can keep the at-caret fallback — this must never break a drop.
+        /// </summary>
+        public bool SetCaretFromScreenPoint(int screenX, int screenY)
+        {
+            try { return SetCaretFromScreenPoint(GetActiveTextArea(), screenX, screenY); }
+            catch { return false; }
+        }
+
+        public bool SetCaretFromScreenPoint(object textArea, int screenX, int screenY)
+        {
+            try
+            {
+                if (textArea == null) return false;
+
+                var textView = GetProperty(textArea, "TextView");
+                if (textView == null)
+                {
+                    // A TextAreaControl (the scrollbar container) exposes TextArea, not TextView —
+                    // unwrap it so callers can pass whichever surface they hit-tested.
+                    var inner = GetProperty(textArea, "TextArea");
+                    return inner != null && SetCaretFromScreenPoint(inner, screenX, screenY);
+                }
+
+                var ctrl = textArea as Control;
+                if (ctrl == null) return false;
+
+                var caret = GetProperty(textArea, "Caret");
+                var document = GetProperty(textArea, "Document");
+                if (caret == null || document == null) return false;
+
+                var clientPt = ctrl.PointToClient(new System.Drawing.Point(screenX, screenY));
+
+                var drawingObj = GetProperty(textView, "DrawingPosition");
+                if (!(drawingObj is System.Drawing.Rectangle drawing)) return false;
+
+                int visualX = Math.Max(0, clientPt.X - drawing.X);
+                int visualY = Math.Max(0, clientPt.Y - drawing.Y);
+
+                var glp = textView.GetType().GetMethod("GetLogicalPosition", new[] { typeof(int), typeof(int) });
+                if (glp == null) return false;
+                var loc = glp.Invoke(textView, new object[] { visualX, visualY });
+                if (loc == null) return false;
+
+                // A drop below the last line yields a line past the end — clamp so Caret.Offset
+                // (read by InsertTextAtCaret) stays resolvable instead of throwing.
+                var lineProp = loc.GetType().GetProperty("Line");
+                int line = (int)lineProp.GetValue(loc, null);
+                int totalLines = (int)GetProperty(document, "TotalNumberOfLines");
+                if (line >= totalLines)
+                {
+                    lineProp.SetValue(loc, totalLines - 1, null);
+                }
+
+                SetProperty(caret, "Position", loc);
+                // ValidateCaretPos clamps a virtual column beyond the line's end (AllowCaretBeyondEOL
+                // is off in the Clarion editor); UpdateCaretPosition repaints. Both best-effort.
+                try { caret.GetType().GetMethod("ValidateCaretPos", Type.EmptyTypes)?.Invoke(caret, null); } catch { }
+                try { caret.GetType().GetMethod("UpdateCaretPosition", Type.EmptyTypes)?.Invoke(caret, null); } catch { }
+                return true;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
         /// Replace text in the active editor between two offsets.
         /// </summary>
         public InsertResult ReplaceRange(int startLine, int startCol, int endLine, int endCol, string newText)

@@ -242,6 +242,34 @@ namespace ClarionAssistant.Services
 
         // ── Pad activation (Ctrl+F in an editor) ──────────────────────────────────────────────
 
+        // First-open focus race: when the pad doesn't exist yet, ShowPad's BringPadToFront (below)
+        // runs BEFORE the pad's WebView2 finishes its async init, and CaFindPad's own "ready"-time
+        // focus claim (CaFindPad.FocusAttempt) then fights MonacoClarionSourceEditor's PRE-EXISTING
+        // WindowSelected hook (OnWorkbenchWindowSelected, "#66 follow-up: claim CA Find pad + focus
+        // Monaco") — that hook fires repeatedly while the new pad panel is being docked/laid out,
+        // each time re-stealing focus back to the editor with the identical Focus()+MoveFocus
+        // mechanism. Confirmed live via monaco-spike.log: both sides winning and losing focus in
+        // alternation until the editor's hook wins the last word. Since the two mechanisms want
+        // opposite outcomes for the same brief window, suppress the editor's side of the fight for
+        // long enough to cover CaFindPad's own focus-claim retries (3 attempts, 80ms apart — well
+        // under a second) plus margin. Only narrows the pre-existing hook's window — normal
+        // tab-switch behavior (its actual purpose) is unaffected once this window elapses.
+        private static long _suppressEditorFocusStealUntilTicks;
+
+        /// <summary>True while a just-opened CA Find pad should win any focus fight against
+        /// MonacoClarionSourceEditor's WindowSelected hook. Checked by that hook before it claims
+        /// focus back for the editor.</summary>
+        public static bool SuppressEditorFocusSteal
+        {
+            get { return DateTime.UtcNow.Ticks < System.Threading.Interlocked.Read(ref _suppressEditorFocusStealUntilTicks); }
+        }
+
+        private static void ArmEditorFocusStealSuppression(int ms)
+        {
+            long until = DateTime.UtcNow.AddMilliseconds(ms).Ticks;
+            System.Threading.Interlocked.Exchange(ref _suppressEditorFocusStealUntilTicks, until);
+        }
+
         /// <summary>Create/raise the CA Find pad — same reflection shape as ShowModernDataPadCommand.
         /// Marshalled to the UI thread by the workbench itself (BringPadToFront is UI-safe here since
         /// WebMessageReceived already runs on the UI thread).</summary>
@@ -249,6 +277,7 @@ namespace ClarionAssistant.Services
         {
             try
             {
+                ArmEditorFocusStealSuppression(1500);
                 var workbench = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
                 if (workbench == null) return;
                 var getPad = workbench.GetType().GetMethod("GetPad", new Type[] { typeof(Type) });

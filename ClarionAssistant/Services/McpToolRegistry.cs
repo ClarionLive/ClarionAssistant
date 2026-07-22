@@ -2399,7 +2399,8 @@ COMMON QUERIES:
                     "The developer can add severity-tagged notes (BLOCKER/SUGGESTION/NITPICK/QUESTION) on any line. " +
                     "You can provide text directly via original_text/modified_text, OR provide file paths via original_file/modified_file to load from disk (avoids encoding issues with large files), " +
                     "OR set modified_from_active_editor='true' to diff the IDE's current (possibly unsaved) editor buffer directly, in-process — no MCP text transport, so it works regardless of file size and costs no extra tokens. " +
-                    "Use ignore_whitespace to suppress trivial whitespace-only differences. Use get_diff_result to check the outcome.",
+                    "Use ignore_whitespace to suppress trivial whitespace-only differences. Use get_diff_result to check the outcome, " +
+                    "or get_diff_content to retrieve the diff text itself (e.g. for summarizing large changes).",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
@@ -2503,6 +2504,30 @@ COMMON QUERIES:
                         return "Error: Diff service not available.";
 
                     return _diffService.GetResult();
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "get_diff_content",
+                Description = "Return the unified diff for the diff currently/most recently shown via show_diff, " +
+                    "computed server-side (git diff --no-index, LCS fallback) from the exact text passed to show_diff — " +
+                    "not read back from the Monaco/WebView2 buffer. Response size scales with the size of the changes, " +
+                    "not the file size, so it's safe for very large files. For renderer='monaco', this diff is computed " +
+                    "independently of what Monaco displays (Monaco computes its own diff client-side) — same underlying " +
+                    "changed lines, but hunk grouping may not be pixel-identical to the on-screen view. " +
+                    "ignore_whitespace is cached as the resolved value from that show_diff call (already accounting for " +
+                    "the renderer-dependent default, e.g. Monaco's ignore-whitespace-on-by-default), not re-resolved here.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>(),
+                    new string[0]),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    if (_diffService == null)
+                        return "Error: Diff service not available.";
+
+                    return _diffService.GetContent();
                 }
             });
 

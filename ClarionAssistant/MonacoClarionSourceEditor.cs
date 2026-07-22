@@ -86,8 +86,15 @@ namespace ClarionAssistant
         // keeps the native ClaTextAreaControl from peeking through underneath.)
         private static readonly Color CoverColor = Color.FromArgb(0xEF, 0xF1, 0xF5);
 
+        // Every live tab, so a build-triggered save (SaveAllDirtyBeforeBuild) can reach all of them. This
+        // class has no other central registry — unlike ModernEmbeditorViewContent's own _instances — because
+        // until now nothing outside a single instance's own close/dispose path ever needed to reach it.
+        private static readonly List<MonacoClarionEditor> _instances = new List<MonacoClarionEditor>();
+
         public MonacoClarionEditor()
         {
+            lock (_instances) { _instances.Add(this); }
+
             // The text area isn't necessarily realized at ctor time (the wrapper builds it as the
             // view loads). Poll on the UI thread until Control exists + has a handle, then capture.
             try
@@ -97,6 +104,43 @@ namespace ClarionAssistant
                 _captureTimer.Start();
             }
             catch (Exception ex) { MonacoSpikeLog.Write("MonacoClarionEditor ctor timer error: " + ex.Message); }
+        }
+
+        /// <summary>Called from SaveSourceEditorsBeforeBuildCommand just before a build starts. The Monaco
+        /// overlay saves straight to disk itself and deliberately never touches the native ClarionEditor's
+        /// own buffer/IsDirty (see AttachOverlay/OnSave's doc comments) — so it stays invisible to the native
+        /// IDE's own save-before-build (SaveAllFiles.SaveAll, which only reaches AbstractViewContent.IsDirty).
+        /// Without this, "Build Solution" can silently compile a stale on-disk version of a file being
+        /// edited in the CA Editor. Best-effort per tab; one tab's failure must not stop the others.</summary>
+        internal static void SaveAllDirtyBeforeBuild()
+        {
+            List<MonacoClarionEditor> snapshot;
+            lock (_instances) { snapshot = new List<MonacoClarionEditor>(_instances); }
+            foreach (var inst in snapshot)
+            {
+                try { inst.SaveDirtyBeforeBuild(); }
+                catch (Exception ex) { MonacoSpikeLog.Write("SaveAllDirtyBeforeBuild per-instance error: " + ex.Message); }
+            }
+        }
+
+        /// <summary>Same write path + dirty guard as OnWorkbenchClosing/Dispose's save-on-close, minus the
+        /// close: writes the overlay's live buffer to disk if there are unsaved edits, then clears the dirty
+        /// flag so a subsequent close doesn't prompt again for something already safely on disk. Does NOT
+        /// touch the page's own ● dirty indicator — same accepted cosmetic gap as the embeditor's equivalent
+        /// (the host doesn't track Monaco's edit-sequence counter, so it can't safely clear it). Silently
+        /// skips a read-only file rather than throwing (matches OnSave's own guard) — the build will simply
+        /// compile the file as it already is on disk.</summary>
+        private void SaveDirtyBeforeBuild()
+        {
+            try
+            {
+                if (!(_overlayDirty && _overlayLiveText != null && !string.IsNullOrEmpty(_filePath))) return;
+                if (IsFileReadOnly()) return;
+                int n = WriteToDisk(_overlayLiveText);
+                _overlayDirty = false;
+                MonacoSpikeLog.Write("overlay build-triggered save wrote: " + _filePath + " (" + n + " chars)");
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("overlay build-triggered save error: " + ex.Message); }
         }
 
         private void CaptureTick(object sender, EventArgs e)
@@ -344,6 +388,8 @@ namespace ClarionAssistant
                 CaptureIdeChromeColors();   // active Clarion IDE theme colors → our toolbar chrome (task c8e669d3)
                 // Honor the file's Windows read-only attribute: open the buffer read-only + flag the title,
                 // instead of letting the user edit freely only to fail at save time (issue #50).
+                // KEEP IN SYNC: OnReload below sends an independent copy of this setSource JSON (not shared
+                // code) — mirror any field added/removed/renamed here over there too.
                 bool fileReadOnly = IsFileReadOnly();
                 string pageTitle = fileReadOnly ? (_overlayTitle + " (read-only)") : _overlayTitle;
                 string json = "{\"type\":\"setSource\","
@@ -873,7 +919,103 @@ namespace ClarionAssistant
             catch { }
         }
         void IMonacoEditorHost.OnFocusEditor(MonacoEditorControl editor) { }
-        void IMonacoEditorHost.OnReload(MonacoEditorControl editor) { }
+
+        // Reload button (fileMode page, two-click confirm): discards the overlay's in-buffer edits and
+        // re-reads the file fresh from disk, then resends it as a new setSource — same message shape
+        // OnReady sends on first open, built independently HERE rather than by refactoring OnReady itself,
+        // so this new, less-tested path can never regress the tab-open path every CA Editor tab depends on.
+        // Unlike OnReady, does NOT re-run CaFindBroker registration, the close-hook attach, or debugger-nav
+        // consumption — the tab isn't being reopened, only its content is refreshed to match disk.
+        // Was a no-op since the very first Monaco-converge commit (748c150) that stubbed the whole
+        // IMonacoEditorHost interface — confirmed via `git log -S"OnReload"`, never implemented since.
+        //
+        // Sends the LIVE cursor position (_lastCursorLine/_lastCursorCol, kept current by
+        // OnSelectionChanged) plus a "reload":true flag, which monaco-embeditor.html's
+        // restoreEmbedState() checks FIRST — bypassing its one-shot "already restored" guard that would
+        // otherwise ignore cursorLine/cursorColumn on any setSource after the tab's first open (landing
+        // on line 1 regardless). That flag is CA-Editor-only by construction: nothing in
+        // ModernEmbeditorViewContent's own save/reload path ever sets it, so the CA Embeditor's reload
+        // behavior is completely unchanged by this. Scope note: the embeditor's reload has the exact
+        // same "lands on line 1" limitation today — deliberately NOT touched here; extending this to
+        // embed mode would need its own look first (a saved/live line can drift outside an editable
+        // embed slot after a regenerate, which lineInEditable's fileMode-always-true fast path never
+        // has to consider for a plain source file).
+        //
+        // KEEP IN SYNC: this setSource JSON is an independent copy of OnReady's, not shared code (see
+        // above) — if a field is added/removed/renamed in OnReady's setSource, mirror it here too.
+        void IMonacoEditorHost.OnReload(MonacoEditorControl editor)
+        {
+            try
+            {
+                if (_editor == null || _editor.TempDir == null || string.IsNullOrEmpty(_filePath)) return;
+                if (!File.Exists(_filePath))
+                {
+                    MonacoSpikeLog.Write("overlay reload: file no longer exists (" + _filePath + ")");
+                    try { editor.PostSaveResult(false, "Reload failed: file no longer exists."); } catch { }
+                    return;
+                }
+
+                Encoding enc = EncodingHelper.DetectFileEncoding(_filePath);
+                string text = File.ReadAllText(_filePath, enc);
+                _overlayLiveText = text;
+                _overlayDirty = false;
+
+                File.WriteAllText(Path.Combine(_editor.TempDir, "source.txt"), text, Encoding.UTF8);
+
+                string settingsJson;
+                try { settingsJson = new JavaScriptSerializer().Serialize(ModernEmbeditorSettings.Load().ToDict()); }
+                catch { settingsJson = "null"; }
+
+                string bpCsv = BreakpointLinesCsv();
+
+                string findHistJson = "[]", replHistJson = "[]", procHistJson = "[]";
+                try
+                {
+                    string sol, key; ResolveHistoryScope(out sol, out key);
+                    List<string> hf, hr, hp;
+                    ModernEmbeditorHistory.Load(sol, key, out hf, out hr, out hp);
+                    findHistJson = ModernEmbeditorHistory.ToJson(hf);
+                    replHistJson = ModernEmbeditorHistory.ToJson(hr);
+                    procHistJson = ModernEmbeditorHistory.ToJson(hp);
+                }
+                catch { }
+
+                CaptureIdeChromeColors();
+                bool fileReadOnly = IsFileReadOnly();
+                string pageTitle = fileReadOnly ? (_overlayTitle + " (read-only)") : _overlayTitle;
+                int curLine = _lastCursorLine >= 1 ? _lastCursorLine : 1;
+                int curCol = _lastCursorCol >= 1 ? _lastCursorCol : 1;
+                string json = "{\"type\":\"setSource\","
+                    + "\"reload\":true,"
+                    + "\"title\":" + MonacoEditorControl.JsonString(pageTitle) + ","
+                    + "\"language\":\"clarion\","
+                    + "\"isDark\":false,"
+                    + "\"chromeBg1\":" + MonacoEditorControl.JsonString(_chromeBg1 ?? "") + ","
+                    + "\"chromeBg2\":" + MonacoEditorControl.JsonString(_chromeBg2 ?? "") + ","
+                    + "\"fileMode\":true,"
+                    + "\"readOnly\":" + (fileReadOnly ? "true" : "false") + ","
+                    + "\"breakpointsEnabled\":true,"
+                    + "\"designerEnabled\":true,"
+                    + "\"filePath\":" + MonacoEditorControl.JsonString(_filePath ?? "") + ","
+                    + "\"saveEnabled\":" + (fileReadOnly ? "false" : "true") + ","
+                    + "\"findUiMode\":\"" + Services.CaFindSettings.FindUiModeForPage + "\","
+                    + "\"editableRanges\":[],"
+                    + "\"settings\":" + settingsJson + ","
+                    + "\"findHistory\":" + findHistJson + ",\"replaceHistory\":" + replHistJson + ",\"procHistory\":" + procHistJson + ","
+                    + "\"cursorLine\":" + curLine + ",\"cursorColumn\":" + curCol + ","
+                    + "\"bookmarks\":[],"
+                    + "\"snippets\":" + Services.SnippetStore.ToJson(Services.SnippetStore.Load()) + ","
+                    + "\"breakpoints\":[" + bpCsv + "],"
+                    + "\"sourceUrl\":\"https://clarion-embeditor-data/source.txt\"}";
+                _editor.PostJson(json);
+                MonacoSpikeLog.Write("overlay reload: re-read from disk and resent (" + _filePath + ", " + text.Length + " chars)");
+            }
+            catch (Exception ex)
+            {
+                MonacoSpikeLog.Write("overlay reload error: " + ex.Message);
+                try { editor.PostSaveResult(false, "Reload failed: " + ex.Message); } catch { }
+            }
+        }
         // The source-editor overlay has no Cancel affordance (the native file editor owns its own close); no-op.
         void IMonacoEditorHost.OnCancel(MonacoEditorControl editor) { }
         // No clickable header in the source-editor overlay (that's the embeditor overlay's feature); no-op.
@@ -1455,8 +1597,19 @@ namespace ClarionAssistant
         {
             try
             {
-                MonacoSpikeLog.Write("select-hook fired: claim CA Find pad + focus (" + (_filePath ?? "?") + ")");
                 ClarionAssistant.Services.CaFindBroker.NotifyActivity(this);
+                // A just-opened CA Find pad is actively fighting for focus right now (its own
+                // FocusAttempt schedule, CaFindPad.cs) — this hook fires repeatedly while that
+                // pad's panel is being docked/laid out for the first time, and stealing focus back
+                // to the editor here is exactly what was losing that fight (see CaFindBroker.
+                // SuppressEditorFocusSteal for the full story). Stand down for this short window;
+                // NotifyActivity above still runs so find/replace routing stays correct either way.
+                if (ClarionAssistant.Services.CaFindBroker.SuppressEditorFocusSteal)
+                {
+                    MonacoSpikeLog.Write("select-hook fired: SUPPRESSED (CA Find pad claiming focus) (" + (_filePath ?? "?") + ")");
+                    return;
+                }
+                MonacoSpikeLog.Write("select-hook fired: claim CA Find pad + focus (" + (_filePath ?? "?") + ")");
                 if (_editor != null)
                 {
                     _editor.FocusEditor();
@@ -1492,6 +1645,7 @@ namespace ClarionAssistant
 
         public override void Dispose()
         {
+            lock (_instances) { _instances.Remove(this); }
             StopCaptureTimer();
             try { if (_hookRetry != null) { _hookRetry.Stop(); _hookRetry.Dispose(); _hookRetry = null; } } catch { }
             UnwireBreakpoints();
