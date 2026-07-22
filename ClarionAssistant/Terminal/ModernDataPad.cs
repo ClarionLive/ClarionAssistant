@@ -1382,7 +1382,7 @@ namespace ClarionAssistant
         private bool _lastShownNative;
         private bool _lastShownSelection;    // last shown proc came from app-tree selection, not a focused editor
         private string _lastEnvKey = "\0"; // last (solution | version | active .red path) key; sentinel so the first tick posts the banner
-        private string _lastShownProc = " "; // sentinel so the first tick always refreshes
+        private string _lastShownProc = "\0"; // sentinel so the first tick always refreshes
 
         /// <summary>
         /// Auto-refresh via a timer (NOT a workbench event subscription). The event approach re-entered
@@ -1472,7 +1472,7 @@ namespace ClarionAssistant
             }
         }
 
-        public override void RedrawContent() { _lastShownProc = " "; Refresh(); }
+        public override void RedrawContent() { _lastShownProc = "\0"; Refresh(); }
 
         public override void Dispose()
         {
