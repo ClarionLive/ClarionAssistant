@@ -68,6 +68,7 @@ function registerClarionLanguage() {
 
 // Clarion code folding: data/control structures close with END (or a lone '.'); PROCEDURE and
 // ROUTINE have no END, so they fold to the next ROUTINE/PROCEDURE boundary (or end of buffer).
+// OMIT('term')/COMPILE('term') directives fold to the line containing their terminator (GH #133).
 // Shared by the embeditor AND the diff editor — also feeds Monaco's sticky-scroll scope headers.
 // Register once per Monaco page (folding providers are global per language id, but each WebView2
 // page hosts its own Monaco instance).
@@ -79,10 +80,26 @@ function registerClarionFolding() {
             var stack = [];
             var n = model.getLineCount();
             var lastProc = -1, lastRoutine = -1;
+            var omit = null;    // active OMIT/COMPILE region: {start, term} (GH #133)
             for (var i = 1; i <= n; i++) {
+                // OMIT('term') / COMPILE('term') fold to the line CONTAINING the terminator (GH #133).
+                // The terminator scan uses the RAW line — it commonly sits inside a comment ("!***") or on
+                // an otherwise-blank line, both of which the comment-strip below would erase. While a region
+                // is open, everything else is skipped: omitted code isn't compiled, so its ENDs/PROCEDUREs
+                // must not pop the structure stack or cut procedure boundaries. Directives don't nest.
+                if (omit) {
+                    if (model.getLineContent(i).toUpperCase().indexOf(omit.term) >= 0) {
+                        if (i > omit.start) ranges.push({ start: omit.start, end: i });
+                        omit = null;
+                    }
+                    continue;
+                }
                 var code = model.getLineContent(i).replace(/!.*$/, '').trim(); // strip line comment
                 if (code === '') continue;
                 var u = code.toUpperCase();
+
+                var om = /^(?:OMIT|COMPILE)\s*\(\s*'([^']+)'/.exec(u);
+                if (om) { omit = { start: i, term: om[1] }; continue; }
 
                 if (/^END\b/.test(u) || u === '.') {            // close most-recent structure
                     if (stack.length) {
@@ -111,6 +128,7 @@ function registerClarionFolding() {
                     continue;
                 }
             }
+            if (omit && n > omit.start) ranges.push({ start: omit.start, end: n });   // unterminated → rest of file is omitted
             if (lastRoutine !== -1 && n > lastRoutine) ranges.push({ start: lastRoutine, end: n });
             if (lastProc !== -1 && n > lastProc) ranges.push({ start: lastProc, end: n });
             return ranges;
