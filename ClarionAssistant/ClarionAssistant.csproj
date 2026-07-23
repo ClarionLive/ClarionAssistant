@@ -94,6 +94,7 @@
     <Compile Include="MonacoClarionSourceEditor.cs" />
     <Compile Include="Services\DocumentOutlineBuilder.cs" />
     <Compile Include="Services\EditorFocusGuard.cs" />
+    <Compile Include="Services\IdeEditorOptions.cs" />
     <Compile Include="AgentPanelPad.cs" />
     <Compile Include="AgentPanelControl.cs" />
     <Compile Include="ShowAgentPanelCommand.cs" />

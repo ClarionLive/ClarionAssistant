@@ -20,6 +20,11 @@ namespace ClarionAssistant.Services
     {
         public int TabSize = 2;
         public bool InsertSpaces = true;
+        // GH #126: when true (default), the EFFECTIVE tabSize/insertSpaces come from the IDE's own
+        // Options → Text Editor → Behavior values (see IdeEditorOptions) instead of the two stored
+        // prefs above. The stored prefs are kept untouched so unticking restores them exactly; the
+        // page computes the effective pair from the ide* keys ToDict ships alongside.
+        public bool FollowIdeIndentation = true;
         public bool AutoIndent = true;
         public bool WordWrap = false;
         public bool Minimap = true;
@@ -85,6 +90,7 @@ namespace ClarionAssistant.Services
                 var sv = new SettingsService();
                 s.TabSize = GetInt(sv, "TabSize", s.TabSize, 1, 16);
                 s.InsertSpaces = GetBool(sv, "InsertSpaces", s.InsertSpaces);
+                s.FollowIdeIndentation = GetBool(sv, "FollowIdeIndentation", s.FollowIdeIndentation);
                 s.AutoIndent = GetBool(sv, "AutoIndent", s.AutoIndent);
                 s.WordWrap = GetBool(sv, "WordWrap", s.WordWrap);
                 s.Minimap = GetBool(sv, "Minimap", s.Minimap);
@@ -106,6 +112,7 @@ namespace ClarionAssistant.Services
             var sv = new SettingsService();
             sv.Set(Prefix + "TabSize", Clamp(TabSize, 1, 16).ToString());
             sv.Set(Prefix + "InsertSpaces", InsertSpaces ? "true" : "false");
+            sv.Set(Prefix + "FollowIdeIndentation", FollowIdeIndentation ? "true" : "false");
             sv.Set(Prefix + "AutoIndent", AutoIndent ? "true" : "false");
             sv.Set(Prefix + "WordWrap", WordWrap ? "true" : "false");
             sv.Set(Prefix + "Minimap", Minimap ? "true" : "false");
@@ -129,6 +136,7 @@ namespace ClarionAssistant.Services
             if (d == null) return s;
             s.TabSize = Clamp(ToInt(d, "tabSize", s.TabSize), 1, 16);
             s.InsertSpaces = ToBool(d, "insertSpaces", s.InsertSpaces);
+            s.FollowIdeIndentation = ToBool(d, "followIdeIndentation", s.FollowIdeIndentation);
             s.AutoIndent = ToBool(d, "autoIndent", s.AutoIndent);
             s.WordWrap = ToBool(d, "wordWrap", s.WordWrap);
             s.Minimap = ToBool(d, "minimap", s.Minimap);
@@ -167,6 +175,7 @@ namespace ClarionAssistant.Services
             {
                 { "tabSize", TabSize },
                 { "insertSpaces", InsertSpaces },
+                { "followIdeIndentation", FollowIdeIndentation },
                 { "autoIndent", AutoIndent },
                 { "wordWrap", WordWrap },
                 { "minimap", Minimap },
@@ -180,6 +189,16 @@ namespace ClarionAssistant.Services
             // Merge the formatter pass-through bag so the bridge payload (load + cross-tab broadcast) carries
             // the gear-panel formatter options the same way it carries the editor keys.
             foreach (var kv in SanitizeFormatter(Formatter)) dict[kv.Key] = kv.Value;
+            // GH #126: ship the IDE's live Options → Text Editor indentation pair ALONGSIDE the stored
+            // prefs (never instead of them). The page computes the effective tabSize/insertSpaces
+            // (followIdeIndentation ? ide : stored), so persisted prefs survive the follow mode and
+            // unticking restores them exactly. Read fresh per payload — PropertyService is live.
+            int ideTab; bool ideSpaces;
+            if (IdeEditorOptions.TryRead(out ideTab, out ideSpaces))
+            {
+                dict["ideTabSize"] = ideTab;
+                dict["ideInsertSpaces"] = ideSpaces;
+            }
             return dict;
         }
 

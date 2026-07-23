@@ -610,6 +610,7 @@
         </div>
         <div class="gear-pane" id="gearPaneEditor">
         <h4>Editor settings</h4>
+        <label title="Use Clarion's own Options &#8594; Text Editor &#8594; Behavior values (Indentation size, Tab size, Convert Tabs to Spaces) so typing and the Smart Formatter match the native editor. Untick to set the two values below yourself. (GH #126)">Follow Clarion's editor options <input type="checkbox" id="setFollowIdeIndent"></label>
         <label>Tab size <input type="number" id="setTabSize" min="1" max="16" step="1"></label>
         <label>Insert spaces (not tabs) <input type="checkbox" id="setInsertSpaces"></label>
         <label>Smart auto-indent <input type="checkbox" id="setAutoIndent"></label>
@@ -1052,6 +1053,9 @@
                     theme: themePrefDark ? 'vs-dark' : 'vs',
                     readOnly: false,
                     automaticLayout: true,
+                    // Indentation is DRIVEN (gear panel / Clarion's Options via GH #126), never guessed
+                    // from file content — content-detection would silently override the configured pair.
+                    detectIndentation: false,
                     minimap: { enabled: true },
                     fontSize: 13,
                     mouseWheelZoom: true,   // Ctrl+wheel zooms the editor font (native Monaco)
@@ -3365,6 +3369,10 @@
     // ----- Editor settings (gear panel) -----
     // Settings arrive from the host on load (setSource) and on broadcast (applySettings, when another
     // tab changes them). Editing a control applies live AND posts to the host to persist + broadcast.
+    // GH #126: last IDE-shipped indentation pair (Options → Text Editor), cached across payloads so
+    // locally-built settings (which carry only stored prefs) keep honoring follow-IDE mode.
+    var _ideTabSize = null, _ideInsertSpaces = false;
+
     function applyEditorSettings(s) {
         if (!s) return;
         // Capture BEFORE the editor-ready guard so a settings broadcast that races Monaco init isn't lost for
@@ -3407,8 +3415,17 @@
         if (s.occurrenceHighlight === false) { clearOccurrenceDecorations(editor); clearOccurrenceDecorations(editor2); }
         // tabSize / insertSpaces are MODEL options in Monaco, not editor options.
         var model = editor.getModel();
-        if (model && typeof s.tabSize === 'number')
-            model.updateOptions({ tabSize: s.tabSize, insertSpaces: !!s.insertSpaces });
+        // GH #126: s.tabSize/s.insertSpaces are the user's STORED gear prefs; ideTabSize/ideInsertSpaces
+        // are the IDE's live Options → Text Editor values the host ships alongside (host payloads +
+        // broadcasts carry them; locally-built payloads from onSettingChanged don't, so the last
+        // host-shipped pair is cached). Effective pair = follow-mode ? IDE : stored. The Smart
+        // Formatter inherits automatically — formatterOptions() reads the live model options back.
+        if (typeof s.ideTabSize === 'number') { _ideTabSize = s.ideTabSize; _ideInsertSpaces = !!s.ideInsertSpaces; }
+        var followIde = (s.followIdeIndentation !== false);
+        var effTab = (followIde && _ideTabSize !== null) ? _ideTabSize : s.tabSize;
+        var effSpaces = (followIde && _ideTabSize !== null) ? _ideInsertSpaces : !!s.insertSpaces;
+        if (model && typeof effTab === 'number')
+            model.updateOptions({ tabSize: effTab, insertSpaces: effSpaces });
         // Key-binding overrides (command id -> chord). Replace the live map and re-dispatch from it.
         if (s.keyBindings && typeof s.keyBindings === 'object') {
             keyBindings = sanitizeLoadedKeyBindings(s.keyBindings);
@@ -3466,11 +3483,23 @@
         return clean;
     }
 
+    // GH #126: gray out the manual Tab size / Insert spaces inputs while follow-IDE mode owns them.
+    // The inputs keep showing the STORED prefs (not the IDE values), so unticking restores them exactly.
+    function syncFollowIdeUi() {
+        var f = document.getElementById('setFollowIdeIndent');
+        var on = !!(f && f.checked);
+        var el;
+        if ((el = document.getElementById('setTabSize'))) el.disabled = on;
+        if ((el = document.getElementById('setInsertSpaces'))) el.disabled = on;
+    }
+
     function populateSettingsPanel(s) {
         if (!s) return;
         var el;
+        if ((el = document.getElementById('setFollowIdeIndent'))) el.checked = (s.followIdeIndentation !== false);   // default ON (GH #126)
         if ((el = document.getElementById('setTabSize')) && typeof s.tabSize === 'number') el.value = s.tabSize;
         if ((el = document.getElementById('setInsertSpaces'))) el.checked = !!s.insertSpaces;
+        syncFollowIdeUi();
         if ((el = document.getElementById('setAutoIndent'))) el.checked = !!s.autoIndent;
         if ((el = document.getElementById('setWordWrap'))) el.checked = !!s.wordWrap;
         if ((el = document.getElementById('setMinimap'))) el.checked = !!s.minimap;
@@ -3548,6 +3577,9 @@
         function sel(id, dflt) { var e = document.getElementById(id); return (e && e.value) || dflt; }
         var D = formatterDefaults();
         return {
+            // GH #126: follow-IDE mode (default ON) — the host ships ideTabSize/ideInsertSpaces and the
+            // page computes the effective pair; the two stored values below stay the user's own prefs.
+            followIdeIndentation: (function () { var e = document.getElementById('setFollowIdeIndent'); return e ? !!e.checked : true; })(),
             tabSize: num('setTabSize', 2, 1, 16),
             insertSpaces: chk('setInsertSpaces'),
             autoIndent: chk('setAutoIndent'),
@@ -3837,7 +3869,7 @@
             var p = document.getElementById('settingsPanel');
             if (p) p.classList.toggle('hidden');
         });
-        var ids = ['setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setFontFamily', 'setOccurrenceHighlight', 'setHorizontalScrollbar',
+        var ids = ['setFollowIdeIndent', 'setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setFontFamily', 'setOccurrenceHighlight', 'setHorizontalScrollbar',
             // Smart Formatter controls
             'setPreferredColumn', 'setContLineMultiplier', 'setIndentComments', 'setDontIndentCol1Comments', 'setFormatLineOnEnter',
             'setAutoSpaceEquals', 'setLiveKeywordCase',
@@ -3848,6 +3880,9 @@
             var e = document.getElementById(ids[i]);
             if (e) e.addEventListener('change', onSettingChanged);
         }
+        // GH #126: toggling follow-IDE also grays/ungrays the manual pair (onSettingChanged persists it).
+        var fIde = document.getElementById('setFollowIdeIndent');
+        if (fIde) fIde.addEventListener('change', syncFollowIdeUi);
         // Seed the formatter controls from DEFAULTS immediately (before host settings arrive) so a keybind
         // persist that runs first doesn't read empty/unchecked formatter controls and clobber the defaults.
         populateFormatterPanel(lastSettings);

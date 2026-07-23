@@ -28,6 +28,26 @@ namespace ClarionAssistant.Services
         private static readonly List<Action<string>> _sinks = new List<Action<string>>();
         private const int MaxBridgeJsonBytes = 65536;   // mirror ModernEmbeditorViewContent.MaxBridgeJsonBytes
 
+        // GH #126: when the developer OKs Options → Text Editor, re-push the stored settings to every open
+        // Monaco surface — ToDict() re-reads the IDE indentation pair live, so followers pick the new values
+        // up immediately instead of on their next open. Static ctor = hooked once, on first Monaco use.
+        static MonacoSettingsBroadcaster()
+        {
+            try
+            {
+                ICSharpCode.Core.PropertyService.PropertyChanged += (s, e) =>
+                {
+                    try
+                    {
+                        if (e != null && e.Key == "TextEditorSettings")
+                            Broadcast(ModernEmbeditorSettings.Load());
+                    }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[MonacoSettingsBroadcaster] ide-options push: " + ex.Message); }
+                };
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[MonacoSettingsBroadcaster] PropertyChanged hook: " + ex.Message); }
+        }
+
         /// <summary>Register a sink (host→page JSON poster). Dispose the returned token to unregister.</summary>
         public static IDisposable Register(Action<string> postJson)
         {
