@@ -57,6 +57,19 @@ namespace ClarionAssistant
         private string _overlayLiveText; // last live buffer the page mirrored, for the close-save write
         private IDisposable _settingsReg; // registration in MonacoSettingsBroadcaster (cross-surface gear-settings sync, deac3d16)
 
+        // External disk watch: SourceSafe checkout/checkin flips the Windows read-only attribute, and any
+        // outside editor (Notepad++, another IDE) can change the content — neither is visible to us without
+        // this. See WireDiskWatch/CheckDiskState below for the full mechanism.
+        // _diskWatchDisposed guards a real race: a watcher/Error event can already be queued via BeginInvoke
+        // onto the (long-lived) workbench form BEFORE Dispose runs, and execute AFTER it — without this flag,
+        // that queued callback would recreate a live FileSystemWatcher/Timer that nothing will ever tear down.
+        private FileSystemWatcher _diskWatcher;
+        private Timer _diskWatchDebounce;
+        private volatile bool _diskWatchDisposed;
+        private bool _lastKnownReadOnly;
+        private DateTime _lastKnownWriteUtc;
+        private long _lastKnownLength = -1;
+
         // Host-driven navigation (debugger / breakpoint-list click via MonacoSourceNavigator). The page can't
         // be positioned until it signals ready, so a nav that arrives earlier is parked here and flushed in
         // OnReady. 1-based; _navPendingLine == 0 means "nothing queued".
@@ -428,6 +441,7 @@ namespace ClarionAssistant
                 if (_navPendingLine >= 1) { _editor.RevealLine(_navPendingLine, _navPendingCol); _navPendingLine = 0; }
                 if (navLine >= 1) _editor.RevealLine(navLine, navCol);
                 else ApplyPendingNavigation();   // nothing seeded → drain any nav that arrived between capture and ready
+                WireDiskWatch();   // start watching for external readonly/readwrite + content changes
             }
             catch (Exception ex) { MonacoSpikeLog.Write("overlay OnReady error: " + ex.Message); }
         }
@@ -959,6 +973,7 @@ namespace ClarionAssistant
                 string text = File.ReadAllText(_filePath, enc);
                 _overlayLiveText = text;
                 _overlayDirty = false;
+                RefreshDiskWatchBaseline();   // we just resynced with disk — any pending watcher event is now stale
 
                 File.WriteAllText(Path.Combine(_editor.TempDir, "source.txt"), text, Encoding.UTF8);
 
@@ -1236,6 +1251,8 @@ namespace ClarionAssistant
         }
         void IMonacoEditorHost.OnUnknownAction(MonacoEditorControl editor, string action, string rawJson)
         {
+            if (action == "diffWithDisk") { ShowDiskDiff(rawJson); return; }
+            if (action == "closeTab") { CloseWorkbenchTab(); return; }
             if (action != "toggleBreakpoint") return;
             // Gutter click in Monaco → toggle the IDE breakpoint on the native document. The native + CA
             // debuggers both listen to DebuggerService; the BreakPointAdded/Removed event re-pushes the set.
@@ -1349,7 +1366,224 @@ namespace ClarionAssistant
             // for UTF-8 or an unknown/missing encoding, write BOM-free UTF-8.
             if (enc == null || enc is UTF8Encoding) enc = NoBomUtf8;
             File.WriteAllText(_filePath, normalized, enc);
+            RefreshDiskWatchBaseline();   // this write is OURS — bring the baseline current so the watcher doesn't mistake it for an external change
             return normalized.Length;
+        }
+
+        // ── External disk watch (readonly/readwrite + content changes from outside the IDE) ────────
+        // FileSystemWatcher fires on a ThreadPool thread and often fires more than once for one logical
+        // change (SourceSafe touching attributes, an editor's atomic replace-save, antivirus scanning);
+        // a short UI-thread-owned debounce timer coalesces a burst into a single re-stat + notify pass.
+        // Our own writes (WriteToDisk) refresh the baseline immediately after writing, and OnReload
+        // refreshes it after re-syncing, so neither is ever mistaken for an "external" change even if a
+        // watcher event for it arrives late.
+
+        /// <summary>(Re)point the watcher at the current _filePath and capture a fresh baseline. Safe to
+        /// call more than once (idempotent) — OnReady is the only caller today, but a stray double-fire
+        /// must not leak a second watcher.</summary>
+        private void WireDiskWatch()
+        {
+            try
+            {
+                if (_diskWatchDisposed) return;   // instance is torn down — a queued Error-rewire must not resurrect a live watcher
+                UnwireDiskWatch();
+                if (string.IsNullOrEmpty(_filePath) || !File.Exists(_filePath)) return;
+                RefreshDiskWatchBaseline();
+                _diskWatcher = new FileSystemWatcher(Path.GetDirectoryName(_filePath), Path.GetFileName(_filePath));
+                _diskWatcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Attributes | NotifyFilters.Size | NotifyFilters.FileName;
+                _diskWatcher.Changed += OnDiskWatcherEvent;
+                _diskWatcher.Created += OnDiskWatcherEvent;
+                _diskWatcher.Renamed += OnDiskWatcherEvent;
+                _diskWatcher.Deleted += OnDiskWatcherEvent;
+                // The watcher observes the whole directory (Filter is applied client-side, not by the OS),
+                // so heavy unrelated churn there (build output, logs, another tool) can overflow its internal
+                // buffer. On that error the watcher silently goes dark forever unless recreated — rewire
+                // instead of just logging, so watching self-heals rather than quietly stopping.
+                _diskWatcher.Error += OnDiskWatcherError;
+                _diskWatcher.EnableRaisingEvents = true;
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("WireDiskWatch error: " + ex.Message); }
+        }
+
+        /// <summary>Stop watching and drop the debounce timer. Called from Dispose so a torn-down
+        /// editor's watcher/timer never fires against a disposed instance.</summary>
+        private void UnwireDiskWatch()
+        {
+            try
+            {
+                if (_diskWatcher != null)
+                {
+                    _diskWatcher.EnableRaisingEvents = false;
+                    _diskWatcher.Changed -= OnDiskWatcherEvent;
+                    _diskWatcher.Created -= OnDiskWatcherEvent;
+                    _diskWatcher.Renamed -= OnDiskWatcherEvent;
+                    _diskWatcher.Deleted -= OnDiskWatcherEvent;
+                    _diskWatcher.Error -= OnDiskWatcherError;
+                    _diskWatcher.Dispose();
+                }
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("UnwireDiskWatch error: " + ex.Message); }
+            finally { _diskWatcher = null; }
+            try { if (_diskWatchDebounce != null) { _diskWatchDebounce.Stop(); _diskWatchDebounce.Dispose(); } } catch { }
+            _diskWatchDebounce = null;
+        }
+
+        /// <summary>Record the current on-disk attribute/size/timestamp as "known" — called once when the
+        /// watcher attaches, after OnReload resyncs, and after every self-write (WriteToDisk), so only a
+        /// genuinely external change ever looks different from this baseline.</summary>
+        private void RefreshDiskWatchBaseline()
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(_filePath) || !File.Exists(_filePath)) return;
+                var fi = new FileInfo(_filePath);
+                _lastKnownReadOnly = fi.IsReadOnly;
+                _lastKnownWriteUtc = fi.LastWriteTimeUtc;
+                _lastKnownLength = fi.Length;
+            }
+            catch { }
+        }
+
+        // FileSystemWatcher callbacks land on a ThreadPool thread — hop to the UI thread before touching
+        // the Timer or any Monaco/WinForms state.
+        private void OnDiskWatcherEvent(object sender, FileSystemEventArgs e)
+        {
+            try
+            {
+                if (_diskWatchDisposed) return;
+                var form = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
+                // No workbench form (shutdown/teardown) → a notification doesn't matter anymore. Do NOT run
+                // ArmDiskWatchDebounce inline here: it constructs a System.Windows.Forms.Timer, which needs
+                // the creating thread's message pump to ever fire — this callback runs on a ThreadPool
+                // thread, which has none, so an inline call would silently create a Timer that never ticks.
+                if (form != null) form.BeginInvoke((Action)ArmDiskWatchDebounce);
+                else MonacoSpikeLog.Write("OnDiskWatcherEvent: no workbench form, dropping (shutdown)");
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("OnDiskWatcherEvent error: " + ex.Message); }
+        }
+
+        // The watcher raises Error (instead of throwing) on e.g. an internal buffer overflow — from then on
+        // it is permanently dead unless recreated. WireDiskWatch disposes any existing watcher first, so
+        // calling it again here is a clean rewire, not a leak.
+        private void OnDiskWatcherError(object sender, ErrorEventArgs e)
+        {
+            try
+            {
+                if (_diskWatchDisposed) return;
+                Exception inner = e.GetException();
+                MonacoSpikeLog.Write("DiskWatcher error, rewiring: " + (inner != null ? inner.Message : "(no exception)"));
+                var form = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
+                // Same reasoning as OnDiskWatcherEvent above: WireDiskWatch touches WinForms/FileSystemWatcher
+                // state that must be UI-thread-owned — never run it inline off the ThreadPool.
+                if (form != null) form.BeginInvoke((Action)WireDiskWatch);
+                else MonacoSpikeLog.Write("OnDiskWatcherError: no workbench form, dropping rewire (shutdown)");
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("OnDiskWatcherError handler error: " + ex.Message); }
+        }
+
+        private void ArmDiskWatchDebounce()
+        {
+            try
+            {
+                if (_diskWatchDisposed) return;   // BeginInvoke can deliver this after Dispose already tore the timer down
+                if (_diskWatchDebounce == null)
+                {
+                    _diskWatchDebounce = new Timer { Interval = 350 };
+                    _diskWatchDebounce.Tick += (s, e) => { _diskWatchDebounce.Stop(); CheckDiskState(); };
+                }
+                _diskWatchDebounce.Stop();
+                _diskWatchDebounce.Start();
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("ArmDiskWatchDebounce error: " + ex.Message); }
+        }
+
+        /// <summary>Re-stat the file against the last known baseline and tell the page what actually
+        /// changed. A readonly-only flip is applied silently (no user interaction, per the request that
+        /// started this); a content change always surfaces a toast (Reload / Show diff) — never a silent
+        /// auto-reload, so an open tab's content/scroll never shifts out from under the developer.</summary>
+        private void CheckDiskState()
+        {
+            try
+            {
+                if (_editor == null || string.IsNullOrEmpty(_filePath)) return;
+                if (!File.Exists(_filePath))
+                {
+                    _editor.PostJson("{\"type\":\"externalFileState\",\"deleted\":true,\"contentChanged\":false,\"readOnly\":false}");
+                    MonacoSpikeLog.Write("overlay external watch: file deleted/moved (" + _filePath + ")");
+                    return;
+                }
+                var fi = new FileInfo(_filePath);
+                bool nowReadOnly = fi.IsReadOnly;
+                bool contentChanged = fi.LastWriteTimeUtc != _lastKnownWriteUtc || fi.Length != _lastKnownLength;
+                bool readOnlyChanged = nowReadOnly != _lastKnownReadOnly;
+                if (!contentChanged && !readOnlyChanged) return;   // e.g. an AV scan touched mtime without a real change
+
+                _lastKnownReadOnly = nowReadOnly;
+                _lastKnownWriteUtc = fi.LastWriteTimeUtc;
+                _lastKnownLength = fi.Length;
+
+                string json = "{\"type\":\"externalFileState\",\"deleted\":false,"
+                    + "\"contentChanged\":" + (contentChanged ? "true" : "false") + ","
+                    + "\"readOnly\":" + (nowReadOnly ? "true" : "false") + "}";
+                _editor.PostJson(json);
+                MonacoSpikeLog.Write("overlay external watch: readOnly=" + nowReadOnly + " contentChanged=" + contentChanged + " (" + _filePath + ")");
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("CheckDiskState error: " + ex.Message); }
+        }
+
+        /// <summary>{action:"diffWithDisk"} from the external-change toast's "Show diff" button — routed
+        /// via OnUnknownAction (like toggleBreakpoint) rather than a new IMonacoEditorHost method, so
+        /// ModernEmbeditorViewContent (CA Embeditor) — which implements the same shared interface — is
+        /// completely untouched by this CA-Editor-only feature.</summary>
+        private void ShowDiskDiff(string rawJson)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(_filePath) || !File.Exists(_filePath)) return;
+                var data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(rawJson) as Dictionary<string, object>;
+                string liveText = (data != null && data.ContainsKey("text")) ? (data["text"] as string ?? "") : (_overlayLiveText ?? "");
+                Encoding enc = EncodingHelper.DetectFileEncoding(_filePath);
+                string diskText = File.ReadAllText(_filePath, enc);
+                var diff = new MonacoDiffViewContent(
+                    "External change: " + Path.GetFileName(_filePath), diskText, liveText, "clarion", false, Services.CaEditorSettings.MonacoThemeDark);
+                // This is a read-only comparison, not a code-review workflow — there's nothing to "apply"
+                // (unlike show_diff's usual Approve/Cancel meaning). Live testing confirmed both buttons were
+                // otherwise dead clicks with no wired handler; closing the tab either way is the only
+                // sensible behavior here.
+                diff.Applied += modifiedText => CloseDiffView(diff);
+                diff.Cancelled += () => CloseDiffView(diff);
+                ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench.ShowView(diff);
+                MonacoSpikeLog.Write("overlay external watch: opened disk-vs-editor diff for " + _filePath);
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("ShowDiskDiff error: " + ex.Message); }
+        }
+
+        private static void CloseDiffView(MonacoDiffViewContent diff)
+        {
+            try { var ww = diff.WorkbenchWindow; if (ww != null) ww.CloseWindow(true); }
+            catch (Exception ex) { MonacoSpikeLog.Write("CloseDiffView error: " + ex.Message); }
+        }
+
+        /// <summary>{action:"closeTab"} from the "file deleted externally" toast's "Close tab" button.
+        /// Closes via CloseWindow(false) — NOT forced — so this routes through the exact same cancellable
+        /// ClosingEvent that EnsureCloseHook already wires to OnWorkbenchClosing, meaning an unsaved-edits
+        /// prompt still fires exactly as it would for a normal tab-close click (Save there still recreates
+        /// the now-deleted file via WriteToDisk, same as clicking Save directly).</summary>
+        private void CloseWorkbenchTab()
+        {
+            try
+            {
+                object wbw = _wbWindow;
+                if (wbw == null) { try { wbw = GetType().GetProperty("WorkbenchWindow")?.GetValue(this, null); } catch { } }
+                if (wbw == null) { MonacoSpikeLog.Write("closeTab: WorkbenchWindow not available"); return; }
+                var m = wbw.GetType().GetMethod("CloseWindow", new[] { typeof(bool) });
+                if (m == null)
+                    foreach (var itf in wbw.GetType().GetInterfaces()) { m = itf.GetMethod("CloseWindow", new[] { typeof(bool) }); if (m != null) break; }
+                if (m == null) { MonacoSpikeLog.Write("closeTab: CloseWindow method not found on " + wbw.GetType().FullName); return; }
+                m.Invoke(wbw, new object[] { false });
+                MonacoSpikeLog.Write("overlay external watch: closeTab requested for " + (_filePath ?? "?"));
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("CloseWorkbenchTab error: " + ex.Message); }
         }
 
         private static void EnsureLsp()
@@ -1659,6 +1893,12 @@ namespace ClarionAssistant
             StopCaptureTimer();
             try { if (_hookRetry != null) { _hookRetry.Stop(); _hookRetry.Dispose(); _hookRetry = null; } } catch { }
             UnwireBreakpoints();
+            // Set BEFORE tearing down: a watcher/Error event can already be queued via BeginInvoke onto the
+            // (long-lived) workbench form before this Dispose runs and only execute after it — this flag is
+            // what stops that queued callback from resurrecting a live FileSystemWatcher/Timer (see WireDiskWatch/
+            // ArmDiskWatchDebounce's own guards).
+            _diskWatchDisposed = true;
+            try { UnwireDiskWatch(); } catch { }
             try { ClarionAssistant.Services.CaFindBroker.UnregisterHost(this); } catch { }
             try { MonacoSourceNavigator.Unregister(_filePath, this); } catch { }
             try { if (_closingEvt != null && _wbWindow != null && _closingHandler != null) _closingEvt.RemoveEventHandler(_wbWindow, _closingHandler); } catch { }
