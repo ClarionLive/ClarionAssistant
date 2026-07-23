@@ -1609,6 +1609,16 @@ namespace ClarionAssistant
                     MonacoSpikeLog.Write("select-hook fired: SUPPRESSED (CA Find pad claiming focus) (" + (_filePath ?? "?") + ")");
                     return;
                 }
+                // GH #140: the fork re-fires WindowSelected for every click into a docked pad while
+                // this Monaco document stays the active tab (Output-pane repro: one fire per click,
+                // often doubled). Claiming here would yank the keyboard straight back out of the pad
+                // — that was the Output pane's "deafness". If the user's focus is in a foreign pad,
+                // stand down; NotifyActivity above already kept find/replace routing correct.
+                if (_editor != null && ClarionAssistant.Services.EditorFocusGuard.FocusInForeignPad(_editor))
+                {
+                    MonacoSpikeLog.Write("select-hook fired: STAND DOWN (focus in foreign pad) (" + (_filePath ?? "?") + ")");
+                    return;
+                }
                 MonacoSpikeLog.Write("select-hook fired: claim CA Find pad + focus (" + (_filePath ?? "?") + ")");
                 if (_editor != null)
                 {

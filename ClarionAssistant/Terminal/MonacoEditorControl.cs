@@ -418,6 +418,10 @@ namespace ClarionAssistant.Terminal
                     t.Tick += (s, e) =>
                     {
                         try { t.Stop(); t.Dispose(); } catch { }
+                        // GH #140 defense-in-depth: if the user actively focused a pad since the
+                        // previous attempt, retrying would yank the keyboard back out of it — the
+                        // verify+retry exists to beat the WORKBENCH's late focus routing, not the user.
+                        if (Services.EditorFocusGuard.FocusInForeignPad(_webView)) return;
                         FocusAttempt(attempt + 1);
                     };
                     t.Start();
