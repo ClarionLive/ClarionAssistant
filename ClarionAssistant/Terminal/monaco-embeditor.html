@@ -337,7 +337,6 @@
     #findPanel:not(.findall) #findGrip,
     #findPanel:not(.findall) #findTabs,
     #findPanel:not(.findall) #findGrid,
-    #findPanel:not(.findall) .find-restools,
     #findPanel:not(.findall) .find-row > label,
     #findPanel:not(.findall) #findGo,
     #findPanel:not(.findall) #findHistClear,
@@ -440,7 +439,6 @@
     #findPanel.findall #replSel,
     #findPanel.findall #findCount,
     #findPanel.findall #findTabs,
-    #findPanel.findall .find-restools,
     #findPanel.findall .find-row > label,
     #findPanel.findall .find-row .find-spacer,
     #findPanel.findall .find-grid .c-chk { display: none; }
@@ -509,11 +507,6 @@
     .find-btn:hover { background: rgba(127,127,127,0.18); }
     .find-btn.primary { background: var(--find-accent); border-color: var(--find-accent); color: var(--on-fg); }
     .find-count { color: var(--title-color); white-space: nowrap; }
-
-    .find-restools { display: flex; align-items: center; gap: 14px; padding: 4px 10px;
-        border-top: 1px solid var(--toolbar-border); flex-shrink: 0; }
-    .find-link { color: var(--find-accent); cursor: pointer; white-space: nowrap; user-select: none; }
-    .find-link:hover { text-decoration: underline; }
 
     .find-grid { flex: 1; overflow: auto; }
     .find-grid table { width: 100%; border-collapse: collapse; }
@@ -749,8 +742,9 @@
             <span class="fa-title">Find All</span>
             <span class="fa-count" id="faCount"></span>
             <span class="find-spacer"></span>
-            <!-- Lives HERE, not in .find-restools: that row is display:none in BOTH panel modes (see the
-                 :not(.findall) and .findall rules above), so it never renders in the overlay. -->
+            <!-- Results tools live HERE, in the header. The overlay's Find-All column is a lean read-only
+                 match list by design (issue #116): Copy/Clear/Select are the CA Find pad's job, so the old
+                 .find-restools row was removed rather than revived. -->
             <button class="find-icon" id="openInDoc" title="Open results in an editor tab (with context)">&#8663;</button>
             <button class="find-icon" id="faClose" title="Close (Esc)">&#10005;</button>
         </div>
@@ -792,13 +786,6 @@
                 <button class="find-icon" id="replHistClear" title="Clear replace history">&#129529;</button>
             </div>
         </div>
-        </div>
-        <div class="find-restools">
-            <span class="find-link" id="selAll" title="Check every replaceable row">&#9638; Select All</span>
-            <span class="find-link" id="selNone" title="Uncheck every row">&#9634; Select None</span>
-            <span class="find-spacer"></span>
-            <span class="find-link" id="copyRes" title="Copy checked rows (or all if none checked)">&#10697; Copy</span>
-            <span class="find-link" id="clearRes" title="Clear results">&#129529; Clear results</span>
         </div>
         <div class="find-grid" id="findGrid">
             <table>
@@ -4587,23 +4574,6 @@
         document.addEventListener('mouseup', up);
     }
 
-    function setAllChecked(on) {
-        for (var i = 0; i < findResults.length; i++)
-            if (findResults[i].editable) findResults[i].checked = on;
-        var cbs = document.querySelectorAll('#findResults input[type=checkbox]');
-        for (var j = 0; j < cbs.length; j++) if (!cbs[j].disabled) cbs[j].checked = on;
-    }
-
-    function copyResults() {
-        syncFindMatches();   // copy live line numbers + text, not the pre-edit snapshot (#65)
-        var rows = findResults.filter(function (r) { return r.checked; });
-        if (!rows.length) rows = findResults;   // nothing checked → copy them all
-        var text = rows.map(function (r) { return r.line + ': ' + r.text; }).join('\r\n');
-        if (!text) return;
-        postToHost({ action: 'clipboard', text: text });
-        showToast('Copied ' + rows.length + ' line' + (rows.length === 1 ? '' : 's'), true);
-    }
-
     // ---- Find tabs ----
     function cloneOpts(o) {
         return { matchCase: o.matchCase, wholeWord: o.wholeWord, regex: o.regex, includeReadOnly: o.includeReadOnly };
@@ -5613,14 +5583,7 @@
         document.getElementById('replSel').addEventListener('click', function () { doReplace(true); });
         document.getElementById('replAll').addEventListener('click', function () { doReplace(false); });
 
-        document.getElementById('selAll').addEventListener('click', function () { setAllChecked(true); });
-        document.getElementById('selNone').addEventListener('click', function () { setAllChecked(false); });
         document.getElementById('openInDoc').addEventListener('click', openResultsInDoc);
-        document.getElementById('copyRes').addEventListener('click', copyResults);
-        document.getElementById('clearRes').addEventListener('click', function () {
-            findResults = []; findCurrentIdx = -1; lastFindQuery = null;
-            renderResults(); clearFindHighlights(); document.getElementById('findCount').textContent = '';
-        });
 
         document.getElementById('findGrip').addEventListener('mousedown', startGripDrag);
 
