@@ -1586,10 +1586,22 @@
         if (t && t.classList.contains('actionable') && t.classList.contains('show')) t.className = '';
     });
 
+    // Shared "Show diff" toast action (live buffer, including unsaved edits, vs. disk) — used by both the
+    // content-changed toast and the became-read-only-while-dirty toast below.
+    function postDiffWithDisk() {
+        var ed = activeEd(), model = ed && ed.getModel();
+        // Fall back to whatever the host last mirrored (_overlayLiveText) rather than sending
+        // no text at all if the model is transiently unavailable.
+        postToHost({ action: 'diffWithDisk', text: model ? model.getValue() : undefined });
+    }
+
     // {"type":"externalFileState",...} from the host's disk watcher (CA Editor / file mode only — the
-    // embeditor never sends this). Readonly/readwrite flips are applied silently (no user interaction,
-    // by design); a content change always surfaces an actionable toast — see showActionToast above for
-    // why it never auto-dismisses. Deleted/moved is a simple warning with no action (rare edge case).
+    // embeditor never sends this). Readonly/readwrite flips are applied silently UNLESS the tab has
+    // unsaved edits at the moment of the flip — those can no longer be saved once the file is read-only
+    // (e.g. a SourceSafe check-in with no unsaved edits should stay invisible; the same check-in while a
+    // tab is dirty should not let that edit vanish on close without ever telling the developer). A content
+    // change always surfaces an actionable toast — see showActionToast above for why it never auto-
+    // dismisses. Deleted/moved is a simple warning with no action (rare edge case).
     function handleExternalFileState(msg) {
         if (!fileMode) return;
         if (msg.deleted) {
@@ -1599,21 +1611,25 @@
             ]);
             return;
         }
+        var justWentReadOnlyDirty = !!msg.readOnly && !!msg.readOnlyChanged && isDirty;
         applyExternalReadOnly(!!msg.readOnly);
         if (msg.contentChanged) {
             var warn = isDirty
                 ? 'File changed on disk outside the editor. You have unsaved changes — Reload will discard them.'
                 : 'File changed on disk outside the editor.';
+            if (justWentReadOnlyDirty) warn = 'File changed on disk and is now read-only outside the editor. ' +
+                'Your unsaved changes can no longer be saved here — Reload will discard them.';
             showActionToast(warn, false, [
                 { label: 'Reload', onClick: function () { postToHost({ action: 'reload' }); } },
-                {
-                    label: 'Show diff', dismiss: false, onClick: function () {
-                        var ed = activeEd(), model = ed && ed.getModel();
-                        // Fall back to whatever the host last mirrored (_overlayLiveText) rather than sending
-                        // no text at all if the model is transiently unavailable.
-                        postToHost({ action: 'diffWithDisk', text: model ? model.getValue() : undefined });
-                    }
-                }
+                { label: 'Show diff', dismiss: false, onClick: postDiffWithDisk }
+            ]);
+        } else if (justWentReadOnlyDirty) {
+            // No content change, just the attribute flip (e.g. a plain check-in) — the file itself didn't
+            // diverge, only its writability did, so there's nothing to Reload from. Show diff only, so an
+            // edit that can no longer be saved is at least surfaced instead of silently lost on close.
+            showActionToast('This file just became read-only outside the editor. Your unsaved changes can ' +
+                'no longer be saved here.', false, [
+                { label: 'Show diff', dismiss: false, onClick: postDiffWithDisk }
             ]);
         }
     }

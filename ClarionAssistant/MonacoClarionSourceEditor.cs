@@ -1498,8 +1498,10 @@ namespace ClarionAssistant
         }
 
         /// <summary>Re-stat the file against the last known baseline and tell the page what actually
-        /// changed. A readonly-only flip is applied silently (no user interaction, per the request that
-        /// started this); a content change always surfaces a toast (Reload / Show diff) — never a silent
+        /// changed. A readonly-only flip is applied silently UNLESS the tab has unsaved edits at that
+        /// moment — those edits can no longer be saved once the file is read-only, so the page surfaces a
+        /// Show-diff toast instead of letting them vanish without notice on close (see readOnlyChanged
+        /// below). A content change always surfaces a toast (Reload / Show diff) — never a silent
         /// auto-reload, so an open tab's content/scroll never shifts out from under the developer.</summary>
         private void CheckDiskState()
         {
@@ -1524,7 +1526,8 @@ namespace ClarionAssistant
 
                 string json = "{\"type\":\"externalFileState\",\"deleted\":false,"
                     + "\"contentChanged\":" + (contentChanged ? "true" : "false") + ","
-                    + "\"readOnly\":" + (nowReadOnly ? "true" : "false") + "}";
+                    + "\"readOnly\":" + (nowReadOnly ? "true" : "false") + ","
+                    + "\"readOnlyChanged\":" + (readOnlyChanged ? "true" : "false") + "}";
                 _editor.PostJson(json);
                 MonacoSpikeLog.Write("overlay external watch: readOnly=" + nowReadOnly + " contentChanged=" + contentChanged + " (" + _filePath + ")");
             }
@@ -1870,14 +1873,26 @@ namespace ClarionAssistant
                 if (e.Cancel) return;
                 if (!(_overlayDirty && _overlayLiveText != null && !string.IsNullOrEmpty(_filePath))) return;
 
+                // This may be a background tab (closed via its own [x] while another tab is active) — bring
+                // it to the foreground before asking anything, so the developer can actually see which file
+                // the prompt is about, and so the read-only toast (lives inside this tab's own Monaco page)
+                // is visible rather than painting unseen behind the active tab.
+                try { _wbWindow?.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(_wbWindow, null); } catch { }
+
                 var owner = _wbWindow as IWin32Window;
+                // WinForms' MessageBox can't disable a single button, so a read-only file gets a Close/Cancel-
+                // only dialog instead — no "Yes" option that would just throw on WriteToDisk (see the toast in
+                // handleExternalFileState for the real recovery path: Show diff, then re-check-out and save).
+                bool readOnly = IsFileReadOnly();
+                string message = readOnly
+                    ? Path.GetFileName(_filePath) + " is read-only — its unsaved changes can't be saved here.\n\nClose anyway?"
+                    : "Save changes to " + Path.GetFileName(_filePath) + " before closing?";
+                var buttons = readOnly ? MessageBoxButtons.OKCancel : MessageBoxButtons.YesNoCancel;
                 var r = owner != null
-                    ? MessageBox.Show(owner, "Save changes to " + Path.GetFileName(_filePath) + " before closing?",
-                        "CA Editor — unsaved changes", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning)
-                    : MessageBox.Show("Save changes to " + Path.GetFileName(_filePath) + " before closing?",
-                        "CA Editor — unsaved changes", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
+                    ? MessageBox.Show(owner, message, "CA Editor — unsaved changes", buttons, MessageBoxIcon.Warning)
+                    : MessageBox.Show(message, "CA Editor — unsaved changes", buttons, MessageBoxIcon.Warning);
                 if (r == DialogResult.Cancel) { e.Cancel = true; return; }
-                if (r == DialogResult.Yes)
+                if (r == DialogResult.Yes)   // only reachable when !readOnly
                 {
                     int n = WriteToDisk(_overlayLiveText);
                     MonacoSpikeLog.Write("overlay close-save wrote: " + _filePath + " (" + n + " chars)");
