@@ -130,6 +130,23 @@
     }
     #toast.show { opacity: 1; transform: translateY(0); }
     #toast.err { background: #f38ba8; color: #1e1e2e; }
+    /* Actionable toast (external-change notice): has real buttons, so it must accept pointer events —
+       unlike the plain message toast above, which is deliberately click-through. */
+    #toast.actionable { pointer-events: auto; display: flex; align-items: center; gap: 10px; white-space: normal; }
+    #toast.actionable .toast-action-btn {
+        flex: none; border: 1px solid rgba(255,255,255,0.35); border-radius: 4px; background: rgba(255,255,255,0.12);
+        color: inherit; font-size: 11px; padding: 3px 9px; cursor: pointer;
+    }
+    #toast.actionable .toast-action-btn:hover { background: rgba(255,255,255,0.24); }
+    #toast.err.actionable .toast-action-btn { border-color: rgba(30,30,46,0.35); background: rgba(30,30,46,0.1); }
+    #toast.err.actionable .toast-action-btn:hover { background: rgba(30,30,46,0.2); }
+    /* Manual dismiss — visually subordinate to the real actions (no border, tighter padding) so it doesn't
+       compete with Reload/Show diff/Close tab, but still an obvious click target. */
+    #toast.actionable .toast-dismiss-btn {
+        margin-left: auto; border: none; background: transparent; padding: 3px 6px; opacity: 0.7; font-size: 12px;
+    }
+    #toast.actionable .toast-dismiss-btn:hover { opacity: 1; background: rgba(255,255,255,0.16); border-radius: 4px; }
+    #toast.err.actionable .toast-dismiss-btn:hover { background: rgba(30,30,46,0.16); }
 
     #toolbar #settingsBtn { padding: 3px 8px; font-size: 14px; line-height: 1; }
     #toolbar .tb-sep { width: 1px; align-self: stretch; margin: 4px 2px; background: var(--toolbar-border); }
@@ -1518,6 +1535,117 @@
         if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
         if (!persist)
             toastTimer = setTimeout(function () { t.className = ''; }, ok === false ? 8000 : 6000);
+    }
+
+    // A toast with real, clickable buttons (external-change notice: Reload / Show diff / Close tab). Unlike
+    // showToast, this never auto-dismisses on a timer — it stays up until the developer resolves it (or
+    // explicitly dismisses it) or another toast replaces it, since silently discarding the notice would leave
+    // a stale-content tab with no indication the file actually diverged from disk.
+    // Each action may set `dismiss: false` to opt out of auto-closing the toast on click — used by "Show
+    // diff", which is just a peek: the notice is still unresolved after looking, so Reload/Close tab must
+    // still be there afterward (confirmed via live testing: without this, clicking Show diff silently
+    // extinguished the notice with nothing actually decided).
+    // Always adds a manual "✕" dismiss button (not part of `actions`) plus Escape-to-dismiss, since there was
+    // previously no way to acknowledge-and-defer without committing to one of the offered actions.
+    function showActionToast(message, ok, actions) {
+        var t = document.getElementById('toast');
+        if (!t) return;
+        if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+        t.textContent = '';
+        var span = document.createElement('span');
+        span.textContent = message;
+        t.appendChild(span);
+        (actions || []).forEach(function (a) {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'toast-action-btn';
+            btn.textContent = a.label;
+            btn.addEventListener('click', function (ev) {
+                ev.stopPropagation();
+                if (a.dismiss !== false) t.className = '';   // resolving actions dismiss; a peek (dismiss:false) doesn't
+                // The toast may already be gone by the time onClick runs, so a throwing handler would
+                // otherwise leave the user with no toast, no error, and no way to retry.
+                try { a.onClick(); } catch (ex) { showToast('Action failed: ' + ex.message, false); }
+            });
+            t.appendChild(btn);
+        });
+        var dismissBtn = document.createElement('button');
+        dismissBtn.type = 'button';
+        dismissBtn.className = 'toast-action-btn toast-dismiss-btn';
+        dismissBtn.title = 'Dismiss';
+        dismissBtn.textContent = '✕';
+        dismissBtn.addEventListener('click', function (ev) { ev.stopPropagation(); t.className = ''; });
+        t.appendChild(dismissBtn);
+        t.className = 'show actionable' + (ok === false ? ' err' : '');
+    }
+    // Escape dismisses the actionable toast (a plain showToast is click-through/non-interactive and doesn't
+    // need this — only the actionable variant has pointer-events enabled and real focusable buttons).
+    document.addEventListener('keydown', function (ev) {
+        if (ev.key !== 'Escape') return;
+        var t = document.getElementById('toast');
+        if (t && t.classList.contains('actionable') && t.classList.contains('show')) t.className = '';
+    });
+
+    // Shared "Show diff" toast action (live buffer, including unsaved edits, vs. disk) — used by both the
+    // content-changed toast and the became-read-only-while-dirty toast below.
+    function postDiffWithDisk() {
+        var ed = activeEd(), model = ed && ed.getModel();
+        // Fall back to whatever the host last mirrored (_overlayLiveText) rather than sending
+        // no text at all if the model is transiently unavailable.
+        postToHost({ action: 'diffWithDisk', text: model ? model.getValue() : undefined });
+    }
+
+    // {"type":"externalFileState",...} from the host's disk watcher (CA Editor / file mode only — the
+    // embeditor never sends this). Readonly/readwrite flips are applied silently UNLESS the tab has
+    // unsaved edits at the moment of the flip — those can no longer be saved once the file is read-only
+    // (e.g. a SourceSafe check-in with no unsaved edits should stay invisible; the same check-in while a
+    // tab is dirty should not let that edit vanish on close without ever telling the developer). A content
+    // change always surfaces an actionable toast — see showActionToast above for why it never auto-
+    // dismisses. Deleted/moved is a simple warning with no action (rare edge case).
+    function handleExternalFileState(msg) {
+        if (!fileMode) return;
+        if (msg.deleted) {
+            showActionToast('File was deleted or moved outside the editor. You can keep editing — Save will ' +
+                'recreate it — or close this tab.', false, [
+                { label: 'Close tab', onClick: function () { postToHost({ action: 'closeTab' }); } }
+            ]);
+            return;
+        }
+        var justWentReadOnlyDirty = !!msg.readOnly && !!msg.readOnlyChanged && isDirty;
+        applyExternalReadOnly(!!msg.readOnly);
+        if (msg.contentChanged) {
+            var warn = isDirty
+                ? 'File changed on disk outside the editor. You have unsaved changes — Reload will discard them.'
+                : 'File changed on disk outside the editor.';
+            if (justWentReadOnlyDirty) warn = 'File changed on disk and is now read-only outside the editor. ' +
+                'Your unsaved changes can no longer be saved here — Reload will discard them.';
+            showActionToast(warn, false, [
+                { label: 'Reload', onClick: function () { postToHost({ action: 'reload' }); } },
+                { label: 'Show diff', dismiss: false, onClick: postDiffWithDisk }
+            ]);
+        } else if (justWentReadOnlyDirty) {
+            // No content change, just the attribute flip (e.g. a plain check-in) — the file itself didn't
+            // diverge, only its writability did, so there's nothing to Reload from. Show diff only, so an
+            // edit that can no longer be saved is at least surfaced instead of silently lost on close.
+            showActionToast('This file just became read-only outside the editor. Your unsaved changes can ' +
+                'no longer be saved here.', false, [
+                { label: 'Show diff', dismiss: false, onClick: postDiffWithDisk }
+            ]);
+        }
+    }
+
+    // Applies a readonly/readwrite flip WITHOUT touching content, cursor, or scroll — unlike a reload,
+    // this must be invisible to anything but the readOnly-dependent UI (editor options, Save button,
+    // title suffix). baseTitle already carries any "(read-only)" suffix set by the host at open/reload
+    // time, so strip-then-reapply keeps this idempotent no matter how it was set originally.
+    function applyExternalReadOnly(ro) {
+        try { editor.updateOptions({ readOnly: ro }); } catch (e) { }
+        try { if (editor2) editor2.updateOptions({ readOnly: ro }); } catch (e) { }
+        saveEnabled = !ro;
+        var sb = document.getElementById('saveBtn');
+        if (sb) sb.style.display = saveEnabled ? '' : 'none';
+        baseTitle = (baseTitle || '').replace(/ \(read-only\)$/, '') + (ro ? ' (read-only)' : '');
+        renderTitle();
     }
 
     // Clarion-style Ctrl+X: with a selection, cut it. With NO selection, REMOVE the whole current line —
@@ -5715,6 +5843,8 @@
                 snippetsList = msg.snippets || [];
                 if (snippetPickerOpen) renderSnippetPickerList();   // keep an open picker live if Settings was edited concurrently
                 renderGearSnippets();                               // refresh the gear-panel manager list
+            } else if (msg.type === 'externalFileState') {
+                handleExternalFileState(msg);
             }
         });
     }
