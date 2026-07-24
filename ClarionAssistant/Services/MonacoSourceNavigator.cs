@@ -104,6 +104,41 @@ namespace ClarionAssistant.Services
             }
         }
 
+        /// <summary>
+        /// Cross-addin entry point (reflection, same pattern as <see cref="NavigateToFileAndLine"/>): the
+        /// ACTIVE document's live Monaco cursor position — file path + 1-based line/column — for callers
+        /// (e.g. the standalone ClarionDebugger's "Run to cursor") that need "wherever the developer's
+        /// cursor actually is right now" rather than a specific known file/line. Frozen contract:
+        ///   bool ClarionAssistant.Services.MonacoSourceNavigator.TryGetActiveCursor(out string filePath, out int line, out int column)
+        /// Returns false if the active workbench window isn't a Monaco-hosted Clarion source editor, or
+        /// Monaco hasn't reported a cursor position yet (overlay just attached, before the first move) —
+        /// callers should treat false as "no usable cursor", not retry blindly.
+        /// </summary>
+        public static bool TryGetActiveCursor(out string filePath, out int line, out int column)
+        {
+            string fp = null; int ln = 0, col = 0; bool ok = false;
+            try
+            {
+                var form = WorkbenchSingleton.Workbench as Form;
+                if (form != null && form.InvokeRequired)
+                    form.Invoke(new Action(() => ok = TryGetActiveCursorOnUiThread(out fp, out ln, out col)));
+                else
+                    ok = TryGetActiveCursorOnUiThread(out fp, out ln, out col);
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("TryGetActiveCursor error: " + ex.Message); ok = false; }
+            filePath = fp; line = ln; column = col;
+            return ok;
+        }
+
+        private static bool TryGetActiveCursorOnUiThread(out string filePath, out int line, out int column)
+        {
+            filePath = null; line = 0; column = 0;
+            var window = WorkbenchSingleton.Workbench?.ActiveWorkbenchWindow;
+            var editor = (window?.ActiveViewContent ?? window?.ViewContent) as MonacoClarionEditor;
+            if (editor == null) return false;
+            return editor.TryGetLiveCursor(out filePath, out line, out column);
+        }
+
         /// <summary>Pop a parked navigation for <paramref name="filePath"/> (the editor applies it on load).</summary>
         internal static bool TryConsumePending(string filePath, out int line, out int column)
         {

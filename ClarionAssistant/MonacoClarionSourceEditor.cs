@@ -918,6 +918,15 @@ namespace ClarionAssistant
             }
             catch { }
         }
+
+        /// <summary>Cross-addin entry point (via MonacoSourceNavigator.TryGetActiveCursor): this editor's
+        /// live Monaco cursor position, kept current by OnSelectionChanged above. Returns false if Monaco
+        /// hasn't reported a position yet (e.g. the overlay just attached, before the first cursor move).</summary>
+        internal bool TryGetLiveCursor(out string filePath, out int line, out int column)
+        {
+            filePath = _filePath; line = _lastCursorLine; column = _lastCursorCol;
+            return line >= 1 && !string.IsNullOrEmpty(_filePath);
+        }
         void IMonacoEditorHost.OnFocusEditor(MonacoEditorControl editor) { }
 
         // Reload button (fileMode page, two-click confirm): discards the overlay's in-buffer edits and
