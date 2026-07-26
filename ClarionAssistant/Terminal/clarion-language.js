@@ -33,7 +33,11 @@ function registerClarionLanguage() {
             // otherwise misread as opening a block and auto-indent the next line. Mirrors the
             // same fix in ModernEmbeditorDiagnostics.cs (C#) and Clarion-Extension's
             // TokenPatterns.ts (PR #378).
-            increaseIndentPattern: /^\s*(?:(?:IF|LOOP|CASE|BEGIN|EXECUTE|ACCEPT|GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|OF|OROF|ELSE|ELSIF)\b|TOOLBAR\b(?=\s*(?:[(,!]|$)))(?![^!]*\.\s*$).*$/i,
+            // MENUBAR/MENU/SHEET/TAB/OPTION share TOOLBAR's exact ambiguity (nested inside
+            // WINDOW/REPORT bodies, legitimately bare — e.g. "OPTION,USE(?opt)") and are split
+            // out alongside it for the same reason (e.g. "option     LONG(0)", a plain local
+            // variable named "option", was misread as opening a block).
+            increaseIndentPattern: /^\s*(?:(?:IF|LOOP|CASE|BEGIN|EXECUTE|ACCEPT|GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|OF|OROF|ELSE|ELSIF)\b|(?:TOOLBAR|MENUBAR|MENU|SHEET|TAB|OPTION)\b(?=\s*(?:[(,!]|$)))(?![^!]*\.\s*$).*$/i,
             decreaseIndentPattern: /^\s*(END\b|\.\s*$|OF\b|OROF\b|ELSE\b|ELSIF\b|UNTIL\b|WHILE\b)/i
         }
     });
@@ -43,8 +47,8 @@ function registerClarionLanguage() {
             'PROGRAM', 'MEMBER', 'MAP', 'MODULE', 'CLASS', 'INTERFACE', 'PROCEDURE', 'FUNCTION',
             'ROUTINE', 'CODE', 'DATA', 'END', 'RETURN', 'EXIT', 'IF', 'THEN', 'ELSE', 'ELSIF',
             'CASE', 'OF', 'OROF', 'LOOP', 'WHILE', 'UNTIL', 'BREAK', 'CYCLE', 'DO', 'BEGIN',
-            'EXECUTE', 'GROUP', 'QUEUE', 'RECORD', 'FILE', 'VIEW', 'WINDOW', 'REPORT', 'MENU',
-            'MENUBAR', 'SHEET', 'TAB', 'OPTION', 'APPLICATION', 'DETAIL', 'HEADER',
+            'EXECUTE', 'GROUP', 'QUEUE', 'RECORD', 'FILE', 'VIEW', 'WINDOW', 'REPORT',
+            'APPLICATION', 'DETAIL', 'HEADER',
             'FOOTER', 'BREAK', 'FORM', 'SELF', 'PARENT', 'NEW', 'DISPOSE', 'THREAD', 'NULL',
             'TRUE', 'FALSE', 'AND', 'OR', 'XOR', 'NOT', 'CHOOSE', 'OMIT', 'COMPILE', 'INCLUDE',
             'EQUATE', 'ITEMIZE', 'TYPE', 'LIKE', 'DIM', 'OVER', 'NAME', 'PRE', 'STATIC', 'THREAD'
@@ -61,10 +65,11 @@ function registerClarionLanguage() {
                 [/\b\d+(?:\.\d+)?\b/, 'number'],
                 [/\b[0-9A-Fa-f]+[Hh]\b/, 'number.hex'],
                 [/[A-Za-z_][A-Za-z0-9_]*:/, 'type.identifier'],
-                // TOOLBAR is handled by its own rule (ahead of the generic identifier rule
-                // below) rather than the flat @keywords list — it needs a position-aware
-                // lookahead, not a bare \b match. See indentationRules comment above for why.
-                [/\bTOOLBAR\b(?=\s*(?:[(,!]|$))/i, 'keyword'],
+                // TOOLBAR/MENUBAR/MENU/SHEET/TAB/OPTION are handled by their own rule (ahead of
+                // the generic identifier rule below) rather than the flat @keywords list — they
+                // need a position-aware lookahead, not a bare \b match. See indentationRules
+                // comment above for why.
+                [/\b(?:TOOLBAR|MENUBAR|MENU|SHEET|TAB|OPTION)\b(?=\s*(?:[(,!]|$))/i, 'keyword'],
                 [/[A-Za-z_][A-Za-z0-9_]*/, {
                     cases: {
                         '@keywords': 'keyword',
@@ -84,13 +89,15 @@ function registerClarionLanguage() {
 // Register once per Monaco page (folding providers are global per language id, but each WebView2
 // page hosts its own Monaco instance).
 function registerClarionFolding() {
-    var STRUCT = /\b(GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)\b/;
+    var STRUCT = /\b(GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)\b/;
     // TOOLBAR split out with its own tight lookahead ('(', ',', '!' or end-of-line right after
     // the keyword) — STRUCT's bare \b would otherwise push the ABC toolbar template's ubiquitous
     // "Toolbar ToolbarClass" variable declaration onto the fold stack as a never-closed opener,
     // silently swallowing a later real END/'.' and folding unrelated code into it. Same fix as
     // ModernEmbeditorDiagnostics.cs (C#) and Clarion-Extension's TokenPatterns.ts (PR #378).
-    var TOOLBAR_OPEN = /^\s*TOOLBAR\b(?=\s*(?:[(,!]|$))/i;
+    // MENUBAR/MENU/SHEET/TAB/OPTION share the identical ambiguity (nested inside WINDOW/REPORT
+    // bodies, legitimately bare) and are split out alongside TOOLBAR for the same reason.
+    var TOOLBAR_OPEN = /^\s*(?:TOOLBAR|MENUBAR|MENU|SHEET|TAB|OPTION)\b(?=\s*(?:[(,!]|$))/i;
     monaco.languages.registerFoldingRangeProvider('clarion', {
         provideFoldingRanges: function (model) {
             var ranges = [];

@@ -44,7 +44,7 @@ namespace ClarionAssistant.Services
         // The lookahead (not [,(]|$ like BandOpen) deliberately allows code structures that take an
         // expression: LOOP I = 1 TO 10, CASE SomeVar, EXECUTE n.
         private static readonly Regex StructOpen = new Regex(
-            @"^\s*(?:[A-Za-z_][A-Za-z0-9_:]*\s+)?(GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)(?=\s|,|\(|$)",
+            @"^\s*(?:[A-Za-z_][A-Za-z0-9_:]*\s+)?(GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)(?=\s|,|\(|$)",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
         // TOOLBAR is nested inside WINDOW/APPLICATION bodies and legitimately written bare
         // ("TOOLBAR,USE(?Toolbar1)"), so StructOpen's generic lookahead (which accepts any
@@ -55,6 +55,15 @@ namespace ClarionAssistant.Services
         // TOOLBAR pattern (PR #378's companion fix in the real LSP).
         private static readonly Regex ToolbarOpen = new Regex(
             @"^\s*TOOLBAR\b(?=\s*(?:[(,!]|$))",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        // MENU/MENUBAR/SHEET/TAB/OPTION share TOOLBAR's exact ambiguity: all are nested inside
+        // WINDOW/APPLICATION/REPORT bodies and legitimately written bare (e.g. "OPTION,USE(?opt)",
+        // "TAB,USE(?tab1)"), so StructOpen's old generic lookahead also matched a bare LABEL
+        // declaration of the same name — e.g. "option     LONG(0)" (a plain local variable) or
+        // "Tab &TabClass". Deferred alongside TOOLBAR's fix (PR #136) at the time; now given the
+        // same tight lookahead ('(', ',', '!' or end-of-line right after the keyword).
+        private static readonly Regex NestedBandOpen = new Regex(
+            @"^\s*(MENUBAR|MENU|SHEET|TAB|OPTION)\b(?=\s*(?:[(,!]|$))",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex StructWordRx = new Regex(
             @"\b(IF|GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|TOOLBAR|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)\b",
@@ -76,9 +85,13 @@ namespace ClarionAssistant.Services
         // "MAP" / "MODULE('')" in a plain MAP...END prototype block):
         //   MAP, MODULE       — namespace-like scoping constructs, never labeled.
         //   ITEMIZE, JOIN     — nested inside LIST/VIEW bodies, never labeled.
-        //   HEADER, FOOTER, FORM, DETAIL, MENUBAR, MENU, TOOLBAR, SHEET, TAB, OPTION
+        //   HEADER, FOOTER, FORM, DETAIL
         //                     — nested inside WINDOW/REPORT bodies; identified by an optional
         //                       ?field-equate via USE(), not a plain leading label.
+        //   TOOLBAR, MENUBAR, MENU, SHEET, TAB, OPTION
+        //                     — same as above, but ALSO given their own tight-lookahead regex
+        //                       (ToolbarOpen / NestedBandOpen) so a bare label of the same name
+        //                       is never even offered to this set in the first place.
         // Execution structures (LOOP/CASE/BEGIN/EXECUTE/ACCEPT) legitimately have no preceding label
         // either and were never in this set.
         private static readonly HashSet<string> DeclarationStructKeywords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -211,6 +224,15 @@ namespace ClarionAssistant.Services
                             // capture group, Groups[1] is empty and never in DeclarationStructKeywords.
                             Match toolbarMatch = ToolbarOpen.Match(u);
                             if (toolbarMatch.Success) openMatch = toolbarMatch;
+                        }
+                        if (openMatch == null || !openMatch.Success)
+                        {
+                            // Same reasoning as ToolbarOpen, for MENU/MENUBAR/SHEET/TAB/OPTION: matched
+                            // keyword never takes a label, so the label gate below can't apply — its
+                            // Groups[1] value isn't checked against DeclarationStructKeywords here either
+                            // (none of these five are in that set).
+                            Match nestedMatch = NestedBandOpen.Match(u);
+                            if (nestedMatch.Success) openMatch = nestedMatch;
                         }
 
                         if (openMatch != null && openMatch.Success)
