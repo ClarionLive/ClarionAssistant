@@ -48,6 +48,8 @@ namespace ClarionAssistant
         private Timer _coverSafety;      // backstop: drop the cover even if the page never signals nav-completed
         private Control _navBar;         // native QuickClassBrowser bar (class/members combos) hidden while the overlay covers the editor; restored on teardown
         private ICSharpCode.TextEditor.TextEditorControl _hostEditor;   // the live editor we mirror
+        private ICSharpCode.TextEditor.Caret _watchedCaret;   // native caret mirrored into Monaco while overlay is on
+        private int _lastMirroredCaretLine = -1;              // 0-based; guards PositionChanged's double-fire (GoToLine sets Line then Column separately)
         private string _overlayTitle = "Clarion Source";
         // Active Clarion IDE theme's toolbar gradient (SerenityBlue/OfficeXP/…) → our overlay toolbar chrome, so
         // the CA Editor's toolbar matches the IDE theme like the embeditor's does. Captured at OnReady. (task c8e669d3)
@@ -246,6 +248,7 @@ namespace ClarionAssistant
                 _settingsReg = Services.MonacoSettingsBroadcaster.Register(json => { try { _editor?.PostJson(json); } catch { } });
                 if (_cover != null) _cover.BringToFront();   // cover ABOVE the WebView2 until Monaco has painted
                 WireBreakpoints();   // keep Monaco's gutter in sync with IDE breakpoints
+                WireCaretSync(host);   // mirror native caret jumps (Errors pane, Bookmarks, Find Next, breakpoint list) into Monaco
 
                 // Backstop: reveal Monaco after a few seconds even if OnEditorNavigationCompleted never arrives,
                 // so a failed load can never leave the cover stranded over a blank editor.
@@ -317,6 +320,58 @@ namespace ClarionAssistant
                 if (textArea != null) new Services.EditorService().GoToLine(textArea, line);
             }
             catch (Exception ex) { MonacoSpikeLog.Write("NativeGoTo error: " + ex.Message); }
+        }
+
+        // ── External-navigation mirror (Errors pane / Bookmarks / Find Next / breakpoint list) ─────
+        // None of these native, closed-source callers go through MonacoSourceNavigator — they set the
+        // hidden native Caret directly (same mechanism as EditorService.GoToLine/NavigateToFileAndLine),
+        // which Monaco never learns about (class banner above: "two-way sync is Phase 2"). Mirror any
+        // native caret-LINE change into the visible Monaco surface while the overlay is attached, so any
+        // such external jump lands correctly instead of leaving Monaco on its last-loaded position.
+
+        /// <summary>Subscribe to the native caret's PositionChanged once the overlay is attached (only
+        /// while Monaco is the visible surface — overlay-off already shows the native caret directly).</summary>
+        private void WireCaretSync(Control host)
+        {
+            try
+            {
+                var atc = (host as ICSharpCode.TextEditor.TextEditorControl)?.ActiveTextAreaControl;
+                _watchedCaret = atc?.Caret;
+                if (_watchedCaret == null) return;
+                _lastMirroredCaretLine = _watchedCaret.Line;
+                _watchedCaret.PositionChanged += NativeCaretPositionChanged;
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("WireCaretSync error: " + ex.Message); }
+        }
+
+        private void NativeCaretPositionChanged(object sender, EventArgs e)
+        {
+            try
+            {
+                if (_watchedCaret == null) return;
+                int line = _watchedCaret.Line;
+                if (line == _lastMirroredCaretLine) return;   // coalesce GoToLine's Line+Column double-fire
+                _lastMirroredCaretLine = line;
+                int column = _watchedCaret.Column;
+
+                // PositionChanged's firing thread isn't guaranteed across every native caller — marshal
+                // defensively, same pattern as MonacoSourceNavigator.NavigateToFileAndLine.
+                var form = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
+                if (form != null && form.InvokeRequired)
+                    form.Invoke(new Action(() => NavigateToLine(line + 1, column + 1)));   // native is 0-based, Monaco is 1-based
+                else
+                    NavigateToLine(line + 1, column + 1);
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("NativeCaretPositionChanged error: " + ex.Message); }
+        }
+
+        /// <summary>Unhook the native caret watch — called from Dispose so a torn-down editor's delegate
+        /// doesn't keep firing against a disposed instance.</summary>
+        private void UnwireCaretSync()
+        {
+            try { if (_watchedCaret != null) _watchedCaret.PositionChanged -= NativeCaretPositionChanged; }
+            catch (Exception ex) { MonacoSpikeLog.Write("UnwireCaretSync error: " + ex.Message); }
+            finally { _watchedCaret = null; }
         }
 
         // ── IMonacoEditorHost (converge step 4) ─────────────────────────────────────────────────
@@ -1661,6 +1716,7 @@ namespace ClarionAssistant
             UnwireBreakpoints();
             try { ClarionAssistant.Services.CaFindBroker.UnregisterHost(this); } catch { }
             try { MonacoSourceNavigator.Unregister(_filePath, this); } catch { }
+            try { UnwireCaretSync(); } catch { }
             try { if (_closingEvt != null && _wbWindow != null && _closingHandler != null) _closingEvt.RemoveEventHandler(_wbWindow, _closingHandler); } catch { }
             try { if (_selectedEvt != null && _wbWindow != null && _selectedHandler != null) _selectedEvt.RemoveEventHandler(_wbWindow, _selectedHandler); } catch { }
             _wbWindow = null; _closingEvt = null; _closingHandler = null; _selectedEvt = null; _selectedHandler = null;
