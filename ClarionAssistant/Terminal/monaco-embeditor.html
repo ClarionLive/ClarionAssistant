@@ -741,6 +741,7 @@
             <button class="ol-tbtn" id="outlineExpandAll" title="Expand all"><span class="codicon codicon-expand-all"></span></button>
             <button class="ol-tbtn" id="outlineCollapseAll" title="Collapse all"><span class="codicon codicon-collapse-all"></span></button>
             <button class="ol-tbtn" id="outlineFilterBtn" title="Filter symbols"><span class="codicon codicon-filter"></span></button>
+            <button class="ol-tbtn" id="outlineSortBtn" title="Sort symbols A-Z (each level sorted independently)"><span class="codicon codicon-sort-precedence"></span></button>
             <span class="find-spacer"></span>
             <span class="ol-count" id="outlineCount"></span>
             <button class="ol-tbtn" id="outlineClose" title="Close"><span class="codicon codicon-close"></span></button>
@@ -4879,6 +4880,7 @@
     var outlineCollapsed = {};   // path -> true when collapsed; survives refreshes so typing doesn't reset the tree
     var outlineSymbols = [];     // last regrouped (unfiltered) tree — filter/expand-all re-render off this
     var outlineFilter = '';      // active filter text ('' = none)
+    var outlineSortEnabled = false;   // when true, each level's children are sorted A-Z independently (order preserved otherwise)
     var outlineRenderedPaths = [];   // exact container paths from the last render (single source of truth for collapse-all)
     function positionOutline() {
         var op = document.getElementById('outlinePanel'), ed = document.getElementById('editor');
@@ -4918,11 +4920,30 @@
             })
             .catch(function () {});
     }
-    // Render the cached tree, applying the active filter (force-expanded so matches are visible).
+    // Render the cached tree, applying the active filter (force-expanded so matches are visible) and,
+    // if enabled, an A-Z sort applied independently at each level (siblings reordered, hierarchy untouched).
     function renderOutlineCurrent() {
         var f = (outlineFilter || '').trim().toLowerCase();
-        if (f) renderOutline(filterOutline(outlineSymbols, f), true);
-        else renderOutline(outlineSymbols, false);
+        var base = outlineSortEnabled ? sortSymbolsTree(outlineSymbols) : outlineSymbols;
+        if (f) renderOutline(filterOutline(base, f), true);
+        else renderOutline(base, false);
+    }
+    // Sorts each node's children A-Z by name, then recurses into them — never flattens across levels,
+    // so a class's Methods/Properties stay grouped as siblings and only reorder among themselves.
+    function sortSymbolsTree(nodes) {
+        if (!nodes || !nodes.length) return nodes || [];
+        var out = nodes.slice().sort(function (a, b) {
+            return (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base', numeric: true });
+        });
+        for (var i = 0; i < out.length; i++) {
+            if (out[i].children && out[i].children.length) out[i] = Object.assign({}, out[i], { children: sortSymbolsTree(out[i].children) });
+        }
+        return out;
+    }
+    function toggleOutlineSort() {
+        outlineSortEnabled = !outlineSortEnabled;
+        document.getElementById('outlineSortBtn').classList.toggle('active', outlineSortEnabled);
+        renderOutlineCurrent();
     }
     // Keep a node if it (or an ancestor) matches — then its whole subtree rides along — or if a descendant
     // matches (kept as a path node). Returns a filtered copy or null.
@@ -5628,6 +5649,7 @@
         document.getElementById('outlineExpandAll').addEventListener('click', expandOutlineAll);
         document.getElementById('outlineCollapseAll').addEventListener('click', collapseOutlineAll);
         document.getElementById('outlineFilterBtn').addEventListener('click', toggleOutlineFilter);
+        document.getElementById('outlineSortBtn').addEventListener('click', toggleOutlineSort);
         document.getElementById('outlineFilterClear').addEventListener('click', function () {
             var inp = document.getElementById('outlineFilterInput'); inp.value = ''; outlineFilter = ''; renderOutlineCurrent(); inp.focus();
         });
