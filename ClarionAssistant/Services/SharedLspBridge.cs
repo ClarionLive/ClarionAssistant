@@ -2299,9 +2299,18 @@ namespace ClarionAssistant.Services
             string className = ResolveInstanceType(lines, line, instance, filePath, out isInlineClass);
             if (string.IsNullOrEmpty(className)) return null;
 
+            // Dedupe key is each item's bare identifier (InsertText), not its display Label — the LSP labels
+            // a member with its type/signature attached (e.g. "MyField STRING", "MyMethod( LONG pField, ...)"),
+            // while MergeDbMembers below adds bare-name items ("MyField"). Keying on Label let a real LSP
+            // member slip past this dedup check and get re-added under its bare name — a visible duplicate
+            // row for any member the LSP already resolved correctly (e.g. a project-local class field).
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var it in primary)
-                if (it != null && !string.IsNullOrEmpty(it.Label)) seen.Add(it.Label);
+            {
+                if (it == null) continue;
+                string key = !string.IsNullOrEmpty(it.InsertText) ? it.InsertText : it.Label;
+                if (!string.IsNullOrEmpty(key)) seen.Add(key);
+            }
 
             // Add members from the project CodeGraph (most specific) then the ClarionGraph library DB; dedupe
             // across both. Collect them (unfiltered by partial) into two sets for the scoping decision below.
