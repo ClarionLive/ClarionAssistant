@@ -113,6 +113,21 @@ namespace ClarionAssistant.Services
             catch { return 0; }
         }
 
+        /// <summary>The live Caret object of the open native embeditor, or null. Used by the CA Embeditor
+        /// overlay to SUBSCRIBE to caret moves (task d19c036d): Clarion's own error→embed navigation keeps
+        /// repositioning the hidden native caret AFTER our overlay attaches — a one-shot GetNativeCaretLine
+        /// read at attach time misses it, and later error clicks into an already-open embed move only this
+        /// invisible caret.</summary>
+        public static ICSharpCode.TextEditor.Caret GetNativeCaret()
+        {
+            try
+            {
+                var control = GetActiveEmbeditorControl(new StringBuilder());
+                return control?.ActiveTextAreaControl?.Caret;
+            }
+            catch { return null; }
+        }
+
         /// <summary>
         /// Reflection-based locate of the embeditor's ICSharpCode TextEditorControl,
         /// then a typed cast. Mirrors AppTreeService.GetClaGenEditor()'s search.

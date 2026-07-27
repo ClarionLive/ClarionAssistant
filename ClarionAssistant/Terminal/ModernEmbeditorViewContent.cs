@@ -1028,6 +1028,15 @@ namespace ClarionAssistant.Terminal
         // to land Monaco at the embed point the developer had the native caret on when the overlay fired.
         private int _initialLine;
 
+        // Native embeditor caret mirror (task d19c036d, sibling of PR #144's source-editor mirror): while the
+        // overlay covers the live native embed, Clarion's own error→embed navigation keeps moving the HIDDEN
+        // native caret — both when it positions LATE on the open that triggered our attach (the one-shot
+        // GetNativeCaretLine read in AttachOverlayToOpenEmbed fires pre-paint, often before Clarion navigates)
+        // and on every later error click routed into the already-open embed. Subscribe to the caret and reveal
+        // each line change in Monaco so those jumps are visible instead of landing behind the overlay.
+        private ICSharpCode.TextEditor.Caret _nativeEmbedCaret;
+        private int _lastNativeEmbedLine = -1;   // 0-based; coalesces the Line-then-Column double-fire of one jump
+
         public ModernEmbeditorViewContent(string title, string sourceText, List<int[]> editableRanges,
             string language = "clarion", bool isDark = true, string procedureName = null, bool liveLinked = false,
             int initialLine = 0, Services.EmbedLspContext lspContext = null)
@@ -2001,6 +2010,49 @@ namespace ClarionAssistant.Terminal
             HideNativeChrome(host);
             CaptureNavIcons();
             HookOverlayTeardown(genEditor);
+            WireNativeEmbedCaretMirror();
+        }
+
+        /// <summary>Subscribe to the live native embeditor's caret while the overlay covers it (see the
+        /// _nativeEmbedCaret field comment). Idempotent: unwires any prior subscription first.</summary>
+        private void WireNativeEmbedCaretMirror()
+        {
+            try
+            {
+                UnwireNativeEmbedCaretMirror();
+                _nativeEmbedCaret = Services.EmbeditorCompletionService.GetNativeCaret();
+                if (_nativeEmbedCaret == null) return;
+                _lastNativeEmbedLine = _nativeEmbedCaret.Line;
+                _nativeEmbedCaret.PositionChanged += OnNativeEmbedCaretMoved;
+            }
+            catch (Exception ex) { ClarionAssistant.MonacoSpikeLog.Write("WireNativeEmbedCaretMirror error: " + ex.Message); }
+        }
+
+        private void UnwireNativeEmbedCaretMirror()
+        {
+            try { if (_nativeEmbedCaret != null) _nativeEmbedCaret.PositionChanged -= OnNativeEmbedCaretMoved; }
+            catch { }
+            finally { _nativeEmbedCaret = null; }
+        }
+
+        private void OnNativeEmbedCaretMoved(object sender, EventArgs e)
+        {
+            try
+            {
+                if (_nativeEmbedCaret == null || _panel == null) return;
+                int line = _nativeEmbedCaret.Line;
+                if (line == _lastNativeEmbedLine) return;   // coalesce the Line/Column double-fire of one jump
+                _lastNativeEmbedLine = line;
+                int column = _nativeEmbedCaret.Column;
+                Action reveal = () =>
+                {
+                    try { _panel?.RevealLine(line + 1, column + 1); }   // native 0-based → Monaco 1-based
+                    catch { }
+                };
+                if (_panel.IsHandleCreated && _panel.InvokeRequired) _panel.BeginInvoke(reveal);
+                else reveal();
+            }
+            catch (Exception ex) { ClarionAssistant.MonacoSpikeLog.Write("OnNativeEmbedCaretMoved error: " + ex.Message); }
         }
 
         /// <summary>Hide the native embeditor chrome (its ~24px Dock=Top toolbar strip with green-check/red-X/
@@ -2331,6 +2383,7 @@ namespace ClarionAssistant.Terminal
             if (_overlayDetached) return;
             _overlayDetached = true;
             UnhookOverlayTeardown();
+            UnwireNativeEmbedCaretMirror();   // stop mirroring BEFORE the native embed (and its caret) is torn down
             // Overlay mode is never ShowView'd, so the workbench never calls our Dispose() — this IS the
             // teardown for the shared session-scoped state too (broker entry, LSP shadow, instance list). (#119)
             TeardownSession();
@@ -3402,6 +3455,7 @@ namespace ClarionAssistant.Terminal
             // Shared session teardown (broker unregister, LSP shadow revert, instance list) — one path
             // with DetachOverlay so the two lists can't drift again. (#119)
             TeardownSession();
+            UnwireNativeEmbedCaretMirror();   // a disposed tab's delegate must not keep firing off the native caret
 
             // Dispose the editor control (its WebView2 + temp dir) FIRST so the confirm MessageBox below
             // can't get stuck behind a live WebView2 (the documented native<->WebView2 focus deadlock).
