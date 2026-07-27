@@ -547,8 +547,18 @@ namespace ClarionAssistant.Services
             {
                 if (memberScope != null && memberScope.Count > 0)
                 {
+                    // memberScope holds bare identifiers (see MergeMemberAccessCompletions/MergeDbMembers),
+                    // so match against each item's bare InsertText rather than its typed Label — the same
+                    // Label-vs-bare-identifier mismatch as the completion-merge dedupe fix above. Currently
+                    // a dormant edge case (post-fix, primary's items already carry typed Labels here so this
+                    // predicate matches nothing and the guard below leaves primary untouched) but kept
+                    // consistent so a future bare-labeled addition here can't silently drop typed members.
                     var scoped = primary.FindAll(it =>
-                        it != null && !string.IsNullOrEmpty(it.Label) && memberScope.Contains(it.Label));
+                    {
+                        if (it == null) return false;
+                        string key = !string.IsNullOrEmpty(it.InsertText) ? it.InsertText : it.Label;
+                        return !string.IsNullOrEmpty(key) && memberScope.Contains(key);
+                    });
                     if (scoped.Count > 0) primary = scoped;
                 }
             }
