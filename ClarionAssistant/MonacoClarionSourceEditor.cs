@@ -35,7 +35,7 @@ namespace ClarionAssistant
     /// fully-working ClarionEditor (TextEditorDisplayBindingWrapper + IStructureDesignerCompatible),
     /// so the designer/app-gen keep functioning through us.
     /// </summary>
-    public class MonacoClarionEditor : ClarionEditor, IMonacoEditorHost
+    public class MonacoClarionEditor : ClarionEditor, IMonacoEditorHost, ICSharpCode.SharpDevelop.Gui.IPositionable
     {
         private Timer _captureTimer;     // polls until the view's Control (text area) is realized
         private int _captureTries;
@@ -302,6 +302,32 @@ namespace ClarionAssistant
                 return true;
             }
             catch (Exception ex) { MonacoSpikeLog.Write("NavigateToLine error: " + ex.Message); return false; }
+        }
+
+        /// <summary>
+        /// IPositionable re-implementation (task d19c036d, follow-up to PR #144). The Errors pane (and any
+        /// other stock SD navigation) goes FileService.JumpToFilePosition → IPositionable.JumpTo on this view
+        /// content — which lands on the base wrapper's caret move against the HIDDEN native editor. PR #144
+        /// tried to observe that via Caret.PositionChanged, but the caret setter fires NO event when it is
+        /// already at the target, and Monaco's caret diverges from the hidden native one as you edit — so an
+        /// error click "worked" only when the invisible native caret happened to be elsewhere (John's
+        /// no-pattern repro, 7 errors in one generated .clw). base.JumpTo is a SEALED interface impl
+        /// (virtual final — cannot override), so this class re-lists IPositionable and hides JumpTo: run the
+        /// base behavior, then mirror to Monaco UNCONDITIONALLY with the exact requested position — no
+        /// event inference, no coalescing guard, works for repeat clicks on the same error. JumpTo is
+        /// 0-based in this SD version (see EditorService.GoToLine notes); NavigateToLine is 1-based.
+        /// The PositionChanged mirror stays for native movers that bypass JumpTo (bookmarks, Find Next).
+        /// </summary>
+        public new void JumpTo(int line, int column)
+        {
+            try { base.JumpTo(line, column); }
+            catch (Exception ex) { MonacoSpikeLog.Write("JumpTo base error: " + ex.Message); }
+            try
+            {
+                NavigateToLine(line + 1, column + 1);
+                MonacoSpikeLog.Write("JumpTo mirrored to Monaco: line " + (line + 1) + " (" + (_filePath ?? "?") + ")");
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("JumpTo mirror error: " + ex.Message); }
         }
 
         /// <summary>Pull and apply a navigation that the navigator parked for this file (on capture / ready).</summary>
