@@ -1820,7 +1820,9 @@
                                 rows.push(['Description', kk.description, 'cmt']);
                                 return buildKindPanel(kins, kk.keyType || 'KEY', '', rows, [
                                     ['PRIMARY', kk.primary, true], ['UNIQUE', kk.unique, true],
-                                    ['CASE SENSITIVE', kk.caseSensitive, true]
+                                    ['CASE SENSITIVE', kk.caseSensitive, true],
+                                    ['AUTO-NUMBER', kk.autoNumber, true],
+                                    ['EXCLUDE EMPTY', kk.excludeEmpty, false]
                                 ], 'double-click row inserts ' + kins);
                             }; })(k, ins) });
                         if (k.primary) { var pb = document.createElement('span'); pb.className = 'badge pk'; pb.textContent = 'PK'; kr.appendChild(pb); }
@@ -1900,22 +1902,32 @@
                                 }
                                 cgrid.appendChild(row);
 
-                                // Column panel: same field set as the variable panels (the declaration tail
-                                // carries DIM/OVER/NAME etc.; description/derived come from the live dict).
+                                // Column panel: full live-dictionary field detail (a9aa19ba round 2) — the
+                                // FieldForm's General/Attributes/Help/Validity data. Declaration-tail attrs
+                                // (DIM/OVER/NAME) back-fill when the live values are absent (.dcv fallback).
                                 wireSlidePanel(cic, row, cdkey, 60 + depth * 16, (function (cc, cpd2, cins, kidN) { return function () {
                                     var a = cpd2.attrs;
+                                    var jt = cc.justify ? cc.justify.charAt(0) + cc.justify.slice(1).toLowerCase().replace(',', ', ') : null;
+                                    var chips = (cc.flags || []).map(function (fl) { return [fl, true, false]; });
+                                    chips.push(['BINDABLE', a.BINDABLE !== undefined, false]);
                                     return buildKindPanel(cc.name, cpd2.display, cc.picture || '', [
                                         ['Members', kidN ? String(kidN) : null],
                                         ['Prompt', cc.prompt], ['Heading', cc.header],
                                         ['Description', cc.description, 'cmt'],
                                         ['Derived from', cc.derivedFrom, 'mono'],
-                                        ['External name', typeof a.NAME === 'string' ? a.NAME : null, 'mono'],
-                                        ['Dimension', typeof a.DIM === 'string' ? a.DIM : null, 'mono'],
+                                        ['External name', cc.extname || (typeof a.NAME === 'string' ? a.NAME : null), 'mono'],
+                                        ['Initial value', cc.initial, 'mono'],
+                                        ['Dimension', cc.dims || (typeof a.DIM === 'string' ? a.DIM : null), 'mono'],
                                         ['Place over', typeof a.OVER === 'string' ? a.OVER : null, 'mono'],
+                                        ['Row picture', cc.rowpic, 'mono'],
+                                        ['Case', cc.casetext],
+                                        ['Justify', jt],
+                                        ['Typing mode', cc.typemode === 'INS' ? 'Set Insert' : (cc.typemode === 'OVR' ? 'Set Overwrite' : cc.typemode)],
+                                        ['Validity', cc.validity],
+                                        ['Help ID', cc.helpid, 'mono'],
+                                        ['Tooltip', cc.tooltip], ['Message', cc.message],
                                         ['Comment', cpd2.comment ? '! ' + cpd2.comment : null, 'cmt']
-                                    ], [
-                                        ['BINDABLE', a.BINDABLE !== undefined, false]
-                                    ], 'double-click row inserts ' + cins);
+                                    ], chips, 'double-click row inserts ' + cins);
                                 }; })(c, cpd, ins, kids.length));
                                 if (open) walk(kids, depth + 1);
                             });

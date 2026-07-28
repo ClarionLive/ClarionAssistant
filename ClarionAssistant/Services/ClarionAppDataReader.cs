@@ -32,6 +32,16 @@ namespace ClarionAssistant.Services
             public string Message;  // MESSAGE('...') — the status-bar Msg text
             public string TypeMode; // TYPEMODE(INS|OVR|...) — typing mode
             public string Justify;  // JUSTIFY(RIGHT,1) etc. — justification + offset
+            // Live-dictionary column detail (ReadLiveField, a9aa19ba round 2) — null/empty when the
+            // source is the .txa (variables) or the field simply has no value.
+            public string ExternalName;   // SQL/external column name
+            public string InitialValue;
+            public string Dimensions;     // "5" / "5,3" from Dimension1..4
+            public string CaseText;       // Uppercase / Word Capitalized (Normal omitted)
+            public string HelpId;
+            public string RowPicture;     // only when it differs from ScreenPicture
+            public string Validity;       // friendly validity-check summary
+            public List<string> Flags;    // READ ONLY / PASSWORD / IMMEDIATE / AUTO-NUMBER / ...
         }
 
         // A dictionary key/index (rich form, populated by the live dictionary reader).
@@ -43,6 +53,8 @@ namespace ClarionAssistant.Services
             public bool Primary;
             public bool Unique;
             public bool CaseSensitive;
+            public bool AutoNumber;      // DDKey.AttributeAutoNum (a9aa19ba round 2)
+            public bool ExcludeEmpty;    // DDKey.AttributeExclude — exclude empty keys
             public string Description;
         }
 

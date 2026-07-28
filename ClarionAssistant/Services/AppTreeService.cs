@@ -2128,6 +2128,7 @@ namespace ClarionAssistant.Services
                 Description = EmptyToNull((GetProp(fobj, "Description") ?? "").ToString()),
                 DerivedFrom = EmptyToNull((GetProp(fobj, "DerivedFromFieldName") ?? "").ToString())
             };
+            ReadLiveFieldDetail(fobj, f);   // panel extras (a9aa19ba round 2) — best-effort, never throws
             bool isContainer = (GetProp(fobj, "IsContainer") as bool?) ?? false;
             if (isContainer)
             {
@@ -2142,8 +2143,9 @@ namespace ClarionAssistant.Services
             return f;
         }
 
-        // Clarion declaration type: string-family types carry their size (CSTRING(61)); others bare (LONG,
-        // GROUP, BLOB, DATE…). FieldSize is the declared size (byte length incl. null for CSTRING).
+        // Clarion declaration type: string-family types carry their size (CSTRING(61)), DECIMAL family
+        // carries characters+places (DECIMAL(10,2)); others bare (LONG, GROUP, BLOB, DATE…). FieldSize is
+        // the declared size (byte length incl. null for CSTRING).
         private string LiveFieldType(object fobj)
         {
             string dt = (GetProp(fobj, "DataType") ?? "").ToString();
@@ -2154,7 +2156,127 @@ namespace ClarionAssistant.Services
                 string sz = (GetProp(fobj, "FieldSize") ?? "").ToString();
                 if (!string.IsNullOrEmpty(sz) && sz != "0") return dt + "(" + sz + ")";
             }
+            if (dtU == "DECIMAL" || dtU == "PDECIMAL")
+            {
+                string ch = (GetProp(fobj, "Characters") ?? "").ToString();
+                string pl = (GetProp(fobj, "Places") ?? "").ToString();
+                if (!string.IsNullOrEmpty(ch) && ch != "0")
+                    return dt + "(" + ch + (pl != "" && pl != "0" ? "," + pl : "") + ")";
+            }
             return dt;
+        }
+
+        // Panel extras off the live DDField (a9aa19ba round 2): the FieldForm's Attributes / Help /
+        // Validity data the pad's column detail panel shows. Every read is guarded — a missing member
+        // on an older Clarion just leaves the value null (panel row omitted).
+        private void ReadLiveFieldDetail(object fobj, ClarionAppDataReader.FieldDef f)
+        {
+            try
+            {
+                f.ExternalName = EmptyToNull((GetProp(fobj, "ExternalName") ?? "").ToString());
+                f.InitialValue = EmptyToNull((GetProp(fobj, "InitialValue") ?? "").ToString());
+                f.HelpId = EmptyToNull((GetProp(fobj, "HelpID") ?? "").ToString());
+                f.Tooltip = EmptyToNull((GetProp(fobj, "ToolTip") ?? "").ToString());
+                f.Message = EmptyToNull((GetProp(fobj, "Message") ?? "").ToString());
+
+                // Row picture only when it genuinely differs from the screen picture.
+                string rp = (GetProp(fobj, "RowPicture") ?? "").ToString();
+                if (!string.IsNullOrEmpty(rp) && !string.Equals(rp, f.Picture, StringComparison.OrdinalIgnoreCase))
+                    f.RowPicture = rp;
+
+                // Dimensions "5" / "5,3" from Dimension1..4 (trailing zeros dropped).
+                var dims = new List<string>();
+                foreach (var dn in new[] { "Dimension1", "Dimension2", "Dimension3", "Dimension4" })
+                {
+                    string dv = (GetProp(fobj, dn) ?? "").ToString();
+                    if (dv == "" || dv == "0") break;
+                    dims.Add(dv);
+                }
+                if (dims.Count > 0) f.Dimensions = string.Join(",", dims);
+
+                // Enum-typed attributes: show the enum NAME (prettified page-side), defaults omitted.
+                string cs = (GetProp(fobj, "CaseAttribute") ?? "").ToString();
+                if (cs.IndexOf("Upper", StringComparison.OrdinalIgnoreCase) >= 0) f.CaseText = "Uppercase";
+                else if (cs.IndexOf("Cap", StringComparison.OrdinalIgnoreCase) >= 0) f.CaseText = "Word Capitalized";
+
+                string ju = (GetProp(fobj, "Justification") ?? "").ToString();
+                if (!string.IsNullOrEmpty(ju) && !string.Equals(ju, "None", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(ju, "Default", StringComparison.OrdinalIgnoreCase))
+                {
+                    string off = (GetProp(fobj, "Offset") ?? "").ToString();
+                    f.Justify = ju.ToUpperInvariant() + (off != "" && off != "0" ? "," + off : "");
+                }
+
+                string tm = (GetProp(fobj, "TypingMode") ?? "").ToString();
+                if (tm.IndexOf("Insert", StringComparison.OrdinalIgnoreCase) >= 0) f.TypeMode = "INS";
+                else if (tm.IndexOf("Over", StringComparison.OrdinalIgnoreCase) >= 0) f.TypeMode = "OVR";
+
+                // Flag chips (filled-only page-side).
+                var flags = new List<string>();
+                Action<string, string> flag = (prop, label) =>
+                { if ((GetProp(fobj, prop) as bool?) ?? false) flags.Add(label); };
+                flag("FlagReadOnly", "READ ONLY");
+                flag("FlagPassword", "PASSWORD");
+                flag("FlagImmediate", "IMMEDIATE");
+                flag("Freeze", "FREEZE");
+                flag("IsAutoNumber", "AUTO-NUMBER");
+                flag("Auto", "AUTO");
+                flag("Binary", "BINARY");
+                flag("IsNull", "NULLABLE");
+                flag("DoNotAutoPopulate", "NO-POPULATE");
+                if (flags.Count > 0) f.Flags = flags;
+
+                f.Validity = SummarizeValidity(fobj);
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[AppTree] ReadLiveFieldDetail: " + ex.Message); }
+        }
+
+        // Friendly one-line validity-check summary matching the FieldForm's Validity Checks tab. Keyed on
+        // the FieldValidationType enum NAME (name-based so enum reordering across versions can't bite).
+        private string SummarizeValidity(object fobj)
+        {
+            string vt = (GetProp(fobj, "ValidityChecks") ?? "").ToString();
+            if (string.IsNullOrEmpty(vt) || vt.IndexOf("No", StringComparison.OrdinalIgnoreCase) == 0) return null;
+            try
+            {
+                if (vt.IndexOf("Zero", StringComparison.OrdinalIgnoreCase) >= 0
+                    || vt.IndexOf("Blank", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return "Cannot be Zero or Blank";
+                if (vt.IndexOf("Range", StringComparison.OrdinalIgnoreCase) >= 0
+                    || vt.IndexOf("Numeric", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    bool hasLo = (GetProp(fobj, "ValidationHasLow") as bool?) ?? false;
+                    bool hasHi = (GetProp(fobj, "ValidationHasHigh") as bool?) ?? false;
+                    string lo = (GetProp(fobj, "ValidationLowestValue") ?? "").ToString();
+                    string hi = (GetProp(fobj, "ValidationHighestValue") ?? "").ToString();
+                    string r = "Must be in range";
+                    if (hasLo) r += " ≥ " + lo;
+                    if (hasHi) r += (hasLo ? "," : "") + " ≤ " + hi;
+                    return r;
+                }
+                if (vt.IndexOf("True", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    string tv = (GetProp(fobj, "ValidationTrueValue") ?? "").ToString();
+                    string fv = (GetProp(fobj, "ValidationFalseValue") ?? "").ToString();
+                    return "Must be True or False" + (tv != "" || fv != "" ? " (" + tv + "/" + fv + ")" : "");
+                }
+                if (vt.IndexOf("File", StringComparison.OrdinalIgnoreCase) >= 0
+                    || vt.IndexOf("Table", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    string tbl = (GetProp(GetProp(fobj, "ValidationLookupTable"), "Name") ?? "").ToString();
+                    bool nullOk = (GetProp(fobj, "EmptyOrZeroIsNull") as bool?) ?? false;
+                    return "Must be in table" + (tbl != "" ? " " + tbl : "") + (nullOk ? " (empty/zero = NULL)" : "");
+                }
+                if (vt.IndexOf("List", StringComparison.OrdinalIgnoreCase) >= 0
+                    || vt.IndexOf("Choice", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    string ch = (GetProp(fobj, "ValidationChoices") ?? "").ToString();
+                    if (ch == "") ch = (GetProp(fobj, "ValidationValues") ?? "").ToString();
+                    return "Must be in list" + (ch != "" ? ": " + ch : "");
+                }
+                return vt;   // unknown kind — show the raw enum name rather than hiding it
+            }
+            catch { return vt; }
         }
 
         // One live DDKey → KeyDef. Name unprefixed (Label); components are the member columns' labels.
@@ -2166,6 +2288,8 @@ namespace ClarionAssistant.Services
                 Primary = (GetProp(kobj, "AttributePrimary") as bool?) ?? false,
                 Unique = (GetProp(kobj, "AttributeUnique") as bool?) ?? false,
                 CaseSensitive = (GetProp(kobj, "AttributeCase") as bool?) ?? false,
+                AutoNumber = (GetProp(kobj, "AttributeAutoNum") as bool?) ?? false,
+                ExcludeEmpty = (GetProp(kobj, "AttributeExclude") as bool?) ?? false,
                 Description = EmptyToNull((GetProp(kobj, "Description") ?? "").ToString())
             };
             var kt = GetProp(kobj, "KeyType");

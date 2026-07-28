@@ -580,6 +580,19 @@ namespace ClarionAssistant.Terminal
             if (!string.IsNullOrEmpty(f.DerivedFrom)) d["derivedFrom"] = f.DerivedFrom;
             if (!string.IsNullOrEmpty(f.Prompt)) d["prompt"] = f.Prompt;
             if (!string.IsNullOrEmpty(f.Header)) d["header"] = f.Header;
+            // Column-panel extras (a9aa19ba round 2) — live-dictionary detail, emitted only when present.
+            if (!string.IsNullOrEmpty(f.ExternalName)) d["extname"] = f.ExternalName;
+            if (!string.IsNullOrEmpty(f.InitialValue)) d["initial"] = f.InitialValue;
+            if (!string.IsNullOrEmpty(f.Dimensions)) d["dims"] = f.Dimensions;
+            if (!string.IsNullOrEmpty(f.CaseText)) d["casetext"] = f.CaseText;
+            if (!string.IsNullOrEmpty(f.Justify)) d["justify"] = f.Justify;
+            if (!string.IsNullOrEmpty(f.TypeMode)) d["typemode"] = f.TypeMode;
+            if (!string.IsNullOrEmpty(f.HelpId)) d["helpid"] = f.HelpId;
+            if (!string.IsNullOrEmpty(f.Tooltip)) d["tooltip"] = f.Tooltip;
+            if (!string.IsNullOrEmpty(f.Message)) d["message"] = f.Message;
+            if (!string.IsNullOrEmpty(f.RowPicture)) d["rowpic"] = f.RowPicture;
+            if (!string.IsNullOrEmpty(f.Validity)) d["validity"] = f.Validity;
+            if (f.Flags != null && f.Flags.Count > 0) d["flags"] = f.Flags;
             if (f.Children != null && f.Children.Count > 0)
             {
                 var kids = new List<object>();
@@ -631,7 +644,8 @@ namespace ClarionAssistant.Terminal
                     {
                         { "name", k.Name }, { "components", comps }, { "keyType", k.KeyType },
                         { "primary", k.Primary }, { "unique", k.Unique },
-                        { "caseSensitive", k.CaseSensitive }, { "description", k.Description ?? "" }
+                        { "caseSensitive", k.CaseSensitive }, { "autoNumber", k.AutoNumber },
+                        { "excludeEmpty", k.ExcludeEmpty }, { "description", k.Description ?? "" }
                     });
                 }
             else
