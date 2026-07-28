@@ -65,6 +65,70 @@ namespace ClarionAssistant.Terminal
         /// teardown by Clarion's error navigation is disruptive. Read by ErrorPadNavigationInterceptor's
         /// dispatch rule (d3ab083a).</summary>
         internal static bool HasLiveOverlay { get { return _liveInstance != null; } }
+
+        /// <summary>
+        /// d3ab083a dispatch target: show an Errors-pane row INSIDE the live overlay instead of letting
+        /// the native route re-host the embeditor (the reload). Mapping: the row's module line minus
+        /// CommonGenEditor.BackgroundLineNumOffset ≈ the pwee document line (the composed
+        /// BackgroundPWEEText = before-text + live pwee slice + after-text, offset = slice start; both
+        /// populated by the background CC thread). Trust gates, each falling back to native (return
+        /// false): no live overlay / different module file / offset not populated yet / composed text's
+        /// line at the error position doesn't byte-match the on-disk module (CC's unproven-identity
+        /// caveat) / mapped line above the slice. line0/col0 are 0-based (Task convention).
+        /// </summary>
+        internal static bool TryRevealErrorInLiveOverlay(string fileName, int line0, int col0)
+        {
+            try
+            {
+                var live = _liveInstance;
+                if (live == null || !live._embedOverlay || live._panel == null || string.IsNullOrEmpty(fileName)) return false;
+                var gen = live._overlayGenEditor;
+                if (gen == null) return false;
+                var t = gen.GetType();
+
+                string genFile = t.GetProperty("FileName")?.GetValue(gen, null) as string;
+                if (string.IsNullOrEmpty(genFile)) return false;
+                bool sameFile;
+                try { sameFile = string.Equals(System.IO.Path.GetFullPath(genFile), System.IO.Path.GetFullPath(fileName), StringComparison.OrdinalIgnoreCase); }
+                catch { sameFile = string.Equals(System.IO.Path.GetFileName(genFile), System.IO.Path.GetFileName(fileName), StringComparison.OrdinalIgnoreCase); }
+                if (!sameFile) return false;
+
+                object offObj = t.GetProperty("BackgroundLineNumOffset")?.GetValue(gen, null);
+                if (!(offObj is int)) return false;
+                int offset = (int)offObj;
+                if (offset <= 0) return false;                    // background composition not ready (or unloaded)
+
+                int pweeLine0 = line0 - offset;
+                if (pweeLine0 < 0) return false;                  // above this procedure's slice — not ours
+
+                string composed = t.GetProperty("BackgroundPWEEText")?.GetValue(gen, null) as string;
+                if (string.IsNullOrEmpty(composed)) return false;
+                var compLines = composed.Split('\n');
+                if (line0 >= compLines.Length) return false;      // below the composed module — not ours
+                try
+                {
+                    var diskLines = System.IO.File.ReadAllLines(fileName);
+                    if (line0 < diskLines.Length &&
+                        !string.Equals(compLines[line0].TrimEnd('\r'), diskLines[line0], StringComparison.Ordinal))
+                    {
+                        ClarionAssistant.MonacoSpikeLog.Write("error reveal: composed/disk mismatch at line0 " + line0 + " — native fallback");
+                        return false;
+                    }
+                }
+                catch { }
+
+                live._panel.RevealLine(pweeLine0 + 1, col0 + 1);  // 0-based → Monaco 1-based
+                live.BringToFront();
+                ClarionAssistant.MonacoSpikeLog.Write("error revealed in live overlay: module line0 " + line0 +
+                    " -> pwee line " + (pweeLine0 + 1) + " (offset " + offset + ", " + System.IO.Path.GetFileName(fileName) + ")");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                ClarionAssistant.MonacoSpikeLog.Write("TryRevealErrorInLiveOverlay error: " + ex.Message);
+                return false;
+            }
+        }
         private static bool _liveWatchWired;                       // one-time ActiveWorkbenchWindowChanged subscription guard
         // Generation counter bumped at every live ACQUISITION (start of a live open, in ReleaseLiveInstanceSync).
         // A deferred switch-away release captures the gen when QUEUED and no-ops if a newer live open has since
