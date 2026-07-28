@@ -68,59 +68,49 @@ namespace ClarionAssistant.Terminal
 
         /// <summary>
         /// d3ab083a dispatch target: show an Errors-pane row INSIDE the live overlay instead of letting
-        /// the native route re-host the embeditor (the reload). Mapping: the row's module line minus
-        /// CommonGenEditor.BackgroundLineNumOffset ≈ the pwee document line (the composed
-        /// BackgroundPWEEText = before-text + live pwee slice + after-text, offset = slice start; both
-        /// populated by the background CC thread). Trust gates, each falling back to native (return
-        /// false): no live overlay / different module file / offset not populated yet / composed text's
-        /// line at the error position doesn't byte-match the on-disk module (CC's unproven-identity
-        /// caveat) / mapped line above the slice. line0/col0 are 0-based (Task convention).
+        /// the native route re-host the embeditor (the reload). Mapping is SELF-ANCHORED: locate a
+        /// distinctive run of the pwee document's opening lines inside the on-disk generated module —
+        /// one mechanism gives module identity (run found = this IS our module), the module→pwee line
+        /// offset, and validation (the mapped line must byte-match). No dependence on the fork's
+        /// background CC thread (CommonGenEditor.BackgroundLineNumOffset proved unpopulated in the
+        /// overlay context — first live test fell through silently). Every gate LOGS its reason; any
+        /// failure returns false = native fallback. line0/col0 are 0-based (Task convention).
+        /// Known v1 limit: the mapped line is in the OPEN-TIME baseline's line space — unsaved embed
+        /// edits ABOVE the target shift the live doc below them, so a reveal after heavy editing can be
+        /// off by the inserted/removed line count. Acceptable for the verify round; noted in the log.
         /// </summary>
         internal static bool TryRevealErrorInLiveOverlay(string fileName, int line0, int col0)
         {
             try
             {
                 var live = _liveInstance;
-                if (live == null || !live._embedOverlay || live._panel == null || string.IsNullOrEmpty(fileName)) return false;
-                var gen = live._overlayGenEditor;
-                if (gen == null) return false;
-                var t = gen.GetType();
+                if (live == null || !live._embedOverlay || live._panel == null)
+                { ClarionAssistant.MonacoSpikeLog.Write("error reveal: no live overlay (live=" + (live != null) + ")"); return false; }
+                if (string.IsNullOrEmpty(fileName) || !System.IO.File.Exists(fileName))
+                { ClarionAssistant.MonacoSpikeLog.Write("error reveal: row file missing (" + (fileName ?? "null") + ")"); return false; }
+                var pwee = live._pweeBaselineLines;
+                if (pwee == null || pwee.Length < 4)
+                { ClarionAssistant.MonacoSpikeLog.Write("error reveal: no pwee baseline captured"); return false; }
 
-                string genFile = t.GetProperty("FileName")?.GetValue(gen, null) as string;
-                if (string.IsNullOrEmpty(genFile)) return false;
-                bool sameFile;
-                try { sameFile = string.Equals(System.IO.Path.GetFullPath(genFile), System.IO.Path.GetFullPath(fileName), StringComparison.OrdinalIgnoreCase); }
-                catch { sameFile = string.Equals(System.IO.Path.GetFileName(genFile), System.IO.Path.GetFileName(fileName), StringComparison.OrdinalIgnoreCase); }
-                if (!sameFile) return false;
+                var disk = System.IO.File.ReadAllLines(fileName);
+                if (line0 < 0 || line0 >= disk.Length)
+                { ClarionAssistant.MonacoSpikeLog.Write("error reveal: line0 " + line0 + " outside module (" + disk.Length + " lines)"); return false; }
 
-                object offObj = t.GetProperty("BackgroundLineNumOffset")?.GetValue(gen, null);
-                if (!(offObj is int)) return false;
-                int offset = (int)offObj;
-                if (offset <= 0) return false;                    // background composition not ready (or unloaded)
+                int offset = ComputeAnchorOffset(pwee, disk);
+                if (offset == int.MinValue)
+                { ClarionAssistant.MonacoSpikeLog.Write("error reveal: anchor run not found in " + System.IO.Path.GetFileName(fileName) + " — different module or drifted source; native fallback"); return false; }
 
                 int pweeLine0 = line0 - offset;
-                if (pweeLine0 < 0) return false;                  // above this procedure's slice — not ours
+                if (pweeLine0 < 0 || pweeLine0 >= pwee.Length)
+                { ClarionAssistant.MonacoSpikeLog.Write("error reveal: mapped line " + pweeLine0 + " outside pwee doc (offset " + offset + ") — row is outside this procedure; native fallback"); return false; }
 
-                string composed = t.GetProperty("BackgroundPWEEText")?.GetValue(gen, null) as string;
-                if (string.IsNullOrEmpty(composed)) return false;
-                var compLines = composed.Split('\n');
-                if (line0 >= compLines.Length) return false;      // below the composed module — not ours
-                try
-                {
-                    var diskLines = System.IO.File.ReadAllLines(fileName);
-                    if (line0 < diskLines.Length &&
-                        !string.Equals(compLines[line0].TrimEnd('\r'), diskLines[line0], StringComparison.Ordinal))
-                    {
-                        ClarionAssistant.MonacoSpikeLog.Write("error reveal: composed/disk mismatch at line0 " + line0 + " — native fallback");
-                        return false;
-                    }
-                }
-                catch { }
+                if (!string.Equals(pwee[pweeLine0], disk[line0], StringComparison.Ordinal))
+                { ClarionAssistant.MonacoSpikeLog.Write("error reveal: validation mismatch at pwee " + pweeLine0 + " vs module " + line0 + " (offset " + offset + ") — native fallback"); return false; }
 
                 live._panel.RevealLine(pweeLine0 + 1, col0 + 1);  // 0-based → Monaco 1-based
                 live.BringToFront();
                 ClarionAssistant.MonacoSpikeLog.Write("error revealed in live overlay: module line0 " + line0 +
-                    " -> pwee line " + (pweeLine0 + 1) + " (offset " + offset + ", " + System.IO.Path.GetFileName(fileName) + ")");
+                    " -> pwee line " + (pweeLine0 + 1) + " (anchor offset " + offset + ", " + System.IO.Path.GetFileName(fileName) + ")");
                 return true;
             }
             catch (Exception ex)
@@ -128,6 +118,32 @@ namespace ClarionAssistant.Terminal
                 ClarionAssistant.MonacoSpikeLog.Write("TryRevealErrorInLiveOverlay error: " + ex.Message);
                 return false;
             }
+        }
+
+        /// <summary>Find where the pwee document's opening lines sit inside the generated module: the
+        /// first distinctive 3-line run of the pwee baseline that matches EXACTLY ONCE in the module
+        /// yields offset = moduleIndex - pweeIndex. Ambiguous runs are skipped; int.MinValue = no
+        /// unique anchor (different module, or the source drifted since generation).</summary>
+        private static int ComputeAnchorOffset(string[] pwee, string[] disk)
+        {
+            int probeLimit = Math.Min(pwee.Length - 2, 40);
+            for (int k = 0; k < probeLimit; k++)
+            {
+                if (pwee[k].Trim().Length < 5) continue;   // blank/trivial lines make weak anchors
+                int found = -1;
+                bool ambiguous = false;
+                for (int m = 0; m + 2 < disk.Length; m++)
+                {
+                    if (!string.Equals(disk[m], pwee[k], StringComparison.Ordinal)) continue;
+                    if (!string.Equals(disk[m + 1], pwee[k + 1], StringComparison.Ordinal)) continue;
+                    if (!string.Equals(disk[m + 2], pwee[k + 2], StringComparison.Ordinal)) continue;
+                    if (found >= 0) { ambiguous = true; break; }
+                    found = m;
+                }
+                if (ambiguous) continue;                   // try a more distinctive run further down
+                if (found >= 0) return found - k;
+            }
+            return int.MinValue;
         }
         private static bool _liveWatchWired;                       // one-time ActiveWorkbenchWindowChanged subscription guard
         // Generation counter bumped at every live ACQUISITION (start of a live open, in ReleaseLiveInstanceSync).
@@ -1096,6 +1112,10 @@ namespace ClarionAssistant.Terminal
         // to land Monaco at the embed point the developer had the native caret on when the overlay fired.
         private int _initialLine;
 
+        // Open-time pwee document lines (from the ctor's sourceText) — the error-reveal self-anchor
+        // (d3ab083a) locates these inside the generated module to map module lines → pwee lines.
+        private string[] _pweeBaselineLines;
+
         // Native embeditor caret mirror (task d19c036d, sibling of PR #144's source-editor mirror): while the
         // overlay covers the live native embed, Clarion's own error→embed navigation keeps moving the HIDDEN
         // native caret — both when it positions LATE on the open that triggered our attach (the one-shot
@@ -1130,6 +1150,9 @@ namespace ClarionAssistant.Terminal
         {
             _title = title ?? "Embeditor";
             _sourceText = sourceText ?? "";
+            // Open-time pwee baseline, line-split once — the self-anchored error-reveal mapping
+            // (TryRevealErrorInLiveOverlay, d3ab083a) matches these lines against the generated module.
+            _pweeBaselineLines = _sourceText.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
             _editableRanges = editableRanges ?? new List<int[]>();
             _language = language ?? "clarion";
             _isDark = isDark;
