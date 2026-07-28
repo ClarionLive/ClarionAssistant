@@ -56,8 +56,37 @@ namespace ClarionAssistant.Services
                 catch (Exception ex)
                 {
                     ClarionAssistant.MonacoSpikeLog.Write("error-task interception NOT installed: " + ex.Message);
+                    return;
                 }
             }
+            // Rows added BEFORE the hook installed (John's repro: build first, open the embeditor after —
+            // the pane was already full when EnsureInstalled ran, so every click hit the unwrapped native
+            // task). Sweep them now; the hook covers everything after. Outside the lock — Remove/Add
+            // re-enter OnTaskAdded.
+            WrapExistingTasks();
+        }
+
+        /// <summary>Wrap every non-CA task already in TaskService, preserving pane order: once any row
+        /// needs wrapping, ALL rows are cycled (Remove/Add in snapshot order) so relative order survives
+        /// the append-on-Add semantics. Idempotent — an all-wrapped list is a no-op.</summary>
+        private static void WrapExistingTasks()
+        {
+            try
+            {
+                var snapshot = new System.Collections.Generic.List<Task>(TaskService.Tasks);
+                bool anyForeign = false;
+                foreach (var t in snapshot)
+                    if (t != null && !(t is CaErrorTask)) { anyForeign = true; break; }
+                if (!anyForeign) return;
+                foreach (var t in snapshot)
+                {
+                    if (t == null) continue;
+                    TaskService.Remove(t);
+                    TaskService.Add(t is CaErrorTask ? t : new CaErrorTask(t));
+                }
+                ClarionAssistant.MonacoSpikeLog.Write("error-task sweep: wrapped pre-existing rows (" + snapshot.Count + " total)");
+            }
+            catch (Exception ex) { ClarionAssistant.MonacoSpikeLog.Write("error-task sweep error: " + ex.Message); }
         }
 
         public static void Uninstall()
