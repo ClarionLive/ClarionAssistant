@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Data pad — master/detail mockup</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1e1e1e; --sec-bg: #eef2f7; --sec-fg: #14344f;
+    --name: #17456e; --type: #6a7a8a; --pic: #8a97a3;
+    --row-hover: #f2f6fb; --row-sel: #e3eefb; --accent: #0a5dc2;
+    --det-bg: #f6f9fc; --det-border: #c9d9ea; --lbl: #7d8b99; --val: #2a3a4a;
+    --chip-bg: #e4ecf5; --chip-fg: #35597c; --danger: #b23a3a;
+    --btn-bg: #ffffff; --btn-border: #b9c8d8;
+  }
+  body.dark {
+    --bg: #1e1e2e; --fg: #d4d4e4; --sec-bg: #2a2a40; --sec-fg: #cfd8ff;
+    --name: #6cb6ff; --type: #8a9ab0; --pic: #6f7f90;
+    --row-hover: #26263a; --row-sel: #2c3a55; --accent: #6cb6ff;
+    --det-bg: #26263a; --det-border: #3a4a5a; --lbl: #8a97a8; --val: #c8d0dc;
+    --chip-bg: #33415a; --chip-fg: #a8c4e4; --danger: #e07070;
+    --btn-bg: #2a2a40; --btn-border: #4a5a70;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 12px 'Segoe UI', sans-serif; background: var(--bg); color: var(--fg); }
+
+  /* ---- mockup chrome (not part of the design) ---- */
+  #mock-bar { display:flex; gap:8px; align-items:center; padding:6px 10px; background:#444; color:#eee;
+              font-size:11px; position:sticky; top:0; z-index:9; }
+  #mock-bar button { font-size:11px; padding:2px 8px; cursor:pointer; }
+  .pad { max-width: 460px; margin: 10px auto 60px; border: 1px solid #b9c4cf; background: var(--bg); }
+  body.dark .pad { border-color: #3a3a52; }
+
+  /* ---- section headers (unchanged from real pad) ---- */
+  .sec { display:flex; align-items:center; gap:8px; padding: 5px 8px; background: var(--sec-bg);
+         color: var(--sec-fg); font-weight: 600; cursor: default; user-select:none; }
+  .sec .lbl { flex: 1; }
+  .sec .hact { font-weight: 400; color: var(--accent); cursor: pointer; font-size: 11.5px;
+               border-radius: 3px; padding: 0 4px; line-height: 16px; }
+  .sec .hact:hover { background: rgba(10,93,194,.14); }
+  body.dark .sec .hact:hover { background: rgba(108,182,255,.18); }
+  .sec .hact.add { font-weight: 700; font-size: 13px; }
+
+  /* ---- variable grid: name | type | picture ---- */
+  .vgrid { display: grid; grid-template-columns: minmax(150px, max-content) max-content 1fr; }
+  .vrow { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1;
+          align-items: center; cursor: default; padding: 2px 0; }
+  .vrow:hover { background: var(--row-hover); }
+  .vrow.sel { background: var(--row-sel); }
+  .vrow .namecell { display:flex; align-items: center; gap: 5px; }
+  .vrow .twisty { width: 11px; color: var(--type); cursor:pointer; font-size:10px; flex:none;
+                  margin-left: -15px; }
+
+  /* type icon — the detail trigger. Hover ring signals clickability. */
+  .ticon { width: 16px; height: 15px; flex: none; display: inline-flex; align-items: center;
+           justify-content: center; cursor: pointer; border-radius: 3px; }
+  .ticon:hover { background: rgba(10,93,194,.14); box-shadow: 0 0 0 1px var(--accent) inset; }
+  body.dark .ticon:hover { background: rgba(108,182,255,.18); }
+  .vrow.open .ticon { background: rgba(10,93,194,.14); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .ticon svg { display: block; }
+
+  .vrow .name { color: var(--name); white-space: nowrap; }
+  .vrow .type { color: var(--type); padding: 0 14px 0 22px; white-space: nowrap; }
+  .vrow .pic  { color: var(--pic); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 8px; }
+
+  /* ---- slide-down detail (grid-rows trick = smooth without fixed height) ---- */
+  .dwrap { grid-column: 1 / -1; display: grid; grid-template-rows: 0fr; transition: grid-template-rows .18s ease; }
+  .dwrap.open { grid-template-rows: 1fr; }
+  .dwrap > .dclip { overflow: hidden; }
+  .dpanel { margin: 0 6px 6px 26px; border-left: 3px solid var(--det-border); background: var(--det-bg);
+            padding: 8px 10px 9px; border-radius: 0 4px 4px 0; }
+
+  .dpanel .decl { font: 12px Consolas, 'Courier New', monospace; color: var(--val); margin-bottom: 7px;
+                  display:flex; align-items:center; gap: 10px; }
+  .dpanel .decl .dtype { color: var(--accent); }
+  .dpanel .decl .dpic  { color: var(--pic); }
+
+  .dgrid { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; margin-bottom: 2px; }
+  .dgrid .l { color: var(--lbl); font-size: 11px; text-transform: uppercase; letter-spacing: .3px;
+              padding-top: 1px; }
+  .dgrid .v { color: var(--val); }
+  .dgrid .v.mono { font-family: Consolas, monospace; }
+  .dgrid .v.cmt { color: #0a7d3a; font-style: italic; }
+  body.dark .dgrid .v.cmt { color: #5fd38a; }
+
+  .chips { display: flex; gap: 5px; flex-wrap: wrap; margin: 5px 0 2px; }
+  .chip { background: var(--chip-bg); color: var(--chip-fg); border-radius: 8px; padding: 1px 8px;
+          font-size: 10.5px; font-weight: 600; }
+  /* storage-class chip in the OFF state: hollow + dim, so the setting is still readable */
+  .chip.off { background: transparent; color: var(--lbl); border: 1px dashed var(--btn-border);
+              font-weight: 400; opacity: .75; }
+  .chip .st { font-size: 9.5px; }
+
+  .dactions { display: flex; gap: 8px; margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--det-border); }
+  .dactions button { display:flex; align-items:center; gap:5px; font: 11.5px 'Segoe UI'; padding: 3px 12px;
+                     border: 1px solid var(--btn-border); background: var(--btn-bg); color: var(--fg);
+                     border-radius: 3px; cursor: pointer; }
+  .dactions button:hover { border-color: var(--accent); color: var(--accent); }
+  .dactions button.del:hover { border-color: var(--danger); color: var(--danger); }
+  .dactions .hint { margin-left:auto; align-self:center; color: var(--lbl); font-size: 10.5px; font-style: italic; }
+</style>
+</head>
+<body>
+<div id="mock-bar">
+  <b>MOCKUP</b> — click the ICON to slide details; carat expands QUEUE/GROUP; row click = select
+  <span style="flex:1"></span>
+  <button onclick="document.body.classList.toggle('dark')">Light / Dark</button>
+</div>
+
+<div class="pad">
+  <div class="sec"><span class="lbl">▾ Global Data  (8)</span>
+    <span class="hact add" title="Add a global variable (opens Clarion’s field form)">＋</span>
+    <span class="hact" title="Edit the selected variable (opens Clarion’s field form)">✎</span>
+    <span class="hact" title="Delete the selected variable">🗑</span>
+    <span class="hact" title="Paste global variable definition(s) from the clipboard">📋</span>
+    <span class="hact" title="Collapse all">⊟</span><span class="hact" title="Expand all">⊞</span>
+  </div>
+  <div class="vgrid" id="gGlobal"></div>
+
+  <div class="sec"><span class="lbl">▾ Local Data  (31)</span>
+    <span class="hact add" title="Add a local variable (opens Clarion’s field form)">＋</span>
+    <span class="hact" title="Edit the selected variable (opens Clarion’s field form)">✎</span>
+    <span class="hact" title="Delete the selected variable">🗑</span>
+    <span class="hact" title="Paste local variable definition(s) from the clipboard">📋</span>
+    <span class="hact" title="Collapse all">⊟</span><span class="hact" title="Expand all">⊞</span>
+  </div>
+  <div class="vgrid" id="gLocal"></div>
+</div>
+
+<script>
+// name, type, picture, then extended detail. null/absent = row omitted from panel.
+var GLOBALS = [
+  { name:'dbgCount', type:'LONG', pic:'', storage:{thread:false, external:false, dll:false} },
+  { name:'Cust:Tag1', type:'STRING(5)', pic:'@s5', prompt:'Cust : Tag 1:', header:'Cust : Tag 1',
+    storage:{thread:false, external:false, dll:false} },
+  { name:'Cust:Tag', type:'STRING(5)', pic:'@s5', prompt:'Cust : Tag:', header:'Cust : Tag',
+    storage:{thread:false, external:false, dll:false} },
+  { name:'testvar7', type:'LONG', pic:'', storage:{thread:true, external:false, dll:false} },
+  { name:'Cust:Name3', type:'STRING(30)', pic:'@s30', prompt:'Cust : Name 3:', header:'Cust : Name 3',
+    storage:{thread:false, external:false, dll:false} },
+  { name:'Global1Edited', type:'STRING(20)', pic:'@s20', comment:'A Test',
+    storage:{thread:false, external:false, dll:false} },
+  { name:'GlobalDataTestVarFromMyDataPad', type:'STRING(20)', pic:'@s20',
+    storage:{thread:true, external:true, dll:true} },
+  { name:'AGlobalVar', type:'STRING(20)', pic:'@s20', initial:"'ABC'", flags:['STATIC'],
+    storage:{thread:true, external:false, dll:false} }
+];
+var LOCALS = [
+  { name:'Cust:Name_Copy', type:'STRING(30)', pic:'@s30', prompt:'Cust : Name Copy:', header:'Cust : Name Copy',
+    casing:'Uppercase', justify:'Left' },
+  { name:'Cust:Price', type:'DECIMAL(10,2)', pic:'@n-14.2', prompt:'Cust : Price:', header:'Cust : Price',
+    desc:'Unit price including tax', validity:'Cannot be Zero or Blank' },
+  { name:'Cust:Codes', type:'STRING(3),DIM(5)', pic:'@s3', prompt:'Cust : Codes:', header:'Cust : Codes',
+    dim:'5' },
+  { name:'Cust:Alias', type:"STRING(20),NAME('REALNAME')", pic:'@s20', prompt:'Cust : Alias:', header:'Cust : Alias',
+    extname:'REALNAME' },
+  { name:'Cust:When', type:'DATE', pic:'@d17', prompt:'Cust : When:', header:'Cust : When' },
+  { name:'qTest', type:'QUEUE', pic:'@s20', kind:'queue', prefix:'qT', desc:'Browse work queue',
+    storage:{thread:true}, children:[
+      { name:'qTest:testvar9', type:'LONG', pic:'@n-14' },
+      { name:'qTest:testvar8', type:'LONG', pic:'@n-14' },
+      { name:'qTest:testvar7', type:'LONG', pic:'@n-14' }
+  ]},
+  { name:'MyGroup', type:'GROUP', pic:'', kind:'group', prefix:'MG', flags:['BINDABLE'], children:[
+      { name:'MG:First', type:'STRING(10)', pic:'@s10' },
+      { name:'MG:Second', type:'LONG', pic:'' },
+      { name:'MG:SecondAsDate', type:'DATE', pic:'@d17', over:'MG:Second' }
+  ]},
+  { name:'Cust:Name2', type:'STRING(30)', pic:'@s30', prompt:'Cust : Name 2:', header:'Cust : Name 2',
+    helpid:'~CustName2', tooltip:'Customer name as printed on invoices' },
+  { name:'testvar2', type:'LONG', pic:'', options:'NOPOPULATE' },
+  { name:'Local2', type:'LONG', pic:'', derived:'GLO:RefCount' },
+  { name:'Local1', type:'STRING(20)', pic:'@s20', flags:['READ ONLY','PASSWORD'] }
+];
+
+// ---- type icons (inline SVG, sized for a 12px row) ----
+function iconFor(kind) {
+  if (kind === 'queue')  // amber folder
+    return '<svg width="13" height="11" viewBox="0 0 13 11">' +
+      '<path d="M.5 1.5 h4 l1 1.5 h6.5 v7 h-11.5 z" fill="#f5c96b" stroke="#b8860b" stroke-width="1"/></svg>';
+  if (kind === 'group')  // blue folder
+    return '<svg width="13" height="11" viewBox="0 0 13 11">' +
+      '<path d="M.5 1.5 h4 l1 1.5 h6.5 v7 h-11.5 z" fill="#9ec4e8" stroke="#3a72a8" stroke-width="1"/></svg>';
+  // variable — small teal box (like the native pad)
+  return '<svg width="12" height="10" viewBox="0 0 12 10">' +
+    '<rect x=".5" y="1.5" width="11" height="7" rx="1" fill="#8fd8e8" stroke="#2a7a9a" stroke-width="1"/>' +
+    '<line x1=".5" y1="3.8" x2="11.5" y2="3.8" stroke="#2a7a9a" stroke-width=".8"/></svg>';
+}
+
+function detailPanel(v) {
+  var d = document.createElement('div');
+  d.className = 'dpanel';
+  var declType = v.type + (v.prefix ? ',PRE(' + v.prefix + ')' : '');
+  var h = '<div class="decl"><span>' + v.name + '</span><span class="dtype">' + declType +
+          '</span>' + (v.pic ? '<span class="dpic">' + v.pic + '</span>' : '') + '</div>';
+  var rows = '';
+  function r(l, val, cls) { if (val) rows += '<div class="l">' + l + '</div><div class="v ' + (cls||'') + '">' + val + '</div>'; }
+  r('Prefix', v.prefix, 'mono');
+  r('Members', v.children ? String(v.children.length) : null);
+  r('Prompt', v.prompt); r('Heading', v.header);
+  r('Description', v.desc); r('Derived from', v.derived, 'mono');
+  r('Initial value', v.initial, 'mono'); r('External name', v.extname, 'mono');
+  r('Dimension', v.dim, 'mono'); r('Place over', v.over, 'mono');
+  r('Case', v.casing); r('Justify', v.justify);
+  r('Validity', v.validity);
+  r('Help ID', v.helpid, 'mono'); r('Tooltip', v.tooltip);
+  r('Options', v.options, 'mono');
+  r('Comment', v.comment ? '! ' + v.comment : null, 'cmt');
+  h += '<div class="dgrid">' + rows + '</div>';
+  // Storage Class chips: ALWAYS shown when the model has them — filled = ON, hollow = OFF —
+  // so "is this THREADed / EXTERNAL / in the data DLL?" is answered either way.
+  var chips = '';
+  if (v.storage) {
+    [['thread','THREAD'], ['external','EXTERNAL'], ['dll','DLL']].forEach(function (s) {
+      if (v.storage[s[0]] === undefined) return;   // not applicable (e.g. locals: no EXTERNAL/DLL)
+      var on = !!v.storage[s[0]];
+      chips += '<span class="chip' + (on ? '' : ' off') + '">' + s[1] +
+               ' <span class="st">' + (on ? '✓' : '✗') + '</span></span>';
+    });
+  }
+  if (v.flags) v.flags.forEach(function (f) { chips += '<span class="chip">' + f + '</span>'; });
+  if (chips) h += '<div class="chips">' + chips + '</div>';
+  h += '<div class="dactions"><button>✎&nbsp;Edit</button><button class="del">🗑&nbsp;Delete</button>' +
+       '<span class="hint">double-click row inserts ' + v.name + '</span></div>';
+  d.innerHTML = h;
+  return d;
+}
+
+function build(gridId, items, scope, depth, parentKey) {
+  var grid = document.getElementById(gridId);
+  items.forEach(function (v) {
+    var key = (parentKey || scope) + '/' + v.name;
+    var row = document.createElement('div');
+    row.className = 'vrow';
+    row.dataset.key = key;
+
+    var nc = document.createElement('div');
+    nc.className = 'namecell';
+    nc.style.paddingLeft = (26 + (depth || 0) * 16) + 'px';
+
+    if (v.children) {                       // carat = expand/collapse children ONLY
+      var tw = document.createElement('span'); tw.className = 'twisty'; tw.textContent = '▾';
+      tw.title = 'Expand / collapse';
+      tw.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var open = tw.textContent === '▾';
+        tw.textContent = open ? '▸' : '▾';
+        document.querySelectorAll('[data-childof]').forEach(function (el) {
+          if (el.dataset.childof.indexOf(key + '/') === 0 || el.dataset.childof === key)
+            el.style.display = open ? 'none' : '';
+        });
+      });
+      nc.appendChild(tw);
+    }
+
+    var ic = document.createElement('span');   // icon = the detail trigger
+    ic.className = 'ticon';
+    ic.innerHTML = iconFor(v.kind);
+    ic.title = 'Show details for ' + v.name;
+    nc.appendChild(ic);
+
+    var nm = document.createElement('span'); nm.className = 'name'; nm.textContent = v.name;
+    nc.appendChild(nm);
+    row.appendChild(nc);
+    var ty = document.createElement('div'); ty.className = 'type'; ty.textContent = v.type; row.appendChild(ty);
+    var pc = document.createElement('div'); pc.className = 'pic'; pc.textContent = v.pic || ''; row.appendChild(pc);
+    if (parentKey) row.dataset.childof = parentKey;
+    grid.appendChild(row);
+
+    var wrap = document.createElement('div'); wrap.className = 'dwrap';
+    if (parentKey) wrap.dataset.childof = parentKey;
+    var clip = document.createElement('div'); clip.className = 'dclip';
+    clip.appendChild(detailPanel(v));
+    wrap.appendChild(clip);
+    grid.appendChild(wrap);
+
+    // Icon click → accordion detail. Row click → plain select highlight only.
+    ic.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var was = wrap.classList.contains('open');
+      document.querySelectorAll('.dwrap.open').forEach(function (w) { w.classList.remove('open'); });
+      document.querySelectorAll('.vrow.open').forEach(function (r2) { r2.classList.remove('open'); });
+      if (!was) { wrap.classList.add('open'); row.classList.add('open'); }
+    });
+    row.addEventListener('click', function () {
+      document.querySelectorAll('.vrow.sel').forEach(function (r2) { r2.classList.remove('sel'); });
+      row.classList.add('sel');
+    });
+
+    if (v.children) build(gridId, v.children, scope, (depth || 0) + 1, key);
+  });
+}
+build('gGlobal', GLOBALS, 'global', 0);
+build('gLocal', LOCALS, 'local', 0);
+</script>
+</body>
+</html>
