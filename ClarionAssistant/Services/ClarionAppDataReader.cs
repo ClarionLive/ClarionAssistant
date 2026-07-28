@@ -25,6 +25,13 @@ namespace ClarionAssistant.Services
             public string Header;
             public string Description; // dictionary column description (live dict)
             public string DerivedFrom; // source field label if this column is derived (live dict)
+            // Extra display metadata off the .txa "!!>" line (a9aa19ba detail panels). Everything else the
+            // panel shows (PRE/THREAD/EXTERNAL/DLL/STATIC/DIM/OVER/NAME/UPR/CAP + trailing !comment) is
+            // already carried inside Type — the full declaration tail — and parsed page-side.
+            public string Tooltip;  // TOOLTIP('...') — the FieldForm's Help/Tooltip text
+            public string Message;  // MESSAGE('...') — the status-bar Msg text
+            public string TypeMode; // TYPEMODE(INS|OVR|...) — typing mode
+            public string Justify;  // JUSTIFY(RIGHT,1) etc. — justification + offset
         }
 
         // A dictionary key/index (rich form, populated by the live dictionary reader).
@@ -706,7 +713,8 @@ namespace ClarionAssistant.Services
             return outp;
         }
 
-        // Pull PICTURE/PROMPT/HEADER off a "!!> GUID(...),PROMPT('...'),HEADER('...'),PICTURE(@...)" line.
+        // Pull PICTURE/PROMPT/HEADER (+ TOOLTIP/MESSAGE/TYPEMODE/JUSTIFY, a9aa19ba) off a
+        // "!!> GUID(...),PROMPT('...'),HEADER('...'),PICTURE(@...),TYPEMODE(INS),JUSTIFY(RIGHT,1)" line.
         private static void ApplyTxaMeta(FieldDef f, string metaLine)
         {
             var pic = Regex.Match(metaLine, @"PICTURE\(([^)]*)\)", RegexOptions.IgnoreCase);
@@ -717,6 +725,18 @@ namespace ClarionAssistant.Services
 
             var hd = Regex.Match(metaLine, @"HEADER\('((?:[^']|'')*)'\)", RegexOptions.IgnoreCase);
             if (hd.Success) f.Header = hd.Groups[1].Value.Replace("''", "'");
+
+            var tip = Regex.Match(metaLine, @"TOOLTIP\('((?:[^']|'')*)'\)", RegexOptions.IgnoreCase);
+            if (tip.Success) f.Tooltip = tip.Groups[1].Value.Replace("''", "'");
+
+            var msg = Regex.Match(metaLine, @"MESSAGE\('((?:[^']|'')*)'\)", RegexOptions.IgnoreCase);
+            if (msg.Success) f.Message = msg.Groups[1].Value.Replace("''", "'");
+
+            var tm = Regex.Match(metaLine, @"TYPEMODE\(([^)]*)\)", RegexOptions.IgnoreCase);
+            if (tm.Success) f.TypeMode = tm.Groups[1].Value.Trim();
+
+            var ju = Regex.Match(metaLine, @"JUSTIFY\(([^)]*)\)", RegexOptions.IgnoreCase);
+            if (ju.Success) f.Justify = ju.Groups[1].Value.Trim();
         }
 
         /// <summary>The dictionary (.dct) path the app was built against, from the TXA header's

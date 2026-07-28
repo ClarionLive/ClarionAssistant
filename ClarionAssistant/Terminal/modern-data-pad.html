@@ -39,10 +39,45 @@
     .row.trow .type { font-size: 10px; color: #5a5a5a; margin-left: 0; white-space: nowrap; padding-right: 20px; }
     .row.trow .picture { font-size: 10px; color: #0a7d3a; font-family: Consolas, 'Courier New', monospace;
         min-width: 0; text-align: left; white-space: nowrap; }
-    /* Per-row edit/delete actions for Local/Global variables. visibility (not display) reserves the space so
-       the max-content name column doesn't reflow on hover; the buttons are only revealed when the row is hovered. */
-    .row.trow .acts { display: inline-flex; gap: 2px; margin-left: 6px; visibility: hidden; }
-    .row.trow:hover .acts { visibility: visible; }
+    /* ---- Local/Global variable rows: master/detail (a9aa19ba) ----
+       The type ICON (var = teal box, QUEUE = amber folder, GROUP = blue folder) doubles as the detail
+       trigger: clicking it slides a panel open under the row (accordion — one open at a time). A hover
+       ring + the ring persisting while open signal that the icon is a button. Row click stays selection. */
+    .ticon { width: 16px; height: 15px; flex: none; display: inline-flex; align-items: center;
+             justify-content: center; cursor: pointer; border-radius: 3px; }
+    .ticon:hover, .row.trow.detopen .ticon { background: rgba(10,93,194,.14); box-shadow: 0 0 0 1px #0a5dc2 inset; }
+    .ticon svg { display: block; }
+    /* Slide animation without a fixed height: wrapper grid-rows 0fr -> 1fr, inner clip hides overflow. */
+    .vdet-wrap { grid-column: 1 / -1; display: grid; grid-template-rows: 0fr; transition: grid-template-rows .18s ease; }
+    .vdet-wrap.open { grid-template-rows: 1fr; }
+    .vdet-wrap > .vdet-clip { overflow: hidden; min-height: 0; }
+    .vdet { margin: 0 6px 6px 26px; border-left: 3px solid #c9d9ea; background: #f6f9fc;
+            padding: 8px 10px 9px; border-radius: 0 4px 4px 0; font-size: 11px; }
+    .vdet .decl { font: 12px Consolas, 'Courier New', monospace; color: #2a3a4a; margin-bottom: 7px;
+                  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .vdet .decl .dtype { color: #0a5dc2; }
+    .vdet .decl .dpic { color: #8a97a3; }
+    .vdet .dgrid { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; margin-bottom: 2px; }
+    .vdet .dgrid .l { color: #7d8b99; font-size: 10px; text-transform: uppercase; letter-spacing: .3px; padding-top: 1px; }
+    .vdet .dgrid .v { color: #2a3a4a; }
+    .vdet .dgrid .v.mono { font-family: Consolas, 'Courier New', monospace; }
+    .vdet .dgrid .v.cmt { color: #0a7d3a; font-style: italic; }
+    .vdet .chips { display: flex; gap: 5px; flex-wrap: wrap; margin: 5px 0 2px; }
+    .vdet .chip { background: #e4ecf5; color: #35597c; border-radius: 8px; padding: 1px 8px;
+                  font-size: 10px; font-weight: 600; }
+    .vdet .chip.off { background: transparent; color: #7d8b99; border: 1px dashed #b9c8d8;
+                      font-weight: 400; opacity: .75; }
+    .vdet .chip .st { font-size: 9px; }
+    .vdet .dactions { display: flex; gap: 8px; margin-top: 8px; padding-top: 7px; border-top: 1px solid #c9d9ea; }
+    .vdet .dactions button { display: flex; align-items: center; gap: 5px; font: 11px 'Segoe UI', sans-serif;
+                             padding: 3px 12px; border: 1px solid #b9c8d8; background: #ffffff; color: #1f1f1f;
+                             border-radius: 3px; cursor: pointer; }
+    .vdet .dactions button:hover { border-color: #0a5dc2; color: #0a5dc2; }
+    .vdet .dactions button.del:hover { border-color: #b23a3a; color: #b23a3a; }
+    .vdet .dactions .hint { margin-left: auto; align-self: center; color: #7d8b99; font-size: 10px; font-style: italic; }
+    /* Header ✎/🗑 act on the SELECTED row in that section — dimmed + inert until one is selected. */
+    .section .sec-btn.dis { opacity: .35; cursor: default; }
+    .section .sec-btn.dis:hover { background: transparent; color: #5a5a5a; }
     /* Same left-aligned columns for the Other Files / Declared Tables COLUMN lists. The gutter (twisty +
        "+" detail toggle) lives inside the name cell so cols 2/3 stay aligned; detail panels span all tracks. */
     .fgrid { display: grid; grid-template-columns: max-content max-content 1fr; }
@@ -395,6 +430,23 @@
     body.dark .detail { color: #b0b0c0; background: #26263a; border-left-color: #3a4a5a; }
     body.dark .detail .attr { color: #c8c8d8; }
     body.dark .detail .cmt { color: #5fd38a; }
+    /* Variable master/detail (a9aa19ba) dark overrides */
+    body.dark .ticon:hover, body.dark .row.trow.detopen .ticon { background: rgba(108,182,255,.18); box-shadow: 0 0 0 1px #6cb6ff inset; }
+    body.dark .vdet { background: #26263a; border-left-color: #3a4a5a; }
+    body.dark .vdet .decl { color: #c8d0dc; }
+    body.dark .vdet .decl .dtype { color: #6cb6ff; }
+    body.dark .vdet .decl .dpic { color: #6f7f90; }
+    body.dark .vdet .dgrid .l { color: #8a97a8; }
+    body.dark .vdet .dgrid .v { color: #c8d0dc; }
+    body.dark .vdet .dgrid .v.cmt { color: #5fd38a; }
+    body.dark .vdet .chip { background: #33415a; color: #a8c4e4; }
+    body.dark .vdet .chip.off { background: transparent; color: #8a97a8; border-color: #4a5a70; }
+    body.dark .vdet .dactions { border-top-color: #3a4a5a; }
+    body.dark .vdet .dactions button { background: #2a2a40; border-color: #4a5a70; color: #d4d4e4; }
+    body.dark .vdet .dactions button:hover { border-color: #6cb6ff; color: #6cb6ff; }
+    body.dark .vdet .dactions button.del:hover { border-color: #e07070; color: #e07070; }
+    body.dark .vdet .dactions .hint { color: #8a97a8; }
+    body.dark .section .sec-btn.dis:hover { background: transparent; color: #5a5a5a; }
     body.dark .comp-row { background: #26263a; }
     body.dark .comp-row .name { color: #e0e0e0; }
     body.dark .row .lineno { color: #6cb6ff; }
@@ -1063,6 +1115,79 @@
             if (e.el) e.el.classList.toggle('multisel', selSet[e.key] !== undefined);
         }
         updateCounts();
+        updateVarHdrButtons();
+    }
+
+    // ---- Variable master/detail helpers (a9aa19ba) ----
+
+    // Parse a declaration TAIL (the pad's `type` string, e.g. "STRING(20),NAME('REALNAME') !comment") into
+    // { display, comment, base, attrs } — display = tail minus the trailing comment (the comment moves into
+    // the detail panel), attrs = { PRE:'qT', DIM:'5', OVER:'x', NAME:'REALNAME', THREAD:true, ... }. The
+    // scanner respects single-quoted strings and parens, so NAME('A,B') or a '!' inside quotes can't split.
+    function parseDecl(t) {
+        var out = { display: t || '', comment: null, base: '', attrs: {} };
+        if (!t) return out;
+        var inQ = false, depth = 0, cut = -1, parts = [], start = 0, i, c;
+        for (i = 0; i < t.length; i++) {
+            c = t.charAt(i);
+            if (inQ) { if (c === "'") inQ = false; continue; }
+            if (c === "'") { inQ = true; continue; }
+            if (c === '(') { depth++; continue; }
+            if (c === ')') { if (depth > 0) depth--; continue; }
+            if (c === '!' && depth === 0) { cut = i; break; }        // trailing comment starts here
+            if (c === ',' && depth === 0) { parts.push(t.slice(start, i)); start = i + 1; }
+        }
+        var body = (cut >= 0 ? t.slice(0, cut) : t);
+        if (cut >= 0) out.comment = t.slice(cut + 1).trim() || null;
+        parts.push(body.slice(start, cut >= 0 ? cut : t.length));
+        out.display = body.replace(/\s+$/, '');
+        for (i = 0; i < parts.length; i++) {
+            var p = parts[i].trim();
+            if (!p) continue;
+            if (i === 0) { out.base = p; continue; }
+            var m = /^([A-Za-z_]+)\s*(?:\((.*)\))?$/.exec(p);
+            if (!m) continue;
+            var k = m[1].toUpperCase();
+            var v = (m[2] !== undefined) ? m[2].replace(/^'|'$/g, '') : true;
+            out.attrs[k] = v;
+        }
+        return out;
+    }
+
+    // Type icon SVG for a variable row: QUEUE = amber folder, GROUP = blue folder, else teal box.
+    function ticonSvg(base) {
+        var b = (base || '').toUpperCase();
+        if (b.indexOf('QUEUE') === 0)
+            return '<svg width="13" height="11" viewBox="0 0 13 11">'
+                + '<path d="M.5 1.5 h4 l1 1.5 h6.5 v7 h-11.5 z" fill="#f5c96b" stroke="#b8860b" stroke-width="1"/></svg>';
+        if (b.indexOf('GROUP') === 0)
+            return '<svg width="13" height="11" viewBox="0 0 13 11">'
+                + '<path d="M.5 1.5 h4 l1 1.5 h6.5 v7 h-11.5 z" fill="#9ec4e8" stroke="#3a72a8" stroke-width="1"/></svg>';
+        return '<svg width="12" height="10" viewBox="0 0 12 10">'
+            + '<rect x=".5" y="1.5" width="11" height="7" rx="1" fill="#8fd8e8" stroke="#2a7a9a" stroke-width="1"/>'
+            + '<line x1=".5" y1="3.8" x2="11.5" y2="3.8" stroke="#2a7a9a" stroke-width=".8"/></svg>';
+    }
+
+    // The single selected VARIABLE row's meta ({name,type,scope,path,...}) for a scope, or null when the
+    // selection is empty / not a variable of that scope. Drives the section-header ✎/🗑 buttons.
+    function selectedVarInScope(scope) {
+        for (var i = 0; i < selOrder.length; i++) {
+            var e = selOrder[i];
+            if (selSet[e.key] !== undefined && e.meta && e.meta.kind === 'var' && e.meta.scope === scope && e.meta.path)
+                return e.meta;
+        }
+        return null;
+    }
+
+    // Live refs to the Local/Global header ✎/🗑 buttons (rebuilt each render) so selection changes can
+    // flip their enabled state without a re-render.
+    var _varHdrBtns = {};   // scope -> [editBtn, delBtn]
+    function updateVarHdrButtons() {
+        for (var scope in _varHdrBtns) {
+            var has = !!selectedVarInScope(scope);
+            var btns = _varHdrBtns[scope] || [];
+            for (var i = 0; i < btns.length; i++) if (btns[i]) btns[i].classList.toggle('dis', !has);
+        }
     }
 
     // A draggable + multi-selectable list row carrying its compilable (prefixed) insert text as text/plain.
@@ -1090,10 +1215,12 @@
             if (e.shiftKey || e.ctrlKey || e.metaKey) { e.preventDefault(); e.stopPropagation(); }
         }, true);
         row.addEventListener('click', function (e) {
-            // Clicks on the chevron / "+" detail / action / line-number children do their own thing — never select.
+            // Clicks on the chevron / "+" detail / type-icon / action / line-number children do their own
+            // thing — never select. The type icon may be hit on its inner <svg>, hence closest().
             var t = e.target;
             if (t && t !== row && (t.classList.contains('twisty') || t.classList.contains('detail-tog')
-                || t.classList.contains('act') || t.classList.contains('lineno'))) return;
+                || t.classList.contains('act') || t.classList.contains('lineno')
+                || (t.closest && t.closest('.ticon')))) return;
             if (e.shiftKey) {
                 e.preventDefault(); e.stopPropagation();
                 selectRangeTo(key); applySel();
@@ -1312,9 +1439,10 @@
             if (open && (allCtl || (extraBtns && extraBtns.length))) {
                 var ctl = document.createElement('span'); ctl.className = 'sec-ctl';
                 (extraBtns || []).forEach(function (b) {
-                    var btn = document.createElement('span'); btn.className = 'sec-btn';
+                    var btn = document.createElement('span'); btn.className = 'sec-btn' + (b.cls ? ' ' + b.cls : '');
                     btn.textContent = b.label; btn.title = b.title;
                     btn.addEventListener('click', function (e) { e.stopPropagation(); b.onClick(); });
+                    if (b.ref) b.ref(btn);   // hand the element back (header ✎/🗑 enable/disable tracking)
                     ctl.appendChild(btn);
                 });
                 if (allCtl) {
@@ -1332,19 +1460,39 @@
             return open;
         }
 
-        // "＋ Add" header button for the Local/Global Data sections — asks the host to drive Clarion's own
-        // add-variable form for that scope (current procedure for Local). Returns null for other sections.
+        // Icon-only header actions for the Local/Global Data sections (a9aa19ba): ＋ add, ✎ edit-selected,
+        // 🗑 delete-selected, 📋 paste — mirroring Clarion's own pad toolbar. ✎/🗑 act on the section's
+        // selected variable row and stay dimmed (.dis) until one is selected; their elements register in
+        // _varHdrBtns so applySel() can flip the state live. Returns null for other sections.
         function addVarBtns(key) {
             if (key !== 'locals' && key !== 'globals') return null;
             var scope = (key === 'locals') ? 'local' : 'global';
+            _varHdrBtns[scope] = [];
+            var sel = function () { return selectedVarInScope(scope); };
             return [{
-                label: '＋ Add',
+                label: '＋',
                 title: 'Add a ' + scope + ' variable (opens Clarion’s field form)',
                 onClick: function () { postToHost({ action: 'addVariable', scope: scope, procedure: renderedProcedure }); }
             }, {
+                label: '✎', cls: sel() ? '' : 'dis',
+                title: 'Edit the selected ' + scope + ' variable (opens Clarion’s field form)',
+                ref: function (el) { _varHdrBtns[scope][0] = el; },
+                onClick: function () {
+                    var m = sel(); if (!m) return;
+                    postToHost({ action: 'editVariable', scope: scope, path: m.path, procedure: renderedProcedure });
+                }
+            }, {
+                label: '🗑', cls: sel() ? '' : 'dis',
+                title: 'Delete the selected ' + scope + ' variable',
+                ref: function (el) { _varHdrBtns[scope][1] = el; },
+                onClick: function () {
+                    var m = sel(); if (!m) return;
+                    postToHost({ action: 'deleteVariable', scope: scope, path: m.path, procedure: renderedProcedure });
+                }
+            }, {
                 // 📋 Paste: the host reads the Windows clipboard and parses Clarion declaration text (e.g.
                 // "Cust:Name STRING(30)") into new variable(s) — no inline text, so the host-clipboard path runs.
-                label: '📋 Paste',
+                label: '📋',
                 title: 'Paste ' + scope + ' variable definition(s) from the clipboard (Clarion declaration text)',
                 onClick: function () { postToHost({ action: 'pasteVariables', scope: scope, procedure: renderedProcedure }); }
             }];
@@ -1821,6 +1969,60 @@
             grid.className = 'tgrid';
             list.appendChild(grid);
 
+            // Detail panel body (a9aa19ba): declaration line + label/value grid + storage-class chips +
+            // Edit/Delete. Empty rows are omitted — a plain LONG shows just the declaration and buttons.
+            var buildVarDetail = function (it, pd, kidCount, fieldPath) {
+                var h = '<div class="decl"><span>' + esc(it.name) + '</span><span class="dtype">'
+                    + esc(pd.display) + '</span>'
+                    + (it.picture ? '<span class="dpic">' + esc(it.picture) + '</span>' : '') + '</div>';
+                var rows = '';
+                var r = function (l, val, cls) {
+                    if (val) rows += '<div class="l">' + l + '</div><div class="v' + (cls ? ' ' + cls : '') + '">' + esc(val) + '</div>';
+                };
+                var a = pd.attrs;
+                r('Prefix', typeof a.PRE === 'string' ? a.PRE : null, 'mono');
+                r('Members', kidCount ? String(kidCount) : null);
+                r('Prompt', it.prompt); r('Heading', it.header);
+                r('Description', it.desc); r('Derived from', it.derived, 'mono');
+                r('External name', typeof a.NAME === 'string' ? a.NAME : null, 'mono');
+                r('Dimension', typeof a.DIM === 'string' ? a.DIM : null, 'mono');
+                r('Place over', typeof a.OVER === 'string' ? a.OVER : null, 'mono');
+                r('Case', a.UPR ? 'Uppercase' : (a.CAP ? 'Word Capitalized' : null));
+                r('Justify', it.justify ? it.justify.charAt(0) + it.justify.slice(1).toLowerCase().replace(',', ', ') : null);
+                r('Typing mode', it.typemode === 'INS' ? 'Set Insert' : (it.typemode === 'OVR' ? 'Set Overwrite' : it.typemode));
+                r('Tooltip', it.tooltip); r('Message', it.message);
+                r('Comment', pd.comment ? '! ' + pd.comment : null, 'cmt');
+                h += '<div class="dgrid">' + rows + '</div>';
+                // Storage Class: globals always show the THREAD/EXTERNAL/DLL trio (filled ✓ = ON, hollow
+                // ✗ = OFF) — "is this threaded / exported / in the data DLL?" answered either way. Locals
+                // only show the ones actually set (EXTERNAL/DLL never apply there). Other flags: filled-only.
+                var chips = '';
+                [['THREAD'], ['EXTERNAL'], ['DLL']].forEach(function (s) {
+                    var on = a[s[0]] !== undefined;
+                    if (rowScope !== 'global' && !on) return;
+                    chips += '<span class="chip' + (on ? '' : ' off') + '">' + s[0]
+                        + ' <span class="st">' + (on ? '✓' : '✗') + '</span></span>';
+                });
+                ['STATIC', 'BINDABLE', 'AUTO', 'TYPE', 'PRIVATE'].forEach(function (fl) {
+                    if (a[fl] !== undefined) chips += '<span class="chip">' + fl + '</span>';
+                });
+                if (chips) h += '<div class="chips">' + chips + '</div>';
+                h += '<div class="dactions"><button class="ved">✎&nbsp;Edit</button><button class="del">🗑&nbsp;Delete</button>'
+                    + '<span class="hint">double-click row inserts ' + esc(it.name) + '</span></div>';
+                var panel = document.createElement('div');
+                panel.className = 'vdet';
+                panel.innerHTML = h;
+                panel.querySelector('.ved').addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    postToHost({ action: 'editVariable', scope: rowScope, path: fieldPath, procedure: renderedProcedure });
+                });
+                panel.querySelector('.del').addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    postToHost({ action: 'deleteVariable', scope: rowScope, path: fieldPath, procedure: renderedProcedure });
+                });
+                return panel;
+            };
+
             var walk = function (arr, depth, parentKey) {
                 arr.forEach(function (it) {
                     var kids = it.children || [];
@@ -1828,20 +2030,23 @@
                     var nkey = parentKey + '/' + (it.name || '');
                     var hasKids = kids.length > 0;
                     var open = hasKids && (!localCollapsed[nkey] || !!f);
-                    // [10] '+' detail for Local/Global rows — reveals prompt/header (the metadata not already
-                    // shown in the type/picture columns), matching the Other Files/columns detail UX.
+                    // Master/detail (a9aa19ba): the '+' toggle and hover ✎/🗑 are gone. The TYPE ICON is the
+                    // detail trigger — clicking it slides the panel open (accordion, one open across both
+                    // variable sections). detailOpen keeps the same 'd:'+nkey keys so saved UI state carries.
                     var dkey = 'd:' + nkey;
-                    var hasDet = !!(it.prompt || it.header);
+                    var pd = parseDecl(it.type);
+                    var isOpen = !!(it.name && detailOpen[dkey]);
                     var tip = it.name + (it.type ? '  ' + it.type : '')
                         + (it.picture ? '  ' + it.picture : '')
                         + (it.prompt ? '\nPrompt: ' + it.prompt : '')
                         + (it.header ? '\nHeader: ' + it.header : '');
 
                     var row = document.createElement('div');
-                    row.className = 'row trow';
+                    row.className = 'row trow' + (isOpen ? ' detopen' : '');
                     row.title = tip;
 
-                    // Column 1: name cell — twisty + name, indent absorbed here (keeps cols 2/3 aligned).
+                    // Column 1: name cell — twisty (containers only) + type icon + name; indent absorbed
+                    // here (keeps cols 2/3 aligned).
                     var namecell = document.createElement('div');
                     namecell.className = 'namecell';
                     namecell.style.paddingLeft = (depth * 16) + 'px';
@@ -1849,46 +2054,20 @@
                     tw.className = 'twisty';
                     tw.textContent = hasKids ? (open ? '▾' : '▸') : '';
                     namecell.appendChild(tw);
-                    var plus = document.createElement('span'); plus.className = 'detail-tog';
-                    if (hasDet) {
-                        plus.textContent = detailOpen[dkey] ? '−' : '+';
-                        plus.title = 'Show details';
-                        plus.addEventListener('click', function (e) {
-                            e.stopPropagation(); detailOpen[dkey] = !detailOpen[dkey]; render();
-                        });
-                    }
-                    namecell.appendChild(plus);
+                    var ic = document.createElement('span');
+                    ic.className = 'ticon';
+                    ic.innerHTML = ticonSvg(pd.base);
+                    if (it.name) ic.title = 'Show details for ' + it.name;
+                    namecell.appendChild(ic);
                     var nm = document.createElement('span');
                     nm.className = 'name'; nm.textContent = it.name;
                     namecell.appendChild(nm);
 
-                    // Per-row edit/delete (hover-revealed). The host drives Clarion's own FieldForm / delete
-                    // confirmation; for Local scope it validates against the on-screen procedure (renderedProcedure).
+                    // STRUCTURAL PATH (nkey minus the leading section key), e.g. "Member" or "Group/Member",
+                    // so the host resolves nested GROUP/QUEUE members unambiguously by descending container-
+                    // by-container (sibling names are unique) rather than by a flat name match.
+                    var fieldPath = it.name ? nkey.slice(key.length + 1) : '';
                     if (it.name) {
-                        // Send the STRUCTURAL PATH (nkey minus the leading section key), e.g. "Member" or
-                        // "Group/Member", so the host resolves nested GROUP/QUEUE members unambiguously by
-                        // descending container-by-container (sibling names are unique) rather than by a flat
-                        // name match (which could hit a same-named field in a different container).
-                        var fieldPath = nkey.slice(key.length + 1);
-                        var acts = document.createElement('span');
-                        acts.className = 'acts';
-                        var edBtn = document.createElement('span');
-                        edBtn.className = 'act'; edBtn.textContent = '✎';
-                        edBtn.title = 'Edit ' + it.name + ' (opens Clarion’s field form)';
-                        edBtn.addEventListener('click', function (e) {
-                            e.stopPropagation();
-                            postToHost({ action: 'editVariable', scope: rowScope, path: fieldPath, procedure: renderedProcedure });
-                        });
-                        var delBtn = document.createElement('span');
-                        delBtn.className = 'act'; delBtn.textContent = '🗑';
-                        delBtn.title = 'Delete ' + it.name;
-                        delBtn.addEventListener('click', function (e) {
-                            e.stopPropagation();
-                            postToHost({ action: 'deleteVariable', scope: rowScope, path: fieldPath, procedure: renderedProcedure });
-                        });
-                        acts.appendChild(edBtn); acts.appendChild(delBtn);
-                        namecell.appendChild(acts);
-
                         // Native-Clarion-style right-click menu (Copy / Copy Details / Paste / Delete / Properties …)
                         // + hover-arms Ctrl+C AND Ctrl+V. Captures this row's identity (name/type/scope/structural path).
                         var vName = it.name, vType = it.type || '', vScope = rowScope, vPath = fieldPath;
@@ -1909,15 +2088,16 @@
                     }
                     row.appendChild(namecell);
 
-                    // Column 2: type. Column 3: picture (empty cell keeps the 3-track grid consistent).
+                    // Column 2: type (declaration tail MINUS the trailing !comment — that lives in the
+                    // panel now). Column 3: picture (empty cell keeps the 3-track grid consistent).
                     var ty = document.createElement('div');
-                    ty.className = 'type'; ty.textContent = it.type || '';
+                    ty.className = 'type'; ty.textContent = pd.display || '';
                     row.appendChild(ty);
                     var pc = document.createElement('div');
                     pc.className = 'picture'; pc.textContent = it.picture || '';
                     row.appendChild(pc);
 
-                    if (it.name) { row.addEventListener('dblclick', function () { insert(it.name); }); makeDraggable(row, it.name, true, { kind: 'var', name: it.name, type: it.type || '', picture: it.picture || '', scope: rowScope }); }
+                    if (it.name) { row.addEventListener('dblclick', function () { insert(it.name); }); makeDraggable(row, it.name, true, { kind: 'var', name: it.name, type: it.type || '', picture: it.picture || '', scope: rowScope, path: fieldPath }); }
                     if (hasKids) {
                         tw.style.cursor = 'pointer';   // chevron-only expand/collapse
                         tw.addEventListener('click', function (e) {
@@ -1925,17 +2105,39 @@
                         });
                     }
                     grid.appendChild(row);
-                    if (hasDet && detailOpen[dkey]) {
-                        var dd = [];
-                        if (it.prompt) dd.push('<span class="attr">Prompt: ' + esc(it.prompt) + '</span>');
-                        if (it.header) dd.push('<span class="attr">Header: ' + esc(it.header) + '</span>');
-                        var dv = document.createElement('div');
-                        dv.className = 'detail';
-                        // Align the detail text under the NAME: row pad (10) + namecell indent (depth*16)
-                        // + twisty (12) + gap (6) + "+" toggle (12) + gap (6) = 46 + depth*16.
-                        dv.style.paddingLeft = (46 + depth * 16) + 'px';
-                        dv.innerHTML = dd.join('<br>');
-                        grid.appendChild(dv); // spans all tracks via .tgrid .detail
+
+                    // Slide-down detail panel — ALWAYS built (hidden at 0fr) so the icon click can animate
+                    // it open in place without a re-render (a full render() would kill the transition).
+                    if (it.name) {
+                        var wrap = document.createElement('div');
+                        wrap.className = 'vdet-wrap' + (isOpen ? ' open' : '');
+                        var clip = document.createElement('div');
+                        clip.className = 'vdet-clip';
+                        var panel = buildVarDetail(it, pd, kids.length, fieldPath);
+                        panel.style.marginLeft = (26 + depth * 16) + 'px';
+                        clip.appendChild(panel);
+                        wrap.appendChild(clip);
+                        grid.appendChild(wrap);
+
+                        ic.addEventListener('click', function (e) {
+                            e.stopPropagation();
+                            var was = wrap.classList.contains('open');
+                            // Accordion across BOTH variable sections: close every open panel in place.
+                            var opens = document.querySelectorAll('.vdet-wrap.open');
+                            for (var oi = 0; oi < opens.length; oi++) opens[oi].classList.remove('open');
+                            var orows = document.querySelectorAll('.row.trow.detopen');
+                            for (var ri = 0; ri < orows.length; ri++) orows[ri].classList.remove('detopen');
+                            // Drop only VARIABLE detail keys — richFileSection shares detailOpen for its
+                            // own '+' details and those must survive.
+                            for (var dk in detailOpen)
+                                if (/^d:(locals|globals)\//.test(dk)) delete detailOpen[dk];
+                            if (!was) {
+                                detailOpen[dkey] = true;
+                                wrap.classList.add('open');
+                                row.classList.add('detopen');
+                            }
+                            scheduleSaveUiState();
+                        });
                     }
                     if (open) walk(kids, depth + 1, nkey);
                 });
@@ -1991,6 +2193,7 @@
         if (!f) _totalShown = selOrder.length;          // remember the unfiltered count for the "N / M" readout
         document.getElementById('filterClear').style.display = f ? 'block' : 'none';
         updateCounts();
+        updateVarHdrButtons();   // headers render before their rows, so the ✎/🗑 state settles here
         scheduleSaveUiState();
     }
 

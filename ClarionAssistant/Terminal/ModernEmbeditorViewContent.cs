@@ -366,6 +366,13 @@ namespace ClarionAssistant.Terminal
             if (!string.IsNullOrEmpty(d.Picture)) dict["picture"] = d.Picture;
             if (!string.IsNullOrEmpty(d.Prompt)) dict["prompt"] = d.Prompt;
             if (!string.IsNullOrEmpty(d.Header)) dict["header"] = d.Header;
+            // Detail-panel extras (a9aa19ba) — emitted only when present so the payload stays lean.
+            if (!string.IsNullOrEmpty(d.Tooltip)) dict["tooltip"] = d.Tooltip;
+            if (!string.IsNullOrEmpty(d.Message)) dict["message"] = d.Message;
+            if (!string.IsNullOrEmpty(d.TypeMode)) dict["typemode"] = d.TypeMode;
+            if (!string.IsNullOrEmpty(d.Justify)) dict["justify"] = d.Justify;
+            if (!string.IsNullOrEmpty(d.Description)) dict["desc"] = d.Description;
+            if (!string.IsNullOrEmpty(d.DerivedFrom)) dict["derived"] = d.DerivedFrom;
             if (d.Children != null && d.Children.Count > 0)
             {
                 var kids = new List<object>();
