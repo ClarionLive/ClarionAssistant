@@ -41,6 +41,8 @@ namespace ClarionAssistant.Services
         // Horizontal scrollbar visibility → Monaco editor option scrollbar.horizontal:
         //   "auto" (show when needed) | "visible" (show always) | "hidden" (show never). Default auto.
         public string HorizontalScrollbar = "auto";
+        // Split-editor pane orientation: "v" (side by side) | "h" (top / bottom). Default v.
+        public string SplitOrientation = "v";
 
         /// <summary>
         /// User key-binding OVERRIDES only: command id → canonical chord string (e.g. "Ctrl+Shift+Y").
@@ -99,6 +101,7 @@ namespace ClarionAssistant.Services
                 s.FontFamily = SanitizeFontFamily(sv.Get(Prefix + "FontFamily"));
                 s.OccurrenceHighlight = GetBool(sv, "OccurrenceHighlight", s.OccurrenceHighlight);
                 s.HorizontalScrollbar = NormalizeScrollbar(sv.Get(Prefix + "HorizontalScrollbar"));
+                s.SplitOrientation = NormalizeSplitOrientation(sv.Get(Prefix + "SplitOrientation"));
                 s.KeyBindings = ParseKeyBindings(sv.Get(Prefix + "KeyBindings"));
                 s.Formatter = ParseFormatter(sv.Get(Prefix + "Formatter"));
             }
@@ -121,6 +124,7 @@ namespace ClarionAssistant.Services
             sv.Set(Prefix + "FontFamily", SanitizeFontFamily(FontFamily));
             sv.Set(Prefix + "OccurrenceHighlight", OccurrenceHighlight ? "true" : "false");
             sv.Set(Prefix + "HorizontalScrollbar", NormalizeScrollbar(HorizontalScrollbar));
+            sv.Set(Prefix + "SplitOrientation", NormalizeSplitOrientation(SplitOrientation));
             // Compact JSON, single line — SettingsService rejects CR/LF in values, and the serializer
             // never emits them. Empty map persists as "{}" (clears any prior overrides).
             sv.Set(Prefix + "KeyBindings", new JavaScriptSerializer().Serialize(SanitizeBindings(KeyBindings)));
@@ -149,6 +153,9 @@ namespace ClarionAssistant.Services
             object hs;
             if (d.TryGetValue("horizontalScrollbar", out hs) && hs != null)
                 s.HorizontalScrollbar = NormalizeScrollbar(hs.ToString());
+            object so;
+            if (d.TryGetValue("splitOrientation", out so) && so != null)
+                s.SplitOrientation = NormalizeSplitOrientation(so.ToString());
             object kb;
             if (d.TryGetValue("keyBindings", out kb) && kb is IDictionary<string, object>)
             {
@@ -184,6 +191,7 @@ namespace ClarionAssistant.Services
                 { "fontFamily", SanitizeFontFamily(FontFamily) },
                 { "occurrenceHighlight", OccurrenceHighlight },
                 { "horizontalScrollbar", HorizontalScrollbar },
+                { "splitOrientation", SplitOrientation },
                 { "keyBindings", SanitizeBindings(KeyBindings) }
             };
             // Merge the formatter pass-through bag so the bridge payload (load + cross-tab broadcast) carries
@@ -348,6 +356,11 @@ namespace ClarionAssistant.Services
         private static string NormalizeScrollbar(string v)
         {
             return (v == "visible" || v == "hidden") ? v : "auto";
+        }
+
+        private static string NormalizeSplitOrientation(string v)
+        {
+            return (v == "h") ? "h" : "v";
         }
 
         private static int GetInt(SettingsService sv, string key, int dflt, int lo, int hi)
