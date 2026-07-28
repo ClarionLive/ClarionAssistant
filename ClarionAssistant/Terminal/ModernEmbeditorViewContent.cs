@@ -606,6 +606,18 @@ namespace ClarionAssistant.Terminal
             return sb.ToString();
         }
 
+        // Discrete table properties for the master/detail table panel (a9aa19ba) — the fused `attributes`
+        // string stays for the panel's declaration line; these feed the label/value rows and chips.
+        private static void AddTableDetailFields(Dictionary<string, object> d, ClarionAppDataReader.TableDef t)
+        {
+            if (!string.IsNullOrEmpty(t.Driver)) d["driver"] = t.Driver;
+            if (!string.IsNullOrEmpty(t.DriverOptions)) d["driverOpts"] = t.DriverOptions;
+            if (!string.IsNullOrEmpty(t.Owner)) d["owner"] = t.Owner;
+            if (!string.IsNullOrEmpty(t.FullName)) d["fullName"] = t.FullName;
+            d["threaded"] = t.Threaded;
+            d["bindable"] = t.Bindable;
+        }
+
         // KeyDef list → JSON dicts for the Other Files key rows (rich form). Falls back to legacy name-only.
         private static List<object> KeysToDicts(ClarionAppDataReader.TableDef t)
         {
@@ -690,12 +702,14 @@ namespace ClarionAssistant.Terminal
                     }
                     var cols = new List<object>();
                     foreach (var f in t.Fields) cols.Add(ColToDict(f));
-                    outp.Add(new Dictionary<string, object>
+                    var td = new Dictionary<string, object>
                     {
                         { "name", t.Name }, { "prefix", t.Prefix },
                         { "attributes", BuildTableAttributes(t) }, { "description", t.Description ?? "" },
                         { "columns", cols }, { "keys", KeysToDicts(t) }, { "relations", RelationsToDicts(t) }
-                    });
+                    };
+                    AddTableDetailFields(td, t);
+                    outp.Add(td);
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] GetOtherFiles: " + ex.Message); }
@@ -732,6 +746,7 @@ namespace ClarionAssistant.Terminal
                         { "attributes", BuildTableAttributes(t) }, { "description", t.Description ?? "" },
                         { "columns", cols }, { "keys", KeysToDicts(t) }, { "relations", RelationsToDicts(t) }
                     };
+                    AddTableDetailFields(d, t);
                 }
                 else
                 {
@@ -782,13 +797,15 @@ namespace ClarionAssistant.Terminal
                         if (fr == null || string.IsNullOrEmpty(fr.Name) || !live.TryGetValue(fr.Name, out t) || t == null) continue;
                         var cols = new List<object>();
                         foreach (var f in t.Fields) cols.Add(ColToDict(f));
-                        files.Add(new Dictionary<string, object>
+                        var fd = new Dictionary<string, object>
                         {
                             { "name", t.Name }, { "prefix", t.Prefix },
                             { "attributes", BuildTableAttributes(t) }, { "description", t.Description ?? "" },
                             { "columns", cols }, { "keys", KeysToDicts(t) }, { "relations", RelationsToDicts(t) },
                             { "depth", fr.Depth }   // relation-tree nesting depth → indented rendering in the File Schematic
-                        });
+                        };
+                        AddTableDetailFields(fd, t);
+                        files.Add(fd);
                     }
                     if (files.Count == 0) continue;   // no resolvable file → drop the scope (don't show an empty card)
                     outp.Add(new Dictionary<string, object>
@@ -1114,12 +1131,14 @@ namespace ClarionAssistant.Terminal
                     if (t == null) t = d; // live snapshot not ready / no match — use the clw-parsed schema
                     var cols = new List<object>();
                     foreach (var f in t.Fields) cols.Add(ColToDict(f));
-                    outp.Add(new Dictionary<string, object>
+                    var dd = new Dictionary<string, object>
                     {
                         { "name", t.Name }, { "prefix", t.Prefix },
                         { "attributes", BuildTableAttributes(t) }, { "description", t.Description ?? "" },
                         { "columns", cols }, { "keys", KeysToDicts(t) }, { "relations", RelationsToDicts(t) }
-                    });
+                    };
+                    AddTableDetailFields(dd, t);
+                    outp.Add(dd);
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] GetDeclaredTables: " + ex.Message); }

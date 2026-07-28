@@ -1190,6 +1190,103 @@
         }
     }
 
+    // HTML-escape for the panel builders (sections also keep their own local esc for legacy paths).
+    function escHtml(s) {
+        return (s == null ? '' : String(s)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // Icon for the table-tree row kinds (a9aa19ba): 'table' = grid card, 'key' = gold key,
+    // 'rel' = chain link. Any other value is treated as a declaration base (var/QUEUE/GROUP).
+    function kindIconSvg(kind) {
+        if (kind === 'table')
+            return '<svg width="13" height="11" viewBox="0 0 13 11">'
+                + '<rect x=".5" y=".5" width="12" height="10" rx="1" fill="#dce9f5" stroke="#3a72a8" stroke-width="1"/>'
+                + '<line x1=".5" y1="3.2" x2="12.5" y2="3.2" stroke="#3a72a8" stroke-width="1"/>'
+                + '<line x1="4.7" y1="3.2" x2="4.7" y2="10.5" stroke="#3a72a8" stroke-width=".7"/>'
+                + '<line x1="8.9" y1="3.2" x2="8.9" y2="10.5" stroke="#3a72a8" stroke-width=".7"/>'
+                + '<rect x=".5" y=".5" width="12" height="2.7" fill="#9ec4e8" stroke="none"/></svg>';
+        if (kind === 'key')
+            return '<svg width="13" height="11" viewBox="0 0 13 11">'
+                + '<circle cx="3.6" cy="5.5" r="2.6" fill="#f5d36b" stroke="#a8790b" stroke-width="1"/>'
+                + '<line x1="6" y1="5.5" x2="12" y2="5.5" stroke="#a8790b" stroke-width="1.4"/>'
+                + '<line x1="10" y1="5.5" x2="10" y2="8" stroke="#a8790b" stroke-width="1.4"/>'
+                + '<line x1="12" y1="5.5" x2="12" y2="7" stroke="#a8790b" stroke-width="1.4"/></svg>';
+        if (kind === 'rel')
+            return '<svg width="13" height="11" viewBox="0 0 13 11">'
+                + '<rect x=".8" y="3.6" width="5.4" height="3.8" rx="1.9" fill="none" stroke="#6f42c1" stroke-width="1.2"/>'
+                + '<rect x="6.8" y="3.6" width="5.4" height="3.8" rx="1.9" fill="none" stroke="#6f42c1" stroke-width="1.2"/></svg>';
+        return ticonSvg(kind);
+    }
+
+    // ONE accordion across the whole Data tab: close every open slide panel (variables AND table tree)
+    // in place and drop every persisted open-detail key. Callers then re-open just their own panel.
+    function closeAllDetailPanels() {
+        var opens = document.querySelectorAll('.vdet-wrap.open');
+        for (var i = 0; i < opens.length; i++) opens[i].classList.remove('open');
+        var orows = document.querySelectorAll('.detopen');
+        for (var j = 0; j < orows.length; j++) orows[j].classList.remove('detopen');
+        for (var dk in detailOpen) if (dk.indexOf('d:') === 0) delete detailOpen[dk];
+    }
+
+    // Shared master/detail wiring (a9aa19ba): create the (empty) slide wrapper right after `row`, build
+    // the panel LAZILY on first open (big tables would otherwise double the DOM), and make `iconEl` the
+    // accordion toggle. Honors a persisted-open dkey at render time (panel built eagerly then).
+    function wireSlidePanel(iconEl, row, dkey, indentPx, buildFn) {
+        var wrap = document.createElement('div');
+        wrap.className = 'vdet-wrap';
+        var clip = document.createElement('div');
+        clip.className = 'vdet-clip';
+        wrap.appendChild(clip);
+        row.parentNode.insertBefore(wrap, row.nextSibling);
+        var ensure = function () {
+            if (clip.firstChild) return;
+            var panel = buildFn();
+            panel.style.marginLeft = indentPx + 'px';
+            clip.appendChild(panel);
+        };
+        if (detailOpen[dkey]) { ensure(); wrap.classList.add('open'); row.classList.add('detopen'); }
+        iconEl.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var was = wrap.classList.contains('open');
+            closeAllDetailPanels();
+            if (!was) {
+                ensure();
+                detailOpen[dkey] = true;
+                wrap.classList.add('open');
+                row.classList.add('detopen');
+            }
+            scheduleSaveUiState();
+        });
+    }
+
+    // Panel factory shared by the table-tree kinds: declaration line + label/value rows + chips.
+    // rows: [label, value, cls] (falsy value = omitted). chips: [label, on, alwaysShow].
+    function buildKindPanel(declName, declType, declPic, rows, chips, hint) {
+        var h = '<div class="decl"><span>' + escHtml(declName) + '</span>'
+            + (declType ? '<span class="dtype">' + escHtml(declType) + '</span>' : '')
+            + (declPic ? '<span class="dpic">' + escHtml(declPic) + '</span>' : '') + '</div>';
+        var rh = '';
+        (rows || []).forEach(function (r) {
+            if (!r || !r[1]) return;
+            rh += '<div class="l">' + r[0] + '</div><div class="v' + (r[2] ? ' ' + r[2] : '') + '">' + escHtml(r[1]) + '</div>';
+        });
+        if (rh) h += '<div class="dgrid">' + rh + '</div>';
+        var ch = '';
+        (chips || []).forEach(function (c) {
+            if (!c) return;
+            var on = !!c[1];
+            if (!on && !c[2]) return;
+            ch += '<span class="chip' + (on ? '' : ' off') + '">' + c[0]
+                + (c[2] ? ' <span class="st">' + (on ? '✓' : '✗') + '</span>' : '') + '</span>';
+        });
+        if (ch) h += '<div class="chips">' + ch + '</div>';
+        if (hint) h += '<div class="dactions"><span class="hint">' + escHtml(hint) + '</span></div>';
+        var panel = document.createElement('div');
+        panel.className = 'vdet';
+        panel.innerHTML = h;
+        return panel;
+    }
+
     // A draggable + multi-selectable list row carrying its compilable (prefixed) insert text as text/plain.
     // The drop lands in the Modern Embeditor's Monaco webview (a SEPARATE WebView2); our installDropInsert
     // inserts it at the drop point and the readOnly guard gates it to editable slots. Windows-standard select:
@@ -1627,22 +1724,20 @@
             // closures read it at call time.
             var host = list;
 
-            // Fixed left gutter so twisty + "+" align across rows. `hasTwisty`/`open` drive the twisty glyph;
-            // `dkey` (when set) wires the "+" detail toggle. Returns the created row (already appended).
-            function gutterRow(cls, name, type, insertText, padPx, hasTwisty, open, twistyToggle, dkey) {
+            // Fixed left gutter so twisty + type icon align across rows. `hasTwisty`/`open` drive the twisty
+            // glyph; `icon` (when set: {kind, dkey, build, indent}) renders the row's type icon and wires it
+            // as the slide-panel trigger (a9aa19ba) — an empty spacer keeps alignment when null. Returns the
+            // created row (already appended, panel wrapper already inserted after it).
+            function gutterRow(cls, name, type, insertText, padPx, hasTwisty, open, twistyToggle, icon) {
                 var row = makeRow(cls, null, name, type || '', name, insertText);
                 row.style.paddingLeft = padPx + 'px';
-                // "+" detail toggle (left of name, per design); empty slot keeps alignment when no detail.
-                var plus = document.createElement('span');
-                plus.className = 'detail-tog';
-                if (dkey) {
-                    plus.textContent = detailOpen[dkey] ? '−' : '+';
-                    plus.title = 'Show details';
-                    plus.addEventListener('click', function (e) {
-                        e.stopPropagation(); detailOpen[dkey] = !detailOpen[dkey]; render();
-                    });
+                var ic = document.createElement('span');
+                ic.className = icon ? 'ticon' : 'detail-tog';
+                if (icon) {
+                    ic.innerHTML = kindIconSvg(icon.kind);
+                    ic.title = 'Show details for ' + name;
                 }
-                row.insertBefore(plus, row.firstChild);
+                row.insertBefore(ic, row.firstChild);
                 // structural twisty (far left)
                 var tw = document.createElement('span');
                 tw.className = 'twisty';
@@ -1653,13 +1748,8 @@
                     tw.addEventListener('click', function (e) { e.stopPropagation(); twistyToggle(); });
                 }
                 host.appendChild(row);
+                if (icon) wireSlidePanel(ic, row, icon.dkey, icon.indent, icon.build);
                 return row;
-            }
-            function detailPanel(padPx, html) {
-                var d = document.createElement('div');
-                d.className = 'detail'; d.style.paddingLeft = padPx + 'px';
-                d.innerHTML = html;
-                host.appendChild(d);
             }
 
             items.forEach(function (ff) {
@@ -1676,10 +1766,25 @@
                 }
                 var fkey = key + '/' + ff.name;
                 var fOpen = !localCollapsed[fkey] || !!f;
-                var fDet = !!(ff.attributes || ff.description);
+                // Table panel: FILE declaration line (the fused attribute string) + discrete rows the host
+                // now sends (driver/owner/full name), THREAD/BINDABLE always shown ✓/✗ (like the globals'
+                // storage chips — "is this FILE threaded/bindable?" answered either way).
                 var hdr = gutterRow('table-hdr', ff.name, '', ff.name, 10, true, fOpen,
                     function () { localCollapsed[fkey] = !localCollapsed[fkey]; render(); },
-                    fDet ? ('d:' + fkey) : null);
+                    { kind: 'table', dkey: 'd:' + fkey, indent: 26, build: (function (t) { return function () {
+                        return buildKindPanel(t.name, t.attributes || 'FILE', '', [
+                            ['Driver', t.driver ? t.driver + (t.driverOpts ? '  ' + t.driverOpts : '') : null, 'mono'],
+                            ['Owner', t.owner, 'mono'],
+                            ['Prefix', t.prefix, 'mono'],
+                            ['Full name', t.fullName, 'mono'],
+                            ['Browse key', t.browseKey, 'mono'],
+                            ['Columns', t.columns && t.columns.length ? String(t.columns.length) : null],
+                            ['Keys', t.keys && t.keys.length ? String(t.keys.length) : null],
+                            ['Description', t.description, 'cmt']
+                        ], [
+                            ['THREAD', t.threaded, true], ['BINDABLE', t.bindable, true]
+                        ], 'double-click row inserts ' + t.name);
+                    }; })(ff) });
                 if (ff.prefix) {
                     var pp = document.createElement('span'); pp.className = 'pre';
                     pp.textContent = 'PRE(' + ff.prefix + ')'; hdr.appendChild(pp);
@@ -1688,11 +1793,6 @@
                     // File-Browsing List Box: show the key the primary file is browsed on (e.g. — AUT:AuSS_Key).
                     var bk = document.createElement('span'); bk.className = 'pre';
                     bk.textContent = '— ' + ff.browseKey; hdr.appendChild(bk);
-                }
-                if (fDet && detailOpen['d:' + fkey]) {
-                    var attr = ff.attributes ? '<span class="attr">' + esc(ff.attributes) + '</span>' : '';
-                    var cmt = ff.description ? '<span class="cmt">  ! ' + esc(ff.description) + '</span>' : '';
-                    detailPanel(50, attr + cmt);
                 }
                 if (!fOpen) return;
 
@@ -1707,32 +1807,24 @@
                         if (!keyMatch(k)) return;
                         var ins = ff.prefix ? ff.prefix + ':' + k.name : k.name;
                         var kdkey = 'd:' + kkey + '/' + k.name;
-                        var hasKDet = !!((k.components && k.components.length) || k.description || k.keyType);
+                        // Key panel: KEY vs INDEX in the declaration line, component columns as rows,
+                        // Primary/Unique/Case Sensitive as always-shown ✓/✗ chips. PK/UNIQUE row badges stay
+                        // for at-a-glance scanning without opening the panel.
                         var kr = gutterRow('col-row', k.name, '', ins, 44, false, false, null,
-                            hasKDet ? kdkey : null);
+                            { kind: 'key', dkey: kdkey, indent: 60, build: (function (kk, kins) { return function () {
+                                var rows = [];
+                                (kk.components || []).forEach(function (comp, ci) {
+                                    rows.push([ci === 0 ? 'Components' : '',
+                                        comp.name + (comp.type ? '  ' + comp.type : '') + (comp.picture ? '  ' + comp.picture : ''), 'mono']);
+                                });
+                                rows.push(['Description', kk.description, 'cmt']);
+                                return buildKindPanel(kins, kk.keyType || 'KEY', '', rows, [
+                                    ['PRIMARY', kk.primary, true], ['UNIQUE', kk.unique, true],
+                                    ['CASE SENSITIVE', kk.caseSensitive, true]
+                                ], 'double-click row inserts ' + kins);
+                            }; })(k, ins) });
                         if (k.primary) { var pb = document.createElement('span'); pb.className = 'badge pk'; pb.textContent = 'PK'; kr.appendChild(pb); }
                         if (k.unique) { var ub = document.createElement('span'); ub.className = 'badge uniq'; ub.textContent = 'UNIQUE'; kr.appendChild(ub); }
-                        if (hasKDet && detailOpen[kdkey]) {
-                            // Attribute summary line.
-                            var attrs = (k.keyType || 'KEY')
-                                + (k.primary ? ' · Primary' : '') + (k.unique ? ' · Unique' : '')
-                                + (k.caseSensitive ? ' · Case Sensitive' : '');
-                            var head = '<span class="attr">' + attrs + '</span>';
-                            if (k.description) head += '<span class="cmt">  ! ' + esc(k.description) + '</span>';
-                            detailPanel(84, head);
-                            // Each component field on its own readable line (name / type / picture).
-                            (k.components || []).forEach(function (comp) {
-                                var cins = ff.prefix ? ff.prefix + ':' + comp.name : comp.name;
-                                var crow = makeRow('comp-row', null, comp.name, comp.type || '',
-                                    comp.name + (comp.type ? '  ' + comp.type : ''), cins);
-                                crow.style.paddingLeft = '92px';
-                                if (comp.picture) {
-                                    var cp = document.createElement('span');
-                                    cp.className = 'picture'; cp.textContent = comp.picture; crow.appendChild(cp);
-                                }
-                                host.appendChild(crow);
-                            });
-                        }
                     });
                 }
 
@@ -1758,28 +1850,23 @@
                                 var open = hasKids && (!localCollapsed[nkey] || !!f);
                                 var ins = ff.prefix ? ff.prefix + ':' + c.name : c.name;
                                 var cdkey = 'd:' + nkey;
-                                var hasCDet = !!(c.description || c.derivedFrom);
+                                var cpd = parseDecl(c.type);
 
                                 var row = document.createElement('div');
                                 row.className = 'row frow col-row';
                                 row.title = c.name + (c.type ? '  ' + c.type : '') + (c.picture ? '  ' + c.picture : '');
 
-                                // Column 1: gutter (twisty + "+") + name, indented for nesting.
+                                // Column 1: gutter (twisty + type icon) + name, indented for nesting.
                                 var gcell = document.createElement('div');
                                 gcell.className = 'gcell';
                                 gcell.style.paddingLeft = (depth * 16) + 'px';
                                 var tw = document.createElement('span'); tw.className = 'twisty';
                                 tw.textContent = hasKids ? (open ? '▾' : '▸') : '';
                                 gcell.appendChild(tw);
-                                var plus = document.createElement('span'); plus.className = 'detail-tog';
-                                if (hasCDet) {
-                                    plus.textContent = detailOpen[cdkey] ? '−' : '+';
-                                    plus.title = 'Show details';
-                                    plus.addEventListener('click', function (e) {
-                                        e.stopPropagation(); detailOpen[cdkey] = !detailOpen[cdkey]; render();
-                                    });
-                                }
-                                gcell.appendChild(plus);
+                                var cic = document.createElement('span'); cic.className = 'ticon';
+                                cic.innerHTML = kindIconSvg(cpd.base);
+                                cic.title = 'Show details for ' + c.name;
+                                gcell.appendChild(cic);
                                 var nm = document.createElement('span'); nm.className = 'name'; nm.textContent = c.name;
                                 gcell.appendChild(nm);
                                 row.appendChild(gcell);
@@ -1813,16 +1900,23 @@
                                 }
                                 cgrid.appendChild(row);
 
-                                if (hasCDet && detailOpen[cdkey]) {
-                                    var dl = [];
-                                    if (c.description) dl.push('<span class="cmt">! ' + esc(c.description) + '</span>');
-                                    if (c.derivedFrom) dl.push('<span class="attr">derived from ' + esc(c.derivedFrom) + '</span>');
-                                    var d = document.createElement('div');
-                                    d.className = 'detail';
-                                    d.style.paddingLeft = (40 + depth * 16) + 'px';
-                                    d.innerHTML = dl.join('<br>');
-                                    cgrid.appendChild(d); // spans all tracks via .fgrid .detail
-                                }
+                                // Column panel: same field set as the variable panels (the declaration tail
+                                // carries DIM/OVER/NAME etc.; description/derived come from the live dict).
+                                wireSlidePanel(cic, row, cdkey, 60 + depth * 16, (function (cc, cpd2, cins, kidN) { return function () {
+                                    var a = cpd2.attrs;
+                                    return buildKindPanel(cc.name, cpd2.display, cc.picture || '', [
+                                        ['Members', kidN ? String(kidN) : null],
+                                        ['Prompt', cc.prompt], ['Heading', cc.header],
+                                        ['Description', cc.description, 'cmt'],
+                                        ['Derived from', cc.derivedFrom, 'mono'],
+                                        ['External name', typeof a.NAME === 'string' ? a.NAME : null, 'mono'],
+                                        ['Dimension', typeof a.DIM === 'string' ? a.DIM : null, 'mono'],
+                                        ['Place over', typeof a.OVER === 'string' ? a.OVER : null, 'mono'],
+                                        ['Comment', cpd2.comment ? '! ' + cpd2.comment : null, 'cmt']
+                                    ], [
+                                        ['BINDABLE', a.BINDABLE !== undefined, false]
+                                    ], 'double-click row inserts ' + cins);
+                                }; })(c, cpd, ins, kids.length));
                                 if (open) walk(kids, depth + 1);
                             });
                         };
@@ -1841,21 +1935,18 @@
                         function () { relExpanded[rkey] = !relExpanded[rkey]; render(); }, null);
                     if (rOpen) rels.forEach(function (r) {
                         var rdkey = 'd:' + rkey + '/' + r.name;
-                        var hasRDet = !!(r.primaryKey || r.foreignKey || (r.mappings && r.mappings.length));
+                        // Relation panel: type in the declaration line, key pair + column mappings as rows.
                         gutterRow('col-row', r.name, r.type || '', r.name, 44, false, false, null,
-                            hasRDet ? rdkey : null);
-                        if (hasRDet && detailOpen[rdkey]) {
-                            var dl = [];
-                            if (r.primaryKey) dl.push('<span class="attr">Primary Key: ' + esc(r.primaryKey) + '</span>');
-                            if (r.foreignKey) dl.push('<span class="attr">Foreign Key: ' + esc(r.foreignKey) + '</span>');
-                            if (dl.length) detailPanel(84, dl.join('<br>'));
-                            (r.mappings || []).forEach(function (m) {
-                                var mrow = makeRow('comp-row', null,
-                                    (m.from || '?') + '  →  ' + (m.to || '?'), '', 'column mapping', null);
-                                mrow.style.paddingLeft = '92px';
-                                host.appendChild(mrow);
-                            });
-                        }
+                            { kind: 'rel', dkey: rdkey, indent: 60, build: (function (rr) { return function () {
+                                var rows = [
+                                    ['Primary key', rr.primaryKey, 'mono'],
+                                    ['Foreign key', rr.foreignKey, 'mono']
+                                ];
+                                (rr.mappings || []).forEach(function (m, mi) {
+                                    rows.push([mi === 0 ? 'Mappings' : '', (m.from || '?') + '  →  ' + (m.to || '?'), 'mono']);
+                                });
+                                return buildKindPanel(rr.name, rr.type || '', '', rows, null, null);
+                            }; })(r) });
                     });
                 }
             });
@@ -2122,15 +2213,8 @@
                         ic.addEventListener('click', function (e) {
                             e.stopPropagation();
                             var was = wrap.classList.contains('open');
-                            // Accordion across BOTH variable sections: close every open panel in place.
-                            var opens = document.querySelectorAll('.vdet-wrap.open');
-                            for (var oi = 0; oi < opens.length; oi++) opens[oi].classList.remove('open');
-                            var orows = document.querySelectorAll('.row.trow.detopen');
-                            for (var ri = 0; ri < orows.length; ri++) orows[ri].classList.remove('detopen');
-                            // Drop only VARIABLE detail keys — richFileSection shares detailOpen for its
-                            // own '+' details and those must survive.
-                            for (var dk in detailOpen)
-                                if (/^d:(locals|globals)\//.test(dk)) delete detailOpen[dk];
+                            // ONE accordion across the whole Data tab (variables + table tree).
+                            closeAllDetailPanels();
                             if (!was) {
                                 detailOpen[dkey] = true;
                                 wrap.classList.add('open');
