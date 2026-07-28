@@ -82,6 +82,18 @@ namespace ClarionAssistant.Services
                     getPadData: () => ModernEmbeditorViewContent.BuildPadData(proc, nativeSource),
                     insert: text =>
                     {
+                        // OVERLAY-AWARE (a9aa19ba): since the v5.2 auto-overlay, this "focused native embeditor"
+                        // is normally COVERED by the CA Embeditor's Monaco. Writing into the native text area
+                        // there is invisible (Monaco hides it) and lost on save (Monaco's content wins) — the
+                        // Data pad's double-click insert silently vanished. Route to the overlay's Monaco when
+                        // it's up for this procedure; the bare-native path below still serves a true uncovered
+                        // native embeditor (overlay disabled/failed).
+                        var ov = ModernEmbeditorViewContent.LiveOverlayInstance;
+                        if (ov != null && string.Equals(ov.ProcedureName, proc, StringComparison.OrdinalIgnoreCase))
+                        {
+                            ov.InsertAtCursor(text);
+                            return;
+                        }
                         editor.InsertTextAtCaret(textArea, text);   // caret ends at the end of the pasted text
                         int end = editor.GetCaretOffset(textArea);  // capture it before focus can reset it
                         editor.FocusTextArea(textArea);             // hand focus back to the embeditor
@@ -89,6 +101,13 @@ namespace ClarionAssistant.Services
                     },
                     gotoRoutine: name =>
                     {
+                        // Same overlay routing as insert: navigate Monaco, not the covered native buffer.
+                        var ov = ModernEmbeditorViewContent.LiveOverlayInstance;
+                        if (ov != null && string.Equals(ov.ProcedureName, proc, StringComparison.OrdinalIgnoreCase))
+                        {
+                            ov.GotoRoutine(name);
+                            return;
+                        }
                         // Find the routine in the LIVE buffer at click time, NOT the resolve-time snapshot: the
                         // snapshot goes stale as the user edits the same procedure (the tick only re-snapshots on a
                         // procedure change), which made goto land a few lines off after inserts. Live read = exact.

@@ -67,6 +67,22 @@ namespace ClarionAssistant.Terminal
         internal static bool HasLiveOverlay { get { return _liveInstance != null; } }
 
         /// <summary>
+        /// The CA Embeditor OVERLAY instance currently covering the open native embeditor, or null when
+        /// none (no live embed, or the live instance is a plain tab, not the overlay). Read by the Data
+        /// pad's insert/goto routing (a9aa19ba): with the overlay up, the native ICSharpCode buffer is
+        /// INVISIBLE under Monaco — and Monaco's save would discard anything written into it — so pad
+        /// actions must target the overlay's Monaco editor, never the covered native text area.
+        /// </summary>
+        internal static ModernEmbeditorViewContent LiveOverlayInstance
+        {
+            get
+            {
+                var live = _liveInstance;
+                return (live != null && live._embedOverlay) ? live : null;
+            }
+        }
+
+        /// <summary>
         /// d3ab083a dispatch target: show an Errors-pane row INSIDE the live overlay instead of letting
         /// the native route re-host the embeditor (the reload). Mapping is SELF-ANCHORED: locate a
         /// distinctive run of the pwee document's opening lines inside the on-disk generated module —
