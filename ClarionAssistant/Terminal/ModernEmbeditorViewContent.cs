@@ -61,6 +61,10 @@ namespace ClarionAssistant.Terminal
         // exit). Gate the release on this flag so open-time churn can't drop the embed. (a5bbf005 probe fix)
         private bool _liveActivatedOnce;
         private static ModernEmbeditorViewContent _liveInstance;   // the ONE tab currently holding an open native embed, or null
+        /// <summary>True while any CA embeditor overlay/tab holds the native embed open — the state whose
+        /// teardown by Clarion's error navigation is disruptive. Read by ErrorPadNavigationInterceptor's
+        /// dispatch rule (d3ab083a).</summary>
+        internal static bool HasLiveOverlay { get { return _liveInstance != null; } }
         private static bool _liveWatchWired;                       // one-time ActiveWorkbenchWindowChanged subscription guard
         // Generation counter bumped at every live ACQUISITION (start of a live open, in ReleaseLiveInstanceSync).
         // A deferred switch-away release captures the gen when QUEUED and no-ops if a newer live open has since
@@ -2086,6 +2090,7 @@ namespace ClarionAssistant.Terminal
             CaptureNavIcons();
             HookOverlayTeardown(genEditor);
             WireNativeEmbedCaretMirror();
+            Services.ErrorPadNavigationInterceptor.EnsureInstalled();   // reroute error clicks while an overlay is live (d3ab083a)
         }
 
         /// <summary>Subscribe to the live native embeditor's caret while the overlay covers it (see the
