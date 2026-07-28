@@ -1037,6 +1037,25 @@ namespace ClarionAssistant.Terminal
         private ICSharpCode.TextEditor.Caret _nativeEmbedCaret;
         private int _lastNativeEmbedLine = -1;   // 0-based; coalesces the Line-then-Column double-fire of one jump
 
+        // Data-loss guard (task d19c036d part 3): Clarion's own error→embed navigation can close the native
+        // embed under a DIRTY overlay. Our edits live only in Monaco until save — the native buffer is clean,
+        // so Clarion never prompts, and the overlay teardown silently discarded the work (John's repro:
+        // edit, click an Errors-pane row that re-opens the embeditor, edits gone). The page mirrors its
+        // edited slot texts here on every legal edit (embedState, sibling of file mode's fileState); an
+        // EXTERNAL teardown (not our own Save/Cancel) stashes them, and the next attach for the same
+        // procedure restores them — validated against the same slot baseline so a stale stash or a
+        // regenerated source can never corrupt anything.
+        private List<string> _mirroredSlots;     // last embedState push from the page (live edited slot texts)
+        private bool _mirroredDirty;             // page's dirty flag at that push
+        private bool _teardownIntentional;       // set by our own Save/Cancel paths — suppresses the stash
+        private sealed class EmbedEditStash
+        {
+            public string Proc;
+            public List<string> Original;        // the torn-down overlay's slot BASELINE (validation key)
+            public List<string> Edited;          // its unsaved edited slot texts
+        }
+        private static EmbedEditStash _editStash;   // single-slot: at most one live overlay exists (a5bbf005)
+
         public ModernEmbeditorViewContent(string title, string sourceText, List<int[]> editableRanges,
             string language = "clarion", bool isDark = true, string procedureName = null, bool liveLinked = false,
             int initialLine = 0, Services.EmbedLspContext lspContext = null)
@@ -1269,7 +1288,37 @@ namespace ClarionAssistant.Terminal
         {
             _isInitialized = success;
             if (_embedOverlay && success) RemoveOverlayCover();
+            if (_embedOverlay && success) TryRestoreStashedEdits();   // re-apply edits an external teardown stashed (d19c036d)
             FocusIfActiveTab();   // #66 round-4: the INITIAL open never fires SwitchedTo (the tab is born selected)
+        }
+
+        /// <summary>If an externally torn-down overlay stashed unsaved edits for THIS procedure, push them to
+        /// the page (which re-applies them slot-by-slot once its source has loaded). Restores ONLY when the
+        /// fresh baseline is identical to the stashed one — a regenerated/changed source invalidates the
+        /// stash, and the page is told so the loss is at least surfaced instead of silent. (d19c036d)</summary>
+        private void TryRestoreStashedEdits()
+        {
+            try
+            {
+                var stash = _editStash;
+                if (stash == null || _panel == null) return;
+                if (!string.Equals(stash.Proc, _procedureName, StringComparison.OrdinalIgnoreCase)) return;   // another proc's stash — leave it for its own re-open
+                _editStash = null;   // single-shot: consumed (or invalidated) by this attach
+                bool baselineMatches = _originalSlotTexts != null && stash.Original.Count == _originalSlotTexts.Count;
+                if (baselineMatches)
+                    for (int i = 0; i < stash.Original.Count; i++)
+                        if (!string.Equals(stash.Original[i], _originalSlotTexts[i], StringComparison.Ordinal)) { baselineMatches = false; break; }
+                if (!baselineMatches)
+                {
+                    try { _panel.PostJson("{\"type\":\"restoreSlotsFailed\"}"); } catch { }
+                    ClarionAssistant.MonacoSpikeLog.Write("stashed unsaved edits NOT restored — baseline changed (" + _procedureName + ")");
+                    return;
+                }
+                var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                _panel.PostJson("{\"type\":\"restoreSlots\",\"slots\":" + ser.Serialize(stash.Edited) + "}");
+                ClarionAssistant.MonacoSpikeLog.Write("restored stashed unsaved edits into re-opened embed (" + _procedureName + ")");
+            }
+            catch (Exception ex) { ClarionAssistant.MonacoSpikeLog.Write("TryRestoreStashedEdits error: " + ex.Message); }
         }
 
         /// <summary>Hand the freshly loaded Monaco page keyboard focus + claim the CA Find pad — but only
@@ -1290,7 +1339,29 @@ namespace ClarionAssistant.Terminal
             }
             catch { }
         }
-        void IMonacoEditorHost.OnUnknownAction(MonacoEditorControl editor, string action, string rawJson) { }
+        void IMonacoEditorHost.OnUnknownAction(MonacoEditorControl editor, string action, string rawJson)
+        {
+            if (action == "embedState") HandleEmbedState(rawJson);
+        }
+
+        /// <summary>{action:"embedState"} — the page's per-edit mirror of its edited slot texts (see the
+        /// _mirroredSlots field comment). Routed via OnUnknownAction so the shared IMonacoEditorHost
+        /// interface (and the CA Editor host) stays untouched.</summary>
+        private void HandleEmbedState(string rawJson)
+        {
+            try
+            {
+                var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                var data = ser.DeserializeObject(rawJson) as Dictionary<string, object>;
+                if (data == null) return;
+                object slotsObj, dirtyObj;
+                var arr = data.TryGetValue("slots", out slotsObj) ? slotsObj as object[] : null;
+                if (arr == null) return;
+                _mirroredSlots = arr.Select(o => o == null ? "" : o.ToString()).ToList();
+                _mirroredDirty = data.TryGetValue("dirty", out dirtyObj) && dirtyObj is bool && (bool)dirtyObj;
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] embedState: " + ex.Message); }
+        }
 
         /// <summary>Persist the user's edits: parse the per-slot payload and run the save round-trip.</summary>
         private void HandleSave(string json)
@@ -1343,6 +1414,7 @@ namespace ClarionAssistant.Terminal
                     // Controlled discard: detach the overlay (dispose the WebView2 on THIS settled turn) BEFORE
                     // cancelling the native embed, so the host disposal can't cascade-dispose the WebView2 on the
                     // native close stack (the freeze). Then release the native embed (nothing is written back).
+                    _teardownIntentional = true;   // user chose Cancel — discarding is the point, don't stash (d19c036d)
                     DetachOverlay();
                     try
                     {
@@ -1669,8 +1741,10 @@ namespace ClarionAssistant.Terminal
             // settled turn — well before SaveAndCloseEmbeditor's native-close DoEvents pump.
             if (_embedOverlay && live)
             {
+                _teardownIntentional = true;   // save-and-exit — the buffer is being persisted, don't stash (d19c036d)
                 DetachOverlay();
                 msg = ModernEmbeditorSaver.SaveLive(_procedureName, _editableRanges, _originalSlotTexts, current, out ok);
+                if (ok) _editStash = null;     // saved — any stash for this proc is now stale
                 try
                 {
                     if (ok) RefreshPadSources();
@@ -1695,6 +1769,7 @@ namespace ClarionAssistant.Terminal
 
             // On success, the saved content is the new baseline so a follow-up save sees no changes.
             if (ok && current.Count == _originalSlotTexts.Count) _originalSlotTexts = current;
+            if (ok) { _mirroredDirty = false; _editStash = null; }   // persisted — mirror clean, stash stale (d19c036d)
             // The save activated the app tree to drive the embeditor — bring this tab back to the front.
             BringToFront();
             // Refresh the pad's IDE-sourced caches (UI thread) so Local/Global Data + Other Files reflect the save.
@@ -2384,6 +2459,23 @@ namespace ClarionAssistant.Terminal
             _overlayDetached = true;
             UnhookOverlayTeardown();
             UnwireNativeEmbedCaretMirror();   // stop mirroring BEFORE the native embed (and its caret) is torn down
+
+            // Data-loss guard (d19c036d): an EXTERNAL teardown (Clarion's error→embed navigation closing the
+            // native embed under us — anything but our own Save/Cancel) with unsaved Monaco edits stashes the
+            // page's last mirrored slot texts, so the next attach for this procedure can restore them.
+            if (!_teardownIntentional && _mirroredDirty && _mirroredSlots != null &&
+                _originalSlotTexts != null && _mirroredSlots.Count == _originalSlotTexts.Count &&
+                !string.IsNullOrEmpty(_procedureName))
+            {
+                _editStash = new EmbedEditStash
+                {
+                    Proc = _procedureName,
+                    Original = new List<string>(_originalSlotTexts),
+                    Edited = new List<string>(_mirroredSlots)
+                };
+                ClarionAssistant.MonacoSpikeLog.Write("embed overlay torn down DIRTY — stashed " + _mirroredSlots.Count +
+                    " slot(s) of unsaved edits for " + _procedureName);
+            }
             // Overlay mode is never ShowView'd, so the workbench never calls our Dispose() — this IS the
             // teardown for the shared session-scoped state too (broker entry, LSP shadow, instance list). (#119)
             TeardownSession();

@@ -868,6 +868,42 @@
         if (!fileMode || !editor) return;
         postToHost({ action: 'fileState', dirty: isDirty, seq: editSeq, text: editor.getModel().getValue() });
     }
+    // Unsaved edits stashed by the host from an externally torn-down overlay, waiting for the async
+    // source fetch to populate the model before they can be re-applied (task d19c036d).
+    var pendingRestoreSlots = null;
+
+    // Re-apply stashed slot texts into the freshly-loaded buffer. All-or-nothing per slot: a slot whose
+    // current text already matches is skipped (no undo churn). Reverse order so earlier ranges stay valid
+    // while later slots grow/shrink; applyGuardedEdits self-maintains embedRanges + mirrors to the host.
+    function restoreSlotContents(slots) {
+        try {
+            if (fileMode || !slots || !embedRanges.length || slots.length !== embedRanges.length) return;
+            var model = editor.getModel();
+            var changed = false;
+            for (var i = embedRanges.length - 1; i >= 0; i--) {
+                var r = embedRanges[i];
+                var range = new monaco.Range(r[0], 1, r[1], model.getLineMaxColumn(r[1]));
+                if (model.getValueInRange(range) === slots[i]) continue;
+                applyGuardedEdits([{ range: range, text: slots[i] }]);
+                changed = true;
+            }
+            if (changed) {
+                setDirty(true);
+                pushEmbedState();
+                showToast('Restored your unsaved edits from the interrupted embeditor session — Ctrl+S to save them.', true, true);
+            }
+        } catch (e) { }
+    }
+
+    // Embed mode's sibling of pushFileState (task d19c036d): mirror the edited slot texts to the host on
+    // every legal edit. The overlay can be torn down at ANY moment by Clarion's own error→embed navigation
+    // closing + re-opening the native embed under us — the native buffer is clean (our edits live only in
+    // Monaco until save), so Clarion never prompts and the work would vanish silently. SYNCHRONOUS for the
+    // same close-safety reason as pushFileState; slot payloads are hand-written embed code, i.e. small.
+    function pushEmbedState() {
+        if (fileMode || !editor || !embedRanges.length) return;
+        try { postToHost({ action: 'embedState', dirty: isDirty, slots: gatherSlots() }); } catch (e) { }
+    }
     var toastTimer = null;
     var saveSafetyTimer = null;   // ensures the "Saving…" toast can never hang forever
     var pendingRequests = {};     // reqId -> resolver, for async LSP completion/hover round-trips
@@ -1292,6 +1328,10 @@
                 guarding = false;
                 restoreEmbedState(msg);     // bookmarks + cursor (once per tab); else reveal line 1
                 if (msg.breakpoints) setBreakpointLines(msg.breakpoints);   // debugger red dots, painted after the content is in (cold-open safe)
+                // Re-apply unsaved edits stashed by the host from an externally torn-down overlay
+                // (d19c036d) — deferred here because the restoreSlots message can arrive before this
+                // async source fetch has populated the model/embedRanges.
+                if (pendingRestoreSlots) { var prs = pendingRestoreSlots; pendingRestoreSlots = null; restoreSlotContents(prs); }
                 scheduleDiagnostics();      // initial squiggle pass once the buffer is in
                 // CA Find pad (#66): a freshly-loaded editor claims the pad — matches "find targets the
                 // window you just opened" without requiring a click into the buffer first.
@@ -1839,6 +1879,7 @@
         applyEmbedDecorations();
         guarding = false;
         scheduleDiagnostics();
+        pushEmbedState();   // guarded edits bypass the content-change mirror (guarding=true) — mirror here (d19c036d)
     }
 
     // Ctrl+I — reformat the selected block (or the caret's line) with the Clarion Smart Formatter.
@@ -3149,7 +3190,7 @@
                 guarding = false;
                 if (legal.length) {
                     setDirty(true);
-                    if (fileMode) { editSeq++; pushFileState(); }
+                    if (fileMode) { editSeq++; pushFileState(); } else pushEmbedState();
                     if (bookmarkDecos.length) scheduleBookmarkPersist();
                     scheduleDiagnostics();
                 }
@@ -3168,6 +3209,9 @@
                 applyEmbedDecorations();
                 guarding = false;
             }
+            // Embed mode: mirror the slots AFTER applyChangesToRanges folded this edit's line delta into
+            // embedRanges — gatherSlots reads those ranges, so pushing earlier would mirror stale spans. (d19c036d)
+            pushEmbedState();
             // Bookmark decorations shift with edits above them; re-persist (debounced) so the saved set
             // matches the moved lines, not the stale ones captured at last toggle. (Debugger finding.)
             if (bookmarkDecos.length) scheduleBookmarkPersist();
@@ -5808,6 +5852,12 @@
                 renderGearSnippets();                               // refresh the gear-panel manager list
             } else if (msg.type === 'externalFileState') {
                 handleExternalFileState(msg);
+            } else if (msg.type === 'restoreSlots') {
+                // May arrive before the async source fetch fills the model — park until applySource's tail.
+                if (embedRanges.length && editor && editor.getModel().getLineCount() > 1) restoreSlotContents(msg.slots);
+                else pendingRestoreSlots = msg.slots;
+            } else if (msg.type === 'restoreSlotsFailed') {
+                showToast('Your unsaved edits from the interrupted embeditor session could not be restored (the generated source changed underneath them).', false);
             }
         });
     }
