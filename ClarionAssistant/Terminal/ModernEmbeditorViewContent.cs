@@ -96,21 +96,18 @@ namespace ClarionAssistant.Terminal
                 if (line0 < 0 || line0 >= disk.Length)
                 { ClarionAssistant.MonacoSpikeLog.Write("error reveal: line0 " + line0 + " outside module (" + disk.Length + " lines)"); return false; }
 
-                int offset = ComputeAnchorOffset(pwee, disk);
-                if (offset == int.MinValue)
-                { ClarionAssistant.MonacoSpikeLog.Write("error reveal: anchor run not found in " + System.IO.Path.GetFileName(fileName) + " — different module or drifted source; native fallback"); return false; }
-
-                int pweeLine0 = line0 - offset;
-                if (pweeLine0 < 0 || pweeLine0 >= pwee.Length)
-                { ClarionAssistant.MonacoSpikeLog.Write("error reveal: mapped line " + pweeLine0 + " outside pwee doc (offset " + offset + ") — row is outside this procedure; native fallback"); return false; }
-
-                if (!string.Equals(pwee[pweeLine0], disk[line0], StringComparison.Ordinal))
-                { ClarionAssistant.MonacoSpikeLog.Write("error reveal: validation mismatch at pwee " + pweeLine0 + " vs module " + line0 + " (offset " + offset + ") — native fallback"); return false; }
+                // Local-context match (the global-offset attempt proved the pwee doc is NOT a contiguous
+                // module slice — it shares the header then diverges structurally, so per-click context is
+                // the only mapping that holds). A found match IS the location, the validation, and the
+                // module-identity proof in one.
+                int pweeLine0 = FindPweeLineByContext(pwee, disk, line0);
+                if (pweeLine0 < 0)
+                { ClarionAssistant.MonacoSpikeLog.Write("error reveal: context for module line0 " + line0 + " not located uniquely in pwee doc — native fallback"); return false; }
 
                 live._panel.RevealLine(pweeLine0 + 1, col0 + 1);  // 0-based → Monaco 1-based
                 live.BringToFront();
                 ClarionAssistant.MonacoSpikeLog.Write("error revealed in live overlay: module line0 " + line0 +
-                    " -> pwee line " + (pweeLine0 + 1) + " (anchor offset " + offset + ", " + System.IO.Path.GetFileName(fileName) + ")");
+                    " -> pwee line " + (pweeLine0 + 1) + " (context match, " + System.IO.Path.GetFileName(fileName) + ")");
                 return true;
             }
             catch (Exception ex)
@@ -120,30 +117,45 @@ namespace ClarionAssistant.Terminal
             }
         }
 
-        /// <summary>Find where the pwee document's opening lines sit inside the generated module: the
-        /// first distinctive 3-line run of the pwee baseline that matches EXACTLY ONCE in the module
-        /// yields offset = moduleIndex - pweeIndex. Ambiguous runs are skipped; int.MinValue = no
-        /// unique anchor (different module, or the source drifted since generation).</summary>
-        private static int ComputeAnchorOffset(string[] pwee, string[] disk)
+        /// <summary>Locate the pwee-document line showing the same code as generated-module line
+        /// <paramref name="line0"/>, by matching the module's local context run inside the pwee lines.
+        /// Strategy: a 3-line window centered on the target must match EXACTLY ONCE; if it matches
+        /// several places (boilerplate), widen to 5 then 7 lines to disambiguate; if the 3-line window
+        /// matches nowhere (divergence/edits inside the window), fall back to a UNIQUE single-line
+        /// match. Windows are clamped at buffer edges. -1 = no unique location (ambiguous boilerplate
+        /// like a bare END, a different module, or drifted source) — caller goes native.</summary>
+        private static int FindPweeLineByContext(string[] pwee, string[] disk, int line0)
         {
-            int probeLimit = Math.Min(pwee.Length - 2, 40);
-            for (int k = 0; k < probeLimit; k++)
+            for (int radius = 1; radius <= 3; radius++)
             {
-                if (pwee[k].Trim().Length < 5) continue;   // blank/trivial lines make weak anchors
-                int found = -1;
-                bool ambiguous = false;
-                for (int m = 0; m + 2 < disk.Length; m++)
-                {
-                    if (!string.Equals(disk[m], pwee[k], StringComparison.Ordinal)) continue;
-                    if (!string.Equals(disk[m + 1], pwee[k + 1], StringComparison.Ordinal)) continue;
-                    if (!string.Equals(disk[m + 2], pwee[k + 2], StringComparison.Ordinal)) continue;
-                    if (found >= 0) { ambiguous = true; break; }
-                    found = m;
-                }
-                if (ambiguous) continue;                   // try a more distinctive run further down
-                if (found >= 0) return found - k;
+                int result = MatchWindow(pwee, disk, line0, radius, out bool ambiguous);
+                if (result >= 0) return result;
+                if (!ambiguous)                        // window not found at all — widening can't help
+                    return radius == 1 ? MatchWindow(pwee, disk, line0, 0, out _) : -1;
             }
-            return int.MinValue;
+            return -1;                                 // still ambiguous at 7 lines — give up honestly
+        }
+
+        /// <summary>Match disk[line0-radius .. line0+radius] (edge-clamped) against every position in
+        /// the pwee lines. Returns the pwee index aligned to line0 when the run occurs exactly once;
+        /// -1 otherwise, with <paramref name="ambiguous"/> telling multiple-hits apart from none.</summary>
+        private static int MatchWindow(string[] pwee, string[] disk, int line0, int radius, out bool ambiguous)
+        {
+            ambiguous = false;
+            int lo = Math.Max(0, line0 - radius);
+            int hi = Math.Min(disk.Length - 1, line0 + radius);
+            int len = hi - lo + 1;
+            int found = -1;
+            for (int m = 0; m + len <= pwee.Length; m++)
+            {
+                bool match = true;
+                for (int d = 0; d < len; d++)
+                    if (!string.Equals(pwee[m + d], disk[lo + d], StringComparison.Ordinal)) { match = false; break; }
+                if (!match) continue;
+                if (found >= 0) { ambiguous = true; return -1; }
+                found = m + (line0 - lo);              // align back to the target line inside the window
+            }
+            return found;
         }
         private static bool _liveWatchWired;                       // one-time ActiveWorkbenchWindowChanged subscription guard
         // Generation counter bumped at every live ACQUISITION (start of a live open, in ReleaseLiveInstanceSync).
