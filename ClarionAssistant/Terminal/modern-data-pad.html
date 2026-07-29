@@ -2631,7 +2631,9 @@
                     }
                     // Restore the rest of the view state. A re-post fires on every pin/open/remove, so
                     // without this the user's scope and type filter would silently snap back mid-session.
-                    if (msg.uiState.scope)   explorerScope = msg.uiState.scope;
+                    // The scope is validated against THIS payload's content — it is persisted across
+                    // restarts and buckets now, so it can name a group that isn't here (scopeWithContent).
+                    if (msg.uiState.scope)   explorerScope = scopeWithContent(msg.uiState.scope, msg);
                     if (msg.uiState.extMode) redExtMode    = msg.uiState.extMode;
                     var maskEl = document.getElementById('redCustomExt');
                     if (maskEl && typeof msg.uiState.customExt === 'string') maskEl.value = msg.uiState.customExt;
@@ -2897,12 +2899,18 @@
     // FILES TAB — Monaco file loader. Renders #panel-files from the host's setExplorerData payload.
     // Contract (host -> JS): { type:'setExplorerData', lastFolder, quickLocations[{key,label,dir}],
     //   pinnedFolders[{label,dir}], pinned[{name,ext,path,kind,incPath?,clwPath?}],
+    //   compares[{a,b,aName,bName,aDir,bDir,ts,aExists,bExists,pinned,shape}],
     //   groups:{ classes[{name,incPath,clwPath,dir,ts,incExists,clwExists,pinned}],
-    //            templates|source|other[{name,ext,path,dir,ts,exists,pinned}] }, uiState:{collapsed[]} }
+    //            templates|source|other[{name,ext,path,dir,ts,exists,pinned}] },
+    //   uiState:{collapsed[],scope,extMode,customExt} }
+    // `compares` arrives ALREADY ORDERED (pinned first, then most recent) and its `shape` is host-computed —
+    // see compareLabel(). uiState is persisted host-side per (version, solution) bucket, so it survives a
+    // restart: the page must never post saveExplorerUiState before the first payload lands, or it would
+    // overwrite the user's stored view state with these defaults.
     // All interactions post messages to the host (handlers live host-side, items 6-8).
     // ============================================================================================
     var explorerData = null;        // last setExplorerData payload
-    var explorerCollapsed = {};     // group key ('classes'|'templates'|'source'|'other') -> true when collapsed
+    var explorerCollapsed = {};     // group key ('compares'|'classes'|'templates'|'source'|'other') -> true when collapsed
     var explorerFilter = '';        // live filter text for recent rows
 
     function fIco(ext, kind) {
@@ -3028,6 +3036,107 @@
         // Primary action: open both .inc + .clw.
         row.addEventListener('click', function () { postToHost({ action: 'openClassPair', inc: entry.incPath, clw: entry.clwPath }); });
         return row;
+    }
+
+    // ---- Recent compare pairs -------------------------------------------------------------------
+    // ONE label for a pair, shared by the group row, the Compare split-button menu and the omnibox, so the
+    // three surfaces can never describe the same pair differently. The host classifies the pair's `shape`
+    // (sameName | sameDir | differ); this only draws it.
+    function compareLabel(p) {
+        var an = p.aName || '', bn = p.bName || '';
+        if (p.shape === 'sameName') {
+            // One filename in two folders — repeating the name would spend the line saying nothing.
+            return { main: an + ' ⇄ 2 locations', sub: shortDir(p.aDir) + '  ⇄  ' + shortDir(p.bDir) };
+        }
+        if (p.shape === 'sameDir') {
+            // One folder, two names, so the folder is stated once. When only the EXTENSION differs (the
+            // .inc/.clw case) the second side is just its extension — "StringTheory.inc ⇄ .clw".
+            var ab = splitExt(an, ''), bb = splitExt(bn, '');
+            var main = (ab[0] && bb[1] && ab[0].toLowerCase() === bb[0].toLowerCase())
+                ? an + ' ⇄ ' + bb[1]
+                : an + ' ⇄ ' + bn;
+            return { main: main, sub: shortDir(p.aDir) };
+        }
+        return { main: an + ' ⇄ ' + bn, sub: shortDir(p.aDir) + '  ⇄  ' + shortDir(p.bDir) };
+    }
+
+    // Which side(s) of a pair are gone, as a sentence. A stale pair says so at rest instead of only
+    // revealing it when a click produces a message box.
+    function compareMissingNote(p) {
+        var aGone = p.aExists === false, bGone = p.bExists === false;
+        if (aGone && bGone) return 'both files are missing on disk';
+        if (aGone) return (p.aName || 'the first file') + ' is missing on disk';
+        if (bGone) return (p.bName || 'the second file') + ' is missing on disk';
+        return '';
+    }
+
+    // Full paths on the tooltip: the label deliberately abbreviates, so the tooltip is where the
+    // exact two paths live.
+    function compareTip(p, note) {
+        return (p.a || '') + '\n⇄\n' + (p.b || '') + (note ? '\n\n' + note : '');
+    }
+
+    // A pair matches the query if EITHER side does — you look for one file and find what you diffed it against.
+    function compareMatch(p) {
+        return explorerMatch(p.aName, p.aDir) || explorerMatch(p.bName, p.bDir);
+    }
+
+    // Build one compare-pair row. entry: {a,b,aName,bName,aDir,bDir,ts,aExists,bExists,pinned,shape}.
+    function buildCompareRow(entry) {
+        var lbl = compareLabel(entry), note = compareMissingNote(entry);
+        var row = document.createElement('div');
+        row.className = 'frow2' + (note ? ' missing' : '');
+        row.title = compareTip(entry, note);
+
+        var ico = document.createElement('span'); ico.className = 'fico'; ico.textContent = '⇄'; row.appendChild(ico);
+
+        var meta = document.createElement('span'); meta.className = 'meta';
+        var fname = document.createElement('div'); fname.className = 'fname';
+        fname.appendChild(document.createTextNode(lbl.main));
+        if (note) {
+            var warn = document.createElement('span'); warn.className = 'pairchip missing';
+            warn.textContent = 'missing'; warn.title = note;
+            fname.appendChild(warn);
+        }
+        meta.appendChild(fname);
+        var fpath = document.createElement('div'); fpath.className = 'fpath'; fpath.textContent = lbl.sub; meta.appendChild(fpath);
+        row.appendChild(meta);
+
+        var time = document.createElement('span'); time.className = 'ftime'; time.textContent = entry.ts || ''; row.appendChild(time);
+
+        var acts = document.createElement('span'); acts.className = 'acts';
+        acts.appendChild(actBtn('⇗', 'Run this comparison again', '',
+            function () { postToHost({ action: 'compare', a: entry.a, b: entry.b }); }));
+        // Swap is a REAL re-run with the sides flipped, not a display toggle. The host records the new order
+        // onto the same (unordered) entry, so the pair keeps its identity and remembers which way round you
+        // last looked at it.
+        acts.appendChild(actBtn('⇄', 'Swap sides and re-run', '',
+            function () { postToHost({ action: 'compare', a: entry.b, b: entry.a }); }));
+        // Both paths, one per line. The host owns the clipboard — writeText fails silently on file://.
+        acts.appendChild(actBtn('⧉', 'Copy both paths', 'both',
+            function () { postToHost({ action: 'copyPaths', a: entry.a, b: entry.b }); }));
+        acts.appendChild(actBtn(entry.pinned ? '★' : '☆', entry.pinned ? 'Unpin this pair' : 'Pin this pair', '',
+            function () { postToHost({ action: entry.pinned ? 'compareUnpin' : 'comparePin', a: entry.a, b: entry.b }); }));
+        acts.appendChild(actBtn('✕', 'Remove from list', 'del',
+            function () { postToHost({ action: 'compareRemove', a: entry.a, b: entry.b }); }));
+        row.appendChild(acts);
+
+        // Primary action: re-run the comparison (what the header hint promises).
+        row.addEventListener('click', function () { postToHost({ action: 'compare', a: entry.a, b: entry.b }); });
+        return row;
+    }
+
+    // The ⇄ Compares group, rendered ABOVE Classes: a compare is recent ACTIVITY, whereas
+    // Classes/Templates/Source are a library of what you have opened. Rows arrive from the host already
+    // ordered (pinned first, then most recent) — do NOT re-sort them here.
+    function buildCompareGroup(host, d) {
+        var all = d.compares || [];
+        var shown = all.filter(compareMatch);
+        if (!shown.length) return;
+        var collapsed = buildGroupHeader(host, 'compares', '⇄ Compares',
+            all.length + ' pair' + (all.length === 1 ? '' : 's'), 'click to re-run');
+        if (collapsed) return;
+        shown.forEach(function (p) { host.appendChild(buildCompareRow(p)); });
     }
 
     // A collapsible group header. key persists collapse via saveExplorerUiState. countText is the label suffix.
@@ -3225,13 +3334,37 @@
         menu.appendChild(row);
     }
 
-    // Recent compare pairs land here in ticket 5e61c82c. Until then the menu carries the explicit
-    // action plus an honest empty state rather than opening blank.
-    function buildCompareMenu(menu) {
+    // The Compare split-button menu: re-run a recent pair, or start a new comparison. Only the most
+    // recent few pairs belong in a dropdown — the full list is the ⇄ Compares group — so when the list is
+    // longer than the cap the menu SAYS so rather than quietly showing a truncated set.
+    var CMP_MENU_MAX = 5;
+
+    function buildCompareMenu(menu, d) {
         menu.innerHTML = '';
-        var hint = document.createElement('div'); hint.className = 'hint';
-        hint.textContent = 'No recent compares yet';
-        menu.appendChild(hint);
+        var all = ((d || {}).compares) || [];
+        var shown = all.slice(0, CMP_MENU_MAX);   // already pinned-first, then most recent — see the contract
+
+        if (!shown.length) {
+            // Honest empty state: the menu opens with something to read, not blank.
+            var hint = document.createElement('div'); hint.className = 'hint';
+            hint.textContent = 'No recent compares yet';
+            menu.appendChild(hint);
+        } else {
+            menuCap(menu, 'Compare again');
+            shown.forEach(function (p) {
+                var lbl = compareLabel(p), note = compareMissingNote(p);
+                // A stale pair shows WHY instead of its folder — that is the more urgent fact, and the
+                // folders are still on the tooltip with the full paths.
+                menuItem(menu, p.pinned ? '★' : '⇄', lbl.main, note || lbl.sub, compareTip(p, note),
+                    function () { postToHost({ action: 'compare', a: p.a, b: p.b }); });
+            });
+            if (all.length > shown.length) {
+                var more = document.createElement('div'); more.className = 'hint';
+                more.textContent = '+' + (all.length - shown.length) + ' more in ⇄ Compares below';
+                menu.appendChild(more);
+            }
+        }
+
         menuSep(menu);
         menuItem(menu, '📂', 'New compare…', 'pick two files', 'Pick two files and diff them in Monaco',
             function () { postToHost({ action: 'compare' }); });
@@ -3282,6 +3415,9 @@
             pinned.forEach(function (e) { body.appendChild(buildFileRow(e, true)); });
         }
 
+        // Recent compares sit above the type groups — activity first, library second (buildCompareGroup).
+        if (scopeAllows('compares')) buildCompareGroup(body, d);
+
         // Recents grouped by type — the active scope pill decides which groups render.
         var g = d.groups || {};
         if (scopeAllows('classes'))   buildGroupRows(body, 'classes',   '📗 Classes',   '',              g.classes,   true);
@@ -3291,7 +3427,7 @@
 
         if (!body.childNodes.length) {
             var none = document.createElement('div'); none.className = 'files-empty';
-            none.textContent = hasAnyGroup(g) || (d.pinned || []).length
+            none.textContent = hasAnyGroup(g) || (d.pinned || []).length || (d.compares || []).length
                 ? 'Nothing in this group.'                                    // scoped away, not actually empty
                 : 'No recent files yet — use Open… above, or drop files below.';
             body.appendChild(none);
@@ -3322,18 +3458,39 @@
     // One pill. Returns the element so the overflow menu can reuse the same definitions.
     function pillDef(key, label, count) { return { key: key, label: label, count: count }; }
 
+    // How many rows a scope key currently has. One definition, used by the pills AND by the
+    // persisted-scope check — so a pill can never exist without content, or content without a pill.
+    function scopeCount(key, d) {
+        d = d || {};
+        var g = d.groups || {};
+        if (key === 'pinned')   return (d.pinned || []).length;
+        if (key === 'compares') return (d.compares || []).length;
+        return (g[key] || []).length;
+    }
+
+    // A persisted scope can outlive its content: the stored pill may be a group this (version, solution)
+    // bucket no longer has — or never had, now that the scope survives a restart. Opening the tab on a
+    // scope with nothing in it would show an empty list next to a pill row that doesn't even offer it,
+    // so fall back to 'all'. Only applied when the scope ARRIVES from the host; scoping to a group and
+    // then emptying it mid-session still shows the existing "Nothing in this group." message.
+    function scopeWithContent(key, d) {
+        if (!key || key === 'all') return 'all';
+        return scopeCount(key, d) > 0 ? key : 'all';
+    }
+
     function buildPills(host, d) {
         host.innerHTML = '';
         if (!d) return;
-        var g = d.groups || {};
         var defs = [];
         // Only groups that actually have content get a pill — the row never lists what you don't have.
-        if ((d.pinned || []).length)   defs.push(pillDef('pinned',    '📌',            d.pinned.length));
-        if ((g.classes || []).length)  defs.push(pillDef('classes',   '📗 Classes',    g.classes.length));
-        if ((g.templates || []).length)defs.push(pillDef('templates', '🧩 Templates',  g.templates.length));
-        if ((g.source || []).length)   defs.push(pillDef('source',    '📘 Source',     g.source.length));
-        if ((g.other || []).length)    defs.push(pillDef('other',     '📦 Other',      g.other.length));
-        // Ticket 5e61c82c inserts a "⇄ Compares" pill here; 3223de58 adds "📄 Docs & data".
+        if (scopeCount('pinned', d))    defs.push(pillDef('pinned',    '📌',            scopeCount('pinned', d)));
+        // Compares sits directly after 📌 and before the type groups, mirroring the row order below.
+        if (scopeCount('compares', d))  defs.push(pillDef('compares',  '⇄ Compares',    scopeCount('compares', d)));
+        if (scopeCount('classes', d))   defs.push(pillDef('classes',   '📗 Classes',    scopeCount('classes', d)));
+        if (scopeCount('templates', d)) defs.push(pillDef('templates', '🧩 Templates',  scopeCount('templates', d)));
+        if (scopeCount('source', d))    defs.push(pillDef('source',    '📘 Source',     scopeCount('source', d)));
+        if (scopeCount('other', d))     defs.push(pillDef('other',     '📦 Other',      scopeCount('other', d)));
+        // Ticket 3223de58 adds "📄 Docs & data" here.
 
         if (!defs.length) return;       // nothing recorded yet — no point showing a lone "All"
 
@@ -3483,26 +3640,34 @@
     function renderOmniResults(body, d) {
         var g = d.groups || {};
 
-        // Flatten recents in the same priority order the browse view shows them.
+        // Flatten recents in the same priority order the browse view shows them. `type` picks the row
+        // builder AND the omniTag target, so a new row kind is added in exactly one place.
         var recents = [];
-        (d.pinned || []).forEach(function (e) { recents.push({ entry: e, isClass: false, key: 'pinned' }); });
-        (g.classes || []).forEach(function (e) { recents.push({ entry: e, isClass: true,  key: 'classes' }); });
+        (d.pinned || []).forEach(function (e) { recents.push({ entry: e, type: 'file', key: 'pinned' }); });
+        // Compare pairs rank with the other recent activity — searching for one side of a diff you ran
+        // this morning should find the diff, not just the file.
+        (d.compares || []).forEach(function (e) { recents.push({ entry: e, type: 'compare', key: 'compares' }); });
+        (g.classes || []).forEach(function (e) { recents.push({ entry: e, type: 'class', key: 'classes' }); });
         [['templates', g.templates], ['source', g.source], ['other', g.other]].forEach(function (pair) {
-            (pair[1] || []).forEach(function (e) { recents.push({ entry: e, isClass: false, key: pair[0] }); });
+            (pair[1] || []).forEach(function (e) { recents.push({ entry: e, type: 'file', key: pair[0] }); });
         });
         // Scope pill applies to recents in query mode too, so "Classes + string" means what it looks like.
         recents = recents.filter(function (r) {
             if (!scopeAllows(r.key)) return false;
-            return r.isClass ? explorerMatch(r.entry.name, r.entry.dir || r.entry.incPath || r.entry.clwPath)
-                             : explorerMatch(r.entry.name, r.entry.path || r.entry.dir);
+            if (r.type === 'compare') return compareMatch(r.entry);      // EITHER side may match
+            return r.type === 'class' ? explorerMatch(r.entry.name, r.entry.dir || r.entry.incPath || r.entry.clwPath)
+                                      : explorerMatch(r.entry.name, r.entry.path || r.entry.dir);
         });
 
         if (recents.length) {
             omniHeader(body, '🕘 Recent', recents.length, false);
             recents.forEach(function (r) {
-                var row = r.isClass ? buildClassRow(r.entry) : buildFileRow(r.entry, false);
-                omniTag(row, r.isClass ? { kind: 'classpair', inc: r.entry.incPath, clw: r.entry.clwPath }
-                                       : { kind: 'file', path: r.entry.path });
+                var row = r.type === 'compare' ? buildCompareRow(r.entry)
+                        : r.type === 'class'   ? buildClassRow(r.entry)
+                                               : buildFileRow(r.entry, false);
+                omniTag(row, r.type === 'compare' ? { kind: 'compare', a: r.entry.a, b: r.entry.b }
+                           : r.type === 'class'   ? { kind: 'classpair', inc: r.entry.incPath, clw: r.entry.clwPath }
+                                                  : { kind: 'file', path: r.entry.path });
                 // The row already carries its own open handler from buildFileRow/buildClassRow. Registered
                 // after it, this runs second and drops the query — so opening from a Recent hit behaves the
                 // same as opening a Redirection hit (which clears via omniOpen). Row action buttons call
@@ -3549,7 +3714,9 @@
     function omniOpen(i) {
         var t = omniHits[i];
         if (!t) return;
-        if (t.kind === 'classpair') postToHost({ action: 'openClassPair', inc: t.inc, clw: t.clw });
+        // "Open" a compare hit = re-run that comparison, which is what its row click does too.
+        if (t.kind === 'compare') postToHost({ action: 'compare', a: t.a, b: t.b });
+        else if (t.kind === 'classpair') postToHost({ action: 'openClassPair', inc: t.inc, clw: t.clw });
         else postToHost({ action: 'loadFile', path: t.path });
         omniClear();
     }

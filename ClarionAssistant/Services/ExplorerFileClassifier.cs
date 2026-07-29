@@ -6,10 +6,11 @@ using System.Linq;
 namespace ClarionAssistant.Services
 {
     /// <summary>
-    /// Turns the raw <see cref="ExplorerRecentsStore"/> recents + pinned lists into the grouped
-    /// view-model the Explorer panel renders: Classes (.inc+.clw pairs), Templates (.tpl/.tpw),
-    /// Source (standalone .clw/.inc/.equ), and Other (everything else). The DTOs here map 1:1 to
-    /// the JSON contract that item 6 serializes for modern-data-pad.html — see <see cref="ExplorerViewModel"/>.
+    /// Turns the raw <see cref="ExplorerRecentsStore"/> recents + pinned + compare lists into the grouped
+    /// view-model the Explorer panel renders: recent Compares (pairs), Classes (.inc+.clw pairs),
+    /// Templates (.tpl/.tpw), Source (standalone .clw/.inc/.equ), and Other (everything else). The DTOs here
+    /// map 1:1 to the JSON contract that item 6 serializes for modern-data-pad.html — see
+    /// <see cref="ExplorerViewModel"/>.
     ///
     /// Classification of a single .inc/.clw (does it define / belong to a CLASS, and what's its
     /// partner?) is cached by (fullPath, File.GetLastWriteTimeUtc) so re-renders don't re-parse.
@@ -69,6 +70,36 @@ namespace ClarionAssistant.Services
             public bool pinned;
         }
 
+        /// <summary>
+        /// One recent compare PAIR. The host resolves the display facts — including the
+        /// <see cref="shape"/> discriminator the page uses to pick a label form — so the page draws
+        /// and never re-derives, the same split as every other row type here.
+        /// </summary>
+        public sealed class CompareRow
+        {
+            public string a;
+            public string b;
+            public string aName;
+            public string bName;
+            public string aDir;
+            public string bDir;
+            public string ts;         // relative, e.g. "4 min ago"
+            public bool aExists;
+            public bool bExists;
+            public bool pinned;
+
+            /// <summary>
+            /// Which label form fits this pair:
+            /// "sameName" — one filename in two folders (show the name once, both dirs),
+            /// "sameDir"  — two filenames in one folder (show both names, the dir once),
+            /// "differ"   — nothing shared, show both names and both dirs.
+            /// </summary>
+            public string shape;
+
+            // Not serialized — ordering only (the "ts" string is the wire value).
+            internal long _tsTicks;
+        }
+
         public sealed class Groups
         {
             public List<ClassRow> classes = new List<ClassRow>();
@@ -83,6 +114,7 @@ namespace ClarionAssistant.Services
             public List<QuickLocation> quickLocations = new List<QuickLocation>();
             public List<PinnedFolder> pinnedFolders = new List<PinnedFolder>();
             public List<PinnedFile> pinned = new List<PinnedFile>();
+            public List<CompareRow> compares = new List<CompareRow>();
             public Groups groups = new Groups();
         }
 
@@ -206,6 +238,8 @@ namespace ClarionAssistant.Services
             }
             // Stable, most-recent-first ordering within each group.
             vm.groups.classes = vm.groups.classes.OrderByDescending(c => c._tsTicks).ToList();
+
+            vm.compares = BuildCompares(store);
 
             if (includeQuickLocations)
                 vm.quickLocations = BuildQuickLocations();
@@ -362,6 +396,55 @@ namespace ClarionAssistant.Services
                 IncPath = incPath,
                 ClwPath = clwPath
             };
+        }
+
+        /// <summary>
+        /// Recent compare pairs as rows: pinned first, then most-recent-first. Pinned-ness comes from the
+        /// pair's own flag, NOT from the pinned-FILES set — pinning a compare and pinning a file are
+        /// separate user gestures.
+        /// </summary>
+        private static List<CompareRow> BuildCompares(ExplorerRecentsStore.Model store)
+        {
+            var rows = new List<CompareRow>();
+            foreach (var p in store.RecentCompares ?? new List<ExplorerRecentsStore.ComparePair>())
+            {
+                if (p == null || string.IsNullOrEmpty(p.A) || string.IsNullOrEmpty(p.B)) continue;
+                string aName = Path.GetFileName(p.A) ?? "";
+                string bName = Path.GetFileName(p.B) ?? "";
+                string aDir = Path.GetDirectoryName(p.A) ?? "";
+                string bDir = Path.GetDirectoryName(p.B) ?? "";
+                rows.Add(new CompareRow
+                {
+                    a = p.A,
+                    b = p.B,
+                    aName = aName,
+                    bName = bName,
+                    aDir = aDir,
+                    bDir = bDir,
+                    ts = RelativeTime(p.Ts),
+                    aExists = File.Exists(p.A),
+                    bExists = File.Exists(p.B),
+                    pinned = p.Pinned,
+                    shape = ShapeOf(aName, bName, aDir, bDir),
+                    _tsTicks = p.Ts
+                });
+            }
+            // OrderBy is stable, so equal-key rows keep the store's own move-to-front order.
+            return rows.OrderByDescending(r => r.pinned).ThenByDescending(r => r._tsTicks).ToList();
+        }
+
+        /// <summary>
+        /// Which of the three label forms fits a pair. A pair that shares BOTH name and folder is the
+        /// degenerate self-compare; it falls through to "differ" so the label states both sides plainly
+        /// rather than claiming "2 locations" for one location.
+        /// </summary>
+        private static string ShapeOf(string aName, string bName, string aDir, string bDir)
+        {
+            bool sameName = string.Equals(aName, bName, StringComparison.OrdinalIgnoreCase);
+            bool sameDir = string.Equals(aDir, bDir, StringComparison.OrdinalIgnoreCase);
+            if (sameName && !sameDir) return "sameName";
+            if (sameDir && !sameName) return "sameDir";
+            return "differ";
         }
 
         private static FileRow FileRowFor(string path, long ts, HashSet<string> pinnedSet)

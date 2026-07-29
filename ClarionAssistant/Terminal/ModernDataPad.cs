@@ -486,8 +486,49 @@ namespace ClarionAssistant
                         if (string.IsNullOrEmpty(fa)) return;
                         if (string.IsNullOrEmpty(fb)) fb = PickSingle("Compare — pick the second file", Path.GetDirectoryName(fa));
                         if (string.IsNullOrEmpty(fb)) return;
-                        Services.MonacoFileOpener.Compare(fa, fb, _isDark);
+                        // A re-run of a recorded pair can point at files that have since moved — say so rather than
+                        // appearing to do nothing (the same reasoning as openClassPair above). Re-post either way:
+                        // on success the pair is now in the compare list, on failure the row's stale marker refreshes.
+                        if (!Services.MonacoFileOpener.Compare(fa, fb, _isDark))
+                            WarnCompareFailed(fa, fb);
+                        PostExplorerData();
                     });
+                }
+                else if (action == "comparePin")
+                {
+                    string a = ExtractJsonValue(json, "a");
+                    string b = ExtractJsonValue(json, "b");
+                    if (!string.IsNullOrEmpty(a) && !string.IsNullOrEmpty(b))
+                    { Services.ExplorerRecentsStore.PinCompare(a, b); PostExplorerData(); }
+                }
+                else if (action == "compareUnpin")
+                {
+                    string a = ExtractJsonValue(json, "a");
+                    string b = ExtractJsonValue(json, "b");
+                    if (!string.IsNullOrEmpty(a) && !string.IsNullOrEmpty(b))
+                    { Services.ExplorerRecentsStore.UnpinCompare(a, b); PostExplorerData(); }
+                }
+                else if (action == "compareRemove")
+                {
+                    string a = ExtractJsonValue(json, "a");
+                    string b = ExtractJsonValue(json, "b");
+                    if (!string.IsNullOrEmpty(a) && !string.IsNullOrEmpty(b))
+                    { Services.ExplorerRecentsStore.RemoveCompare(a, b); PostExplorerData(); }
+                }
+                else if (action == "copyPaths")
+                {
+                    // "Copy both" on a compare row: both sides, one per line. Clipboard work stays host-side —
+                    // navigator.clipboard.writeText silently fails on a file:// page in WebView2.
+                    string a = ExtractJsonValue(json, "a");
+                    string b = ExtractJsonValue(json, "b");
+                    var lines = new List<string>();
+                    if (!string.IsNullOrEmpty(a)) lines.Add(a);
+                    if (!string.IsNullOrEmpty(b)) lines.Add(b);
+                    if (lines.Count > 0)
+                    {
+                        try { System.Windows.Forms.Clipboard.SetText(string.Join(Environment.NewLine, lines)); }
+                        catch (Exception cex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] copyPaths clipboard: " + cex.Message); }
+                    }
                 }
                 else if (action == "pickFolderAndLoad")
                 {
@@ -582,11 +623,13 @@ namespace ClarionAssistant
                 {
                     // Files-tab view state: collapsed groups, the active scope pill, and the type filter.
                     // Kept so a re-post (after a pin/open) doesn't reset the view under the user. Echoed back
-                    // in PostExplorerData's uiState. (Session-scoped; disk persistence is polish.)
+                    // in PostExplorerData's uiState, and written through to disk so it also survives a restart.
                     _explorerCollapsed = ParseCollapsed(json);
                     _explorerScope     = ParseUiString(json, "scope",    _explorerScope);
                     _explorerExtMode   = ParseUiString(json, "extMode",  _explorerExtMode);
                     _explorerCustomExt = ParseUiString(json, "customExt", _explorerCustomExt);
+                    Services.ExplorerRecentsStore.SaveViewState(
+                        _explorerScope, _explorerExtMode, _explorerCustomExt, _explorerCollapsed);
                 }
                 else if (action == "requestRedIndex")
                 {
@@ -852,7 +895,8 @@ namespace ClarionAssistant
         private bool _isDark;
 
         // Collapsed Files-tab group keys, echoed back in setExplorerData.uiState so a re-post (after a pin/open)
-        // doesn't expand everything. Session-scoped; cross-session persistence is a polish item.
+        // doesn't expand everything. Persisted per (version, solution) bucket in ExplorerRecentsStore, so it
+        // also survives a restart — these fields are the in-memory mirror of that, not the source of truth.
         private List<string> _explorerCollapsed = new List<string>();
 
         // Rest of the Files-tab view state, echoed back the same way: the active scope pill, the search
@@ -861,6 +905,12 @@ namespace ClarionAssistant
         private string _explorerScope     = "all";
         private string _explorerExtMode   = "all";
         private string _explorerCustomExt = "";
+
+        // Which (version, solution) bucket the four fields above were last seeded from. Recents/pins/compares
+        // AND the view state are all bucketed, so switching solution or Clarion version must re-seed from the
+        // new bucket rather than carrying the previous solution's scope/collapse state across. Empty = not yet
+        // seeded this session.
+        private string _explorerUiSeededFor = "";
 
         // Single source of truth for the open-file dialog filter (shared with OpenSourceFileInCaEditorCommand).
         private static readonly string ExplorerOpenFilter = Services.MonacoFileOpener.OpenFileFilter;
@@ -968,6 +1018,10 @@ namespace ClarionAssistant
             {
                 string sol = null;
                 try { sol = Services.EditorService.GetOpenSolutionPath(); } catch { }
+                string versionTag = Services.ModernEmbeditorHistory.VersionTag();
+                string solutionTag = Services.ModernEmbeditorHistory.SolutionTag(sol);
+                SeedExplorerUiState(versionTag, solutionTag);
+
                 var vm = Services.ExplorerFileClassifier.BuildViewModel(true);
                 Post(new Dictionary<string, object>
                 {
@@ -975,12 +1029,13 @@ namespace ClarionAssistant
                     // Carry the active bucket so the page's banner can self-correct: the pad may post once at IDE
                     // startup before the solution has loaded (NoSolution); a later post (Files activation / mutation /
                     // solution-change tick) lands the real solution and refreshes the banner.
-                    { "versionTag", Services.ModernEmbeditorHistory.VersionTag() },
-                    { "solutionTag", Services.ModernEmbeditorHistory.SolutionTag(sol) },
+                    { "versionTag", versionTag },
+                    { "solutionTag", solutionTag },
                     { "lastFolder", vm.lastFolder ?? "" },
                     { "quickLocations", vm.quickLocations },
                     { "pinnedFolders", vm.pinnedFolders },
                     { "pinned", vm.pinned },
+                    { "compares", vm.compares },
                     { "groups", vm.groups },
                     { "uiState", new Dictionary<string, object> {
                         { "collapsed", _explorerCollapsed },
@@ -990,6 +1045,59 @@ namespace ClarionAssistant
                 });
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] PostExplorerData: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// Seed the in-memory Files-tab view state from the persisted bucket, once per (version, solution).
+        /// Called from PostExplorerData, which already resolves both tags. Re-seeds when the bucket changes so a
+        /// solution or Clarion-version switch shows THAT bucket's scope/filter/collapse state instead of carrying
+        /// the previous one across. An empty persisted facet leaves the current default alone, which is what makes
+        /// a first run (or a v1 recents file) behave exactly as it did before this was persisted.
+        /// </summary>
+        private void SeedExplorerUiState(string versionTag, string solutionTag)
+        {
+            string bucket = (versionTag ?? "") + "|" + (solutionTag ?? "");
+            if (_explorerUiSeededFor == bucket) return;
+            _explorerUiSeededFor = bucket;
+            try
+            {
+                var vs = Services.ExplorerRecentsStore.GetViewState();
+                if (vs == null) return;
+                if (!string.IsNullOrEmpty(vs.Scope)) _explorerScope = vs.Scope;
+                if (!string.IsNullOrEmpty(vs.ExtMode)) _explorerExtMode = vs.ExtMode;
+                _explorerCustomExt = vs.CustomExt ?? "";
+                _explorerCollapsed = vs.Collapsed ?? new List<string>();
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] SeedExplorerUiState: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// Tell the developer why a compare produced nothing, naming the side(s) that are no longer on disk.
+        /// Mirrors openClassPair's stale-pair message box; the alternative is a click that appears to do nothing.
+        /// UI thread (called from inside DeferExplorer).
+        /// </summary>
+        private static void WarnCompareFailed(string a, string b)
+        {
+            try
+            {
+                bool aGone = !FileExistsSafe(a), bGone = !FileExistsSafe(b);
+                string msg;
+                if (aGone && bGone)
+                    msg = "Neither file in this comparison is on disk anymore (they may have been moved or deleted).";
+                else if (aGone || bGone)
+                    msg = "\"" + Path.GetFileName(aGone ? a : b) + "\" is not on disk anymore "
+                        + "(it may have been moved or deleted), so there is nothing to compare it with.";
+                else
+                    msg = "The comparison could not be opened.";
+                MessageBox.Show(msg, "Compare", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch { }
+        }
+
+        private static bool FileExistsSafe(string path)
+        {
+            try { return !string.IsNullOrEmpty(path) && File.Exists(path); }
+            catch { return false; }
         }
 
         /// <summary>

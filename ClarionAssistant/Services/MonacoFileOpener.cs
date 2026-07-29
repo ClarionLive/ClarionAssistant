@@ -10,6 +10,8 @@ namespace ClarionAssistant.Services
     /// via MonacoClarionEditorDisplayBinding). Every open routes through
     /// <see cref="OpenFile"/> so recents + last-folder get recorded in <see cref="ExplorerRecentsStore"/>
     /// in exactly one place — callers (Tools menu, Explorer panel, etc.) never touch the store directly.
+    /// <see cref="Compare"/> is the same choke point for compare PAIRS: every diff, whether it came from the
+    /// split button, a class row, or a re-run of a recorded pair, records through here and nowhere else.
     ///
     /// These methods assume they are already on the UI thread (the host defers Explorer actions before
     /// calling in), so they do NOT marshal with BeginInvoke — keep them straightforward.
@@ -88,26 +90,45 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// Show a Monaco side-by-side diff of two files on disk (full file vs full file). This does NOT
-        /// record recents — it's a read-only comparison, not an editing open.
+        /// Show a Monaco side-by-side diff of two files on disk (full file vs full file).
+        ///
+        /// Records the PAIR in <see cref="ExplorerRecentsStore.RecordCompare"/> — but still never records a
+        /// file recent for either side, because a comparison is a read-only look, not an editing open. The
+        /// pair is recorded only AFTER the diff actually opens, the same "record after success" discipline
+        /// as <see cref="OpenFile"/>, so a stale pair or a failed diff can't pollute the compare list.
         /// </summary>
-        public static void Compare(string a, string b, bool isDark)
+        /// <returns>true if the diff was shown (and the pair recorded); false if either side was
+        /// missing/invalid or the diff failed to open — the caller surfaces the feedback.</returns>
+        public static bool Compare(string a, string b, bool isDark)
         {
             // Fail closed if either side is missing — same existence guard as OpenFile, so a stale/bogus path
             // (e.g. from persisted recents or a crafted compare message) can't drive DiffService to resolve a
             // non-file. UNC handling mirrors OpenFile: a path the user themselves opened is allowed; the
             // untrusted drag vector is the one that hard-blocks UNC (in the dropFiles host handler).
-            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return;
-            if (!File.Exists(a) || !File.Exists(b)) return;
+            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+            if (!File.Exists(a) || !File.Exists(b)) return false;
 
-            var diff = new DiffService();
-            diff.SetTheme(isDark);
-            // endLine = -1 -> DiffService clamps to full file length for each side.
-            diff.ShowDiffFromFiles(
-                Path.GetFileName(a) + " ↔ " + Path.GetFileName(b),
-                a, 1, -1,
-                b, 1, -1,
-                language: "clarion", ignoreWhitespace: false, useMonaco: true);
+            try
+            {
+                var diff = new DiffService();
+                diff.SetTheme(isDark);
+                // endLine = -1 -> DiffService clamps to full file length for each side.
+                diff.ShowDiffFromFiles(
+                    Path.GetFileName(a) + " ↔ " + Path.GetFileName(b),
+                    a, 1, -1,
+                    b, 1, -1,
+                    language: "clarion", ignoreWhitespace: false, useMonaco: true);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[MonacoFileOpener] Compare: " + ex.Message);
+                return false;
+            }
+
+            // Record AFTER the diff opened. Dedup/cap/pin bookkeeping all live in the store; the incoming
+            // side order is preserved there, which is what makes a swapped re-run rewrite the one entry.
+            ExplorerRecentsStore.RecordCompare(a, b);
+            return true;
         }
 
         /// <summary>
