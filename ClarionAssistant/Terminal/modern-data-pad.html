@@ -3337,7 +3337,9 @@
         if (it.section) { var sec = document.createElement('span'); sec.className = 'rsec'; sec.textContent = it.section; fpath.appendChild(sec); }
         meta.appendChild(fpath);
         row.appendChild(meta);
-        row.title = it.path || '';
+        // The section goes in the tooltip too: .fpath is ellipsised, so a long path pushes the inline
+        // marker out of sight — precisely when you most need to know which .red section resolved it.
+        row.title = (it.path || '') + (it.section ? '\n[' + it.section + ']' : '');
         omniTag(row, { kind: 'file', path: it.path });
         // mousedown (not click) so it fires before the input's blur, matching the old dropdown's behaviour.
         row.addEventListener('mousedown', function (e) {
@@ -3666,8 +3668,13 @@
             tipEl.style.display = 'block';
             var w = tipEl.offsetWidth, h = tipEl.offsetHeight;
             var px = x + 12, py = y + 18;                        // below-right of the cursor, like native
+            // The Files tab docks a NATIVE WinForms drop strip (Label, Height=56 — see ModernDataPad.cs)
+            // across the bottom. The WebView2 viewport extends behind it, so window.innerHeight overstates
+            // the VISIBLE area: anything the page paints down there is hidden under a control it cannot
+            // composite over. Reserve that band so tooltips flip above the cursor before reaching it.
+            var usableBottom = window.innerHeight - (document.querySelector('#panel-files.active') ? 60 : 0);
             if (px + w > window.innerWidth - 4) px = Math.max(4, window.innerWidth - w - 4);
-            if (py + h > window.innerHeight - 4) py = y - h - 8; // flip above when it would clip
+            if (py + h > usableBottom - 4) py = y - h - 8;       // flip above when it would clip
             if (py < 4) py = 4;
             tipEl.style.left = px + 'px'; tipEl.style.top = py + 'px';
         }
