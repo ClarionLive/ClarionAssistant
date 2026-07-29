@@ -133,7 +133,8 @@
         padding: 3px 10px; font-size: 11px; color: #5a5a64;
         background: #eef1f5; border-bottom: 1px solid #dfe3e8; white-space: nowrap;
         overflow: hidden; text-overflow: ellipsis; }
-    .ver-banner .vb-ico { font-size: 12px; }
+    /* Fixed width so the .red line below can align its path to this line's text. */
+    .ver-banner .vb-ico { font-size: 12px; width: 14px; text-align: center; flex: none; }
     #verText { font-weight: 600; color: #0a5dc2; }
     body.dark .ver-banner { color: #9a9ab0; background: #21212e; border-bottom-color: #33333f; }
     body.dark #verText { color: #89b4fa; }
@@ -239,6 +240,21 @@
        .fmenu is namespaced (not .menu) to avoid colliding with anything else on the page. The menu is
        absolutely positioned inside .splitwrap; it drops from the toolbar at the very top of the panel,
        so #panel-files's overflow:auto has plenty of room and never clips it. */
+    /* Active .red — the second line of the version/solution banner block, so it reads as part of the same
+       environment context rather than as chrome hanging off the tab strip. Matches .ver-banner's palette;
+       the divider between the two lines is dropped so they group visually. */
+    /* Same gap + icon width as .ver-banner above it, so the two VALUES line up in one column. That is why
+       this leads with an icon rather than an "Active .RED" label — a ~60px text label could never align
+       with a ~14px emoji, and the path's own .red extension already says what it is. */
+    .redbanner { display: flex; align-items: center; gap: 6px; padding: 0 10px 4px 10px; flex: none;
+        background: #eef1f5; border-bottom: 1px solid #dfe3e8; font-size: 11px; min-width: 0; margin-top: -1px; }
+    .redbanner .vb-ico { font-size: 12px; width: 14px; text-align: center; flex: none; color: #8b8b96; }
+    .redbanner .path { font-family: Consolas, 'Courier New', monospace; color: #5a5a64;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+    .redbanner .path.link { color: #0a5dc2; cursor: pointer; }
+    .redbanner .path.link:hover { text-decoration: underline; }
+    .redbanner .path.none { color: #b0152e; font-style: italic; direction: ltr; }
+
     .splitwrap { position: relative; display: inline-flex; }
     .files-toolbar .btn-split { padding-right: 0; }
     .files-toolbar .btn-split .caret { display: inline-flex; align-items: center; align-self: stretch;
@@ -406,6 +422,11 @@
     body.dark .redopen-trace-log .pathlink:hover { color: #89b4fa; }
 
     /* ----- Files tab — dark ----- */
+    body.dark .redbanner { background: #21212e; border-bottom-color: #33333f; }
+    body.dark .redbanner .vb-ico { color: #6c7086; }
+    body.dark .redbanner .path { color: #9a9ab0; }
+    body.dark .redbanner .path.link { color: #89b4fa; }
+    body.dark .redbanner .path.none { color: #f38ba8; }
     body.dark .files-toolbar { border-bottom-color: #3a3a4a; }
     body.dark .files-toolbar .btn { background: #313244; border-color: #313244; color: #d4d4d4; }
     body.dark .files-toolbar .btn:hover { background: #3a3a52; }
@@ -621,6 +642,15 @@
          different Clarion version shows different recents. Populated by the host's setVersionInfo message. -->
     <div id="verBanner" class="ver-banner" title="Recent files and pinned folders are saved per Clarion version and solution. This shows the active bucket.">
         <span class="vb-ico">📦</span><span id="verText">—</span>
+    </div>
+
+    <!-- Second line of the same environment block: which .red every redirection search actually resolves
+         through. Sits with the version/solution banner deliberately — these are all "what environment am I
+         in" facts and belong together. Worth stating because CA falls back to the Clarion install's own
+         clarion.red when no solution is loaded, so "no solution" does NOT mean "no redirection". -->
+    <div class="redbanner" title="The redirection file every search resolves through.">
+        <span class="vb-ico">↪</span>
+        <span class="path" id="redBannerPath" title="Waiting for the redirection index…">—</span>
     </div>
 
     <!-- Tab strip: Data (the original Data Pad) | Files (Monaco file loader). pick() toggles .active. -->
@@ -2657,6 +2687,24 @@
                     else { rh.style.display = 'none'; }
                 }
 
+                // Name the .red actually in play. Note "no solution" does NOT imply "no redirection": the
+                // host falls back to the Clarion install's own clarion.red, and that changes what every
+                // search returns — so it is worth stating rather than leaving to be inferred.
+                var rbp = document.getElementById('redBannerPath');
+                if (rbp) {
+                    if (redAvailable && msg.redPath) {
+                        rbp.textContent = msg.redPath;
+                        rbp.title = msg.redPath + '\n(click to open)';
+                        rbp.className = 'path link';
+                        rbp.setAttribute('data-redpath', msg.redPath);
+                    } else {
+                        rbp.textContent = 'None';
+                        rbp.title = 'No active redirection file — open a Clarion solution.';
+                        rbp.className = 'path none';
+                        rbp.removeAttribute('data-redpath');
+                    }
+                }
+
                 redFilter(); // re-apply whatever is already typed (re-renders and rebuilds omniHits)
                 if (prevPath) { // restore the highlight if that file survived the re-filter
                     for (var rp = 0; rp < omniHits.length; rp++) {
@@ -3710,6 +3758,14 @@
             typeMenu.addEventListener('click', function (e) { e.stopPropagation(); });
         }
         redSyncTypeBtn();
+
+        // Clicking the named .red opens it — you usually want to look at the file the moment you notice
+        // it is not the one you expected.
+        var redBannerPath = document.getElementById('redBannerPath');
+        if (redBannerPath) redBannerPath.addEventListener('click', function () {
+            var p = this.getAttribute('data-redpath');
+            if (p) postToHost({ action: 'loadFile', path: p });
+        });
         // (The Trace button is gone — the action now lives on the Redirection group header, built in
         // renderOmniResults. The trace log panel below is unchanged.)
         var rclose = document.getElementById('redTraceClose');
