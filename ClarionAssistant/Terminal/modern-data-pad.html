@@ -288,8 +288,15 @@
     .pill .n { font-size: 11px; opacity: .7; }
 
     /* section header inside the Files list */
+    /* Sticky: on a long result list the Redirection header carries the ⤓ Trace action, and it was
+       scrolling out of reach — you had to pick a row then scroll all the way back up to act on it.
+       Needs an opaque background or rows show through as they pass under. */
     .fsec { display: flex; align-items: center; gap: 6px; padding: 6px 10px 4px 10px;
-        font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: #5a5a5a; margin-top: 4px; }
+        font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: #5a5a5a; margin-top: 4px;
+        position: sticky; top: 0; z-index: 2; background: #ffffff; }
+    /* Clicking the icon selects a row without opening it (mouse-driven target picking for Trace). */
+    .fico.selectable { cursor: pointer; border-radius: 4px; }
+    .fico.selectable:hover { background: #d5e2f5; outline: 1px solid #0a5dc2; }
     .fsec .count { color: #888; font-weight: 400; }
     .fsec .sec-line { flex: 1; height: 1px; background: #d4d4d4; margin-left: 4px; }
     .fsec.grp { cursor: pointer; }
@@ -376,6 +383,9 @@
         color: #2a2a2a; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow: auto; }
     .redopen-trace-log .found { color: #0a7d3a; font-weight: 600; }
     .redopen-trace-log .notfound { color: #b0152e; font-weight: 600; }
+    /* The resolved path reads and behaves as a link — clicking it opens the file in Monaco. */
+    .redopen-trace-log .pathlink { text-decoration: underline; cursor: pointer; }
+    .redopen-trace-log .pathlink:hover { color: #0a5dc2; }
 
     body.dark .redopen { border-bottom-color: #3a3a4a; }
     body.dark .redopen-ico { color: #9a9ab0; }
@@ -393,6 +403,7 @@
     body.dark .redopen-trace-log { color: #cdd6f4; }
     body.dark .redopen-trace-log .found { color: #a6e3a1; }
     body.dark .redopen-trace-log .notfound { color: #f38ba8; }
+    body.dark .redopen-trace-log .pathlink:hover { color: #89b4fa; }
 
     /* ----- Files tab — dark ----- */
     body.dark .files-toolbar { border-bottom-color: #3a3a4a; }
@@ -434,8 +445,10 @@
     body.dark .fsec .sec-line { background: #3a3a4a; }
     body.dark .fsec.grp .caret { color: #6c7086; }
     body.dark .fsec.grp:hover { color: #cdd6f4; }
+    body.dark .fsec { background: #1e1e2e; }
     body.dark .fsec .hint { color: #6c7086; }
     body.dark .fsec .act { color: #89b4fa; }
+    body.dark .fico.selectable:hover { background: #3a3a52; outline-color: #89b4fa; }
     body.dark .pairchip { border-color: #313244; background: #313244; }
     body.dark .pairchip.inc { color: #a6e3a1; border-color: rgba(166,227,161,.35); }
     body.dark .pairchip.clw { color: #89b4fa; border-color: rgba(137,180,250,.35); }
@@ -2659,13 +2672,30 @@
                     var lines = msg.lines || [], html = '';
                     for (var li = 0; li < lines.length; li++) {
                         var ln = lines[li], cls = '';
-                        if (ln.indexOf('FOUND:') === 0) cls = ' class="found"';
-                        else if (ln.indexOf('NOT FOUND') === 0) cls = ' class="notfound"';
+                        if (ln.indexOf('FOUND:') === 0) {
+                            // The resolved path is the answer the trace exists to give — make it openable
+                            // rather than something you have to copy out and search for again.
+                            var fp = ln.substring(6).trim();
+                            html += '<span class="found">FOUND: <span class="pathlink" data-path="'
+                                  + redEsc(fp).replace(/"/g, '&quot;') + '">' + redEsc(fp) + '</span></span>\n';
+                            continue;
+                        }
+                        if (ln.indexOf('NOT FOUND') === 0) cls = ' class="notfound"';
                         html += '<span' + cls + '>' + redEsc(ln) + '</span>\n';
                     }
                     rlog.innerHTML = html;
+                    var links = rlog.querySelectorAll('.pathlink');
+                    for (var lk = 0; lk < links.length; lk++) {
+                        links[lk].addEventListener('click', function () {
+                            postToHost({ action: 'loadFile', path: this.getAttribute('data-path') });
+                        });
+                    }
                 }
+                // Show BEFORE scrolling — scrollHeight is 0 while the element is display:none.
                 if (rwrap) rwrap.style.display = 'block';
+                // Jump to the end: the FOUND/NOT FOUND verdict is the last line, and it is the reason you
+                // ran the trace. The search path above it is context you scroll UP for if you need it.
+                if (rlog) rlog.scrollTop = rlog.scrollHeight;
                 return;
             }
         });
@@ -3322,7 +3352,25 @@
     function omniTag(row, target) {
         row.setAttribute('data-omni', String(omniHits.length));
         omniHits.push(target);
+        omniIconSelect(row);
         return row;
+    }
+
+    // Clicking a row's ICON selects it instead of opening it. Everything else about the row still opens on
+    // click, but Trace needs a target, and requiring the keyboard to choose one made a mouse-driven trace
+    // impossible — you cannot click a row to aim at it without launching the file.
+    function omniIconSelect(row) {
+        var ico = row.querySelector('.fico');
+        if (!ico) return;
+        ico.classList.add('selectable');
+        ico.title = 'Select this row (without opening it)';
+        function pick(e) {
+            e.preventDefault(); e.stopPropagation();     // beat BOTH the row's click and mousedown openers
+            var i = parseInt(row.getAttribute('data-omni'), 10);
+            if (!isNaN(i)) { redHl = i; omniPaint(); }
+        }
+        ico.addEventListener('mousedown', pick);
+        ico.addEventListener('click', pick);
     }
 
     function omniHeader(host, label, count, truncated, action) {
