@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CA Explorer - Files tab redesign</title>
+<style>
+:root{
+  --bg:#ffffff; --fg:#1f1f1f; --bar-bg:#f3f3f3; --sec-bg:#eef1f4;
+  --border:#d4d4d4; --border-soft:#e6e6e6; --accent:#0a5dc2; --accent-hover:#0b6ee0;
+  --btn-bg:#0a5dc2; --btn-fg:#fff; --chip-bg:#eef1f4; --chip-hover:#e0e6ee;
+  --hover:#e8eef7; --muted:#888; --muted2:#5a5a5a; --input-bg:#ffffff;
+  --ok:#0a7d3a; --danger:#b0152e; --warn:#c08a00;
+  --mono:Consolas,'Courier New',monospace;
+  --page:#e9ecef; --note-bg:#ffffff;
+  --fs:13px;
+}
+body.dark{
+  --bg:#1e1e2e; --fg:#cdd6f4; --bar-bg:#252535; --sec-bg:#2a2a3c;
+  --border:#3a3a4a; --border-soft:#313244; --accent:#89b4fa; --accent-hover:#74a8f7;
+  --btn-bg:#1e66a8; --btn-fg:#fff; --chip-bg:#313244; --chip-hover:#3a3a52;
+  --hover:#2d2d44; --muted:#6c7086; --muted2:#9a9ab0; --input-bg:#1a1a28;
+  --ok:#a6e3a1; --danger:#f38ba8; --warn:#fab387;
+  --page:#141420; --note-bg:#1a1a28;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--fg);
+  font:var(--fs)/1.45 "Segoe UI",system-ui,sans-serif;}
+
+/* ---------- shell ---------- */
+.top{position:sticky;top:0;z-index:50;background:var(--bar-bg);
+  border-bottom:1px solid var(--border);padding:10px 16px;
+  display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.top h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.2px}
+.top .spacer{flex:1}
+.vtabs{display:flex;gap:4px}
+.vtab{padding:5px 12px;border:1px solid var(--border);background:var(--bg);
+  border-radius:6px;cursor:pointer;font-size:12px;color:var(--fg)}
+.vtab:hover{background:var(--hover)}
+.vtab.on{background:var(--btn-bg);border-color:var(--btn-bg);color:var(--btn-fg);font-weight:600}
+.mini{padding:4px 9px;border:1px solid var(--border);background:var(--bg);
+  border-radius:5px;cursor:pointer;font-size:12px;color:var(--fg)}
+.mini:hover{background:var(--hover)}
+
+.stage{padding:20px 16px 60px;display:grid;grid-template-columns:minmax(0,640px) minmax(280px,1fr);
+  gap:24px;align-items:start;max-width:1500px;margin:0 auto}
+@media(max-width:1040px){.stage{grid-template-columns:1fr}}
+.panel{display:none}
+.panel.on{display:contents}
+
+/* ---------- the pad frame ---------- */
+.pad{width:620px;max-width:100%;background:var(--bg);border:1px solid var(--border);
+  border-radius:8px;overflow:hidden;box-shadow:0 8px 28px rgba(0,0,0,.18)}
+.padcap{background:linear-gradient(#5a9fe0,#3f7fbf);color:#fff;font-size:12px;
+  padding:5px 10px;display:flex;justify-content:space-between}
+body.dark .padcap{background:linear-gradient(#2c4f75,#22405f)}
+.padhead{display:flex;align-items:center;gap:8px;padding:8px 10px;
+  border-bottom:1px solid var(--border-soft);background:var(--bar-bg)}
+.padhead b{font-size:14px}
+.padhead .spacer{flex:1}
+.verbar{display:flex;align-items:center;gap:7px;padding:5px 10px;font-size:12px;
+  background:var(--sec-bg);border-bottom:1px solid var(--border-soft);color:var(--accent)}
+.tabrow{display:flex;gap:2px;padding:8px 10px 0;background:var(--bar-bg);
+  border-bottom:1px solid var(--border)}
+.tab{padding:6px 14px;border:1px solid var(--border);border-bottom:none;
+  border-radius:6px 6px 0 0;background:var(--sec-bg);font-size:13px;color:var(--muted2)}
+.tab.on{background:var(--bg);color:var(--fg);font-weight:600;margin-bottom:-1px;padding-bottom:7px}
+
+/* ---------- controls ---------- */
+.zone{padding:9px 10px;border-bottom:1px solid var(--border-soft)}
+.row{display:flex;gap:7px;align-items:center}
+.row+.row{margin-top:7px}
+.btn{padding:6px 12px;border:1px solid var(--border);border-radius:5px;background:var(--bg);
+  color:var(--fg);font-size:13px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;
+  white-space:nowrap}
+.btn:hover{background:var(--hover)}
+.btn.primary{background:var(--btn-bg);border-color:var(--btn-bg);color:var(--btn-fg);font-weight:600}
+.btn.primary:hover{background:var(--accent-hover)}
+.btn.split{padding-right:0}
+.btn.split .car{border-left:1px solid rgba(255,255,255,.35);padding:0 9px;margin-left:3px;
+  align-self:stretch;display:flex;align-items:center}
+.btn.ghost{border-style:dashed;color:var(--muted2)}
+
+.search{flex:1;display:flex;align-items:center;gap:7px;border:1px solid var(--border);
+  border-radius:6px;background:var(--input-bg);padding:0 8px;min-width:0}
+.search.focus{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 22%,transparent)}
+.search input{flex:1;border:0;outline:0;background:transparent;color:var(--fg);
+  font:inherit;padding:7px 0;min-width:0}
+.search .lead{opacity:.65}
+.typesel{border:0;background:var(--chip-bg);color:var(--muted2);font:inherit;font-size:12px;
+  border-radius:4px;padding:3px 6px;cursor:pointer}
+.xbtn{border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:14px;padding:0 2px}
+
+.pills{display:flex;gap:5px;flex-wrap:wrap;padding:8px 10px;border-bottom:1px solid var(--border-soft)}
+.pill{padding:3px 10px;border-radius:999px;border:1px solid var(--border);background:var(--chip-bg);
+  font-size:12px;color:var(--muted2);cursor:pointer;display:inline-flex;gap:5px;align-items:center}
+.pill:hover{background:var(--chip-hover)}
+.pill.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+body.dark .pill.on{color:#11111b}
+.pill .n{opacity:.7;font-size:11px}
+
+/* dropdown menu */
+.menuwrap{position:relative}
+.menu{position:absolute;top:calc(100% + 4px);left:0;z-index:20;min-width:250px;
+  background:var(--bg);border:1px solid var(--border);border-radius:7px;
+  box-shadow:0 10px 30px rgba(0,0,0,.28);padding:5px;font-size:13px}
+.menu .mi{padding:6px 9px;border-radius:5px;display:flex;gap:8px;align-items:center;cursor:pointer}
+.menu .mi:hover{background:var(--hover)}
+.menu .mi .sub{margin-left:auto;font-size:11px;color:var(--muted);font-family:var(--mono);
+  max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.menu .sep{height:1px;background:var(--border-soft);margin:5px 4px}
+.menu .cap{font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);
+  padding:5px 9px 3px}
+
+/* ---------- list ---------- */
+.list{max-height:430px;overflow:auto}
+.ghead{display:flex;align-items:center;gap:8px;padding:9px 10px 4px;font-size:10.5px;
+  letter-spacing:.8px;text-transform:uppercase;color:var(--muted);font-weight:700}
+.ghead .line{flex:1;height:1px;background:var(--border-soft)}
+.ghead .act{font-size:11px;text-transform:none;letter-spacing:0;color:var(--accent);
+  cursor:pointer;font-weight:600}
+.item{display:flex;gap:9px;align-items:center;padding:6px 10px;cursor:pointer;border-left:2px solid transparent}
+.item:hover{background:var(--hover);border-left-color:var(--accent)}
+.ico{width:18px;text-align:center;flex-shrink:0;font-size:14px}
+.meta{flex:1;min-width:0}
+.nm{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nm .ext{color:var(--accent);font-weight:500}
+.pth{font-size:11px;color:var(--muted);font-family:var(--mono);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.when{font-size:11px;color:var(--muted);flex-shrink:0;white-space:nowrap}
+.pair{display:inline-flex;gap:3px;margin-left:6px;vertical-align:1px}
+.badge{font-size:10px;font-family:var(--mono);padding:1px 5px;border-radius:3px;
+  border:1px solid var(--border);background:var(--chip-bg);color:var(--muted2)}
+.badge.inc{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,transparent)}
+.badge.clw{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,transparent)}
+.acts{display:none;gap:2px;flex-shrink:0}
+.item:hover .acts{display:flex}
+.item:hover .when{display:none}
+.act1{border:0;background:transparent;color:var(--muted2);cursor:pointer;padding:2px 4px;
+  border-radius:4px;font-size:12px}
+.act1:hover{background:var(--chip-hover);color:var(--fg)}
+.note{font-size:11.5px;color:var(--muted);font-style:italic;padding:0 10px 5px 38px}
+.vs{color:var(--warn);font-weight:600;font-size:11.5px;padding:0 2px}
+.arr{color:var(--warn);padding:0 3px}
+.drop{padding:9px;text-align:center;font-size:12px;color:var(--muted);
+  background:var(--bar-bg);border-top:1px solid var(--border)}
+.empty{padding:26px 14px;text-align:center;color:var(--muted);font-size:12.5px}
+
+/* ---------- notes column ---------- */
+.notes{background:var(--note-bg);border:1px solid var(--border);border-radius:8px;padding:16px 18px}
+.notes h2{margin:0 0 4px;font-size:16px}
+.notes h3{margin:18px 0 6px;font-size:12.5px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted)}
+.notes p{margin:0 0 9px;font-size:13px}
+.notes ul{margin:0 0 9px;padding-left:18px;font-size:13px}
+.notes li{margin-bottom:5px}
+.tag{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.5px;padding:2px 7px;
+  border-radius:999px;text-transform:uppercase;margin-bottom:8px}
+.tag.win{background:color-mix(in srgb,var(--ok) 22%,transparent);color:var(--ok)}
+.tag.risk{background:color-mix(in srgb,var(--warn) 25%,transparent);color:var(--warn)}
+.kill{color:var(--danger);font-weight:600}
+.keep{color:var(--ok);font-weight:600}
+code{font-family:var(--mono);font-size:12px;background:var(--chip-bg);padding:1px 5px;border-radius:3px}
+
+/* ---------- problems panel ---------- */
+.prob{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);
+  border-radius:7px;margin-bottom:9px;background:var(--bg)}
+.pn{width:22px;height:22px;border-radius:50%;background:var(--danger);color:#fff;font-size:12px;
+  font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+body.dark .pn{color:#11111b}
+.prob b{display:block;font-size:13px;margin-bottom:2px}
+.prob span{font-size:12.5px;color:var(--muted2)}
+</style>
+</head>
+<body class="dark">
+
+<div class="top">
+  <h1>CA Explorer &mdash; Files tab</h1>
+  <div class="vtabs">
+    <button class="vtab on" data-v="p">Problems</button>
+    <button class="vtab" data-v="a">A &middot; Omnibox</button>
+    <button class="vtab" data-v="b">B &middot; Group tabs</button>
+    <button class="vtab" data-v="c">C &middot; Flat &amp; calm</button>
+    <button class="vtab" data-v="s">A+ &middot; Scaling types</button>
+  </div>
+  <div class="spacer"></div>
+  <button class="mini" id="fsDown">A&minus;</button>
+  <button class="mini" id="fsUp">A+</button>
+  <span id="fsVal" style="font-size:11px;color:var(--muted)">13px</span>
+  <button class="mini" id="themeBtn">&#9728; Light</button>
+</div>
+
+<div class="stage">
+
+<!-- ============================================================ PROBLEMS -->
+<div class="panel on" data-p="p">
+  <div>
+    <div class="pad">
+      <div class="padcap"><span>CA Explorer</span><span>&#128204; &#10005;</span></div>
+      <div class="padhead"><b>Explorer</b><div class="spacer"></div>
+        <span style="font-size:12px;color:var(--muted2)">BrowseAuthors</span>
+        <button class="mini">A&minus;</button><button class="mini">A+</button>
+        <button class="mini">&#127769;</button><button class="mini">Refresh</button><button class="mini">&#9881;</button></div>
+      <div class="verbar">&#128230; <b>Clarion12</b> &middot; clbrws</div>
+      <div class="tabrow"><div class="tab">&#128202; Data</div><div class="tab on">&#128193; Files</div><div class="tab">&#128421; Cheat Sheet</div></div>
+
+      <div class="zone" style="outline:2px solid var(--danger);outline-offset:-2px">
+        <div class="row"><button class="btn primary">&#128193; Load File&hellip;</button><button class="btn">&#8646; Compare&hellip;</button></div>
+      </div>
+      <div class="zone" style="outline:2px solid var(--warn);outline-offset:-2px">
+        <div class="row"><div class="search"><span class="lead">&#128269;</span>
+          <input placeholder="Open file via redirection&hellip; (type to search the .re"></div>
+          <button class="btn">Open</button><button class="btn">Trace</button></div>
+        <div class="row" style="font-size:12.5px;gap:12px;flex-wrap:wrap">
+          <label>&#9673; All</label><label>&#9711; App</label><label>&#9711; Source</label>
+          <label>&#9711; Classes</label><label>&#9711; Templates</label></div>
+        <div class="row" style="font-size:12.5px"><label>&#9711; Custom</label>
+          <input style="flex:0 0 190px;border:1px solid var(--border);background:var(--input-bg);color:var(--fg);border-radius:4px;padding:3px 6px" value="*.xml, *.txt"></div>
+        <div style="font-size:11.5px;font-style:italic;color:var(--muted);margin-top:5px">Showing the first 20000 files (index truncated).</div>
+      </div>
+      <div class="zone" style="outline:2px solid var(--danger);outline-offset:-2px">
+        <div class="row" style="font-size:12.5px"><span>&#128205; Last folder:</span>
+          <span style="color:var(--accent);font-family:var(--mono);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">C:\Users\Public\Documents\SoftVelocity\Clarion11\Exam&hellip;</span>
+          <span style="margin-left:auto;text-decoration:underline;color:var(--accent)">change</span></div>
+      </div>
+      <div class="zone" style="outline:2px solid var(--danger);outline-offset:-2px">
+        <div class="ghead" style="padding:0 0 6px">Quick locations<div class="line"></div></div>
+        <div class="row" style="flex-wrap:wrap">
+          <span class="pill">&#9733; LibSrc (win)</span><span class="pill">&#9733; Accessory</span>
+          <span class="pill">&#9733; Solution</span><span class="pill">&#128336; Last folder</span>
+          <span class="pill" style="border-style:dashed">&#65291; pin folder</span></div>
+      </div>
+      <div class="zone" style="outline:2px solid var(--warn);outline-offset:-2px">
+        <div class="row"><div class="search"><input placeholder="Filter recents&hellip;"></div></div>
+      </div>
+      <div class="list" style="max-height:200px">
+        <div class="ghead">&#128215; Classes <span style="color:var(--muted2)">3 pairs</span><div class="line"></div></div>
+        <div class="note">opening a class loads its .inc + .clw into two separate editors</div>
+        <div class="item"><span class="ico">&#128215;</span><div class="meta">
+          <div class="nm">UltimateParameters<span class="pair"><span class="badge inc">.inc</span><span class="badge clw">.clw</span></span></div>
+          <div class="pth">C:\Clarion12\Accessory\Libsrc\win</div></div><span class="when">Yesterday</span></div>
+        <div class="item"><span class="ico">&#128215;</span><div class="meta">
+          <div class="nm">Reflection<span class="pair"><span class="badge inc">.inc</span><span class="badge clw">.clw</span></span></div>
+          <div class="pth">C:\Clarion12\Accessory\Libsrc\win</div></div><span class="when">5 days ago</span></div>
+      </div>
+      <div class="drop">&#8942; Drop files here to open them in Monaco</div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <h2>What's actually wrong</h2>
+    <p>Six stacked zones compete for attention before you reach a single file. Worse &mdash; three of them are the <em>same control</em> and two of them are <em>search boxes that search different universes</em>.</p>
+
+    <div class="prob"><div class="pn">1</div><div><b>Three controls, one job</b><span>
+      Every Quick&nbsp;Location chip posts <code>pickFolderAndLoad</code> &mdash; it opens the <em>same multi-select file picker</em> as &ldquo;Load File&hellip;&rdquo;, just rooted elsewhere. They are not folder browsers. &ldquo;Last folder&rdquo; is simply the folder that picker <em>starts</em> in. So <span class="kill">Load File + Last folder row + 5 chips = one button with a dropdown.</span></span></div></div>
+
+    <div class="prob"><div class="pn">2</div><div><b>Two identical-looking search boxes</b><span>
+      The top one searches the <em>whole redirection index</em> (20k files). The bottom one filters <em>the recents list below it</em>. Same shape, same placeholder grammar, totally different scope, 200px apart. This is the single biggest &ldquo;what am I looking at&rdquo; cost.</span></div></div>
+
+    <div class="prob"><div class="pn">3</div><div><b>The filter radios are always-on chrome</b><span>
+      Six radios + a mask box occupy ~55px permanently, but they only matter <em>while you are typing a query</em>. Pure standing cost.</span></div></div>
+
+    <div class="prob"><div class="pn">4</div><div><b>&ldquo;Last folder&rdquo; is a setting dressed as content</b><span>
+      It gets a full-width labelled row <em>and</em> a duplicate chip in Quick Locations. It is a preference &mdash; it belongs in a menu, not in the reading flow.</span></div></div>
+
+    <div class="prob"><div class="pn">5</div><div><b>Section headers outnumber content</b><span>
+      &ldquo;Quick locations&rdquo; + group headers + the italic class note + the truncation hint = four grey texts before three actual files.</span></div></div>
+
+    <h3>What must survive</h3>
+    <ul>
+      <li><span class="keep">Redirection type-ahead</span> &mdash; the star feature; in-memory index, no disk I/O per keystroke.</li>
+      <li><span class="keep">Trace</span> &mdash; niche but irreplaceable when a .red lookup goes wrong.</li>
+      <li><span class="keep">Class pair folding</span> &mdash; one row opens .inc + .clw as two editors.</li>
+      <li><span class="keep">Native drop strip</span> &mdash; must stay docked at the bottom (WebView2 strips real paths).</li>
+      <li><span class="keep">Per-solution recents bucket</span> &mdash; hence the &#128230; version banner.</li>
+    </ul>
+    <p style="margin-top:14px;color:var(--muted);font-size:12.5px">Pick a variant tab above &rarr; each one attacks these five in a different order.</p>
+  </div>
+</div>
+
+<!-- ============================================================ VARIANT A -->
+<div class="panel" data-p="a">
+  <div>
+    <div class="pad">
+      <div class="padcap"><span>CA Explorer</span><span>&#128204; &#10005;</span></div>
+      <div class="padhead"><b>Explorer</b><div class="spacer"></div>
+        <span style="font-size:12px;color:var(--muted2)">BrowseAuthors</span>
+        <button class="mini">&#127769;</button><button class="mini">&#9881;</button></div>
+      <div class="verbar">&#128230; <b>Clarion12</b> &middot; clbrws</div>
+      <div class="tabrow"><div class="tab">&#128202; Data</div><div class="tab on">&#128193; Files</div><div class="tab">&#128421; Cheat Sheet</div></div>
+
+      <div class="zone">
+        <div class="row">
+          <div class="search" id="aSearch">
+            <span class="lead">&#128269;</span>
+            <input id="aInput" placeholder="Search recents and redirection&hellip;">
+            <select class="typesel"><option>All types</option><option>App</option><option>Source</option>
+              <option>Classes</option><option>Templates</option><option>Custom&hellip;</option></select>
+          </div>
+        </div>
+        <div class="row">
+          <div class="menuwrap">
+            <button class="btn primary split" id="aOpenBtn">&#128193; Open&hellip;<span class="car">&#9662;</span></button>
+            <div class="menu" id="aMenu" style="display:none">
+              <div class="mi"><span>&#128193;</span> Browse&hellip; <span class="sub">last folder</span></div>
+              <div class="sep"></div>
+              <div class="cap">Jump to</div>
+              <div class="mi"><span>&#9733;</span> LibSrc (win) <span class="sub">C:\Clarion12\Libsrc\win</span></div>
+              <div class="mi"><span>&#9733;</span> Accessory <span class="sub">C:\Clarion12\Accessory</span></div>
+              <div class="mi"><span>&#9733;</span> Solution <span class="sub">h:\dev\source\clbrws</span></div>
+              <div class="mi"><span>&#128336;</span> Last folder <span class="sub">&hellip;Clarion11\Examples</span></div>
+              <div class="sep"></div>
+              <div class="mi"><span>&#65291;</span> Pin a folder&hellip;</div>
+              <div class="mi"><span>&#9881;</span> Set default folder&hellip;</div>
+            </div>
+          </div>
+          <div class="menuwrap">
+            <button class="btn split" id="aCmpBtn">&#8646; Compare&hellip;<span class="car" style="border-left-color:var(--border)">&#9662;</span></button>
+            <div class="menu" id="aCmpMenu" style="display:none;min-width:290px">
+              <div class="cap">Compare again</div>
+              <div class="mi"><span>&#128204;</span> clbrws005.clw <span class="sub">2 locations</span></div>
+              <div class="mi"><span>&#8646;</span> StringTheory .inc &#8646; .clw <span class="sub">Libsrc\win</span></div>
+              <div class="mi"><span>&#8646;</span> MyApp.clw &#8646; MyApp.bak.clw <span class="sub">2 locations</span></div>
+              <div class="sep"></div>
+              <div class="mi"><span>&#128193;</span> New compare&hellip; <span class="sub">pick two files</span></div>
+            </div>
+          </div>
+          <div class="spacer" style="flex:1"></div>
+          <button class="btn" id="aType">&#9654; simulate typing</button>
+        </div>
+      </div>
+
+      <div class="pills" id="aPills">
+        <span class="pill on">All <span class="n">16</span></span>
+        <span class="pill">&#128204; <span class="n">2</span></span>
+        <span class="pill">&#8646; Compares <span class="n">3</span></span>
+        <span class="pill">&#128215; Classes <span class="n">3</span></span>
+        <span class="pill">&#129513; Templates <span class="n">4</span></span>
+        <span class="pill">&#128216; Source <span class="n">3</span></span>
+        <span class="pill">&#128230; Other <span class="n">1</span></span>
+      </div>
+
+      <div class="list" id="aRest">
+        <div class="ghead">&#8646; Compares<div class="line"></div><span class="act">click to re-run</span></div>
+        <div class="item"><span class="ico">&#128204;</span><div class="meta">
+          <div class="nm">clbrws005<span class="ext">.clw</span> <span class="vs">&#8646; 2 locations</span></div>
+          <div class="pth">&hellip;\Clarion11\Examples\clbrws <span class="arr">&#8596;</span> h:\dev\source\clbrws</div></div>
+          <span class="when">5 hours ago</span>
+          <span class="acts"><button class="act1" title="Re-run">&#8663;</button><button class="act1" title="Swap sides">&#8644;</button><button class="act1" title="Copy both paths">&#9099;</button><button class="act1" title="Unpin">&#9733;</button><button class="act1">&#10005;</button></span></div>
+        <div class="item"><span class="ico">&#8646;</span><div class="meta">
+          <div class="nm">StringTheory<span class="ext">.inc</span> <span class="vs">&#8646;</span> <span class="ext">.clw</span></div>
+          <div class="pth">C:\Clarion12\Accessory\Libsrc\win</div></div>
+          <span class="when">Yesterday</span>
+          <span class="acts"><button class="act1" title="Re-run">&#8663;</button><button class="act1" title="Swap sides">&#8644;</button><button class="act1" title="Copy both paths">&#9099;</button><button class="act1" title="Pin">&#9734;</button><button class="act1">&#10005;</button></span></div>
+        <div class="item"><span class="ico">&#8646;</span><div class="meta">
+          <div class="nm">MyApp<span class="ext">.clw</span> <span class="vs">&#8646;</span> MyApp.bak<span class="ext">.clw</span></div>
+          <div class="pth">h:\dev\source\clbrws <span class="arr">&#8596;</span> h:\backup\2026-07-24</div></div>
+          <span class="when">3 days ago</span></div>
+
+        <div class="ghead">&#128215; Classes<div class="line"></div><span class="act">opens .inc + .clw</span></div>
+        <div class="item"><span class="ico">&#128215;</span><div class="meta">
+          <div class="nm">UltimateParameters<span class="pair"><span class="badge inc">.inc</span><span class="badge clw">.clw</span></span></div>
+          <div class="pth">C:\Clarion12\Accessory\Libsrc\win</div></div>
+          <span class="when">Yesterday</span>
+          <span class="acts"><button class="act1">&#8663;</button><button class="act1">&#8646;</button><button class="act1">&#9099;</button><button class="act1">&#9734;</button><button class="act1">&#10005;</button></span></div>
+        <div class="item"><span class="ico">&#128215;</span><div class="meta">
+          <div class="nm">Reflection<span class="pair"><span class="badge inc">.inc</span><span class="badge clw">.clw</span></span></div>
+          <div class="pth">C:\Clarion12\Accessory\Libsrc\win</div></div>
+          <span class="when">5 days ago</span>
+          <span class="acts"><button class="act1">&#8663;</button><button class="act1">&#8646;</button><button class="act1">&#9099;</button><button class="act1">&#9734;</button><button class="act1">&#10005;</button></span></div>
+        <div class="item"><span class="ico">&#128215;</span><div class="meta">
+          <div class="nm">ABBROWSE<span class="pair"><span class="badge inc">.inc</span><span class="badge clw">.clw</span></span></div>
+          <div class="pth">C:\Clarion12\Libsrc\win</div></div><span class="when">2026-06-15</span></div>
+
+        <div class="ghead">&#129513; Templates<div class="line"></div></div>
+        <div class="item"><span class="ico">&#129513;</span><div class="meta">
+          <div class="nm">StringTheory<span class="ext">.tpl</span></div>
+          <div class="pth">C:\Clarion12\Accessory\template\win</div></div><span class="when">2026-06-15</span></div>
+        <div class="item"><span class="ico">&#129513;</span><div class="meta">
+          <div class="nm">StringClass<span class="ext">.tpl</span></div>
+          <div class="pth">h:\dev\source\SharedTemplates</div></div><span class="when">2026-06-15</span></div>
+        <div class="item"><span class="ico">&#129513;</span><div class="meta">
+          <div class="nm">UltimateClass<span class="ext">.tpl</span></div>
+          <div class="pth">h:\dev\source\SharedTemplates</div></div><span class="when">2026-06-15</span></div>
+
+        <div class="ghead">&#128216; Source<div class="line"></div></div>
+        <div class="item"><span class="ico">&#128216;</span><div class="meta">
+          <div class="nm">clbrws005<span class="ext">.clw</span></div>
+          <div class="pth">C:\Users\Public\Documents\SoftVelocity&hellip;</div></div><span class="when">5 hours ago</span></div>
+        <div class="item"><span class="ico">&#128216;</span><div class="meta">
+          <div class="nm">KEYCODES<span class="ext">.clw</span></div>
+          <div class="pth">C:\Clarion12\Libsrc\win</div></div><span class="when">2026-07-02</span></div>
+      </div>
+
+      <div class="list" id="aResults" style="display:none">
+        <div class="ghead">&#8646; Compares &middot; 1 match<div class="line"></div></div>
+        <div class="item"><span class="ico">&#8646;</span><div class="meta">
+          <div class="nm"><mark>String</mark>Theory<span class="ext">.inc</span> <span class="vs">&#8646;</span> <span class="ext">.clw</span></div>
+          <div class="pth">C:\Clarion12\Accessory\Libsrc\win</div></div><span class="when">Yesterday</span></div>
+
+        <div class="ghead">&#128336; Recent &middot; 2 matches<div class="line"></div></div>
+        <div class="item"><span class="ico">&#128215;</span><div class="meta">
+          <div class="nm"><mark>String</mark>Class<span class="ext">.tpl</span></div>
+          <div class="pth">h:\dev\source\SharedTemplates</div></div><span class="when">2026-06-15</span></div>
+        <div class="item"><span class="ico">&#129513;</span><div class="meta">
+          <div class="nm"><mark>String</mark>Theory<span class="ext">.tpl</span></div>
+          <div class="pth">C:\Clarion12\Accessory\template\win</div></div><span class="when">2026-06-15</span></div>
+
+        <div class="ghead">&#128269; Redirection &middot; 18 matches<div class="line"></div>
+          <span class="act">&#8623; Trace &ldquo;string&rdquo;</span></div>
+        <div class="item"><span class="ico">&#128216;</span><div class="meta">
+          <div class="nm"><mark>String</mark>Theory<span class="ext">.inc</span></div>
+          <div class="pth">C:\Clarion12\Accessory\Libsrc\win &middot; <span style="color:var(--warn)">[Copy]</span></div></div></div>
+        <div class="item"><span class="ico">&#128216;</span><div class="meta">
+          <div class="nm"><mark>String</mark>Theory<span class="ext">.clw</span></div>
+          <div class="pth">C:\Clarion12\Accessory\Libsrc\win &middot; <span style="color:var(--warn)">[Copy]</span></div></div></div>
+        <div class="item"><span class="ico">&#128216;</span><div class="meta">
+          <div class="nm"><mark>String</mark>Utils<span class="ext">.clw</span></div>
+          <div class="pth">h:\dev\source\clbrws &middot; <span style="color:var(--warn)">[Source]</span></div></div></div>
+        <div class="item"><span class="ico">&#128216;</span><div class="meta">
+          <div class="nm">Clip<mark>String</mark><span class="ext">.inc</span></div>
+          <div class="pth">C:\Clarion12\Libsrc\win &middot; <span style="color:var(--warn)">[Copy]</span></div></div></div>
+        <div style="padding:7px 10px;font-size:11.5px;color:var(--muted);font-style:italic">
+          + 14 more &middot; index truncated at 20000 files</div>
+      </div>
+
+      <div class="drop">&#8942; Drop files here to open them in Monaco</div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <span class="tag win">my recommendation</span>
+    <h2>A &mdash; One box, one list</h2>
+    <p>The core move: <b>the recents list is just the empty-query state of the search.</b> One field, one result surface, one mental model &mdash; &ldquo;everything I can open, filtered.&rdquo;</p>
+
+    <h3>What changed</h3>
+    <ul>
+      <li><b>Two search boxes &rarr; one.</b> Empty &rarr; recents, grouped as today. Typing &rarr; <em>Recent</em> matches first (you almost always want the file you touched yesterday), then <em>Redirection</em> matches below. Nothing is hidden, nothing needs choosing up front.</li>
+      <li><b>Radios &rarr; a <code>type</code> dropdown</b> inside the field. Six always-on radios become one 90px control that reads as part of the query. Custom mask opens a small popover.</li>
+      <li><b>Load File + Last folder + 5 chips &rarr; one split button.</b> <code>Open&hellip;</code> browses from the last folder; the caret lists LibSrc / Accessory / Solution / Last folder / your pins / <em>Pin a folder</em> / <em>Set default folder</em>. Same actions, ~110px of chrome reclaimed, and &ldquo;last folder&rdquo; finally reads as the setting it is.</li>
+      <li><b>Group headers &rarr; count pills.</b> Answers your tabs question without a second tab row (see B). All is the default merged view; click a pill to focus one kind. Counts are visible at rest, which the current headers only give you after scrolling.</li>
+      <li><b>The italic class note</b> moves onto the Classes header as a quiet <code>opens .inc + .clw</code> hint &mdash; same information, one line instead of two.</li>
+      <li><b>Redirection rows show their .red section</b> (<span style="color:var(--warn)">[Copy]</span>, <span style="color:var(--warn)">[Source]</span>) &mdash; free from the index we already have, and it's the thing you actually want to know when two files share a name.</li>
+      <li><b>Trace</b> stops being a permanent button and becomes an action on the Redirection group header, where it makes sense (&ldquo;trace <em>this</em> name&rdquo;).</li>
+    </ul>
+
+    <h3>Recent compares <span style="color:var(--warn)">&#9733; new</span></h3>
+    <p>Today <code>Compare&hellip;</code> is the one action that records <b>nothing</b> &mdash; you re-pick both files through two dialogs every single time. A compare isn't a file, it's a <b>pair</b>, so it gets its own group and rides all the same machinery:</p>
+    <ul>
+      <li><b>&#8646; Compares group + count pill</b>, sitting above Classes because a compare is recent <em>activity</em>, not a library. Row click re-runs it &mdash; zero dialogs.</li>
+      <li><b>Pin a pair</b> (&#9733;) and it sticks to the top of the group forever. That's your &ldquo;same pairing several times&rdquo; case: pin it once, it's one click for the rest of the project.</li>
+      <li><b>Split button on Compare&hellip; &#9662;</b> lists the last few pairs, so you can repeat without scrolling the list at all. Click the caret in the mockup.</li>
+      <li><b>Rows collapse what's redundant</b> &mdash; the labelling adapts to why you're comparing:
+        <br>&bull; same name, two folders &rarr; <code>clbrws005.clw &#8646; 2 locations</code> with both dirs below (version-vs-version)
+        <br>&bull; same folder, two names &rarr; <code>StringTheory.inc &#8646; .clw</code> with the dir once (pair diff)
+        <br>&bull; both differ &rarr; full <code>name &#8646; name</code> and both dirs (backup diff)</li>
+      <li><b>&#8644; swaps sides</b> &mdash; left/right matters in a diff and re-picking to flip it is pure friction.</li>
+      <li><b>The omnibox searches pairs too</b> &mdash; matching <em>either</em> side surfaces the compare. Try the typing sim.</li>
+      <li><b>Class rows record pairs too</b> <span style="color:var(--ok)">&mdash; decided</span>. The <code>&#8646;</code> inc&harr;clw action writes a compare like any other: the two halves are genuinely tied together (method definitions must track their implementations), so a recorded inc&harr;clw pair is a real working artifact, not noise. Cap stays ~20 with pinned pairs immune, so deliberate compares can't be pushed out.</li>
+    </ul>
+    <p style="font-size:12.5px"><b>Implementation:</b> add <code>recentCompares:[{a,b,ts,pinned}]</code> to <code>explorer-recents.json</code> (capped ~20, move-to-front dedup on the normalized unordered pair so A/B and B/A are one entry), and have <code>MonacoFileOpener.Compare</code> record it &mdash; it currently doesn't. Same per-solution bucket as recents, so compares follow the &#128230; version banner.</p>
+
+    <h3>Cost / risk</h3>
+    <ul>
+      <li>Merging the two searches means one keystroke path filters two data sources. Cheap &mdash; both are already in-memory arrays.</li>
+      <li>Enter is now ambiguous (recent vs redirection hit). Fix: Enter opens the highlighted row, highlight starts on the first Recent match.</li>
+      <li>Losing the always-visible ext radios costs a click for users who switch filters constantly. Worth watching.</li>
+    </ul>
+    <p style="color:var(--muted);font-size:12.5px">Try &ldquo;<b>simulate typing</b>&rdquo; on the mockup to see the query state.</p>
+  </div>
+</div>
+
+<!-- ============================================================ VARIANT B -->
+<div class="panel" data-p="b">
+  <div>
+    <div class="pad">
+      <div class="padcap"><span>CA Explorer</span><span>&#128204; &#10005;</span></div>
+      <div class="padhead"><b>Explorer</b><div class="spacer"></div>
+        <button class="mini">&#127769;</button><button class="mini">&#9881;</button></div>
+      <div class="verbar">&#128230; <b>Clarion12</b> &middot; clbrws</div>
+      <div class="tabrow"><div class="tab">&#128202; Data</div><div class="tab on">&#128193; Files</div><div class="tab">&#128421; Cheat Sheet</div></div>
+
+      <div class="zone">
+        <div class="row">
+          <div class="search"><span class="lead">&#128269;</span><input placeholder="Find a file&hellip;">
+            <select class="typesel"><option>All types</option><option>App</option><option>Source</option></select></div>
+          <button class="btn primary split">&#128193; Open<span class="car">&#9662;</span></button>
+          <button class="btn">&#8646;</button>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:0;border-bottom:1px solid var(--border);background:var(--bar-bg);padding:0 6px" id="bTabs">
+        <div class="btab on">&#128336; Recent</div>
+        <div class="btab">&#128215; Classes <span class="n">3</span></div>
+        <div class="btab">&#129513; Templates <span class="n">4</span></div>
+        <div class="btab">&#128216; Source <span class="n">3</span></div>
+        <div class="btab">&#128204; Pinned <span class="n">2</span></div>
+      </div>
+
+      <div class="list">
+        <div class="item"><span class="ico">&#128216;</span><div class="meta">
+          <div class="nm">clbrws005<span class="ext">.clw</span></div>
+          <div class="pth">C:\Users\Public\Documents\SoftVelocity&hellip;</div></div><span class="when">5 hours ago</span></div>
+        <div class="item"><span class="ico">&#128215;</span><div class="meta">
+          <div class="nm">UltimateParameters<span class="pair"><span class="badge inc">.inc</span><span class="badge clw">.clw</span></span></div>
+          <div class="pth">C:\Clarion12\Accessory\Libsrc\win</div></div><span class="when">Yesterday</span></div>
+        <div class="item"><span class="ico">&#128215;</span><div class="meta">
+          <div class="nm">Reflection<span class="pair"><span class="badge inc">.inc</span><span class="badge clw">.clw</span></span></div>
+          <div class="pth">C:\Clarion12\Accessory\Libsrc\win</div></div><span class="when">5 days ago</span></div>
+        <div class="item"><span class="ico">&#128216;</span><div class="meta">
+          <div class="nm">KEYCODES<span class="ext">.clw</span></div>
+          <div class="pth">C:\Clarion12\Libsrc\win</div></div><span class="when">2026-07-02</span></div>
+        <div class="item"><span class="ico">&#129513;</span><div class="meta">
+          <div class="nm">StringTheory<span class="ext">.tpl</span></div>
+          <div class="pth">C:\Clarion12\Accessory\template\win</div></div><span class="when">2026-06-15</span></div>
+        <div class="item"><span class="ico">&#129513;</span><div class="meta">
+          <div class="nm">StringClass<span class="ext">.tpl</span></div>
+          <div class="pth">h:\dev\source\SharedTemplates</div></div><span class="when">2026-06-15</span></div>
+        <div class="item"><span class="ico">&#129513;</span><div class="meta">
+          <div class="nm">UltimateClass<span class="ext">.tpl</span></div>
+          <div class="pth">h:\dev\source\SharedTemplates</div></div><span class="when">2026-06-15</span></div>
+        <div class="item"><span class="ico">&#128215;</span><div class="meta">
+          <div class="nm">ABBROWSE<span class="pair"><span class="badge inc">.inc</span><span class="badge clw">.clw</span></span></div>
+          <div class="pth">C:\Clarion12\Libsrc\win</div></div><span class="when">2026-06-15</span></div>
+      </div>
+      <div class="drop">&#8942; Drop files here to open them in Monaco</div>
+    </div>
+    <style>
+      .btab{padding:7px 12px;font-size:12.5px;color:var(--muted2);cursor:pointer;
+        border-bottom:2px solid transparent;display:flex;gap:5px;align-items:center}
+      .btab:hover{color:var(--fg)}
+      .btab.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+      .btab .n{font-size:10.5px;background:var(--chip-bg);border-radius:999px;padding:0 5px}
+    </style>
+  </div>
+
+  <div class="notes">
+    <span class="tag risk">your idea, taken literally</span>
+    <h2>B &mdash; Groups become tabs</h2>
+    <p>Underline tabs replace the group headers. The first tab, <b>Recent</b>, is the merged chronological list &mdash; that's the important part; without it, tabs would destroy the &ldquo;what did I touch today&rdquo; view entirely.</p>
+
+    <h3>Why it works</h3>
+    <ul>
+      <li>Flattest possible list &mdash; no headers, no italic notes, no collapse chevrons. Pure content.</li>
+      <li>Counts sit in the tab, so the shape of your recents is visible at rest.</li>
+      <li>Each tab can have its <em>own</em> sort and columns &mdash; Classes could sort by class name, Templates by vendor folder. Headers can't do that.</li>
+      <li>Reclaims the most vertical space of the three variants.</li>
+    </ul>
+
+    <h3>Why I'd hesitate</h3>
+    <ul>
+      <li><b>Tabs inside tabs.</b> There's already a Data / Files / Cheat Sheet row 30px above. Two tab rows in a 620px pad is a real orientation cost &mdash; you have to remember which row you're in.</li>
+      <li><b>Hidden state.</b> If the tab remembers where you left it, you open the pad on &ldquo;Templates&rdquo; and your recent .clw is invisible. If it doesn't remember, tab choice is never durable and the tabs are just slow pills.</li>
+      <li><b>Groups are derived and volatile.</b> A tab can be empty (no templates yet in a fresh solution). An empty header hides itself gracefully; an empty tab is dead furniture you still have to render.</li>
+      <li>Pills in variant A give ~90% of this benefit without a second tab row &mdash; that's the trade to argue about.</li>
+    </ul>
+    <p style="color:var(--muted);font-size:12.5px">If you like this direction, the hybrid worth building is: <b>A's pills, styled as underline tabs</b> &mdash; visually B, behaviourally A (All stays the default, empties auto-hide).</p>
+  </div>
+</div>
+
+<!-- ============================================================ VARIANT C -->
+<div class="panel" data-p="c">
+  <div>
+    <div class="pad">
+      <div class="padcap"><span>CA Explorer</span><span>&#128204; &#10005;</span></div>
+      <div class="padhead"><b>Explorer</b><div class="spacer"></div>
+        <button class="mini">&#127769;</button><button class="mini">&#9881;</button></div>
+      <div class="verbar">&#128230; <b>Clarion12</b> &middot; clbrws</div>
+      <div class="tabrow"><div class="tab">&#128202; Data</div><div class="tab on">&#128193; Files</div><div class="tab">&#128421; Cheat Sheet</div></div>
+
+      <div class="zone" style="padding:8px 10px">
+        <div class="row">
+          <div class="search focus"><span class="lead">&#128269;</span>
+            <input placeholder="Search or open a file&hellip;" value=""></div>
+          <button class="btn primary split">&#128193;<span class="car">&#9662;</span></button>
+          <button class="btn" title="Compare">&#8646;</button>
+          <button class="btn" title="More">&#8943;</button>
+        </div>
+        <div style="margin-top:7px;border:1px solid var(--border);border-radius:6px;
+          background:var(--sec-bg);padding:7px 9px">
+          <div style="font-size:10.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--muted);margin-bottom:5px">
+            Narrow by type &mdash; shown only while the field has focus</div>
+          <div style="display:flex;gap:5px;flex-wrap:wrap">
+            <span class="pill on">All</span><span class="pill">App</span><span class="pill">Source</span>
+            <span class="pill">Classes</span><span class="pill">Templates</span>
+            <span class="pill" style="border-style:dashed">*.xml, *.txt</span></div>
+        </div>
+      </div>
+
+      <div class="list" style="max-height:470px">
+        <div class="item"><span class="ico">&#128216;</span><div class="meta">
+          <div class="nm">clbrws005<span class="ext">.clw</span></div>
+          <div class="pth">C:\Users\Public\Documents\SoftVelocity\Clarion11\Examples\clbrws</div></div>
+          <span class="when">5h</span></div>
+        <div class="item"><span class="ico">&#128215;</span><div class="meta">
+          <div class="nm">UltimateParameters<span class="pair"><span class="badge inc">.inc</span><span class="badge clw">.clw</span></span></div>
+          <div class="pth">C:\Clarion12\Accessory\Libsrc\win</div></div><span class="when">1d</span></div>
+        <div class="item"><span class="ico">&#128215;</span><div class="meta">
+          <div class="nm">Reflection<span class="pair"><span class="badge inc">.inc</span><span class="badge clw">.clw</span></span></div>
+          <div class="pth">C:\Clarion12\Accessory\Libsrc\win</div></div><span class="when">5d</span></div>
+        <div class="item"><span class="ico">&#128216;</span><div class="meta">
+          <div class="nm">KEYCODES<span class="ext">.clw</span></div>
+          <div class="pth">C:\Clarion12\Libsrc\win</div></div><span class="when">Jul 2</span></div>
+        <div class="item"><span class="ico">&#129513;</span><div class="meta">
+          <div class="nm">StringTheory<span class="ext">.tpl</span></div>
+          <div class="pth">C:\Clarion12\Accessory\template\win</div></div><span class="when">Jun 15</span></div>
+        <div class="item"><span class="ico">&#129513;</span><div class="meta">
+          <div class="nm">StringClass<span class="ext">.tpl</span></div>
+          <div class="pth">h:\dev\source\SharedTemplates</div></div><span class="when">Jun 15</span></div>
+        <div class="item"><span class="ico">&#129513;</span><div class="meta">
+          <div class="nm">UltimateClass<span class="ext">.tpl</span></div>
+          <div class="pth">h:\dev\source\SharedTemplates</div></div><span class="when">Jun 15</span></div>
+        <div class="item"><span class="ico">&#129513;</span><div class="meta">
+          <div class="nm">Reflection<span class="ext">.tpl</span></div>
+          <div class="pth">C:\Clarion12\Accessory\template\win</div></div><span class="when">Jun 15</span></div>
+        <div class="item"><span class="ico">&#128215;</span><div class="meta">
+          <div class="nm">ABBROWSE<span class="pair"><span class="badge inc">.inc</span><span class="badge clw">.clw</span></span></div>
+          <div class="pth">C:\Clarion12\Libsrc\win</div></div><span class="when">Jun 15</span></div>
+      </div>
+      <div class="drop">&#8942; Drop files here to open them in Monaco</div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <span class="tag risk">most radical</span>
+    <h2>C &mdash; Flat &amp; calm</h2>
+    <p>Delete the grouping entirely. One list, strict recency, icon carries the type. Everything that isn't a file is either in the toolbar or revealed on demand.</p>
+
+    <h3>What changed</h3>
+    <ul>
+      <li><b>No group headers, no counts, no notes.</b> Nine files render in the space that currently holds three. The &#128215;/&#129513;/&#128216; icon and the <code>.inc .clw</code> badges already tell you the kind &mdash; the headers were restating the icons.</li>
+      <li><b>Type filters appear on focus</b> and collapse when you leave the field. Zero standing cost, full power when you're actually filtering.</li>
+      <li><b>Toolbar is one row.</b> Search + Open&#9662; + Compare + overflow (&#8943; = Trace, Refresh, Set default folder, Pin folder, Clear recents).</li>
+      <li><b>Timestamps compress</b> to <code>5h / 1d / 5d / Jul 2</code>. The verbose &ldquo;5 days ago&rdquo; column was ~90px of repetitive text.</li>
+      <li>Strict recency answers the actual question &mdash; &ldquo;what was I just in?&rdquo; &mdash; which grouping currently buries under a Classes section that may be a week stale.</li>
+    </ul>
+
+    <h3>What you lose</h3>
+    <ul>
+      <li>&ldquo;Show me all my templates&rdquo; now needs the type filter instead of being permanently visible. That's the whole bet: is browsing-by-kind common enough to pay for headers on every render?</li>
+      <li>Pinned files lose their dedicated section &mdash; they'd need to sort to the top with a &#128204; marker instead.</li>
+      <li>The class-pair explanation has nowhere to live; it becomes a tooltip on the badges.</li>
+    </ul>
+    <p style="color:var(--muted);font-size:12.5px">C is the honest test of your instinct. If, after a week on C, you never miss the groups &mdash; they were chrome. If you do miss them, A's pills are the cheapest way to get them back.</p>
+  </div>
+</div>
+
+<!-- ============================================================ A+ SCALING -->
+<div class="panel" data-p="s">
+  <div>
+    <div class="pad">
+      <div class="padcap"><span>CA Explorer</span><span>&#128204; &#10005;</span></div>
+      <div class="padhead"><b>Explorer</b><div class="spacer"></div>
+        <button class="mini" id="sMode">solution: mixed</button>
+        <button class="mini">&#127769;</button><button class="mini">&#9881;</button></div>
+      <div class="verbar">&#128230; <b>Clarion12</b> &middot; clbrws</div>
+      <div class="tabrow"><div class="tab">&#128202; Data</div><div class="tab on">&#128193; Files</div><div class="tab">&#128421; Cheat Sheet</div></div>
+
+      <div class="zone">
+        <div class="row">
+          <div class="menuwrap" style="flex:1">
+            <div class="search focus"><span class="lead">&#128269;</span>
+              <input placeholder="Search recents and redirection&hellip;">
+              <span class="typesel" id="sTypeBtn" style="cursor:pointer">All types &#9662;</span></div>
+            <div class="menu" id="sTypeMenu" style="display:none;left:auto;right:0;min-width:265px">
+              <div class="mi"><span>&#10003;</span> All types <span class="sub">except .obj</span></div>
+              <div class="sep"></div>
+              <div class="cap">Clarion</div>
+              <div class="mi"><span>&#128230;</span> App <span class="sub">.app</span></div>
+              <div class="mi"><span>&#128216;</span> Source <span class="sub">.clw .inc .equ .int .trn</span></div>
+              <div class="mi"><span>&#128215;</span> Classes <span class="sub">.inc + .clw</span></div>
+              <div class="mi"><span>&#129513;</span> Templates <span class="sub">.tpl .tpw</span></div>
+              <div class="sep"></div>
+              <div class="cap">Docs &amp; data</div>
+              <div class="mi"><span>&#128221;</span> Markdown <span class="sub">.md .markdown</span></div>
+              <div class="mi"><span>&#127760;</span> Web <span class="sub">.html .htm .css .js</span></div>
+              <div class="mi"><span>&#128202;</span> Data <span class="sub">.json .xml .yaml .csv</span></div>
+              <div class="mi"><span>&#128451;</span> SQL <span class="sub">.sql</span></div>
+              <div class="mi"><span>&#128441;</span> Text &amp; config <span class="sub">.txt .ini .log .cfg</span></div>
+              <div class="sep"></div>
+              <div class="mi"><span>&#9881;</span> Custom mask&hellip; <span class="sub">*.xml, *.txt</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <button class="btn primary split">&#128193; Open&hellip;<span class="car">&#9662;</span></button>
+          <button class="btn split">&#8646; Compare&hellip;<span class="car" style="border-left-color:var(--border)">&#9662;</span></button>
+        </div>
+      </div>
+
+      <div class="pills" id="sPills">
+        <span class="pill on">All <span class="n">21</span></span>
+        <span class="pill">&#128204; <span class="n">2</span></span>
+        <span class="pill">&#8646; Compares <span class="n">3</span></span>
+        <span class="pill">&#128215; Classes <span class="n">3</span></span>
+        <span class="pill">&#129513; Templates <span class="n">4</span></span>
+        <span class="pill">&#128216; Source <span class="n">3</span></span>
+        <span class="pill sdoc">&#128196; Docs &amp; data <span class="n">5</span></span>
+        <span class="pill sdoc" style="border-style:dashed">&#8943; 1 more</span>
+      </div>
+
+      <div class="list" id="sList">
+        <div class="ghead sdoc">&#128196; Docs &amp; data<div class="line"></div>
+          <span class="act">.md &rarr; Markdown Editor</span></div>
+        <div class="item sdoc"><span class="ico">&#128221;</span><div class="meta">
+          <div class="nm">README<span class="ext" style="color:var(--warn)">.md</span>
+            <span class="badge" style="margin-left:6px;color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent)">MD editor</span></div>
+          <div class="pth">h:\dev\source\clbrws</div></div><span class="when">2 hours ago</span></div>
+        <div class="item sdoc"><span class="ico">&#128202;</span><div class="meta">
+          <div class="nm">appsettings<span class="ext" style="color:var(--ok)">.json</span></div>
+          <div class="pth">h:\dev\source\clbrws\config</div></div><span class="when">Yesterday</span></div>
+        <div class="item sdoc"><span class="ico">&#127760;</span><div class="meta">
+          <div class="nm">invoice-template<span class="ext" style="color:var(--danger)">.html</span></div>
+          <div class="pth">h:\dev\source\clbrws\reports</div></div><span class="when">Yesterday</span></div>
+        <div class="item sdoc"><span class="ico">&#128202;</span><div class="meta">
+          <div class="nm">dictionary-export<span class="ext" style="color:var(--ok)">.xml</span></div>
+          <div class="pth">h:\dev\source\clbrws</div></div><span class="when">3 days ago</span></div>
+
+        <div class="ghead">&#128215; Classes<div class="line"></div><span class="act">opens .inc + .clw</span></div>
+        <div class="item"><span class="ico">&#128215;</span><div class="meta">
+          <div class="nm">UltimateParameters<span class="pair"><span class="badge inc">.inc</span><span class="badge clw">.clw</span></span></div>
+          <div class="pth">C:\Clarion12\Accessory\Libsrc\win</div></div><span class="when">Yesterday</span></div>
+        <div class="item"><span class="ico">&#128215;</span><div class="meta">
+          <div class="nm">Reflection<span class="pair"><span class="badge inc">.inc</span><span class="badge clw">.clw</span></span></div>
+          <div class="pth">C:\Clarion12\Accessory\Libsrc\win</div></div><span class="when">5 days ago</span></div>
+
+        <div class="ghead">&#129513; Templates<div class="line"></div></div>
+        <div class="item"><span class="ico">&#129513;</span><div class="meta">
+          <div class="nm">StringTheory<span class="ext">.tpl</span></div>
+          <div class="pth">C:\Clarion12\Accessory\template\win</div></div><span class="when">2026-06-15</span></div>
+        <div class="item"><span class="ico">&#129513;</span><div class="meta">
+          <div class="nm">StringClass<span class="ext">.tpl</span></div>
+          <div class="pth">h:\dev\source\SharedTemplates</div></div><span class="when">2026-06-15</span></div>
+      </div>
+      <div class="drop">&#8942; Drop files here to open them in Monaco</div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <span class="tag win">the pills survive</span>
+    <h2>A+ &mdash; Adding .md / .json / .html / .xml</h2>
+    <p>There are <b>two different filters</b> in variant A and it's worth separating them, because only one of them scales with file types &mdash; and it's already a dropdown.</p>
+
+    <h3>1. The type filter <span style="color:var(--muted);text-transform:none;letter-spacing:0">&mdash; in the search field</span></h3>
+    <p>This one queries the <b>20,000-file redirection index</b>, where literally any extension can turn up. It <em>must</em> enumerate types, so it was always going to be a dropdown &mdash; it's the <code>All types &#9662;</code> control. Click it in the mockup: new formats just add a <b>Docs &amp; data</b> section to a menu that was already grouped. It absorbs ten new extensions at zero visual cost.</p>
+
+    <h3>2. The pills <span style="color:var(--muted);text-transform:none;letter-spacing:0">&mdash; below the toolbar</span></h3>
+    <p><b>These are not a type catalogue.</b> They're groups over <em>your recents</em> &mdash; files you have actually opened. That's the difference that saves them:</p>
+    <ul>
+      <li><b>They don't enumerate what's possible, only what's present.</b> Empty groups already auto-hide (the current code does this too). A pure-Clarion solution never renders a Docs pill at all &mdash; hit <b>&ldquo;solution: mixed&rdquo;</b> in the pad header to watch the row shrink.</li>
+      <li><b>One new group, not nine.</b> The trap is a group per extension. Don't: fold every non-Clarion format into a single <b>&#128196; Docs &amp; data</b> bucket. Ten extensions, +1 pill. The extension is already on every row, colour-coded &mdash; the group doesn't need to repeat it.</li>
+      <li><b>Ceiling is ~7 and it's fixed:</b> All, &#128204;, &#8646; Compares, Classes, Templates, Source, Docs. That's the whole taxonomy, and it does not grow when you add formats &mdash; only if we add a genuinely new <em>kind of thing</em> (as Compares was).</li>
+    </ul>
+
+    <h3>If they ever do overflow</h3>
+    <p>Cheap insurance, worth building once: order pills by count and let the tail collapse into a dashed <code>&#8943; N more</code> chip that opens as a menu (shown in the mockup). One line, always &mdash; never wraps, never scrolls sideways in a 620px pad.</p>
+
+    <h3>The filter is the easy half</h3>
+    <p>What actually makes these formats work isn't the pills &mdash; it's four small things on the host side:</p>
+    <ul>
+      <li><b>Language mapping</b> in <code>MonacoFileOpener</code> &mdash; ext &rarr; Monaco language id. Monaco ships json / html / css / javascript / xml / markdown / sql grammars already, so this is a lookup table, not a parser. This is what &ldquo;formatted properly&rdquo; means for syntax colour.</li>
+      <li><b>Actual formatting</b> &mdash; only JSON, HTML and CSS have built-in document formatters; <code>.md</code> and <code>.xml</code> don't, so <code>Format Document</code> silently no-ops on them. Worth knowing before it reads as a bug.</li>
+      <li><b>Drop-strip whitelist</b> &mdash; <code>IsAllowedDropExtension</code> gates the native drop strip; new formats must be added or dropping them silently does nothing.</li>
+      <li><b>Extension colours</b> in the row renderer, plus <code>KindOf()</code> in <code>ExplorerFileClassifier</code> returning the new <code>docs</code> kind &mdash; otherwise everything lands in <b>Other</b>.</li>
+    </ul>
+    <h3>Markdown routes elsewhere <span style="color:var(--muted);text-transform:none;letter-spacing:0">&mdash; verified 2026-07-28</span></h3>
+    <p><code>.md</code> is the one format that should <b>not</b> open in Monaco. <b>ClarionMarkdownEditor</b> (Mark Sarson's fork &mdash; split-pane live preview, WebView2 + a self-contained HTML page, architecturally the same shape as our Monaco surface) already exists and is installed at <code>C:\Clarion12\accessory\addins\MarkdownEditor</code>. Hence the <span class="badge" style="color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent)">MD editor</span> badge on the row &mdash; same honesty as the Classes group telling you it opens two editors.</p>
+    <p><b>Three facts that decide the integration:</b></p>
+    <ul>
+      <li><b>It exposes <code>MarkdownEditorViewContent : AbstractViewContent</code> with <code>Load(string)</code> / <code>Save(string)</code></b> &mdash; a proper document view content, the same contract family as our <code>ModernEmbeditorViewContent</code>. It is genuinely hostable as a file tab.</li>
+      <li><b>But its <code>.addin</code> declares NO <code>&lt;DisplayBinding&gt;</code></b> &mdash; only a Pad (<code>Ctrl+Alt+M</code>) and a View menu item. So the IDE never routes <code>.md</code> to it on its own. Today, opening a <code>.md</code> gets you the plain text editor.</li>
+      <li><b>The build installed here is v1.0.0 (Jan 2026)</b> &mdash; John's stale original, <em>not</em> Mark's v1.1.x (tabbed multi-file, save-corruption fix, open-from-URL). PR&nbsp;#4 has been open since Feb; neither repo is archived; CA issue&nbsp;#27 untouched since May. The canonical-repo question is still unresolved.</li>
+    </ul>
+    <p><b>Decided:</b> <code>.md</code> routes to Mark's editor, and <span class="keep">no &ldquo;open as text&rdquo; fallback is needed</span> &mdash; confirmed in the shipped page: it has <code>editorPane</code> + <code>preview-pane</code>, a split toggle (<code>SplitDirection</code>) and <code>scrollSyncEnabled</code>/<code>syncScroll</code> with a checkbox. It <em>is</em> the raw editor with a live preview beside it, scrolling together. A Monaco fallback would be strictly worse.</p>
+    <p><b>The one tweak worth PR-ing:</b> add <code>&lt;DisplayBinding&gt;</code> for <code>.md</code> to his <code>.addin</code>. Then CA just <em>doesn't hijack</em> the extension &mdash; route <code>.md</code> through the IDE's normal open path and binding resolution does the rest. CA ships zero markdown code. <b>Bridge if that's slow:</b> resolve <code>MarkdownEditorViewContent</code> reflectively, Monaco fallback when absent.</p>
+
+    <h3>Bundling it with our installer</h3>
+    <p>Licensing is fine &mdash; <b>Mark's fork is MIT</b> (John's upstream has <em>no</em> license at all, worth fixing as part of the canonical call). Redistribution just needs the LICENSE + copyright carried along. Two real risks though:</p>
+    <ul>
+      <li><b>Version collision.</b> If our installer writes <code>accessory\addins\MarkdownEditor</code> <em>and</em> Mark ships his own releases, last-installer-wins &mdash; including <span class="kill">silent downgrades</span> (user installs his v1.3.0, later reinstalls CA, gets our older bundle). Guard the <code>[Files]</code> block with a <code>Check:</code> that compares <code>GetVersionNumbersString</code> and only overwrites when ours is <em>newer</em>. Never blind-copy.</li>
+      <li><b>PR first, then bundle.</b> If we bundle a locally-tweaked build (his v1.2.0 + our DisplayBinding) while the PR is unmerged, our artifact permanently diverges from his releases and the collision problem compounds. Land the DisplayBinding upstream, then redistribute his released artifact <em>unmodified</em> &mdash; we stay a pure redistributor with nothing to maintain.</li>
+      <li>Consider the <b>marketplace</b> channel instead of the installer (<code>ClarionLive/clarionassistant-marketplace</code>, <code>configure.ps1 -InstallPlugin</code>) &mdash; optional-by-design, and sidesteps last-writer-wins entirely.</li>
+      <li>Installer gotchas that bite here: ISPP <code>#ifexist</code> is <b>file-only</b>, so a directory guard silently drops the whole <code>[Files]</code> block &mdash; probe a sentinel <em>file</em> and warn on skip; and verify the deployed folder against the hand-list, which has drifted before in clean-install-only ways.</li>
+    </ul>
+    <p style="font-size:12.5px"><b>Currently installed here: v1.0.0 (Jan 2026)</b> &mdash; three releases behind and <span class="kill">missing the v1.0.2 save-corruption fix</span>. Worth updating independently of any of this.</p>
+    <p style="font-size:12.5px"><b>Hard constraint either way:</b> CA must consume this <span class="kill">at runtime only</span> &mdash; never as an <code>.addin</code> <code>&lt;Dependency&gt;</code>. A coerced dependency is still a hard one in this IDE, so declaring it would stop ClarionAssistant loading on any machine without the markdown addin installed.</p>
+  </div>
+</div>
+
+</div>
+
+<script>
+(function(){
+  var fs = 13;
+  function setFs(v){ fs = Math.max(10, Math.min(20, v));
+    document.documentElement.style.setProperty('--fs', fs+'px');
+    document.getElementById('fsVal').textContent = fs+'px'; }
+  document.getElementById('fsUp').onclick = function(){ setFs(fs+1); };
+  document.getElementById('fsDown').onclick = function(){ setFs(fs-1); };
+
+  var tb = document.getElementById('themeBtn');
+  tb.onclick = function(){
+    var dark = document.body.classList.toggle('dark');
+    tb.innerHTML = dark ? '\u2600 Light' : '\u263D Dark';
+  };
+
+  var tabs = document.querySelectorAll('.vtab');
+  for (var i=0;i<tabs.length;i++){
+    tabs[i].onclick = (function(el){ return function(){
+      for (var j=0;j<tabs.length;j++) tabs[j].classList.remove('on');
+      el.classList.add('on');
+      var v = el.getAttribute('data-v');
+      var ps = document.querySelectorAll('.panel');
+      for (var k=0;k<ps.length;k++)
+        ps[k].classList.toggle('on', ps[k].getAttribute('data-p') === v);
+      window.scrollTo(0,0);
+    };})(tabs[i]);
+  }
+
+  // Variant A interactions
+  var aBtn = document.getElementById('aOpenBtn'), aMenu = document.getElementById('aMenu');
+  aBtn.onclick = function(e){ e.stopPropagation();
+    aMenu.style.display = aMenu.style.display === 'none' ? 'block' : 'none'; };
+  var cBtn = document.getElementById('aCmpBtn'), cMenu = document.getElementById('aCmpMenu');
+  cBtn.onclick = function(e){ e.stopPropagation();
+    aMenu.style.display = 'none';
+    cMenu.style.display = cMenu.style.display === 'none' ? 'block' : 'none'; };
+  document.addEventListener('click', function(){ aMenu.style.display='none'; cMenu.style.display='none'; });
+  aMenu.onclick = function(e){ e.stopPropagation(); };
+  cMenu.onclick = function(e){ e.stopPropagation(); };
+  aBtn.addEventListener('click', function(){ cMenu.style.display='none'; });
+
+  var typing = false;
+  var aType = document.getElementById('aType');
+  aType.onclick = function(){
+    typing = !typing;
+    document.getElementById('aInput').value = typing ? 'string' : '';
+    document.getElementById('aSearch').classList.toggle('focus', typing);
+    document.getElementById('aRest').style.display = typing ? 'none' : 'block';
+    document.getElementById('aResults').style.display = typing ? 'block' : 'none';
+    document.getElementById('aPills').style.opacity = typing ? '.45' : '1';
+    aType.innerHTML = typing ? '\u25A0 clear query' : '\u25B6 simulate typing';
+  };
+
+  // generic pill / tab toggles inside mockups
+  function groupToggle(sel, cls){
+    var g = document.querySelectorAll(sel);
+    for (var i=0;i<g.length;i++){
+      g[i].onclick = (function(el,all){ return function(){
+        for (var j=0;j<all.length;j++) all[j].classList.remove(cls);
+        el.classList.add(cls);
+      };})(g[i], g);
+    }
+  }
+  groupToggle('#aPills .pill','on');
+  groupToggle('#bTabs .btab','on');
+  groupToggle('#sPills .pill','on');
+
+  // A+ : type menu + Clarion-only / mixed solution toggle
+  var sBtn = document.getElementById('sTypeBtn'), sMenu = document.getElementById('sTypeMenu');
+  sBtn.onclick = function(e){ e.stopPropagation();
+    sMenu.style.display = sMenu.style.display === 'none' ? 'block' : 'none'; };
+  sMenu.onclick = function(e){ e.stopPropagation(); };
+  document.addEventListener('click', function(){ sMenu.style.display='none'; });
+
+  var mixed = true, sm = document.getElementById('sMode');
+  sm.onclick = function(){
+    mixed = !mixed;
+    var d = document.querySelectorAll('.sdoc');
+    for (var i=0;i<d.length;i++) d[i].style.display = mixed ? '' : 'none';
+    sm.textContent = mixed ? 'solution: mixed' : 'solution: Clarion-only';
+    document.querySelector('#sPills .pill .n').textContent = mixed ? '21' : '16';
+  };
+})();
+</script>
+</body>
+</html>

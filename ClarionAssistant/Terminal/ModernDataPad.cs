@@ -580,9 +580,13 @@ namespace ClarionAssistant
                 }
                 else if (action == "saveExplorerUiState")
                 {
-                    // Collapsed-group state for the Files tab; kept so a re-post (after a pin/open) doesn't expand
-                    // everything. Echoed back in PostExplorerData's uiState. (Session-scoped; persistence is polish.)
+                    // Files-tab view state: collapsed groups, the active scope pill, and the type filter.
+                    // Kept so a re-post (after a pin/open) doesn't reset the view under the user. Echoed back
+                    // in PostExplorerData's uiState. (Session-scoped; disk persistence is polish.)
                     _explorerCollapsed = ParseCollapsed(json);
+                    _explorerScope     = ParseUiString(json, "scope",    _explorerScope);
+                    _explorerExtMode   = ParseUiString(json, "extMode",  _explorerExtMode);
+                    _explorerCustomExt = ParseUiString(json, "customExt", _explorerCustomExt);
                 }
                 else if (action == "requestRedIndex")
                 {
@@ -851,6 +855,13 @@ namespace ClarionAssistant
         // doesn't expand everything. Session-scoped; cross-session persistence is a polish item.
         private List<string> _explorerCollapsed = new List<string>();
 
+        // Rest of the Files-tab view state, echoed back the same way: the active scope pill, the search
+        // type filter, and the custom extension mask. Without these a re-post would silently reset the
+        // user's scope/filter mid-session (a pin or an open triggers a re-post).
+        private string _explorerScope     = "all";
+        private string _explorerExtMode   = "all";
+        private string _explorerCustomExt = "";
+
         // Single source of truth for the open-file dialog filter (shared with OpenSourceFileInCaEditorCommand).
         private static readonly string ExplorerOpenFilter = Services.MonacoFileOpener.OpenFileFilter;
 
@@ -971,7 +982,11 @@ namespace ClarionAssistant
                     { "pinnedFolders", vm.pinnedFolders },
                     { "pinned", vm.pinned },
                     { "groups", vm.groups },
-                    { "uiState", new Dictionary<string, object> { { "collapsed", _explorerCollapsed } } }
+                    { "uiState", new Dictionary<string, object> {
+                        { "collapsed", _explorerCollapsed },
+                        { "scope",     _explorerScope },
+                        { "extMode",   _explorerExtMode },
+                        { "customExt", _explorerCustomExt } } }
                 });
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] PostExplorerData: " + ex.Message); }
@@ -1294,6 +1309,26 @@ namespace ClarionAssistant
             }
             catch { }
             return outp;
+        }
+
+        /// <summary>Parse one string field out of saveExplorerUiState's nested state object.
+        /// Returns <paramref name="fallback"/> when the field is absent or the blob is unparseable, so a
+        /// partial payload can never blank out state the page didn't mention.</summary>
+        private static string ParseUiString(string json, string key, string fallback)
+        {
+            try
+            {
+                var d = new JavaScriptSerializer().DeserializeObject(json) as Dictionary<string, object>;
+                object st;
+                if (d != null && d.TryGetValue("state", out st))
+                {
+                    var sd = st as Dictionary<string, object>;
+                    object v;
+                    if (sd != null && sd.TryGetValue(key, out v) && v != null) return v.ToString();
+                }
+            }
+            catch { }
+            return fallback;
         }
 
         /// <summary>Parse saveExplorerUiState's nested state.collapsed string array.</summary>

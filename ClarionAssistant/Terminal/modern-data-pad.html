@@ -133,9 +133,10 @@
         padding: 3px 10px; font-size: 11px; color: #5a5a64;
         background: #eef1f5; border-bottom: 1px solid #dfe3e8; white-space: nowrap;
         overflow: hidden; text-overflow: ellipsis; }
-    .ver-banner .vb-ico { font-size: 12px; }
+    /* Fixed width so the .red line below can align its path to this line's text. */
+    .ver-banner .vb-ico { font-size: 12px; width: 14px; text-align: center; flex: none; }
     #verText { font-weight: 600; color: #0a5dc2; }
-    body.dark .ver-banner { color: #9a9ab0; background: #21212e; border-bottom-color: #33333f; }
+    body.dark .ver-banner { color: #c2c8dc; background: #21212e; border-bottom-color: #33333f; }
     body.dark #verText { color: #89b4fa; }
 
     /* ===================== Tab strip (Data | Files) — adapted from header.html .tab-bar/.tab ===================== */
@@ -189,14 +190,14 @@
         border-radius: 4px; padding: 6px 9px; margin: 10px 2px 0; line-height: 1.5; }
     .cs-empty { font-size: 11px; color: #8a8a8a; padding: 10px 9px; display: none; }
     /* Cheat sheet — dark */
-    body.dark .cs-intro { color: #9a9ab0; }
+    body.dark .cs-intro { color: #c2c8dc; }
     body.dark .cs-search input { background: #1e1e2e; color: #cdd6f4; border-color: #45475a; }
     body.dark .cs-search input:focus { border-color: #89b4fa; }
     body.dark .cs-search-clear { color: #7f849c; }
     body.dark .cs-search-clear:hover { color: #cdd6f4; }
     body.dark .cs-head { color: #cdd6f4; background: #252535; border-color: #3a3a4a; }
     body.dark .cs-row:hover { background: #2a2a3d; }
-    body.dark .cs-keys .pl { color: #6c7086; }
+    body.dark .cs-keys .pl { color: #a3aac2; }
     body.dark .cs-keys .or { color: #7f849c; }
     body.dark .cs-desc { color: #cdd6f4; }
     body.dark .kbd { color: #cdd6f4; background: #313244; border-color: #45475a; }
@@ -214,11 +215,8 @@
     .files-toolbar .btn-primary { background: #0a5dc2; border-color: #0a5dc2; color: #fff; }
     .files-toolbar .btn-primary:hover { background: #0b6ee0; border-color: #0b6ee0; }
     .files-toolbar .btn .ico { font-size: 13px; }
-    .filter-wrap { position: relative; flex: none; }
-    .filter-wrap input { height: 28px; width: 150px; padding: 0 24px 0 9px; background: #ffffff;
-        border: 1px solid #bcbcbc; border-radius: 6px; color: #1f1f1f; font: inherit; font-size: 12px; outline: none; }
-    .filter-wrap input:focus { border-color: #0a5dc2; }
-    .filter-wrap .fx { position: absolute; right: 7px; top: 6px; color: #8a8a8a; font-size: 13px; cursor: pointer; display: none; }
+    /* .filter-wrap rules removed with the "Filter recents…" box (item 2) — it was their only user. The
+       Data tab's filter is id-based (#filter / #filterClear) and is unaffected. */
 
     /* last-folder strip */
     .lastfolder { display: flex; align-items: center; gap: 6px; padding: 5px 10px;
@@ -238,15 +236,95 @@
     .chip .star { color: #c08a00; }
     .chip.add { color: #888; border-style: dashed; }
 
+    /* ---- Split buttons + dropdown menus (Open… / Compare…) ----
+       .fmenu is namespaced (not .menu) to avoid colliding with anything else on the page. The menu is
+       absolutely positioned inside .splitwrap; it drops from the toolbar at the very top of the panel,
+       so #panel-files's overflow:auto has plenty of room and never clips it. */
+    /* Active .red — the second line of the version/solution banner block, so it reads as part of the same
+       environment context rather than as chrome hanging off the tab strip. Matches .ver-banner's palette;
+       the divider between the two lines is dropped so they group visually. */
+    /* Same gap + icon width as .ver-banner above it, so the two VALUES line up in one column. That is why
+       this leads with an icon rather than an "Active .RED" label — a ~60px text label could never align
+       with a ~14px emoji, and the path's own .red extension already says what it is. */
+    .redbanner { display: flex; align-items: center; gap: 6px; padding: 0 10px 4px 10px; flex: none;
+        background: #eef1f5; border-bottom: 1px solid #dfe3e8; font-size: 11px; min-width: 0; margin-top: -1px; }
+    .redbanner .vb-ico { font-size: 12px; width: 14px; text-align: center; flex: none; color: #8b8b96; }
+    .redbanner .path { font-family: Consolas, 'Courier New', monospace; color: #5a5a64;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+    .redbanner .path.link { color: #0a5dc2; cursor: pointer; }
+    .redbanner .path.link:hover { text-decoration: underline; }
+    .redbanner .path.none { color: #b0152e; font-style: italic; direction: ltr; }
+
+    .splitwrap { position: relative; display: inline-flex; }
+    .files-toolbar .btn-split { padding-right: 0; }
+    .files-toolbar .btn-split .caret { display: inline-flex; align-items: center; align-self: stretch;
+        padding: 0 8px; margin-left: 7px; font-size: 10px; border-left: 1px solid rgba(255, 255, 255, .35); }
+    .files-toolbar .btn-split:not(.btn-primary) .caret { border-left-color: #bcbcbc; }
+    .files-toolbar .btn-split .caret:hover { background: rgba(255, 255, 255, .18); }
+    .files-toolbar .btn-split:not(.btn-primary) .caret:hover { background: #d8dde5; }
+    .fmenu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 60; min-width: 252px;
+        background: #fff; border: 1px solid #bcbcbc; border-radius: 6px; padding: 4px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, .22); }
+    .fmenu .mi { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 4px;
+        cursor: pointer; font-size: 12px; color: #1f1f1f; white-space: nowrap; }
+    .fmenu .mi:hover { background: #e8eef7; }
+    .fmenu .mi .sub { margin-left: auto; padding-left: 12px; font-family: Consolas, 'Courier New', monospace;
+        font-size: 10.5px; color: #888; max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+    .fmenu .mi .unpin { margin-left: auto; padding-left: 10px; color: #888; font-size: 11px; }
+    .fmenu .mi .unpin:hover { color: #b0152e; }
+    .fmenu .sep { height: 1px; background: #e6e6e6; margin: 4px 3px; }
+    .fmenu .cap { padding: 4px 8px 2px; font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: #888; }
+    .fmenu .hint { padding: 5px 8px; font-size: 11.5px; color: #888; font-style: italic; }
+    /* Type filter control — reads as part of the query, not as a separate row of options. */
+    .typesel { display: inline-flex; align-items: center; height: 28px; padding: 0 9px; cursor: pointer;
+        border: 1px solid #bcbcbc; border-radius: 6px; background: #eef1f4; color: #5a5a5a;
+        font-size: 12px; white-space: nowrap; }
+    .typesel:hover { background: #e0e6ee; }
+    /* A long custom mask must not stretch the control and squeeze the search field — ellipsise the label
+       and keep the full value on the tooltip. */
+    .typesel .lbl { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .typesel.active { border-color: #0a5dc2; color: #0a5dc2; background: #e8eef7; font-weight: 600; }
+    .fmenu .mi.mask { gap: 6px; }
+    .fmenu .maskinput { flex: 1; min-width: 0; height: 22px; padding: 0 6px; font: inherit; font-size: 11.5px;
+        font-family: Consolas, 'Courier New', monospace; border: 1px solid #bcbcbc; border-radius: 4px;
+        background: #fff; color: #1f1f1f; outline: none; }
+    .fmenu .maskinput:focus { border-color: #0a5dc2; }
+    /* Scope pills. Counts are visible at rest — the old group headers only revealed them once you had
+       scrolled to each one. The row is nowrap + an overflow menu so it can never wrap in a narrow pad. */
+    .pills { display: flex; align-items: center; gap: 5px; flex-wrap: nowrap; overflow: hidden;
+        padding: 7px 10px; border-bottom: 1px solid #d4d4d4; flex: none; }
+    .pills:empty { display: none; }
+    .pill { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 999px;
+        border: 1px solid #d4d4d4; background: #eef1f4; color: #5a5a5a; font-size: 12px; cursor: pointer;
+        white-space: nowrap; flex: none; }
+    .pill:hover { background: #e0e6ee; }
+    .pill.on { background: #0a5dc2; border-color: #0a5dc2; color: #fff; font-weight: 600; }
+    .pill.on .n { opacity: .8; }
+    .pill.more { border-style: dashed; }
+    .pill .n { font-size: 11px; opacity: .7; }
+
     /* section header inside the Files list */
+    /* Sticky: on a long result list the Redirection header carries the ⤓ Trace action, and it was
+       scrolling out of reach — you had to pick a row then scroll all the way back up to act on it.
+       Needs an opaque background or rows show through as they pass under. */
     .fsec { display: flex; align-items: center; gap: 6px; padding: 6px 10px 4px 10px;
-        font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: #5a5a5a; margin-top: 4px; }
+        font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: #5a5a5a; margin-top: 4px;
+        position: sticky; top: 0; z-index: 2; background: #ffffff; }
+    /* Clicking the icon selects a row without opening it (mouse-driven target picking for Trace). */
+    .fico.selectable { cursor: pointer; border-radius: 4px; }
+    .fico.selectable:hover { background: #d5e2f5; outline: 1px solid #0a5dc2; }
     .fsec .count { color: #888; font-weight: 400; }
     .fsec .sec-line { flex: 1; height: 1px; background: #d4d4d4; margin-left: 4px; }
     .fsec.grp { cursor: pointer; }
     .fsec.grp .caret { font-size: 9px; color: #888; width: 10px; display: inline-block; }
     .fsec.grp:hover { color: #1f1f1f; }
-    .fsec-note { padding: 2px 10px 4px 26px; font-size: 10px; color: #888; font-style: italic; }
+    /* .fsec-note (the standalone italic class-pair line) folded onto the header as .fsec .hint. */
+    .fsec .hint { font-size: 10px; color: #888; font-style: italic; text-transform: none; letter-spacing: 0;
+        margin-left: 8px; font-weight: 400; flex: none; }
+    /* Header action (⤓ Trace on the Redirection group) — reads as a link, not another button. */
+    .fsec .act { font-size: 11px; color: #0a5dc2; cursor: pointer; text-transform: none; letter-spacing: 0;
+        margin-left: 8px; font-weight: 600; flex: none; }
+    .fsec .act:hover { text-decoration: underline; }
 
     /* class .inc/.clw chips */
     .pairchip { font-family: Consolas, 'Courier New', monospace; font-size: 9px; padding: 1px 5px; border-radius: 8px;
@@ -270,6 +348,11 @@
     .frow2 .ftime { font-size: 10px; color: #888; white-space: nowrap; }
     .frow2 .acts { display: inline-flex; gap: 2px; visibility: hidden; }
     .frow2:hover .acts { visibility: visible; }
+    /* Omnibox results: the keyboard highlight is styled separately from :hover so both can show at once
+       (mouse resting on one row while you arrow through another). .rsec is the .red section a redirection
+       hit resolved from — the disambiguator when two files share a name. */
+    .frow2.hl { background: #dce9fb; border-left-color: #0a5dc2; }
+    .fpath .rsec { margin-left: 8px; font-size: 9px; color: #888; text-transform: uppercase; letter-spacing: .4px; }
     .frow2 .acts .a { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center;
         border-radius: 4px; color: #5a5a5a; font-size: 13px; }
     .frow2 .acts .a:hover { background: #dbe1e8; color: #1f1f1f; }
@@ -299,26 +382,11 @@
         border: 1px solid #bcbcbc; border-radius: 6px; background: #f1f3f5; color: #1f1f1f;
         font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; transition: all .15s; }
     .redopen-row .btn:hover { background: #e4e8ee; }
-    .redopen-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 7px; }
-    .redopen-filters label { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: #3a3a3a; cursor: pointer; }
-    .redopen-filters input[type=radio] { margin: 0; cursor: pointer; }
-    .redopen-custom { height: 22px; width: 140px; padding: 0 7px; background: #fff; border: 1px solid #bcbcbc;
-        border-radius: 5px; color: #1f1f1f; font: inherit; font-size: 11px; outline: none; }
-    .redopen-custom:focus { border-color: #0a5dc2; }
-    /* Keep the Custom radio + its field together as one unit so they wrap to a new line together. */
-    .redopen-customgroup { display: inline-flex; align-items: center; gap: 6px; }
-    /* Recents filter, relocated to sit directly above the file list. */
-    .files-filter-row { padding: 6px 10px; border-bottom: 1px solid #d4d4d4; flex: none; }
-    .filter-wrap.wide { display: block; width: 100%; }
-    .filter-wrap.wide input { width: 100%; box-sizing: border-box; }
-    body.dark .files-filter-row { border-bottom-color: #3a3a4a; }
-    .redopen-drop { margin-top: 5px; border: 1px solid #d0d0d0; border-radius: 6px; background: #fff;
-        max-height: 240px; overflow: auto; }
-    .redopen-item { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center;
-        padding: 4px 9px; cursor: pointer; }
-    .redopen-item .rn { color: #1f1f1f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .redopen-item .rsec { font-size: 9px; color: #888; text-transform: uppercase; letter-spacing: .4px; }
-    .redopen-item:hover, .redopen-item.hl { background: #e8eef7; }
+    /* .redopen-filters / .redopen-custom rules removed with the radio row (item 3) — the type filter is
+       now .typesel + a .fmenu menu. */
+
+    /* .redopen-drop / .redopen-item rules removed with the floating dropdown — omnibox matches now render
+       as .frow2 rows inside #filesBody (see renderOmniResults). */
     .redopen-hint { margin-top: 5px; font-size: 11px; color: #888; font-style: italic; }
     .redopen-trace { margin-top: 6px; border: 1px solid #d0d0d0; border-radius: 6px; background: #fafafa; }
     .redopen-trace-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px;
@@ -331,23 +399,19 @@
         color: #2a2a2a; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow: auto; }
     .redopen-trace-log .found { color: #0a7d3a; font-weight: 600; }
     .redopen-trace-log .notfound { color: #b0152e; font-weight: 600; }
+    /* The resolved path reads and behaves as a link — clicking it opens the file in Monaco. */
+    .redopen-trace-log .pathlink { text-decoration: underline; cursor: pointer; }
+    .redopen-trace-log .pathlink:hover { color: #0a5dc2; }
 
     body.dark .redopen { border-bottom-color: #3a3a4a; }
-    body.dark .redopen-ico { color: #9a9ab0; }
+    body.dark .redopen-ico { color: #c2c8dc; }
     body.dark .redopen-inputwrap input { background: #1a1a28; border-color: #313244; color: #cdd6f4; }
     body.dark .redopen-inputwrap input:focus { border-color: #89b4fa; }
-    body.dark .redopen-clear { color: #6c7086; }
+    body.dark .redopen-clear { color: #a3aac2; }
     body.dark .redopen-clear:hover { color: #cdd6f4; }
     body.dark .redopen-row .btn { background: #313244; border-color: #313244; color: #d4d4d4; }
     body.dark .redopen-row .btn:hover { background: #3a3a52; }
-    body.dark .redopen-filters label { color: #a6adc8; }
-    body.dark .redopen-custom { background: #1a1a28; border-color: #313244; color: #cdd6f4; }
-    body.dark .redopen-custom:focus { border-color: #89b4fa; }
-    body.dark .redopen-drop { background: #1a1a28; border-color: #313244; }
-    body.dark .redopen-item .rn { color: #e0e0e0; }
-    body.dark .redopen-item .rsec { color: #6c7086; }
-    body.dark .redopen-item:hover, body.dark .redopen-item.hl { background: #2d2d44; }
-    body.dark .redopen-hint { color: #6c7086; }
+    body.dark .redopen-hint { color: #a3aac2; }
     body.dark .redopen-trace { background: #161622; border-color: #313244; }
     body.dark .redopen-trace-head { border-bottom-color: #313244; color: #a6adc8; }
     body.dark .btn-mini { background: #313244; border-color: #313244; color: #d4d4d4; }
@@ -355,54 +419,82 @@
     body.dark .redopen-trace-log { color: #cdd6f4; }
     body.dark .redopen-trace-log .found { color: #a6e3a1; }
     body.dark .redopen-trace-log .notfound { color: #f38ba8; }
+    body.dark .redopen-trace-log .pathlink:hover { color: #89b4fa; }
 
     /* ----- Files tab — dark ----- */
+    body.dark .redbanner { background: #21212e; border-bottom-color: #33333f; }
+    body.dark .redbanner .vb-ico { color: #a3aac2; }
+    body.dark .redbanner .path { color: #c2c8dc; }
+    body.dark .redbanner .path.link { color: #89b4fa; }
+    body.dark .redbanner .path.none { color: #f38ba8; }
     body.dark .files-toolbar { border-bottom-color: #3a3a4a; }
     body.dark .files-toolbar .btn { background: #313244; border-color: #313244; color: #d4d4d4; }
     body.dark .files-toolbar .btn:hover { background: #3a3a52; }
     body.dark .files-toolbar .btn-primary { background: #1e66a8; border-color: #1e66a8; color: #fff; }
     body.dark .files-toolbar .btn-primary:hover { background: #2580d4; border-color: #2580d4; }
-    body.dark .filter-wrap input { background: #1a1a28; border-color: #313244; color: #cdd6f4; }
-    body.dark .filter-wrap input:focus { border-color: #89b4fa; }
-    body.dark .filter-wrap .fx { color: #6c7086; }
     body.dark .lastfolder { background: #1a1a28; border-bottom-color: #3a3a4a; color: #a6adc8; }
     body.dark .lastfolder .path { color: #89b4fa; }
-    body.dark .lastfolder .change { color: #6c7086; }
+    body.dark .lastfolder .change { color: #a3aac2; }
     body.dark .lastfolder .change:hover { color: #cdd6f4; }
-    body.dark .quick .ql-label { color: #6c7086; }
+    body.dark .quick .ql-label { color: #a3aac2; }
     body.dark .chip { background: #313244; border-color: #313244; color: #bac2de; }
     body.dark .chip:hover { background: #3a3a52; border-color: #89b4fa; }
     body.dark .chip .star { color: #fab387; }
-    body.dark .chip.add { color: #6c7086; }
+    body.dark .chip.add { color: #a3aac2; }
+    body.dark .files-toolbar .btn-split:not(.btn-primary) .caret { border-left-color: #45455a; }
+    body.dark .files-toolbar .btn-split:not(.btn-primary) .caret:hover { background: #45455a; }
+    body.dark .fmenu { background: #252535; border-color: #3a3a4a; box-shadow: 0 8px 24px rgba(0, 0, 0, .5); }
+    body.dark .fmenu .mi { color: #cdd6f4; }
+    body.dark .fmenu .mi:hover { background: #2d2d44; }
+    body.dark .fmenu .mi .sub { color: #a3aac2; }
+    body.dark .fmenu .mi .unpin { color: #a3aac2; }
+    body.dark .fmenu .mi .unpin:hover { color: #f38ba8; }
+    body.dark .fmenu .sep { background: #313244; }
+    body.dark .fmenu .cap { color: #a3aac2; }
+    body.dark .fmenu .hint { color: #a3aac2; }
+    body.dark .typesel { background: #313244; border-color: #313244; color: #bac2de; }
+    body.dark .typesel:hover { background: #3a3a52; }
+    body.dark .typesel.active { border-color: #89b4fa; color: #89b4fa; background: #2d2d44; }
+    body.dark .fmenu .maskinput { background: #1a1a28; border-color: #313244; color: #cdd6f4; }
+    body.dark .fmenu .maskinput:focus { border-color: #89b4fa; }
+    body.dark .pills { border-bottom-color: #3a3a4a; }
+    body.dark .pill { background: #313244; border-color: #313244; color: #bac2de; }
+    body.dark .pill:hover { background: #3a3a52; }
+    body.dark .pill.on { background: #89b4fa; border-color: #89b4fa; color: #11111b; }
     body.dark .fsec { color: #a6adc8; }
-    body.dark .fsec .count { color: #6c7086; }
+    body.dark .fsec .count { color: #a3aac2; }
     body.dark .fsec .sec-line { background: #3a3a4a; }
-    body.dark .fsec.grp .caret { color: #6c7086; }
+    body.dark .fsec.grp .caret { color: #a3aac2; }
     body.dark .fsec.grp:hover { color: #cdd6f4; }
-    body.dark .fsec-note { color: #6c7086; }
+    body.dark .fsec { background: #1e1e2e; }
+    body.dark .fsec .hint { color: #a3aac2; }
+    body.dark .fsec .act { color: #89b4fa; }
+    body.dark .fico.selectable:hover { background: #3a3a52; outline-color: #89b4fa; }
     body.dark .pairchip { border-color: #313244; background: #313244; }
     body.dark .pairchip.inc { color: #a6e3a1; border-color: rgba(166,227,161,.35); }
     body.dark .pairchip.clw { color: #89b4fa; border-color: rgba(137,180,250,.35); }
     body.dark .pairchip:hover { background: #3a3a52; }
     body.dark .frow2:hover { background: #2d2d44; border-left-color: #89b4fa; }
+    body.dark .frow2.hl { background: #33344d; border-left-color: #89b4fa; }
+    body.dark .fpath .rsec { color: #a3aac2; }
     body.dark .frow2 .fname { color: #e0e0e0; }
     body.dark .frow2 .fname .ext { color: #89b4fa; }
-    body.dark .frow2 .fpath, body.dark .frow2 .ftime { color: #6c7086; }
-    body.dark .frow2 .acts .a { color: #9a9ab0; }
+    body.dark .frow2 .fpath, body.dark .frow2 .ftime { color: #a3aac2; }
+    body.dark .frow2 .acts .a { color: #c2c8dc; }
     body.dark .frow2 .acts .a:hover { background: #3a3a52; color: #fff; }
     body.dark .frow2 .acts .a.del:hover { background: rgba(243,139,168,.15); color: #f38ba8; }
     body.dark .frow2 .acts .a.both { color: #a6e3a1; }
     body.dark .frow2 .pin { color: #fab387; }
-    body.dark .drophint { border-color: #313244; color: #6c7086; }
+    body.dark .drophint { border-color: #313244; color: #a3aac2; }
     body.dark .drophint b { color: #a6adc8; }
     body.dark .drophint.dragover { border-color: #89b4fa; background: rgba(137,180,250,.1); color: #89b4fa; }
-    body.dark .files-empty { color: #9a9ab0; }
+    body.dark .files-empty { color: #c2c8dc; }
 
     /* ===================== Dark theme (body.dark) — mirrors the editor's dark look ===================== */
     body.dark { background: #1e1e2e; color: #d4d4d4; }
     body.dark #bar { background: #252535; border-bottom-color: #3a3a4a; }
     body.dark #bar .title { color: #e6e6e6; }
-    body.dark #bar .counts { color: #9a9ab0; }
+    body.dark #bar .counts { color: #c2c8dc; }
     body.dark #bar button { border-color: #45455a; color: #6cb6ff; }
     body.dark #bar button:hover { background: #33334a; }
     body.dark #filter { background: #1e1e2e; color: #d4d4d4; border-bottom-color: #3a3a4a; }
@@ -410,19 +502,19 @@
     body.dark #filterClear:hover { color: #e6e6e6; }
     body.dark #list { background: #1e1e2e; }
     body.dark .section { background: #2a2a3c; color: #c8c8d8; border-top-color: #3a3a4a; border-bottom-color: #3a3a4a; }
-    body.dark .section .sec-btn { color: #9a9ab0; }
+    body.dark .section .sec-btn { color: #c2c8dc; }
     body.dark .section .sec-btn:hover { background: #3a3a52; color: #e6e6e6; }
     body.dark .row:hover { background: #2d2d44; }
     body.dark .row .name { color: #e0e0e0; }
     body.dark .row .kind { color: #c08cf0; }
-    body.dark .row .type { color: #9a9ab0; }
+    body.dark .row .type { color: #c2c8dc; }
     body.dark .row .picture { color: #5fd38a; }
     body.dark .row .pre { color: #888; }
-    body.dark .row.trow .type, body.dark .row.frow .type { color: #9a9ab0; }
+    body.dark .row.trow .type, body.dark .row.frow .type { color: #c2c8dc; }
     body.dark .row.trow .picture, body.dark .row.frow .picture { color: #5fd38a; }
     body.dark .row.selected, body.dark .row.selected:hover { background: #2f4a6b; }
     body.dark .row.multisel, body.dark .row.multisel:hover { background: #234063; box-shadow: inset 3px 0 0 #4a9eff; }
-    body.dark .twisty, body.dark .table-hdr .twisty { color: #9a9ab0; }
+    body.dark .twisty, body.dark .table-hdr .twisty { color: #c2c8dc; }
     body.dark .table-hdr { color: #6cb6ff; }
     body.dark .col-row .name { color: #ff8095; }
     body.dark .detail-tog { color: #6cb6ff; }
@@ -451,10 +543,10 @@
     body.dark .comp-row .name { color: #e0e0e0; }
     body.dark .row .lineno { color: #6cb6ff; }
     body.dark .row .lineno:hover { color: #9accff; background: #2d3f5a; }
-    body.dark .row .params { color: #9a9ab0; }
+    body.dark .row .params { color: #c2c8dc; }
     body.dark .badge.pk { background: #5a4a1a; color: #ffd479; }
     body.dark .badge.uniq { background: #1f3a5a; color: #9accff; }
-    body.dark .empty { color: #9a9ab0; }
+    body.dark .empty { color: #c2c8dc; }
 
     /* Tab strip — dark */
     body.dark .tab-bar { background: #252535; border-bottom-color: #3a3a4a; }
@@ -500,12 +592,12 @@
 
     body.dark .panel { background: #252535; color: #d4d4d4; border-color: #3a3a4a; }
     body.dark .panel-hdr { background: #2a2a3c; border-bottom-color: #3a3a4a; }
-    body.dark .panel-hdr #settingsClose { color: #9a9ab0; }
+    body.dark .panel-hdr #settingsClose { color: #c2c8dc; }
     body.dark .panel-hdr #settingsClose:hover { color: #e6e6e6; }
     body.dark .zone-label { color: #8a8aa0; }
     body.dark .scard { background: #2a2a3c; border-color: #3a3a4a; }
     body.dark .scard .handle { color: #7a7a90; }
-    body.dark .scard .sbtn { color: #9a9ab0; }
+    body.dark .scard .sbtn { color: #c2c8dc; }
     body.dark .scard .sbtn:hover { background: #3a3a52; color: #e6e6e6; }
     body.dark .scard.drop-target { border-color: #6cb6ff; box-shadow: 0 0 0 1px #6cb6ff inset; }
     body.dark .panel-ftr { background: #2a2a3c; border-top-color: #3a3a4a; }
@@ -552,6 +644,15 @@
         <span class="vb-ico">📦</span><span id="verText">—</span>
     </div>
 
+    <!-- Second line of the same environment block: which .red every redirection search actually resolves
+         through. Sits with the version/solution banner deliberately — these are all "what environment am I
+         in" facts and belong together. Worth stating because CA falls back to the Clarion install's own
+         clarion.red when no solution is loaded, so "no solution" does NOT mean "no redirection". -->
+    <div class="redbanner" title="The redirection file every search resolves through.">
+        <span class="vb-ico">↪</span>
+        <span class="path" id="redBannerPath" title="Waiting for the redirection index…">—</span>
+    </div>
+
     <!-- Tab strip: Data (the original Data Pad) | Files (Monaco file loader). pick() toggles .active. -->
     <div class="tab-bar">
         <div class="tab active" data-tab="data" onclick="pick('data')"><span class="dot">📊</span>Data</div>
@@ -568,9 +669,20 @@
 
     <!-- ===================== FILES PANEL — Monaco file loader (rendered by renderExplorer) ===================== -->
     <div class="tabpanel" id="panel-files">
+        <!-- Toolbar: two split buttons. The body runs the default action; the caret opens a menu built
+             fresh from explorerData. The Open menu absorbs what used to be three separate controls —
+             "Load File…", the "Last folder" strip and the Quick-locations chips — because every one of
+             those chips posted the SAME pickFolderAndLoad the button posts (they were start-folder
+             variants of one picker), and "last folder" was only ever the folder that picker opens at. -->
         <div class="files-toolbar">
-            <button class="btn btn-primary" id="loadFileBtn" title="Open a file into the Monaco editor"><span class="ico">📂</span>Load File…</button>
-            <button class="btn" id="compareBtn" title="Pick two files and diff them in Monaco"><span class="ico">⇄</span>Compare…</button>
+            <span class="splitwrap">
+                <button class="btn btn-primary btn-split" id="loadFileBtn" title="Open a file into the Monaco editor"><span class="ico">📂</span>Open…<span class="caret" id="openCaret" title="Open from a specific folder">▾</span></button>
+                <div class="fmenu" id="openMenu" style="display:none;"></div>
+            </span>
+            <span class="splitwrap">
+                <button class="btn btn-split" id="compareBtn" title="Pick two files and diff them in Monaco"><span class="ico">⇄</span>Compare…<span class="caret" id="cmpCaret" title="Recent compares">▾</span></button>
+                <div class="fmenu" id="cmpMenu" style="display:none;"></div>
+            </span>
         </div>
 
         <!-- ===== Open File via Redirection: type-ahead search + Trace over the active .red (under the toolbar) ===== -->
@@ -579,26 +691,26 @@
                 <span class="redopen-ico">🔎</span>
                 <span class="redopen-inputwrap">
                     <input type="text" id="redInput" autocomplete="off" spellcheck="false"
-                           placeholder="Open file via redirection… (type to search the .red)" />
+                           placeholder="Search recents and redirection…" />
                     <span class="redopen-clear" id="redClear" title="Clear">×</span>
                 </span>
-                <button class="btn" id="redOpenBtn" title="Open the file named in the field, then clear it">Open</button>
-                <button class="btn" id="redTraceBtn" title="Trace how the active .red resolves this exact filename">Trace</button>
-            </div>
-            <!-- single-select extension filter (radio semantics — only one active at a time) -->
-            <div class="redopen-filters" id="redFilters">
-                <label><input type="radio" name="redext" value="all" checked> All</label>
-                <label><input type="radio" name="redext" value="app"> App</label>
-                <label><input type="radio" name="redext" value="source"> Source</label>
-                <label><input type="radio" name="redext" value="classes"> Classes</label>
-                <label><input type="radio" name="redext" value="templates"> Templates</label>
-                <span class="redopen-customgroup">
-                    <label><input type="radio" name="redext" value="custom"> Custom</label>
-                    <input type="text" id="redCustomExt" class="redopen-custom" placeholder="*.xml, *.txt" title="Comma/space-separated extensions (used when Custom is selected)" />
+                <!-- Type filter. Replaces a row of six radios + a mask box that stood permanently in the
+                     layout but only mattered while you were typing. A grouped menu also absorbs new file
+                     types (ticket 3223de58) at zero visual cost — a radio row could not. -->
+                <span class="splitwrap">
+                    <span class="typesel" id="redTypeBtn" title="Narrow the search by file type">All types ▾</span>
+                    <div class="fmenu" id="redTypeMenu" style="display:none;"></div>
                 </span>
+                <button class="btn" id="redOpenBtn" title="Open the file named in the field, then clear it">Open</button>
+                <!-- Trace moved onto the Redirection group header (item 5): as a permanent button it had no
+                     subject, and it is only meaningful once a query has produced redirection hits. -->
             </div>
-            <!-- type-ahead results (in-flow so the WebView2 overflow:auto panel never clips it) -->
-            <div class="redopen-drop" id="redDrop" style="display:none;"></div>
+            <!-- The custom-mask value lives here permanently (hidden) so redParseCustom's getElementById
+                 lookup keeps working while the menu — and its visible mask input — is closed. -->
+            <input type="hidden" id="redCustomExt" value="" />
+            <!-- Results no longer render here. The recents list IS the empty-query state of this field, so
+                 matches are rendered into #filesBody below as two groups (Recent, then Redirection) — one
+                 result surface instead of a dropdown floating over a second, separate list. -->
             <!-- status / hint (no active .red, or index truncated) -->
             <div class="redopen-hint" id="redHint" style="display:none;"></div>
             <!-- trace log (revealed by the Trace button) -->
@@ -614,27 +726,27 @@
             </div>
         </div>
 
-        <div class="lastfolder" id="lastFolderStrip" style="display:none;">
-            <span>📍 Last folder:</span>
-            <span class="path" id="lastFolderPath"></span>
-            <span class="change" id="lastFolderChange" title="Pick a different folder">change</span>
-        </div>
+        <!-- The "Last folder" strip and the Quick-locations chips used to sit here. Both now live in the
+             Open… caret menu (see the toolbar above): they were the same picker as the button, and the
+             strip was a setting rendered in the middle of the reading flow. -->
 
-        <!-- Quick locations chips (rendered by buildQuickChips) — kept above the recents filter. -->
-        <div id="filesQuick"></div>
+        <!-- Scope pills (built by buildPills). These scope YOUR RECENTS; the type control in the search row
+             scopes the REDIRECTION INDEX — one scoping concept per data source, so they never overlap.
+             Outside #filesScroll so they stay put while the list scrolls. -->
+        <div class="pills" id="filesPills"></div>
 
-        <!-- Recents filter — sits directly UNDER Quick locations and above the recents list (it filters recents,
-             not the quick locations). -->
-        <div class="files-filter-row">
-            <span class="filter-wrap wide">
-                <input type="text" id="filesFilter" placeholder="Filter recents…" />
-                <span class="fx" id="filesFilterClear" title="Clear filter">×</span>
-            </span>
-        </div>
+        <!-- The separate "Filter recents…" box lived here. It searched a DIFFERENT universe to the box above
+             it (recents vs the whole .red index) while looking identical — the single biggest source of
+             "what am I looking at" in this tab. Both are now the one field above. -->
 
         <!-- Scrollable region: pinned + grouped recents + drop zone (built in JS). -->
+        <!-- padding-bottom: the last row could not scroll fully clear of the viewport, so its path line was
+             cut off. #panel-files and #filesScroll are BOTH overflow:auto (nested scrollers), which leaves
+             the inner scroller's final few px below the visible area. Trailing space on the content is the
+             fix that holds regardless of which scroller is short. Exposed by the omnibox: redirection
+             matches used to live in a separate capped dropdown, so this list rarely reached its end. -->
         <div id="filesScroll" style="flex:1; min-height:0; overflow:auto;">
-            <div id="filesBody"></div>
+            <div id="filesBody" style="padding-bottom:16px;"></div>
             <!-- In-page drop hint is hidden: WebView2 strips real file paths from page drops, so external file
                  drops are handled by the host's native drop strip (docked below the WebView2 on the Files tab). -->
             <div class="drophint" id="dropZone" style="display:none;">⬇ <b>Drop files here</b> to open them in Monaco</div>
@@ -2512,9 +2624,19 @@
                 // The payload also carries the active bucket — refresh the banner so it self-corrects if the first
                 // setVersionInfo (posted at startup) captured "no solution" before the solution finished loading.
                 if (msg.versionTag) setVerBanner(msg.versionTag, msg.solutionTag);
-                if (msg.uiState && msg.uiState.collapsed) {
-                    explorerCollapsed = {};
-                    (msg.uiState.collapsed || []).forEach(function (g) { explorerCollapsed[g] = true; });
+                if (msg.uiState) {
+                    if (msg.uiState.collapsed) {
+                        explorerCollapsed = {};
+                        (msg.uiState.collapsed || []).forEach(function (g) { explorerCollapsed[g] = true; });
+                    }
+                    // Restore the rest of the view state. A re-post fires on every pin/open/remove, so
+                    // without this the user's scope and type filter would silently snap back mid-session.
+                    if (msg.uiState.scope)   explorerScope = msg.uiState.scope;
+                    if (msg.uiState.extMode) redExtMode    = msg.uiState.extMode;
+                    var maskEl = document.getElementById('redCustomExt');
+                    if (maskEl && typeof msg.uiState.customExt === 'string') maskEl.value = msg.uiState.customExt;
+                    redParseCustom();
+                    redSyncTypeBtn();
                 }
                 renderExplorer();
             }
@@ -2548,7 +2670,9 @@
 
                 // Preserve the user's current highlight across the re-filter (benign re-requests fire on every
                 // Files-tab activation — they must not snap the selection back to row 0).
-                var prevName = (redHl >= 0 && redShown[redHl]) ? redShown[redHl].name : null;
+                // redHl indexes the COMBINED omnibox result list, not redShown — so remember the path and
+                // re-find it after the re-render rather than trusting the old row number.
+                var prevPath = (redHl >= 0 && omniHits[redHl]) ? (omniHits[redHl].path || omniHits[redHl].inc || null) : null;
 
                 redIndex = msg.files || [];
                 redTruncated = !!msg.truncated;
@@ -2556,15 +2680,35 @@
                 for (var ri2 = 0; ri2 < redIndex.length; ri2++) redIndex[ri2].nameLower = (redIndex[ri2].name || '').toLowerCase();
 
                 if (rh) {
+                    // Only the "no .red at all" case needs a standing hint. Truncation is reported on the
+                    // Redirection group header instead, where the match count gives it context — saying it
+                    // in both places was just noise.
                     if (!redAvailable) { rh.textContent = 'No active redirection (.red) — open a Clarion solution to search.'; rh.style.display = 'block'; }
-                    else if (redTruncated) { rh.textContent = 'Showing the first ' + redIndex.length + ' files (index truncated).'; rh.style.display = 'block'; }
                     else { rh.style.display = 'none'; }
                 }
 
-                redFilter(); // re-apply whatever is already typed
-                if (prevName) { // restore the highlight if that file is still in the filtered set
-                    for (var rp = 0; rp < redShown.length; rp++) {
-                        if (redShown[rp].name === prevName) { redHl = rp; redRenderDrop(); break; }
+                // Name the .red actually in play. Note "no solution" does NOT imply "no redirection": the
+                // host falls back to the Clarion install's own clarion.red, and that changes what every
+                // search returns — so it is worth stating rather than leaving to be inferred.
+                var rbp = document.getElementById('redBannerPath');
+                if (rbp) {
+                    if (redAvailable && msg.redPath) {
+                        rbp.textContent = msg.redPath;
+                        rbp.title = msg.redPath + '\n(click to open)';
+                        rbp.className = 'path link';
+                        rbp.setAttribute('data-redpath', msg.redPath);
+                    } else {
+                        rbp.textContent = 'None';
+                        rbp.title = 'No active redirection file — open a Clarion solution.';
+                        rbp.className = 'path none';
+                        rbp.removeAttribute('data-redpath');
+                    }
+                }
+
+                redFilter(); // re-apply whatever is already typed (re-renders and rebuilds omniHits)
+                if (prevPath) { // restore the highlight if that file survived the re-filter
+                    for (var rp = 0; rp < omniHits.length; rp++) {
+                        if ((omniHits[rp].path || omniHits[rp].inc) === prevPath) { redHl = rp; omniPaint(); break; }
                     }
                 }
                 return;
@@ -2576,13 +2720,30 @@
                     var lines = msg.lines || [], html = '';
                     for (var li = 0; li < lines.length; li++) {
                         var ln = lines[li], cls = '';
-                        if (ln.indexOf('FOUND:') === 0) cls = ' class="found"';
-                        else if (ln.indexOf('NOT FOUND') === 0) cls = ' class="notfound"';
+                        if (ln.indexOf('FOUND:') === 0) {
+                            // The resolved path is the answer the trace exists to give — make it openable
+                            // rather than something you have to copy out and search for again.
+                            var fp = ln.substring(6).trim();
+                            html += '<span class="found">FOUND: <span class="pathlink" data-path="'
+                                  + redEsc(fp).replace(/"/g, '&quot;') + '">' + redEsc(fp) + '</span></span>\n';
+                            continue;
+                        }
+                        if (ln.indexOf('NOT FOUND') === 0) cls = ' class="notfound"';
                         html += '<span' + cls + '>' + redEsc(ln) + '</span>\n';
                     }
                     rlog.innerHTML = html;
+                    var links = rlog.querySelectorAll('.pathlink');
+                    for (var lk = 0; lk < links.length; lk++) {
+                        links[lk].addEventListener('click', function () {
+                            postToHost({ action: 'loadFile', path: this.getAttribute('data-path') });
+                        });
+                    }
                 }
+                // Show BEFORE scrolling — scrollHeight is 0 while the element is display:none.
                 if (rwrap) rwrap.style.display = 'block';
+                // Jump to the end: the FOUND/NOT FOUND verdict is the last line, and it is the reason you
+                // ran the trace. The search path above it is context you scroll UP for if you need it.
+                if (rlog) rlog.scrollTop = rlog.scrollHeight;
                 return;
             }
         });
@@ -2870,13 +3031,14 @@
     }
 
     // A collapsible group header. key persists collapse via saveExplorerUiState. countText is the label suffix.
-    function buildGroupHeader(host, key, label, countText) {
+    function buildGroupHeader(host, key, label, countText, hint) {
         var collapsed = !!explorerCollapsed[key];
         var sec = document.createElement('div'); sec.className = 'fsec grp';
         var caret = document.createElement('span'); caret.className = 'caret'; caret.textContent = collapsed ? '▸' : '▾'; sec.appendChild(caret);
         sec.appendChild(document.createTextNode(' ' + label + ' '));
         var cnt = document.createElement('span'); cnt.className = 'count'; cnt.textContent = countText; sec.appendChild(cnt);
         var line = document.createElement('span'); line.className = 'sec-line'; sec.appendChild(line);
+        if (hint) { var h = document.createElement('span'); h.className = 'hint'; h.textContent = hint; sec.appendChild(h); }
         sec.addEventListener('click', function () {
             explorerCollapsed[key] = !explorerCollapsed[key];
             saveExplorerUiState();
@@ -2889,42 +3051,190 @@
     function saveExplorerUiState() {
         var collapsed = [];
         for (var k in explorerCollapsed) if (explorerCollapsed[k]) collapsed.push(k);
-        postToHost({ action: 'saveExplorerUiState', state: { collapsed: collapsed } });
+        var mask = document.getElementById('redCustomExt');
+        postToHost({ action: 'saveExplorerUiState', state: {
+            collapsed: collapsed,
+            scope:     explorerScope,
+            extMode:   redExtMode,
+            customExt: (mask && mask.value) || ''
+        } });
     }
 
-    // Build the quick-location chips + the "pin folder" chip.
-    function buildQuickChips(host, d) {
-        var quick = document.createElement('div'); quick.className = 'quick';
-        var ql = document.createElement('span'); ql.className = 'ql-label'; ql.textContent = 'Quick locations'; quick.appendChild(ql);
-        (d.quickLocations || []).forEach(function (q) {
-            var chip = document.createElement('span'); chip.className = 'chip';
-            var star = document.createElement('span'); star.className = 'star'; star.textContent = '★'; chip.appendChild(star);
-            chip.appendChild(document.createTextNode(' ' + (q.label || q.key || q.dir)));
-            chip.title = q.dir || '';
-            chip.addEventListener('click', function () { postToHost({ action: 'pickFolderAndLoad', dir: q.dir }); });
-            quick.appendChild(chip);
-        });
-        // Pinned folders the user added (rendered alongside the quick locations).
-        (d.pinnedFolders || []).forEach(function (pf) {
-            var chip = document.createElement('span'); chip.className = 'chip';
-            chip.appendChild(document.createTextNode('📁 ' + (pf.label || pf.dir)));
-            chip.title = pf.dir || '';
-            chip.addEventListener('click', function () { postToHost({ action: 'pickFolderAndLoad', dir: pf.dir }); });
-            quick.appendChild(chip);
-        });
-        // "Last folder" convenience chip.
-        if (d.lastFolder) {
-            var lf = document.createElement('span'); lf.className = 'chip';
-            lf.appendChild(document.createTextNode('🕘 Last folder'));
-            lf.title = d.lastFolder;
-            lf.addEventListener('click', function () { postToHost({ action: 'pickFolderAndLoad', dir: d.lastFolder }); });
-            quick.appendChild(lf);
+    // ---- Open… / Compare… dropdown menus (replaced buildQuickChips + the last-folder strip) ----
+    // Every quick-location chip posted the same pickFolderAndLoad that "Load File…" posted — they were
+    // start-folder variants of ONE picker, not folder browsers — and "last folder" is just the folder
+    // those pickers open at. So all of it collapses into this menu.
+
+    // Keep a .fmenu inside the WebView2 viewport. The page cannot paint outside it — an overflowing menu is
+    // simply cut off by whatever IDE pane sits next to the pad — and the bottom band belongs to the native
+    // drop strip (see the tooltip note in showTip). Call this immediately after making a menu visible.
+    function placeMenu(menu, anchor) {
+        menu.style.left = '0px'; menu.style.right = 'auto';
+        menu.style.maxHeight = ''; menu.style.overflowY = '';
+
+        if (menu.getBoundingClientRect().right > window.innerWidth - 6) {
+            menu.style.left = 'auto'; menu.style.right = '0px';          // right-align under the anchor
+            if (menu.getBoundingClientRect().left < 4) {                  // still too wide — pin to the viewport
+                var a = anchor.getBoundingClientRect();
+                menu.style.right = 'auto';
+                menu.style.left = (4 - a.left) + 'px';
+            }
         }
-        var add = document.createElement('span'); add.className = 'chip add';
-        add.textContent = '＋ pin folder'; add.title = 'Pin a folder for quick access';
-        add.addEventListener('click', function () { postToHost({ action: 'pinFolder' }); });
-        quick.appendChild(add);
-        host.appendChild(quick);
+
+        var usableBottom = window.innerHeight - (document.querySelector('#panel-files.active') ? 60 : 0);
+        var top = menu.getBoundingClientRect().top;
+        if (top + menu.offsetHeight > usableBottom - 6) {
+            menu.style.maxHeight = Math.max(120, usableBottom - top - 10) + 'px';
+            menu.style.overflowY = 'auto';
+        }
+    }
+
+    function closeFileMenus() {
+        var m = document.getElementById('openMenu'); if (m) m.style.display = 'none';
+        var c = document.getElementById('cmpMenu'); if (c) c.style.display = 'none';
+        var t = document.getElementById('redTypeMenu'); if (t) t.style.display = 'none';
+    }
+
+    // Trailing fragment of a path, for menu subtitles. The full path stays on the tooltip.
+    function shortDir(dir) {
+        if (!dir) return '';
+        var parts = String(dir).replace(/[\\/]+$/, '').split(/[\\/]/);
+        return parts.length <= 2 ? String(dir) : '…\\' + parts.slice(-2).join('\\');
+    }
+
+    // One menu row. mousedown (not click) so it fires before any blur, matching redDrop's convention.
+    function menuItem(menu, glyph, label, sub, tip, onClick) {
+        var el = document.createElement('div'); el.className = 'mi';
+        var g = document.createElement('span'); g.textContent = glyph; el.appendChild(g);
+        el.appendChild(document.createTextNode(label));
+        if (sub) { var s = document.createElement('span'); s.className = 'sub'; s.textContent = sub; el.appendChild(s); }
+        if (tip) el.title = tip;
+        el.addEventListener('mousedown', function (e) { e.preventDefault(); closeFileMenus(); onClick(); });
+        menu.appendChild(el);
+        return el;
+    }
+    function menuSep(menu) { var s = document.createElement('div'); s.className = 'sep'; menu.appendChild(s); }
+    function menuCap(menu, text) { var c = document.createElement('div'); c.className = 'cap'; c.textContent = text; menu.appendChild(c); }
+
+    // Rebuilt on every open, so quick locations / pins / last folder are always current.
+    function buildOpenMenu(menu, d) {
+        d = d || {};
+        menu.innerHTML = '';
+        menuItem(menu, '📂', 'Browse…', shortDir(d.lastFolder), d.lastFolder || 'Pick a file to open',
+            function () { postToHost({ action: 'loadFileDialog' }); });
+
+        var quick = d.quickLocations || [], pins = d.pinnedFolders || [];
+        if (quick.length || pins.length || d.lastFolder) { menuSep(menu); menuCap(menu, 'Jump to'); }
+
+        quick.forEach(function (q) {
+            menuItem(menu, '★', q.label || q.key || q.dir, shortDir(q.dir), q.dir || '',
+                function () { postToHost({ action: 'pickFolderAndLoad', dir: q.dir }); });
+        });
+        pins.forEach(function (pf) {
+            var el = menuItem(menu, '📁', pf.label || pf.dir, '', pf.dir || '',
+                function () { postToHost({ action: 'pickFolderAndLoad', dir: pf.dir }); });
+            // Unpin: the host has always had an unpinFolder action, but nothing in the page called it.
+            var x = document.createElement('span'); x.className = 'unpin'; x.textContent = '✕'; x.title = 'Unpin this folder';
+            x.addEventListener('mousedown', function (e) {
+                e.preventDefault(); e.stopPropagation(); closeFileMenus();
+                postToHost({ action: 'unpinFolder', dir: pf.dir });
+            });
+            el.appendChild(x);
+        });
+        if (d.lastFolder) {
+            menuItem(menu, '🕘', 'Last folder', shortDir(d.lastFolder), d.lastFolder,
+                function () { postToHost({ action: 'pickFolderAndLoad', dir: d.lastFolder }); });
+        }
+
+        menuSep(menu);
+        menuItem(menu, '＋', 'Pin a folder…', '', 'Pin a folder for quick access',
+            function () { postToHost({ action: 'pinFolder' }); });
+        menuItem(menu, '⚙', 'Set default folder…', '', 'The folder the file pickers open at',
+            function () { postToHost({ action: 'setLastFolder' }); });
+    }
+
+    // ---- Type filter menu (replaced the six ext radios + the always-visible mask box) ----
+    // The radios cost ~55px of permanent layout but only mattered mid-query. A grouped menu costs one
+    // ~90px control and, unlike a radio row, absorbs whole new categories of file type for free.
+    var RED_TYPE_LABELS = { all: 'All types', app: 'App', source: 'Source', classes: 'Classes', templates: 'Templates', custom: 'Custom' };
+
+    function redSyncTypeBtn() {
+        var b = document.getElementById('redTypeBtn');
+        if (!b) return;
+        var label = RED_TYPE_LABELS[redExtMode] || 'All types';
+        // In custom mode show the actual mask — the extensions matter more than the word "Custom".
+        var custom = redExtMode === 'custom' && redCustomExts.length;
+        if (custom) label = redCustomExts.join(' ');
+        // Label lives in its own span so CSS can ellipsise it: a long mask must not stretch the control
+        // and squeeze the search field. The full value stays available on the tooltip.
+        b.innerHTML = '';
+        var lbl = document.createElement('span'); lbl.className = 'lbl'; lbl.textContent = label;
+        b.appendChild(lbl);
+        b.appendChild(document.createTextNode(' ▾'));
+        b.title = custom ? 'Custom mask: ' + redCustomExts.join(' ') : 'Narrow the search by file type';
+        b.className = 'typesel' + (redExtMode === 'all' ? '' : ' active');
+    }
+
+    function redSetType(mode) {
+        redExtMode = mode;
+        if (mode === 'custom') redParseCustom();
+        redSyncTypeBtn();
+        saveExplorerUiState();
+        redFilter();               // re-apply the filter to whatever is already typed
+    }
+
+    function buildTypeMenu(menu) {
+        menu.innerHTML = '';
+        function typeRow(mode, label, sub) {
+            menuItem(menu, redExtMode === mode ? '✓' : ' ', label, sub, '', function () { redSetType(mode); });
+        }
+        typeRow('all', 'All types', 'except .obj');
+        menuSep(menu); menuCap(menu, 'Clarion');
+        typeRow('app',       'App',       '.app');
+        typeRow('source',    'Source',    '.clw .inc .int .trn .equ');
+        typeRow('classes',   'Classes',   '.inc .clw');
+        typeRow('templates', 'Templates', '.tpl .tpw');
+        // Ticket 3223de58 adds a "Docs & data" section here (.md .html .css .json .xml .sql .txt).
+        menuSep(menu); menuCap(menu, 'Custom mask');
+
+        // Editable row. Clicks inside must not close the menu, and the value is mirrored into the hidden
+        // #redCustomExt so redParseCustom() still finds it after the menu is torn down.
+        var hidden = document.getElementById('redCustomExt');
+        var row = document.createElement('div'); row.className = 'mi mask';
+        var chk = document.createElement('span'); chk.textContent = redExtMode === 'custom' ? '✓' : ' '; row.appendChild(chk);
+        var inp = document.createElement('input');
+        inp.type = 'text'; inp.className = 'maskinput'; inp.placeholder = '*.xml, *.txt';
+        inp.value = (hidden && hidden.value) || '';
+        inp.title = 'Comma/space-separated extensions';
+        function stop(e) { e.stopPropagation(); }
+        inp.addEventListener('mousedown', stop);
+        inp.addEventListener('click', stop);
+        inp.addEventListener('input', function () {
+            if (hidden) hidden.value = inp.value;
+            redParseCustom();
+            if (redExtMode === 'custom') { redSyncTypeBtn(); redFilter(); }
+        });
+        inp.addEventListener('keydown', function (e) {
+            e.stopPropagation();                                    // don't let Escape/Enter reach the omnibox
+            if (e.key === 'Enter') { redSetType('custom'); closeFileMenus(); e.preventDefault(); }
+            else if (e.key === 'Escape') { closeFileMenus(); e.preventDefault(); }
+        });
+        row.appendChild(inp);
+        // Clicking the row (but not the input) switches to custom mode.
+        row.addEventListener('mousedown', function (e) { e.preventDefault(); redSetType('custom'); closeFileMenus(); });
+        menu.appendChild(row);
+    }
+
+    // Recent compare pairs land here in ticket 5e61c82c. Until then the menu carries the explicit
+    // action plus an honest empty state rather than opening blank.
+    function buildCompareMenu(menu) {
+        menu.innerHTML = '';
+        var hint = document.createElement('div'); hint.className = 'hint';
+        hint.textContent = 'No recent compares yet';
+        menu.appendChild(hint);
+        menuSep(menu);
+        menuItem(menu, '📂', 'New compare…', 'pick two files', 'Pick two files and diff them in Monaco',
+            function () { postToHost({ action: 'compare' }); });
     }
 
     function buildGroupRows(host, key, label, suffix, entries, isClasses) {
@@ -2934,12 +3244,10 @@
         });
         if (!shown.length) return;   // hide an empty (or fully-filtered) group entirely
         var count = isClasses ? (entries.length + ' pair' + (entries.length === 1 ? '' : 's')) : (entries.length + suffix);
-        var collapsed = buildGroupHeader(host, key, label, count);
-        if (key === 'classes') {
-            var note = document.createElement('div'); note.className = 'fsec-note';
-            note.textContent = 'opening a class loads its .inc + .clw into two separate editors';
-            host.appendChild(note);
-        }
+        // The class-pair explanation used to be a full italic line of its own under the header. Same
+        // information, folded onto the header as a quiet hint — one line instead of two.
+        var collapsed = buildGroupHeader(host, key, label, count,
+            key === 'classes' ? 'opens .inc + .clw' : '');
         if (collapsed) return;
         shown.forEach(function (e) { host.appendChild(isClasses ? buildClassRow(e) : buildFileRow(e, false)); });
     }
@@ -2949,22 +3257,22 @@
         var body = document.getElementById('filesBody');
         if (!body) return;
         body.innerHTML = '';
-        var quickEl0 = document.getElementById('filesQuick'); if (quickEl0) quickEl0.innerHTML = '';
+        omniHits = [];
+        var pillHost = document.getElementById('filesPills'); if (pillHost) pillHost.innerHTML = '';
         if (!d) { var em = document.createElement('div'); em.className = 'files-empty'; em.textContent = 'Loading recent files…'; body.appendChild(em); return; }
+        if (pillHost) buildPills(pillHost, d);
 
-        // Last-folder strip
-        var strip = document.getElementById('lastFolderStrip');
-        var lfp = document.getElementById('lastFolderPath');
-        if (d.lastFolder) { lfp.textContent = d.lastFolder; lfp.title = d.lastFolder; strip.style.display = 'flex'; }
-        else { strip.style.display = 'none'; }
+        // Last folder + quick locations are no longer rendered here — they are rows in the Open… caret
+        // menu, which rebuilds from explorerData each time it opens (buildOpenMenu).
 
-        // Quick locations + pinned-folder chips — rendered ABOVE the recents filter (in #filesQuick, outside the
-        // scroll), so the "Filter recents" control sits directly under Quick locations and above the recents list.
-        var quickEl = document.getElementById('filesQuick');
-        if (quickEl) buildQuickChips(quickEl, d); // already cleared above (covers the loading-return path too)
+        // A query turns this whole surface into search results. With no query we render the recents
+        // browser below — which IS the empty-query state of the same search, not a separate feature.
+        if (explorerFilter) { renderOmniResults(body, d); return; }
 
         // Pinned files
-        var pinned = (d.pinned || []).filter(function (e) { return explorerMatch(e.name, e.path || e.dir); });
+        var pinned = scopeAllows('pinned')
+            ? (d.pinned || []).filter(function (e) { return explorerMatch(e.name, e.path || e.dir); })
+            : [];
         if (pinned.length) {
             var ps = document.createElement('div'); ps.className = 'fsec';
             ps.appendChild(document.createTextNode('📌 Pinned '));
@@ -2974,23 +3282,285 @@
             pinned.forEach(function (e) { body.appendChild(buildFileRow(e, true)); });
         }
 
-        // Recents grouped by type
+        // Recents grouped by type — the active scope pill decides which groups render.
         var g = d.groups || {};
-        buildGroupRows(body, 'classes',   '📗 Classes',   '',            g.classes,   true);
-        buildGroupRows(body, 'templates', '🧩 Templates', ' · .tpl .tpw', g.templates, false);
-        buildGroupRows(body, 'source',    '📘 Source',    ' · .clw .equ', g.source,    false);
-        buildGroupRows(body, 'other',     '📦 Other',     ' · .app .trn …', g.other,   false);
+        if (scopeAllows('classes'))   buildGroupRows(body, 'classes',   '📗 Classes',   '',              g.classes,   true);
+        if (scopeAllows('templates')) buildGroupRows(body, 'templates', '🧩 Templates', ' · .tpl .tpw',   g.templates, false);
+        if (scopeAllows('source'))    buildGroupRows(body, 'source',    '📘 Source',    ' · .clw .equ',   g.source,    false);
+        if (scopeAllows('other'))     buildGroupRows(body, 'other',     '📦 Other',     ' · .app .trn …', g.other,     false);
 
-        // No pinned files and no recents in any group → a gentle empty note (the chips + drop zone still show).
-        if (!pinned.length && !hasAnyGroup(g)) {
+        if (!body.childNodes.length) {
             var none = document.createElement('div'); none.className = 'files-empty';
-            none.textContent = explorerFilter ? 'No files match the filter.' : 'No recent files yet — use Load File… or drop files below.';
+            none.textContent = hasAnyGroup(g) || (d.pinned || []).length
+                ? 'Nothing in this group.'                                    // scoped away, not actually empty
+                : 'No recent files yet — use Open… above, or drop files below.';
             body.appendChild(none);
         }
     }
     function hasAnyGroup(g) {
         return ((g.classes && g.classes.length) || (g.templates && g.templates.length)
              || (g.source && g.source.length) || (g.other && g.other.length)) ? true : false;
+    }
+
+    // ============================================================================================
+    // SCOPE PILLS — counts visible at rest, click to focus one group.
+    // Answers "should the groups be tabs?" without a second tab row under the real Data/Files/Cheat
+    // Sheet tabs. They scope RECENTS only (in both browse and query mode); the redirection index is
+    // scoped by the type control instead, so the two never fight over the same rows.
+    // ============================================================================================
+    var explorerScope = 'all';          // all | pinned | classes | templates | source | other
+    var PILL_VISIBLE_MAX = 6;           // beyond this the tail collapses into a "⋯ N more" menu
+
+    function scopeAllows(key) { return explorerScope === 'all' || explorerScope === key; }
+
+    function setScope(key) {
+        explorerScope = key;
+        saveExplorerUiState();
+        renderExplorer();
+    }
+
+    // One pill. Returns the element so the overflow menu can reuse the same definitions.
+    function pillDef(key, label, count) { return { key: key, label: label, count: count }; }
+
+    function buildPills(host, d) {
+        host.innerHTML = '';
+        if (!d) return;
+        var g = d.groups || {};
+        var defs = [];
+        // Only groups that actually have content get a pill — the row never lists what you don't have.
+        if ((d.pinned || []).length)   defs.push(pillDef('pinned',    '📌',            d.pinned.length));
+        if ((g.classes || []).length)  defs.push(pillDef('classes',   '📗 Classes',    g.classes.length));
+        if ((g.templates || []).length)defs.push(pillDef('templates', '🧩 Templates',  g.templates.length));
+        if ((g.source || []).length)   defs.push(pillDef('source',    '📘 Source',     g.source.length));
+        if ((g.other || []).length)    defs.push(pillDef('other',     '📦 Other',      g.other.length));
+        // Ticket 5e61c82c inserts a "⇄ Compares" pill here; 3223de58 adds "📄 Docs & data".
+
+        if (!defs.length) return;       // nothing recorded yet — no point showing a lone "All"
+
+        var total = defs.reduce(function (n, x) { return n + x.count; }, 0);
+        defs.unshift(pillDef('all', 'All', total));
+
+        function makePill(def) {
+            var el = document.createElement('span');
+            el.className = 'pill' + (explorerScope === def.key ? ' on' : '');
+            el.appendChild(document.createTextNode(def.label + ' '));
+            var n = document.createElement('span'); n.className = 'n'; n.textContent = String(def.count);
+            el.appendChild(n);
+            el.addEventListener('click', function (e) { e.stopPropagation(); setScope(def.key); });
+            return el;
+        }
+
+        var shown = defs, rest = [];
+        if (defs.length > PILL_VISIBLE_MAX) {
+            // Keep "All" plus the biggest groups; the tail goes in a menu so the row never wraps.
+            var tail = defs.slice(1).sort(function (a, b) { return b.count - a.count; });
+            var keep = tail.slice(0, PILL_VISIBLE_MAX - 2);
+            rest = tail.slice(PILL_VISIBLE_MAX - 2);
+            // If the active scope got pushed into the overflow, pull it back into view.
+            for (var i = 0; i < rest.length; i++) {
+                if (rest[i].key === explorerScope) { keep.push(rest.splice(i, 1)[0]); break; }
+            }
+            shown = [defs[0]].concat(keep);
+        }
+        shown.forEach(function (def) { host.appendChild(makePill(def)); });
+
+        if (rest.length) {
+            var wrap = document.createElement('span'); wrap.className = 'splitwrap';
+            var more = document.createElement('span'); more.className = 'pill more';
+            more.textContent = '⋯ ' + rest.length + ' more';
+            var menu = document.createElement('div'); menu.className = 'fmenu'; menu.style.display = 'none';
+            more.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var wasOpen = menu.style.display !== 'none';
+                closeFileMenus();
+                if (wasOpen) return;
+                menu.innerHTML = '';
+                rest.forEach(function (def) {
+                    menuItem(menu, explorerScope === def.key ? '✓' : ' ', def.label, String(def.count), '',
+                        function () { setScope(def.key); });
+                });
+                menu.style.display = 'block';
+                placeMenu(menu, more);
+            });
+            menu.addEventListener('click', function (e) { e.stopPropagation(); });
+            wrap.appendChild(more); wrap.appendChild(menu);
+            host.appendChild(wrap);
+        }
+    }
+
+    // ============================================================================================
+    // OMNIBOX RESULTS — one field, two sources, ONE result surface.
+    // Recents come first because the file you touched yesterday is the one you usually want; the
+    // redirection index follows. Rendered into #filesBody (in-flow) rather than a floating dropdown,
+    // so #panel-files's overflow:auto can never clip it and both sources share one scrollbar.
+    // ============================================================================================
+    var omniHits = [];   // openable rows in render order — the keyboard highlight indexes into this
+
+    // Register a row as keyboard-openable and stamp its index for omniPaint/omniOpen.
+    function omniTag(row, target) {
+        row.setAttribute('data-omni', String(omniHits.length));
+        omniHits.push(target);
+        omniIconSelect(row);
+        return row;
+    }
+
+    // Clicking a row's ICON selects it instead of opening it. Everything else about the row still opens on
+    // click, but Trace needs a target, and requiring the keyboard to choose one made a mouse-driven trace
+    // impossible — you cannot click a row to aim at it without launching the file.
+    function omniIconSelect(row) {
+        var ico = row.querySelector('.fico');
+        if (!ico) return;
+        ico.classList.add('selectable');
+        ico.title = 'Select this row (without opening it)';
+        function pick(e) {
+            e.preventDefault(); e.stopPropagation();     // beat BOTH the row's click and mousedown openers
+            var i = parseInt(row.getAttribute('data-omni'), 10);
+            if (!isNaN(i)) { redHl = i; omniPaint(); }
+        }
+        ico.addEventListener('mousedown', pick);
+        ico.addEventListener('click', pick);
+    }
+
+    function omniHeader(host, label, count, truncated, action) {
+        var sec = document.createElement('div'); sec.className = 'fsec';
+        sec.appendChild(document.createTextNode(label + ' '));
+        var c = document.createElement('span'); c.className = 'count';
+        c.textContent = count + ' match' + (count === 1 ? '' : 'es') + (truncated ? ' (index truncated)' : '');
+        sec.appendChild(c);
+        var line = document.createElement('span'); line.className = 'sec-line'; sec.appendChild(line);
+        if (action) {
+            var a = document.createElement('span'); a.className = 'act';
+            a.textContent = action.label;
+            if (action.title) a.title = action.title;
+            a.addEventListener('click', function (e) { e.stopPropagation(); action.onClick(); });
+            sec.appendChild(a);
+        }
+        host.appendChild(sec);
+        return sec;
+    }
+
+    // What Trace should resolve. Prefer the highlighted row's filename — tracing a half-typed query tells
+    // you nothing — and fall back to whatever is in the field.
+    function omniTraceName() {
+        var t = omniHits[redHl];
+        if (t && t.path) {
+            var p = String(t.path), i = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'));
+            return i >= 0 ? p.slice(i + 1) : p;
+        }
+        var input = document.getElementById('redInput');
+        return (input && input.value || '').trim();
+    }
+
+    // One redirection hit. Same visual language as a recents row, plus the .red section it resolved
+    // from — that section is the disambiguator when two files share a name.
+    function buildRedRow(it) {
+        var ext = redExtOf(it.name);
+        var row = document.createElement('div'); row.className = 'frow2';
+        var ico = document.createElement('span'); ico.className = 'fico'; ico.textContent = fIco(ext, ''); row.appendChild(ico);
+        var meta = document.createElement('span'); meta.className = 'meta';
+        var fname = document.createElement('div'); fname.className = 'fname';
+        var parts = splitExt(it.name || '', ext);
+        fname.appendChild(document.createTextNode(parts[0]));
+        if (parts[1]) { var ex = document.createElement('span'); ex.className = 'ext'; ex.textContent = parts[1]; fname.appendChild(ex); }
+        meta.appendChild(fname);
+        var fpath = document.createElement('div'); fpath.className = 'fpath';
+        fpath.appendChild(document.createTextNode(it.path || ''));
+        if (it.section) { var sec = document.createElement('span'); sec.className = 'rsec'; sec.textContent = it.section; fpath.appendChild(sec); }
+        meta.appendChild(fpath);
+        row.appendChild(meta);
+        // The section goes in the tooltip too: .fpath is ellipsised, so a long path pushes the inline
+        // marker out of sight — precisely when you most need to know which .red section resolved it.
+        row.title = (it.path || '') + (it.section ? '\n[' + it.section + ']' : '');
+        omniTag(row, { kind: 'file', path: it.path });
+        // mousedown (not click) so it fires before the input's blur, matching the old dropdown's behaviour.
+        row.addEventListener('mousedown', function (e) {
+            e.preventDefault();
+            omniOpen(parseInt(row.getAttribute('data-omni'), 10));
+        });
+        return row;
+    }
+
+    function renderOmniResults(body, d) {
+        var g = d.groups || {};
+
+        // Flatten recents in the same priority order the browse view shows them.
+        var recents = [];
+        (d.pinned || []).forEach(function (e) { recents.push({ entry: e, isClass: false, key: 'pinned' }); });
+        (g.classes || []).forEach(function (e) { recents.push({ entry: e, isClass: true,  key: 'classes' }); });
+        [['templates', g.templates], ['source', g.source], ['other', g.other]].forEach(function (pair) {
+            (pair[1] || []).forEach(function (e) { recents.push({ entry: e, isClass: false, key: pair[0] }); });
+        });
+        // Scope pill applies to recents in query mode too, so "Classes + string" means what it looks like.
+        recents = recents.filter(function (r) {
+            if (!scopeAllows(r.key)) return false;
+            return r.isClass ? explorerMatch(r.entry.name, r.entry.dir || r.entry.incPath || r.entry.clwPath)
+                             : explorerMatch(r.entry.name, r.entry.path || r.entry.dir);
+        });
+
+        if (recents.length) {
+            omniHeader(body, '🕘 Recent', recents.length, false);
+            recents.forEach(function (r) {
+                var row = r.isClass ? buildClassRow(r.entry) : buildFileRow(r.entry, false);
+                omniTag(row, r.isClass ? { kind: 'classpair', inc: r.entry.incPath, clw: r.entry.clwPath }
+                                       : { kind: 'file', path: r.entry.path });
+                // The row already carries its own open handler from buildFileRow/buildClassRow. Registered
+                // after it, this runs second and drops the query — so opening from a Recent hit behaves the
+                // same as opening a Redirection hit (which clears via omniOpen). Row action buttons call
+                // stopPropagation, so ⇄/⧉/☆/✕ do NOT clear the search out from under you.
+                row.addEventListener('click', function () { omniClear(); });
+                body.appendChild(row);
+            });
+        }
+
+        var reds = (redAvailable && redShown.length) ? redShown : [];
+        if (reds.length) {
+            omniHeader(body, '🔎 Redirection', reds.length, redTruncated, {
+                label: '⤓ Trace',
+                title: 'Trace how the active .red resolves the highlighted file (or whatever is typed)',
+                onClick: function () { postToHost({ action: 'traceRedFile', name: omniTraceName() }); }
+            });
+            reds.forEach(function (it) { body.appendChild(buildRedRow(it)); });
+        }
+
+        if (!recents.length && !reds.length) {
+            var none = document.createElement('div'); none.className = 'files-empty';
+            none.textContent = redAvailable
+                ? 'Nothing matches “' + explorerFilter + '”.'
+                : 'No recent files match — and there is no active .red to search. Open a solution to search redirection.';
+            body.appendChild(none);
+        }
+        omniPaint();
+    }
+
+    // Paint the keyboard highlight. Called after every render and every arrow key.
+    function omniPaint() {
+        var body = document.getElementById('filesBody');
+        if (!body) return;
+        var rows = body.querySelectorAll('[data-omni]');
+        for (var i = 0; i < rows.length; i++) rows[i].classList.remove('hl');
+        if (redHl < 0 || redHl >= omniHits.length) return;
+        var row = body.querySelector('[data-omni="' + redHl + '"]');
+        if (row) {
+            row.classList.add('hl');
+            if (row.scrollIntoView) { try { row.scrollIntoView({ block: 'nearest' }); } catch (x) {} }
+        }
+    }
+
+    function omniOpen(i) {
+        var t = omniHits[i];
+        if (!t) return;
+        if (t.kind === 'classpair') postToHost({ action: 'openClassPair', inc: t.inc, clw: t.clw });
+        else postToHost({ action: 'loadFile', path: t.path });
+        omniClear();
+    }
+
+    // Clear the field and drop back to the recents browser.
+    function omniClear() {
+        var input = document.getElementById('redInput');
+        if (input) input.value = '';
+        explorerFilter = ''; redShown = []; redHl = -1;
+        redUpdateClearX();
+        renderExplorer();
     }
 
     // ============================================================================================
@@ -3051,85 +3621,42 @@
         if (x && input) x.style.display = (input.value || '').length ? 'block' : 'none';
     }
 
-    function redClearField() {
-        var input = document.getElementById('redInput');
-        if (input) input.value = '';
-        redShown = []; redHl = -1;
-        var drop = document.getElementById('redDrop');
-        if (drop) drop.style.display = 'none';
-        redUpdateClearX();
-    }
+    function redClearField() { omniClear(); }
 
+    // The single keypath for BOTH sources. Sets explorerFilter (which the recents matcher reads) and
+    // recomputes redShown from the in-memory index, then re-renders the one result surface.
     function redFilter() {
         var input = document.getElementById('redInput');
-        var drop = document.getElementById('redDrop');
-        if (!input || !drop) return;
+        if (!input) return;
         redUpdateClearX();
         var q = (input.value || '').trim().toLowerCase();
-        if (!redAvailable || !q) { redShown = []; redHl = -1; drop.style.display = 'none'; return; }
-        // Prefix matches rank above substring matches (closest to what you'd expect when typing a name).
-        // Uses the precomputed nameLower so the keypath does no per-keystroke allocation. Applies the active
-        // extension filter (radio row) and always hides .obj.
-        var pre = [], sub = [];
-        for (var i = 0; i < redIndex.length; i++) {
-            if (!redPassesExt(redIndex[i].name)) continue;
-            var ix = (redIndex[i].nameLower || '').indexOf(q);
-            if (ix === 0) pre.push(redIndex[i]);
-            else if (ix > 0) sub.push(redIndex[i]);
-            if (pre.length + sub.length >= 400) break; // cap rendered rows; keep typing to narrow further
+        explorerFilter = q;
+        if (!redAvailable || !q) {
+            redShown = [];
+        } else {
+            // Prefix matches rank above substring matches (closest to what you'd expect when typing a name).
+            // Uses the precomputed nameLower so the keypath does no per-keystroke allocation. Applies the active
+            // extension filter and always hides .obj.
+            var pre = [], sub = [];
+            for (var i = 0; i < redIndex.length; i++) {
+                if (!redPassesExt(redIndex[i].name)) continue;
+                var ix = (redIndex[i].nameLower || '').indexOf(q);
+                if (ix === 0) pre.push(redIndex[i]);
+                else if (ix > 0) sub.push(redIndex[i]);
+                if (pre.length + sub.length >= 400) break; // cap rendered rows; keep typing to narrow further
+            }
+            redShown = pre.concat(sub);
         }
-        redShown = pre.concat(sub);
-        redHl = redShown.length ? 0 : -1;
-        redRenderDrop();
+        // Highlight starts on the first rendered row, which is a Recent hit whenever there is one.
+        redHl = q ? 0 : -1;
+        renderExplorer();
     }
 
-    function redRenderDrop() {
-        var drop = document.getElementById('redDrop');
-        if (!drop) return;
-        if (!redShown.length) { drop.style.display = 'none'; return; }
-        var h = '';
-        for (var i = 0; i < redShown.length; i++) {
-            var it = redShown[i];
-            h += '<div class="redopen-item' + (i === redHl ? ' hl' : '') + '" data-i="' + i + '">'
-               + '<span class="rn" title="' + redEsc(it.path) + '">' + redEsc(it.name) + '</span>'
-               + '<span class="rsec">' + redEsc(it.section) + '</span></div>';
-        }
-        drop.innerHTML = h;
-        drop.style.display = 'block';
-        var rows = drop.querySelectorAll('.redopen-item');
-        for (var j = 0; j < rows.length; j++) {
-            // mousedown (not click) so it fires before the input's blur hides the dropdown.
-            rows[j].addEventListener('mousedown', function (ev) {
-                ev.preventDefault();
-                redOpenIndex(parseInt(this.getAttribute('data-i'), 10));
-            });
-        }
-        redScrollToHl();
-    }
-
-    function redScrollToHl() {
-        var drop = document.getElementById('redDrop');
-        if (!drop || redHl < 0) return;
-        var row = drop.querySelector('.redopen-item[data-i="' + redHl + '"]');
-        if (row && row.scrollIntoView) { try { row.scrollIntoView({ block: 'nearest' }); } catch (x) {} }
-    }
-
-    function redMirror() {
-        // Mirror the highlighted file's full name back into the entry field (matches the native dialog).
-        var input = document.getElementById('redInput');
-        if (input && redHl >= 0 && redShown[redHl]) input.value = redShown[redHl].name;
-    }
-
-    function redOpenIndex(i) {
-        if (i < 0 || !redShown[i]) return;
-        postToHost({ action: 'loadFile', path: redShown[i].path }); // reuse the Files-tab open path (records recents)
-        redClearField();   // opening clears the field (and dropdown)
-    }
-
-    // Open whatever the field/selection designates, then clear. Used by Enter and the Open button.
-    // (Arrow-select only mirrors the name into the field via redMirror — it does NOT open until this runs.)
+    // Open whatever the highlight designates, then clear. Used by Enter and the Open button. Falls back to
+    // an exact filename match in the full index, so typing a complete name still opens even when the
+    // rendered rows were capped at 400.
     function redOpenSelected() {
-        if (redHl >= 0 && redShown[redHl]) { redOpenIndex(redHl); return; }
+        if (redHl >= 0 && omniHits[redHl]) { omniOpen(redHl); return; }
         var input = document.getElementById('redInput');
         var typed = (input && input.value || '').trim().toLowerCase();
         if (!typed) return;
@@ -3144,21 +3671,27 @@
 
     // ---- Files toolbar / strip wiring ----
     (function wireExplorer() {
-        var loadBtn = document.getElementById('loadFileBtn');
-        if (loadBtn) loadBtn.addEventListener('click', function () { postToHost({ action: 'loadFileDialog' }); });
-        var cmpBtn = document.getElementById('compareBtn');
-        if (cmpBtn) cmpBtn.addEventListener('click', function () { postToHost({ action: 'compare' }); });
-        var change = document.getElementById('lastFolderChange');
-        if (change) change.addEventListener('click', function () { postToHost({ action: 'setLastFolder' }); });
+        // ---- Toolbar split buttons ----
+        // Button body = default action; caret = menu. The caret stops propagation so clicking it does NOT
+        // also fire the button's own handler (the caret lives inside the button).
+        function wireSplit(btnId, caretId, menuId, build, defaultAction) {
+            var btn = document.getElementById(btnId), caret = document.getElementById(caretId), menu = document.getElementById(menuId);
+            if (!btn || !caret || !menu) return;
+            caret.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var wasOpen = menu.style.display !== 'none';
+                closeFileMenus();                       // never leave both menus open at once
+                if (!wasOpen) { build(menu, explorerData); menu.style.display = 'block'; placeMenu(menu, caret); }
+            });
+            btn.addEventListener('click', function () { closeFileMenus(); postToHost({ action: defaultAction }); });
+            menu.addEventListener('click', function (e) { e.stopPropagation(); });
+        }
+        wireSplit('loadFileBtn', 'openCaret', 'openMenu', buildOpenMenu, 'loadFileDialog');
+        wireSplit('compareBtn', 'cmpCaret', 'cmpMenu', buildCompareMenu, 'compare');
+        document.addEventListener('click', closeFileMenus);
+        document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeFileMenus(); });
 
-        var ff = document.getElementById('filesFilter');
-        var ffx = document.getElementById('filesFilterClear');
-        if (ff) ff.addEventListener('input', function () {
-            explorerFilter = (ff.value || '').trim().toLowerCase();
-            if (ffx) ffx.style.display = ff.value ? 'block' : 'none';
-            renderExplorer();
-        });
-        if (ffx) ffx.addEventListener('click', function () { ff.value = ''; explorerFilter = ''; ffx.style.display = 'none'; ff.focus(); renderExplorer(); });
+        // The separate "Filter recents…" input is gone — #redInput below now drives both sources.
 
         // Drop zone (and whole scroll area): dropping files opens them. In WebView2 a dropped file's full path
         // is usually NOT exposed to JS (security) — File.path is empty in the browser. We send whatever we can
@@ -3189,9 +3722,12 @@
         }
         if (scroll) { scroll.addEventListener('dragover', onDragOver); scroll.addEventListener('dragleave', onDragLeave); scroll.addEventListener('drop', onDrop); }
 
-        // ---- Open File via Redirection wiring ----
+        // ---- Omnibox wiring (one field, both sources) ----
+        // Arrow keys move the highlight across the COMBINED result list (omniHits), so you can arrow from
+        // the last Recent hit straight into the redirection matches. Deliberately no longer mirrors the
+        // highlighted filename back into the field the way the old dropdown did — that would overwrite the
+        // query and re-trigger filtering on every arrow press.
         var ri = document.getElementById('redInput');
-        var rdrop = document.getElementById('redDrop');
         if (ri) {
             ri.addEventListener('input', function () {
                 redUpdateClearX(); // immediate (the debounced filter also calls it, but show the × without the delay)
@@ -3199,30 +3735,39 @@
                 redDebounce = setTimeout(redFilter, 80); // in-memory filter; debounce is belt-and-suspenders
             });
             ri.addEventListener('keydown', function (e) {
-                if (e.key === 'ArrowDown') { if (redShown.length) { redHl = Math.min(redHl + 1, redShown.length - 1); redRenderDrop(); redMirror(); } e.preventDefault(); }
-                else if (e.key === 'ArrowUp') { if (redShown.length) { redHl = Math.max(redHl - 1, 0); redRenderDrop(); redMirror(); } e.preventDefault(); }
+                if (e.key === 'ArrowDown') { if (omniHits.length) { redHl = Math.min(redHl + 1, omniHits.length - 1); omniPaint(); } e.preventDefault(); }
+                else if (e.key === 'ArrowUp') { if (omniHits.length) { redHl = Math.max(redHl - 1, 0); omniPaint(); } e.preventDefault(); }
                 else if (e.key === 'Enter') { redOpenSelected(); e.preventDefault(); }   // open + clear
-                else if (e.key === 'Escape') { if (rdrop) rdrop.style.display = 'none'; e.preventDefault(); }
+                else if (e.key === 'Escape') { omniClear(); e.preventDefault(); }        // clear the query, back to recents
             });
-            ri.addEventListener('focus', function () { if (redShown.length && (ri.value || '').trim()) { if (rdrop) rdrop.style.display = 'block'; } });
-            // Hide the dropdown shortly after blur — the row mousedown (which opens) fires first.
-            ri.addEventListener('blur', function () { setTimeout(function () { if (rdrop) rdrop.style.display = 'none'; }, 150); });
         }
         var rclear = document.getElementById('redClear');
         if (rclear) rclear.addEventListener('mousedown', function (e) { e.preventDefault(); redClearField(); if (ri) ri.focus(); });
         var ropen = document.getElementById('redOpenBtn');
         if (ropen) ropen.addEventListener('click', function () { redOpenSelected(); });   // open file in field + clear
-        // Single-select extension filter: switching mode re-applies the filter to whatever is typed.
-        var redRadios = document.querySelectorAll('input[name="redext"]');
-        for (var rr = 0; rr < redRadios.length; rr++) {
-            redRadios[rr].addEventListener('change', function () {
-                if (this.checked) { redExtMode = this.value; if (redExtMode === 'custom') redParseCustom(); redFilter(); }
+        // Type filter: the menu replaces the radio row. Same wireSplit contract as the toolbar buttons,
+        // except the "button" is the label itself — there is no default action, only the menu.
+        var typeBtn = document.getElementById('redTypeBtn'), typeMenu = document.getElementById('redTypeMenu');
+        if (typeBtn && typeMenu) {
+            typeBtn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var wasOpen = typeMenu.style.display !== 'none';
+                closeFileMenus();
+                if (!wasOpen) { buildTypeMenu(typeMenu); typeMenu.style.display = 'block'; placeMenu(typeMenu, typeBtn); }
             });
+            typeMenu.addEventListener('click', function (e) { e.stopPropagation(); });
         }
-        var rcustom = document.getElementById('redCustomExt');
-        if (rcustom) rcustom.addEventListener('input', function () { redParseCustom(); if (redExtMode === 'custom') redFilter(); });
-        var rtrace = document.getElementById('redTraceBtn');
-        if (rtrace) rtrace.addEventListener('click', function () { postToHost({ action: 'traceRedFile', name: (ri && ri.value || '').trim() }); });
+        redSyncTypeBtn();
+
+        // Clicking the named .red opens it — you usually want to look at the file the moment you notice
+        // it is not the one you expected.
+        var redBannerPath = document.getElementById('redBannerPath');
+        if (redBannerPath) redBannerPath.addEventListener('click', function () {
+            var p = this.getAttribute('data-redpath');
+            if (p) postToHost({ action: 'loadFile', path: p });
+        });
+        // (The Trace button is gone — the action now lives on the Redirection group header, built in
+        // renderOmniResults. The trace log panel below is unchanged.)
         var rclose = document.getElementById('redTraceClose');
         if (rclose) rclose.addEventListener('click', function () { var w = document.getElementById('redTraceWrap'); if (w) w.style.display = 'none'; });
         var rcopy = document.getElementById('redCopyBtn');
@@ -3262,8 +3807,13 @@
             tipEl.style.display = 'block';
             var w = tipEl.offsetWidth, h = tipEl.offsetHeight;
             var px = x + 12, py = y + 18;                        // below-right of the cursor, like native
+            // The Files tab docks a NATIVE WinForms drop strip (Label, Height=56 — see ModernDataPad.cs)
+            // across the bottom. The WebView2 viewport extends behind it, so window.innerHeight overstates
+            // the VISIBLE area: anything the page paints down there is hidden under a control it cannot
+            // composite over. Reserve that band so tooltips flip above the cursor before reaching it.
+            var usableBottom = window.innerHeight - (document.querySelector('#panel-files.active') ? 60 : 0);
             if (px + w > window.innerWidth - 4) px = Math.max(4, window.innerWidth - w - 4);
-            if (py + h > window.innerHeight - 4) py = y - h - 8; // flip above when it would clip
+            if (py + h > usableBottom - 4) py = y - h - 8;       // flip above when it would clip
             if (py < 4) py = 4;
             tipEl.style.left = px + 'px'; tipEl.style.top = py + 'px';
         }
