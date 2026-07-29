@@ -694,8 +694,13 @@
              "what am I looking at" in this tab. Both are now the one field above. -->
 
         <!-- Scrollable region: pinned + grouped recents + drop zone (built in JS). -->
+        <!-- padding-bottom: the last row could not scroll fully clear of the viewport, so its path line was
+             cut off. #panel-files and #filesScroll are BOTH overflow:auto (nested scrollers), which leaves
+             the inner scroller's final few px below the visible area. Trailing space on the content is the
+             fix that holds regardless of which scroller is short. Exposed by the omnibox: redirection
+             matches used to live in a separate capped dropdown, so this list rarely reached its end. -->
         <div id="filesScroll" style="flex:1; min-height:0; overflow:auto;">
-            <div id="filesBody"></div>
+            <div id="filesBody" style="padding-bottom:16px;"></div>
             <!-- In-page drop hint is hidden: WebView2 strips real file paths from page drops, so external file
                  drops are handled by the host's native drop strip (docked below the WebView2 on the Files tab). -->
             <div class="drophint" id="dropZone" style="display:none;">⬇ <b>Drop files here</b> to open them in Monaco</div>
