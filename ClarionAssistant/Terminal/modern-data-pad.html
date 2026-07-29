@@ -264,6 +264,9 @@
         border: 1px solid #bcbcbc; border-radius: 6px; background: #eef1f4; color: #5a5a5a;
         font-size: 12px; white-space: nowrap; }
     .typesel:hover { background: #e0e6ee; }
+    /* A long custom mask must not stretch the control and squeeze the search field — ellipsise the label
+       and keep the full value on the tooltip. */
+    .typesel .lbl { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .typesel.active { border-color: #0a5dc2; color: #0a5dc2; background: #e8eef7; font-weight: 600; }
     .fmenu .mi.mask { gap: 6px; }
     .fmenu .maskinput { flex: 1; min-width: 0; height: 22px; padding: 0 6px; font: inherit; font-size: 11.5px;
@@ -2984,6 +2987,30 @@
     // start-folder variants of ONE picker, not folder browsers — and "last folder" is just the folder
     // those pickers open at. So all of it collapses into this menu.
 
+    // Keep a .fmenu inside the WebView2 viewport. The page cannot paint outside it — an overflowing menu is
+    // simply cut off by whatever IDE pane sits next to the pad — and the bottom band belongs to the native
+    // drop strip (see the tooltip note in showTip). Call this immediately after making a menu visible.
+    function placeMenu(menu, anchor) {
+        menu.style.left = '0px'; menu.style.right = 'auto';
+        menu.style.maxHeight = ''; menu.style.overflowY = '';
+
+        if (menu.getBoundingClientRect().right > window.innerWidth - 6) {
+            menu.style.left = 'auto'; menu.style.right = '0px';          // right-align under the anchor
+            if (menu.getBoundingClientRect().left < 4) {                  // still too wide — pin to the viewport
+                var a = anchor.getBoundingClientRect();
+                menu.style.right = 'auto';
+                menu.style.left = (4 - a.left) + 'px';
+            }
+        }
+
+        var usableBottom = window.innerHeight - (document.querySelector('#panel-files.active') ? 60 : 0);
+        var top = menu.getBoundingClientRect().top;
+        if (top + menu.offsetHeight > usableBottom - 6) {
+            menu.style.maxHeight = Math.max(120, usableBottom - top - 10) + 'px';
+            menu.style.overflowY = 'auto';
+        }
+    }
+
     function closeFileMenus() {
         var m = document.getElementById('openMenu'); if (m) m.style.display = 'none';
         var c = document.getElementById('cmpMenu'); if (c) c.style.display = 'none';
@@ -3058,8 +3085,15 @@
         if (!b) return;
         var label = RED_TYPE_LABELS[redExtMode] || 'All types';
         // In custom mode show the actual mask — the extensions matter more than the word "Custom".
-        if (redExtMode === 'custom' && redCustomExts.length) label = redCustomExts.join(' ');
-        b.textContent = label + ' ▾';
+        var custom = redExtMode === 'custom' && redCustomExts.length;
+        if (custom) label = redCustomExts.join(' ');
+        // Label lives in its own span so CSS can ellipsise it: a long mask must not stretch the control
+        // and squeeze the search field. The full value stays available on the tooltip.
+        b.innerHTML = '';
+        var lbl = document.createElement('span'); lbl.className = 'lbl'; lbl.textContent = label;
+        b.appendChild(lbl);
+        b.appendChild(document.createTextNode(' ▾'));
+        b.title = custom ? 'Custom mask: ' + redCustomExts.join(' ') : 'Narrow the search by file type';
         b.className = 'typesel' + (redExtMode === 'all' ? '' : ' active');
     }
 
@@ -3268,6 +3302,7 @@
                         function () { setScope(def.key); });
                 });
                 menu.style.display = 'block';
+                placeMenu(menu, more);
             });
             menu.addEventListener('click', function (e) { e.stopPropagation(); });
             wrap.appendChild(more); wrap.appendChild(menu);
@@ -3550,7 +3585,7 @@
                 e.stopPropagation();
                 var wasOpen = menu.style.display !== 'none';
                 closeFileMenus();                       // never leave both menus open at once
-                if (!wasOpen) { build(menu, explorerData); menu.style.display = 'block'; }
+                if (!wasOpen) { build(menu, explorerData); menu.style.display = 'block'; placeMenu(menu, caret); }
             });
             btn.addEventListener('click', function () { closeFileMenus(); postToHost({ action: defaultAction }); });
             menu.addEventListener('click', function (e) { e.stopPropagation(); });
@@ -3622,7 +3657,7 @@
                 e.stopPropagation();
                 var wasOpen = typeMenu.style.display !== 'none';
                 closeFileMenus();
-                if (!wasOpen) { buildTypeMenu(typeMenu); typeMenu.style.display = 'block'; }
+                if (!wasOpen) { buildTypeMenu(typeMenu); typeMenu.style.display = 'block'; placeMenu(typeMenu, typeBtn); }
             });
             typeMenu.addEventListener('click', function (e) { e.stopPropagation(); });
         }
