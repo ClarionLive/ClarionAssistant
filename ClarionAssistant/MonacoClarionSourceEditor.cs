@@ -455,6 +455,22 @@ namespace ClarionAssistant
                 try { int nl, nc; if (MonacoSourceNavigator.TryConsumePending(_filePath, out nl, out nc)) { navLine = nl; navCol = nc; } }
                 catch (Exception nex) { MonacoSpikeLog.Write("overlay OnReady consume-pending error: " + nex.Message); }
 
+                // Same cold-open race, second source (2026-07-30): _navPendingLine is JumpTo/NavigateToLine's
+                // OWN park field, set by any native, closed-source caller that moves the hidden Caret directly
+                // — the Errors pane, Bookmarks next/prev, Find Next — when JumpTo fires before this view's
+                // Monaco page exists yet (a genuinely cold open). Until now it was only ever applied as the
+                // exact same kind of racy revealLine-after-setSource follow-up further down, even though by
+                // THIS point (OnReady already running) whatever set it fired strictly before the page existed
+                // — there's no reason to treat it differently from a MonacoSourceNavigator-parked nav. Folding
+                // it into navLine here closes the identical race for those callers too, not just
+                // MonacoSourceNavigator-originated ones (CA Debugger / breakpoint clicks, hover-footer links).
+                if (_navPendingLine >= 1)
+                {
+                    navLine = _navPendingLine;
+                    navCol = _navPendingCol > 0 ? _navPendingCol : 1;
+                    _navPendingLine = 0;
+                }
+
                 // Carry the current breakpoints INSIDE setSource so the page paints them after the content loads
                 // (a standalone setBreakpoints sent right after would race the async content fetch on a cold open).
                 string bpCsv = BreakpointLinesCsv();
