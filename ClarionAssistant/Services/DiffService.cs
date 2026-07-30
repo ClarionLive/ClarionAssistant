@@ -163,13 +163,14 @@ namespace ClarionAssistant.Services
                     // Monaco renderer: native side-by-side/inline + ignore-whitespace; ignore_whitespace
                     // defaults ON here (John's standing pref) when the caller didn't opt out.
                     var monaco = new MonacoDiffViewContent(title, originalText, modifiedText, language, ignoreWhitespace, _isDark, fileContext);
-                    monaco.Applied += OnApplied;
-                    monaco.Cancelled += OnCancelled;
+                    // EVERY handler captures its own view. Reading _currentDiff inside a handler instead
+                    // lets a stale view act on whatever diff is current now — e.g. Close on an old
+                    // compare (one whose CloseWindow threw) would prompt about, and close, the NEW one.
+                    var target = monaco;
+                    monaco.Applied += (text) => OnAppliedFrom(target, text);
+                    monaco.Cancelled += () => OnCancelledFrom(target);
                     if (fileContext != null)
                     {
-                        // Captured per-view so the handler always writes through THIS diff's context, even if
-                        // _currentDiff has since been replaced by another compare.
-                        var target = monaco;
                         monaco.SaveSideRequested += (side, text) => OnSaveSideRequested(target, side, text);
                         monaco.ClosingWithUnsavedEdits += (args) => OnDiffClosingWithUnsavedEdits(target, args);
                     }
@@ -179,8 +180,11 @@ namespace ClarionAssistant.Services
                 else
                 {
                     var classic = new DiffViewContent(title, originalText, modifiedText, language, ignoreWhitespace, _isDark);
-                    classic.Applied += OnApplied;
-                    classic.Cancelled += OnCancelled;
+                    var classicTarget = classic;
+                    classic.Applied += (text) => OnAppliedFrom(classicTarget, text);
+                    // The classic renderer has no editable state, so there is nothing to prompt about —
+                    // but it still routes through the same view-identity check as the Monaco path.
+                    classic.Cancelled += () => OnCancelledFrom(classicTarget);
                     classic.NotesSubmitted += OnNotesSubmitted;
                     _currentDiff = classic;
                 }
@@ -368,7 +372,7 @@ namespace ClarionAssistant.Services
                     return false;
                 }
 
-                File.WriteAllText(path, text ?? "", encoding);
+                WriteAtomic(path, text ?? "", encoding);
                 ctx.NoteSideSaved(side);
 
                 // Best-effort: an open CLEAN tab for this file now shows stale text. Refresh it so the editor
@@ -415,16 +419,24 @@ namespace ClarionAssistant.Services
             var failures = new List<string>();
             foreach (var side in view.DirtySides())
             {
+                string label = (side == "original" ? "Left" : "Right");
                 string text;
                 if (!view.TryGetSideText(side, out text))
                 {
-                    // No mirrored buffer for a side we believe is dirty — refuse to guess at its content.
-                    failures.Add((side == "original" ? "Left" : "Right") + ": its current text hasn't reached the host yet; use Save in the diff.");
+                    // Either no mirrored buffer, or one that has fallen behind the page. Refuse rather
+                    // than write text we know is not what the user is looking at — this is the path
+                    // that used to silently save stale content and report success.
+                    string stale = label + ": its current text hasn't reached the host yet; use Save in the diff.";
+                    failures.Add(stale);
+                    try { view.PostSaveResult(side, false, stale); } catch { }
                     continue;
                 }
                 string message;
-                if (!TrySaveSide(view, side, text, out message))
-                    failures.Add((side == "original" ? "Left" : "Right") + ": " + message);
+                bool ok = TrySaveSide(view, side, text, out message);
+                if (!ok) failures.Add(label + ": " + message);
+                // Tell the page either way. Without this a side written from the close path keeps its
+                // dirty dot and enabled Save button when the close is cancelled by another side failing.
+                try { view.PostSaveResult(side, ok, message); } catch { }
             }
 
             if (failures.Count > 0)
@@ -459,6 +471,53 @@ namespace ClarionAssistant.Services
             catch { return false; }
         }
 
+        /// <summary>
+        /// Write via a sibling temp file, then swap it over the target.
+        ///
+        /// File.WriteAllText truncates IN PLACE: if it fails partway (disk full, network share drops,
+        /// an AV scanner grabs the handle) the original file is already destroyed, and the only copy of
+        /// its content was the text we were replacing — so "save failed" would mean "your file is now
+        /// empty". Writing beside it first means a failure leaves the original untouched.
+        ///
+        /// The temp file is created in the SAME directory so the swap stays on one volume.
+        /// </summary>
+        private static void WriteAtomic(string path, string text, Encoding encoding)
+        {
+            string dir = Path.GetDirectoryName(path);
+            if (string.IsNullOrEmpty(dir)) dir = ".";
+            string tmp = Path.Combine(dir, Path.GetFileName(path) + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".catmp");
+
+            try
+            {
+                File.WriteAllText(tmp, text, encoding);
+
+                if (!File.Exists(path))
+                {
+                    // Target vanished since the compare opened — nothing to replace, just put it there.
+                    File.Move(tmp, path);
+                    return;
+                }
+
+                try
+                {
+                    // Preserves the destination's identity and ACLs. No backup file wanted.
+                    File.Replace(tmp, path, null);
+                    return;   // Replace consumed tmp
+                }
+                catch (PlatformNotSupportedException) { }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+
+                // Filesystems where Replace isn't available (some network shares). Still better than
+                // having written nothing: the content is known-good in tmp before the target is touched.
+                File.Copy(tmp, path, true);
+            }
+            finally
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+            }
+        }
+
         private static string SafeName(string path)
         {
             if (string.IsNullOrEmpty(path)) return "The file";
@@ -479,9 +538,23 @@ namespace ClarionAssistant.Services
             CloseDiff();
         }
 
-        private void OnCancelled()
+        /// <summary>Approve from a specific view. A view that is no longer the current diff must not
+        /// write into the shared result slot — the MCP caller is waiting on the CURRENT diff.</summary>
+        private void OnAppliedFrom(AbstractViewContent sender, string text)
         {
-            var monaco = _currentDiff as MonacoDiffViewContent;
+            if (!ReferenceEquals(_currentDiff, sender)) return;
+            OnApplied(text);
+        }
+
+        /// <summary>Cancel/Close from a specific view, ignored unless that view is the current diff.</summary>
+        private void OnCancelledFrom(AbstractViewContent sender)
+        {
+            if (!ReferenceEquals(_currentDiff, sender)) return;
+            OnCancelled(sender as MonacoDiffViewContent);
+        }
+
+        private void OnCancelled(MonacoDiffViewContent monaco)
+        {
             if (monaco != null && monaco.HasUnsavedEdits)
             {
                 // This runs on the WebView2 message-handler stack. A modal here pumps a nested message
@@ -493,10 +566,15 @@ namespace ClarionAssistant.Services
                 {
                     ctrl.BeginInvoke((MethodInvoker)(() =>
                     {
-                        if (!ConfirmDiscardIfDirty(_currentDiff,
+                        // Re-check on arrival: the modal that got us here pumps the UI queue, so the
+                        // current diff can have been replaced between queueing and running. Prompt
+                        // about — and close — THIS view or nothing.
+                        if (!ReferenceEquals(_currentDiff, monaco)) return;
+                        if (!ConfirmDiscardIfDirty(monaco,
                                 "This compare has unsaved changes that have not been written to disk.\n\n" +
                                 "Close and discard them?"))
                             return;
+                        if (!ReferenceEquals(_currentDiff, monaco)) return;
                         _lastAction = "cancel";
                         _lastResult = null;
                         _lastNotes = null;

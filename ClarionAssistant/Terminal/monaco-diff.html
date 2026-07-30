@@ -108,7 +108,9 @@
                min-width: 0; flex: 0 1 auto; }
     #filebar.fb-visible { display: flex; }
     .fb-side { display: flex; align-items: center; gap: 5px; min-width: 0; flex: 0 1 auto; }
-    .fb-name { color: var(--fg); white-space: nowrap; overflow: hidden; min-width: 0; }
+    /* text-overflow is a BACKSTOP only — fitFilePath does the real middle-elision. It exists so that
+       any residual overflow is at least visibly truncated rather than sliced mid-character. */
+    .fb-name { color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
     /* Dirty dot: reserves its space at all times so the filename never shifts when it appears. */
     .fb-dot { width: 8px; height: 8px; border-radius: 50%; background: transparent; flex-shrink: 0; }
     .fb-side.dirty .fb-dot { background: #f9e2af; }
@@ -225,6 +227,9 @@
     var flipAll = false;
     var gutterHooked = false;
     var gutterObserver = null;
+    // True between applying a hunk and Monaco delivering the recomputed diff — `changes` is stale
+    // for that window, so no second hunk may be applied from it.
+    var hunkApplyPending = false;
     // Globals named to match the C# ZoomableWebView2 Ctrl+wheel bridge ("applyFontSize(savedFontSize+(N))").
     var savedFontSize = parseInt(localStorage.getItem('diffFontSize') || '13');
     var savedFontFamily = localStorage.getItem('diffFontFamily') || "'Cascadia Code','Consolas',monospace";
@@ -268,6 +273,14 @@
         if (diffEditor) diffEditor.updateOptions({ renderSideBySide: renderSideBySide });
         var btn = document.getElementById('btn-layout');
         if (btn) { btn.textContent = renderSideBySide ? 'Inline' : 'Side-by-side'; btn.classList.toggle('active', !renderSideBySide); }
+        // Inline shows only the modified side, so a FLIPPED click there would edit the original pane
+        // — invisible to the user, who would then find the left side dirty for an edit they never saw
+        // applied. Reset to the default direction on the way in, and say so.
+        if (!renderSideBySide && flipAll) {
+            flipAll = false;
+            refreshGutterAdornments();
+            showFileBarNote('Copy direction reset to LEFT into RIGHT — flipping needs the side-by-side view.', false);
+        }
     }
     function toggleWhitespace() {
         ignoreTrimWhitespace = !ignoreTrimWhitespace;
@@ -398,7 +411,15 @@
         }
         renderDirtyState();
     }
-    var lastPostedDirty = null;
+    /// Monaco's monotonic content version per side. The host uses these to tell whether the buffer it
+    /// mirrored is still the current one.
+    function currentVersions() {
+        var o = 0, m = 0;
+        try { if (originalModel) o = originalModel.getVersionId(); } catch (e) { }
+        try { if (modifiedModel) m = modifiedModel.getVersionId(); } catch (e) { }
+        return { o: o, m: m };
+    }
+
     function renderDirtyState() {
         var o = document.getElementById('fb-original');
         var m = document.getElementById('fb-modified');
@@ -406,14 +427,16 @@
         if (m) m.classList.toggle('dirty', !!modDirty);
         if (typeof onDirtyStateChanged === 'function') onDirtyStateChanged();
 
-        // Mirror dirty state to the host so it can put a prompt in front of anything that would
-        // discard unsaved edits (closing this diff, or replacing it with another compare). Only on a
-        // real transition — recomputeDirty runs on every keystroke and the host needs none of that.
-        var stamp = (origDirty ? '1' : '0') + (modDirty ? '1' : '0');
-        if (stamp !== lastPostedDirty) {
-            lastPostedDirty = stamp;
-            postMsg({ action: 'dirtyState', origDirty: !!origDirty, modDirty: !!modDirty });
-        }
+        // Posted on EVERY change, not only on a dirty transition. The host needs the CURRENT version
+        // ids to decide whether its mirrored text is still fresh; a transition-only message left it
+        // unable to tell a current mirror from a stale one, which is how a close could write old text
+        // and report success. The message is tiny — the buffers themselves stay debounced below.
+        var v = currentVersions();
+        postMsg({
+            action: 'dirtyState',
+            origDirty: !!origDirty, modDirty: !!modDirty,
+            origVersion: v.o, modVersion: v.m
+        });
         scheduleBufferSync();
     }
 
@@ -422,21 +445,41 @@
     /// Asking the page for its text from inside a cancellable close handler is not an option: that
     /// round trip is async and blocking on it inside the handler risks a nested-pump deadlock. Same
     /// approach the CA source editor uses to survive its own tab close.
+    var BUFFER_SYNC_DEBOUNCE = 400;
+    var BUFFER_SYNC_MAX_WAIT = 750;
     var bufferSyncTimer = null;
+    var bufferSyncOldestChange = 0;   // when the oldest un-flushed change happened
+
     function scheduleBufferSync() {
         if (!fileCompareMode) return;
+        var now = Date.now();
+        if (!bufferSyncOldestChange) bufferSyncOldestChange = now;
+        // MAX-WAIT, and it is the whole point. A plain reset-debounce re-arms on every keystroke, so
+        // while you keep typing it NEVER fires — the host's mirror is not "at most 400ms old", it is
+        // as old as the moment you started typing. Past the ceiling we flush instead of rescheduling.
+        if (now - bufferSyncOldestChange >= BUFFER_SYNC_MAX_WAIT) { flushBufferSync(); return; }
         clearTimeout(bufferSyncTimer);
-        bufferSyncTimer = setTimeout(function () {
-            try {
-                postMsg({
-                    action: 'buffers',
-                    origDirty: !!origDirty, modDirty: !!modDirty,
-                    // Only dirty sides carry text — a clean side is already on disk.
-                    original: (origDirty && originalModel) ? originalModel.getValue() : null,
-                    modified: (modDirty && modifiedModel) ? modifiedModel.getValue() : null
-                });
-            } catch (e) { }
-        }, 400);
+        bufferSyncTimer = setTimeout(flushBufferSync, BUFFER_SYNC_DEBOUNCE);
+    }
+
+    function flushBufferSync() {
+        clearTimeout(bufferSyncTimer);
+        bufferSyncTimer = null;
+        bufferSyncOldestChange = 0;
+        if (!fileCompareMode) return;
+        try {
+            // The version ids are those of the text being SENT. The host compares them against the
+            // latest ids from dirtyState and refuses to save from a mirror that has fallen behind.
+            var v = currentVersions();
+            postMsg({
+                action: 'buffers',
+                origDirty: !!origDirty, modDirty: !!modDirty,
+                // Only dirty sides carry text — a clean side is already on disk.
+                original: (origDirty && originalModel) ? originalModel.getValue() : null,
+                modified: (modDirty && modifiedModel) ? modifiedModel.getValue() : null,
+                origVersion: v.o, modVersion: v.m
+            });
+        } catch (e) { }
     }
     // ===== File paths in the bottom bar =====
     /// Remember the full path on the element and render as much of it as fits.
@@ -471,9 +514,22 @@
         el.textContent = best;
     }
 
+    /// Both paths share ONE flex line, so fitting the left one measures it against whatever the right
+    /// one currently holds — and shrinking the right afterwards frees room the left never reclaims.
+    /// A single left-then-right pass therefore leaves the left path clipped. Reset both to full text,
+    /// then iterate until neither overflows.
     function refitFilePaths() {
-        fitFilePath(document.getElementById('fb-name-original'));
-        fitFilePath(document.getElementById('fb-name-modified'));
+        var els = [document.getElementById('fb-name-original'), document.getElementById('fb-name-modified')];
+        els.forEach(function (el) { if (el) el.textContent = el.getAttribute('data-full') || ''; });
+        for (var pass = 0; pass < 3; pass++) {
+            var overflowed = false;
+            for (var i = 0; i < els.length; i++) {
+                var el = els[i];
+                if (!el || el.clientWidth === 0) continue;
+                if (el.scrollWidth > el.clientWidth) { fitFilePath(el); overflowed = true; }
+            }
+            if (!overflowed) break;
+        }
     }
     // The bar's width changes with the window and when the Save buttons appear/disappear.
     (function () {
@@ -499,11 +555,16 @@
         }
     }
 
-    /// Marks a side clean at its current content — called after a successful save.
+    /// Marks a side clean at the version that was actually WRITTEN — not at the version current when
+    /// the host's ack arrives. The pane stays editable during the save round trip (only the button is
+    /// disabled), so re-baselining to "now" folds anything typed in flight into the clean baseline:
+    /// the dot clears, closing never prompts, and those keystrokes are lost with no error. Cleaning to
+    /// the sent version instead leaves the side correctly dirty when the user kept typing.
     function markSideClean(side) {
         try {
-            if (side === 'original' && originalModel) origCleanVersionId = originalModel.getAlternativeVersionId();
-            if (side === 'modified' && modifiedModel) modCleanVersionId = modifiedModel.getAlternativeVersionId();
+            var v = savePendingVersion[side];
+            if (side === 'original' && originalModel) origCleanVersionId = v || originalModel.getAlternativeVersionId();
+            if (side === 'modified' && modifiedModel) modCleanVersionId = v || modifiedModel.getAlternativeVersionId();
         } catch (e) { }
         recomputeDirty();
     }
@@ -600,6 +661,11 @@
         var eol = model.getEOL();
         var lineCount = model.getLineCount();
 
+        // Refuse an out-of-range block outright. A stale hunk index (line numbers from before an edit
+        // Monaco has not re-diffed yet) would otherwise fall into the "runs to EOF" branch below and be
+        // reinterpreted as "replace from here to end of file" — silently destroying the tail.
+        if (tgtStart > lineCount || tgtEnd > lineCount) return null;
+
         if (tgtEnd > 0) {
             if (tgtEnd >= lineCount) {
                 // Block runs to end of document — no trailing EOL exists after it.
@@ -637,6 +703,10 @@
     /// an arrow click exactly like a typed edit.
     function applyHunk(index, direction) {
         if (!fileCompareMode || !diffEditor) return;
+        // Monaco recomputes the diff on a worker, so `changes` still holds PRE-edit line numbers until
+        // onDidUpdateDiff lands. A second click inside that window would apply a hunk against indices
+        // that no longer describe the buffer. Refuse rather than guess.
+        if (hunkApplyPending) return;
         var c = changes[index];
         if (!c) return;
 
@@ -657,8 +727,10 @@
         if (!edit) return;
 
         try {
+            // Latch BEFORE the edit: onDidUpdateDiff clears it once the recomputed hunks land.
+            hunkApplyPending = true;
             tgtEditor.executeEdits('applyHunk', [{ range: edit.range, text: edit.text, forceMoveMarkers: true }]);
-        } catch (e) { return; }
+        } catch (e) { hunkApplyPending = false; return; }
         // onDidUpdateDiff refreshes the change list, arrows and counter; dirty is derived from the
         // model change listener. Nothing to recompute by hand here.
     }
@@ -685,6 +757,11 @@
             if (!label) return;
             e.preventDefault();
             e.stopPropagation();
+            // See toggleLayout: flipping is meaningless inline, where the original pane isn't shown.
+            if (!renderSideBySide) {
+                showFileBarNote('Flipping direction needs the side-by-side view.', false);
+                return;
+            }
             flipAll = !flipAll;
             refreshGutterAdornments();
             showFileBarNote(flipAll ? 'Arrows now copy RIGHT into LEFT.' : 'Arrows now copy LEFT into RIGHT.', false);
@@ -820,6 +897,8 @@
                 // Gutter hooks are registered ONCE here, delegated from the diff editor's own root.
                 wireGutterHooks();
                 diffEditor.onDidUpdateDiff(function () {
+                    // The recomputed hunks are in — `changes` is trustworthy again.
+                    hunkApplyPending = false;
                     refreshChanges();
                     if (changes.length && currentChangeIndex < 0) {
                         // Auto-navigate to (reveal + focus) the first change, exactly like pressing
@@ -925,8 +1004,13 @@
         if (!fileCompareMode) return;
         var model = (side === 'original') ? originalModel : (side === 'modified') ? modifiedModel : null;
         if (!model) return;
-        var text;
-        try { text = model.getValue(); } catch (e) { return; }
+        var text, version;
+        try {
+            text = model.getValue();
+            // Captured together, so markSideClean can later clean to exactly what was sent.
+            version = model.getAlternativeVersionId();
+        } catch (e) { return; }
+        savePendingVersion[side] = version;
         setSavePending(side, true);
         postMsg({ action: 'saveSide', side: side, text: text });
     }
@@ -1034,6 +1118,8 @@
     /// While a save is in flight that side's button is disabled, so a double-click can't queue a second
     /// write of the same text.
     var savePending = { original: false, modified: false };
+    // The alternative-version id each side's in-flight save was captured at (see markSideClean).
+    var savePendingVersion = { original: 0, modified: 0 };
     function setSavePending(side, pending) {
         if (side !== 'original' && side !== 'modified') return;
         savePending[side] = !!pending;

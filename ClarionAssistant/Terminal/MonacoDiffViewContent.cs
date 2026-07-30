@@ -44,6 +44,16 @@ namespace ClarionAssistant.Terminal
         // than only warn — the page cannot be asked for its text from inside a cancellable close handler.
         private string _origText;
         private string _modText;
+        // Version ids let us tell a CURRENT mirror from a stale one. *TextVersion is the version the
+        // mirrored text was captured at; *Version is the latest the page has reported. When they
+        // differ the mirror has fallen behind and must not be written to disk.
+        private int _origTextVersion;
+        private int _modTextVersion;
+        private int _origVersion;
+        private int _modVersion;
+        // False until the page has reported its state at least once. Until then we cannot claim the
+        // diff is clean, so a close is treated as potentially destructive.
+        private bool _pageReportedState;
 
         // Tab-close hook. SharpDevelop closes a tab through the workbench window's OWN cancellable
         // ClosingEvent; the Form's FormClosing never fires here, and this view is IsViewOnly so the IDE
@@ -170,6 +180,10 @@ namespace ClarionAssistant.Terminal
                 if (action == "ready")
                 {
                     SendDiffData();
+                    // Attach HERE, not on the first dirtyState. A single keystroke followed by an
+                    // immediate Ctrl+F4 can beat that message across the process boundary, and an
+                    // unattached hook means the tab closes with no prompt at all.
+                    EnsureCloseHook();
                 }
                 else if (action == "approve")
                 {
@@ -187,11 +201,13 @@ namespace ClarionAssistant.Terminal
                 else if (action == "dirtyState")
                 {
                     // Mirrored from the page so the host can guard destructive actions (close / replace)
-                    // without having to ask the page synchronously.
+                    // without having to ask the page synchronously. Sent on EVERY edit, so these version
+                    // ids are the freshest the host can know about.
                     _origDirty = ExtractJsonValue(json, "origDirty") == "true";
                     _modDirty = ExtractJsonValue(json, "modDirty") == "true";
-                    // Attach here rather than on 'ready': by the time anything is dirty the workbench
-                    // window is certainly realized, and this is exactly when the guard starts mattering.
+                    _origVersion = ParseIntOr(ExtractJsonValue(json, "origVersion"), _origVersion);
+                    _modVersion = ParseIntOr(ExtractJsonValue(json, "modVersion"), _modVersion);
+                    _pageReportedState = true;
                     EnsureCloseHook();
                 }
                 else if (action == "buffers")
@@ -199,6 +215,7 @@ namespace ClarionAssistant.Terminal
                     _origDirty = ExtractJsonValue(json, "origDirty") == "true";
                     _modDirty = ExtractJsonValue(json, "modDirty") == "true";
                     ReadBufferTexts(json);
+                    _pageReportedState = true;
                     EnsureCloseHook();
                 }
                 else if (action == "saveSide")
@@ -246,19 +263,61 @@ namespace ClarionAssistant.Terminal
             {
                 var data = new System.Web.Script.Serialization.JavaScriptSerializer { MaxJsonLength = int.MaxValue }
                     .DeserializeObject(json) as Dictionary<string, object>;
-                if (data == null) return;
+                if (data == null) throw new InvalidOperationException("buffers payload did not parse to an object");
                 _origText = data.ContainsKey("original") ? data["original"] as string : null;
                 _modText = data.ContainsKey("modified") ? data["modified"] as string : null;
+                _origTextVersion = data.ContainsKey("origVersion") ? Convert.ToInt32(data["origVersion"]) : 0;
+                _modTextVersion = data.ContainsKey("modVersion") ? Convert.ToInt32(data["modVersion"]) : 0;
+                _origVersion = Math.Max(_origVersion, _origTextVersion);
+                _modVersion = Math.Max(_modVersion, _modTextVersion);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                // Do NOT leave the previous text in place with its old version looking current — that
+                // is how a stale buffer gets written and reported as saved. Drop the mirror instead;
+                // TryGetSideText then refuses and the close prompt cancels rather than writing.
+                _origText = _modText = null;
+                _origTextVersion = _modTextVersion = 0;
+                System.Diagnostics.Debug.WriteLine("[MonacoDiffViewContent] buffers parse failed: " + ex.Message);
+            }
         }
 
-        /// <summary>The last mirrored text for a side, if we have one. False means we cannot save that
-        /// side without asking the page — callers must not invent content.</summary>
+        private static int ParseIntOr(string s, int fallback)
+        {
+            int v;
+            return int.TryParse(s, out v) ? v : fallback;
+        }
+
+        /// <summary>
+        /// The mirrored text for a side, ONLY if it is still current. The buffer arrives debounced, so
+        /// it can lag the page; writing a lagging buffer would silently discard the newest keystrokes
+        /// while reporting a successful save. False means "ask the page" — callers must refuse rather
+        /// than invent content.
+        /// </summary>
         public bool TryGetSideText(string side, out string text)
         {
-            text = (side == "original") ? _origText : (side == "modified") ? _modText : null;
-            return text != null;
+            text = null;
+            if (side == "original")
+            {
+                if (_origText == null || _origTextVersion != _origVersion) return false;
+                text = _origText;
+                return true;
+            }
+            if (side == "modified")
+            {
+                if (_modText == null || _modTextVersion != _modVersion) return false;
+                text = _modText;
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>Unsaved edits, OR a page that has not yet told us its state. Used to decide whether
+        /// a CLOSE needs a prompt: a fast first keystroke can still be in flight, and silently
+        /// discarding it is worse than an occasional prompt on a clean diff.</summary>
+        public bool MayHaveUnsavedEdits
+        {
+            get { return HasUnsavedEdits || (_fileContext != null && !_pageReportedState); }
         }
 
         /// <summary>Which sides currently hold unsaved edits.</summary>
@@ -314,7 +373,7 @@ namespace ClarionAssistant.Terminal
 
         private void OnWorkbenchClosing(object sender, System.ComponentModel.CancelEventArgs e)
         {
-            if (!HasUnsavedEdits) return;
+            if (!MayHaveUnsavedEdits) return;
             var handler = ClosingWithUnsavedEdits;
             if (handler != null) handler(e);
         }
