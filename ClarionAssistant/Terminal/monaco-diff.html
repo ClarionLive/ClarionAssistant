@@ -563,8 +563,13 @@
     function markSideClean(side) {
         try {
             var v = savePendingVersion[side];
-            if (side === 'original' && originalModel) origCleanVersionId = v || originalModel.getAlternativeVersionId();
-            if (side === 'modified' && modifiedModel) modCleanVersionId = v || modifiedModel.getAlternativeVersionId();
+            // No recorded version means this ack did not come from a saveSide we issued — the
+            // close-path save posts its result directly. Re-baselining to "now" there would adopt a
+            // version we never wrote (and, after an undo, could report CLEAN while disk differs), so
+            // leave the baseline alone and let recomputeDirty tell the truth.
+            if (!v) { recomputeDirty(); return; }
+            if (side === 'original' && originalModel) origCleanVersionId = v;
+            if (side === 'modified' && modifiedModel) modCleanVersionId = v;
         } catch (e) { }
         recomputeDirty();
     }
@@ -917,6 +922,12 @@
                 setTheme(themeDark);
                 if (pending) { var p = pending; pending = null; applyDiff(p); }
                 postMsg({ action: 'ready' });
+                // Report state immediately after 'ready'. The host attaches its close hook on 'ready'
+                // but treats a page that has never reported as POSSIBLY dirty — so without this, a
+                // compare closed before its models finish loading (or one whose diff data fails to
+                // load at all, which never reaches recomputeDirty) prompts about unsaved changes that
+                // do not exist. Nothing is loaded yet, so clean is the honest answer.
+                postMsg({ action: 'dirtyState', origDirty: false, modDirty: false, origVersion: 0, modVersion: 0 });
             });
         };
         loader.onerror = function () {
@@ -1040,6 +1051,9 @@
         var side = msg.side || '';
         setSavePending(side, false);
         if (msg.ok) markSideClean(side);
+        // Consume the recorded version: it belongs to THIS save only. Leaving it set would let a
+        // later ack that had no saveSide of its own (the close path) re-baseline to it.
+        if (side === 'original' || side === 'modified') savePendingVersion[side] = 0;
 
         if (saveBatch) {
             saveBatch.results.push({ side: side, ok: !!msg.ok, message: msg.message || '' });

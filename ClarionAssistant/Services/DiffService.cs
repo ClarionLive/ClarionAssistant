@@ -486,6 +486,7 @@ namespace ClarionAssistant.Services
             string dir = Path.GetDirectoryName(path);
             if (string.IsNullOrEmpty(dir)) dir = ".";
             string tmp = Path.Combine(dir, Path.GetFileName(path) + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".catmp");
+            bool keepTemp = false;
 
             try
             {
@@ -508,13 +509,28 @@ namespace ClarionAssistant.Services
                 catch (IOException) { }
                 catch (UnauthorizedAccessException) { }
 
-                // Filesystems where Replace isn't available (some network shares). Still better than
-                // having written nothing: the content is known-good in tmp before the target is touched.
-                File.Copy(tmp, path, true);
+                // Filesystems where Replace isn't available (some network shares). NOTE this branch
+                // truncates in place, so it reintroduces the very failure mode WriteAtomic exists to
+                // prevent — and it is reached precisely where a partial write is most likely. If it
+                // throws, KEEP the temp: it holds the only intact copy of the new content, and the
+                // target is already damaged. Naming it in the exception is what makes recovery possible.
+                try
+                {
+                    File.Copy(tmp, path, true);
+                }
+                catch (Exception ex)
+                {
+                    keepTemp = true;
+                    throw new IOException(
+                        ex.Message + " — the new content was preserved at: " + tmp, ex);
+                }
             }
             finally
             {
-                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                if (!keepTemp)
+                {
+                    try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                }
             }
         }
 
@@ -546,10 +562,27 @@ namespace ClarionAssistant.Services
             OnApplied(text);
         }
 
-        /// <summary>Cancel/Close from a specific view, ignored unless that view is the current diff.</summary>
+        /// <summary>
+        /// Cancel/Close from a specific view. A view that is no longer the current diff must not touch
+        /// the shared result slot — but it must still CLOSE, otherwise its Close button is silently
+        /// inert and the tab reads as frozen. This state is reachable: ShowDiff tolerates a failed
+        /// CloseWindow and reassigns _currentDiff, leaving the old tab open and orphaned.
+        /// </summary>
         private void OnCancelledFrom(AbstractViewContent sender)
         {
-            if (!ReferenceEquals(_currentDiff, sender)) return;
+            if (!ReferenceEquals(_currentDiff, sender))
+            {
+                try
+                {
+                    var ww = sender != null ? sender.WorkbenchWindow : null;
+                    if (ww != null) ww.CloseWindow(true);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine("[DiffService] orphaned diff close failed: " + ex.Message);
+                }
+                return;
+            }
             OnCancelled(sender as MonacoDiffViewContent);
         }
 
@@ -595,7 +628,11 @@ namespace ClarionAssistant.Services
         private static bool ConfirmDiscardIfDirty(AbstractViewContent diff, string message)
         {
             var monaco = diff as MonacoDiffViewContent;
-            if (monaco == null || !monaco.HasUnsavedEdits) return true;
+            // MayHaveUnsavedEdits, not HasUnsavedEdits: this guards the REPLACE path, which then calls
+            // CloseWindow(true) — a forced close that skips ClosingEvent entirely. So it carries the
+            // same first-keystroke race the close hook was fixed for (an edit still in flight from the
+            // page), and it is the only thing standing in front of a force-close.
+            if (monaco == null || !monaco.MayHaveUnsavedEdits) return true;
             try
             {
                 return MessageBox.Show(message, "Unsaved compare changes",
