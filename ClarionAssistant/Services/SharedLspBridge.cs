@@ -1627,7 +1627,11 @@ namespace ClarionAssistant.Services
             string prefix = m.Value;
             if (prefix.Length < CgCompletionMinPrefix) return;
             // Qualified access (Class.Member, PROP:/EVENT:/prefixed field) → LSP-only, no global noise.
-            if (m.Index > 0) { char before = upToCursor[m.Index - 1]; if (before == '.' || before == ':') return; }
+            // '?' is a field-equate (?Ctrl) context — those are handled entirely by the bundled LSP's
+            // own scoped completion; merging bare-prefix globals/locals here just pollutes and outranks
+            // the real ?Ctrl item (a variable named e.g. "LDField" prefix-matches the replace range,
+            // while "?LdapButton" only substring-matches it, so it loses the client-side ranking tie).
+            if (m.Index > 0) { char before = upToCursor[m.Index - 1]; if (before == '.' || before == ':' || before == '?') return; }
 
             // Labels already returned by the LSP — don't double-list (case-insensitive).
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
