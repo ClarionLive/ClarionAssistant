@@ -723,7 +723,7 @@
                     </div></div>
                 <div class="sf-field"><div class="sf-lbl">Body
                     <button class="sf-help" id="snipHelpBtn" title="Show examples">?</button></div>
-                    <textarea id="snipBody" rows="7" spellcheck="false" placeholder="$1  ${1:default}  $0  ${SELECTED}  — click ? for examples"></textarea></div>
+                    <textarea id="snipBody" rows="7" spellcheck="false" placeholder="$1  ${1:default}  $0  ${SELECTED}  ${SELECTED:N}  — click ? for examples"></textarea></div>
                 <div class="sf-actions">
                     <button class="sf-btn primary" id="snipSaveBtn">Save</button>
                     <button class="sf-btn" id="snipCancelBtn">Cancel</button>
@@ -3467,10 +3467,10 @@
                 var ext = activeSnippetExtension(), wl = word.toLowerCase(), sugg = [];
                 for (var i = 0; i < snippetsList.length; i++) {
                     var s = snippetsList[i];
-                    // ${SELECTED} snippets wrap the current selection — but typing a trigger to autocomplete
-                    // has already destroyed any selection. They only make sense via Ctrl+J (which captures the
-                    // selection before the picker opens), so keep them OUT of the completion list.
-                    if (s.body && s.body.indexOf('${SELECTED}') !== -1) continue;
+                    // ${SELECTED}/${SELECTED:N} snippets wrap the current selection — but typing a trigger to
+                    // autocomplete has already destroyed any selection. They only make sense via Ctrl+J (which
+                    // captures the selection before the picker opens), so keep them OUT of the completion list.
+                    if (isWrapStyleSnippet(s.body)) continue;
                     if (!snippetAppliesToExt(s, ext)) continue;   // scoped out (case-insensitive)
                     var trig = (s.trigger || '').toLowerCase();
                     if (trig.indexOf(wl) !== 0) continue;   // prefix match on the trigger
@@ -3978,6 +3978,10 @@
           body: "IF ${SELECTED}\n  $0\nEND",
           result: "IF <span class=sel>Customer:Name</span>\n  <span class=caret>&#9474;</span>\nEND",
           explain: "Select some text first (say <code>Customer:Name</code>), then press <b>Ctrl+J</b>. <code>${SELECTED}</code> is replaced with what you had highlighted. If nothing was selected, it becomes a normal fillable tab-stop instead." },
+        { title: "Split a selection into parts", sub: "${SELECTED:1} ${SELECTED:2} — comma-separated pieces",
+          body: "Access:${SELECTED:1}.Fetch(${SELECTED:2})",
+          result: "Access:<span class=sel>Clientes</span>.Fetch(<span class=sel>CLI:CLI01</span>)",
+          explain: "Select <code>Clientes,CLI:CLI01</code> (say, from inside a <code>GET(Clientes,CLI:CLI01)</code> call) and press <b>Ctrl+J</b>. <code>${SELECTED:1}</code> and <code>${SELECTED:2}</code> are the 1st and 2nd comma-separated parts of the selection, trimmed. Plain <code>${SELECTED}</code> still means the whole selection — mix them freely. With nothing selected, each distinct <code>${SELECTED:N}</code> becomes its own fillable tab-stop instead." },
         { title: "Multi-line block", sub: "auto-indent + $0",
           body: "LOOP\n  ${1:! your code}\n  $0\nEND",
           result: "    LOOP\n      <span class=ph>! your code</span>\n      <span class=caret>&#9474;</span>\n    END",
@@ -4230,7 +4234,7 @@
             var wl = m[0].toLowerCase(), ext = activeSnippetExtension(), snip = null;
             for (var i = 0; i < snippetsList.length; i++) {
                 var s = snippetsList[i];
-                if (s.body && s.body.indexOf('${SELECTED}') !== -1) continue;   // wrap-style → Ctrl+J only
+                if (isWrapStyleSnippet(s.body)) continue;   // wrap-style → Ctrl+J only
                 if (!snippetAppliesToExt(s, ext)) continue;
                 if ((s.trigger || '').toLowerCase() === wl) { snip = s; break; }   // EXACT trigger match
             }
@@ -4405,19 +4409,45 @@
         return { text: text, stops: stops };
     }
 
-    // Substitutes ${SELECTED} in the snippet body: with the text that was selected when Ctrl+J was
-    // pressed, or — if nothing was selected — with a new editable tab-stop (so the snippet never
-    // inserts a blank hole). A literal '$' inside the selected text is escaped so parseSnippetBody
+    // True for a snippet body referencing ${SELECTED} or ${SELECTED:N} — these wrap/consume the current
+    // selection and only make sense via Ctrl+J (which captures the selection before the picker opens), so
+    // trigger-word completion (which has already destroyed any selection by the time you finish typing the
+    // trigger) must keep them out of its list.
+    function isWrapStyleSnippet(body) { return !!body && /\$\{SELECTED(?::|\})/.test(body); }
+
+    // Substitutes ${SELECTED} / ${SELECTED:N} in the snippet body: with the text that was selected when
+    // Ctrl+J was pressed, or — if nothing was selected — with a new editable tab-stop (so the snippet
+    // never inserts a blank hole). A literal '$' inside the selected text is escaped so parseSnippetBody
     // doesn't mistake it for the start of another tab-stop.
+    //
+    // ${SELECTED:N} (1-based) splits the selection on commas and substitutes the Nth trimmed part — e.g.
+    // selecting "Clientes,CLI:CLI01" and writing "Access:${SELECTED:1}.Fetch(${SELECTED:2})" yields
+    // "Access:Clientes.Fetch(CLI:CLI01)". Out-of-range indices substitute empty. Plain ${SELECTED} (no
+    // index) keeps substituting the WHOLE selection unchanged, same as before.
     function insertSnippetBody(ed, body, selText) {
         var subst;
         if (selText) {
-            var escaped = selText.replace(/\$/g, function () { return '\\$'; });
-            subst = body.split('${SELECTED}').join(escaped);
+            var parts = selText.split(',').map(function (p) { return p.trim(); });
+            var escSel = function (s) { return s.replace(/\$/g, function () { return '\\$'; }); };
+            // Indexed tokens first — "${SELECTED}" as a literal string isn't a substring of "${SELECTED:1}"
+            // (missing the closing brace right after SELECTED), so this can't collide with the plain-token
+            // split below.
+            subst = body.replace(/\$\{SELECTED:(\d+)\}/g, function (_, n) {
+                var idx = parseInt(n, 10) - 1;
+                return escSel((idx >= 0 && idx < parts.length) ? parts[idx] : '');
+            });
+            subst = subst.split('${SELECTED}').join(escSel(selText));
         } else {
             var maxIdx = 0, re = /\$\{?(\d+)/g, m;
             while ((m = re.exec(body))) { var n = parseInt(m[1], 10); if (n > maxIdx) maxIdx = n; }
-            subst = body.split('${SELECTED}').join('${' + (maxIdx + 1) + ':selected}');
+            // No selection: every DISTINCT ${SELECTED}/${SELECTED:N} spelling becomes its own fillable
+            // tab-stop (never a blank hole). Repeats of the SAME spelling share one index and mirror,
+            // exactly like repeated $N stops (installSnippetTabCycling groups by index).
+            var nextIdx = maxIdx, assigned = {};
+            subst = body.replace(/\$\{SELECTED(?::(\d+))?\}/g, function (token, n) {
+                if (!assigned[token]) assigned[token] = { idx: ++nextIdx, hint: n ? 'selected' + n : 'selected' };
+                return '${' + assigned[token].idx + ':' + assigned[token].hint + '}';
+            });
         }
 
         var model = ed.getModel();

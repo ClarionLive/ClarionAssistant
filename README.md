@@ -49,6 +49,14 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
+## What's New (Unreleased)
+
+### Split a selection into multiple snippet parameters
+
+Code Snippets (Ctrl+J) gain `${SELECTED:N}` &mdash; the Nth comma-separated part of the current selection (1-based, trimmed), alongside the existing `${SELECTED}` (whole selection). Select `Clientes,CLI:CLI01` and a snippet body like `Access:${SELECTED:1}.Fetch(${SELECTED:2})` expands to `Access:Clientes.Fetch(CLI:CLI01)`. With nothing selected, each distinct `${SELECTED:N}` becomes its own fillable tab-stop instead of a blank hole &mdash; same as `${SELECTED}` already did. See the examples panel (the **?** next to the snippet Body field) for a worked example.
+
+---
+
 ## What's New in v5.4
 
 v5.4 is the biggest community cycle yet. Full notes: [docs/releases/v5.4.0.md](docs/releases/v5.4.0.md).
