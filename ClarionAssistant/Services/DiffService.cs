@@ -28,6 +28,12 @@ namespace ClarionAssistant.Services
         public string ModifiedPath { get; private set; }
         public Encoding ModifiedEncoding { get; private set; }
 
+        // Disk timestamps as they were when each side was READ into the diff. A save compares against these
+        // to catch "something else changed this file while the compare was open" — writing then would
+        // silently discard the other change, since the pane was built from the older content.
+        private DateTime _originalStampUtc;
+        private DateTime _modifiedStampUtc;
+
         public DiffFileContext(string originalPath, Encoding originalEncoding,
                                string modifiedPath, Encoding modifiedEncoding)
         {
@@ -35,6 +41,14 @@ namespace ClarionAssistant.Services
             OriginalEncoding = originalEncoding;
             ModifiedPath = modifiedPath;
             ModifiedEncoding = modifiedEncoding;
+            _originalStampUtc = SafeStamp(originalPath);
+            _modifiedStampUtc = SafeStamp(modifiedPath);
+        }
+
+        private static DateTime SafeStamp(string path)
+        {
+            try { return File.GetLastWriteTimeUtc(path); }
+            catch { return DateTime.MinValue; }
         }
 
         /// <summary>Resolve a side name ("original"/"modified") coming FROM THE PAGE to a real path+encoding.
@@ -45,6 +59,31 @@ namespace ClarionAssistant.Services
             if (side == "original") { path = OriginalPath; encoding = OriginalEncoding; return true; }
             if (side == "modified") { path = ModifiedPath; encoding = ModifiedEncoding; return true; }
             path = null; encoding = null; return false;
+        }
+
+        /// <summary>True if the file on disk still looks like the one this side was read from. A mismatch
+        /// means someone else wrote it while the compare was open, so our pane is based on stale content and
+        /// saving it would drop their change. Unknown stamps (MinValue) don't block — a guard that can't
+        /// read the timestamp should not make the feature unusable.</summary>
+        public bool IsSideUnchangedOnDisk(string side)
+        {
+            string path; DateTime captured;
+            if (side == "original") { path = OriginalPath; captured = _originalStampUtc; }
+            else if (side == "modified") { path = ModifiedPath; captured = _modifiedStampUtc; }
+            else return false;
+
+            if (captured == DateTime.MinValue) return true;
+            DateTime now = SafeStamp(path);
+            if (now == DateTime.MinValue) return true;
+            return now == captured;
+        }
+
+        /// <summary>Adopt the on-disk state as the new baseline for a side we just wrote — otherwise our own
+        /// write would make the next save of that side look like someone else's interference.</summary>
+        public void NoteSideSaved(string side)
+        {
+            if (side == "original") _originalStampUtc = SafeStamp(OriginalPath);
+            else if (side == "modified") _modifiedStampUtc = SafeStamp(ModifiedPath);
         }
     }
 
@@ -101,9 +140,15 @@ namespace ClarionAssistant.Services
 
             try
             {
-                // Close previous diff if still open
+                // Close previous diff if still open. There is only ONE diff slot, so opening a second
+                // compare discards the first — which is destructive once a compare can hold unsaved edits.
                 if (_currentDiff != null)
                 {
+                    if (!ConfirmDiscardIfDirty(_currentDiff,
+                            "The open compare has unsaved changes that have not been written to disk.\n\n" +
+                            "Opening a new compare will discard them. Continue?"))
+                        return "Cancelled: the open compare has unsaved changes.";
+
                     try
                     {
                         var ww = _currentDiff.WorkbenchWindow;
@@ -120,6 +165,13 @@ namespace ClarionAssistant.Services
                     var monaco = new MonacoDiffViewContent(title, originalText, modifiedText, language, ignoreWhitespace, _isDark, fileContext);
                     monaco.Applied += OnApplied;
                     monaco.Cancelled += OnCancelled;
+                    if (fileContext != null)
+                    {
+                        // Captured per-view so the handler always writes through THIS diff's context, even if
+                        // _currentDiff has since been replaced by another compare.
+                        var target = monaco;
+                        monaco.SaveSideRequested += (side, text) => OnSaveSideRequested(target, side, text);
+                    }
                     // NOTE: the Monaco view has no notes workflow yet (deferred to a follow-up ticket).
                     _currentDiff = monaco;
                 }
@@ -244,6 +296,114 @@ namespace ClarionAssistant.Services
             return string.Join("\n", lines);
         }
 
+        /// <summary>
+        /// Write one side of an editable file compare back to disk. This is the "smart route" agreed with
+        /// John (2026-07-30): SAVE ALWAYS MEANS ON DISK, but never at the cost of someone else's edit.
+        ///
+        /// Order matters — each guard exists because skipping it loses data silently:
+        ///   1. Resolve the SIDE TOKEN to a path. The page never supplies a path, so it cannot redirect us.
+        ///   2. Refuse if an open editor tab holds UNSAVED edits for that file. The diff panes were built
+        ///      from DISK, so they do not contain those edits; writing would strand them, and pushing our
+        ///      text into the tab would destroy them. Neither side can be preserved automatically, so the
+        ///      only honest answer is to stop and say so.
+        ///   3. Refuse if the file changed on disk since the compare opened — our pane is based on the older
+        ///      content, so writing would drop whatever landed in between.
+        ///   4. Write using the encoding captured at READ time, which round-trips the file's original BOM
+        ///      state (DetectFileEncoding returns UTF8Encoding(true/false) accordingly — important because
+        ///      Clarion rejects a BOM it did not start with).
+        ///   5. Resync a CLEAN open tab so it shows the new content instead of a stale buffer.
+        /// </summary>
+        private void OnSaveSideRequested(MonacoDiffViewContent view, string side, string text)
+        {
+            if (view == null) return;
+            try
+            {
+                var ctx = view.FileContext;
+                if (ctx == null) { view.PostSaveResult(side, false, "This diff has no file to save to."); return; }
+
+                string path; Encoding encoding;
+                if (!ctx.TryResolveSide(side, out path, out encoding) || string.IsNullOrEmpty(path))
+                {
+                    view.PostSaveResult(side, false, "Unknown side — nothing was written.");
+                    return;
+                }
+
+                string name = SafeName(path);
+
+                // TWO dirty checks, because neither alone is sufficient:
+                //   - The CA Monaco overlay keeps its buffer OUTSIDE the IDE's document model and leaves the
+                //     native shell clean on purpose, so the IDE reports "not dirty" for a tab full of edits.
+                //   - Conversely the overlay can be toggled off (ToggleMonacoSourceOverlayCommand), leaving a
+                //     plain native editor whose unsaved state only the IDE knows about.
+                bool tabDirty;
+                if ((MonacoClarionEditor.TryGetLiveTabState(path, out tabDirty) && tabDirty) || IsOpenAndDirtyInIde(path))
+                {
+                    view.PostSaveResult(side, false,
+                        name + " has unsaved changes in an editor. Save or close that tab, then re-run the compare.");
+                    return;
+                }
+
+                if (!ctx.IsSideUnchangedOnDisk(side))
+                {
+                    view.PostSaveResult(side, false,
+                        name + " changed on disk since this compare opened. Re-run the compare so you don't overwrite that change.");
+                    return;
+                }
+
+                var attrs = SafeAttributes(path);
+                if (attrs.HasValue && (attrs.Value & FileAttributes.ReadOnly) == FileAttributes.ReadOnly)
+                {
+                    view.PostSaveResult(side, false, name + " is read-only on disk.");
+                    return;
+                }
+
+                File.WriteAllText(path, text ?? "", encoding);
+                ctx.NoteSideSaved(side);
+
+                // Best-effort: an open CLEAN tab for this file now shows stale text. Refresh it so the editor
+                // and disk agree. A failure here does not undo the save, so it must not be reported as one.
+                try { MonacoClarionEditor.TryResyncFromDisk(path); } catch { }
+
+                view.PostSaveResult(side, true, "Saved " + name + ".");
+            }
+            catch (Exception ex)
+            {
+                try { view.PostSaveResult(side, false, "Save failed: " + ex.Message); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// Does the IDE itself hold an open, modified document for this path? Complements the CA-overlay
+        /// check — this one sees a plain native editor tab with unsaved edits.
+        ///
+        /// IsDirty lives on AbstractViewContent, NOT on the IViewContent that FileService hands back (verified
+        /// against this fork's ICSharpCode.SharpDevelop.dll), hence the cast. A view content that is neither
+        /// shape is treated as clean rather than blocking the save on something we cannot read.
+        /// </summary>
+        private static bool IsOpenAndDirtyInIde(string path)
+        {
+            try
+            {
+                if (!ICSharpCode.SharpDevelop.FileService.IsOpen(path)) return false;
+                var vc = ICSharpCode.SharpDevelop.FileService.GetOpenFileViewContent(path) as AbstractViewContent;
+                return vc != null && vc.IsDirty;
+            }
+            catch { return false; }
+        }
+
+        private static string SafeName(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return "The file";
+            try { return Path.GetFileName(path) ?? path; }
+            catch { return path; }
+        }
+
+        private static FileAttributes? SafeAttributes(string path)
+        {
+            try { return File.GetAttributes(path); }
+            catch { return null; }
+        }
+
         private void OnApplied(string text)
         {
             _lastAction = "apply";
@@ -253,10 +413,53 @@ namespace ClarionAssistant.Services
 
         private void OnCancelled()
         {
+            var monaco = _currentDiff as MonacoDiffViewContent;
+            if (monaco != null && monaco.HasUnsavedEdits)
+            {
+                // This runs on the WebView2 message-handler stack. A modal here pumps a nested message
+                // loop inside that handler — the reentrancy trap this codebase has been bitten by before
+                // (see the embeditor's "run the open OFF this stack" rule and the close-save MessageBox
+                // note in MonacoClarionSourceEditor). Defer, then prompt.
+                var ctrl = monaco.Control;
+                if (ctrl != null && ctrl.IsHandleCreated)
+                {
+                    ctrl.BeginInvoke((MethodInvoker)(() =>
+                    {
+                        if (!ConfirmDiscardIfDirty(_currentDiff,
+                                "This compare has unsaved changes that have not been written to disk.\n\n" +
+                                "Close and discard them?"))
+                            return;
+                        _lastAction = "cancel";
+                        _lastResult = null;
+                        _lastNotes = null;
+                        CloseDiff();
+                    }));
+                    return;
+                }
+            }
+
             _lastAction = "cancel";
             _lastResult = null;
             _lastNotes = null;
             CloseDiff();
+        }
+
+        /// <summary>Ask before discarding unsaved compare edits. Returns true when it is safe to proceed —
+        /// including the common case of a diff that is read-only or clean, which is never prompted for.</summary>
+        private static bool ConfirmDiscardIfDirty(AbstractViewContent diff, string message)
+        {
+            var monaco = diff as MonacoDiffViewContent;
+            if (monaco == null || !monaco.HasUnsavedEdits) return true;
+            try
+            {
+                return MessageBox.Show(message, "Unsaved compare changes",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+            }
+            catch
+            {
+                // No UI available to ask — the safe default is to KEEP the edits, not silently bin them.
+                return false;
+            }
         }
 
         private void OnNotesSubmitted(string notesJson)

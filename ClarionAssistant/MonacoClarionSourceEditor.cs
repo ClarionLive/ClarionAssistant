@@ -138,6 +138,83 @@ namespace ClarionAssistant
             }
         }
 
+        /// <summary>
+        /// Is <paramref name="path"/> open in a live CA Monaco source tab, and does that tab have unsaved
+        /// edits? Needed by the editable-compare write-back (task 0d47078b), which must never write a file
+        /// out from under an editor holding newer text.
+        ///
+        /// The overlay's dirty state is NOT visible through the IDE's own AbstractViewContent.IsDirty — this
+        /// class deliberately leaves the native shell clean (see SaveAllDirtyBeforeBuild's comment), so the
+        /// only truthful source is the mirrored _overlayDirty. Asking the IDE instead would report "clean"
+        /// for a tab full of unsaved work.
+        /// </summary>
+        /// <returns>true if a live tab for that path was found; <paramref name="isDirty"/> reports its state.</returns>
+        internal static bool TryGetLiveTabState(string path, out bool isDirty)
+        {
+            isDirty = false;
+            if (string.IsNullOrEmpty(path)) return false;
+            List<MonacoClarionEditor> snapshot;
+            lock (_instances) { snapshot = new List<MonacoClarionEditor>(_instances); }
+            foreach (var inst in snapshot)
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(inst._filePath)) continue;
+                    if (!PathsEqual(inst._filePath, path)) continue;
+                    isDirty = inst._overlayDirty;
+                    return true;
+                }
+                catch { }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Re-read <paramref name="path"/> from disk into its live CA Monaco tab, if one is open and CLEAN.
+        /// Used after the editable compare writes that file, so the open tab shows the new content instead of
+        /// a stale buffer.
+        ///
+        /// Refuses when the tab has unsaved edits — reloading would discard them. Callers are expected to have
+        /// already refused the WRITE in that case; this is a second line of defence, not the primary guard.
+        /// Reuses the existing OnReload path, which re-reads disk, clears the dirty flag and resyncs the disk
+        /// watch baseline — exactly the post-write state we want.
+        /// </summary>
+        internal static bool TryResyncFromDisk(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            List<MonacoClarionEditor> snapshot;
+            lock (_instances) { snapshot = new List<MonacoClarionEditor>(_instances); }
+            foreach (var inst in snapshot)
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(inst._filePath)) continue;
+                    if (!PathsEqual(inst._filePath, path)) continue;
+                    if (inst._overlayDirty) return false;      // never clobber unsaved edits
+                    if (inst._editor == null) return false;    // page not up yet — nothing to resync
+                    ((IMonacoEditorHost)inst).OnReload(inst._editor);
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    MonacoSpikeLog.Write("TryResyncFromDisk error: " + ex.Message);
+                    return false;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>Windows path comparison for the tab lookups above: case-insensitive, and normalized so
+        /// the same file reached by differently-shaped paths still matches. Falls back to a plain
+        /// case-insensitive compare if either path is malformed enough that GetFullPath throws.</summary>
+        private static bool PathsEqual(string a, string b)
+        {
+            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+            try { a = Path.GetFullPath(a); b = Path.GetFullPath(b); }
+            catch { }
+            return string.Equals(a.TrimEnd('\\'), b.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+        }
+
         /// <summary>Same write path + dirty guard as OnWorkbenchClosing/Dispose's save-on-close, minus the
         /// close: writes the overlay's live buffer to disk if there are unsaved edits, then clears the dirty
         /// flag so a subsequent close doesn't prompt again for something already safely on disk. Does NOT

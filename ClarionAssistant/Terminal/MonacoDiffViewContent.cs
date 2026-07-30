@@ -38,6 +38,8 @@ namespace ClarionAssistant.Terminal
         private bool _ignoreWhitespace;
         private bool _isDark = true;
         private readonly ClarionAssistant.Services.DiffFileContext _fileContext;
+        private bool _origDirty;
+        private bool _modDirty;
 
         private string _tempDir;
         private const string VIRTUAL_HOST = "clarion-monaco-diff-data";
@@ -50,6 +52,12 @@ namespace ClarionAssistant.Terminal
         /// <summary>Fires when the user clicks Cancel.</summary>
         public event Action Cancelled;
 
+        /// <summary>Fires when the user saves one side of an editable file compare. The string is the SIDE
+        /// TOKEN ("original"/"modified") — never a path; the handler resolves the real path through
+        /// <see cref="FileContext"/>. The second argument is the pane's live text. The handler reports the
+        /// outcome back via <see cref="PostSaveResult"/>.</summary>
+        public event Action<string, string> SaveSideRequested;
+
         public override Control Control { get { return _panel; } }
 
         /// <summary>Non-null only for an editable whole-file compare — the authoritative record of which path
@@ -60,6 +68,10 @@ namespace ClarionAssistant.Terminal
         /// <summary>True when this diff is an editable file-vs-file compare rather than the read-only
         /// MCP show_diff viewer.</summary>
         public bool IsFileCompare { get { return _fileContext != null; } }
+
+        /// <summary>True when either pane holds edits that have not been written to disk. Mirrored from the
+        /// page, so it is only ever meaningful for a file compare.</summary>
+        public bool HasUnsavedEdits { get { return _fileContext != null && (_origDirty || _modDirty); } }
 
         public MonacoDiffViewContent(string title, string originalText, string modifiedText, string language = "clarion",
             bool ignoreWhitespace = true, bool isDark = true, ClarionAssistant.Services.DiffFileContext fileContext = null)
@@ -142,15 +154,81 @@ namespace ClarionAssistant.Terminal
                 string action = ExtractJsonValue(json, "action");
 
                 if (action == "ready")
+                {
                     SendDiffData();
+                }
                 else if (action == "approve")
-                    Applied?.Invoke(_modifiedText);
+                {
+                    // The page sends its LIVE modified buffer. Previously this passed _modifiedText — the
+                    // text originally handed TO the page — so once the panes became editable, Approve would
+                    // have silently returned the pre-edit text to the MCP caller. Falls back to the original
+                    // field only if the payload has no text (an older page, or a malformed message).
+                    string live = ExtractPayloadText(json);
+                    Applied?.Invoke(live ?? _modifiedText);
+                }
                 else if (action == "cancel")
+                {
                     Cancelled?.Invoke();
+                }
+                else if (action == "dirtyState")
+                {
+                    // Mirrored from the page so the host can guard destructive actions (close / replace)
+                    // without having to ask the page synchronously.
+                    _origDirty = ExtractJsonValue(json, "origDirty") == "true";
+                    _modDirty = ExtractJsonValue(json, "modDirty") == "true";
+                }
+                else if (action == "saveSide")
+                {
+                    string side = ExtractJsonValue(json, "side");
+                    string text = ExtractPayloadText(json);
+                    if (side == null || text == null)
+                        PostSaveResult(side ?? "", false, "Save request was malformed.");
+                    else if (SaveSideRequested == null)
+                        PostSaveResult(side, false, "Saving is not available for this diff.");
+                    else
+                        SaveSideRequested(side, text);
+                }
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine("[MonacoDiffViewContent] Message error: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Pull the "text" field out of a page message. Uses a real JSON parser rather than the hand-rolled
+        /// <see cref="ExtractJsonValue"/> because this field carries ARBITRARY FILE CONTENT: JSON.stringify
+        /// escapes control characters as \uXXXX, which the hand-rolled reader passes through literally and
+        /// would silently corrupt what we then write to disk. Returns null when absent.
+        /// </summary>
+        private static string ExtractPayloadText(string json)
+        {
+            try
+            {
+                var data = new System.Web.Script.Serialization.JavaScriptSerializer { MaxJsonLength = int.MaxValue }
+                    .DeserializeObject(json) as Dictionary<string, object>;
+                if (data == null || !data.ContainsKey("text")) return null;
+                return data["text"] as string;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>Tell the page how a save went. On success the page marks that side clean; on failure it
+        /// surfaces the message and LEAVES the side dirty, so a refused save never looks like a saved one.</summary>
+        public void PostSaveResult(string side, bool ok, string message)
+        {
+            if (_webView == null || _webView.CoreWebView2 == null) return;
+            try
+            {
+                _webView.CoreWebView2.PostWebMessageAsJson(
+                    "{\"type\":\"saveResult\"," +
+                    "\"side\":" + JsonString(side ?? "") + "," +
+                    "\"ok\":" + (ok ? "true" : "false") + "," +
+                    "\"message\":" + JsonString(message ?? "") + "}");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[MonacoDiffViewContent] PostSaveResult error: " + ex.Message);
             }
         }
 

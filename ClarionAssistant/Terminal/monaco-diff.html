@@ -77,6 +77,12 @@
     .cr-btn.pass:hover { background: #94e2d5; }
     .cr-btn.cancel-btn { background: transparent; color: var(--fg); border: 1px solid var(--btn-border); }
     .cr-btn.cancel-btn:hover { background: var(--btn-hover); }
+    /* Save buttons exist only in editable file-compare mode, and are enabled only while that side is
+       dirty — so the bar itself tells you whether there is anything to write. */
+    .cr-btn.save-btn { display: none; background: transparent; color: var(--nav-color); border: 1px solid var(--btn-border); }
+    .cr-btn.save-btn.sb-visible { display: inline-block; }
+    .cr-btn.save-btn:hover:not(:disabled) { background: var(--btn-hover); }
+    .cr-btn.save-btn:disabled { opacity: 0.4; cursor: default; }
 
     /* ---------- Current-line comparison panel (TotalCommander-style full-line view) ---------- */
     #linecompare {
@@ -161,6 +167,8 @@
         <span class="fb-side" id="fb-modified"><span class="fb-dot"></span><span class="fb-name" id="fb-name-modified"></span></span>
     </span>
     <div class="spacer"></div>
+    <button id="btn-save-original" class="cr-btn save-btn" onclick="saveSide('original')" title="Write the left pane to its file">Save Left</button>
+    <button id="btn-save-modified" class="cr-btn save-btn" onclick="saveSide('modified')" title="Write the right pane to its file">Save Right</button>
     <button id="btn-approve" class="cr-btn pass" onclick="onApprove()">Approve</button>
     <button id="btn-cancel" class="cr-btn cancel-btn" onclick="onCancel()">Cancel</button>
 </div>
@@ -374,14 +382,38 @@
         }
         renderDirtyState();
     }
+    var lastPostedDirty = null;
     function renderDirtyState() {
         var o = document.getElementById('fb-original');
         var m = document.getElementById('fb-modified');
         if (o) o.classList.toggle('dirty', !!origDirty);
         if (m) m.classList.toggle('dirty', !!modDirty);
-        // Save buttons are wired in a later item; this hook is where they get enabled/disabled.
         if (typeof onDirtyStateChanged === 'function') onDirtyStateChanged();
+
+        // Mirror dirty state to the host so it can put a prompt in front of anything that would
+        // discard unsaved edits (closing this diff, or replacing it with another compare). Only on a
+        // real transition — recomputeDirty runs on every keystroke and the host needs none of that.
+        var stamp = (origDirty ? '1' : '0') + (modDirty ? '1' : '0');
+        if (stamp !== lastPostedDirty) {
+            lastPostedDirty = stamp;
+            postMsg({ action: 'dirtyState', origDirty: !!origDirty, modDirty: !!modDirty });
+        }
     }
+    /// Enable/disable the per-side Save buttons. Called from renderDirtyState (which the dirty tracking
+    /// and the in-flight save flag both drive), so the buttons can never disagree with the dirty dots.
+    function onDirtyStateChanged() {
+        var so = document.getElementById('btn-save-original');
+        var sm = document.getElementById('btn-save-modified');
+        if (so) {
+            so.classList.toggle('sb-visible', fileCompareMode);
+            so.disabled = !origDirty || savePending.original;
+        }
+        if (sm) {
+            sm.classList.toggle('sb-visible', fileCompareMode);
+            sm.disabled = !modDirty || savePending.modified;
+        }
+    }
+
     /// Marks a side clean at its current content — called after a successful save.
     function markSideClean(side) {
         try {
@@ -583,6 +615,11 @@
         var mName = document.getElementById('fb-name-modified');
         if (oName) { oName.textContent = msg.originalName || ''; oName.title = msg.originalPath || ''; }
         if (mName) { mName.textContent = msg.modifiedName || ''; mName.title = msg.modifiedPath || ''; }
+
+        // Show/hide the Save buttons for the new mode. The models have not loaded yet, so both sides are
+        // clean and the buttons come up correctly disabled.
+        savePending.original = savePending.modified = false;
+        onDirtyStateChanged();
     }
 
     // ===== Monaco worker shim (cross-origin CDN workers can't load directly) =====
@@ -723,8 +760,40 @@
     }
 
     // ===== Actions (mirror diff.html's host contract) =====
-    function onApprove() { postMsg({ action: 'approve' }); }
+    // Approve carries the LIVE modified buffer. It used to carry nothing and the host answered with the
+    // text it had originally sent — which was correct only while the pane could not be edited.
+    function onApprove() {
+        var live = null;
+        try { if (modifiedModel) live = modifiedModel.getValue(); } catch (e) { }
+        postMsg({ action: 'approve', text: live });
+    }
     function onCancel() { postMsg({ action: 'cancel' }); }
+
+    /// Ask the host to write one side to disk. Sends a SIDE TOKEN, never a path — the host owns the
+    /// path/encoding mapping, so the page cannot redirect a write. The side stays dirty until the host
+    /// acks success, so a refused or failed save never looks like it worked.
+    function saveSide(side) {
+        if (!fileCompareMode) return;
+        var model = (side === 'original') ? originalModel : (side === 'modified') ? modifiedModel : null;
+        if (!model) return;
+        var text;
+        try { text = model.getValue(); } catch (e) { return; }
+        setSavePending(side, true);
+        postMsg({ action: 'saveSide', side: side, text: text });
+    }
+
+    /// Host's answer to a saveSide. Success marks the side clean (which clears its dot and disables its
+    /// Save button); failure leaves it dirty and shows why.
+    function onSaveResult(msg) {
+        var side = msg.side || '';
+        setSavePending(side, false);
+        if (msg.ok) {
+            markSideClean(side);
+            showFileBarNote((side === 'original' ? 'Left' : 'Right') + ' side saved.', false);
+        } else {
+            showFileBarNote(msg.message || 'Save failed.', true);
+        }
+    }
 
     // ===== Keyboard shortcuts (F7 / Shift+F7 nav, Esc = cancel) =====
     document.addEventListener('keydown', function (e) {
@@ -739,25 +808,41 @@
         }
     });
 
-    /// Briefly explain why Esc did nothing. Deliberately not a confirm()/alert(): a modal script
-    /// dialog inside the WebView2 host blocks the message pump the host talks to us over.
-    var unsavedHintTimer = null;
-    function flashUnsavedHint() {
+    /// Transient message in the file bar (save outcomes, the Esc guard). Deliberately not a
+    /// confirm()/alert(): a modal script dialog inside the WebView2 host blocks the message pump the
+    /// host talks to us over. An error sticks around noticeably longer than a success — a failed save
+    /// is the one message the user must not miss.
+    var fileBarNoteTimer = null;
+    var fileBarNoteEl = null;
+    function showFileBarNote(text, isError) {
         var bar = document.getElementById('filebar');
         if (!bar) return;
-        var prev = bar.getAttribute('data-hint-shown');
-        if (prev === '1') return;
-        bar.setAttribute('data-hint-shown', '1');
+        if (fileBarNoteEl) { try { bar.removeChild(fileBarNoteEl); } catch (e) { } fileBarNoteEl = null; }
         var note = document.createElement('span');
         note.className = 'fb-name';
-        note.style.color = 'var(--nav-color)';
-        note.textContent = 'Unsaved changes — save, or press Close to discard.';
+        note.style.color = isError ? '#f38ba8' : 'var(--nav-color)';
+        note.style.maxWidth = '420px';
+        note.textContent = text;
+        note.title = text;          // full text on hover when the bar ellipsis-truncates it
         bar.appendChild(note);
-        clearTimeout(unsavedHintTimer);
-        unsavedHintTimer = setTimeout(function () {
+        fileBarNoteEl = note;
+        clearTimeout(fileBarNoteTimer);
+        fileBarNoteTimer = setTimeout(function () {
             try { bar.removeChild(note); } catch (e) { }
-            bar.removeAttribute('data-hint-shown');
-        }, 2600);
+            if (fileBarNoteEl === note) fileBarNoteEl = null;
+        }, isError ? 7000 : 2600);
+    }
+    function flashUnsavedHint() {
+        showFileBarNote('Unsaved changes — save, or press Close to discard.', false);
+    }
+
+    /// While a save is in flight that side's button is disabled, so a double-click can't queue a second
+    /// write of the same text.
+    var savePending = { original: false, modified: false };
+    function setSavePending(side, pending) {
+        if (side !== 'original' && side !== 'modified') return;
+        savePending[side] = !!pending;
+        renderDirtyState();
     }
 
     // ===== Host message handler =====
@@ -766,6 +851,7 @@
             var msg = event.data;
             if (typeof msg === 'string') { try { msg = JSON.parse(msg); } catch (e) { return; } }
             if (msg.type === 'applyTheme') { setTheme(msg.isDark !== false); return; }
+            if (msg.type === 'saveResult') { onSaveResult(msg); return; }
             if (msg.type === 'setDiff') {
                 if (!ready) { pending = msg; return; }
                 applyDiff(msg);
