@@ -166,7 +166,7 @@ $authorMap      = Get-ConfigMap $cfg.authors
 $coveredOverride= Get-ConfigMap $cfg.coveredOverrides
 $excludedRefs   = Get-ConfigMap $cfg.excludedRefs
 $ignoreScopes   = @($cfg.ignoreScopes)   | Where-Object { $_ }
-$ackCommits     = @($cfg.acknowledgedCommits) | Where-Object { $_ }
+$ackCommits     = Get-ConfigMap $cfg.acknowledgedCommits   # sha -> why
 # An ABSENT key means "use the defaults"; an explicitly EMPTY list means "disable the rule".
 # Collapsing the two would make the exclusion impossible to switch off from config — and
 # would quietly neutralise any test that tries to, which is how this was found.
@@ -378,7 +378,7 @@ foreach ($scope in ($scopeCommits.Keys | Sort-Object)) {
 
 foreach ($c in $unscoped) {
     $isAck = $false
-    foreach ($a in $ackCommits) {
+    foreach ($a in $ackCommits.Keys) {
         if ($a -and ($c.Sha -like "$a*")) { $isAck = $true; break }
     }
     if ($isAck) { continue }

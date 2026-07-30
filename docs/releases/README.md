@@ -98,8 +98,8 @@ Everything in it is editorial data that cannot be inferred from git or GitHub.
 - **`excludedRefs`** — one-off "never report this number" entries. Prefer
   `docsOnlyPathPatterns`, which is structural and needs no upkeep.
 - **`coveredOverrides`** — last-resort "this scope is covered" assertion.
-- **`acknowledgedCommits`** — SHAs of unprefixed commits a human has decided need no entry.
-  Clear this list when a version is cut; it is scoped to one cycle.
+- **`acknowledgedCommits`** — SHA → why, for unprefixed commits needing no further action.
+  Clear it when a version is cut; it is scoped to one cycle.
 
 ### Claiming coverage from the README
 
@@ -118,9 +118,26 @@ override outlives the entry and will then hide real drift.
 
 A commit with no conventional-commit prefix and no recognisable `CA <Feature>:` subject has
 no key to reconcile on, so the tool reports it for **triage** rather than guessing — guessing
-would either invent drift or hide it. Document it, or list its SHA in `acknowledgedCommits`.
-(If such a commit cites issues in its subject and all of them are already cited in the notes,
-it is treated as covered and not reported.)
+would either invent drift or hide it. Document it, or record its SHA in
+`acknowledgedCommits`. (If such a commit cites issues in its subject and all of them are
+already cited in the notes, it is treated as covered and not reported.)
+
+Usually the commit turns out to be *already documented* by an entry the tool simply cannot
+link to it — an unprefixed subject carries no scope, so it cannot claim a coverage marker
+either. Acknowledge it with a reason; do not invent a scope for the entry to make it
+matchable.
+
+**The risk profiles here are opposite, and it is worth being explicit.** The warning above —
+prefer a README marker over a config override, because the marker dies with the entry —
+applies to *scopes*. It does not apply here:
+
+| | covers | if it goes stale |
+|---|---|---|
+| scope alias / override | every commit ever carrying that scope | silently hides future drift |
+| SHA acknowledgement | exactly one immutable commit | cannot hide anything, ever |
+
+So for a SHA-less commit the config entry is the **safer** option, not the compromise. A
+scope alias is the one to be sparing with.
 
 ## The release gate
 

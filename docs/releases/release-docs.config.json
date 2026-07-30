@@ -104,14 +104,26 @@
   "coveredOverrides": {},
 
   "$comment_acknowledgedCommits": [
-    "Full or abbreviated SHAs of commits the tool could not attribute to any scope (unprefixed",
-    "subjects) and that a human has decided need no release-note entry.",
+    "SHA (full or abbreviated) -> why it needs no further action. Covers BOTH cases:",
+    "  (a) the commit warrants no release note at all, and",
+    "  (b) the commit IS documented, but by an entry the tool cannot link back to it.",
+    "Case (b) is the common one: an unprefixed subject carries no scope, so it cannot claim a",
+    "coverage marker either, even though a perfectly good entry describes it.",
     "",
-    "The tool deliberately does NOT guess for these. An unprefixed subject carries no scope and",
-    "no reliable keyword, so guessing would either invent drift or hide it. Listing the SHA is an",
-    "explicit human decision, recorded in the repo.",
+    "The tool deliberately does NOT guess here. An unprefixed subject has no scope and no",
+    "reliable keyword, so guessing would either invent drift or hide it. The SHA is an explicit",
+    "human decision, recorded in the repo.",
     "",
-    "Scoped to one release cycle — clear this list when a version is cut."
+    "NOTE THE RISK PROFILE, which is the OPPOSITE of a scope alias. A SHA names one immutable",
+    "commit and can never mask anything future. A scope alias silently covers every commit that",
+    "ever carries that scope, forever. So where a coverage marker is the cautious choice for a",
+    "scope, a SHA acknowledgement is the SAFER of the options here — not a compromise. Padding an",
+    "entry with an invented scope purely to make it matchable would be the riskier fix.",
+    "",
+    "Scoped to one release cycle — clear this map when a version is cut."
   ],
-  "acknowledgedCommits": []
+  "acknowledgedCommits": {
+    "d335b08": "Split-editor pane — documented by the 'Horizontal split panes (#157)' entry; unprefixed subject, so it cannot carry a scope marker.",
+    "4cf141d": "Embeditor close/reopen on Errors-pane clicks — documented by the 'Zero-reload error navigation' entry; unprefixed subject."
+  }
 }
