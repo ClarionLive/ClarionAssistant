@@ -2644,16 +2644,21 @@
                         // Write the correction back. Without this the host and the file still hold the empty
                         // scope, so the NEXT payload that happens to populate that group would silently yank the
                         // view back to it while the user was browsing 'all'.
-                        if (explorerScope !== msg.uiState.scope) scopeCorrectionPending = true;
+                        if (explorerScope !== msg.uiState.scope) uiCorrectionPending = true;
                     }
                     if (msg.uiState.extMode) redExtMode    = msg.uiState.extMode;
                     var maskEl = document.getElementById('redCustomExt');
                     if (maskEl && typeof msg.uiState.customExt === 'string') maskEl.value = msg.uiState.customExt;
                     redParseCustom();
+                    // A persisted "custom" mode whose mask parses to NOTHING (e.g. "*" or "*.", which
+                    // redParseCustom discards as under-length) renders as an active-looking filter that filters
+                    // nothing. The host rejects an EMPTY mask, but it cannot know what redParseCustom will keep,
+                    // so the final say belongs here — before redSyncTypeBtn paints the button.
+                    if (redExtMode === 'custom' && !redCustomExts.length) { redExtMode = 'all'; uiCorrectionPending = true; }
                     redSyncTypeBtn();
                     // Flushed HERE, after the mask has been applied — saveExplorerUiState reads #redCustomExt,
                     // so posting it back at the scope line above would persist a stale mask.
-                    if (scopeCorrectionPending) { scopeCorrectionPending = false; saveExplorerUiState(); }
+                    if (uiCorrectionPending) { uiCorrectionPending = false; saveExplorerUiState(); }
                 }
                 renderExplorer();
             }
@@ -2927,7 +2932,9 @@
     var explorerData = null;        // last setExplorerData payload
     var explorerCollapsed = {};     // group key ('compares'|'classes'|'templates'|'source'|'other') -> true when collapsed
     var explorerFilter = '';        // live filter text for recent rows
-    var scopeCorrectionPending = false;  // scopeWithContent overrode the arriving scope; write the fix back
+    // Set when the page had to override something the host sent (an empty scope, or a "custom" type filter
+    // whose mask parses to nothing). Named for the correction, not the facet: it now covers more than scope.
+    var uiCorrectionPending = false;
 
     function fIco(ext, kind) {
         var e = (ext || '').toLowerCase().replace(/^\./, '');

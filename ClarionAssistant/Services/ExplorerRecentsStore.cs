@@ -31,14 +31,6 @@ namespace ClarionAssistant.Services
         /// <summary>Cap on pinned compare pairs, mirroring <see cref="PinnedFilesCap"/> for pinned files.</summary>
         private const int PinnedComparesCap = 50;
 
-        /// <summary>
-        /// Absolute ceiling on compare pairs accepted from disk, pinned included. The per-kind caps above are
-        /// enforced when pairs arrive through the API, but nothing stops a hand-edited or corrupted file from
-        /// declaring thousands of PINNED pairs — and every loaded pair costs two File.Exists probes on every
-        /// Files-tab render (ExplorerFileClassifier.BuildCompares), so an unbounded list is a UI stall.
-        /// </summary>
-        private const int TotalComparesCap = RecentComparesCap + PinnedComparesCap;
-
         /// <summary>Cap on persisted collapsed-group keys — a backstop against an unbounded key list.</summary>
         private const int CollapsedCap = 64;
 
@@ -119,6 +111,12 @@ namespace ClarionAssistant.Services
                 if (d.TryGetValue("recentCompares", out cv) && cv is object[])
                 {
                     var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    // Counted PER KIND, and full kinds are SKIPPED rather than ending the read. A single
+                    // total-count break would be positional: a hand-edited file listing 100 unpinned pairs
+                    // ahead of its pinned ones would fill the quota with unpinned and drop every pinned pair —
+                    // inverting the pinned-immunity this file guarantees everywhere else. Partitioning makes
+                    // that guarantee hold regardless of the order the entries happen to appear in.
+                    int pinnedTaken = 0, unpinnedTaken = 0;
                     foreach (var item in (object[])cv)
                     {
                         var cd = item as Dictionary<string, object>;
@@ -128,17 +126,25 @@ namespace ClarionAssistant.Services
                         if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) continue;
                         string key = PairKey(a, b);
                         if (key == null || !seen.Add(key)) continue;   // drop unresolvable + duplicate pairs
+
+                        bool isPinned = AsBool(cd, "pinned");
+                        if (isPinned)
+                        {
+                            if (pinnedTaken >= PinnedComparesCap) continue;
+                            pinnedTaken++;
+                        }
+                        else
+                        {
+                            if (unpinnedTaken >= RecentComparesCap) continue;
+                            unpinnedTaken++;
+                        }
                         model.RecentCompares.Add(new ComparePair
                         {
                             A = a,
                             B = b,
                             Ts = AsLong(cd, "ts"),
-                            Pinned = AsBool(cd, "pinned")
+                            Pinned = isPinned
                         });
-                        // Absolute ceiling, pinned included — a hand-edited file could otherwise declare an
-                        // unbounded number of PINNED pairs, which TrimCompares (unpinned-only, by design) would
-                        // happily keep and the classifier would File.Exists on every render.
-                        if (model.RecentCompares.Count >= TotalComparesCap) break;
                     }
                     // Then trim by the per-kind rule. Done AFTER the loop rather than breaking at
                     // RecentComparesCap: breaking there would drop PINNED pairs sitting past it, and pinned

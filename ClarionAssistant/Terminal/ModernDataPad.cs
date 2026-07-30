@@ -1088,8 +1088,12 @@ namespace ClarionAssistant
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] SeedExplorerUiState: " + ex.Message); }
-            // Marked seeded only AFTER the read. Marking first would strand this bucket permanently on the
-            // defaults if the read ever threw, because the guard above would already match on the retry.
+            // Marked seeded UNCONDITIONALLY, including on the failure path — deliberately, and not merely
+            // because GetViewState is total (it swallows everything and returns a default ViewState, so the
+            // catch above is unreachable today). If a future throwing read skipped this assignment, the guard
+            // at the top would no longer match and the reset-then-overlay above would re-fire on EVERY
+            // PostExplorerData — i.e. on every pin, open and remove — resetting the user's live scope each
+            // time. Stranding one bucket on defaults is strictly better than clobbering the view repeatedly.
             _explorerUiSeededFor = bucket;
         }
 
