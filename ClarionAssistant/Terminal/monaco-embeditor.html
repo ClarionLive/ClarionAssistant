@@ -620,6 +620,7 @@
         <span class="tb-sep"></span>
         <button id="findBtn" title="Find &amp; Replace"><svg class="fico-sm" viewBox="0 0 20 20" fill="none" stroke="#2563eb" stroke-width="2.2" stroke-linecap="round"><circle cx="8.5" cy="8.5" r="5"/><path d="M12.6 12.6 L17 17"/></svg></button>
         <button id="outlineBtn" title="Document structure (outline)"><svg class="fico-sm" viewBox="0 0 20 20" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 5 H16 M7 10 H16 M7 15 H16"/><circle cx="3.6" cy="5" r="1.1" fill="#2563eb" stroke="none"/><circle cx="3.6" cy="10" r="1.1" fill="#2563eb" stroke="none"/><circle cx="3.6" cy="15" r="1.1" fill="#2563eb" stroke="none"/></svg></button>
+        <button id="foldBtn" title="Contract all (fold every structure) — right-click for Expand all"><svg class="fico-sm" viewBox="0 0 20 20" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 4 H16.5 M3.5 16 H16.5"/><path d="M7 8.2 L10 11.2 L13 8.2"/></svg></button>
         <button id="splitBtn" title="Split editor — two panes of the same file (compare/copy between areas)"><svg class="fico-sm" viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="1.6" fill="none" stroke="#475569" stroke-width="2"/><rect x="10" y="4" width="7" height="12" fill="#475569" opacity="0.22"/><path d="M10 4 V16" stroke="#475569" stroke-width="2"/></svg></button>
         <button id="settingsBtn" title="Editor settings"><svg class="fico-sm" viewBox="0 0 24 24" fill="#475569"><path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54a7 7 0 0 0-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.31 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96a7 7 0 0 0 1.62.94l.36 2.54a.5.5 0 0 0 .5.42h3.8a.5.5 0 0 0 .5-.42l.36-2.54a7 7 0 0 0 1.62-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64z" /><circle cx="12" cy="12" r="3.1" fill="#fff"/></svg></button>
         <button id="themeBtn" class="theme-toggle" title="Toggle light / dark"><svg class="tgl" width="34" height="16" viewBox="0 0 34 16"><rect x="0.5" y="0.5" width="33" height="15" rx="7.5" fill="#9aa5b5" stroke="rgba(0,0,0,0.3)"/><circle class="tgl-knob" cx="25" cy="8" r="6"/></svg></button>
@@ -1208,6 +1209,11 @@
                 if (splitBtn) splitBtn.addEventListener('click', toggleSplit);   // split toggle (#15)
                 if (splitBtn) splitBtn.addEventListener('contextmenu', function (ev) {
                     ev.preventDefault(); showSplitMenu(ev.clientX, ev.clientY);   // pick vertical/horizontal
+                });
+                var foldBtn = document.getElementById('foldBtn');
+                if (foldBtn) foldBtn.addEventListener('click', function () { foldAllInActive(); });   // contract all (#147)
+                if (foldBtn) foldBtn.addEventListener('contextmenu', function (ev) {
+                    ev.preventDefault(); showFoldMenu(ev.clientX, ev.clientY);   // contract / expand all
                 });
                 installNavTracking(editor);    // record cursor jumps for Back/Forward (#14)
                 wireNavButtons();
@@ -2771,6 +2777,38 @@
             d.className = 'ftab-menu-item';
             d.textContent = (splitOrientation === it[1] ? '✓ ' : '   ') + it[0];
             d.addEventListener('click', function () { hideTabMenu(); setSplitOrientation(it[1]); });
+            menu.appendChild(d);
+        });
+        menu.style.left = Math.min(x, window.innerWidth - 220) + 'px';
+        menu.style.top = Math.min(y, window.innerHeight - 80) + 'px';
+        menu.classList.remove('hidden');
+    }
+
+    // Contract/Expand all (#147). Monaco ships editor.foldAll / editor.unfoldAll and they were
+    // already reachable via the F1 palette and Ctrl+K Ctrl+0 / Ctrl+K Ctrl+J — what was missing is a
+    // visible control, which is what the request was actually about. Targets activeEd() so it acts
+    // on the focused pane when split, matching every other toolbar command here.
+    // Ranges come from our own Clarion folding provider, so this folds real Clarion structures
+    // (and, since GH #158, not keywords that merely appear inside string literals).
+    function foldAllInActive() { try { activeEd().trigger('toolbar', 'editor.foldAll', null); } catch (e) { } }
+    function unfoldAllInActive() { try { activeEd().trigger('toolbar', 'editor.unfoldAll', null); } catch (e) { } }
+
+    // Right-click menu on the fold button — same #ftabMenu element and shape as showSplitMenu, so
+    // the two toolbar buttons behave consistently (left-click = the common action, right-click =
+    // pick explicitly).
+    function showFoldMenu(x, y) {
+        var menu = document.getElementById('ftabMenu');
+        if (!menu) return;
+        menu.innerHTML = '';
+        var items = [
+            ['Contract all', foldAllInActive],
+            ['Expand all', unfoldAllInActive]
+        ];
+        items.forEach(function (it) {
+            var d = document.createElement('div');
+            d.className = 'ftab-menu-item';
+            d.textContent = '   ' + it[0];
+            d.addEventListener('click', function () { hideTabMenu(); it[1](); });
             menu.appendChild(d);
         });
         menu.style.left = Math.min(x, window.innerWidth - 220) + 'px';
