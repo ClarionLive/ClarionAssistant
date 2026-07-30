@@ -164,8 +164,17 @@ function Get-ConfigMap($Node) {
 $scopeAliases   = Get-ConfigMap $cfg.scopeAliases
 $authorMap      = Get-ConfigMap $cfg.authors
 $coveredOverride= Get-ConfigMap $cfg.coveredOverrides
+$excludedRefs   = Get-ConfigMap $cfg.excludedRefs
 $ignoreScopes   = @($cfg.ignoreScopes)   | Where-Object { $_ }
 $ackCommits     = @($cfg.acknowledgedCommits) | Where-Object { $_ }
+# An ABSENT key means "use the defaults"; an explicitly EMPTY list means "disable the rule".
+# Collapsing the two would make the exclusion impossible to switch off from config — and
+# would quietly neutralise any test that tries to, which is how this was found.
+$docsPatterns = if ($null -ne $cfg.PSObject.Properties['docsOnlyPathPatterns']) {
+    @($cfg.docsOnlyPathPatterns) | Where-Object { $_ }
+} else {
+    @('docs/*', '*.md')
+}
 
 # ---------------------------------------------------------------------------
 # README: the Unreleased block
@@ -420,8 +429,44 @@ $landedRefs  = @(($prMergeRefs + $otherRefs) | Sort-Object -Unique)
 # entries in this repo describe the change in prose without citing a number, so demanding a
 # citation would impose a new editorial convention rather than enforce the existing one.
 # Pass A already covers that work by scope; this is corroboration, not an independent check.
+$prFilesCache = @{}
+function Test-PrIsDocsOnly([int]$Number) {
+    if (-not $ghAvailable) { return $false }
+    if (-not $prFilesCache.ContainsKey($Number)) {
+        $paths = & gh api "repos/$ghRepo/pulls/$Number/files" --paginate --jq '.[].filename' 2>$null
+        $prFilesCache[$Number] = if ($LASTEXITCODE -eq 0 -and $paths) { @($paths) } else { @() }
+    }
+    $paths = $prFilesCache[$Number]
+    if (-not $paths -or $paths.Count -eq 0) { return $false }   # unknown => report it, never hide
+    foreach ($p in $paths) {
+        $path = "$p".Trim()
+        if (-not $path) { continue }
+        $isDoc = $false
+        foreach ($pat in $docsPatterns) { if ($path -like $pat) { $isDoc = $true; break } }
+        if (-not $isDoc) { return $false }
+    }
+    return $true
+}
+
+$prUncited = @($prMergeRefs |
+    Where-Object { $documentedRefs -notcontains $_ } |
+    Where-Object { -not $excludedRefs.ContainsKey("$_") } |
+    Sort-Object)
+
+# A PR that only touches documentation is not a change awaiting a release note. The case
+# this exists for is the release-notes PR itself: notes for version N merge BEFORE tag N,
+# so at the moment the gate runs — cutting N — that PR sits inside the range citing nothing,
+# a guaranteed false positive exactly when the gate matters most. #130 missed the v5.4.0
+# range by ten minutes (merged 01:47Z, tagged 01:57Z); that is too thin to rely on.
+$docsOnlyPrs = @()
+if ($ghAvailable) {
+    $docsOnlyPrs = @($prUncited | Where-Object { Test-PrIsDocsOnly $_ })
+    $prUncited   = @($prUncited | Where-Object { $docsOnlyPrs -notcontains $_ })
+}
+
 $passB = @{
-    PrNotDocumented    = @($prMergeRefs | Where-Object { $documentedRefs -notcontains $_ } | Sort-Object)
+    PrNotDocumented    = $prUncited
+    DocsOnlyExcluded   = $docsOnlyPrs
     MentionedNotCited  = @($otherRefs   | Where-Object { $documentedRefs -notcontains $_ } | Sort-Object)
     Unresolvable       = @()
     StillOpen          = @()
@@ -552,6 +597,9 @@ if ($passB.PrNotDocumented.Count -eq 0) {
     Write-Host "      -> a merged PR nobody cited is the original failure mode, and its author" -ForegroundColor DarkGray
     Write-Host "         goes uncredited. Cite it in an entry, or in the Thanks block." -ForegroundColor DarkGray
 }
+if ($passB.DocsOnlyExcluded.Count -gt 0) {
+    Write-Host "  excluded as documentation-only: $((($passB.DocsOnlyExcluded | ForEach-Object { "#$_" }) -join ', '))" -ForegroundColor DarkGray
+}
 if ($passB.MentionedNotCited.Count -gt 0) {
     Write-Host "  note: subject-referenced but not cited (advisory, does not gate): $((($passB.MentionedNotCited | ForEach-Object { "#$_" }) -join ', '))" -ForegroundColor DarkGray
 }
@@ -573,7 +621,7 @@ if ($passC.Skipped) {
 } else {
     foreach ($l in $passC.UnmappedLogins) {
         Write-Host "  UNMAPPED      login '$l' has a merged PR in range but no display name" -ForegroundColor Red
-        Write-Host "      -> add \"$l\": \"Their Name\" to authors in $configRelPath" -ForegroundColor DarkGray
+        Write-Host "      -> add `"$l`": `"Their Name`" to authors in $configRelPath" -ForegroundColor DarkGray
     }
     foreach ($m in $passC.MissingThanks) {
         Write-Host "  NOT CREDITED  $($m.Display) ($($m.Login)) is absent from the Thanks block" -ForegroundColor Red

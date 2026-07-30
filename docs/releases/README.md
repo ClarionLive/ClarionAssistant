@@ -63,6 +63,15 @@ an uncredited author); references cited in the notes that do not exist on GitHub
 failure — a typo); and references that are still **open** on GitHub although a commit in
 range claims to have shipped them (advisory).
 
+A merged PR that only touches documentation is **not** reported. This exists for the
+release-notes PR itself: notes for version N merge *before* tag N is created, so at the
+moment the gate runs — cutting N — that PR sits inside the range citing nothing, and would
+be a guaranteed false positive at exactly the moment the gate matters most. It is not
+hypothetical: `#130` ("docs: v5.4 release notes…") merged at 01:47Z and v5.4.0 was tagged at
+01:57Z, missing the range by ten minutes. Tag before merging rather than after and it lands
+inside. Controlled by `docsOnlyPathPatterns`; a PR whose files can't be read is reported
+rather than hidden.
+
 Note it does **not** enforce issue-vs-PR by section. This repo's notes cite issues in headings
 and PRs in Thanks — and also the reverse: v5.4's headings link both `issues/66` and `pull/91`,
 and its Thanks credits bug reporters by issue. Any rule stronger than "the reference must
@@ -83,6 +92,11 @@ Everything in it is editorial data that cannot be inferred from git or GitHub.
   first appear.
 - **`ignoreScopes`** — scopes that never warrant a note. Keep this short; every entry is a
   hole in the gate.
+- **`docsOnlyPathPatterns`** — a merged PR touching only these paths is documentation, not a
+  change awaiting a note. Omit the key entirely to get the defaults (`docs/*`, `*.md`); set
+  it to `[]` to switch the rule off.
+- **`excludedRefs`** — one-off "never report this number" entries. Prefer
+  `docsOnlyPathPatterns`, which is structural and needs no upkeep.
 - **`coveredOverrides`** — last-resort "this scope is covered" assertion.
 - **`acknowledgedCommits`** — SHAs of unprefixed commits a human has decided need no entry.
   Clear this list when a version is cut; it is scoped to one cycle.

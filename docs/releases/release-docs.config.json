@@ -36,7 +36,7 @@
     "diff": ["diff", "CA Compare"],
     "cafind": ["CA Find", "find"],
     "webview2": ["WebView2"],
-    "lsp": ["language server", "LSP"],
+    "lsp": ["language server", "LSP", "go-to-definition", "go to definition"],
     "diagnostics": [
       "diagnostics",
       "END has no matching structure",
@@ -67,6 +67,31 @@
     "OkayPlunk": "OkayPlunk",
     "armisoftware": "armisoftware"
   },
+
+  "$comment_docsOnlyPathPatterns": [
+    "A merged PR touching ONLY these paths is documentation, not a change that needs a",
+    "release note, so it is never reported as uncited.",
+    "",
+    "The case this exists for is the release-notes PR itself. Notes for version N are written",
+    "and merged BEFORE tag N is created, so at the moment the gate runs — cutting version N —",
+    "that PR is inside the range and cites nothing. It would be a guaranteed false positive at",
+    "exactly the moment the gate matters most.",
+    "",
+    "Near miss on record: #130 ('docs: v5.4 release notes, README, and user-guide updates')",
+    "merged at 2026-07-19T01:47Z and v5.4.0 was tagged at 01:57Z — outside the range by ten",
+    "minutes. Tag first instead of merging first and it lands inside. Not worth leaving to",
+    "the ordering of two commands.",
+    "",
+    "Wildcards are PowerShell -like patterns matched against each changed path."
+  ],
+  "docsOnlyPathPatterns": ["docs/*", "*.md"],
+
+  "$comment_excludedRefs": [
+    "Issue/PR numbers never to report as uncited, whatever their file footprint.",
+    "Prefer docsOnlyPathPatterns — it is structural and needs no upkeep. Use this only for a",
+    "one-off, and say why."
+  ],
+  "excludedRefs": {},
 
   "$comment_coveredOverrides": [
     "Escape hatch for a scope whose entry exists but whose title genuinely does not name it,",
