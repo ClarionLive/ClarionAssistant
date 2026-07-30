@@ -89,7 +89,7 @@ Long-standing parity gaps close together. **Ctrl+Q** mimics the native embeditor
 
 ### CA Editor reliability
 
-The editor watches its file on disk for external read-only and content changes, saves dirty tabs **before a build starts**, and the **Reload** button now actually works &mdash; it was a no-op since day one &mdash; restoring caret and scroll position when it does.
+The editor watches its file on disk for external read-only and content changes (#146), saves dirty tabs **before a build starts** (#134), and the **Reload** button now actually works (#135) &mdash; it was a no-op since day one &mdash; restoring caret and scroll position when it does. A new `get_diff_content` MCP tool shares a common unified-diff generator with the diff viewer (#131), and the live Monaco cursor is exposed over a cross-addin reflection contract (#149) for consumers like the CA Debugger.
 
 ### Fixed
 
@@ -98,15 +98,19 @@ The editor watches its file on disk for external read-only and content changes, 
 - **Phantom "END has no matching structure" warnings** (#156) &mdash; bare screen `GROUP` controls in a WINDOW and anonymous `RECORD, PRE()` structures inside a FILE no longer desync the embed slot's structure-balance checker, while a plain variable named `Group` or `Record` still correctly produces no warning. Shipped with a repro fixture that must yield zero diagnostics.
 - **Cold-open navigation lands on the right line** (#162) &mdash; Errors-pane clicks, bookmarks, and Find Next targeting a file that isn't open yet could silently drop the requested line and open wherever the file was last positioned. The requested position is now parked before the file opens, closing the race for every caller that drives the hidden caret directly.
 - **Duplicate entries in member completion** (#151) &mdash; dedupe now keys on each item's bare identifier rather than its display label, so a member the language server already resolved can't be re-added under its bare name.
-- **More keyword-as-label misreads** &mdash; `MENU`, `MENUBAR`, `SHEET`, `TAB`, `OPTION`, and `TOOLBAR` used as plain variable names no longer read as structure openers, and the label check is now strict column 0, matching the real compiler rule.
-- **Cross-instance WebView2 crashes** &mdash; each Clarion process gets an isolated WebView2 profile, allocated from stable slots rather than per-PID folders.
+- **More keyword-as-label misreads** (#132/#136/#150) &mdash; `MENU`, `MENUBAR`, `SHEET`, `TAB`, `OPTION`, and `TOOLBAR` used as plain variable names no longer read as structure openers, and the label check is now strict column 0, matching the real compiler rule.
+- **Cross-instance WebView2 crashes** (#141) &mdash; each Clarion process gets an isolated WebView2 profile, allocated from stable slots rather than per-PID folders.
+- **Errors-pane caret mirroring** (#144) &mdash; native caret jumps are mirrored into the Monaco overlay, so an error click lands where it should.
 - **Unsaved edits preserved** &mdash; overlay edits survive Clarion's embed re-open, and a disk-watched file turning read-only no longer discards them.
-- **CA Find** no longer misses keyboard focus on the first Ctrl+F after IDE start.
+- **Go-to-definition no longer jumps to itself** (#143) &mdash; the fallback path could resolve a symbol to the very line you invoked it from.
+- **Dead overlay Find-All results-tools row removed** (#116/#145) &mdash; Copy / Clear were wired but could never render.
+- **CA Find** no longer misses keyboard focus on the first Ctrl+F after IDE start (#139).
 - **CA Explorer polish** &mdash; dark-mode secondary text lifted above the WCAG AA contrast floor; dropdown menus kept inside the WebView2; tooltips flipped above the native drop strip; the last row's path line no longer clipped; the Files tab stops jumping on every activation.
 
 ### Thanks
 
-- **geircodes** &mdash; horizontal split panes (#157), outline sort (#153), field-equate completion (#159/#160), scoping fixes (#152), GROUP/RECORD diagnostics (#156), cold-open navigation (#162), completion dedupe (#151).
+- **geircodes** &mdash; the bulk of this cycle: horizontal split panes (#157), outline sort (#153), field-equate completion (#159/#160), scoping fixes (#152), GROUP/RECORD and keyword-as-label diagnostics (#132, #136, #150, #156), cold-open navigation (#162), completion dedupe (#151), CA Editor reliability (#134, #135, #146), WebView2 profile isolation (#141), CA Find focus (#139), Errors-pane caret mirroring (#144), go-to-definition self-jump (#143), `get_diff_content` (#131), and the cross-addin cursor contract (#149).
+- **Mark Sarson** &mdash; removing the dead overlay Find-All results-tools row (#116/#145).
 - **Andrew Santarelli** &mdash; snippet parameter splitting (#155).
 - **BoxSoft** &mdash; Ctrl+Q parity (#137) and the as-you-type opt-outs (#138).
 - **armisoftware** &mdash; OMIT/COMPILE folding (#133).
