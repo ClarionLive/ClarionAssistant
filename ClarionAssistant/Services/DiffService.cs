@@ -171,6 +171,7 @@ namespace ClarionAssistant.Services
                         // _currentDiff has since been replaced by another compare.
                         var target = monaco;
                         monaco.SaveSideRequested += (side, text) => OnSaveSideRequested(target, side, text);
+                        monaco.ClosingWithUnsavedEdits += (args) => OnDiffClosingWithUnsavedEdits(target, args);
                     }
                     // NOTE: the Monaco view has no notes workflow yet (deferred to a follow-up ticket).
                     _currentDiff = monaco;
@@ -316,16 +317,28 @@ namespace ClarionAssistant.Services
         private void OnSaveSideRequested(MonacoDiffViewContent view, string side, string text)
         {
             if (view == null) return;
+            string message;
+            bool ok = TrySaveSide(view, side, text, out message);
+            try { view.PostSaveResult(side, ok, message); } catch { }
+        }
+
+        /// <summary>
+        /// The actual write, with every guard. Shared by the page's Save buttons and by the
+        /// save-on-close prompt, so closing a tab can never take a shortcut past a check that the
+        /// buttons enforce. Returns false with a user-facing reason in <paramref name="message"/>.
+        /// </summary>
+        private bool TrySaveSide(MonacoDiffViewContent view, string side, string text, out string message)
+        {
             try
             {
                 var ctx = view.FileContext;
-                if (ctx == null) { view.PostSaveResult(side, false, "This diff has no file to save to."); return; }
+                if (ctx == null) { message = "This diff has no file to save to."; return false; }
 
                 string path; Encoding encoding;
                 if (!ctx.TryResolveSide(side, out path, out encoding) || string.IsNullOrEmpty(path))
                 {
-                    view.PostSaveResult(side, false, "Unknown side — nothing was written.");
-                    return;
+                    message = "Unknown side — nothing was written.";
+                    return false;
                 }
 
                 string name = SafeName(path);
@@ -338,23 +351,21 @@ namespace ClarionAssistant.Services
                 bool tabDirty;
                 if ((MonacoClarionEditor.TryGetLiveTabState(path, out tabDirty) && tabDirty) || IsOpenAndDirtyInIde(path))
                 {
-                    view.PostSaveResult(side, false,
-                        name + " has unsaved changes in an editor. Save or close that tab, then re-run the compare.");
-                    return;
+                    message = name + " has unsaved changes in an editor. Save or close that tab, then re-run the compare.";
+                    return false;
                 }
 
                 if (!ctx.IsSideUnchangedOnDisk(side))
                 {
-                    view.PostSaveResult(side, false,
-                        name + " changed on disk since this compare opened. Re-run the compare so you don't overwrite that change.");
-                    return;
+                    message = name + " changed on disk since this compare opened. Re-run the compare so you don't overwrite that change.";
+                    return false;
                 }
 
                 var attrs = SafeAttributes(path);
                 if (attrs.HasValue && (attrs.Value & FileAttributes.ReadOnly) == FileAttributes.ReadOnly)
                 {
-                    view.PostSaveResult(side, false, name + " is read-only on disk.");
-                    return;
+                    message = name + " is read-only on disk.";
+                    return false;
                 }
 
                 File.WriteAllText(path, text ?? "", encoding);
@@ -364,11 +375,68 @@ namespace ClarionAssistant.Services
                 // and disk agree. A failure here does not undo the save, so it must not be reported as one.
                 try { MonacoClarionEditor.TryResyncFromDisk(path); } catch { }
 
-                view.PostSaveResult(side, true, "Saved " + name + ".");
+                message = "Saved " + name + ".";
+                return true;
             }
             catch (Exception ex)
             {
-                try { view.PostSaveResult(side, false, "Save failed: " + ex.Message); } catch { }
+                message = "Save failed: " + ex.Message;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// The tab is closing with unsaved compare edits. Yes saves them, No discards, Cancel keeps the
+        /// tab open. This is the ONLY guard on the tab-X / Ctrl+F4 path: the page's own Close button
+        /// never runs, and the view is IsViewOnly so the IDE will not prompt by itself.
+        ///
+        /// A save that is REFUSED (file open dirty elsewhere, changed on disk, read-only) cancels the
+        /// close — closing anyway would discard the very edits the user just asked to keep.
+        /// </summary>
+        private void OnDiffClosingWithUnsavedEdits(MonacoDiffViewContent view, System.ComponentModel.CancelEventArgs e)
+        {
+            DialogResult answer;
+            try
+            {
+                answer = MessageBox.Show(
+                    "This compare has changes that have not been written to disk.\n\nSave them before closing?",
+                    "Unsaved compare changes",
+                    MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button1);
+            }
+            catch
+            {
+                e.Cancel = true;   // couldn't ask → keep the edits rather than guess
+                return;
+            }
+
+            if (answer == DialogResult.Cancel) { e.Cancel = true; return; }
+            if (answer == DialogResult.No) return;      // discard: let the close proceed
+
+            var failures = new List<string>();
+            foreach (var side in view.DirtySides())
+            {
+                string text;
+                if (!view.TryGetSideText(side, out text))
+                {
+                    // No mirrored buffer for a side we believe is dirty — refuse to guess at its content.
+                    failures.Add((side == "original" ? "Left" : "Right") + ": its current text hasn't reached the host yet; use Save in the diff.");
+                    continue;
+                }
+                string message;
+                if (!TrySaveSide(view, side, text, out message))
+                    failures.Add((side == "original" ? "Left" : "Right") + ": " + message);
+            }
+
+            if (failures.Count > 0)
+            {
+                e.Cancel = true;   // keep the tab open — the edits are still unsaved
+                try
+                {
+                    MessageBox.Show(
+                        "Not everything could be saved, so the compare has been left open:\n\n" + string.Join("\n", failures.ToArray()),
+                        "Unsaved compare changes", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                catch { }
             }
         }
 

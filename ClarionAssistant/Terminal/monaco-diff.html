@@ -101,10 +101,14 @@
     /* ---------- Editable file-compare: per-side status + apply-change arrows ---------- */
     /* The file bar replaces the read-only hint in the bottom bar when the diff is an editable
        whole-file compare. Hidden entirely in the read-only (MCP show_diff) mode. */
-    #filebar { display: none; align-items: center; gap: 14px; font-size: 11px; color: var(--counter-color); min-width: 0; }
+    /* Takes the bar's spare width so both FULL paths can show. Each side flexes equally and may
+       shrink (min-width:0), which is what lets the elider below decide how much of a path fits
+       rather than the paths shoving the Save/Close buttons off the end. */
+    #filebar { display: none; align-items: center; gap: 10px; font-size: 11px; color: var(--counter-color);
+               min-width: 0; flex: 1 1 auto; }
     #filebar.fb-visible { display: flex; }
-    .fb-side { display: flex; align-items: center; gap: 5px; min-width: 0; }
-    .fb-name { color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+    .fb-side { display: flex; align-items: center; gap: 5px; min-width: 0; flex: 1 1 0; }
+    .fb-name { color: var(--fg); white-space: nowrap; overflow: hidden; min-width: 0; }
     /* Dirty dot: reserves its space at all times so the filename never shifts when it appears. */
     .fb-dot { width: 8px; height: 8px; border-radius: 50%; background: transparent; flex-shrink: 0; }
     .fb-side.dirty .fb-dot { background: #f9e2af; }
@@ -410,7 +414,76 @@
             lastPostedDirty = stamp;
             postMsg({ action: 'dirtyState', origDirty: !!origDirty, modDirty: !!modDirty });
         }
+        scheduleBufferSync();
     }
+
+    /// Mirror the live buffers to the host, debounced. Without this the host knows a side is dirty but
+    /// not what it contains, so a save-on-close prompt could only warn — it could not actually save.
+    /// Asking the page for its text from inside a cancellable close handler is not an option: that
+    /// round trip is async and blocking on it inside the handler risks a nested-pump deadlock. Same
+    /// approach the CA source editor uses to survive its own tab close.
+    var bufferSyncTimer = null;
+    function scheduleBufferSync() {
+        if (!fileCompareMode) return;
+        clearTimeout(bufferSyncTimer);
+        bufferSyncTimer = setTimeout(function () {
+            try {
+                postMsg({
+                    action: 'buffers',
+                    origDirty: !!origDirty, modDirty: !!modDirty,
+                    // Only dirty sides carry text — a clean side is already on disk.
+                    original: (origDirty && originalModel) ? originalModel.getValue() : null,
+                    modified: (modDirty && modifiedModel) ? modifiedModel.getValue() : null
+                });
+            } catch (e) { }
+        }, 400);
+    }
+    // ===== File paths in the bottom bar =====
+    /// Remember the full path on the element and render as much of it as fits.
+    function setFilePath(el, fullPath) {
+        if (!el) return;
+        el.setAttribute('data-full', fullPath || '');
+        el.title = fullPath || '';       // hover always gives the untruncated path
+        fitFilePath(el);
+    }
+
+    /// Show the whole path when it fits; otherwise drop characters from the MIDDLE. Compare pairs
+    /// usually share a long prefix and differ at the end, so the middle is the least informative part
+    /// — losing it keeps both the drive/root and the file name readable, which end-ellipsis would not.
+    function fitFilePath(el) {
+        if (!el) return;
+        var full = el.getAttribute('data-full') || '';
+        el.textContent = full;
+        if (!full || el.scrollWidth <= el.clientWidth || el.clientWidth === 0) return;   // fits (or not laid out yet)
+
+        // Binary search the largest number of kept characters that still fits. Measuring the real
+        // element avoids guessing at font metrics, and this runs only on load/resize.
+        var lo = 0, hi = full.length, best = '…';
+        while (lo <= hi) {
+            var keep = (lo + hi) >> 1;
+            var head = Math.ceil(keep / 2), tail = keep - head;
+            var candidate = tail > 0 ? full.slice(0, head) + '…' + full.slice(full.length - tail)
+                                     : full.slice(0, head) + '…';
+            el.textContent = candidate;
+            if (el.scrollWidth <= el.clientWidth) { best = candidate; lo = keep + 1; }
+            else { hi = keep - 1; }
+        }
+        el.textContent = best;
+    }
+
+    function refitFilePaths() {
+        fitFilePath(document.getElementById('fb-name-original'));
+        fitFilePath(document.getElementById('fb-name-modified'));
+    }
+    // The bar's width changes with the window and when the Save buttons appear/disappear.
+    (function () {
+        var t = null;
+        window.addEventListener('resize', function () {
+            clearTimeout(t);
+            t = setTimeout(refitFilePaths, 120);
+        });
+    })();
+
     /// Enable/disable the per-side Save buttons. Called from renderDirtyState (which the dirty tracking
     /// and the in-flight save flag both drive), so the buttons can never disagree with the dirty dots.
     function onDirtyStateChanged() {
@@ -686,15 +759,17 @@
         if (approve) approve.style.display = fileCompareMode ? 'none' : '';
         if (cancel) cancel.textContent = fileCompareMode ? 'Close' : 'Cancel';
 
-        var oName = document.getElementById('fb-name-original');
-        var mName = document.getElementById('fb-name-modified');
-        if (oName) { oName.textContent = msg.originalName || ''; oName.title = msg.originalPath || ''; }
-        if (mName) { mName.textContent = msg.modifiedName || ''; mName.title = msg.modifiedPath || ''; }
+        // FULL paths, not just file names — a compare of two same-named files in different folders is
+        // exactly when you most need to know which is which. Elided only if the bar runs out of room.
+        setFilePath(document.getElementById('fb-name-original'), msg.originalPath || msg.originalName || '');
+        setFilePath(document.getElementById('fb-name-modified'), msg.modifiedPath || msg.modifiedName || '');
 
         // Show/hide the Save buttons for the new mode. The models have not loaded yet, so both sides are
         // clean and the buttons come up correctly disabled.
         savePending.original = savePending.modified = false;
         onDirtyStateChanged();
+        // Re-fit AFTER the buttons have taken their space, since they change the room available.
+        try { requestAnimationFrame(refitFilePaths); } catch (e) { refitFilePaths(); }
     }
 
     // ===== Monaco worker shim (cross-origin CDN workers can't load directly) =====

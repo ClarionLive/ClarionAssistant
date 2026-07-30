@@ -40,6 +40,20 @@ namespace ClarionAssistant.Terminal
         private readonly ClarionAssistant.Services.DiffFileContext _fileContext;
         private bool _origDirty;
         private bool _modDirty;
+        // Live buffers mirrored from the page (debounced), so a close prompt can actually SAVE rather
+        // than only warn — the page cannot be asked for its text from inside a cancellable close handler.
+        private string _origText;
+        private string _modText;
+
+        // Tab-close hook. SharpDevelop closes a tab through the workbench window's OWN cancellable
+        // ClosingEvent; the Form's FormClosing never fires here, and this view is IsViewOnly so the IDE
+        // will never prompt for it by itself. Same mechanism MonacoClarionEditor uses (see its
+        // EnsureCloseHook) — without it, closing the TAB discards unsaved compare edits silently, which
+        // the page's own Close button already guards against.
+        private object _wbWindow;
+        private EventInfo _closingEvt;
+        private System.ComponentModel.CancelEventHandler _closingHandler;
+        private bool _closeHooked;
 
         private string _tempDir;
         private const string VIRTUAL_HOST = "clarion-monaco-diff-data";
@@ -176,6 +190,16 @@ namespace ClarionAssistant.Terminal
                     // without having to ask the page synchronously.
                     _origDirty = ExtractJsonValue(json, "origDirty") == "true";
                     _modDirty = ExtractJsonValue(json, "modDirty") == "true";
+                    // Attach here rather than on 'ready': by the time anything is dirty the workbench
+                    // window is certainly realized, and this is exactly when the guard starts mattering.
+                    EnsureCloseHook();
+                }
+                else if (action == "buffers")
+                {
+                    _origDirty = ExtractJsonValue(json, "origDirty") == "true";
+                    _modDirty = ExtractJsonValue(json, "modDirty") == "true";
+                    ReadBufferTexts(json);
+                    EnsureCloseHook();
                 }
                 else if (action == "saveSide")
                 {
@@ -211,6 +235,88 @@ namespace ClarionAssistant.Terminal
                 return data["text"] as string;
             }
             catch { return null; }
+        }
+
+        /// <summary>Parse the mirrored buffers. A null/absent side means "not dirty" and deliberately
+        /// CLEARS any stale text, so a side that was undone back to clean can't later be written from a
+        /// buffer we no longer believe in.</summary>
+        private void ReadBufferTexts(string json)
+        {
+            try
+            {
+                var data = new System.Web.Script.Serialization.JavaScriptSerializer { MaxJsonLength = int.MaxValue }
+                    .DeserializeObject(json) as Dictionary<string, object>;
+                if (data == null) return;
+                _origText = data.ContainsKey("original") ? data["original"] as string : null;
+                _modText = data.ContainsKey("modified") ? data["modified"] as string : null;
+            }
+            catch { }
+        }
+
+        /// <summary>The last mirrored text for a side, if we have one. False means we cannot save that
+        /// side without asking the page — callers must not invent content.</summary>
+        public bool TryGetSideText(string side, out string text)
+        {
+            text = (side == "original") ? _origText : (side == "modified") ? _modText : null;
+            return text != null;
+        }
+
+        /// <summary>Which sides currently hold unsaved edits.</summary>
+        public List<string> DirtySides()
+        {
+            var sides = new List<string>();
+            if (_fileContext == null) return sides;
+            if (_origDirty) sides.Add("original");
+            if (_modDirty) sides.Add("modified");
+            return sides;
+        }
+
+        /// <summary>Raised when the TAB is closing with unsaved edits. Handlers set Cancel to keep it
+        /// open. Runs on the workbench window's cancellable ClosingEvent, which is the only close path
+        /// a tab X / Ctrl+F4 actually goes through.</summary>
+        public event Action<System.ComponentModel.CancelEventArgs> ClosingWithUnsavedEdits;
+
+        /// <summary>
+        /// Subscribe once to the workbench tab's cancellable ClosingEvent. The event is IDE-internal, so
+        /// it is reflected off the window's runtime type (SdiWorkspaceWindow) or its interfaces — the
+        /// same approach, and the same fallbacks, as MonacoClarionEditor.EnsureCloseHook.
+        /// </summary>
+        private void EnsureCloseHook()
+        {
+            if (_closeHooked || _fileContext == null) return;
+            try
+            {
+                object wbw = null;
+                try { wbw = WorkbenchWindow; } catch { }
+                if (wbw == null) return;   // window not realized yet — try again on the next signal
+
+                var evt = wbw.GetType().GetEvent("ClosingEvent");
+                if (evt == null)
+                    foreach (var itf in wbw.GetType().GetInterfaces()) { evt = itf.GetEvent("ClosingEvent"); if (evt != null) break; }
+
+                _closeHooked = true;   // one shot either way — don't retry forever if the event is absent
+                if (evt == null)
+                {
+                    System.Diagnostics.Debug.WriteLine("[MonacoDiffViewContent] ClosingEvent not found on " + wbw.GetType().FullName);
+                    return;
+                }
+
+                _closingHandler = new System.ComponentModel.CancelEventHandler(OnWorkbenchClosing);
+                evt.AddEventHandler(wbw, _closingHandler);
+                _wbWindow = wbw;
+                _closingEvt = evt;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[MonacoDiffViewContent] close-hook attach error: " + ex.Message);
+            }
+        }
+
+        private void OnWorkbenchClosing(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            if (!HasUnsavedEdits) return;
+            var handler = ClosingWithUnsavedEdits;
+            if (handler != null) handler(e);
         }
 
         /// <summary>Tell the page how a save went. On success the page marks that side clean; on failure it
@@ -328,6 +434,12 @@ namespace ClarionAssistant.Terminal
         public override void Dispose()
         {
             lock (_instances) { _instances.Remove(this); }
+            // Detach the close hook before teardown, so a queued close can't call back into a disposed view.
+            if (_closingEvt != null && _wbWindow != null && _closingHandler != null)
+            {
+                try { _closingEvt.RemoveEventHandler(_wbWindow, _closingHandler); } catch { }
+                _closingEvt = null; _wbWindow = null; _closingHandler = null;
+            }
             if (_webView != null)
             {
                 _webView.Dispose();
