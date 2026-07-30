@@ -15,7 +15,8 @@ param(
     [int]$Major,
     [int]$Minor,
     [int]$Build,
-    [switch]$BumpBuild   # Convenience: increment build by 1 without compiling
+    [switch]$BumpBuild,      # Convenience: increment build by 1 without compiling
+    [switch]$SkipDocsCheck   # Cut the version even if release docs have drifted
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,6 +27,35 @@ if (-not (Test-Path $VersionProps)) { throw "Version.props not found: $VersionPr
 
 [xml]$xml = Get-Content -LiteralPath $VersionProps -Raw
 $pg = $xml.Project.PropertyGroup
+
+# --- release-docs gate -------------------------------------------------------
+# A MAJOR or MINOR change is a release cut, and release notes are written per minor.
+# Check that everything landed since the last tag is documented BEFORE writing
+# Version.props, so a failed check leaves the tree untouched.
+#
+# Deliberately NOT run for -Build / -BumpBuild: the build counter increments on every
+# local build, and gating that would fire the check dozens of times a day and train
+# everyone to pass -SkipDocsCheck reflexively. A gate people route around is worse
+# than no gate.
+$oldMajor = [int]$pg.VersionMajor
+$oldMinor = [int]$pg.VersionMinor
+$isReleaseCut =
+    ($PSBoundParameters.ContainsKey('Major') -and $Major -ne $oldMajor) -or
+    ($PSBoundParameters.ContainsKey('Minor') -and $Minor -ne $oldMinor)
+
+if ($isReleaseCut -and -not $SkipDocsCheck) {
+    $checker = Join-Path $ScriptDir 'Check-ReleaseDocs.ps1'
+    if (Test-Path $checker) {
+        Write-Host "Release cut detected - checking release docs..." -ForegroundColor Cyan
+        & $checker
+        if ($LASTEXITCODE -ne 0) {
+            throw "Release docs have drifted (see above). Fix the notes, or re-run with -SkipDocsCheck to override."
+        }
+    } else {
+        Write-Warning "Check-ReleaseDocs.ps1 not found next to this script - skipping the release-docs gate."
+    }
+}
+# -----------------------------------------------------------------------------
 
 if ($PSBoundParameters.ContainsKey('Major')) { $pg.VersionMajor = "$Major" }
 if ($PSBoundParameters.ContainsKey('Minor')) { $pg.VersionMinor = "$Minor" }

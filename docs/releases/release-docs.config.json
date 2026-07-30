@@ -1,0 +1,92 @@
+{
+  "$comment": [
+    "Configuration for Check-ReleaseDocs.ps1 (the release-docs drift reconciler).",
+    "",
+    "Everything in this file is EDITORIAL DATA that cannot be inferred from git or GitHub.",
+    "That is the whole reason the file exists — see the notes on each section.",
+    "",
+    "After cutting a release, clear 'acknowledgedCommits' — it is scoped to one cycle."
+  ],
+
+  "$comment_scopeAliases": [
+    "Maps a conventional-commit scope to the phrases the release notes actually use for it.",
+    "Required because prose and scopes do not agree: scope 'datapad' is written 'Data pad',",
+    "scope 'cafind' is written 'CA Find'. Matching on the bare scope name alone produces",
+    "false 'undocumented' reports for entries that are in fact present.",
+    "",
+    "Matching is case-insensitive and is done against ENTRY TITLES ONLY (### headings and",
+    "'- **bold**' lead-ins), never against body prose. That distinction is load-bearing: the",
+    "word 'compare' appears incidentally inside the CA Explorer entry's paragraph ('per-compare'),",
+    "so a body-text match would have reported CA Compare as documented while it had no entry.",
+    "",
+    "Aliases are ORed. Give each scope every spelling the notes plausibly use for it."
+  ],
+  "scopeAliases": {
+    "compare": ["CA Compare", "compare"],
+    "explorer": ["CA Explorer", "explorer"],
+    "datapad": ["Data pad", "datapad", "data-pad", "dictionary column"],
+    "editor": ["editor"],
+    "source-editor": ["editor", "source editor"],
+    "ca-editor": ["CA Editor"],
+    "monaco": ["Monaco", "editor"],
+    "embeditor": ["embeditor"],
+    "completion": ["completion"],
+    "hover": ["hover", "completion"],
+    "outline": ["outline", "Document Structure"],
+    "diff": ["diff", "CA Compare"],
+    "cafind": ["CA Find", "find"],
+    "webview2": ["WebView2"],
+    "lsp": ["language server", "LSP"],
+    "diagnostics": [
+      "diagnostics",
+      "END has no matching structure",
+      "keyword-as-label",
+      "structure openers"
+    ]
+  },
+
+  "$comment_ignoreScopes": [
+    "Scopes that are never user-facing and so never need a release-note entry.",
+    "Commit TYPES chore/docs/test/ci/build/style/refactor are already excluded by type;",
+    "this list is for cases where the TYPE is feat/fix but the area genuinely ships nothing",
+    "a user would notice. Keep it short — every entry here is a hole in the gate."
+  ],
+  "ignoreScopes": [],
+
+  "$comment_authors": [
+    "GitHub login -> the display name used in the 'Thanks' section.",
+    "NOT derivable from the GitHub API: login 'asantarelli' has profile name 'SDigitales'",
+    "but the notes credit 'Andrew Santarelli'; 'msarson' is credited 'Mark Sarson'.",
+    "This map is the attribution source of truth. An unmapped login is a hard error rather",
+    "than a guess, because silently crediting the wrong name is worse than failing loudly."
+  ],
+  "authors": {
+    "geircodes": "geircodes",
+    "asantarelli": "Andrew Santarelli",
+    "msarson": "Mark Sarson",
+    "OkayPlunk": "OkayPlunk",
+    "armisoftware": "armisoftware"
+  },
+
+  "$comment_coveredOverrides": [
+    "Escape hatch for a scope whose entry exists but whose title genuinely does not name it,",
+    "and where no honest alias would either. Prefer an in-README marker instead:",
+    "    <!-- release-docs: covered=scopename -->",
+    "placed on its own line inside the Unreleased block. The marker travels WITH the entry, so",
+    "deleting the entry removes the claim; an override here survives the entry's deletion and",
+    "will then hide real drift. Use overrides sparingly and say why."
+  ],
+  "coveredOverrides": {},
+
+  "$comment_acknowledgedCommits": [
+    "Full or abbreviated SHAs of commits the tool could not attribute to any scope (unprefixed",
+    "subjects) and that a human has decided need no release-note entry.",
+    "",
+    "The tool deliberately does NOT guess for these. An unprefixed subject carries no scope and",
+    "no reliable keyword, so guessing would either invent drift or hide it. Listing the SHA is an",
+    "explicit human decision, recorded in the repo.",
+    "",
+    "Scoped to one release cycle — clear this list when a version is cut."
+  ],
+  "acknowledgedCommits": []
+}
