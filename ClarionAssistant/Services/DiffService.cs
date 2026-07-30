@@ -588,7 +588,11 @@ namespace ClarionAssistant.Services
 
         private void OnCancelled(MonacoDiffViewContent monaco)
         {
-            if (monaco != null && monaco.HasUnsavedEdits)
+            // Same predicate as ConfirmDiscardIfDirty. When this is false control falls through to
+            // CloseDiff -> CloseWindow(true), a forced close, so both guards in front of a forced
+            // close must agree — using the narrower test here is exactly the asymmetry that left the
+            // replace path unprotected.
+            if (monaco != null && monaco.MayHaveUnsavedEdits)
             {
                 // This runs on the WebView2 message-handler stack. A modal here pumps a nested message
                 // loop inside that handler — the reentrancy trap this codebase has been bitten by before
