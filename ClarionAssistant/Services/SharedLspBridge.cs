@@ -547,8 +547,18 @@ namespace ClarionAssistant.Services
             {
                 if (memberScope != null && memberScope.Count > 0)
                 {
+                    // memberScope holds bare identifiers (see MergeMemberAccessCompletions/MergeDbMembers),
+                    // so match against each item's bare InsertText rather than its typed Label — the same
+                    // Label-vs-bare-identifier mismatch as the completion-merge dedupe fix above. Currently
+                    // a dormant edge case (post-fix, primary's items already carry typed Labels here so this
+                    // predicate matches nothing and the guard below leaves primary untouched) but kept
+                    // consistent so a future bare-labeled addition here can't silently drop typed members.
                     var scoped = primary.FindAll(it =>
-                        it != null && !string.IsNullOrEmpty(it.Label) && memberScope.Contains(it.Label));
+                    {
+                        if (it == null) return false;
+                        string key = !string.IsNullOrEmpty(it.InsertText) ? it.InsertText : it.Label;
+                        return !string.IsNullOrEmpty(key) && memberScope.Contains(key);
+                    });
                     if (scoped.Count > 0) primary = scoped;
                 }
             }
@@ -2299,9 +2309,18 @@ namespace ClarionAssistant.Services
             string className = ResolveInstanceType(lines, line, instance, filePath, out isInlineClass);
             if (string.IsNullOrEmpty(className)) return null;
 
+            // Dedupe key is each item's bare identifier (InsertText), not its display Label — the LSP labels
+            // a member with its type/signature attached (e.g. "MyField STRING", "MyMethod( LONG pField, ...)"),
+            // while MergeDbMembers below adds bare-name items ("MyField"). Keying on Label let a real LSP
+            // member slip past this dedup check and get re-added under its bare name — a visible duplicate
+            // row for any member the LSP already resolved correctly (e.g. a project-local class field).
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var it in primary)
-                if (it != null && !string.IsNullOrEmpty(it.Label)) seen.Add(it.Label);
+            {
+                if (it == null) continue;
+                string key = !string.IsNullOrEmpty(it.InsertText) ? it.InsertText : it.Label;
+                if (!string.IsNullOrEmpty(key)) seen.Add(key);
+            }
 
             // Add members from the project CodeGraph (most specific) then the ClarionGraph library DB; dedupe
             // across both. Collect them (unfiltered by partial) into two sets for the scoping decision below.
