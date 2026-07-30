@@ -59,7 +59,7 @@ The diff viewer becomes a working surface rather than a read-only one. Both pane
 
 The omnibox is rebuilt around a split-button **Open** plus a single search field, joined by a type dropdown, scope pills, and a header **Trace** with mouse-pickable targets, sticky headers, and an actionable trace log. **Compare pairs are remembered** &mdash; re-run, swap, or pin a pair straight from the Files tab. The environment banner names the active `.red`, and view state round-trips so the tab comes back the way you left it.
 
-### Data pad &mdash; master/detail and drag-to-editor
+### Data pad &mdash; master/detail and field drag-and-drop
 
 Variable rows and the table tree both gain master/detail: type-icon slide-down panels for variables, and table/key/column/relation panels for the tree, with an icon-only header toolbar. Column detail now comes from the **live dictionary** in full, including auto-number and exclude chips on keys. Fields can be **dragged from the pad into an editor** &mdash; Monaco surfaces and legacy ICSharpCode editors both accept a point-drop, with visible drop feedback while you drag.
 
