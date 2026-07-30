@@ -37,6 +37,7 @@ namespace ClarionAssistant.Terminal
         private string _language;
         private bool _ignoreWhitespace;
         private bool _isDark = true;
+        private readonly ClarionAssistant.Services.DiffFileContext _fileContext;
 
         private string _tempDir;
         private const string VIRTUAL_HOST = "clarion-monaco-diff-data";
@@ -51,8 +52,17 @@ namespace ClarionAssistant.Terminal
 
         public override Control Control { get { return _panel; } }
 
+        /// <summary>Non-null only for an editable whole-file compare — the authoritative record of which path
+        /// each pane maps to. The page is never told a path it could send back; save requests name a SIDE and
+        /// the host resolves it here, so the page cannot redirect a write at an arbitrary file.</summary>
+        public ClarionAssistant.Services.DiffFileContext FileContext { get { return _fileContext; } }
+
+        /// <summary>True when this diff is an editable file-vs-file compare rather than the read-only
+        /// MCP show_diff viewer.</summary>
+        public bool IsFileCompare { get { return _fileContext != null; } }
+
         public MonacoDiffViewContent(string title, string originalText, string modifiedText, string language = "clarion",
-            bool ignoreWhitespace = true, bool isDark = true)
+            bool ignoreWhitespace = true, bool isDark = true, ClarionAssistant.Services.DiffFileContext fileContext = null)
         {
             _title = title ?? "Diff";
             _originalText = originalText ?? "";
@@ -60,6 +70,7 @@ namespace ClarionAssistant.Terminal
             _language = language ?? "clarion";
             _ignoreWhitespace = ignoreWhitespace;
             _isDark = isDark;
+            _fileContext = fileContext;
             TitleName = "Diff: " + _title;
             // No Save()/SaveAs() implementation exists for this view — without this, SharpDevelop
             // treats it as a normal, saveable, filename-less document (enables Save, then throws when invoked).
@@ -168,11 +179,25 @@ namespace ClarionAssistant.Terminal
                 File.WriteAllText(origFile, _originalText ?? "", new UTF8Encoding(false));
                 File.WriteAllText(modFile, _modifiedText ?? "", new UTF8Encoding(false));
 
+                // fileCompare tells the page whether to unlock the panes and offer per-side saving at all. The
+                // names/paths are for LABELS AND TOOLTIPS ONLY — the page never sends a path back (see FileContext).
+                string fileCompareJson = "\"fileCompare\":false";
+                if (_fileContext != null)
+                {
+                    fileCompareJson =
+                        "\"fileCompare\":true," +
+                        "\"originalName\":" + JsonString(SafeFileName(_fileContext.OriginalPath)) + "," +
+                        "\"modifiedName\":" + JsonString(SafeFileName(_fileContext.ModifiedPath)) + "," +
+                        "\"originalPath\":" + JsonString(_fileContext.OriginalPath) + "," +
+                        "\"modifiedPath\":" + JsonString(_fileContext.ModifiedPath);
+                }
+
                 string json = "{\"type\":\"setDiff\"," +
                     "\"title\":" + JsonString(_title) + "," +
                     "\"language\":" + JsonString(_language) + "," +
                     "\"isDark\":" + (_isDark ? "true" : "false") + "," +
                     "\"ignoreWhitespace\":" + (_ignoreWhitespace ? "true" : "false") + "," +
+                    fileCompareJson + "," +
                     "\"originalUrl\":\"https://" + VIRTUAL_HOST + "/original.txt\"," +
                     "\"modifiedUrl\":\"https://" + VIRTUAL_HOST + "/modified.txt\"}";
                 _webView.CoreWebView2.PostWebMessageAsJson(json);
@@ -181,6 +206,15 @@ namespace ClarionAssistant.Terminal
             {
                 System.Diagnostics.Debug.WriteLine("[MonacoDiffViewContent] SendDiffData error: " + ex.Message);
             }
+        }
+
+        /// <summary>File name for a label, without throwing on a malformed path (Path.GetFileName can throw on
+        /// invalid characters). A display label is never worth taking the whole diff down for.</summary>
+        private static string SafeFileName(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return "";
+            try { return Path.GetFileName(path) ?? path; }
+            catch { return path; }
         }
 
         private string GetHtmlPath()

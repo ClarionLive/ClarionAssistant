@@ -91,6 +91,29 @@
     .lc-text { color: var(--fg); }
     .lc-hl { background: rgba(249, 226, 175, 0.4); border-radius: 2px; }
     body.light .lc-hl { background: rgba(223, 142, 29, 0.28); }
+
+    /* ---------- Editable file-compare: per-side status + apply-change arrows ---------- */
+    /* The file bar replaces the read-only hint in the bottom bar when the diff is an editable
+       whole-file compare. Hidden entirely in the read-only (MCP show_diff) mode. */
+    #filebar { display: none; align-items: center; gap: 14px; font-size: 11px; color: var(--counter-color); min-width: 0; }
+    #filebar.fb-visible { display: flex; }
+    .fb-side { display: flex; align-items: center; gap: 5px; min-width: 0; }
+    .fb-name { color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+    /* Dirty dot: reserves its space at all times so the filename never shifts when it appears. */
+    .fb-dot { width: 8px; height: 8px; border-radius: 50%; background: transparent; flex-shrink: 0; }
+    .fb-side.dirty .fb-dot { background: #f9e2af; }
+    body.light .fb-side.dirty .fb-dot { background: #df8e1d; }
+
+    /* Glyph-margin apply-change arrows. Monaco puts the class on the glyph margin cell, so the
+       arrow itself is drawn with ::before and the whole cell is the click target. */
+    .hunk-arrow { cursor: pointer; }
+    .hunk-arrow::before {
+        display: block; text-align: center; line-height: inherit;
+        color: var(--nav-color); opacity: 0.55; font-size: 11px;
+    }
+    .hunk-arrow:hover::before { opacity: 1; }
+    .hunk-arrow-right::before { content: '\25B6'; }
+    .hunk-arrow-left::before  { content: '\25C0'; }
 </style>
 </head>
 <body>
@@ -127,12 +150,19 @@
     <div class="lc-row"><span class="lc-label">Buffer</span><span id="lc-modified" class="lc-text"></span></div>
 </div>
 
-<!-- Bottom action bar (preserves the show_diff Approve/Cancel result contract) -->
+<!-- Bottom action bar. In read-only mode this preserves the show_diff Approve/Cancel result contract
+     verbatim; in editable file-compare mode the hint + Approve are hidden and the file bar takes over
+     (Approve means "return this text to the MCP caller", which is meaningless for a file compare). -->
 <div id="bottom">
-    <span class="hint">Read-only diff. Approve to apply the modified text, or Cancel to dismiss.</span>
+    <span class="hint" id="bottom-hint">Read-only diff. Approve to apply the modified text, or Cancel to dismiss.</span>
+    <span id="filebar">
+        <span class="fb-side" id="fb-original"><span class="fb-dot"></span><span class="fb-name" id="fb-name-original"></span></span>
+        <span class="sep">&#x2194;</span>
+        <span class="fb-side" id="fb-modified"><span class="fb-dot"></span><span class="fb-name" id="fb-name-modified"></span></span>
+    </span>
     <div class="spacer"></div>
-    <button class="cr-btn pass" onclick="onApprove()">Approve</button>
-    <button class="cr-btn cancel-btn" onclick="onCancel()">Cancel</button>
+    <button id="btn-approve" class="cr-btn pass" onclick="onApprove()">Approve</button>
+    <button id="btn-cancel" class="cr-btn cancel-btn" onclick="onCancel()">Cancel</button>
 </div>
 
 <!-- Shared Clarion language registration (grammar + monarch). Cache-busted via Date.now()
@@ -155,6 +185,25 @@
     var currentChangeIndex = -1;
     var renderSideBySide = true;    // side-by-side vs inline
     var ignoreTrimWhitespace = true;// John's standing default: ignore whitespace
+
+    // ----- Editable file-compare state -----
+    // fileCompareMode is set ONLY by the host's setDiff payload. While false the page must behave
+    // exactly as it always has (read-only panes, no arrows, Approve/Cancel) — that is what keeps the
+    // MCP show_diff contract intact, so every editable feature below is gated on it.
+    var fileCompareMode = false;
+    // Monaco's alternative version id at the last known-clean point, per side. Comparing against it
+    // (rather than setting a boolean on first keystroke) means undoing back to the original state
+    // correctly reports CLEAN again — the same trick VS Code uses for its dirty indicator.
+    var origCleanVersionId = null;
+    var modCleanVersionId = null;
+    var origDirty = false;
+    var modDirty = false;
+    var contentListeners = [];      // per-model change subscriptions, disposed on each setDiff
+    // Glyph-margin decoration ids + the line->change-index maps their click handlers read.
+    var origArrowDecorations = [];
+    var modArrowDecorations = [];
+    var origArrowLines = {};
+    var modArrowLines = {};
     // Globals named to match the C# ZoomableWebView2 Ctrl+wheel bridge ("applyFontSize(savedFontSize+(N))").
     var savedFontSize = parseInt(localStorage.getItem('diffFontSize') || '13');
     var savedFontFamily = localStorage.getItem('diffFontFamily') || "'Cascadia Code','Consolas',monospace";
@@ -210,6 +259,11 @@
     function refreshChanges() {
         try { changes = (diffEditor && diffEditor.getLineChanges()) || []; }
         catch (e) { changes = []; }
+        // Editing shrinks the change list under us (applying a hunk removes it), so an index captured
+        // before the edit can now point past the end and make the counter read "5 of 3". Clamp before
+        // anything renders from it.
+        if (currentChangeIndex >= changes.length) currentChangeIndex = changes.length - 1;
+        refreshArrowDecorations();
         updateCounter();
     }
     function updateCounter() {
@@ -305,6 +359,232 @@
         }
     }
 
+    // ===== Editable file-compare: dirty tracking =====
+    // Dirty is derived from Monaco's alternative version id, not from "has a change event fired",
+    // so Ctrl+Z back to the original text clears the marker instead of leaving a false positive.
+    function recomputeDirty() {
+        if (!fileCompareMode || !diffEditor) { origDirty = modDirty = false; }
+        else {
+            try {
+                origDirty = originalModel !== null && origCleanVersionId !== null &&
+                            originalModel.getAlternativeVersionId() !== origCleanVersionId;
+                modDirty = modifiedModel !== null && modCleanVersionId !== null &&
+                           modifiedModel.getAlternativeVersionId() !== modCleanVersionId;
+            } catch (e) { /* model disposed mid-flight — leave the last known state */ }
+        }
+        renderDirtyState();
+    }
+    function renderDirtyState() {
+        var o = document.getElementById('fb-original');
+        var m = document.getElementById('fb-modified');
+        if (o) o.classList.toggle('dirty', !!origDirty);
+        if (m) m.classList.toggle('dirty', !!modDirty);
+        // Save buttons are wired in a later item; this hook is where they get enabled/disabled.
+        if (typeof onDirtyStateChanged === 'function') onDirtyStateChanged();
+    }
+    /// Marks a side clean at its current content — called after a successful save.
+    function markSideClean(side) {
+        try {
+            if (side === 'original' && originalModel) origCleanVersionId = originalModel.getAlternativeVersionId();
+            if (side === 'modified' && modifiedModel) modCleanVersionId = modifiedModel.getAlternativeVersionId();
+        } catch (e) { }
+        recomputeDirty();
+    }
+    function anyDirty() { return !!(origDirty || modDirty); }
+
+    // ===== Editable file-compare: apply-change arrows =====
+    // The arrows are NOT a monaco-editor feature (they're VS Code's, layered on top). We draw one
+    // glyph per hunk per side and copy the hunk across on click, reusing the `changes` list that
+    // Prev/Next navigation already computes and keeps fresh.
+
+    /// The glyph line for one side of a change. Both cases anchor on startLineNumber: when that side
+    /// HAS lines it is the first changed line, and when it has none (endLine === 0 — a pure insertion
+    /// on the OTHER side) Monaco reports the line the insertion follows, which is exactly where the
+    /// arrow belongs. Clamped to 1 because that insertion marker is 0 when the text goes in at the top.
+    function arrowLineFor(startLine) {
+        return Math.max(1, startLine);
+    }
+
+    function refreshArrowDecorations() {
+        if (!diffEditor || !window.monaco) return;
+        var origEd = diffEditor.getOriginalEditor();
+        var modEd = diffEditor.getModifiedEditor();
+        origArrowLines = {};
+        modArrowLines = {};
+
+        if (!fileCompareMode) {
+            // Read-only mode: make sure nothing is left decorated.
+            try {
+                origArrowDecorations = origEd.deltaDecorations(origArrowDecorations, []);
+                modArrowDecorations = modEd.deltaDecorations(modArrowDecorations, []);
+            } catch (e) { }
+            return;
+        }
+
+        var origDecs = [], modDecs = [];
+        for (var i = 0; i < changes.length; i++) {
+            var c = changes[i];
+            var oLine = arrowLineFor(c.originalStartLineNumber);
+            var mLine = arrowLineFor(c.modifiedStartLineNumber);
+            // Two hunks can share a glyph line (e.g. two insertions after the same line). First one
+            // wins so a click is always deterministic rather than depending on iteration order.
+            if (origArrowLines[oLine] === undefined) origArrowLines[oLine] = i;
+            if (modArrowLines[mLine] === undefined) modArrowLines[mLine] = i;
+            origDecs.push({
+                range: new monaco.Range(oLine, 1, oLine, 1),
+                options: {
+                    glyphMarginClassName: 'hunk-arrow hunk-arrow-right',
+                    glyphMarginHoverMessage: { value: 'Copy this change to the right' }
+                }
+            });
+            modDecs.push({
+                range: new monaco.Range(mLine, 1, mLine, 1),
+                options: {
+                    glyphMarginClassName: 'hunk-arrow hunk-arrow-left',
+                    glyphMarginHoverMessage: { value: 'Copy this change to the left' }
+                }
+            });
+        }
+        try {
+            origArrowDecorations = origEd.deltaDecorations(origArrowDecorations, origDecs);
+            modArrowDecorations = modEd.deltaDecorations(modArrowDecorations, modDecs);
+        } catch (e) { }
+    }
+
+    /// The literal text of lines [start..end] as an array. Empty when that side has no lines for the
+    /// hunk (endLine === 0), which is how a "copy across" becomes a deletion on the target.
+    function linesOf(model, start, end) {
+        if (!model || !start || start < 1 || !end || end < 1) return [];
+        var out = [], last = Math.min(end, model.getLineCount());
+        for (var i = start; i <= last; i++) out.push(model.getLineContent(i));
+        return out;
+    }
+
+    /// Build the single edit that makes target lines [tgtStart..tgtEnd] hold exactly `lines`.
+    /// EOL handling is the whole difficulty here: an interior block is replaced INCLUDING its
+    /// trailing line break (so the text must carry one too), while a block running to EOF has no
+    /// trailing break to replace (so the text must not add one). Getting this wrong silently
+    /// duplicates or eats a line at the end of the file.
+    function buildLineBlockEdit(model, tgtStart, tgtEnd, lines) {
+        var eol = model.getEOL();
+        var lineCount = model.getLineCount();
+
+        if (tgtEnd > 0) {
+            if (tgtEnd >= lineCount) {
+                // Block runs to end of document — no trailing EOL exists after it.
+                if (lines.length === 0) {
+                    // Deleting through EOF: also swallow the PRECEDING break, else a blank line is left behind.
+                    if (tgtStart > 1) {
+                        return { range: new monaco.Range(tgtStart - 1, model.getLineMaxColumn(tgtStart - 1),
+                                                         lineCount, model.getLineMaxColumn(lineCount)), text: '' };
+                    }
+                    return { range: new monaco.Range(1, 1, lineCount, model.getLineMaxColumn(lineCount)), text: '' };
+                }
+                return { range: new monaco.Range(tgtStart, 1, lineCount, model.getLineMaxColumn(lineCount)),
+                         text: lines.join(eol) };
+            }
+            // Interior block: range covers the lines AND their trailing break, so the text must too.
+            return { range: new monaco.Range(tgtStart, 1, tgtEnd + 1, 1),
+                     text: lines.length ? lines.join(eol) + eol : '' };
+        }
+
+        // Pure insertion. Monaco's convention: insert AFTER line tgtStart (0 means before line 1).
+        if (lines.length === 0) return null;
+        if (tgtStart <= 0) {
+            return { range: new monaco.Range(1, 1, 1, 1), text: lines.join(eol) + eol };
+        }
+        if (tgtStart >= lineCount) {
+            // Appending past the last line: carry a LEADING break instead of a trailing one.
+            var endCol = model.getLineMaxColumn(lineCount);
+            return { range: new monaco.Range(lineCount, endCol, lineCount, endCol), text: eol + lines.join(eol) };
+        }
+        return { range: new monaco.Range(tgtStart + 1, 1, tgtStart + 1, 1), text: lines.join(eol) + eol };
+    }
+
+    /// Copy hunk `index` across. direction 'toModified' pushes left→right, 'toOriginal' right→left.
+    /// Applied through editor.executeEdits so it lands on that pane's own undo stack — Ctrl+Z undoes
+    /// an arrow click exactly like a typed edit.
+    function applyHunk(index, direction) {
+        if (!fileCompareMode || !diffEditor) return;
+        var c = changes[index];
+        if (!c) return;
+
+        var toModified = (direction === 'toModified');
+        var srcModel = toModified ? originalModel : modifiedModel;
+        var tgtModel = toModified ? modifiedModel : originalModel;
+        var tgtEditor = toModified ? diffEditor.getModifiedEditor() : diffEditor.getOriginalEditor();
+        if (!srcModel || !tgtModel) return;
+        if (tgtEditor.getOption && tgtEditor.getRawOptions && tgtEditor.getRawOptions().readOnly) return;
+
+        var srcLines = toModified
+            ? linesOf(srcModel, c.originalStartLineNumber, c.originalEndLineNumber)
+            : linesOf(srcModel, c.modifiedStartLineNumber, c.modifiedEndLineNumber);
+        var tgtStart = toModified ? c.modifiedStartLineNumber : c.originalStartLineNumber;
+        var tgtEnd = toModified ? c.modifiedEndLineNumber : c.originalEndLineNumber;
+
+        var edit = buildLineBlockEdit(tgtModel, tgtStart, tgtEnd, srcLines);
+        if (!edit) return;
+
+        try {
+            tgtEditor.executeEdits('applyHunk', [{ range: edit.range, text: edit.text, forceMoveMarkers: true }]);
+        } catch (e) { return; }
+        // onDidUpdateDiff refreshes the change list, arrows and counter; dirty is derived from the
+        // model change listener. Nothing to recompute by hand here.
+    }
+
+    /// One-time wiring of the glyph-margin click handlers. Registered against the sub-editors right
+    /// after the diff editor is built — NOT per decoration refresh, which would stack duplicates.
+    function wireArrowClicks() {
+        if (!diffEditor || !window.monaco) return;
+        var glyphType = monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN;
+        diffEditor.getOriginalEditor().onMouseDown(function (e) {
+            if (!fileCompareMode || !e.target || e.target.type !== glyphType) return;
+            var ln = e.target.position && e.target.position.lineNumber;
+            var idx = origArrowLines[ln];
+            if (idx !== undefined) applyHunk(idx, 'toModified');
+        });
+        diffEditor.getModifiedEditor().onMouseDown(function (e) {
+            if (!fileCompareMode || !e.target || e.target.type !== glyphType) return;
+            var ln = e.target.position && e.target.position.lineNumber;
+            var idx = modArrowLines[ln];
+            if (idx !== undefined) applyHunk(idx, 'toOriginal');
+        });
+    }
+
+    /// Switch the page between the read-only viewer and the editable file compare. Called from
+    /// applyDiff once the host's payload says which mode this diff is.
+    function applyFileCompareMode(msg) {
+        fileCompareMode = (msg.fileCompare === true);
+
+        if (diffEditor) {
+            // In a Monaco diff editor `readOnly` governs the MODIFIED pane and `originalEditable`
+            // the ORIGINAL one — both must flip for a two-way editable compare.
+            diffEditor.updateOptions({ readOnly: !fileCompareMode, originalEditable: fileCompareMode });
+            // Glyph margin only exists to host the arrows, so it follows the mode rather than being
+            // always-on (it would otherwise widen the gutter of every read-only show_diff).
+            try {
+                diffEditor.getOriginalEditor().updateOptions({ glyphMargin: fileCompareMode });
+                diffEditor.getModifiedEditor().updateOptions({ glyphMargin: fileCompareMode });
+            } catch (e) { }
+        }
+
+        var hint = document.getElementById('bottom-hint');
+        var bar = document.getElementById('filebar');
+        var approve = document.getElementById('btn-approve');
+        var cancel = document.getElementById('btn-cancel');
+        if (hint) hint.style.display = fileCompareMode ? 'none' : '';
+        if (bar) bar.classList.toggle('fb-visible', fileCompareMode);
+        // Approve returns text to the waiting MCP caller — there is no such caller for a file
+        // compare, so it is hidden rather than left to do something meaningless.
+        if (approve) approve.style.display = fileCompareMode ? 'none' : '';
+        if (cancel) cancel.textContent = fileCompareMode ? 'Close' : 'Cancel';
+
+        var oName = document.getElementById('fb-name-original');
+        var mName = document.getElementById('fb-name-modified');
+        if (oName) { oName.textContent = msg.originalName || ''; oName.title = msg.originalPath || ''; }
+        if (mName) { mName.textContent = msg.modifiedName || ''; mName.title = msg.modifiedPath || ''; }
+    }
+
     // ===== Monaco worker shim (cross-origin CDN workers can't load directly) =====
     window.MonacoEnvironment = {
         getWorkerUrl: function () {
@@ -350,6 +630,9 @@
                     scrollBeyondLastLine: false,
                     theme: themeDark ? 'vs-dark' : 'vs'
                 });
+                // Glyph-margin click handlers are registered ONCE here; the decorations they read are
+                // rebuilt on every diff update.
+                wireArrowClicks();
                 diffEditor.onDidUpdateDiff(function () {
                     refreshChanges();
                     if (changes.length && currentChangeIndex < 0) {
@@ -406,7 +689,14 @@
                                     : Promise.resolve(msg.originalText || '');
         var pMod  = msg.modifiedUrl ? fetch(msg.modifiedUrl).then(function (r) { return r.text(); })
                                     : Promise.resolve(msg.modifiedText || '');
+        // Read-only vs editable is decided BEFORE the models load, so the panes are never briefly
+        // editable (or briefly locked) while the text is in flight.
+        applyFileCompareMode(msg);
+
         Promise.all([pOrig, pMod]).then(function (texts) {
+            // Drop the previous models' change subscriptions before the models themselves go away.
+            contentListeners.forEach(function (d) { try { d.dispose(); } catch (e) { } });
+            contentListeners = [];
             // Dispose previous models so repeated setDiff calls don't leak.
             if (originalModel) { try { originalModel.dispose(); } catch (e) { } }
             if (modifiedModel) { try { modifiedModel.dispose(); } catch (e) { } }
@@ -414,6 +704,16 @@
             modifiedModel = monaco.editor.createModel(texts[1] || '', lang);
             currentChangeIndex = -1;
             diffEditor.setModel({ original: originalModel, modified: modifiedModel });
+
+            // Freshly loaded text IS the clean baseline for both sides — capture it before any edit
+            // can happen, then track dirty off these ids.
+            origCleanVersionId = originalModel.getAlternativeVersionId();
+            modCleanVersionId = modifiedModel.getAlternativeVersionId();
+            origDirty = modDirty = false;
+            contentListeners.push(originalModel.onDidChangeContent(recomputeDirty));
+            contentListeners.push(modifiedModel.onDidChangeContent(recomputeDirty));
+            recomputeDirty();
+
             applyFontSize(savedFontSize);
             applyFontFamily(savedFontFamily);
         }).catch(function (err) {
@@ -430,8 +730,35 @@
     document.addEventListener('keydown', function (e) {
         if (e.key === 'F7' && e.shiftKey) { goPrev(); e.preventDefault(); }
         else if (e.key === 'F7') { goNext(); e.preventDefault(); }
-        else if (e.key === 'Escape') { onCancel(); }
+        else if (e.key === 'Escape') {
+            // A stray Esc must not silently bin unsaved edits. Read-only mode is unchanged (Esc still
+            // cancels immediately); the deliberate Close button remains available either way, and the
+            // host puts a real prompt in front of a dirty close.
+            if (fileCompareMode && anyDirty()) { flashUnsavedHint(); e.preventDefault(); return; }
+            onCancel();
+        }
     });
+
+    /// Briefly explain why Esc did nothing. Deliberately not a confirm()/alert(): a modal script
+    /// dialog inside the WebView2 host blocks the message pump the host talks to us over.
+    var unsavedHintTimer = null;
+    function flashUnsavedHint() {
+        var bar = document.getElementById('filebar');
+        if (!bar) return;
+        var prev = bar.getAttribute('data-hint-shown');
+        if (prev === '1') return;
+        bar.setAttribute('data-hint-shown', '1');
+        var note = document.createElement('span');
+        note.className = 'fb-name';
+        note.style.color = 'var(--nav-color)';
+        note.textContent = 'Unsaved changes — save, or press Close to discard.';
+        bar.appendChild(note);
+        clearTimeout(unsavedHintTimer);
+        unsavedHintTimer = setTimeout(function () {
+            try { bar.removeChild(note); } catch (e) { }
+            bar.removeAttribute('data-hint-shown');
+        }, 2600);
+    }
 
     // ===== Host message handler =====
     if (window.chrome && window.chrome.webview) {

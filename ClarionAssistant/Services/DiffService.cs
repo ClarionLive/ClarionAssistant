@@ -9,6 +9,46 @@ using ICSharpCode.SharpDevelop.Gui;
 namespace ClarionAssistant.Services
 {
     /// <summary>
+    /// Where the two sides of an EDITABLE file-vs-file compare came from, and how to write them back.
+    ///
+    /// Its presence is what puts the Monaco diff into editable "file compare" mode; a null context means the
+    /// classic read-only viewer contract (the MCP <c>show_diff</c> approve/cancel flow), which must not change.
+    ///
+    /// The encodings are captured at READ time from <see cref="EncodingHelper.DetectFileEncoding"/> so a save
+    /// round-trips each file's ORIGINAL encoding instead of guessing one. That is deliberately per-side: the two
+    /// files being compared need not share an encoding, and re-detecting at save time would be reading a file we
+    /// are about to overwrite.
+    ///
+    /// Only ever constructed for a WHOLE-FILE compare — see <see cref="DiffService.ShowDiffFromFiles"/>.
+    /// </summary>
+    public class DiffFileContext
+    {
+        public string OriginalPath { get; private set; }
+        public Encoding OriginalEncoding { get; private set; }
+        public string ModifiedPath { get; private set; }
+        public Encoding ModifiedEncoding { get; private set; }
+
+        public DiffFileContext(string originalPath, Encoding originalEncoding,
+                               string modifiedPath, Encoding modifiedEncoding)
+        {
+            OriginalPath = originalPath;
+            OriginalEncoding = originalEncoding;
+            ModifiedPath = modifiedPath;
+            ModifiedEncoding = modifiedEncoding;
+        }
+
+        /// <summary>Resolve a side name ("original"/"modified") coming FROM THE PAGE to a real path+encoding.
+        /// The page sends only a side token and its buffer — never a path — so a compromised or buggy page
+        /// cannot redirect a save at an arbitrary file. Returns false for anything else.</summary>
+        public bool TryResolveSide(string side, out string path, out Encoding encoding)
+        {
+            if (side == "original") { path = OriginalPath; encoding = OriginalEncoding; return true; }
+            if (side == "modified") { path = ModifiedPath; encoding = ModifiedEncoding; return true; }
+            path = null; encoding = null; return false;
+        }
+    }
+
+    /// <summary>
     /// Manages the diff viewer lifecycle. Creates DiffViewContent instances
     /// and opens them in the IDE's editor panel.
     /// NOTE: ShowDiff must be called on the UI thread (the MCP tool is RequiresUiThread=true).
@@ -37,9 +77,14 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// Show a diff in the IDE editor panel. Must be called on the UI thread.
         /// The result is available later via GetResult().
+        ///
+        /// <paramref name="fileContext"/> is the opt-in to EDITABLE file-compare mode: non-null puts the Monaco
+        /// view into an editable diff that can write each side back. It is ignored for the classic renderer
+        /// (which has no editing) and defaults to null, so every existing MCP <c>show_diff</c> caller keeps the
+        /// read-only approve/cancel contract unchanged.
         /// </summary>
         public string ShowDiff(string title, string originalText, string modifiedText, string language = "clarion",
-            bool ignoreWhitespace = false, bool useMonaco = false)
+            bool ignoreWhitespace = false, bool useMonaco = false, DiffFileContext fileContext = null)
         {
             // Reset state
             _lastResult = null;
@@ -72,7 +117,7 @@ namespace ClarionAssistant.Services
                 {
                     // Monaco renderer: native side-by-side/inline + ignore-whitespace; ignore_whitespace
                     // defaults ON here (John's standing pref) when the caller didn't opt out.
-                    var monaco = new MonacoDiffViewContent(title, originalText, modifiedText, language, ignoreWhitespace, _isDark);
+                    var monaco = new MonacoDiffViewContent(title, originalText, modifiedText, language, ignoreWhitespace, _isDark, fileContext);
                     monaco.Applied += OnApplied;
                     monaco.Cancelled += OnCancelled;
                     // NOTE: the Monaco view has no notes workflow yet (deferred to a follow-up ticket).
@@ -128,6 +173,12 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// Show a diff where both original and modified are loaded from files on disk.
         /// Avoids MCP text transport encoding issues for large files.
+        ///
+        /// When BOTH sides are whole-file (the Explorer "Compare" path) and the Monaco renderer is in use, this
+        /// also builds the <see cref="DiffFileContext"/> that makes the diff editable and saveable. A SUB-RANGE
+        /// compare is deliberately left read-only: the panes would hold only a slice of each file, so writing a
+        /// pane back means splicing it into surrounding text it never showed — a different feature with its own
+        /// failure modes. Better to not offer saving than to offer a save that silently truncates a file.
         /// </summary>
         public string ShowDiffFromFiles(string title, string originalFile, int origStartLine, int origEndLine,
             string modifiedFile, int modStartLine, int modEndLine, string language = "clarion", bool ignoreWhitespace = false,
@@ -140,15 +191,33 @@ namespace ClarionAssistant.Services
                 if (!File.Exists(modifiedFile))
                     return "Error: Modified file not found: " + modifiedFile;
 
-                string originalText = ReadOriginalText(originalFile, origStartLine, origEndLine, EncodingHelper.DetectFileEncoding(originalFile));
-                string modifiedText = ReadOriginalText(modifiedFile, modStartLine, modEndLine, EncodingHelper.DetectFileEncoding(modifiedFile));
+                // Detected ONCE here and carried on the context — a save must round-trip the encoding the text
+                // was read with, and re-detecting later would mean reading a file we're about to overwrite.
+                Encoding originalEncoding = EncodingHelper.DetectFileEncoding(originalFile);
+                Encoding modifiedEncoding = EncodingHelper.DetectFileEncoding(modifiedFile);
 
-                return ShowDiff(title, originalText, modifiedText, language, ignoreWhitespace, useMonaco);
+                string originalText = ReadOriginalText(originalFile, origStartLine, origEndLine, originalEncoding);
+                string modifiedText = ReadOriginalText(modifiedFile, modStartLine, modEndLine, modifiedEncoding);
+
+                // Same "whole file" test ReadOriginalText itself uses, so the editable/read-only decision can
+                // never disagree with whether the panes actually hold the complete file.
+                bool wholeFile = IsWholeFile(origStartLine, origEndLine) && IsWholeFile(modStartLine, modEndLine);
+                DiffFileContext fileContext = (useMonaco && wholeFile)
+                    ? new DiffFileContext(originalFile, originalEncoding, modifiedFile, modifiedEncoding)
+                    : null;
+
+                return ShowDiff(title, originalText, modifiedText, language, ignoreWhitespace, useMonaco, fileContext);
             }
             catch (Exception ex)
             {
                 return "Error reading files: " + ex.Message;
             }
+        }
+
+        /// <summary>The "no sub-range requested" test, matching <see cref="ReadOriginalText"/>'s own condition.</summary>
+        private static bool IsWholeFile(int startLine, int endLine)
+        {
+            return startLine <= 1 && endLine == -1;
         }
 
         /// <summary>
