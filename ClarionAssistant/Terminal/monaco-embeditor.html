@@ -3420,6 +3420,14 @@
                                     // no-op so 'smart' Enter inserts a newline instead of re-casing in place.
                                     if (String(hi.insertText || hi.label).toUpperCase() === lu) hi.insertText = typedW;
                                 }
+                            } else if (typedW && lu === TWU) {
+                                // Exact-match identifier (e.g. local "PRO") must outrank a keyword that merely
+                                // PREFIXES it ("PROCEDURE"/"PROGRAM" both start with "PRO") — otherwise the
+                                // keyword's '0kw_' sortText wins, PROCEDURE stays highlighted, and a commit
+                                // char like '.' inserts "PROCEDURE." instead of completing "PRO.".
+                                hi.preselect = true;
+                                hi.sortText = '00_' + lu;              // ranks before '0kw_' and other '1_' items
+                                hi.filterText = typedW;
                             }
                         }
                         var kws = clarionKeywordSuggestions(before, range, seen);

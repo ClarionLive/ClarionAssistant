@@ -1457,6 +1457,24 @@ namespace ClarionAssistant.Services
                 // Bare word (class name, equate) — exact-name lookup.
                 string word = CgWordAt(filePath, line, character, bufferText);
                 if (string.IsNullOrEmpty(word)) return null;
+
+                // Buffer-local resolution FIRST: a local/routine/module var or a module-local procedure
+                // declared right here in the file must win over a same-named symbol anywhere else in the
+                // indexed solution or library. CgHoverFromDb below is a global, UNSCOPED exact-name lookup —
+                // without this, an in-scope local (e.g. "PRO") or a brand-new, not-yet-indexed procedure
+                // (e.g. "Test") can resolve to an unrelated class member elsewhere that merely shares the name.
+                string[] lines = CgGetLines(bufferText, filePath);
+                var localHover = BufferLocalHover(lines, line, word, filePath);
+                if (localHover != null) return localHover;
+
+                // BufferLocalHover just searched this file's ENTIRE local/routine/module/local-procedure
+                // scope at this exact cursor and found nothing — so a "variable"-kind exact-name match from
+                // the global DB can only be a procedure- or routine-local declared somewhere else entirely
+                // (a different procedure, possibly a different file). Clarion has no mechanism for such a
+                // variable to be in scope here, regardless of whether the word sits in a declaration's type
+                // slot ("Test PRO" typed before "PROCEDURE" finishes) or is just referenced in CODE (a typo
+                // or a not-yet-declared local, e.g. "PRO = 12" inside a procedure that never declared it) —
+                // so CgHoverFromDb always rejects a procedure/routine-scoped "variable" match here.
                 var hov = CgHoverFromDb(word, ResolveCodeGraphDb(filePath), "CodeGraph")
                     ?? CgHoverFromDb(word, ClarionGraphService.ResolveDbPath(), "ClarionGraph");
                 if (hov != null) return hov;
@@ -1466,6 +1484,83 @@ namespace ClarionAssistant.Services
                 return AbcGlobalHover(word);
             }
             catch { return null; }
+        }
+
+        /// <summary>Exact-name hover for a word declared right here in the buffer — a local/routine/module
+        /// variable (via the same scope ranges completion uses, so it honors the column-1-declaration-in-
+        /// progress guard) or a module-local procedure (MAP prototype or in-buffer implementation). Tried
+        /// BEFORE the global CodeGraph/ClarionGraph exact-name lookup so an in-scope local always outranks a
+        /// same-named symbol declared elsewhere in the solution or library. Null when nothing in the buffer
+        /// matches — the global lookup then proceeds as before. Never throws.</summary>
+        private static Dictionary<string, object> BufferLocalHover(string[] lines, int line, string word, string filePath)
+        {
+            try
+            {
+                if (lines == null || string.IsNullOrEmpty(word)) return null;
+                string fileName = string.IsNullOrEmpty(filePath) ? null : Path.GetFileName(filePath);
+
+                foreach (var rg in GetScopeDataRanges(lines, line))
+                {
+                    string restOfLine = FindDataLabelInRange(lines, rg[0], rg[1], word);
+                    if (restOfLine == null) continue;
+                    string detail, doc;
+                    BuildVarDetail(restOfLine, null, out detail, out doc);
+                    var bits = new List<string> { "local" };
+                    if (fileName != null) bits.Add(fileName);
+                    string sig = string.IsNullOrEmpty(detail) ? word : word + "  " + detail;
+                    return WrapResult(new Dictionary<string, object> {
+                        { "contents", "```clarion\n" + sig + "\n```\n\n" + string.Join(" · ", bits) } });
+                }
+
+                foreach (var kv in GetModuleMapProcedures(lines))
+                {
+                    if (!string.Equals(kv.Key, word, StringComparison.OrdinalIgnoreCase)) continue;
+                    var bits = new List<string> { "local procedure" };
+                    if (fileName != null) bits.Add(fileName);
+                    string sig = string.IsNullOrEmpty(kv.Value) ? word : kv.Value;
+                    return WrapResult(new Dictionary<string, object> {
+                        { "contents", "```clarion\n" + sig + "\n```\n\n" + string.Join(" · ", bits) } });
+                }
+
+                foreach (var ln in lines)
+                {
+                    var hm = CgProcHeaderLabel.Match(ln);
+                    if (!hm.Success) continue;
+                    if (hm.Groups[1].Value.IndexOf('.') >= 0 || hm.Groups[1].Value.IndexOf(':') >= 0) continue;
+                    if (!string.Equals(hm.Groups[1].Value, word, StringComparison.OrdinalIgnoreCase)) continue;
+                    var bits = new List<string> { "local procedure" };
+                    if (fileName != null) bits.Add(fileName);
+                    string sig = CgTrailingComment.Replace(ln.Trim(), "").Trim();
+                    return WrapResult(new Dictionary<string, object> {
+                        { "contents", "```clarion\n" + sig + "\n```\n\n" + string.Join(" · ", bits) } });
+                }
+
+                return null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>First depth-0 data declaration in [start, end) whose label exactly matches <paramref
+        /// name="word"/> (case-insensitive) — its rest-of-line (type + optional trailing '!' comment), or
+        /// null. Mirrors CollectDataLabels'/MergeModuleVarCompletions' depth tracking so a struct's own
+        /// field names don't false-positive as bare locals.</summary>
+        private static string FindDataLabelInRange(string[] lines, int start, int end, string word)
+        {
+            int depth = 0;
+            for (int i = start; i < end && i < lines.Length; i++)
+            {
+                string ln = lines[i];
+                bool isEnd = CgEndLine.IsMatch(ln) || CgPeriodEnd.IsMatch(ln);
+                if (depth == 0 && !isEnd)
+                {
+                    var lm = CgDataLabelPattern.Match(ln);
+                    if (lm.Success && string.Equals(lm.Groups[1].Value, word, StringComparison.OrdinalIgnoreCase))
+                        return lm.Groups[2].Value;
+                }
+                if (CgGroupQueueOpen.IsMatch(ln)) depth++;
+                else if (isEnd && depth > 0) depth--;
+            }
+            return null;
         }
 
         /// <summary>Hover for a well-known ABC standard global/equate (GlobalRequest, GlobalResponse,
@@ -1484,8 +1579,11 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>Exact-name hover from one CodeGraph-schema DB → an LSP hover dict ({contents}), or null
-        /// when the DB is missing/unopenable or the symbol isn't found. <paramref name="sourceLabel"/> names
-        /// the DB (e.g. "ClarionGraph") for the detail line when the symbol has no project name. Never throws.</summary>
+        /// when the DB is missing/unopenable, the symbol isn't found, or the only match is a "variable"
+        /// scoped to a PROCEDURE/ROUTINE elsewhere (see IsUnreachableLocalVariable — never a legitimate hit,
+        /// since the caller already exhausted this file's own local/routine/module scope via
+        /// BufferLocalHover before falling back here). <paramref name="sourceLabel"/> names the DB (e.g.
+        /// "ClarionGraph") for the detail line when the symbol has no project name. Never throws.</summary>
         private static Dictionary<string, object> CgHoverFromDb(string word, string db, string sourceLabel)
         {
             try
@@ -1496,12 +1594,31 @@ namespace ClarionAssistant.Services
                     if (!p.Open(db)) return null;
                     var sym = p.FindSymbolByName(word);
                     if (sym == null) return null;
+                    if (IsUnreachableLocalVariable(p, sym)) return null;
                     string contents = CgHoverText(sym, sourceLabel);
                     if (string.IsNullOrEmpty(contents)) return null;
                     return WrapResult(new Dictionary<string, object> { { "contents", contents } });
                 }
             }
             catch { return null; }
+        }
+
+        /// <summary>True when <paramref name="sym"/> is a "variable" whose ParentName resolves to a
+        /// PROCEDURE or ROUTINE symbol — i.e. a local declared inside some OTHER procedure/routine.
+        /// Clarion has no mechanism for such a variable to be referenced from outside its own owning
+        /// procedure, so a match like this from the global exact-name lookup is never legitimate (the
+        /// caller only reaches this after BufferLocalHover already searched the current file's own
+        /// local/routine/module scope and found nothing). A plain module/program-scope variable (no
+        /// parent, or a parent that isn't itself a procedure/routine) is NOT filtered — those can
+        /// legitimately be out of BufferLocalHover's reach (a different file's module-level global).</summary>
+        private static bool IsUnreachableLocalVariable(CodeGraphProvider p, CodeGraphSymbol sym)
+        {
+            if (!string.Equals(sym.Type, "variable", StringComparison.OrdinalIgnoreCase)) return false;
+            if (string.IsNullOrEmpty(sym.ParentName)) return false;
+            var parent = p.FindSymbolByName(sym.ParentName);
+            return parent != null &&
+                (string.Equals(parent.Type, "procedure", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(parent.Type, "routine", StringComparison.OrdinalIgnoreCase));
         }
 
         /// <summary>Markdown hover text for a CodeGraph symbol: a fenced signature line (name + params +
@@ -1855,6 +1972,20 @@ namespace ClarionAssistant.Services
             if (lines == null || line < 0 || line >= lines.Length) return;
             int from = Math.Min(line, lines.Length - 1);
 
+            // The cursor's own line is a column-1 declaration in progress (e.g. "Test PRO", about to become
+            // "Test PROCEDURE") that ISN'T a complete PROCEDURE/ROUTINE header yet. Column 1 always starts a
+            // new top-level construct in Clarion, implicitly ending whatever procedure precedes it in the
+            // text — UNLESS that procedure's DATA section is still open (no CODE line yet), in which case
+            // this is just a sibling declaration within it. Without this check the plain backward scan below
+            // ignores CODE lines entirely and walks straight past the PREVIOUS procedure's CODE into its
+            // header, surfacing ITS locals while a brand-new procedure header is still being typed.
+            if (CgDataLabelPattern.IsMatch(lines[from]) && !CgProcHeaderPattern.IsMatch(lines[from]) && !CgRoutineHeaderPattern.IsMatch(lines[from]))
+            {
+                int openHeader = FindOpenDataSectionHeader(lines, from);
+                if (openHeader < 0) return;   // past any procedure's CODE line → brand-new construct, no locals
+                from = openHeader;
+            }
+
             // (a) Enclosing ROUTINE (most specific). Scanning up, an enclosing routine is one whose header
             // we reach BEFORE any PROCEDURE header — otherwise the cursor is in the procedure's main body.
             // Added first so a routine-private var shadows a same-named procedure local (via `seen`).
@@ -1867,6 +1998,21 @@ namespace ClarionAssistant.Services
             // (b) Enclosing PROCEDURE main locals — in scope everywhere in the proc, incl. its routines.
             for (int i = from; i >= 0; i--)
                 if (CgProcHeaderPattern.IsMatch(lines[i])) { CollectDataLabels(lines, i, prefix, seen, primary, "(local)"); break; }
+        }
+
+        /// <summary>Scans upward from just above <paramref name="from"/> for the nearest PROCEDURE/ROUTINE
+        /// header whose DATA section is still open. Returns its line index, or -1 if a CODE line (or the top
+        /// of the file) is reached first — meaning <paramref name="from"/> sits past that construct's DATA
+        /// section entirely (e.g. a brand-new top-level declaration starting there). Used to disambiguate a
+        /// column-1 declaration-in-progress from a genuine sibling DATA declaration.</summary>
+        private static int FindOpenDataSectionHeader(string[] lines, int from)
+        {
+            for (int i = from - 1; i >= 0; i--)
+            {
+                if (CgProcHeaderPattern.IsMatch(lines[i]) || CgRoutineHeaderPattern.IsMatch(lines[i])) return i;
+                if (CgCodeLinePattern.IsMatch(lines[i])) return -1;
+            }
+            return -1;
         }
 
         /// <summary>Phase 2 refinement (task a47a6cac item #5): merge module-scope (file-scope) scalar and
@@ -1987,6 +2133,15 @@ namespace ClarionAssistant.Services
         {
             var ranges = new List<int[]>();
             int from = Math.Min(line, lines.Length - 1);
+
+            // Same column-1-declaration-in-progress guard as MergeLocalVarCompletions — see its comment.
+            if (CgDataLabelPattern.IsMatch(lines[from]) && !CgProcHeaderPattern.IsMatch(lines[from]) && !CgRoutineHeaderPattern.IsMatch(lines[from]))
+            {
+                int openHeader = FindOpenDataSectionHeader(lines, from);
+                if (openHeader < 0) { ranges.AddRange(GetModuleDataRanges(lines)); return ranges; }
+                from = openHeader;
+            }
+
             for (int i = from; i >= 0; i--)   // enclosing routine (only if reached before any procedure header)
             {
                 if (CgRoutineHeaderPattern.IsMatch(lines[i])) { ranges.Add(new[] { i + 1, FindCodeAfter(lines, i) }); break; }
