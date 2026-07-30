@@ -44,7 +44,7 @@ namespace ClarionAssistant.Services
         // The lookahead (not [,(]|$ like BandOpen) deliberately allows code structures that take an
         // expression: LOOP I = 1 TO 10, CASE SomeVar, EXECUTE n.
         private static readonly Regex StructOpen = new Regex(
-            @"^\s*(?:[A-Za-z_][A-Za-z0-9_:]*\s+)?(GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)(?=\s|,|\(|$)",
+            @"^\s*(?:[A-Za-z_][A-Za-z0-9_:]*\s+)?(QUEUE|FILE|VIEW|REPORT|WINDOW|APPLICATION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)(?=\s|,|\(|$)",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
         // TOOLBAR is nested inside WINDOW/APPLICATION bodies and legitimately written bare
         // ("TOOLBAR,USE(?Toolbar1)"), so StructOpen's generic lookahead (which accepts any
@@ -64,6 +64,25 @@ namespace ClarionAssistant.Services
         // same tight lookahead ('(', ',', '!' or end-of-line right after the keyword).
         private static readonly Regex NestedBandOpen = new Regex(
             @"^\s*(MENUBAR|MENU|SHEET|TAB|OPTION)\b(?=\s*(?:[(,!]|$))",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        // GROUP shares TOOLBAR/OPTION's ambiguity — legitimately bare as a nested WINDOW/
+        // APPLICATION/REPORT screen control ("GROUP('Title'),AT(...),USE(?G1),BOXED") and as a
+        // fully anonymous DATA group ("GROUP,PRE(x)") — but UNLIKE Toolbar/Option it is ALSO
+        // legitimately LABELED ("MyGroup GROUP,PRE(x)"). A plain identifier named "Group"
+        // declared bare ("Group &STRING", confirmed live next to the analogous "Window &STRING")
+        // must not match. Keep StructOpen's optional-label prefix, but require '(', ',', '!' or
+        // end-of-line after optional whitespace — real code puts a space before the paren too
+        // (e.g. "SysInfo GROUP (SysDescrGroupType), NAME(...)"), so the lookahead allows that gap.
+        private static readonly Regex GroupOpen = new Regex(
+            @"^\s*(?:[A-Za-z_][A-Za-z0-9_:]*\s+)?(GROUP)(?=\s*(?:[(,!]|$))",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        // RECORD shares GROUP's exact ambiguity — legitimately bare inside a FILE
+        // ("RECORD, PRE()", an anonymous record) and legitimately labeled ("Rec RECORD"). A plain
+        // identifier named "Record" declared bare ("Record &STRING") must not match. Confirmed
+        // live: an anonymous RECORD inside a FILE, unfixed, desyncs the balance stack the same
+        // way a bare screen GROUP did (same root cause, different keyword).
+        private static readonly Regex RecordOpen = new Regex(
+            @"^\s*(?:[A-Za-z_][A-Za-z0-9_:]*\s+)?(RECORD)(?=\s*(?:[(,!]|$))",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex StructWordRx = new Regex(
             @"\b(IF|GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|MENUBAR|MENU|TOOLBAR|SHEET|TAB|OPTION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)\b",
@@ -92,11 +111,15 @@ namespace ClarionAssistant.Services
         //                     — same as above, but ALSO given their own tight-lookahead regex
         //                       (ToolbarOpen / NestedBandOpen) so a bare label of the same name
         //                       is never even offered to this set in the first place.
+        //   GROUP, RECORD     — legitimately bare AND legitimately labeled (unlike Toolbar/Option,
+        //                       which are never labeled): each gets its own tight-lookahead regex
+        //                       (GroupOpen / RecordOpen) instead of this label gate, so both are
+        //                       matched correctly either way without ever landing here.
         // Execution structures (LOOP/CASE/BEGIN/EXECUTE/ACCEPT) legitimately have no preceding label
         // either and were never in this set.
         private static readonly HashSet<string> DeclarationStructKeywords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "GROUP", "QUEUE", "RECORD", "FILE", "VIEW", "REPORT", "WINDOW", "APPLICATION",
+            "QUEUE", "FILE", "VIEW", "REPORT", "WINDOW", "APPLICATION",
             "CLASS", "INTERFACE"
         };
         private static readonly Regex EndRx = new Regex(@"^END\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -217,6 +240,20 @@ namespace ClarionAssistant.Services
                         Match structMatch = StructOpen.Match(u);
                         Match bandMatch = structMatch.Success ? null : BandOpen.Match(u);
                         Match openMatch = structMatch.Success ? structMatch : bandMatch;
+                        if (openMatch == null || !openMatch.Success)
+                        {
+                            // GROUP was pulled out of StructOpen's alternation (see GroupOpen's
+                            // comment) — this is its own match slot, same shape as ToolbarOpen below.
+                            Match groupMatch = GroupOpen.Match(u);
+                            if (groupMatch.Success) openMatch = groupMatch;
+                        }
+                        if (openMatch == null || !openMatch.Success)
+                        {
+                            // RECORD was pulled out of StructOpen's alternation too (see RecordOpen's
+                            // comment) — same shape as GroupOpen above.
+                            Match recordMatch = RecordOpen.Match(u);
+                            if (recordMatch.Success) openMatch = recordMatch;
+                        }
                         if (openMatch == null || !openMatch.Success)
                         {
                             // TOOLBAR has its own tight pattern (see ToolbarOpen) and never takes a
