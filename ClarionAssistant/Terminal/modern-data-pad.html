@@ -2681,11 +2681,18 @@
                 var rh = document.getElementById('redHint');
 
                 if (msg.indexing) {
-                    // Host started a (possibly slow) enumeration. Show progress so an in-flight scan isn't read as
-                    // "no matches"; keep the prior redIndex usable until the real result lands.
+                    // Deliberately NO "indexing…" progress text. A benign re-request fires on every
+                    // Files-tab activation (see the note below) and normally completes in a few
+                    // milliseconds, so the hint only ever flashed: this is a block element, so showing
+                    // it shoved the whole page down and hiding it sprang the page back — long enough to
+                    // be a visible jump on every tab click, never long enough to read.
+                    //
+                    // The visibility rule here is now IDENTICAL to the completed branch below, so the
+                    // hint's height cannot change across the indexing -> done transition. The prior
+                    // redIndex stays usable until the real result lands, exactly as before.
                     if (rh) {
                         if (!redAvailable) { rh.textContent = 'No active redirection (.red) — open a Clarion solution to search.'; rh.style.display = 'block'; }
-                        else { rh.textContent = 'Indexing redirection files…'; rh.style.display = 'block'; }
+                        else { rh.style.display = 'none'; }
                     }
                     return;
                 }
