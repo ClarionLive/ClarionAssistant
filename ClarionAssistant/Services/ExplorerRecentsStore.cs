@@ -31,6 +31,17 @@ namespace ClarionAssistant.Services
         /// <summary>Cap on pinned compare pairs, mirroring <see cref="PinnedFilesCap"/> for pinned files.</summary>
         private const int PinnedComparesCap = 50;
 
+        /// <summary>
+        /// Absolute ceiling on compare pairs accepted from disk, pinned included. The per-kind caps above are
+        /// enforced when pairs arrive through the API, but nothing stops a hand-edited or corrupted file from
+        /// declaring thousands of PINNED pairs — and every loaded pair costs two File.Exists probes on every
+        /// Files-tab render (ExplorerFileClassifier.BuildCompares), so an unbounded list is a UI stall.
+        /// </summary>
+        private const int TotalComparesCap = RecentComparesCap + PinnedComparesCap;
+
+        /// <summary>Cap on persisted collapsed-group keys — a backstop against an unbounded key list.</summary>
+        private const int CollapsedCap = 64;
+
         /// <summary>One recently-opened file with the UTC tick at which it was last opened.</summary>
         public sealed class RecentEntry
         {
@@ -124,9 +135,14 @@ namespace ClarionAssistant.Services
                             Ts = AsLong(cd, "ts"),
                             Pinned = AsBool(cd, "pinned")
                         });
+                        // Absolute ceiling, pinned included — a hand-edited file could otherwise declare an
+                        // unbounded number of PINNED pairs, which TrimCompares (unpinned-only, by design) would
+                        // happily keep and the classifier would File.Exists on every render.
+                        if (model.RecentCompares.Count >= TotalComparesCap) break;
                     }
-                    // Trim here rather than breaking out of the loop above: a break at the cap would
-                    // drop PINNED pairs sitting past it, and pinned pairs are supposed to be immune.
+                    // Then trim by the per-kind rule. Done AFTER the loop rather than breaking at
+                    // RecentComparesCap: breaking there would drop PINNED pairs sitting past it, and pinned
+                    // pairs are supposed to be immune to the unpinned cap.
                     TrimCompares(model.RecentCompares);
                 }
 
@@ -306,9 +322,6 @@ namespace ClarionAssistant.Services
 
         // ---- internals -------------------------------------------------------
 
-        /// <summary>Cap on persisted collapsed-group keys — a backstop against an unbounded key list.</summary>
-        private const int CollapsedCap = 64;
-
         private static void SetComparePinned(string a, string b, bool pinned)
         {
             if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return;
@@ -321,9 +334,25 @@ namespace ClarionAssistant.Services
                 if (at < 0) return;
                 if (m.RecentCompares[at].Pinned == pinned) return;
                 if (pinned && m.RecentCompares.Count(c => c.Pinned) >= PinnedComparesCap) return;
-                m.RecentCompares[at].Pinned = pinned;
-                // Unpinning can push the pair past the unpinned cap; re-trim so the invariant holds.
-                if (!pinned) TrimCompares(m.RecentCompares);
+                var entry = m.RecentCompares[at];
+                entry.Pinned = pinned;
+                if (!pinned)
+                {
+                    // Unpinning must DEMOTE the pair to a recent, never destroy it — ✕ is the destructive
+                    // affordance, ★ is not. A pair pinned long ago sits deep in insertion order, so simply
+                    // re-trimming would find it past the unpinned cap and delete it outright: pin a pair, run 20
+                    // more compares, unpin, and it silently vanishes. Move it to the front so the eviction lands
+                    // on a genuinely unwanted entry instead.
+                    //
+                    // Ts is deliberately NOT restamped. Restamping would make the row claim it was compared "just
+                    // now", falsifying the one fact the timestamp exists to report — so the pair survives at the
+                    // head of the list while still DISPLAYING its true age (the classifier orders by Ts). The cost
+                    // is that this one trim can evict an entry slightly newer than the moved pair; keeping a pair
+                    // the user cared enough to pin is the better trade.
+                    m.RecentCompares.RemoveAt(at);
+                    m.RecentCompares.Insert(0, entry);
+                    TrimCompares(m.RecentCompares);
+                }
                 Save(m);
             }
             catch (Exception ex) { Debug("SetComparePinned", ex); }

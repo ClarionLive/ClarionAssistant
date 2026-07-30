@@ -333,6 +333,11 @@
     .pairchip.clw { color: #0a5dc2; border-color: rgba(10,93,194,.35); }
     .pairchip:hover { background: #e0e6ee; }
     .pairchip.missing { opacity: .4; }
+    /* .missing means "dim this side" (a class row's .inc/.clw chip). A compare row's stale badge is the
+       opposite intent — it must be the most readable thing in the row, not the least — and nesting the two
+       multiplied to ~18% opacity. Note the parent .frow2.missing still clamps children to its own .45, so
+       this buys color contrast rather than full opacity. */
+    .pairchip.warn { opacity: 1; color: #b3401e; border-color: rgba(179,64,30,.45); background: #fdeee9; }
 
     /* file rows */
     .frow2 { display: grid; grid-template-columns: 24px 1fr auto auto; align-items: center; gap: 8px;
@@ -474,6 +479,7 @@
     body.dark .pairchip.inc { color: #a6e3a1; border-color: rgba(166,227,161,.35); }
     body.dark .pairchip.clw { color: #89b4fa; border-color: rgba(137,180,250,.35); }
     body.dark .pairchip:hover { background: #3a3a52; }
+    body.dark .pairchip.warn { color: #fab387; border-color: rgba(250,179,135,.45); background: #3b2f28; }
     body.dark .frow2:hover { background: #2d2d44; border-left-color: #89b4fa; }
     body.dark .frow2.hl { background: #33344d; border-left-color: #89b4fa; }
     body.dark .fpath .rsec { color: #a3aac2; }
@@ -2633,12 +2639,21 @@
                     // without this the user's scope and type filter would silently snap back mid-session.
                     // The scope is validated against THIS payload's content — it is persisted across
                     // restarts and buckets now, so it can name a group that isn't here (scopeWithContent).
-                    if (msg.uiState.scope)   explorerScope = scopeWithContent(msg.uiState.scope, msg);
+                    if (msg.uiState.scope) {
+                        explorerScope = scopeWithContent(msg.uiState.scope, msg);
+                        // Write the correction back. Without this the host and the file still hold the empty
+                        // scope, so the NEXT payload that happens to populate that group would silently yank the
+                        // view back to it while the user was browsing 'all'.
+                        if (explorerScope !== msg.uiState.scope) scopeCorrectionPending = true;
+                    }
                     if (msg.uiState.extMode) redExtMode    = msg.uiState.extMode;
                     var maskEl = document.getElementById('redCustomExt');
                     if (maskEl && typeof msg.uiState.customExt === 'string') maskEl.value = msg.uiState.customExt;
                     redParseCustom();
                     redSyncTypeBtn();
+                    // Flushed HERE, after the mask has been applied — saveExplorerUiState reads #redCustomExt,
+                    // so posting it back at the scope line above would persist a stale mask.
+                    if (scopeCorrectionPending) { scopeCorrectionPending = false; saveExplorerUiState(); }
                 }
                 renderExplorer();
             }
@@ -2912,6 +2927,7 @@
     var explorerData = null;        // last setExplorerData payload
     var explorerCollapsed = {};     // group key ('compares'|'classes'|'templates'|'source'|'other') -> true when collapsed
     var explorerFilter = '';        // live filter text for recent rows
+    var scopeCorrectionPending = false;  // scopeWithContent overrode the arriving scope; write the fix back
 
     function fIco(ext, kind) {
         var e = (ext || '').toLowerCase().replace(/^\./, '');
@@ -3077,8 +3093,11 @@
     }
 
     // A pair matches the query if EITHER side does — you look for one file and find what you diffed it against.
+    // Pass the FULL path, not the directory: file rows match on `e.path`, so a pasted full path finds a file row
+    // but would miss a pair whose dir is only a prefix of it. The full path is a superset of the dir, so
+    // directory queries keep working.
     function compareMatch(p) {
-        return explorerMatch(p.aName, p.aDir) || explorerMatch(p.bName, p.bDir);
+        return explorerMatch(p.aName, p.a || p.aDir) || explorerMatch(p.bName, p.b || p.bDir);
     }
 
     // Build one compare-pair row. entry: {a,b,aName,bName,aDir,bDir,ts,aExists,bExists,pinned,shape}.
@@ -3094,7 +3113,7 @@
         var fname = document.createElement('div'); fname.className = 'fname';
         fname.appendChild(document.createTextNode(lbl.main));
         if (note) {
-            var warn = document.createElement('span'); warn.className = 'pairchip missing';
+            var warn = document.createElement('span'); warn.className = 'pairchip warn';
             warn.textContent = 'missing'; warn.title = note;
             fname.appendChild(warn);
         }
@@ -3266,6 +3285,7 @@
     // The radios cost ~55px of permanent layout but only mattered mid-query. A grouped menu costs one
     // ~90px control and, unlike a radio row, absorbs whole new categories of file type for free.
     var RED_TYPE_LABELS = { all: 'All types', app: 'App', source: 'Source', classes: 'Classes', templates: 'Templates', custom: 'Custom' };
+    var maskSaveTimer = null;   // debounce for persisting the custom-extension mask as it is typed
 
     function redSyncTypeBtn() {
         var b = document.getElementById('redTypeBtn');
@@ -3322,6 +3342,12 @@
             if (hidden) hidden.value = inp.value;
             redParseCustom();
             if (redExtMode === 'custom') { redSyncTypeBtn(); redFilter(); }
+            // Persist the mask as it's refined. Only redSetType used to save, so editing the mask AFTER
+            // switching to Custom filtered live but was never written — the mask silently reverted on restart,
+            // and an unrelated later gesture (collapsing a group) would flush whatever was in the box, making
+            // persistence look random. Debounced so a keystroke isn't a disk write.
+            if (maskSaveTimer) clearTimeout(maskSaveTimer);
+            maskSaveTimer = setTimeout(function () { maskSaveTimer = null; saveExplorerUiState(); }, 300);
         });
         inp.addEventListener('keydown', function (e) {
             e.stopPropagation();                                    // don't let Escape/Enter reach the omnibox
@@ -3360,7 +3386,10 @@
             });
             if (all.length > shown.length) {
                 var more = document.createElement('div'); more.className = 'hint';
-                more.textContent = '+' + (all.length - shown.length) + ' more in ⇄ Compares below';
+                // Deliberately does NOT promise "below": the ⇄ Compares group is hidden when it's collapsed,
+                // when the scope pill is on a type group, or when a live filter excludes the extra pairs — so
+                // naming a location would sometimes be a lie. State the count, which is always true.
+                more.textContent = '+' + (all.length - shown.length) + ' more recent pairs';
                 menu.appendChild(more);
             }
         }
@@ -3444,7 +3473,7 @@
     // Sheet tabs. They scope RECENTS only (in both browse and query mode); the redirection index is
     // scoped by the type control instead, so the two never fight over the same rows.
     // ============================================================================================
-    var explorerScope = 'all';          // all | pinned | classes | templates | source | other
+    var explorerScope = 'all';          // all | pinned | compares | classes | templates | source | other
     var PILL_VISIBLE_MAX = 6;           // beyond this the tail collapses into a "⋯ N more" menu
 
     function scopeAllows(key) { return explorerScope === 'all' || explorerScope === key; }
@@ -3471,8 +3500,13 @@
     // A persisted scope can outlive its content: the stored pill may be a group this (version, solution)
     // bucket no longer has — or never had, now that the scope survives a restart. Opening the tab on a
     // scope with nothing in it would show an empty list next to a pill row that doesn't even offer it,
-    // so fall back to 'all'. Only applied when the scope ARRIVES from the host; scoping to a group and
-    // then emptying it mid-session still shows the existing "Nothing in this group." message.
+    // so fall back to 'all'.
+    //
+    // This applies on EVERY payload, not just the first. An earlier comment here claimed it was
+    // arrival-only and that emptying a group mid-session still showed "Nothing in this group." — that was
+    // wrong: every mutation handler calls PostExplorerData and the host always includes scope, so removing
+    // the last pair while scoped to Compares does fall back to 'all'. One behaviour, not two: a scope with
+    // no rows is never shown, and the correction is written back so it cannot silently reappear later.
     function scopeWithContent(key, d) {
         if (!key || key === 'all') return 'all';
         return scopeCount(key, d) > 0 ? key : 'all';

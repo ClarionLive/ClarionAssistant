@@ -1051,24 +1051,46 @@ namespace ClarionAssistant
         /// Seed the in-memory Files-tab view state from the persisted bucket, once per (version, solution).
         /// Called from PostExplorerData, which already resolves both tags. Re-seeds when the bucket changes so a
         /// solution or Clarion-version switch shows THAT bucket's scope/filter/collapse state instead of carrying
-        /// the previous one across. An empty persisted facet leaves the current default alone, which is what makes
-        /// a first run (or a v1 recents file) behave exactly as it did before this was persisted.
+        /// the previous one across.
+        ///
+        /// RESET-then-overlay, never overlay alone. An earlier version only assigned a facet when the persisted
+        /// value was non-empty, meaning to protect a first run's defaults — but combined with re-seeding it LEAKED:
+        /// switching from a configured solution to one with a v1 (or absent) recents file left the previous
+        /// solution's scope and extMode in the fields, and the page's next saveExplorerUiState wrote them into the
+        /// new bucket, making the contamination permanent. Reset to the page's own defaults first so an absent
+        /// facet means "default", not "whatever the last solution had".
         /// </summary>
         private void SeedExplorerUiState(string versionTag, string solutionTag)
         {
             string bucket = (versionTag ?? "") + "|" + (solutionTag ?? "");
             if (_explorerUiSeededFor == bucket) return;
-            _explorerUiSeededFor = bucket;
             try
             {
+                // Page defaults, matching the field initializers and the page's own starting values.
+                _explorerScope = "all";
+                _explorerExtMode = "all";
+                _explorerCustomExt = "";
+                _explorerCollapsed = new List<string>();
+
                 var vs = Services.ExplorerRecentsStore.GetViewState();
-                if (vs == null) return;
-                if (!string.IsNullOrEmpty(vs.Scope)) _explorerScope = vs.Scope;
-                if (!string.IsNullOrEmpty(vs.ExtMode)) _explorerExtMode = vs.ExtMode;
-                _explorerCustomExt = vs.CustomExt ?? "";
-                _explorerCollapsed = vs.Collapsed ?? new List<string>();
+                if (vs != null)
+                {
+                    if (!string.IsNullOrEmpty(vs.Scope)) _explorerScope = vs.Scope;
+                    _explorerCustomExt = vs.CustomExt ?? "";
+                    _explorerCollapsed = vs.Collapsed ?? new List<string>();
+                    // extMode and customExt are ONE unit: "custom" with no mask renders as an active filter that
+                    // filters nothing (redParseCustom yields an empty set, which passes everything, while the type
+                    // button still labels itself Custom). Fall back to "all" rather than show a filter the user
+                    // never set.
+                    if (!string.IsNullOrEmpty(vs.ExtMode)
+                        && !(vs.ExtMode == "custom" && string.IsNullOrEmpty(_explorerCustomExt)))
+                        _explorerExtMode = vs.ExtMode;
+                }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] SeedExplorerUiState: " + ex.Message); }
+            // Marked seeded only AFTER the read. Marking first would strand this bucket permanently on the
+            // defaults if the read ever threw, because the guard above would already match on the retry.
+            _explorerUiSeededFor = bucket;
         }
 
         /// <summary>
