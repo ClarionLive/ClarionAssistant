@@ -67,20 +67,40 @@ namespace ClarionAssistant.Services
             return DoNavigate(full, line, column);
         }
 
-        // Always on the UI thread. Open (or focus) the file, park the desired position, then drive the editor
-        // if it is already live — otherwise it self-applies via ApplyPendingNavigation on capture/ready.
+        // Always on the UI thread. Park the desired position FIRST, THEN open (or focus) the file, then
+        // drive the editor if it is already live — otherwise it self-applies via ApplyPendingNavigation
+        // on capture/ready.
+        //
+        // Ordering fix (2026-07-30): this used to call FileService.OpenFile() BEFORE writing _pending.
+        // For a COLD open, OpenFile() drives the entire view-creation sequence — CaptureTick →
+        // AttachOverlay → the WebView2 page's own "ready" round-trip — and that sequence reads _pending
+        // for this exact file (MonacoClarionSourceEditor's OnReady, via TryConsumePending) to seed the
+        // initial cursor position into the very first setSource payload. If any part of that chain
+        // completes before OpenFile() returns, _pending was still empty at read time — the file opened at
+        // whatever position it last had, silently dropping the requested line (confirmed via
+        // monaco-spike.log: a cold open logged with no ", nav->line N" suffix, which the log line only
+        // appends when a pending nav was actually found). Writing _pending before OpenFile() closes that
+        // window entirely. Same failure class as the historical "memento-restore race" (PR #111).
         private static bool DoNavigate(string full, int line, int column)
         {
-            try { ICSharpCode.SharpDevelop.FileService.OpenFile(full); }
-            catch (Exception ex) { MonacoSpikeLog.Write("Navigator OpenFile error: " + ex.Message); return false; }
-
-            MonacoClarionEditor ed;
+            MonacoClarionEditor liveBefore;
             lock (_gate)
             {
                 _pending[full] = new[] { line, column };
-                _live.TryGetValue(full, out ed);
+                _live.TryGetValue(full, out liveBefore);
             }
-            if (ed != null) ed.ApplyPendingNavigation();
+
+            try { ICSharpCode.SharpDevelop.FileService.OpenFile(full); }
+            catch (Exception ex)
+            {
+                MonacoSpikeLog.Write("Navigator OpenFile error: " + ex.Message);
+                lock (_gate) { _pending.Remove(full); }   // don't leave a stale entry for a later unrelated open
+                return false;
+            }
+
+            // If it was ALREADY live before OpenFile (a no-op re-open/focus), drive it directly — the
+            // cold-open path above only fires for a file that wasn't loaded yet.
+            if (liveBefore != null) liveBefore.ApplyPendingNavigation();
             return true;
         }
 
