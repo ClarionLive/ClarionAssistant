@@ -51,6 +51,22 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ## What's New (Unreleased)
 
+### CA Compare &mdash; editable diffs
+
+The diff viewer becomes a working surface rather than a read-only one. Both panes unlock for editing, and each hunk gets a single **apply-change arrow** (Monaco's own gutter revert control) that copies it to the other side; copy direction is chosen per-compare, not per-hunk. Each side saves independently through a write-back path that can't clobber an edit made on the other, **Ctrl+S** saves every changed side at once, and closing the tab &mdash; not just the Close button &mdash; prompts when either side is dirty. The file-path bar shows full paths.
+
+### CA Explorer &mdash; Files tab restructure
+
+The omnibox is rebuilt around a split-button **Open** plus a single search field, joined by a type dropdown, scope pills, and a header **Trace** with mouse-pickable targets, sticky headers, and an actionable trace log. **Compare pairs are remembered** &mdash; re-run, swap, or pin a pair straight from the Files tab. The environment banner names the active `.red`, and view state round-trips so the tab comes back the way you left it.
+
+### Data pad &mdash; master/detail and drag-to-editor
+
+Variable rows and the table tree both gain master/detail: type-icon slide-down panels for variables, and table/key/column/relation panels for the tree, with an icon-only header toolbar. Column detail now comes from the **live dictionary** in full, including auto-number and exclude chips on keys. Fields can be **dragged from the pad into an editor** &mdash; Monaco surfaces and legacy ICSharpCode editors both accept a point-drop, with visible drop feedback while you drag.
+
+### Zero-reload error navigation
+
+Clicking a row in the IDE's Errors pane used to close and reopen the embeditor. Navigation is now intercepted and dispatched into the **live overlay**, repositioning it in place &mdash; and unsaved overlay edits survive Clarion's own embed re-open via a mirror/stash/restore path.
+
 ### Horizontal split panes (#157)
 
 The editor **Split** button gains an orientation choice: right-click it for **Vertical split (side by side)** or **Horizontal split (top / bottom)**. Choosing an orientation while already split repositions the panes in place &mdash; content, scroll position, and cursor are all preserved; choosing one while unsplit opens the split immediately in that orientation. The choice persists across sessions. The divider now tracks the true midpoint of the editing area, so toggling the Outline or Find-All column while split no longer opens a gap.
@@ -67,17 +83,33 @@ Code Snippets (Ctrl+J) gain `${SELECTED:N}` &mdash; the Nth comma-separated part
 
 Typing `?` now triggers completion directly, and field equates come back as a Reference kind with their own icon. Bare-prefix globals are no longer merged into that list &mdash; previously a variable like `LDField` could prefix-match and outrank the `?LdapButton` you were actually reaching for.
 
+### Native embeditor parity and editor options
+
+Long-standing parity gaps close together. **Ctrl+Q** mimics the native embeditor's save-and-exit gesture (#137) &mdash; a dirty buffer raises a confirm where Enter saves and exits, absorbing the trailing Enter of the native muscle memory. The as-you-type aids are now **individually switchable** in the gear panel (#138): *Auto-space assignments (=)* and *Live keyword casing* can each be turned off. `OMIT('term')` and `COMPILE('term')` blocks fold (#133), shared across the embeditor, diff editor, and sticky scroll. Indentation follows **Options &rarr; Text Editor &rarr; Behavior** &mdash; Indentation size, Tab size, and Convert Tabs to Spaces &mdash; instead of assuming 4, via a "Follow Clarion's editor options" checkbox that's on by default (#126).
+
+### CA Editor reliability
+
+The editor watches its file on disk for external read-only and content changes, saves dirty tabs **before a build starts**, and the **Reload** button now actually works &mdash; it was a no-op since day one &mdash; restoring caret and scroll position when it does.
+
 ### Fixed
 
+- **Output pane deafness** (#140) &mdash; while a Monaco editor was the active document, the IDE's Output pane (Build / Generator / Debug) couldn't be clicked into, drag-selected, or Ctrl+A'd; only scroll worked. Monaco no longer steals focus from IDE pads, with no regression to editor-focus-on-tab-switch.
 - **Hover and completion respect procedure scope** (#152) &mdash; a local, routine, or module variable declared in the current buffer now outranks a same-named symbol anywhere else in the solution or library, and a not-yet-indexed local procedure resolves from the buffer. A column-1 declaration in progress no longer leaks the *previous* procedure's locals into the completion list, and an exact-match identifier outranks a keyword that merely prefixes it (typing `PRO` where a local `PRO` exists no longer commits `PROCEDURE`).
 - **Phantom "END has no matching structure" warnings** (#156) &mdash; bare screen `GROUP` controls in a WINDOW and anonymous `RECORD, PRE()` structures inside a FILE no longer desync the embed slot's structure-balance checker, while a plain variable named `Group` or `Record` still correctly produces no warning. Shipped with a repro fixture that must yield zero diagnostics.
 - **Cold-open navigation lands on the right line** (#162) &mdash; Errors-pane clicks, bookmarks, and Find Next targeting a file that isn't open yet could silently drop the requested line and open wherever the file was last positioned. The requested position is now parked before the file opens, closing the race for every caller that drives the hidden caret directly.
 - **Duplicate entries in member completion** (#151) &mdash; dedupe now keys on each item's bare identifier rather than its display label, so a member the language server already resolved can't be re-added under its bare name.
+- **More keyword-as-label misreads** &mdash; `MENU`, `MENUBAR`, `SHEET`, `TAB`, `OPTION`, and `TOOLBAR` used as plain variable names no longer read as structure openers, and the label check is now strict column 0, matching the real compiler rule.
+- **Cross-instance WebView2 crashes** &mdash; each Clarion process gets an isolated WebView2 profile, allocated from stable slots rather than per-PID folders.
+- **Unsaved edits preserved** &mdash; overlay edits survive Clarion's embed re-open, and a disk-watched file turning read-only no longer discards them.
+- **CA Find** no longer misses keyboard focus on the first Ctrl+F after IDE start.
+- **CA Explorer polish** &mdash; dark-mode secondary text lifted above the WCAG AA contrast floor; dropdown menus kept inside the WebView2; tooltips flipped above the native drop strip; the last row's path line no longer clipped; the Files tab stops jumping on every activation.
 
 ### Thanks
 
 - **geircodes** &mdash; horizontal split panes (#157), outline sort (#153), field-equate completion (#159/#160), scoping fixes (#152), GROUP/RECORD diagnostics (#156), cold-open navigation (#162), completion dedupe (#151).
 - **Andrew Santarelli** &mdash; snippet parameter splitting (#155).
+- **BoxSoft** &mdash; Ctrl+Q parity (#137) and the as-you-type opt-outs (#138).
+- **armisoftware** &mdash; OMIT/COMPILE folding (#133).
 
 ---
 
