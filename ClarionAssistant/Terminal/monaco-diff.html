@@ -114,6 +114,14 @@
        hunk) — we do not draw any. A hunk we've flipped is mirrored in place, which turns the
        side-by-side arrow around and the inline "discard" curl into its opposite, so one rule covers
        both layouts without depending on specific codicon names. */
+
+    /* Keep every arrow visible. Monaco ships `.gutterItem{opacity:0}` and only reveals the one under
+       the pointer/cursor via `.showAlways`, so arrows fade in and out as the mouse moves. With a
+       GLOBAL copy direction that's actively unhelpful: the arrows are the only thing showing which
+       way a click will go, so they need to be readable without hunting for them. Overriding the
+       opacity is enough — the elements are always in the DOM (for hunks near the viewport), it is
+       purely a visual reveal. */
+    .monaco-diff-editor .gutter .gutterItem { opacity: 1 !important; transition: none !important; }
     .monaco-diff-editor .gutterItem .action-label.ca-flipped {
         transform: scaleX(-1);
         color: #df8e1d;
@@ -165,8 +173,8 @@
         <span class="fb-side" id="fb-modified"><span class="fb-dot"></span><span class="fb-name" id="fb-name-modified"></span></span>
     </span>
     <div class="spacer"></div>
-    <button id="btn-save-original" class="cr-btn save-btn" onclick="saveSide('original')" title="Write the left pane to its file">Save Left</button>
-    <button id="btn-save-modified" class="cr-btn save-btn" onclick="saveSide('modified')" title="Write the right pane to its file">Save Right</button>
+    <button id="btn-save-original" class="cr-btn save-btn" onclick="saveSide('original')" title="Write the left pane to its file (Ctrl+S saves every changed side)">Save Left</button>
+    <button id="btn-save-modified" class="cr-btn save-btn" onclick="saveSide('modified')" title="Write the right pane to its file (Ctrl+S saves every changed side)">Save Right</button>
     <button id="btn-approve" class="cr-btn pass" onclick="onApprove()">Approve</button>
     <button id="btn-cancel" class="cr-btn cancel-btn" onclick="onCancel()">Cancel</button>
 </div>
@@ -848,18 +856,64 @@
         postMsg({ action: 'saveSide', side: side, text: text });
     }
 
+    /// Ctrl+S saves EVERY dirty side. No focus tracking and no prompt: what it will do is already on
+    /// screen as the dirty dots, and each side still goes through the host's own guards, so this is a
+    /// shortcut for pressing the Save buttons rather than a way around them. The buttons remain the
+    /// precise instrument when you want only one side written.
+    function saveAllDirty() {
+        if (!fileCompareMode) return;
+        var sides = [];
+        if (origDirty && !savePending.original) sides.push('original');
+        if (modDirty && !savePending.modified) sides.push('modified');
+        if (!sides.length) { showFileBarNote('Nothing to save.', false); return; }
+        // Batch so two results produce ONE message — otherwise the second note would overwrite the
+        // first and a refusal could be swallowed by the other side's success.
+        saveBatch = (sides.length > 1) ? { expected: sides.length, results: [] } : null;
+        sides.forEach(saveSide);
+    }
+
+    var saveBatch = null;
+    function sideLabel(side) { return side === 'original' ? 'Left' : 'Right'; }
+
     /// Host's answer to a saveSide. Success marks the side clean (which clears its dot and disables its
     /// Save button); failure leaves it dirty and shows why.
     function onSaveResult(msg) {
         var side = msg.side || '';
         setSavePending(side, false);
-        if (msg.ok) {
-            markSideClean(side);
-            showFileBarNote((side === 'original' ? 'Left' : 'Right') + ' side saved.', false);
-        } else {
-            showFileBarNote(msg.message || 'Save failed.', true);
+        if (msg.ok) markSideClean(side);
+
+        if (saveBatch) {
+            saveBatch.results.push({ side: side, ok: !!msg.ok, message: msg.message || '' });
+            if (saveBatch.results.length < saveBatch.expected) return;   // wait for the rest
+            var results = saveBatch.results;
+            saveBatch = null;
+            var failed = results.filter(function (r) { return !r.ok; });
+            if (!failed.length) {
+                showFileBarNote('Saved ' + results.map(function (r) { return sideLabel(r.side); }).join(' and ') + '.', false);
+            } else {
+                // Always name what FAILED, and say what succeeded, so a partial save is unambiguous.
+                var okNames = results.filter(function (r) { return r.ok; }).map(function (r) { return sideLabel(r.side); });
+                var parts = failed.map(function (r) { return sideLabel(r.side) + ': ' + (r.message || 'save failed'); });
+                showFileBarNote((okNames.length ? 'Saved ' + okNames.join(' and ') + '. ' : '') + parts.join(' '), true);
+            }
+            return;
         }
+
+        if (msg.ok) showFileBarNote(sideLabel(side) + ' side saved.', false);
+        else showFileBarNote(msg.message || 'Save failed.', true);
     }
+
+    // ===== Ctrl+S =====
+    // CAPTURE phase, and always preventDefault: Monaco binds Ctrl+S itself and WebView2 would
+    // otherwise offer its own "save page" dialog. Swallowed in read-only mode too — there is nothing
+    // to save there, and letting the browser dialog through would be worse than doing nothing.
+    document.addEventListener('keydown', function (e) {
+        if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+        if ((e.key || '').toLowerCase() !== 's') return;
+        e.preventDefault();
+        e.stopPropagation();
+        saveAllDirty();
+    }, true);
 
     // ===== Keyboard shortcuts (F7 / Shift+F7 nav, Esc = cancel) =====
     document.addEventListener('keydown', function (e) {
