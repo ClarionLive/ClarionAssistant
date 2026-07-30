@@ -294,6 +294,12 @@
         color: var(--title-color); font-family: var(--mono, monospace); font-size: 11px;
         white-space: pre; overflow: hidden; user-select: none;
     }
+    /* Fold button shows the icon for what the NEXT click will do (#147). Only one of the two SVGs is
+       ever visible; .expand is set by refreshFoldBtn() from the live folding model, never a remembered
+       flag — so hand-folding a region can't leave the icon promising the wrong action. */
+    #toolbar #foldBtn .ico-expand { display: none; }
+    #toolbar #foldBtn.expand .ico-contract { display: none; }
+    #toolbar #foldBtn.expand .ico-expand { display: inline; }
     #toolbar #splitBtn { padding: 3px 8px; font-size: 14px; line-height: 1; }
     #toolbar #splitBtn.on { background: var(--title-accent); color: #fff; }
     /* The icon's stroke/fill are hardcoded #475569 (a dark slate), which is nearly the same tone as
@@ -620,7 +626,7 @@
         <span class="tb-sep"></span>
         <button id="findBtn" title="Find &amp; Replace"><svg class="fico-sm" viewBox="0 0 20 20" fill="none" stroke="#2563eb" stroke-width="2.2" stroke-linecap="round"><circle cx="8.5" cy="8.5" r="5"/><path d="M12.6 12.6 L17 17"/></svg></button>
         <button id="outlineBtn" title="Document structure (outline)"><svg class="fico-sm" viewBox="0 0 20 20" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 5 H16 M7 10 H16 M7 15 H16"/><circle cx="3.6" cy="5" r="1.1" fill="#2563eb" stroke="none"/><circle cx="3.6" cy="10" r="1.1" fill="#2563eb" stroke="none"/><circle cx="3.6" cy="15" r="1.1" fill="#2563eb" stroke="none"/></svg></button>
-        <button id="foldBtn" title="Contract all (fold every structure) — right-click for Expand all"><svg class="fico-sm" viewBox="0 0 20 20" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 4 H16.5 M3.5 16 H16.5"/><path d="M7 8.2 L10 11.2 L13 8.2"/></svg></button>
+        <button id="foldBtn" title="Contract all (fold every structure) — right-click for both"><svg class="fico-sm ico-contract" viewBox="0 0 20 20" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 4 H16.5 M3.5 16 H16.5"/><path d="M7 7.4 L10 10.4 L13 7.4"/></svg><svg class="fico-sm ico-expand" viewBox="0 0 20 20" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 4 H16.5 M3.5 16 H16.5"/><path d="M7 11.2 L10 8.2 L13 11.2"/></svg></button>
         <button id="splitBtn" title="Split editor — two panes of the same file (compare/copy between areas)"><svg class="fico-sm" viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="1.6" fill="none" stroke="#475569" stroke-width="2"/><rect x="10" y="4" width="7" height="12" fill="#475569" opacity="0.22"/><path d="M10 4 V16" stroke="#475569" stroke-width="2"/></svg></button>
         <button id="settingsBtn" title="Editor settings"><svg class="fico-sm" viewBox="0 0 24 24" fill="#475569"><path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54a7 7 0 0 0-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.31 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96a7 7 0 0 0 1.62.94l.36 2.54a.5.5 0 0 0 .5.42h3.8a.5.5 0 0 0 .5-.42l.36-2.54a7 7 0 0 0 1.62-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64z" /><circle cx="12" cy="12" r="3.1" fill="#fff"/></svg></button>
         <button id="themeBtn" class="theme-toggle" title="Toggle light / dark"><svg class="tgl" width="34" height="16" viewBox="0 0 34 16"><rect x="0.5" y="0.5" width="33" height="15" rx="7.5" fill="#9aa5b5" stroke="rgba(0,0,0,0.3)"/><circle class="tgl-knob" cx="25" cy="8" r="6"/></svg></button>
@@ -1211,7 +1217,8 @@
                     ev.preventDefault(); showSplitMenu(ev.clientX, ev.clientY);   // pick vertical/horizontal
                 });
                 var foldBtn = document.getElementById('foldBtn');
-                if (foldBtn) foldBtn.addEventListener('click', function () { foldAllInActive(); });   // contract all (#147)
+                if (foldBtn) foldBtn.addEventListener('click', toggleFoldAll);   // contract <-> expand (#147)
+                wireFoldBtnRefresh(editor);
                 if (foldBtn) foldBtn.addEventListener('contextmenu', function (ev) {
                     ev.preventDefault(); showFoldMenu(ev.clientX, ev.clientY);   // contract / expand all
                 });
@@ -2715,6 +2722,7 @@
         wireGlyphBookmark(editor2);
         wireCtrlClickDefinition(editor2);   // Ctrl+Click go-to-definition in the split pane too (#40)
         installNavTracking(editor2);   // cursor jumps in the split pane feed the shared history (#14)
+        wireFoldBtnRefresh(editor2);   // fold button tracks whichever pane has focus (#147)
         var pos = editor.getPosition();
         if (pos) editor2.revealLineInCenter(pos.lineNumber);
         activeEditor = editor2;
@@ -2792,6 +2800,61 @@
     // (and, since GH #158, not keywords that merely appear inside string literals).
     function foldAllInActive() { try { activeEd().trigger('toolbar', 'editor.foldAll', null); } catch (e) { } }
     function unfoldAllInActive() { try { activeEd().trigger('toolbar', 'editor.unfoldAll', null); } catch (e) { } }
+
+    // Reads the LIVE folding model — deliberately not a remembered "is folded" flag. Fold state can
+    // change without going through this button (gutter clicks, Ctrl+K Ctrl+0, a reload), and a stale
+    // flag would leave the icon promising one action while the click performs the other. Async because
+    // Monaco 0.52's FoldingController.getFoldingModel() returns a promise. cb(null) whenever the model
+    // can't be reached, and every caller treats null as "just contract" — the safe default, and what
+    // the button did before it could toggle at all.
+    function foldingState(ed, cb) {
+        try {
+            var c = ed && ed.getContribution && ed.getContribution('editor.contrib.folding');
+            var p = c && typeof c.getFoldingModel === 'function' ? c.getFoldingModel() : null;
+            if (!p || typeof p.then !== 'function') { cb(null); return; }
+            p.then(function (fm) {
+                if (!fm || !fm.regions) { cb(null); return; }
+                var total = fm.regions.length, collapsed = 0;
+                for (var i = 0; i < total; i++) if (fm.regions.isCollapsed(i)) collapsed++;
+                cb({ total: total, collapsed: collapsed });
+            }, function () { cb(null); });
+        } catch (e) { cb(null); }
+    }
+    // Expand is offered ONLY when everything foldable is already collapsed. The looser rule ("anything
+    // collapsed -> expand") would let a single hand-folded region flip the primary action to expand,
+    // when contract-all is what you almost always want — this keeps click/click-again = contract/expand
+    // even starting from a partially folded buffer.
+    function foldNextAction(st) { return (st && st.total > 0 && st.collapsed >= st.total) ? 'expand' : 'contract'; }
+
+    function toggleFoldAll() {
+        foldingState(activeEd(), function (st) {
+            if (foldNextAction(st) === 'expand') unfoldAllInActive(); else foldAllInActive();
+            setTimeout(refreshFoldBtn, 0);   // let the fold action settle before re-reading the model
+        });
+    }
+    // Folding is implemented with decorations, so onDidChangeModelDecorations is the public signal that
+    // fold state moved — however it moved (gutter click, keybinding, our own button, a reload). Coalesced
+    // through a single timer because it also fires for unrelated decoration churn (diagnostics, find
+    // highlights) and re-reading the folding model on each of those would be wasteful.
+    var foldRefreshTimer = null;
+    function wireFoldBtnRefresh(ed) {
+        if (!ed || typeof ed.onDidChangeModelDecorations !== 'function') return;
+        ed.onDidChangeModelDecorations(function () {
+            if (foldRefreshTimer) clearTimeout(foldRefreshTimer);
+            foldRefreshTimer = setTimeout(function () { foldRefreshTimer = null; refreshFoldBtn(); }, 120);
+        });
+        ed.onDidFocusEditorText(function () { refreshFoldBtn(); });   // button follows the focused pane
+    }
+    function refreshFoldBtn() {
+        var b = document.getElementById('foldBtn');
+        if (!b) return;
+        foldingState(activeEd(), function (st) {
+            var expand = foldNextAction(st) === 'expand';
+            b.classList.toggle('expand', expand);
+            b.title = (expand ? 'Expand all (everything is folded)' : 'Contract all (fold every structure)')
+                    + ' — right-click for both';
+        });
+    }
 
     // Right-click menu on the fold button — same #ftabMenu element and shape as showSplitMenu, so
     // the two toolbar buttons behave consistently (left-click = the common action, right-click =
