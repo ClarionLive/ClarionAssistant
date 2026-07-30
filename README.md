@@ -51,9 +51,33 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ## What's New (Unreleased)
 
-### Split a selection into multiple snippet parameters
+### Horizontal split panes (#157)
+
+The editor **Split** button gains an orientation choice: right-click it for **Vertical split (side by side)** or **Horizontal split (top / bottom)**. Choosing an orientation while already split repositions the panes in place &mdash; content, scroll position, and cursor are all preserved; choosing one while unsplit opens the split immediately in that orientation. The choice persists across sessions. The divider now tracks the true midpoint of the editing area, so toggling the Outline or Find-All column while split no longer opens a gap.
+
+### Sort the Document Structure outline (#153)
+
+A new sort toggle in the outline toolbar orders symbols **A&ndash;Z independently at each level** &mdash; a class's methods reorder among themselves while the hierarchy stays intact and siblings never migrate between levels. Toggle it off for document order. Works alongside the existing filter.
+
+### Split a selection into multiple snippet parameters (#154)
 
 Code Snippets (Ctrl+J) gain `${SELECTED:N}` &mdash; the Nth comma-separated part of the current selection (1-based, trimmed), alongside the existing `${SELECTED}` (whole selection). Select `Clientes,CLI:CLI01` and a snippet body like `Access:${SELECTED:1}.Fetch(${SELECTED:2})` expands to `Access:Clientes.Fetch(CLI:CLI01)`. With nothing selected, each distinct `${SELECTED:N}` becomes its own fillable tab-stop instead of a blank hole &mdash; same as `${SELECTED}` already did. See the examples panel (the **?** next to the snippet Body field) for a worked example.
+
+### Field-equate completion on `?` (#159/#160)
+
+Typing `?` now triggers completion directly, and field equates come back as a Reference kind with their own icon. Bare-prefix globals are no longer merged into that list &mdash; previously a variable like `LDField` could prefix-match and outrank the `?LdapButton` you were actually reaching for.
+
+### Fixed
+
+- **Hover and completion respect procedure scope** (#152) &mdash; a local, routine, or module variable declared in the current buffer now outranks a same-named symbol anywhere else in the solution or library, and a not-yet-indexed local procedure resolves from the buffer. A column-1 declaration in progress no longer leaks the *previous* procedure's locals into the completion list, and an exact-match identifier outranks a keyword that merely prefixes it (typing `PRO` where a local `PRO` exists no longer commits `PROCEDURE`).
+- **Phantom "END has no matching structure" warnings** (#156) &mdash; bare screen `GROUP` controls in a WINDOW and anonymous `RECORD, PRE()` structures inside a FILE no longer desync the embed slot's structure-balance checker, while a plain variable named `Group` or `Record` still correctly produces no warning. Shipped with a repro fixture that must yield zero diagnostics.
+- **Cold-open navigation lands on the right line** (#162) &mdash; Errors-pane clicks, bookmarks, and Find Next targeting a file that isn't open yet could silently drop the requested line and open wherever the file was last positioned. The requested position is now parked before the file opens, closing the race for every caller that drives the hidden caret directly.
+- **Duplicate entries in member completion** (#151) &mdash; dedupe now keys on each item's bare identifier rather than its display label, so a member the language server already resolved can't be re-added under its bare name.
+
+### Thanks
+
+- **geircodes** &mdash; horizontal split panes (#157), outline sort (#153), field-equate completion (#159/#160), scoping fixes (#152), GROUP/RECORD diagnostics (#156), cold-open navigation (#162), completion dedupe (#151).
+- **Andrew Santarelli** &mdash; snippet parameter splitting (#155).
 
 ---
 
