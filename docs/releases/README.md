@@ -31,6 +31,7 @@ cd ClarionAssistant
 .\Check-ReleaseDocs.ps1 -Json           # machine-readable
 .\Check-ReleaseDocs.ps1 -WarnOnly       # report but always exit 0
 .\Check-ReleaseDocs.ps1 -Ref 800b03a    # check the docs as they were at some commit
+.\Check-ReleaseDocs.ps1 -ShowCoverage   # audit which entry answered for each scope
 ```
 
 Exit codes: `0` clean, `1` drift, `2` could not run.
@@ -56,6 +57,28 @@ Two details are load-bearing:
   text reported CA Compare as documented while it had no entry of its own.
 - Scope names and prose disagree — scope `datapad` is written "Data pad", `cafind` is
   written "CA Find" — so aliases are required, not a nicety.
+
+**Auditing coverage.** `-ShowCoverage` prints which alias matched which entry title for every
+covered scope. Worth running occasionally, because an over-broad alias is the one config entry
+with unbounded forward reach: it vouches for its scope via whatever entry happens to contain
+the word, in every future cycle, and a covered scope is invisible in normal output.
+
+The signature to look for is **one entry answering for several unrelated scopes**. A real
+example from this repo:
+
+```
+editor          <- "Data pad — master/detail and drag-to-editor"  [via 'editor']
+monaco          <- "Data pad — master/detail and drag-to-editor"  [via 'editor']
+source-editor   <- "Data pad — master/detail and drag-to-editor"  [via 'editor']
+```
+
+Three scopes, one of them carrying 13 commits, all vouched for by the Data pad entry purely
+because its title ends "drag-to-**editor**". Coverage is satisfied by an entry that has nothing
+to do with the work. It is not currently hiding anything — the genuine "CA Editor reliability"
+entry would match too — but in a cycle where the editor work had *no* entry, that stray phrase
+would still report it covered. Tighten the alias (`"editor"` → `"CA Editor"`, `"editor
+options"`) if that matters to you; the trade is a bare alias that over-matches versus a
+specific one that can miss and cause false drift.
 
 **Pass B — issue/PR references, both directions.** Merged PRs since the tag that the notes
 never cite (hard failure — this is the original failure mode, and an uncited PR usually means
@@ -99,7 +122,10 @@ Everything in it is editorial data that cannot be inferred from git or GitHub.
   `docsOnlyPathPatterns`, which is structural and needs no upkeep.
 - **`coveredOverrides`** — last-resort "this scope is covered" assertion.
 - **`acknowledgedCommits`** — SHA → why, for unprefixed commits needing no further action.
-  Clear it when a version is cut; it is scoped to one cycle.
+  Clear it when a version is cut; it is scoped to one cycle. The tool reports entries that
+  have fallen out of range as **stale acks** so the clearing step is self-correcting — this is
+  hygiene only and never gates: a SHA whose commit is outside the range is never evaluated,
+  so it cannot suppress anything.
 
 ### Claiming coverage from the README
 

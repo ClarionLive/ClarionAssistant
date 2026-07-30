@@ -48,7 +48,11 @@ param(
     [switch]$Json,
 
     # Report drift but exit 0 anyway. For advisory runs; the release gate does not use it.
-    [switch]$WarnOnly
+    [switch]$WarnOnly,
+
+    # Show, for every covered scope, which alias matched which entry title. Use this to audit
+    # whether an alias is vouching for its scope via an entry that has nothing to do with it.
+    [switch]$ShowCoverage
 )
 
 $ErrorActionPreference = 'Stop'
@@ -350,20 +354,46 @@ function Resolve-Ref([int]$Number) {
 # ---------------------------------------------------------------------------
 
 function Test-ScopeCovered([string]$Scope) {
-    if ($markedScopes -contains $Scope) { return @{ Covered = $true; How = 'README marker' } }
-    if ($coveredOverride.ContainsKey($Scope)) { return @{ Covered = $true; How = 'config override' } }
+    if ($markedScopes -contains $Scope) { return @{ Covered = $true; How = 'README marker'; Via = $null; Title = $null } }
+    if ($coveredOverride.ContainsKey($Scope)) { return @{ Covered = $true; How = 'config override'; Via = $null; Title = $null } }
 
     $needles = @($Scope)
     if ($scopeAliases.ContainsKey($Scope)) { $needles += @($scopeAliases[$Scope]) }
     foreach ($n in ($needles | ForEach-Object { Normalize-Text $_ } | Where-Object { $_ })) {
-        foreach ($t in $normalizedTitles) {
-            if ($t -like "*$n*") { return @{ Covered = $true; How = "title match on '$n'" } }
+        for ($i = 0; $i -lt $normalizedTitles.Count; $i++) {
+            if ($normalizedTitles[$i] -like "*$n*") {
+                # Carry the alias AND the title it hit. An over-broad alias is the one config
+                # entry with unbounded forward reach — it vouches for its scope via whatever
+                # entry happens to contain the word, in every future cycle. Recording which
+                # title answered for which scope is what makes that auditable (-ShowCoverage).
+                return @{ Covered = $true; How = "title match on '$n'"; Via = $n; Title = $entryTitles[$i] }
+            }
         }
     }
-    return @{ Covered = $false; How = $null }
+    return @{ Covered = $false; How = $null; Via = $null; Title = $null }
 }
 
-$passA = @{ Uncovered = @(); Covered = @(); Triage = @() }
+$passA = @{ Uncovered = @(); Covered = @(); Triage = @(); StaleAcks = @() }
+
+# acknowledgedCommits is scoped to ONE release cycle and is meant to be cleared when a
+# version is cut — a convention the tool cannot enforce. Entries left behind afterwards are
+# DEAD, not dangerous: a SHA names one immutable commit, and once that commit falls outside
+# the range it is never evaluated, so it cannot suppress anything. This is hygiene, and it
+# stays advisory for exactly that reason — it must never gate a release.
+foreach ($a in ($ackCommits.Keys | Sort-Object)) {
+    $inRange = $false
+    foreach ($c in $commits) { if ($c.Sha -like "$a*") { $inRange = $true; break } }
+    if (-not $inRange) {
+        # `git cat-file -e` prints nothing on success, so Invoke-Git's return value cannot
+        # tell success from failure here — read the exit code directly.
+        & git -C $script:Root cat-file -e "$a^{commit}" 2>&1 | Out-Null
+        $exists = ($LASTEXITCODE -eq 0)
+        $passA.StaleAcks += [pscustomobject]@{
+            Sha    = $a
+            Reason = if ($exists) { 'no longer in range' } else { 'not a commit in this repo' }
+        }
+    }
+}
 
 foreach ($scope in ($scopeCommits.Keys | Sort-Object)) {
     $r = Test-ScopeCovered $scope
@@ -371,6 +401,8 @@ foreach ($scope in ($scopeCommits.Keys | Sort-Object)) {
         Scope   = $scope
         Count   = $scopeCommits[$scope].Count
         How     = $r.How
+        Via     = $r.Via
+        Title   = $r.Title
         Commits = @($scopeCommits[$scope] | ForEach-Object { "$($_.Short) $($_.Subject)" })
     }
     if ($r.Covered) { $passA.Covered += $entry } else { $passA.Uncovered += $entry }
@@ -580,8 +612,20 @@ foreach ($t in $passA.Triage) {
     Write-Host "  TRIAGE        $($t.Sha) $($t.Subject)" -ForegroundColor Yellow
     Write-Host "      -> no scope to key on. Document it, or add '$($t.Sha)' to acknowledgedCommits." -ForegroundColor DarkGray
 }
+foreach ($s in $passA.StaleAcks) {
+    Write-Host "  stale ack     $($s.Sha) - $($s.Reason); safe to remove from acknowledgedCommits" -ForegroundColor DarkGray
+}
 if ($passA.Covered.Count -gt 0) {
-    Write-Host "  covered: $((($passA.Covered | ForEach-Object { $_.Scope }) -join ', '))" -ForegroundColor DarkGray
+    if ($ShowCoverage) {
+        Write-Host "  coverage provenance:" -ForegroundColor DarkGray
+        foreach ($cv in $passA.Covered) {
+            $how = if ($cv.Title) { "`"$($cv.Title)`"  [via '$($cv.Via)']" } else { $cv.How }
+            Write-Host ("    {0,-16} <- {1}" -f $cv.Scope, $how) -ForegroundColor DarkGray
+        }
+    } else {
+        Write-Host "  covered: $((($passA.Covered | ForEach-Object { $_.Scope }) -join ', '))" -ForegroundColor DarkGray
+        Write-Host "  (-ShowCoverage lists which entry answered for each scope)" -ForegroundColor DarkGray
+    }
 }
 
 Write-Section '[B] Issue/PR references (bidirectional)'
