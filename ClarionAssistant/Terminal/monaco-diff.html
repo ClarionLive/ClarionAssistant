@@ -110,16 +110,14 @@
     .fb-side.dirty .fb-dot { background: #f9e2af; }
     body.light .fb-side.dirty .fb-dot { background: #df8e1d; }
 
-    /* Glyph-margin apply-change arrows. Monaco puts the class on the glyph margin cell, so the
-       arrow itself is drawn with ::before and the whole cell is the click target. */
-    .hunk-arrow { cursor: pointer; }
-    .hunk-arrow::before {
-        display: block; text-align: center; line-height: inherit;
-        color: var(--nav-color); opacity: 0.55; font-size: 11px;
+    /* Apply-change arrows are Monaco's OWN gutter revert buttons (.gutter > .gutterItem, one per
+       hunk) — we do not draw any. A hunk we've flipped is mirrored in place, which turns the
+       side-by-side arrow around and the inline "discard" curl into its opposite, so one rule covers
+       both layouts without depending on specific codicon names. */
+    .monaco-diff-editor .gutterItem .action-label.ca-flipped {
+        transform: scaleX(-1);
+        color: #df8e1d;
     }
-    .hunk-arrow:hover::before { opacity: 1; }
-    .hunk-arrow-right::before { content: '\25B6'; }
-    .hunk-arrow-left::before  { content: '\25C0'; }
 </style>
 </head>
 <body>
@@ -207,11 +205,12 @@
     var origDirty = false;
     var modDirty = false;
     var contentListeners = [];      // per-model change subscriptions, disposed on each setDiff
-    // Glyph-margin decoration ids + the line->change-index maps their click handlers read.
-    var origArrowDecorations = [];
-    var modArrowDecorations = [];
-    var origArrowLines = {};
-    var modArrowLines = {};
+    // Per-hunk flip state, keyed by hunk identity rather than by index or DOM node: Monaco
+    // virtualizes the gutter (only hunks near the viewport get a button) and rebuilds those buttons
+    // on scroll, so anything keyed to a position or an element would silently reset.
+    var hunkFlips = {};
+    var gutterHooked = false;
+    var gutterObserver = null;
     // Globals named to match the C# ZoomableWebView2 Ctrl+wheel bridge ("applyFontSize(savedFontSize+(N))").
     var savedFontSize = parseInt(localStorage.getItem('diffFontSize') || '13');
     var savedFontFamily = localStorage.getItem('diffFontFamily') || "'Cascadia Code','Consolas',monospace";
@@ -271,7 +270,11 @@
         // before the edit can now point past the end and make the counter read "5 of 3". Clamp before
         // anything renders from it.
         if (currentChangeIndex >= changes.length) currentChangeIndex = changes.length - 1;
-        refreshArrowDecorations();
+        pruneHunkFlips();
+        // Monaco rebuilds the gutter for the new diff after this returns, so reconcile on the next
+        // frame as well as now — otherwise the first paint after an edit shows unflipped icons.
+        refreshGutterAdornments();
+        try { requestAnimationFrame(refreshGutterAdornments); } catch (e) { }
         updateCounter();
     }
     function updateCounter() {
@@ -424,63 +427,93 @@
     }
     function anyDirty() { return !!(origDirty || modDirty); }
 
-    // ===== Editable file-compare: apply-change arrows =====
-    // The arrows are NOT a monaco-editor feature (they're VS Code's, layered on top). We draw one
-    // glyph per hunk per side and copy the hunk across on click, reusing the `changes` list that
-    // Prev/Next navigation already computes and keeps fresh.
+    // ===== Editable file-compare: Monaco's own gutter revert buttons =====
+    // We draw NO arrows. Monaco already renders one revert button per hunk in the column between the
+    // panes (side-by-side) or at the far left (inline) — `.monaco-diff-editor > .gutter > .gutterItem`,
+    // icon `codicon-arrow-right` / `codicon-discard`, both labelled "Revert Block".
+    //
+    // Its built-in action copies ORIGINAL -> MODIFIED ("keep the left/upper version"), which is the
+    // unflipped direction — so for an unflipped hunk we let Monaco do the work and stay out of the way.
+    // Right-click flips a hunk; a left-click on a FLIPPED hunk is intercepted and we copy the other way.
+    //
+    // Verified against Monaco 0.52.2 in scratchpad/revert-probe.html. Two behaviours drive the design:
+    //   * the gutter is VIEWPORT-VIRTUALIZED, so buttons exist only for hunks near the viewport and are
+    //     rebuilt on scroll — hence flip state keyed by hunk identity, re-applied whenever items render;
+    //   * capture-phase listeners CAN suppress the built-in action (proven with a control).
 
-    /// The glyph line for one side of a change. Both cases anchor on startLineNumber: when that side
-    /// HAS lines it is the first changed line, and when it has none (endLine === 0 — a pure insertion
-    /// on the OTHER side) Monaco reports the line the insertion follows, which is exactly where the
-    /// arrow belongs. Clamped to 1 because that insertion marker is 0 when the text goes in at the top.
-    function arrowLineFor(startLine) {
-        return Math.max(1, startLine);
+    /// Stable identity for a hunk. Line numbers shift as edits are applied, so this deliberately dies
+    /// when a hunk changes shape — a stale flip is dropped rather than silently reattached elsewhere.
+    function changeKey(c) {
+        return c.originalStartLineNumber + '-' + c.originalEndLineNumber + '/' +
+               c.modifiedStartLineNumber + '-' + c.modifiedEndLineNumber;
+    }
+    function isFlipped(c) { return c ? hunkFlips[changeKey(c)] === true : false; }
+
+    function gutterEl() {
+        var root = diffEditor && diffEditor.getContainerDomNode ? diffEditor.getContainerDomNode() : null;
+        if (!root) root = document.getElementById('diff-editor');
+        if (!root) return null;
+        return root.querySelector('.monaco-diff-editor > .gutter') || root.querySelector('.gutter');
+    }
+    /// The real per-hunk items: the gutter also contains a zero-height spacer child.
+    function gutterItems() {
+        var g = gutterEl();
+        if (!g) return [];
+        return Array.prototype.filter.call(g.children, function (k) { return k.querySelector('.buttons'); });
     }
 
-    function refreshArrowDecorations() {
-        if (!diffEditor || !window.monaco) return;
-        var origEd = diffEditor.getOriginalEditor();
-        var modEd = diffEditor.getModifiedEditor();
-        origArrowLines = {};
-        modArrowLines = {};
-
-        if (!fileCompareMode) {
-            // Read-only mode: make sure nothing is left decorated.
-            try {
-                origArrowDecorations = origEd.deltaDecorations(origArrowDecorations, []);
-                modArrowDecorations = modEd.deltaDecorations(modArrowDecorations, []);
-            } catch (e) { }
-            return;
-        }
-
-        var origDecs = [], modDecs = [];
-        for (var i = 0; i < changes.length; i++) {
-            var c = changes[i];
-            var oLine = arrowLineFor(c.originalStartLineNumber);
-            var mLine = arrowLineFor(c.modifiedStartLineNumber);
-            // Two hunks can share a glyph line (e.g. two insertions after the same line). First one
-            // wins so a click is always deterministic rather than depending on iteration order.
-            if (origArrowLines[oLine] === undefined) origArrowLines[oLine] = i;
-            if (modArrowLines[mLine] === undefined) modArrowLines[mLine] = i;
-            origDecs.push({
-                range: new monaco.Range(oLine, 1, oLine, 1),
-                options: {
-                    glyphMarginClassName: 'hunk-arrow hunk-arrow-right',
-                    glyphMarginHoverMessage: { value: 'Copy this change to the right' }
-                }
-            });
-            modDecs.push({
-                range: new monaco.Range(mLine, 1, mLine, 1),
-                options: {
-                    glyphMarginClassName: 'hunk-arrow hunk-arrow-left',
-                    glyphMarginHoverMessage: { value: 'Copy this change to the left' }
-                }
-            });
-        }
+    /// Which hunk does this gutter item belong to? Index is NOT usable (virtualization), so we probe
+    /// the modified editor at the item's vertical centre and take the nearest change. Measured exact
+    /// (distance 0) for every hunk in both layouts, including pure deletions anchored on a view zone.
+    function changeIndexForGutterItem(item) {
         try {
-            origArrowDecorations = origEd.deltaDecorations(origArrowDecorations, origDecs);
-            modArrowDecorations = modEd.deltaDecorations(modArrowDecorations, modDecs);
-        } catch (e) { }
+            var modEd = diffEditor.getModifiedEditor();
+            var mdom = modEd.getDomNode();
+            if (!mdom) return -1;
+            var mr = mdom.getBoundingClientRect();
+            var r = item.getBoundingClientRect();
+            var target = modEd.getTargetAtClientPoint(mr.left + Math.min(mr.width - 6, 80), r.top + r.height / 2);
+            var line = target && target.position ? target.position.lineNumber : null;
+            if (line == null) return -1;
+
+            var best = -1, bestDist = Infinity;
+            for (var i = 0; i < changes.length; i++) {
+                var c = changes[i];
+                var s = c.modifiedStartLineNumber;
+                var e = c.modifiedEndLineNumber > 0 ? c.modifiedEndLineNumber : c.modifiedStartLineNumber;
+                var d = (line >= s && line <= e) ? 0 : Math.min(Math.abs(line - s), Math.abs(line - e));
+                if (d < bestDist) { bestDist = d; best = i; }
+            }
+            // A few lines of slack covers deletion view zones; beyond that we'd be guessing, and acting
+            // on the wrong hunk is worse than doing nothing.
+            return bestDist <= 3 ? best : -1;
+        } catch (e) { return -1; }
+    }
+
+    /// Paint flip state + tooltips onto whatever gutter buttons currently exist. Safe to call often;
+    /// it is the reconciliation step that makes virtualized, rebuilt buttons show the right direction.
+    function refreshGutterAdornments() {
+        if (!fileCompareMode) return;
+        var items = gutterItems();
+        for (var i = 0; i < items.length; i++) {
+            var label = items[i].querySelector('.action-label');
+            if (!label) continue;
+            var idx = changeIndexForGutterItem(items[i]);
+            var flipped = idx >= 0 && isFlipped(changes[idx]);
+            if (label.classList.contains('ca-flipped') !== flipped) label.classList.toggle('ca-flipped', flipped);
+            var tip = flipped
+                ? 'Copy RIGHT into LEFT — right-click to flip back'
+                : 'Copy LEFT into RIGHT — right-click to flip direction';
+            if (label.getAttribute('title') !== tip) label.setAttribute('title', tip);
+        }
+    }
+
+    /// Drop flip state for hunks that no longer exist, so the map can't grow without bound across a
+    /// long editing session and a recycled key can't resurrect an old flip.
+    function pruneHunkFlips() {
+        var live = {};
+        for (var i = 0; i < changes.length; i++) live[changeKey(changes[i])] = true;
+        for (var k in hunkFlips) { if (!live[k]) delete hunkFlips[k]; }
     }
 
     /// The literal text of lines [start..end] as an array. Empty when that side has no lines for the
@@ -564,23 +597,65 @@
         // model change listener. Nothing to recompute by hand here.
     }
 
-    /// One-time wiring of the glyph-margin click handlers. Registered against the sub-editors right
-    /// after the diff editor is built — NOT per decoration refresh, which would stack duplicates.
-    function wireArrowClicks() {
-        if (!diffEditor || !window.monaco) return;
-        var glyphType = monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN;
-        diffEditor.getOriginalEditor().onMouseDown(function (e) {
-            if (!fileCompareMode || !e.target || e.target.type !== glyphType) return;
-            var ln = e.target.position && e.target.position.lineNumber;
-            var idx = origArrowLines[ln];
-            if (idx !== undefined) applyHunk(idx, 'toModified');
+    /// Wire the gutter once. Delegated + capture-phase, because the buttons themselves are recreated
+    /// constantly by virtualization — a listener bound to an element would not survive.
+    function wireGutterHooks() {
+        if (gutterHooked) return;
+        var root = (diffEditor && diffEditor.getContainerDomNode)
+            ? diffEditor.getContainerDomNode() : document.getElementById('diff-editor');
+        if (!root) return;
+
+        function labelFrom(e) {
+            if (!fileCompareMode || !e.target || !e.target.closest) return null;
+            return e.target.closest('.gutterItem .action-label');
+        }
+        function itemFrom(label) { return label ? label.closest('.gutterItem') : null; }
+
+        // Right-click flips the hunk's direction. It does NOT copy — you see which way it points
+        // before committing, so a mis-flip costs nothing.
+        root.addEventListener('contextmenu', function (e) {
+            var label = labelFrom(e);
+            if (!label) return;
+            e.preventDefault();
+            e.stopPropagation();
+            var idx = changeIndexForGutterItem(itemFrom(label));
+            if (idx < 0) return;
+            var key = changeKey(changes[idx]);
+            hunkFlips[key] = !hunkFlips[key];
+            refreshGutterAdornments();
+        }, true);
+
+        // Left-click: for an UNFLIPPED hunk we let Monaco's own revert run (it already copies
+        // original -> modified). For a flipped one we suppress it and copy the other way. Every
+        // button-ish event is suppressed, not just click — Monaco acts on the pointer/mouse sequence.
+        ['pointerdown', 'mousedown', 'mouseup', 'pointerup', 'click'].forEach(function (type) {
+            root.addEventListener(type, function (e) {
+                if (e.button !== 0 && type !== 'click') return;
+                var label = labelFrom(e);
+                if (!label) return;
+                var idx = changeIndexForGutterItem(itemFrom(label));
+                if (idx < 0 || !isFlipped(changes[idx])) return;   // unflipped → Monaco handles it
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                if (type === 'click') applyHunk(idx, 'toOriginal');
+            }, true);
         });
-        diffEditor.getModifiedEditor().onMouseDown(function (e) {
-            if (!fileCompareMode || !e.target || e.target.type !== glyphType) return;
-            var ln = e.target.position && e.target.position.lineNumber;
-            var idx = modArrowLines[ln];
-            if (idx !== undefined) applyHunk(idx, 'toOriginal');
-        });
+
+        // Virtualization rebuilds buttons on scroll, which would drop the flip styling. Reconcile
+        // whenever the gutter's children change. Debounced through rAF so a burst of DOM churn
+        // costs one pass.
+        try {
+            var scheduled = false;
+            gutterObserver = new MutationObserver(function () {
+                if (scheduled) return;
+                scheduled = true;
+                requestAnimationFrame(function () { scheduled = false; refreshGutterAdornments(); });
+            });
+            gutterObserver.observe(root, { childList: true, subtree: true });
+        } catch (e) { }
+
+        gutterHooked = true;
     }
 
     /// Switch the page between the read-only viewer and the editable file compare. Called from
@@ -592,12 +667,17 @@
             // In a Monaco diff editor `readOnly` governs the MODIFIED pane and `originalEditable`
             // the ORIGINAL one — both must flip for a two-way editable compare.
             diffEditor.updateOptions({ readOnly: !fileCompareMode, originalEditable: fileCompareMode });
-            // Glyph margin only exists to host the arrows, so it follows the mode rather than being
-            // always-on (it would otherwise widen the gutter of every read-only show_diff).
+            // We no longer draw anything in the glyph margin — Monaco's own gutter revert buttons are
+            // the apply-change affordance — so it stays off and the gutter keeps its original width.
             try {
-                diffEditor.getOriginalEditor().updateOptions({ glyphMargin: fileCompareMode });
-                diffEditor.getModifiedEditor().updateOptions({ glyphMargin: fileCompareMode });
+                diffEditor.getOriginalEditor().updateOptions({ glyphMargin: false });
+                diffEditor.getModifiedEditor().updateOptions({ glyphMargin: false });
             } catch (e) { }
+            // Monaco only renders the revert buttons when the modified side is editable, so they
+            // appear/disappear with the mode on their own; we just reconcile our adornments.
+            hunkFlips = {};
+            wireGutterHooks();
+            try { requestAnimationFrame(refreshGutterAdornments); } catch (e) { }
         }
 
         var hint = document.getElementById('bottom-hint');
@@ -667,9 +747,8 @@
                     scrollBeyondLastLine: false,
                     theme: themeDark ? 'vs-dark' : 'vs'
                 });
-                // Glyph-margin click handlers are registered ONCE here; the decorations they read are
-                // rebuilt on every diff update.
-                wireArrowClicks();
+                // Gutter hooks are registered ONCE here, delegated from the diff editor's own root.
+                wireGutterHooks();
                 diffEditor.onDidUpdateDiff(function () {
                     refreshChanges();
                     if (changes.length && currentChangeIndex < 0) {
