@@ -323,10 +323,17 @@ console.log('\nC#/JS formatter-key list parity:');
         ok('C# FormatterKeys parsed', cs && cs.length > 0, JSON.stringify(cs));
         ok('JS FORMATTER_SETTING_KEYS parsed', js && js.length > 0, JSON.stringify(js));
         if (cs && js) {
-            var expected = js.concat(['formatLineOnEnter']).sort();
+            // The C# list deliberately carries keys the JS one does not: they are persisted and
+            // broadcast across tabs by the host, but are NOT formatter-engine options, so
+            // formatterOptions() must not forward them. autoSpaceEquals/liveKeywordCase joined
+            // formatLineOnEnter here in 8357d9f (the GH #138 as-you-type toggles) — this assertion
+            // wasn't updated at the time, so it has been red since. Keep this list in step with the
+            // DRIFT note above FORMATTER_SETTING_KEYS in monaco-embeditor.html.
+            var HOST_ONLY = ['formatLineOnEnter', 'autoSpaceEquals', 'liveKeywordCase'];
+            var expected = js.concat(HOST_ONLY).sort();
             var actual = cs.slice().sort();
             var same = expected.length === actual.length && expected.every(function (k, i) { return k === actual[i]; });
-            ok('C# FormatterKeys == JS FORMATTER_SETTING_KEYS + formatLineOnEnter', same,
+            ok('C# FormatterKeys == JS FORMATTER_SETTING_KEYS + host-only keys', same,
                 'C#:  ' + JSON.stringify(actual) + '\n      JS+: ' + JSON.stringify(expected));
         }
     }

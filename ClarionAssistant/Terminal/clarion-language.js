@@ -88,8 +88,44 @@ function registerClarionLanguage() {
 // Shared by the embeditor AND the diff editor — also feeds Monaco's sticky-scroll scope headers.
 // Register once per Monaco page (folding providers are global per language id, but each WebView2
 // page hosts its own Monaco instance).
-function registerClarionFolding() {
-    var STRUCT = /\b(GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)\b/;
+// Splits one raw line into { code, safe } in a SINGLE left-to-right pass that understands
+// Clarion's single-quoted strings ('' being an embedded quote):
+//   code — trailing '!' comment removed, string CONTENTS intact. The OMIT/COMPILE terminator
+//          must be read from this, since blanking would destroy the term (GH #133).
+//   safe — the same, with every string's contents blanked to ''. EVERY structure-keyword scan
+//          runs on this.
+// Why (GH #158): the keyword scan used to run on raw text, so a structure keyword inside an
+// ordinary string literal — 'Unable to initialize Session Class instance', 'Content-Type:
+// application/xml', 'View not found' — was read as a real structure opener and pushed a phantom
+// entry onto the fold stack, producing a bogus fold triangle on a plain executable line. Not an
+// edge case: a single ~9,000-line production .clw turned up 64 such literals, the kind any
+// codebase accumulates in error messages, log text, and MIME types.
+// Doing both in one pass is also what makes the comment strip string-aware: the old
+// /!.*$/ replace truncated the line at a '!' INSIDE a literal ('Done!'), which could hide a
+// real one-line IF terminator and fold the rest of the procedure into it.
+function splitClarionLine(line) {
+    var code = '', safe = '', i = 0, n = line.length;
+    while (i < n) {
+        var ch = line.charAt(i);
+        if (ch === '!') break;                       // line comment (we're outside a string here)
+        if (ch !== "'") { code += ch; safe += ch; i++; continue; }
+        var lit = "'";                               // string literal — copy it to `code` verbatim
+        i++;
+        while (i < n) {
+            var c = line.charAt(i);
+            if (c === "'") {
+                if (line.charAt(i + 1) === "'") { lit += "''"; i += 2; continue; }   // '' = escaped quote
+                lit += "'"; i++; break;                                              // closing quote
+            }
+            lit += c; i++;
+        }
+        code += lit;
+        safe += "''";                                // placeholder keeps `safe` a valid-looking line
+    }
+    return { code: code, safe: safe };
+}
+
+var STRUCT = /\b(GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)\b/;
     // TOOLBAR split out with its own tight lookahead ('(', ',', '!' or end-of-line right after
     // the keyword) — STRUCT's bare \b would otherwise push the ABC toolbar template's ubiquitous
     // "Toolbar ToolbarClass" variable declaration onto the fold stack as a never-closed opener,
@@ -97,9 +133,12 @@ function registerClarionFolding() {
     // ModernEmbeditorDiagnostics.cs (C#) and Clarion-Extension's TokenPatterns.ts (PR #378).
     // MENUBAR/MENU/SHEET/TAB/OPTION share the identical ambiguity (nested inside WINDOW/REPORT
     // bodies, legitimately bare) and are split out alongside TOOLBAR for the same reason.
-    var TOOLBAR_OPEN = /^\s*(?:TOOLBAR|MENUBAR|MENU|SHEET|TAB|OPTION)\b(?=\s*(?:[(,!]|$))/i;
-    monaco.languages.registerFoldingRangeProvider('clarion', {
-        provideFoldingRanges: function (model) {
+var TOOLBAR_OPEN = /^\s*(?:TOOLBAR|MENUBAR|MENU|SHEET|TAB|OPTION)\b(?=\s*(?:[(,!]|$))/i;
+
+// The fold computation, split out from the provider registration so it can be exercised directly
+// by Terminal/test/clarion-folding.test.js without a Monaco instance. Takes anything with
+// getLineCount()/getLineContent(i) — the real model in the browser, a plain stub under Node.
+function clarionFoldingRanges(model) {
             var ranges = [];
             var stack = [];
             var n = model.getLineCount();
@@ -118,11 +157,16 @@ function registerClarionFolding() {
                     }
                     continue;
                 }
-                var code = model.getLineContent(i).replace(/!.*$/, '').trim(); // strip line comment
+                // String-aware split: `u` (strings blanked) drives every keyword test below, so a
+                // keyword inside a literal can't open a phantom fold (GH #158). The OMIT/COMPILE
+                // term is read from `code`, which keeps string contents (GH #133).
+                var parts = splitClarionLine(model.getLineContent(i));
+                var code = parts.code.trim();
                 if (code === '') continue;
-                var u = code.toUpperCase();
+                var safe = parts.safe.trim();
+                var u = safe.toUpperCase();
 
-                var om = /^(?:OMIT|COMPILE)\s*\(\s*'([^']+)'/.exec(u);
+                var om = /^(?:OMIT|COMPILE)\s*\(\s*'([^']+)'/.exec(code.toUpperCase());
                 if (om) { omit = { start: i, term: om[1] }; continue; }
 
                 if (/^END\b/.test(u) || u === '.') {            // close most-recent structure
@@ -145,9 +189,12 @@ function registerClarionFolding() {
                 }
                 if (STRUCT.test(u) || TOOLBAR_OPEN.test(u)) { stack.push(i); continue; } // GROUP/QUEUE/LOOP/CASE/...
                 if (/^IF\b/.test(u)) {                          // block IF only (skip one-liners)
+                    // Index into `safe`, NOT `code` — blanking a literal changes the line's length,
+                    // so an offset taken from `u` only lines up with `safe`. Using `code` here would
+                    // slice at the wrong column on any IF whose condition contains a string.
                     var thenIdx = u.indexOf(' THEN');
-                    var afterThen = thenIdx >= 0 ? code.substring(thenIdx + 5).trim() : '';
-                    var oneLiner = afterThen.length > 0 || /\.\s*$/.test(code);
+                    var afterThen = thenIdx >= 0 ? safe.substring(thenIdx + 5).trim() : '';
+                    var oneLiner = afterThen.length > 0 || /\.\s*$/.test(safe);
                     if (!oneLiner) stack.push(i);
                     continue;
                 }
@@ -156,6 +203,14 @@ function registerClarionFolding() {
             if (lastRoutine !== -1 && n > lastRoutine) ranges.push({ start: lastRoutine, end: n });
             if (lastProc !== -1 && n > lastProc) ranges.push({ start: lastProc, end: n });
             return ranges;
-        }
-    });
+}
+
+function registerClarionFolding() {
+    monaco.languages.registerFoldingRangeProvider('clarion', { provideFoldingRanges: clarionFoldingRanges });
+}
+
+// Node-visible surface for Terminal/test/clarion-folding.test.js. Guarded exactly like
+// clarion-formatter.js — `module` is undefined in the WebView2 pages, so this is inert there.
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { splitClarionLine: splitClarionLine, clarionFoldingRanges: clarionFoldingRanges };
 }
