@@ -49,7 +49,9 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
-## What's New (Unreleased)
+## What's New in v5.5
+
+v5.5 turns two read-only surfaces into working ones &mdash; editable diffs and a drag-and-drop Data pad &mdash; and fixes a CodeGraph misattribution that was hiding 59% of the call graph. Full notes: [docs/releases/v5.5.0.md](docs/releases/v5.5.0.md).
 
 ### CA Compare &mdash; editable diffs
 
@@ -129,6 +131,10 @@ Hovers render **below** the hovered line instead of above it, nudged clear of th
 - **CA Find opened dark regardless of your theme** (#148) &mdash; the pad only restored a theme it had saved itself, falling back to dark otherwise. It now seeds from Clarion Assistant's own light/dark setting, while a preference set inside the pad still wins.
 - **CA Find** no longer misses keyboard focus on the first Ctrl+F after IDE start (#139).
 - **CA Explorer polish** &mdash; dark-mode secondary text lifted above the WCAG AA contrast floor; dropdown menus kept inside the WebView2; tooltips flipped above the native drop strip; the last row's path line no longer clipped; the Files tab stops jumping on every activation.
+
+### Known issues
+
+- **Check the install folder if you have two installs of the same Clarion version** (#142). The installer derives each Clarion root from the registry (`HKLM\SOFTWARE\SoftVelocity\Clarion<version>\root`) on every run, and does **not** remember a folder you picked by hand last time. If the registry points at one Clarion 11 install and you actually launch a different one, setup will default to the registry's copy and quietly install where you don't run it &mdash; and the symptom is confusing, because the IDE then loads an older addin and behaves like the bugs you just upgraded to fix. Verify the path on the install page, and if you correct it, expect to correct it again next time. If you're unsure which build you're actually running, the CA panel reports the version of the DLL Clarion loaded &mdash; if that doesn't match the release you installed, this is why. A proper fix (remembering your choice) is queued for the next cycle.
 
 ### Thanks
 

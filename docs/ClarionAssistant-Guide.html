@@ -439,6 +439,7 @@
   <nav class="sidebar">
     <h3>What's New</h3>
     <a href="#whats-new">Release Notes</a>
+    <a href="#whats-new-55" class="sub">v5.5</a>
     <a href="#whats-new-54" class="sub">v5.4</a>
     <a href="#whats-new-50" class="sub">v5.1</a>
     <a href="#whats-new-snippets" class="sub">Code Snippets (Ctrl+J)</a>
@@ -526,6 +527,41 @@
 <!-- ════════════════════════════════════════════════════ -->
 <section id="whats-new" class="doc-section">
   <h2>What's New</h2>
+
+  <h3 id="whats-new-55">v5.5 &mdash; Editable Diffs, Data Pad Drag-and-Drop, CodeGraph Accuracy</h3>
+
+  <p>
+    v5.5 turns two read-only surfaces into working ones. <strong>CA Compare</strong> becomes an
+    <strong>editable diff</strong>: both panes unlock, each hunk gets an apply-change arrow that copies it
+    to the other side, and each side saves independently without clobbering the other. The
+    <a href="#ca-explorer"><strong>Data pad</strong></a> gains master/detail panels for variables, tables,
+    keys and columns &mdash; sourced from the <em>live</em> dictionary &mdash; and fields can now be
+    <strong>dragged straight into an editor</strong>. The editor picks up
+    <strong>horizontal split panes</strong>, outline sorting, field-equate completion on <kbd>?</kbd>,
+    a Contract&nbsp;all&nbsp;/&nbsp;Expand&nbsp;all fold button, and hovers that render below the line
+    instead of over the code you were reading. Errors-pane clicks now reposition the
+    <em>live</em> embeditor overlay instead of closing and reopening it.
+  </p>
+
+  <p>
+    Underneath, the <strong>CodeGraph indexer stops confusing same-named procedures</strong> &mdash;
+    parameter-type overloads, case variants, and a local ROUTINE sharing its enclosing PROCEDURE's name all
+    used to collapse onto one arbitrary winner. On a 1,659-file production solution the fix finds
+    <strong>59% more call edges</strong>, surfaces 6,240 procedures that never appeared as callers at all,
+    loses nothing, and indexes about <strong>40% faster</strong>.
+  </p>
+
+  <div class="info-box info-box--warning">
+    <strong>Re-index after upgrading.</strong> The attribution fix changes what the indexer <em>writes</em>,
+    so existing CodeGraph databases keep returning the old answers until rebuilt. Use
+    <strong>Reindex</strong> (full) &mdash; <strong>Update</strong> is not enough, because the incremental
+    path compares source timestamps and your source hasn't changed.
+  </div>
+
+  <p>
+    Full notes:
+    <a href="https://github.com/ClarionLive/ClarionAssistant/blob/master/docs/releases/v5.5.0.md">v5.5.0 release notes</a>.
+  </p>
 
   <h3 id="whats-new-54">v5.4 &mdash; Find &amp; Replace Suite, Document Structure, Dark Mode Polish</h3>
 
