@@ -124,3 +124,16 @@ DerivedWorkerClass CLASS(BaseWorkerClass),TYPE, MODULE('WorkerLib.CLW'), LINK('W
 
 CallViaInheritedMember PROCEDURE( ), LONG
             END
+
+! Bug P repro: Dispatch is declared TWICE with the exact same name, differing only by
+! parameter type (LONG vs *CSTRING) -- a real, legal Clarion overload. CodeGraphIndexer.cs's
+! ResolveRelationships tracked "which procedure is this line inside" (currentProcId) via a
+! name-keyed dictionary (symbolByFile/symbolNameToId) that can only hold ONE id per name -- so
+! every line inside BOTH bodies collapsed onto whichever overload happened to load last,
+! regardless of which one the scanner was actually inside. See WorkerLib.clw for the two
+! implementations and README.md for the full writeup + expected before/after counts.
+OverloadBugClass CLASS,TYPE, MODULE('WorkerLib.CLW'), LINK('WorkerLib.CLW', 1 ), DLL( 0 )
+
+Dispatch      PROCEDURE( LONG pValue ), LONG
+Dispatch      PROCEDURE( *CSTRING pValue ), LONG
+            END

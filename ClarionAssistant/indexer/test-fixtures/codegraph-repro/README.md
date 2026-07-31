@@ -2,9 +2,10 @@
 
 Contributed by [@geircodes](https://github.com/geircodes) alongside issues #79–#90, extended for
 the `LIKE(...)`/`EQUATE`-alias CLASS-member fix (PR #92), the GROUP-typed CLASS-member fix
-(PR #93), the inherited-CLASS-member dotted-call resolution fix (PR #112), and the
-built-in-name-collision fix (PR #118) — a single compiling Clarion solution whose procedures each
-exercise one historical parser/indexer bug. This is currently the only regression coverage the
+(PR #93), the inherited-CLASS-member dotted-call resolution fix (PR #112), the
+built-in-name-collision fix (PR #118), issue #97's attrs+same-line-terminator fix, and the
+overload-attribution fix (Bug P, this PR) — a single compiling Clarion solution whose procedures
+each exercise one historical parser/indexer bug. This is currently the only regression coverage the
 CodeGraph parser has; run it after ANY change to `Parsing/ClarionParser.cs` or
 `Graph/CodeGraphIndexer.cs` (either synced copy).
 
@@ -21,10 +22,10 @@ indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproS
 ```
 
 ## Expected results (verified 2026-07-17 with all #79–#90 fixes applied, plus #92, #93, #112, and
-#118, then re-verified with #97; line numbers below reflect the fixture AFTER #97's
-`AttrTermLocalGroupTest` addition)
+#118, then re-verified with #97 and with Bug P (this PR); line numbers below reflect the fixture
+AFTER Bug P's `OverloadBugClass.Dispatch` addition)
 
-### Callers of `WorkerClass.Sign` — exactly 21 `calls` rows
+### Callers of `WorkerClass.Sign` — exactly 22 `calls` rows
 
 | Caller | Line | Proves issue |
 |---|---|---|
@@ -49,8 +50,9 @@ indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproS
 | LikeMemberBugClass.CallViaPlainInstanceMember | 309 | #92 (call through a reference CLASS member, unaffected control) |
 | MultiLineGroupBugClass.CallViaAfterMultiLineGroupMember | 327 | #93 (member after multi-line GROUP with its own extra field) |
 | DerivedWorkerClass.CallViaInheritedMember | 338 | #112 (member declared on a BASE class, accessed via SELF. from a DERIVED class's own method) |
+| OverloadBugClass.Dispatch (LONG overload) | 349 | Bug P (own overload's call, correctly self-attributed — not misattributed to the CSTRING overload) |
 
-### Callers of `WorkerClass.Ask` — exactly 2 `calls` rows (Bug N, **fixed in #118**)
+### Callers of `WorkerClass.Ask` — exactly 3 `calls` rows (Bug N fixed in #118, +1 from Bug P)
 
 `Ask` is identical in shape to `Sign` (same class, same signature) — the only difference is its
 name, which happens to collide with the Clarion built-in `ASK()` window/UI statement. Both call
@@ -61,6 +63,7 @@ SAME call site, so the two can be compared line-for-line:
 |---|---|---|---|
 | TestSignatureFlow | 30 | line 25 (`worker.Sign( 1 )`) | DATA-section local variable (baseline path) |
 | OwnerClass.CallViaMember | 69 | line 63 (`SELF.MyWorker.Sign( 10 )`) | cross-file CLASS member (#84/#86, and #112's inheritance walk when applicable) |
+| OverloadBugClass.Dispatch (CSTRING overload) | 368 | line 349 (`worker.Sign( pValue )`, LONG overload) | Bug P — sibling overload's call, correctly self-attributed to the CSTRING overload's own line (363), not the LONG overload's (346) |
 
 **Root cause (fixed by #118)**: `"ASK"` is in `ClarionBuiltins.cs`'s `_builtins` set (window/UI
 statement). Before #118 both the `SELF.Method` and the dotted `ObjectName.Method` call-detection
@@ -78,6 +81,41 @@ built-in/keyword collision was confirmed against a production Clarion solution a
 `Empty`, `Reset`, `Get`, `Put`, `Update`, `Destroy` — all real Clarion built-in keywords also used
 as ordinary ABC-style class method names), suggesting a substantial number of currently-invisible
 calls solution-wide, not a narrow edge case.
+
+### Bug P: overloaded procedure/method names collapsed onto one arbitrary overload
+
+`OverloadBugClass.Dispatch` is declared twice with the exact same name, differing only by
+parameter type (`LONG` vs `*CSTRING`) — a real, legal Clarion overload. `ResolveRelationships`
+tracked "which procedure is this source line inside" (`currentProcId`) via dictionaries keyed by
+name only (`symbolByFile`/`symbolNameToId`), which can hold just one id per name. Before this fix,
+every line inside **both** `Dispatch` bodies — every call, every variable reference — collapsed
+onto whichever overload happened to be inserted last, regardless of which overload's body the
+scanner was actually inside.
+
+The CSTRING overload delegates to the LONG overload via `SELF.Dispatch(...)`, the same general
+shape as the real-world case that motivated this fix (an overload calling a sibling overload of
+the same name via `SELF.Method(...)`). Each overload calls a different, distinguishable target
+(`WorkerClass.Sign` from the LONG overload, `WorkerClass.Ask` from the CSTRING overload) so the two
+bodies' own calls can be told apart in the results:
+
+- **Before the fix**: both `worker.Sign(pValue)` (inside the LONG overload) and `worker.Ask(result)`
+  (inside the CSTRING overload) would be attributed as coming from the SAME one overload symbol —
+  whichever loaded last — never from their own respective overloads.
+- **After the fix**: `WorkerClass.Sign` gains exactly one caller row from `OverloadBugClass.Dispatch`
+  at line 349, correctly attributed to the LONG overload's own definition line (346). `WorkerClass.Ask`
+  gains exactly one caller row from `OverloadBugClass.Dispatch` at line 368, correctly attributed to
+  the CSTRING overload's own definition line (363) — a different id than the Sign caller above, even
+  though both share the literal name `OverloadBugClass.Dispatch`.
+
+**Deliberately NOT fixed by this change, and not a regression if still true**: the
+`SELF.Dispatch(99)` call at line 367 (inside the CSTRING overload, intending to call the LONG
+overload) still resolves its call *target* to the CSTRING overload itself (i.e. `to_id`'s
+definition line is 363, not 346) — call-target resolution for an overloaded name still isn't
+type-aware; it still picks whichever overload loaded last, same as before this fix. This fix only
+corrects the *caller* side (`currentProcId`/`currentProcName` — "which procedure is this line
+inside"), not the *callee* side (which overload a given call site actually invokes). Per-overload
+caller *counts* (grouping by `to_id` for an overloaded name) remain unreliable; "what does this
+specific overload call" (grouping by `from_id`) is now correct.
 
 ### Symbols
 
@@ -130,6 +168,11 @@ calls solution-wide, not a narrow edge case.
   as correctly as `WorkerClass.Sign` right next to it (proving the symbol/parsing side was always
   unaffected) — the bug was entirely in call-site resolution, not symbol capture. Compare against
   the "Callers of `WorkerClass.Ask`" table above.
+- `OverloadBugClass.Dispatch` (Bug P, this PR): two `procedure` symbols sharing the identical
+  name, at lines 346 (`( LONG pValue )`) and 363 (`( *CSTRING pValue )`) — both were ALWAYS
+  correctly stored as two distinct symbols (proving, like Bug N, that the bug was entirely in
+  relationship resolution, not symbol capture). Compare against the "Bug P" writeup and the
+  `WorkerClass.Sign`/`WorkerClass.Ask` caller tables above.
 
 ### Program symbol (#81)
 
@@ -144,13 +187,23 @@ SELECT s2.name, r.line_number FROM relationships r
 JOIN symbols s1 ON r.to_id=s1.id JOIN symbols s2 ON r.from_id=s2.id
 WHERE s1.name='WorkerClass.Sign' AND r.type='calls' ORDER BY r.line_number;
 
--- Bug N (fixed in #118): expect 2 rows (TestSignatureFlow line 30, OwnerClass.CallViaMember
--- line 69). If this drops back to 0, Bug N has regressed — the built-in-named method is being
--- erased at the dotted/SELF. call sites again.
+-- Bug N (fixed in #118): expect 3 rows (TestSignatureFlow line 30, OwnerClass.CallViaMember
+-- line 69, OverloadBugClass.Dispatch line 368 -- the last one is Bug P's addition, not Bug N's).
+-- If this drops back to 0, Bug N has regressed — the built-in-named method is being erased at
+-- the dotted/SELF. call sites again.
 SELECT s2.name, r.line_number FROM relationships r
 JOIN symbols s1 ON r.to_id=s1.id JOIN symbols s2 ON r.from_id=s2.id
 WHERE s1.name='WorkerClass.Ask' AND r.type='calls' ORDER BY r.line_number;
 
 SELECT name, type, scope, parent_name, params FROM symbols WHERE type='class' OR scope='parameter'
 OR name IN ('LocalDerived','workerRef','LocalGroup','InlineLocalGroup','GenCertData','SomeHandle','InlineGroup','InlineGroupPeriod','MultiLineGroup','HiddenGroupMember','AttrTermGroup','AttrTermGroupPeriod','BaseWorker');
+
+-- Bug P: expect the LONG overload (line 346) as the sole caller of WorkerClass.Sign here, and
+-- the CSTRING overload (line 363) as the sole caller of WorkerClass.Ask -- never the same
+-- overload's line for both.
+SELECT s_to.name AS callee, r.line_number, s_from.line_number AS from_overload_def_line
+FROM relationships r
+JOIN symbols s_to ON r.to_id = s_to.id
+JOIN symbols s_from ON r.from_id = s_from.id
+WHERE s_to.name IN ('WorkerClass.Sign','WorkerClass.Ask') AND s_from.name = 'OverloadBugClass.Dispatch';
 ```

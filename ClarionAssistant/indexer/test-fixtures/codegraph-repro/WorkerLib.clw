@@ -339,3 +339,32 @@ result   LONG
   DISPOSE( SELF.BaseWorker )
   RETURN result
 
+! Bug P repro: the LONG overload -- the "real work" implementation. Calls WorkerClass.Sign,
+! a distinct, identifiable target from the CSTRING overload below (which calls
+! WorkerClass.Ask instead), so the two overload bodies' OWN calls can be told apart in the
+! results. See WorkerLib.inc for the declaration and README.md for the full writeup.
+OverloadBugClass.Dispatch PROCEDURE( LONG pValue )
+worker WorkerClass
+  CODE
+  RETURN worker.Sign( pValue )
+
+! Bug P repro: the CSTRING overload -- delegates to the LONG overload above via
+! SELF.Dispatch(...), the same general shape as the real production case that motivated this
+! fix (an overload calling a sibling overload of the same name via SELF.Method(...)). Before
+! this fix, every line inside this body -- including this SELF.Dispatch(...) call and the
+! worker.Ask(...) call below -- was misattributed as coming from the LONG overload above
+! instead of from here (both overloads share the exact same declared name, and the old
+! name-keyed currentProcId lookup can only ever resolve to one of them). Expected AFTER the
+! fix: WorkerClass.Sign gains exactly one more caller (this overload's OWN symbol, from the
+! LONG overload above) and WorkerClass.Ask gains exactly one more caller (this overload's OWN
+! symbol) -- not both attributed to the same one. Note: the SELF.Dispatch(99) call's TARGET
+! resolution (which overload it calls) is a SEPARATE, still-open limitation (call-target
+! overload resolution isn't type-aware yet) -- this repro only asserts the CALLER side.
+OverloadBugClass.Dispatch PROCEDURE( *CSTRING pValue )
+result LONG
+worker WorkerClass
+  CODE
+  result = SELF.Dispatch( 99 )
+  result = worker.Ask( result )
+  RETURN result
+

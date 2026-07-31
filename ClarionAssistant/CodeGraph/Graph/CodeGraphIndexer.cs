@@ -563,16 +563,29 @@ namespace ClarionCodeGraph.Graph
             var procNames = new List<string>(); // ordered list for matching
             // File-specific lookup: filePath → (name → id) — resolves ambiguous names
             var symbolByFile = new Dictionary<string, Dictionary<string, long>>(StringComparer.OrdinalIgnoreCase);
+            // File-specific lookup: filePath → (definition line → id). Clarion allows several
+            // procedures/methods to share the exact same name via parameter-type overloading
+            // (e.g. a method declared once per parameter type) -- symbolByFile and
+            // symbolNameToId can only ever hold ONE id per name, so they silently collapse every
+            // overload onto whichever one happened to be inserted last (see the "Last wins"
+            // comment below). A procedure's own definition line is always unique per file, so
+            // it's used below to pick out the exact overload currentProcId/currentProcName
+            // should track while scanning that overload's own body.
+            var symbolLineByFile = new Dictionary<string, Dictionary<int, long>>(StringComparer.OrdinalIgnoreCase);
 
             var allSymDt = _db.ExecuteQuery(
-                "SELECT id, name, type, file_path FROM symbols WHERE type IN ('procedure','function','routine')");
+                "SELECT id, name, type, file_path, line_number FROM symbols WHERE type IN ('procedure','function','routine')");
 
             foreach (System.Data.DataRow row in allSymDt.Rows)
             {
                 string name = row["name"].ToString();
                 long id = Convert.ToInt64(row["id"]);
                 string filePath = row["file_path"].ToString();
-                // Last wins — implementation in member file overwrites MAP declaration
+                int lineNumber = row["line_number"] != DBNull.Value ? Convert.ToInt32(row["line_number"]) : -1;
+                // Last wins — implementation in member file overwrites MAP declaration. Also the
+                // known limitation this fix works around: for genuine overloads sharing a name,
+                // only the last-loaded one survives here. symbolLineByFile above is the
+                // disambiguated path for anything that needs the correct per-overload id.
                 symbolNameToId[name] = id;
 
                 // Build per-file symbol lookup
@@ -583,6 +596,17 @@ namespace ClarionCodeGraph.Graph
                     symbolByFile[filePath] = fileSymbols;
                 }
                 fileSymbols[name] = id;
+
+                if (lineNumber > 0)
+                {
+                    Dictionary<int, long> fileSymbolsByLine;
+                    if (!symbolLineByFile.TryGetValue(filePath, out fileSymbolsByLine))
+                    {
+                        fileSymbolsByLine = new Dictionary<int, long>();
+                        symbolLineByFile[filePath] = fileSymbolsByLine;
+                    }
+                    fileSymbolsByLine[lineNumber] = id;
+                }
 
                 // Only add procedures/functions from .clw files to the match list.
                 // Skip: routines, dotted names (class method implementations),
@@ -757,13 +781,18 @@ namespace ClarionCodeGraph.Graph
                     int localClassEndDepth = 0;
                     // The parent (first) procedure in each member file owns all calls
                     long parentProcId = -1;
+                    string parentProcName = null;
                     // Track local MAP procedure names — skip these as call targets
                     var localMapNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-                    // Get file-specific symbol lookup for this file
-                    Dictionary<string, long> currentFileSymbols;
-                    if (!symbolByFile.TryGetValue(target.Path, out currentFileSymbols))
-                        currentFileSymbols = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+                    // Get file-specific (definition line → id) lookup. Used (instead of a
+                    // name-keyed lookup) everywhere the exact overload matters, since
+                    // symbolByFile/symbolNameToId can only hold one id per name and would
+                    // collapse same-named overloads onto whichever loaded last (see
+                    // symbolLineByFile's comment above).
+                    Dictionary<int, long> currentFileSymbolsByLine;
+                    if (!symbolLineByFile.TryGetValue(target.Path, out currentFileSymbolsByLine))
+                        currentFileSymbolsByLine = new Dictionary<int, long>();
 
                     // Load variables for this file
                     List<VariableInfo> currentFileVars;
@@ -783,11 +812,14 @@ namespace ClarionCodeGraph.Graph
                             {
                                 foundFirstProc = true;
                                 string matchName = firstMatch.Groups[1].Value;
-                                // Use ONLY file-specific lookup to avoid cross-file name collisions.
-                                // symbolNameToId may return a symbol from a different file if names collide.
+                                // Resolve by (file, definition line), not name alone -- see the
+                                // overload note where currentProcId is updated the same way below.
                                 long id;
-                                if (currentFileSymbols.TryGetValue(matchName, out id))
+                                if (currentFileSymbolsByLine.TryGetValue(p + 1, out id))
+                                {
                                     parentProcId = id;
+                                    parentProcName = matchName;
+                                }
                             }
                             continue;
                         }
@@ -817,6 +849,7 @@ namespace ClarionCodeGraph.Graph
                     if (parentProcId < 0) continue;
 
                     long currentProcId = parentProcId;
+                    string currentProcName = parentProcName;
                     bool seenFirstCode = false;
 
                     for (int i = target.StartLine; i < lines.Length; i++)
@@ -906,7 +939,7 @@ namespace ClarionCodeGraph.Graph
                             string matchedName = procMatch.Groups[1].Value;
                             // Update currentProcId for both top-level procedures AND class method
                             // implementations (ClassName.Method). Dotted method names resolve through
-                            // currentFileSymbols (the same lookup SELF.Method uses), so calls made
+                            // currentFileSymbolsByLine (the same lookup SELF.Method uses), so calls made
                             // inside a class method are attributed to that method — not to whatever
                             // procedure was recognized before it (issue #54, Bug 2). The old
                             // `!matchedName.Contains(".")` guard skipped every class-method
@@ -928,16 +961,28 @@ namespace ClarionCodeGraph.Graph
                             if (localMapNames.Contains(matchedName))
                             {
                                 currentProcId = parentProcId;
+                                currentProcName = parentProcName;
                                 continue;
                             }
-                            // Use ONLY file-specific lookup to avoid cross-file name collisions.
-                            // If the symbol isn't in this file's symbols, reset to parentProcId
-                            // rather than risking a match to a same-named symbol in another file.
+                            // Resolve by (file, exact definition line) rather than name alone --
+                            // Clarion allows multiple procedures/methods to share the same name via
+                            // parameter-type overloading (e.g. several same-named overloads
+                            // differing only by parameter type), which a name-keyed lookup can't
+                            // distinguish: it silently collapses onto whichever overload happened
+                            // to load last (see symbolLineByFile's comment above). procDefRegex only
+                            // ever matches a procedure's own definition line, so (file, line) is
+                            // unambiguous here.
                             long id;
-                            if (currentFileSymbols.TryGetValue(matchedName, out id))
+                            if (currentFileSymbolsByLine.TryGetValue(i + 1, out id))
+                            {
                                 currentProcId = id;
+                                currentProcName = matchedName;
+                            }
                             else
+                            {
                                 currentProcId = parentProcId;
+                                currentProcName = parentProcName;
+                            }
                             continue;
                         }
 
@@ -996,17 +1041,14 @@ namespace ClarionCodeGraph.Graph
                             // procedure symbol, so this can't manufacture a false "calls" edge -- it only
                             // stops erasing real ones.
 
-                            // Try to resolve as ClassName.MethodName using the current procedure's class
-                            string callerName = null;
-                            // Look up current proc name to find its class prefix
-                            foreach (var kvp2 in symbolNameToId)
-                            {
-                                if (kvp2.Value == currentProcId && kvp2.Key.Contains("."))
-                                {
-                                    callerName = kvp2.Key;
-                                    break;
-                                }
-                            }
+                            // Try to resolve as ClassName.MethodName using the current procedure's
+                            // class. currentProcName is tracked directly alongside currentProcId
+                            // (overload-safe -- see the update above) rather than reverse-scanned
+                            // from symbolNameToId: a reverse scan can't tell which of several
+                            // same-named overloads currentProcId actually refers to.
+                            string callerName = (currentProcName != null && currentProcName.Contains("."))
+                                ? currentProcName
+                                : null;
                             if (callerName != null)
                             {
                                 string className = callerName.Substring(0, callerName.LastIndexOf('.'));
@@ -1058,8 +1100,6 @@ namespace ClarionCodeGraph.Graph
                             bool foundLocalVar = false;
                             if (currentFileVars != null)
                             {
-                                string currentProcNameForParamScope = null;
-                                bool triedCurrentProcNameForParamScope = false;
                                 foreach (var varInfo in currentFileVars)
                                 {
                                     if (!string.Equals(varInfo.Name, objName, StringComparison.OrdinalIgnoreCase))
@@ -1069,18 +1109,12 @@ namespace ClarionCodeGraph.Graph
                                     // same parameter name can carry a different type in a different
                                     // procedure in the same file, so the file-wide-by-name matching
                                     // that's safe for DATA locals (see Bug 1/#54) is not safe here.
+                                    // currentProcName is tracked directly alongside currentProcId
+                                    // (overload-safe -- see the update above), not reverse-scanned.
                                     if (string.Equals(varInfo.Scope, "parameter", StringComparison.OrdinalIgnoreCase))
                                     {
-                                        if (!triedCurrentProcNameForParamScope)
-                                        {
-                                            triedCurrentProcNameForParamScope = true;
-                                            foreach (var kvp4 in currentFileSymbols)
-                                            {
-                                                if (kvp4.Value == currentProcId) { currentProcNameForParamScope = kvp4.Key; break; }
-                                            }
-                                        }
-                                        if (currentProcNameForParamScope == null ||
-                                            !string.Equals(varInfo.ParentName, currentProcNameForParamScope, StringComparison.OrdinalIgnoreCase))
+                                        if (currentProcName == null ||
+                                            !string.Equals(varInfo.ParentName, currentProcName, StringComparison.OrdinalIgnoreCase))
                                             continue; // wrong procedure's parameter of the same name -- skip
                                     }
 
@@ -1100,15 +1134,12 @@ namespace ClarionCodeGraph.Graph
                             // class-name derivation already used for SELF.Method resolution above.
                             if (!foundLocalVar)
                             {
-                                string ownerClassName = null;
-                                foreach (var kvp3 in symbolNameToId)
-                                {
-                                    if (kvp3.Value == currentProcId && kvp3.Key.Contains("."))
-                                    {
-                                        ownerClassName = kvp3.Key.Substring(0, kvp3.Key.LastIndexOf('.'));
-                                        break;
-                                    }
-                                }
+                                // currentProcName is tracked directly alongside currentProcId
+                                // (overload-safe -- see the update above), not reverse-scanned
+                                // from symbolNameToId.
+                                string ownerClassName = (currentProcName != null && currentProcName.Contains("."))
+                                    ? currentProcName.Substring(0, currentProcName.LastIndexOf('.'))
+                                    : null;
                                 if (ownerClassName != null)
                                 {
                                     // Walk the inheritance chain: try the current class first, then
@@ -1193,17 +1224,10 @@ namespace ClarionCodeGraph.Graph
                                 // - local vars and parameters are only visible to their owning procedure
                                 if ((varInfo.Scope == "local" || varInfo.Scope == "parameter") && varInfo.ParentName != null)
                                 {
-                                    // Check if this var belongs to the current procedure
-                                    // currentProcId must match the procedure that owns this variable
-                                    string currentProcName = null;
-                                    foreach (var kvp2 in currentFileSymbols)
-                                    {
-                                        if (kvp2.Value == currentProcId)
-                                        {
-                                            currentProcName = kvp2.Key;
-                                            break;
-                                        }
-                                    }
+                                    // Check if this var belongs to the current procedure.
+                                    // currentProcName is tracked directly alongside currentProcId
+                                    // (overload-safe -- see the update above), not reverse-scanned
+                                    // from a name-keyed symbol lookup.
                                     if (currentProcName == null ||
                                         !string.Equals(varInfo.ParentName, currentProcName, StringComparison.OrdinalIgnoreCase))
                                         continue;
