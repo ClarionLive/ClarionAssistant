@@ -605,6 +605,21 @@
     .monaco-editor .ca-dnd-target { border-right: 2px solid var(--find-accent); }
     body.ca-dragging, body.ca-dragging * { cursor: copy !important; }
     body.ca-dragging.ca-drag-blocked, body.ca-dragging.ca-drag-blocked * { cursor: no-drop !important; }
+
+    /* Hover tooltip readability (word hover, squiggle hover, glyph-margin hover — all .monaco-hover).
+       1) Monaco left-aligns the hover at the hovered word and prefers rendering it ABOVE the line, so it
+          lands squarely on the lines above. In Clarion that hides the LABEL column, which is exactly the
+          context you're reading. Nudge it right; hover.above:false (see the editor options) also drops it
+          below the line. Transform is visual only — Monaco's positioning math is untouched, and
+          getBoundingClientRect still reflects it, so mouse-into-hover (hover.sticky) keeps working.
+       2) The widget inherits the editor's inline font-size, so a code-heavy tooltip renders as loud as the
+          source. Pin it one px smaller; --ca-hover-font-size is refreshed from fontInfo on every editor
+          configuration change (gear panel AND Ctrl+wheel zoom) so it tracks the editor font rather than a
+          constant. Fenced code inside the hover sets no size of its own, so it scales along. */
+    .monaco-editor .monaco-hover {
+        transform: translateX(30px);
+        font-size: var(--ca-hover-font-size, 12px);
+    }
 </style>
 </head>
 <body>
@@ -1155,10 +1170,15 @@
                     wordSeparators: "`~!@#$%^&*()-=+[{]}\\|;'\",.<>/?",
                     // We handle Data-pad drops ourselves (see installDropInsert) — Monaco's built-in
                     // dropIntoEditor snippet-expands the text and leaves "$0" artifacts.
-                    dropIntoEditor: { enabled: false }
+                    dropIntoEditor: { enabled: false },
+                    // above:false — render the hover BELOW the hovered line. Monaco's default prefers
+                    // above, which covers the lines you were just reading (Clarion labels sit in column 0
+                    // there). Paired with the 30px nudge + smaller font in the .monaco-hover CSS.
+                    hover: { above: false }
                 });
                 installReadOnlyGuard();        // also marks the buffer dirty on each legal edit
                 installDropInsert(editor);     // accept Data-pad drops (plain text, at the drop point)
+                installHoverFontSizeSync(editor);  // keep the hover tooltip one px under the editor font
                 activeEditor = editor;         // commands target the focused pane; primary by default (#15)
                 editor.onDidFocusEditorText(function () { activeEditor = editor; });
                 // Flush the live buffer to the host immediately on blur (file mode), so the host's close-time copy
@@ -2696,7 +2716,8 @@
             wordWrap: s.wordWrap ? 'on' : 'off',
             autoIndent: s.autoIndent ? 'full' : 'keep',
             wordSeparators: "`~!@#$%^&*()-=+[{]}\\|;'\",.<>/?", // see primary editor: keep ':' in-word
-            dropIntoEditor: { enabled: false }                  // split pane: custom drop handler (installDropInsert)
+            dropIntoEditor: { enabled: false },                 // split pane: custom drop handler (installDropInsert)
+            hover: { above: false }                             // same as primary: hover below the line
         };
     }
 
@@ -3254,6 +3275,26 @@
         ed.focus();
     }
 
+    // Hover tooltips read one px smaller than the source text (--ca-hover-font-size, consumed by the
+    // .monaco-hover rule). Monaco has no hover-font option and the widget inherits the editor's inline
+    // font-size, so the value is mirrored here from fontInfo — which covers BOTH the gear panel's font
+    // size and Ctrl+wheel zoom, since either one raises onDidChangeConfiguration. Set on the root element
+    // because hovers can render outside the editor's own subtree (overflowing content widgets).
+    function installHoverFontSizeSync(ed) {
+        if (!ed) return;
+        var apply = function () {
+            try {
+                var fi = ed.getOption(monaco.editor.EditorOption.fontInfo);
+                var px = (fi && fi.fontSize) ? fi.fontSize : 13;
+                document.documentElement.style.setProperty('--ca-hover-font-size', Math.max(6, Math.round(px - 1)) + 'px');
+            } catch (e) { }
+        };
+        apply();
+        // Any option flip re-reads fontInfo — cheap, and avoids depending on which EditorOption id
+        // a given Monaco version reports for a font change.
+        ed.onDidChangeConfiguration(apply);
+    }
+
     // Native OS drop from the Data pad. We do NOT use Monaco's dropIntoEditor (it snippet-expands the
     // dropped text → "$0" artifacts). Insert plain text at the DROP POINT via the same executeEdits path
     // as the double-click insert, validated against the editable-slot guard.
@@ -3674,6 +3715,27 @@
                         return { contents: [{ value: resp.contents }] };
                     })
                     .catch(function () { return null; });
+            }
+        });
+        // Hover footers arrive from the LSP as markdown links to a location — "Foo.inc:12 → Foo.clw:340"
+        // is two independent links, each targeting file:///…#L<line>. Monaco parses the #L fragment into a
+        // selection itself, but then hands the file: URI to its DEFAULT opener, which treats it as an
+        // external link (window.open) — useless for a Clarion source file. Intercept and let the IDE
+        // navigate. Registered here (once, with the other providers) though link openers are global, not
+        // per-language; non-file schemes fall through to the default opener untouched.
+        monaco.editor.registerLinkOpener({
+            open: function (uri) {
+                if (!uri || uri.scheme !== 'file') return false;
+                // Hover footers only ever emit a bare #L<line> (see HoverFormatter.locationLink on the
+                // language-server side) — no column — matching what the host's navigation (EditorService.
+                // NavigateToFileAndLine, same as the open_file MCP tool) accepts.
+                var m = /^L?(\d+)/.exec(uri.fragment || '');
+                postToHost({
+                    action: 'openLocation',
+                    path: uri.fsPath,
+                    line: m ? (parseInt(m[1], 10) || 1) : 1
+                });
+                return true;   // handled — suppresses the external-open fallback
             }
         });
         // Signature help — parameter hints when typing '(' or ',' at a call site (mirrors VS Code).

@@ -264,6 +264,39 @@ namespace ClarionAssistant.Terminal
                         try { Services.CaEditorSettings.MonacoThemeDark = json.IndexOf("\"dark\":true", StringComparison.Ordinal) >= 0; }
                         catch { }
                         break;
+                    case "openLocation":
+                        // A hover-footer location link was clicked ("Foo.inc:12 → Foo.clw:340"). Handled
+                        // HERE rather than on IMonacoEditorHost — like "themeChanged" above — so every
+                        // Monaco surface gets it without each host implementing anything.
+                        //
+                        // Services.MonacoSourceNavigator, NOT Services.EditorService (2026-07-30, second
+                        // pass) — EditorService.NavigateToFileAndLine (what open_file uses) drives
+                        // FileService.JumpToFilePosition, which IS the historically-fixed, race-free way
+                        // to position the NATIVE caret — but on a Monaco-overlay COLD open, the surface
+                        // the developer actually sees is seeded from a SEPARATE place entirely:
+                        // MonacoClarionSourceEditor.OnReady calls MonacoSourceNavigator.TryConsumePending
+                        // to bake the target line into the very FIRST setSource payload (deliberately —
+                        // see that method's own comment: a follow-up revealLine sent after setSource races
+                        // the async content fetch on a cold open and loses). JumpTo's own Monaco mirror
+                        // (_navPendingLine) is exactly that losing follow-up path when the file wasn't
+                        // already open. EditorService never touches MonacoSourceNavigator's pending dict,
+                        // so a cold open through it landed on the file's last-remembered position instead
+                        // — reproduced live: first click on a not-yet-open target opened at the wrong
+                        // line, a second click (file now already live) worked, matching this mechanism
+                        // exactly. MonacoSourceNavigator.NavigateToFileAndLine already routes correctly to
+                        // BOTH surfaces (NativeGoTo → EditorService.GoToLine when the overlay is off), so
+                        // it alone is the right call here — the same one OnDefinition's F12/Ctrl+F12
+                        // cross-file jump already uses for this identical scenario.
+                        try
+                        {
+                            string locPath = ExtractJsonValue(json, "path");
+                            int locLine;
+                            if (!int.TryParse(ExtractJsonValue(json, "line"), out locLine)) locLine = 1;
+                            if (!string.IsNullOrEmpty(locPath))
+                                Services.MonacoSourceNavigator.NavigateToFileAndLine(locPath, locLine, 1);
+                        }
+                        catch (Exception lex) { System.Diagnostics.Debug.WriteLine("[MonacoEditorControl] openLocation error: " + lex.Message); }
+                        break;
                     case "ready":             h.OnReady(this); break;
                     case "save":              h.OnSave(this, json); break;
                     case "cancel":            h.OnCancel(this); break;
