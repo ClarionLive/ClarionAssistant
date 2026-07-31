@@ -83,6 +83,14 @@ Code Snippets (Ctrl+J) gain `${SELECTED:N}` &mdash; the Nth comma-separated part
 
 Typing `?` now triggers completion directly, and field equates come back as a Reference kind with their own icon. Bare-prefix globals are no longer merged into that list &mdash; previously a variable like `LDField` could prefix-match and outrank the `?LdapButton` you were actually reaching for.
 
+### Contract all / Expand all (#147)
+
+A fold button joins the embeditor toolbar. Click contracts every structure, click again expands, and the icon shows which the next click will do; right-click offers both explicitly. The state is read from the live folding model each time rather than remembered, so folding a region by hand from the gutter can't leave the icon promising the wrong action. Expand is offered only once *everything* foldable is collapsed, so a single hand-folded region doesn't hijack the primary action.
+
+### Code suggestions quote the code (#69)
+
+The assistant now quotes the surrounding lines when it points you at a change, instead of citing a bare line number. This matters most in template-generated `.clw` files: they're regenerated, so a line number goes stale the moment the template runs again, while the surrounding code stays recognizable. A useful side effect &mdash; because locating a change now means reading the real generated source, the assistant can also tell you which **embed** the change belongs in.
+
 ### Native embeditor parity and editor options
 
 Long-standing parity gaps close together. **Ctrl+Q** mimics the native embeditor's save-and-exit gesture (#137) &mdash; a dirty buffer raises a confirm where Enter saves and exits, absorbing the trailing Enter of the native muscle memory. The as-you-type aids are now **individually switchable** in the gear panel (#138): *Auto-space assignments (=)* and *Live keyword casing* can each be turned off. `OMIT('term')` and `COMPILE('term')` blocks fold (#133), shared across the embeditor, diff editor, and sticky scroll. Indentation follows **Options &rarr; Text Editor &rarr; Behavior** &mdash; Indentation size, Tab size, and Convert Tabs to Spaces &mdash; instead of assuming 4, via a "Follow Clarion's editor options" checkbox that's on by default (#126).
@@ -104,6 +112,8 @@ The editor watches its file on disk for external read-only and content changes (
 - **Unsaved edits preserved** &mdash; overlay edits survive Clarion's embed re-open, and a disk-watched file turning read-only no longer discards them.
 - **Go-to-definition no longer jumps to itself** (#143) &mdash; the fallback path could resolve a symbol to the very line you invoked it from.
 - **Dead overlay Find-All results-tools row removed** (#116/#145) &mdash; Copy / Clear were wired but could never render.
+- **Fold triangles on ordinary statement lines** (#158) &mdash; the folding scanner matched structure keywords inside string literals, so `MESSAGE('Unable to initialize Session Class instance')` or a `'Content-Type: application/xml'` header opened a phantom fold that swallowed the enclosing structure. One production 9,000-line file contained 64 such literals. String contents are now blanked before the keyword scan &mdash; which also makes comment-stripping literal-aware, so a `!` inside a string no longer truncates the line. Fixes the CA Embeditor, both diff panes and sticky-scroll headers at once.
+- **CA Find opened dark regardless of your theme** (#148) &mdash; the pad only restored a theme it had saved itself, falling back to dark otherwise. It now seeds from Clarion Assistant's own light/dark setting, while a preference set inside the pad still wins.
 - **CA Find** no longer misses keyboard focus on the first Ctrl+F after IDE start (#139).
 - **CA Explorer polish** &mdash; dark-mode secondary text lifted above the WCAG AA contrast floor; dropdown menus kept inside the WebView2; tooltips flipped above the native drop strip; the last row's path line no longer clipped; the Files tab stops jumping on every activation.
 
@@ -112,8 +122,9 @@ The editor watches its file on disk for external read-only and content changes (
 - **geircodes** &mdash; the bulk of this cycle: horizontal split panes (#157), outline sort (#153), field-equate completion (#159/#160), scoping fixes (#152), GROUP/RECORD and keyword-as-label diagnostics (#132, #136, #150, #156), cold-open navigation (#162), completion dedupe (#151), CA Editor reliability (#134, #135, #146), WebView2 profile isolation (#141), CA Find focus (#139), Errors-pane caret mirroring (#144), go-to-definition self-jump (#143), `get_diff_content` (#131), and the cross-addin cursor contract (#149).
 - **Mark Sarson** &mdash; removing the dead overlay Find-All results-tools row (#116/#145).
 - **Andrew Santarelli** &mdash; snippet parameter splitting (#155).
-- **BoxSoft** &mdash; Ctrl+Q parity (#137) and the as-you-type opt-outs (#138).
-- **armisoftware** &mdash; OMIT/COMPILE folding (#133).
+- **BoxSoft** &mdash; Ctrl+Q parity (#137), the as-you-type opt-outs (#138), and the case for quoting code over line numbers (#69).
+- **armisoftware** &mdash; OMIT/COMPILE folding (#133), Contract all / Expand all (#147), and the Find pad's theme (#148).
+- **geircodes** also root-caused the phantom fold triangles (#158), including the measurement &mdash; 64 colliding string literals in a single 9,000-line file &mdash; that showed it was systemic rather than a two-line curiosity.
 
 ---
 
