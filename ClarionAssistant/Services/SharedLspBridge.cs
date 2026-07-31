@@ -1185,6 +1185,41 @@ namespace ClarionAssistant.Services
         // Clarion identifier under the cursor — mirrors server.ts getWordAtPosition.
         private static readonly Regex CgWordPattern = new Regex(@"[A-Za-z_][A-Za-z0-9_:.]*");
 
+        /// <summary>True when `character` (0-based) on `lineText` sits inside a single-quoted Clarion
+        /// string literal — '' is an escaped quote, not a terminator, and both delimiting quote chars
+        /// count as "inside" (matches the LSP's own TokenHelper.isPositionInString convention) — or on
+        /// or after an unquoted `!` comment marker. CgWordPattern has no tokenizer and matches
+        /// identifier-shaped text inside either just as readily as real code; callers that fall back to
+        /// a bare-word symbol lookup must check this first so a string/comment never resolves as if it
+        /// were a reference.</summary>
+        private static bool CgIsInsideStringOrComment(string lineText, int character)
+        {
+            if (string.IsNullOrEmpty(lineText)) return false;
+            bool inString = false;
+            int stringStart = -1;
+            for (int i = 0; i < lineText.Length; i++)
+            {
+                char ch = lineText[i];
+                if (!inString && ch == '!') return character >= i;
+                if (ch == '\'')
+                {
+                    if (inString && i + 1 < lineText.Length && lineText[i + 1] == '\'') { i++; continue; } // '' escape
+                    if (inString)
+                    {
+                        if (character >= stringStart && character <= i) return true;
+                        inString = false;
+                    }
+                    else
+                    {
+                        inString = true;
+                        stringStart = i;
+                    }
+                }
+            }
+            // Unterminated string running to end of line — still "inside" from the opening quote onward.
+            return inString && character >= stringStart;
+        }
+
         /// <summary>True when a dispatcher result carries no usable payload (null, an error, or an
         /// empty result collection) — i.e. the LSP had no answer and we should try CodeGraph.</summary>
         private static bool IsEmptyResult(Dictionary<string, object> r)
@@ -1444,6 +1479,21 @@ namespace ClarionAssistant.Services
         {
             try
             {
+                // The LSP already bails on hover for a position inside a string literal or comment
+                // (TokenHelper.isPositionInString/isPositionInComment) — that's WHY it returned nothing
+                // and this fallback fired. CgWordPattern has no tokenizer, so without this guard it
+                // happily matches identifier-shaped text inside either and looks it up as if it were
+                // real code: hovering the 'Total' argument in SomeClass.SetValue('Total', ...) resolved
+                // an unrelated local variable named Total instead of showing nothing (string-literal
+                // text coincidentally matching a variable name elsewhere in scope). Bail the same way
+                // the LSP did.
+                string[] lines = CgGetLines(bufferText, filePath);
+                if (lines != null && line >= 0 && line < lines.Length &&
+                    CgIsInsideStringOrComment(lines[line], character))
+                {
+                    return null;
+                }
+
                 // Member access first ("oInstance.Member" → that member's signature), resolved via the buffer.
                 string mDb, mLabel;
                 var mSym = ResolveMemberAccessSymbol(bufferText, filePath, line, character, out mDb, out mLabel);
@@ -1463,7 +1513,6 @@ namespace ClarionAssistant.Services
                 // indexed solution or library. CgHoverFromDb below is a global, UNSCOPED exact-name lookup —
                 // without this, an in-scope local (e.g. "PRO") or a brand-new, not-yet-indexed procedure
                 // (e.g. "Test") can resolve to an unrelated class member elsewhere that merely shares the name.
-                string[] lines = CgGetLines(bufferText, filePath);
                 var localHover = BufferLocalHover(lines, line, word, filePath);
                 if (localHover != null) return localHover;
 
