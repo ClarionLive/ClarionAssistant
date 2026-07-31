@@ -763,7 +763,12 @@
         var msg = event.data;   // PostWebMessageAsJson → already an object
         if (!msg || !msg.type) return;
         try {
-            if (msg.type === 'applyState') applyState(msg.state);
+            // Seed from Clarion Assistant's shared light/dark choice (GH #148). Sent by the host
+            // immediately BEFORE applyState, so a theme saved in this pad's own blob still wins —
+            // this only decides what a pad with no saved preference opens as, which used to be
+            // unconditionally dark.
+            if (msg.type === 'hostTheme') { themeDark = !!msg.dark; applyTheme(); }
+            else if (msg.type === 'applyState') applyState(msg.state);
             else if (msg.type === 'activeEditor') onActiveEditor(msg);
             else if (msg.type === 'caFindFromEditor') onEditorMsg(msg);
             else if (msg.type === 'applyHistory') {

@@ -101,6 +101,18 @@ namespace ClarionAssistant
                     // Saved state FIRST (sessions/history/options/theme), THEN attach to the broker —
                     // SetPadPoster immediately replays the current active editor, and the page needs its
                     // sessions restored before it can pick the right one.
+                    // CA's shared light/dark choice, posted BEFORE the saved blob so it acts as a SEED,
+                    // not an override: applyState's themeDark (when the blob has one) lands afterwards
+                    // and wins. Without this the page fell back to its hardcoded themeDark = true, so a
+                    // first run — or any run predating the pad's own theme toggle — opened dark no matter
+                    // what the rest of Clarion Assistant was set to (GH #148).
+                    try
+                    {
+                        bool dark = (new SettingsService().Get("Theme") ?? "dark") != "light";
+                        PostJson("{\"type\":\"hostTheme\",\"dark\":" + (dark ? "true" : "false") + "}");
+                    }
+                    catch { /* seed is best-effort; the page keeps its own default */ }
+
                     string state = Terminal.CaFindPadState.Load();
                     if (!string.IsNullOrEmpty(state))
                         PostJson("{\"type\":\"applyState\",\"state\":" + state + "}");

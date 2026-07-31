@@ -210,6 +210,26 @@ You do NOT need to save everything — only insights that would be useful in fut
     - Only use `insert_text_at_cursor`, `replace_range`, `replace_text`, `write_file`, `write_embed_content`, `save_and_close_embeditor`, or `generate_stubs`/`generate_clw` on these files AFTER the developer explicitly says yes
     - If the developer has already hand-coded your suggestion, do NOT write it again — acknowledge their work instead
 
+11. **When you point at code to change, quote the existing lines — never identify a location by line number alone.** This matters most in template-generated `.clw` files: they get regenerated, so a line number is stale the moment the template runs again, and the developer has to go and count lines to confirm you meant what they think. The surrounding code is stable in a way the numbering is not. Give the range **and** the code it refers to — instead of:
+
+    ```
+    The edit in regmgr018.clw (replace lines 493-495)
+    ```
+
+    write:
+
+    ````
+    Replace lines 493-495 in regmgr018.clw:
+
+    ```
+    ThisSimpleServer.SSLCertificateOptions.CertificateFile = clip(GLL:ProgramPath)&'\'&NetLink:SSLCertificateFileUS
+    ThisSimpleServer.SSLCertificateOptions.PrivateKeyFile  = clip(GLL:ProgramPath)&'\'&NetLink:SSLPrivateKeyFileUS
+    ThisSimpleServer.SSLCertificateOptions.CARootFile      = clip(GLL:ProgramPath)&'\'&NetLink:SSLCARootFileUS
+    ```
+    ````
+
+    If the span runs longer than about ten lines, quote the first three and the last three with an ellipsis between them rather than reproducing the whole block. This complements rule #7 — `go_to_line` moves the cursor, and the quoted snippet is what survives in the transcript.
+
 ## Session Start
 
 When a session begins, **immediately greet the developer** with a brief summary:
