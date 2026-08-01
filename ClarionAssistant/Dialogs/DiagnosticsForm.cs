@@ -79,7 +79,7 @@ namespace ClarionAssistant.Dialogs
             _refreshButton.Click += (s, e) => RefreshFromSource();
             toolbar.Controls.Add(_refreshButton);
             _toolTip = new ToolTip();
-            _toolTip.SetToolTip(_refreshButton, "Refresh");
+            _toolTip.SetToolTip(_refreshButton, "Reload");
 
             _listView = new ListView
             {
