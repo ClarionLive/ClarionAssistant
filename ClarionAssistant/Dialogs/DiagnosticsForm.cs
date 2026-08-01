@@ -174,12 +174,29 @@ namespace ClarionAssistant.Dialogs
             catch { /* best-effort — caption just stays whatever the OS default is */ }
         }
 
+        // GDI+ paints exactly the requested color with normal alpha blending against whatever's
+        // already on the surface. GDI's TextRenderer.DrawText, even given the correct background
+        // color, still renders ClearType-composited text visibly paler than the literal RGB value
+        // for these saturated severity colors — DrawString avoids that ambiguity entirely.
+        private static readonly StringFormat CellTextFormat = new StringFormat
+        {
+            Alignment = StringAlignment.Near,
+            LineAlignment = StringAlignment.Center,
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap
+        };
+
+        // TextRenderer.DrawText added a couple pixels of left padding automatically; DrawString
+        // doesn't, so without this the text would sit flush against the cell's left edge.
+        private static RectangleF Inset(Rectangle bounds) =>
+            new RectangleF(bounds.X + 2, bounds.Y, Math.Max(0, bounds.Width - 2), bounds.Height);
+
         private void OnDrawColumnHeader(object sender, DrawListViewColumnHeaderEventArgs e)
         {
             using (var brush = new SolidBrush(_headerBackColor))
                 e.Graphics.FillRectangle(brush, e.Bounds);
-            TextRenderer.DrawText(e.Graphics, e.Header.Text, _listView.Font, e.Bounds, _headerForeColor, _headerBackColor,
-                TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            using (var foreBrush = new SolidBrush(_headerForeColor))
+                e.Graphics.DrawString(e.Header.Text, _listView.Font, foreBrush, Inset(e.Bounds), CellTextFormat);
         }
 
         private void OnDrawSubItem(object sender, DrawListViewSubItemEventArgs e)
@@ -196,11 +213,8 @@ namespace ClarionAssistant.Dialogs
 
             using (var backBrush = new SolidBrush(back))
                 e.Graphics.FillRectangle(backBrush, e.Bounds);
-            // Passing the real background color (not the 5-arg "transparent" overload) matters:
-            // without it, GDI doesn't know what it's compositing ClearType antialiasing against
-            // and the severity colors render visibly washed out/pastel instead of their true value.
-            TextRenderer.DrawText(e.Graphics, e.SubItem.Text, _listView.Font, e.Bounds, fore, back,
-                TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            using (var foreBrush = new SolidBrush(fore))
+                e.Graphics.DrawString(e.SubItem.Text, _listView.Font, foreBrush, Inset(e.Bounds), CellTextFormat);
 
             using (var pen = new Pen(_gridLineColor))
             {
