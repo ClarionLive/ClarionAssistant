@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using ClarionAssistant.Services;
 
@@ -13,9 +14,16 @@ namespace ClarionAssistant.Dialogs
     /// </summary>
     public class DiagnosticsForm : Form
     {
+        // Win32 common-control ListView headers don't follow BackColor/ForeColor — without this,
+        // the column header band stays light even in dark mode. "DarkMode_Explorer" is the standard
+        // uxtheme.dll trick for making a ListView's native header (and scrollbar) follow dark mode.
+        [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+        private static extern int SetWindowTheme(IntPtr hWnd, string pszSubAppName, string pszSubIdList);
+
         private ListView _listView;
         private Button _refreshButton;
-        private Label _fileLabel;
+        private ToolTip _toolTip;
+        private string _currentFileName = "";
         private readonly Action<int> _goToLine;
         private readonly Func<List<LspClient.DiagnosticEntry>> _refreshData;
         private bool _isDark = true;
@@ -37,31 +45,22 @@ namespace ClarionAssistant.Dialogs
             ShowInTaskbar = false;
             FormBorderStyle = FormBorderStyle.SizableToolWindow;
 
-            _fileLabel = new Label
-            {
-                Dock = DockStyle.Top,
-                Height = 22,
-                Padding = new Padding(6, 4, 0, 0),
-                Font = new Font("Segoe UI", 8.5f),
-                Text = ""
-            };
-
-            var toolbar = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                Height = 28,
-                FlowDirection = FlowDirection.LeftToRight,
-                Padding = new Padding(4, 2, 0, 0)
-            };
+            // Slim single strip: just the icon-only refresh button, right-aligned. The filename
+            // used to live in its own row here — it's now folded into the window title instead
+            // (see UpdateDiagnostics), so this row only needs to hold the refresh action.
+            var toolbar = new Panel { Dock = DockStyle.Top, Height = 24 };
             _refreshButton = new Button
             {
-                Text = "Refresh",
-                AutoSize = true,
+                Text = "⟳",
+                Dock = DockStyle.Right,
+                Width = 28,
                 FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 8f)
+                Font = new Font("Segoe UI", 10f)
             };
             _refreshButton.Click += (s, e) => RefreshFromSource();
             toolbar.Controls.Add(_refreshButton);
+            _toolTip = new ToolTip();
+            _toolTip.SetToolTip(_refreshButton, "Refresh");
 
             _listView = new ListView
             {
@@ -81,7 +80,6 @@ namespace ClarionAssistant.Dialogs
 
             Controls.Add(_listView);
             Controls.Add(toolbar);
-            Controls.Add(_fileLabel);
 
             ApplyTheme(_isDark);
         }
@@ -95,7 +93,6 @@ namespace ClarionAssistant.Dialogs
                 ForeColor = Color.FromArgb(205, 214, 244);
                 _listView.BackColor = Color.FromArgb(24, 24, 37);
                 _listView.ForeColor = Color.FromArgb(205, 214, 244);
-                _fileLabel.ForeColor = Color.FromArgb(127, 132, 156);
                 _refreshButton.ForeColor = Color.FromArgb(205, 214, 244);
                 _refreshButton.FlatAppearance.BorderColor = Color.FromArgb(69, 71, 90);
             }
@@ -105,15 +102,18 @@ namespace ClarionAssistant.Dialogs
                 ForeColor = Color.FromArgb(76, 79, 105);
                 _listView.BackColor = Color.FromArgb(230, 233, 239);
                 _listView.ForeColor = Color.FromArgb(76, 79, 105);
-                _fileLabel.ForeColor = Color.FromArgb(108, 111, 133);
                 _refreshButton.ForeColor = Color.FromArgb(76, 79, 105);
                 _refreshButton.FlatAppearance.BorderColor = Color.FromArgb(188, 192, 204);
             }
+
+            try { SetWindowTheme(_listView.Handle, isDark ? "DarkMode_Explorer" : "Explorer", null); }
+            catch { /* best-effort — header just stays whatever the OS default is */ }
         }
 
         public void UpdateDiagnostics(string filePath, List<LspClient.DiagnosticEntry> entries)
         {
-            _fileLabel.Text = string.IsNullOrEmpty(filePath) ? "" : System.IO.Path.GetFileName(filePath);
+            _currentFileName = string.IsNullOrEmpty(filePath) ? "" : System.IO.Path.GetFileName(filePath);
+            Text = string.IsNullOrEmpty(_currentFileName) ? "Diagnostics" : "Diagnostics — " + _currentFileName;
 
             _listView.BeginUpdate();
             _listView.Items.Clear();
@@ -159,7 +159,7 @@ namespace ClarionAssistant.Dialogs
             if (_refreshData != null)
             {
                 var entries = _refreshData();
-                UpdateDiagnostics(_fileLabel.Text, entries);
+                UpdateDiagnostics(_currentFileName, entries);
             }
         }
 
