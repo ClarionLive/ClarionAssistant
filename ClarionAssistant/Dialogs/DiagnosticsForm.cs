@@ -14,20 +14,20 @@ namespace ClarionAssistant.Dialogs
     /// </summary>
     public class DiagnosticsForm : Form
     {
-        // Win32 common-control ListView headers don't follow BackColor/ForeColor — without this,
-        // the column header band stays light even in dark mode. "DarkMode_Explorer" is the standard
-        // uxtheme.dll trick for making a ListView's native header (and scrollbar) follow dark mode.
-        // SetWindowTheme on the ListView handle alone only covers the item area/scrollbar — the
-        // column header is a separate child HWND (Header32) that needs its own SetWindowTheme call,
-        // plus a WM_THEMECHANGED nudge to make it actually repaint with the new palette.
+        // Win32 common-control ListView headers don't follow BackColor/ForeColor, and the
+        // "DarkMode_Explorer"/"DarkMode_ItemsView" SetWindowTheme trick only reliably recolors the
+        // header BACKGROUND, not its text — leaving black-on-near-black in dark mode. Owner-drawing
+        // the header (see OnDrawColumnHeader) gives full control over both, so use that instead.
         [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
         private static extern int SetWindowTheme(IntPtr hWnd, string pszSubAppName, string pszSubIdList);
 
-        [DllImport("user32.dll")]
-        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
-
-        private const int LVM_GETHEADER = 0x1000 + 31;
-        private const int WM_THEMECHANGED = 0x031A;
+        // Makes the native title bar itself follow dark/light mode (Windows 10 20H1+ / Windows 11),
+        // so the caption looks like a normal OS window caption in either theme instead of always
+        // rendering in the OS default (light) regardless of the client area's theme.
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+        private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+        private const int DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19;
 
         private ListView _listView;
         private Button _refreshButton;
@@ -36,6 +36,8 @@ namespace ClarionAssistant.Dialogs
         private readonly Action<int> _goToLine;
         private readonly Func<List<LspClient.DiagnosticEntry>> _refreshData;
         private bool _isDark = true;
+        private Color _headerBackColor = Color.White;
+        private Color _headerForeColor = Color.Black;
 
         public DiagnosticsForm(Action<int> goToLine, Func<List<LspClient.DiagnosticEntry>> refreshData)
         {
@@ -78,6 +80,7 @@ namespace ClarionAssistant.Dialogs
                 FullRowSelect = true,
                 GridLines = true,
                 HeaderStyle = ColumnHeaderStyle.Nonclickable,
+                OwnerDraw = true,
                 Font = new Font("Cascadia Code", 9f, FontStyle.Regular,
                     GraphicsUnit.Point, 0, false)
             };
@@ -86,6 +89,9 @@ namespace ClarionAssistant.Dialogs
             _listView.Columns.Add("Message", 400);
             _listView.DoubleClick += OnListDoubleClick;
             _listView.KeyDown += OnListKeyDown;
+            _listView.DrawColumnHeader += OnDrawColumnHeader;
+            _listView.DrawItem += (s, e) => e.DrawDefault = true;
+            _listView.DrawSubItem += (s, e) => e.DrawDefault = true;
 
             Controls.Add(_listView);
             Controls.Add(toolbar);
@@ -106,30 +112,43 @@ namespace ClarionAssistant.Dialogs
                 _listView.ForeColor = Color.FromArgb(235, 235, 235);
                 _refreshButton.ForeColor = Color.FromArgb(235, 235, 235);
                 _refreshButton.FlatAppearance.BorderColor = Color.FromArgb(90, 90, 90);
+                // Header matches the list body exactly, same as it does natively in light mode.
+                _headerBackColor = _listView.BackColor;
+                _headerForeColor = _listView.ForeColor;
             }
             else
             {
-                // Plain light grey, not the pale lavender-tinted panel used before — that tint
-                // plus the soft grey text was too low-contrast to read comfortably.
                 BackColor = Color.FromArgb(240, 240, 240);
                 ForeColor = Color.FromArgb(32, 32, 32);
-                _listView.BackColor = Color.FromArgb(225, 225, 225);
+                _listView.BackColor = Color.White;
                 _listView.ForeColor = Color.FromArgb(32, 32, 32);
                 _refreshButton.ForeColor = Color.FromArgb(32, 32, 32);
                 _refreshButton.FlatAppearance.BorderColor = Color.FromArgb(180, 180, 180);
+                _headerBackColor = _listView.BackColor;
+                _headerForeColor = _listView.ForeColor;
             }
+            _listView.Invalidate();
+
+            try { SetWindowTheme(_listView.Handle, isDark ? "DarkMode_Explorer" : "Explorer", null); }
+            catch { /* best-effort — scrollbar just stays whatever the OS default is */ }
 
             try
             {
-                SetWindowTheme(_listView.Handle, isDark ? "DarkMode_Explorer" : "Explorer", null);
-                IntPtr header = SendMessage(_listView.Handle, LVM_GETHEADER, IntPtr.Zero, IntPtr.Zero);
-                if (header != IntPtr.Zero)
-                {
-                    SetWindowTheme(header, isDark ? "DarkMode_ItemsView" : "Explorer", null);
-                    SendMessage(header, WM_THEMECHANGED, IntPtr.Zero, IntPtr.Zero);
-                }
+                // Accessing Handle forces early creation if needed — safe pre-Show, and required
+                // so the caption is already themed correctly on first display (no dark→light flash).
+                int useDark = isDark ? 1 : 0;
+                if (DwmSetWindowAttribute(Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, ref useDark, sizeof(int)) != 0)
+                    DwmSetWindowAttribute(Handle, DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, ref useDark, sizeof(int));
             }
-            catch { /* best-effort — header just stays whatever the OS default is */ }
+            catch { /* best-effort — caption just stays whatever the OS default is */ }
+        }
+
+        private void OnDrawColumnHeader(object sender, DrawListViewColumnHeaderEventArgs e)
+        {
+            using (var brush = new SolidBrush(_headerBackColor))
+                e.Graphics.FillRectangle(brush, e.Bounds);
+            TextRenderer.DrawText(e.Graphics, e.Header.Text, _listView.Font, e.Bounds, _headerForeColor,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
 
         public void UpdateDiagnostics(string filePath, List<LspClient.DiagnosticEntry> entries)
