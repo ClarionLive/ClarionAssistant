@@ -173,11 +173,17 @@ namespace ClarionAssistant.Dialogs
                 TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
 
+        // One fixed middle gray for selection, used in BOTH themes (rather than per-theme accent
+        // colors) — legible against both the near-black dark background and white light background.
+        // Selected text keeps its normal severity color (red/amber/blue) instead of a forced
+        // white/black override, so a selected row still reads the same as an unselected one.
+        private static readonly Color SelectionBackColor = Color.FromArgb(128, 128, 128);
+
         private void OnDrawSubItem(object sender, DrawListViewSubItemEventArgs e)
         {
             bool selected = e.Item.Selected;
-            Color back = selected ? SystemColors.Highlight : _listView.BackColor;
-            Color fore = selected ? SystemColors.HighlightText : e.Item.ForeColor;
+            Color back = selected ? SelectionBackColor : _listView.BackColor;
+            Color fore = e.Item.ForeColor;
 
             using (var backBrush = new SolidBrush(back))
                 e.Graphics.FillRectangle(backBrush, e.Bounds);
