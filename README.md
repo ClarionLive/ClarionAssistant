@@ -10,9 +10,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ClarionLive/ClarionAssistant/releases/tag/v5.4.0"><img src="https://img.shields.io/github/v/release/ClarionLive/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
+  <a href="https://github.com/ClarionLive/ClarionAssistant/releases/latest"><img src="https://img.shields.io/github/v/release/ClarionLive/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
   <img src="https://img.shields.io/badge/Clarion-10%20%7C%2011%20%7C%2011.1%20%7C%2012-blue?style=for-the-badge" alt="Clarion 10 | 11 | 11.1 | 12">
-  <img src="https://img.shields.io/badge/version-5.4-blue?style=for-the-badge" alt="v5.4">
+  <img src="https://img.shields.io/badge/version-5.5-blue?style=for-the-badge" alt="v5.5">
+</p>
+
+<p align="center">
+  <em>An independent community project &mdash; not a SoftVelocity product.</em><br>
+  <a href="docs/HISTORY.md">History, stats &amp; contributors</a>
 </p>
 
 ---
