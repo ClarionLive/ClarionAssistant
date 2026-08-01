@@ -73,6 +73,7 @@ namespace ClarionAssistant
         private int _lastDiagErrors = -1;
         private int _lastDiagWarnings = -1;
         private List<Services.LspClient.DiagnosticEntry> _lastDiagEntries;
+        private bool? _lastMonacoThemeDark; // tracks CaEditorSettings.MonacoThemeDark for live-follow in PollLspUi
 
         public string CurrentSolutionPath { get { return _currentSlnPath; } }
         public SettingsService Settings { get { return _settings; } }
@@ -950,6 +951,17 @@ namespace ClarionAssistant
             try
             {
                 if (_lspStatusBar == null) return;
+
+                // Live-follow the Monaco/CA Editor's own theme toggle (independent of this chat
+                // pane's theme) — the page pushes it to CaEditorSettings on every toolbar toggle,
+                // but nothing notifies this control directly, so pick up a change on the next tick.
+                bool monacoDark = CaEditorSettings.MonacoThemeDark;
+                if (_lastMonacoThemeDark != monacoDark)
+                {
+                    _lastMonacoThemeDark = monacoDark;
+                    _lspStatusBar.ApplyTheme(monacoDark);
+                    if (_diagForm != null) _diagForm.ApplyTheme(monacoDark);
+                }
 
                 // Wire up the OnLspRequest event once the LspClient is available
                 var lsp = _toolRegistry?.LspClientInstance;
@@ -1984,8 +1996,14 @@ namespace ClarionAssistant
             _splitter.BackColor = _isDarkTheme ? Color.FromArgb(49, 50, 68) : Color.FromArgb(204, 208, 218);
             if (_tabStrip != null) _tabManager?.ApplyTheme(_isDarkTheme);
             if (_contentArea != null) _contentArea.BackColor = _isDarkTheme ? Color.FromArgb(12, 12, 12) : Color.White;
-            if (_lspStatusBar != null) _lspStatusBar.ApplyTheme(_isDarkTheme);
-            if (_diagForm != null) _diagForm.ApplyTheme(_isDarkTheme);
+
+            // LSP status bar + diagnostics window show diagnostics for the CODE editor, so they
+            // follow the Monaco/CA Editor's own theme (CaEditorSettings.MonacoThemeDark) rather
+            // than this chat pane's own _isDarkTheme — the two are independent settings and can differ.
+            bool monacoDark = CaEditorSettings.MonacoThemeDark;
+            _lastMonacoThemeDark = monacoDark;
+            if (_lspStatusBar != null) _lspStatusBar.ApplyTheme(monacoDark);
+            if (_diagForm != null) _diagForm.ApplyTheme(monacoDark);
         }
 
         private float GetFontSize()
