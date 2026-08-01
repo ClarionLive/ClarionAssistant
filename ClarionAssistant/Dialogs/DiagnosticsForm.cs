@@ -178,7 +178,7 @@ namespace ClarionAssistant.Dialogs
         {
             using (var brush = new SolidBrush(_headerBackColor))
                 e.Graphics.FillRectangle(brush, e.Bounds);
-            TextRenderer.DrawText(e.Graphics, e.Header.Text, _listView.Font, e.Bounds, _headerForeColor,
+            TextRenderer.DrawText(e.Graphics, e.Header.Text, _listView.Font, e.Bounds, _headerForeColor, _headerBackColor,
                 TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
 
@@ -196,7 +196,10 @@ namespace ClarionAssistant.Dialogs
 
             using (var backBrush = new SolidBrush(back))
                 e.Graphics.FillRectangle(backBrush, e.Bounds);
-            TextRenderer.DrawText(e.Graphics, e.SubItem.Text, _listView.Font, e.Bounds, fore,
+            // Passing the real background color (not the 5-arg "transparent" overload) matters:
+            // without it, GDI doesn't know what it's compositing ClearType antialiasing against
+            // and the severity colors render visibly washed out/pastel instead of their true value.
+            TextRenderer.DrawText(e.Graphics, e.SubItem.Text, _listView.Font, e.Bounds, fore, back,
                 TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
 
             using (var pen = new Pen(_gridLineColor))
