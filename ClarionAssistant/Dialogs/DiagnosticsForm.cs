@@ -106,6 +106,12 @@ namespace ClarionAssistant.Dialogs
             _listView.DrawItem += (s, e) => e.DrawDefault = false;
             _listView.DrawSubItem += OnDrawSubItem;
 
+            // ListView doesn't expose DoubleBuffered publicly. Without it, every owner-drawn
+            // repaint (including the ones Windows triggers just from mouse-move hover tracking,
+            // even with no hover-selection behavior configured) flashes visibly before painting.
+            typeof(Control).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                ?.SetValue(_listView, true, null);
+
             Controls.Add(_listView);
             Controls.Add(toolbar);
 
@@ -173,16 +179,16 @@ namespace ClarionAssistant.Dialogs
                 TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
 
-        // One fixed middle gray for selection, used in BOTH themes (rather than per-theme accent
-        // colors) — legible against both the near-black dark background and white light background.
-        // Selected text keeps its normal severity color (red/amber/blue) instead of a forced
-        // white/black override, so a selected row still reads the same as an unselected one.
-        private static readonly Color SelectionBackColor = Color.FromArgb(128, 128, 128);
-
         private void OnDrawSubItem(object sender, DrawListViewSubItemEventArgs e)
         {
             bool selected = e.Item.Selected;
-            Color back = selected ? SelectionBackColor : _listView.BackColor;
+            // A flat middle gray sits in the worst contrast zone for the pastel/saturated
+            // severity colors (red/amber/blue) used for the text — it's roughly as bright as
+            // the amber text itself. A subtle per-theme tint close to the row's own background
+            // keeps the same contrast the text already had while still reading as "selected".
+            Color back = selected
+                ? (_isDark ? Color.FromArgb(60, 60, 68) : Color.FromArgb(210, 210, 218))
+                : _listView.BackColor;
             Color fore = e.Item.ForeColor;
 
             using (var backBrush = new SolidBrush(back))
