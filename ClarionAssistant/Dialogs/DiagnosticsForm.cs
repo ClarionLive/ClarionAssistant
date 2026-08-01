@@ -28,6 +28,13 @@ namespace ClarionAssistant.Dialogs
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
         private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
         private const int DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19;
+        // Windows 11 22H2+: force the exact caption background/text color instead of relying on
+        // the OS's generic dark-mode default, which renders caption text in a duller gray than
+        // our own client-area text.
+        private const int DWMWA_CAPTION_COLOR = 35;
+        private const int DWMWA_TEXT_COLOR = 36;
+
+        private static int ToColorRef(Color c) => c.R | (c.G << 8) | (c.B << 16);
 
         private ListView _listView;
         private Button _refreshButton;
@@ -38,6 +45,7 @@ namespace ClarionAssistant.Dialogs
         private bool _isDark = true;
         private Color _headerBackColor = Color.White;
         private Color _headerForeColor = Color.Black;
+        private Color _gridLineColor = Color.FromArgb(220, 220, 220);
 
         public DiagnosticsForm(Action<int> goToLine, Func<List<LspClient.DiagnosticEntry>> refreshData)
         {
@@ -78,7 +86,9 @@ namespace ClarionAssistant.Dialogs
                 Dock = DockStyle.Fill,
                 View = View.Details,
                 FullRowSelect = true,
-                GridLines = true,
+                // Native gridlines always use a fixed system color (bright, non-theme-aware) —
+                // drawn manually in OnDrawSubItem instead so they can match the theme.
+                GridLines = false,
                 HeaderStyle = ColumnHeaderStyle.Nonclickable,
                 OwnerDraw = true,
                 Font = new Font("Cascadia Code", 9f, FontStyle.Regular,
@@ -90,8 +100,11 @@ namespace ClarionAssistant.Dialogs
             _listView.DoubleClick += OnListDoubleClick;
             _listView.KeyDown += OnListKeyDown;
             _listView.DrawColumnHeader += OnDrawColumnHeader;
-            _listView.DrawItem += (s, e) => e.DrawDefault = true;
-            _listView.DrawSubItem += (s, e) => e.DrawDefault = true;
+            // Details view: draw everything (background, text, and the custom grid lines) in
+            // DrawSubItem — DrawDefault=true there would paint AFTER any custom drawing here,
+            // overwriting it, so DrawItem must fully defer instead of drawing its own default.
+            _listView.DrawItem += (s, e) => e.DrawDefault = false;
+            _listView.DrawSubItem += OnDrawSubItem;
 
             Controls.Add(_listView);
             Controls.Add(toolbar);
@@ -106,12 +119,15 @@ namespace ClarionAssistant.Dialogs
             {
                 // Plain near-black, deliberately NOT the same blue-tinted black as the Monaco
                 // editor chrome, so the list reads as a distinct panel rather than blending in.
+                // Kept the same shade as the window/caption background per feedback, rather than
+                // a darker shade of its own.
                 BackColor = Color.FromArgb(32, 32, 32);
                 ForeColor = Color.FromArgb(235, 235, 235);
-                _listView.BackColor = Color.FromArgb(18, 18, 18);
+                _listView.BackColor = Color.FromArgb(32, 32, 32);
                 _listView.ForeColor = Color.FromArgb(235, 235, 235);
                 _refreshButton.ForeColor = Color.FromArgb(235, 235, 235);
                 _refreshButton.FlatAppearance.BorderColor = Color.FromArgb(90, 90, 90);
+                _gridLineColor = Color.FromArgb(70, 70, 70);
                 // Header matches the list body exactly, same as it does natively in light mode.
                 _headerBackColor = _listView.BackColor;
                 _headerForeColor = _listView.ForeColor;
@@ -124,6 +140,7 @@ namespace ClarionAssistant.Dialogs
                 _listView.ForeColor = Color.FromArgb(32, 32, 32);
                 _refreshButton.ForeColor = Color.FromArgb(32, 32, 32);
                 _refreshButton.FlatAppearance.BorderColor = Color.FromArgb(180, 180, 180);
+                _gridLineColor = Color.FromArgb(220, 220, 220);
                 _headerBackColor = _listView.BackColor;
                 _headerForeColor = _listView.ForeColor;
             }
@@ -139,6 +156,11 @@ namespace ClarionAssistant.Dialogs
                 int useDark = isDark ? 1 : 0;
                 if (DwmSetWindowAttribute(Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, ref useDark, sizeof(int)) != 0)
                     DwmSetWindowAttribute(Handle, DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, ref useDark, sizeof(int));
+
+                int captionColor = ToColorRef(BackColor);
+                int textColor = ToColorRef(ForeColor);
+                DwmSetWindowAttribute(Handle, DWMWA_CAPTION_COLOR, ref captionColor, sizeof(int));
+                DwmSetWindowAttribute(Handle, DWMWA_TEXT_COLOR, ref textColor, sizeof(int));
             }
             catch { /* best-effort — caption just stays whatever the OS default is */ }
         }
@@ -149,6 +171,24 @@ namespace ClarionAssistant.Dialogs
                 e.Graphics.FillRectangle(brush, e.Bounds);
             TextRenderer.DrawText(e.Graphics, e.Header.Text, _listView.Font, e.Bounds, _headerForeColor,
                 TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
+
+        private void OnDrawSubItem(object sender, DrawListViewSubItemEventArgs e)
+        {
+            bool selected = e.Item.Selected;
+            Color back = selected ? SystemColors.Highlight : _listView.BackColor;
+            Color fore = selected ? SystemColors.HighlightText : e.Item.ForeColor;
+
+            using (var backBrush = new SolidBrush(back))
+                e.Graphics.FillRectangle(backBrush, e.Bounds);
+            TextRenderer.DrawText(e.Graphics, e.SubItem.Text, _listView.Font, e.Bounds, fore,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+
+            using (var pen = new Pen(_gridLineColor))
+            {
+                e.Graphics.DrawLine(pen, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
+                e.Graphics.DrawLine(pen, e.Bounds.Right - 1, e.Bounds.Top, e.Bounds.Right - 1, e.Bounds.Bottom);
+            }
         }
 
         public void UpdateDiagnostics(string filePath, List<LspClient.DiagnosticEntry> entries)
