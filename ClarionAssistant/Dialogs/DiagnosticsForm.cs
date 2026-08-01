@@ -82,7 +82,7 @@ namespace ClarionAssistant.Dialogs
             // is the active foreground window, and this non-modal tool window (shown via
             // Show(this) from the docked chat pane) apparently never becomes active.
             _toolTip = new ToolTip { ShowAlways = true };
-            _toolTip.SetToolTip(_refreshButton, "Reload");
+            _toolTip.SetToolTip(_refreshButton, "Refresh");
 
             _listView = new ListView
             {
