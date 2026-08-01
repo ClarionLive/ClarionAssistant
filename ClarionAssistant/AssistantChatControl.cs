@@ -1062,7 +1062,7 @@ namespace ClarionAssistant
                 _diagForm = new Dialogs.DiagnosticsForm(
                     line => _editorService.GoToLine(line),
                     () => _lastDiagEntries);
-                _diagForm.ApplyTheme(_isDarkTheme);
+                _diagForm.ApplyTheme(CaEditorSettings.MonacoThemeDark);
             }
             _diagForm.UpdateDiagnostics(_lastDiagFile, _lastDiagEntries);
             if (!_diagForm.Visible)

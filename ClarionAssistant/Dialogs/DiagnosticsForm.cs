@@ -17,8 +17,17 @@ namespace ClarionAssistant.Dialogs
         // Win32 common-control ListView headers don't follow BackColor/ForeColor — without this,
         // the column header band stays light even in dark mode. "DarkMode_Explorer" is the standard
         // uxtheme.dll trick for making a ListView's native header (and scrollbar) follow dark mode.
+        // SetWindowTheme on the ListView handle alone only covers the item area/scrollbar — the
+        // column header is a separate child HWND (Header32) that needs its own SetWindowTheme call,
+        // plus a WM_THEMECHANGED nudge to make it actually repaint with the new palette.
         [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
         private static extern int SetWindowTheme(IntPtr hWnd, string pszSubAppName, string pszSubIdList);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        private const int LVM_GETHEADER = 0x1000 + 31;
+        private const int WM_THEMECHANGED = 0x031A;
 
         private ListView _listView;
         private Button _refreshButton;
@@ -89,24 +98,37 @@ namespace ClarionAssistant.Dialogs
             _isDark = isDark;
             if (isDark)
             {
-                BackColor = Color.FromArgb(30, 30, 46);
-                ForeColor = Color.FromArgb(205, 214, 244);
-                _listView.BackColor = Color.FromArgb(24, 24, 37);
-                _listView.ForeColor = Color.FromArgb(205, 214, 244);
-                _refreshButton.ForeColor = Color.FromArgb(205, 214, 244);
-                _refreshButton.FlatAppearance.BorderColor = Color.FromArgb(69, 71, 90);
+                // Plain near-black, deliberately NOT the same blue-tinted black as the Monaco
+                // editor chrome, so the list reads as a distinct panel rather than blending in.
+                BackColor = Color.FromArgb(32, 32, 32);
+                ForeColor = Color.FromArgb(235, 235, 235);
+                _listView.BackColor = Color.FromArgb(18, 18, 18);
+                _listView.ForeColor = Color.FromArgb(235, 235, 235);
+                _refreshButton.ForeColor = Color.FromArgb(235, 235, 235);
+                _refreshButton.FlatAppearance.BorderColor = Color.FromArgb(90, 90, 90);
             }
             else
             {
-                BackColor = Color.FromArgb(239, 241, 245);
-                ForeColor = Color.FromArgb(76, 79, 105);
-                _listView.BackColor = Color.FromArgb(230, 233, 239);
-                _listView.ForeColor = Color.FromArgb(76, 79, 105);
-                _refreshButton.ForeColor = Color.FromArgb(76, 79, 105);
-                _refreshButton.FlatAppearance.BorderColor = Color.FromArgb(188, 192, 204);
+                // Plain light grey, not the pale lavender-tinted panel used before — that tint
+                // plus the soft grey text was too low-contrast to read comfortably.
+                BackColor = Color.FromArgb(240, 240, 240);
+                ForeColor = Color.FromArgb(32, 32, 32);
+                _listView.BackColor = Color.FromArgb(225, 225, 225);
+                _listView.ForeColor = Color.FromArgb(32, 32, 32);
+                _refreshButton.ForeColor = Color.FromArgb(32, 32, 32);
+                _refreshButton.FlatAppearance.BorderColor = Color.FromArgb(180, 180, 180);
             }
 
-            try { SetWindowTheme(_listView.Handle, isDark ? "DarkMode_Explorer" : "Explorer", null); }
+            try
+            {
+                SetWindowTheme(_listView.Handle, isDark ? "DarkMode_Explorer" : "Explorer", null);
+                IntPtr header = SendMessage(_listView.Handle, LVM_GETHEADER, IntPtr.Zero, IntPtr.Zero);
+                if (header != IntPtr.Zero)
+                {
+                    SetWindowTheme(header, isDark ? "DarkMode_ItemsView" : "Explorer", null);
+                    SendMessage(header, WM_THEMECHANGED, IntPtr.Zero, IntPtr.Zero);
+                }
+            }
             catch { /* best-effort — header just stays whatever the OS default is */ }
         }
 
