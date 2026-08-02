@@ -159,6 +159,19 @@ namespace ClarionAssistant.Dialogs
                 _headerBackColor = _listView.BackColor;
                 _headerForeColor = _listView.ForeColor;
             }
+            // Rows keep whatever ForeColor they were given when they were ADDED, so a theme flip
+            // left an already-populated list painted in the other theme's palette — the dark
+            // palette's pastel red/amber against the light background reads as washed out, and it
+            // persisted until the next UpdateDiagnostics happened to rebuild the rows. Re-derive
+            // each row's color from the severity stashed in its RowInfo. (Latent since this form
+            // was written; only reachable now that the window follows a theme that changes at
+            // runtime instead of one fixed at construction.)
+            foreach (ListViewItem item in _listView.Items)
+            {
+                var info = item.Tag as RowInfo;
+                if (info != null) item.ForeColor = SeverityColor(info.Severity);
+            }
+
             _listView.Invalidate();
 
             try { SetWindowTheme(_listView.Handle, isDark ? "DarkMode_Explorer" : "Explorer", null); }
@@ -229,6 +242,32 @@ namespace ClarionAssistant.Dialogs
             }
         }
 
+        /// <summary>
+        /// Per-row state the form still needs after the row is built: the line to navigate to, and
+        /// the severity to RE-derive the text color from if the theme changes under an already
+        /// populated list. ApplyTheme can't recompute a color whose input it never kept.
+        /// </summary>
+        private class RowInfo
+        {
+            public int Line;       // 0-based, as the LSP reports it
+            public int Severity;   // LSP severity: 1=error, 2=warning, 3=info, 4=hint
+        }
+
+        /// <summary>Severity text color for the CURRENT theme. Single source of truth so a row
+        /// built by UpdateDiagnostics and a row recolored by ApplyTheme can never disagree.</summary>
+        private Color SeverityColor(int severity)
+        {
+            if (_isDark)
+            {
+                return severity == 1 ? Color.FromArgb(243, 139, 168) :  // red
+                       severity == 2 ? Color.FromArgb(250, 179, 135) :  // amber
+                       Color.FromArgb(137, 180, 250);                    // blue
+            }
+            return severity == 1 ? Color.FromArgb(210, 15, 57) :
+                   severity == 2 ? Color.FromArgb(254, 100, 11) :
+                   Color.FromArgb(30, 102, 245);
+        }
+
         public void UpdateDiagnostics(string filePath, List<LspClient.DiagnosticEntry> entries)
         {
             _currentFileName = string.IsNullOrEmpty(filePath) ? "" : System.IO.Path.GetFileName(filePath);
@@ -248,20 +287,8 @@ namespace ClarionAssistant.Dialogs
                     var item = new ListViewItem(icon);
                     item.SubItems.Add((e.Line + 1).ToString());   // LSP 0-based → display 1-based
                     item.SubItems.Add(e.Message ?? "");
-                    item.Tag = e.Line;                             // store 0-based for GoToLine
-
-                    if (_isDark)
-                    {
-                        item.ForeColor = e.Severity == 1 ? Color.FromArgb(243, 139, 168) :  // red
-                                         e.Severity == 2 ? Color.FromArgb(250, 179, 135) :  // amber
-                                         Color.FromArgb(137, 180, 250);                      // blue
-                    }
-                    else
-                    {
-                        item.ForeColor = e.Severity == 1 ? Color.FromArgb(210, 15, 57) :
-                                         e.Severity == 2 ? Color.FromArgb(254, 100, 11) :
-                                         Color.FromArgb(30, 102, 245);
-                    }
+                    item.Tag = new RowInfo { Line = e.Line, Severity = e.Severity };
+                    item.ForeColor = SeverityColor(e.Severity);
 
                     _listView.Items.Add(item);
                 }
@@ -306,9 +333,10 @@ namespace ClarionAssistant.Dialogs
         {
             if (_listView.SelectedItems.Count == 0) return;
             var item = _listView.SelectedItems[0];
-            if (item.Tag is int line)
+            var info = item.Tag as RowInfo;
+            if (info != null)
             {
-                try { _goToLine(line + 1); } // LSP 0-based → IDE 1-based
+                try { _goToLine(info.Line + 1); } // LSP 0-based → IDE 1-based
                 catch { }
             }
         }
