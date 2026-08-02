@@ -971,14 +971,20 @@ namespace ClarionAssistant
                     lsp.OnLspRequest += OnLspRequest;
                 }
 
-                if (lsp == null || !lsp.IsRunning)
+                // Ask the BRIDGE whether an LSP is up, not the bundled LspClient. When the IDE's own
+                // ClarionLsp is the active client the bundled one is never started at all, so
+                // lsp.IsRunning is false and this hid the pill on every tick — even with the CA
+                // Editor showing live squiggles, because the squiggle pass (and every other
+                // consumer) already routes through SharedLspBridge. The two clients also keep
+                // SEPARATE diagnostics caches, so the read below has to go through the bridge too
+                // or it looks in an empty dictionary.
+                if (!SharedLspBridge.IsRunning)
                 {
                     _lspStatusBar.SetDiagnostics(0, 0, hidden: true);
                     return;
                 }
 
-                // Read diagnostics for the last file the LSP operated on
-                string filePath = lsp.LastActiveFilePath;
+                string filePath = ResolveDiagnosticsTarget(lsp);
                 if (string.IsNullOrEmpty(filePath))
                 {
                     _lspStatusBar.SetDiagnostics(0, 0, hidden: true);
@@ -987,7 +993,7 @@ namespace ClarionAssistant
 
                 // Deduplicate diagnostics by (line, message) — the Clarion LSP server
                 // can emit the same diagnostic dozens of times per analysis cycle.
-                var raw = lsp.GetCachedDiagnostics(filePath);
+                var raw = SharedLspBridge.GetCachedDiagnostics(filePath);
                 List<Services.LspClient.DiagnosticEntry> entries = null;
                 int errors = 0, warnings = 0;
                 if (raw != null && raw.Count > 0)
@@ -1053,6 +1059,46 @@ namespace ClarionAssistant
                 }
             }
             catch { }
+        }
+
+        /// <summary>
+        /// Which file the pill and the diagnostics window are about. There are TWO independent
+        /// Monaco-backed editing surfaces in this addin, and either can be the one the developer is
+        /// actually looking at:
+        ///   1. MonacoClarionEditor — a Monaco squiggle OVERLAY on the native Clarion source editor
+        ///      (ClarionEditor). This is what a plain "open a .clw and edit it" session uses, and its
+        ///      _filePath is exactly what EditorService.GetActiveDocumentPath() resolves (confirmed
+        ///      live via inspect_ide: all currently-open windows report as this type; get_active_file,
+        ///      which calls GetActiveDocumentPath(), correctly returned the real path for one).
+        ///   2. ModernEmbeditorViewContent — the separate CA Editor / embeditor tab surface. It does
+        ///      NOT expose FileName/PrimaryFileName (GetActiveDocumentPath's reflection probes miss it
+        ///      entirely), so it needs its own DiagnosticsCacheKey lookup as a distinct path, not a
+        ///      fallback that GetActiveDocumentPath will ever satisfy for it.
+        /// Try (1) first since it's the common case, then (2). LastActiveFilePath is the last resort —
+        /// it follows the last file ANY LSP tool touched, which chat-driven hover/definition lookups
+        /// and full-solution sweeps retarget to files nobody is editing.
+        /// </summary>
+        private string ResolveDiagnosticsTarget(LspClient lsp)
+        {
+            try
+            {
+                string active = _editorService?.GetActiveDocumentPath();
+                // Reject a bare filename with no directory — GetActiveDocumentPath's last-resort
+                // Title fallback returns that shape, and it can't key the diagnostics cache.
+                if (!string.IsNullOrEmpty(active) && active.IndexOf('\\') >= 0)
+                    return active;
+            }
+            catch { /* fall through */ }
+
+            try
+            {
+                var view = ModernEmbeditorViewContent.ActiveModernView();
+                string key = (view != null) ? view.DiagnosticsCacheKey : null;
+                if (!string.IsNullOrEmpty(key)) return key;
+            }
+            catch { /* fall through to the last-LSP-activity path */ }
+
+            return (lsp != null) ? lsp.LastActiveFilePath : null;
         }
 
         private void OnDiagnosticsBarClicked(object sender, EventArgs e)
