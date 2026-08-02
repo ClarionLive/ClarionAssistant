@@ -72,6 +72,9 @@ namespace ClarionAssistant
         private string _lastDiagFile;
         private int _lastDiagErrors = -1;
         private int _lastDiagWarnings = -1;
+        // Tri-state guard: unknown and clean are BOTH 0/0, so the counts alone can't tell the
+        // change detector that a file just resolved from "not analyzed" to "analyzed, clean".
+        private bool _lastDiagKnown = true;
         private List<Services.LspClient.DiagnosticEntry> _lastDiagEntries;
         private bool? _lastMonacoThemeDark; // tracks CaEditorSettings.MonacoThemeDark for live-follow in PollLspUi
 
@@ -994,6 +997,13 @@ namespace ClarionAssistant
                 // Deduplicate diagnostics by (line, message) — the Clarion LSP server
                 // can emit the same diagnostic dozens of times per analysis cycle.
                 var raw = SharedLspBridge.GetCachedDiagnostics(filePath);
+                // null = the server has NEVER published for this file (bundled path reports it via
+                // DiagnosticSet.WasPublished, shared path by the key being absent) — genuinely
+                // unknown, NOT clean. An authoritatively clean file caches an EMPTY list instead,
+                // so null-vs-empty already carries the distinction; it was being thrown away by
+                // flattening both to 0/0, which painted a confident green "OK" over a file nothing
+                // had been heard about yet.
+                bool known = raw != null;
                 List<Services.LspClient.DiagnosticEntry> entries = null;
                 int errors = 0, warnings = 0;
                 if (raw != null && raw.Count > 0)
@@ -1012,14 +1022,18 @@ namespace ClarionAssistant
                     }
                 }
 
-                // Only update if the file or counts changed (avoid flicker)
-                if (filePath != _lastDiagFile || errors != _lastDiagErrors || warnings != _lastDiagWarnings)
+                // Only update if the file, the counts, or known-ness changed (avoid flicker).
+                // `known` has to be in this test: unknown and clean are both 0/0, so without it the
+                // pill would stay stuck on "○ …" once a file resolved to genuinely clean.
+                if (filePath != _lastDiagFile || errors != _lastDiagErrors || warnings != _lastDiagWarnings
+                    || known != _lastDiagKnown)
                 {
                     _lastDiagFile = filePath;
                     _lastDiagErrors = errors;
                     _lastDiagWarnings = warnings;
+                    _lastDiagKnown = known;
                     _lastDiagEntries = entries;
-                    _lspStatusBar.SetDiagnostics(errors, warnings, hidden: false);
+                    _lspStatusBar.SetDiagnostics(errors, warnings, hidden: false, known: known);
 
                     // Update the diagnostics form if it's visible
                     if (_diagForm != null && _diagForm.Visible)
