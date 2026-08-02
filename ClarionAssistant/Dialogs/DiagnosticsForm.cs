@@ -42,15 +42,21 @@ namespace ClarionAssistant.Dialogs
         private string _currentFileName = "";
         private readonly Action<int> _goToLine;
         private readonly Func<List<LspClient.DiagnosticEntry>> _refreshData;
+        // Refresh must re-read the file identity from the same source as the entries, not
+        // reuse the cached _currentFileName — see RefreshFromSource.
+        private readonly Func<string> _refreshFile;
         private bool _isDark = true;
         private Color _headerBackColor = Color.White;
         private Color _headerForeColor = Color.Black;
         private Color _gridLineColor = Color.FromArgb(220, 220, 220);
 
-        public DiagnosticsForm(Action<int> goToLine, Func<List<LspClient.DiagnosticEntry>> refreshData)
+        public DiagnosticsForm(Action<int> goToLine,
+                               Func<List<LspClient.DiagnosticEntry>> refreshData,
+                               Func<string> refreshFile)
         {
             _goToLine = goToLine;
             _refreshData = refreshData;
+            _refreshFile = refreshFile;
             InitializeUI();
         }
 
@@ -269,11 +275,17 @@ namespace ClarionAssistant.Dialogs
 
         private void RefreshFromSource()
         {
-            if (_refreshData != null)
-            {
-                var entries = _refreshData();
-                UpdateDiagnostics(_currentFileName, entries);
-            }
+            if (_refreshData == null) return;
+
+            // Both the file and the entries must come from the current source. Passing the
+            // cached _currentFileName here instead captioned the window with whatever file
+            // was showing when it last updated, while the rows below were the newly-fetched
+            // entries — which belong to whichever file the LSP has since moved on to. The
+            // two reads are safe as a pair: the source updates them together on the UI
+            // thread (AssistantChatControl.PollLspUi), and this runs on the UI thread too.
+            var entries = _refreshData();
+            string filePath = _refreshFile != null ? _refreshFile() : _currentFileName;
+            UpdateDiagnostics(filePath, entries);
         }
 
         private void OnListDoubleClick(object sender, EventArgs e)
