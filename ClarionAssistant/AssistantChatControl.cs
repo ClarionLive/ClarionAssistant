@@ -958,7 +958,7 @@ namespace ClarionAssistant
                 // Live-follow the Monaco/CA Editor's own theme toggle (independent of this chat
                 // pane's theme) — the page pushes it to CaEditorSettings on every toolbar toggle,
                 // but nothing notifies this control directly, so pick up a change on the next tick.
-                bool monacoDark = CaEditorSettings.MonacoThemeDark;
+                bool monacoDark = ResolveEditorThemeDark();
                 if (_lastMonacoThemeDark != monacoDark)
                 {
                     _lastMonacoThemeDark = monacoDark;
@@ -1076,6 +1076,30 @@ namespace ClarionAssistant
         }
 
         /// <summary>
+        /// Which theme the pill and the diagnostics window should wear: the ACTIVE editor's, not the
+        /// process-wide CaEditorSettings.MonacoThemeDark mirror. That mirror records whichever Monaco
+        /// page most recently booted or toggled — switching tabs posts nothing and moves nothing — so
+        /// polling it alone left the diagnostics window wearing the theme of whatever surface last
+        /// spoke rather than the editor being looked at. Same shape as ResolveDiagnosticsTarget below:
+        /// ask the active editor, fall back to the global. The mirror stays the fallback (and stays a
+        /// mirror), so nothing else that reads it changes behaviour.
+        /// </summary>
+        private bool ResolveEditorThemeDark()
+        {
+            try
+            {
+                bool? overlay = MonacoClarionEditor.ActiveEditorIsDark();
+                if (overlay.HasValue) return overlay.Value;
+
+                bool? modern = ModernEmbeditorViewContent.ActiveViewIsDark();
+                if (modern.HasValue) return modern.Value;
+            }
+            catch { /* fall through to the global mirror */ }
+
+            return CaEditorSettings.MonacoThemeDark;
+        }
+
+        /// <summary>
         /// Which file the pill and the diagnostics window are about. There are TWO independent
         /// Monaco-backed editing surfaces in this addin, and either can be the one the developer is
         /// actually looking at:
@@ -1123,7 +1147,7 @@ namespace ClarionAssistant
                     line => _editorService.GoToLine(line),
                     () => _lastDiagEntries,
                     () => _lastDiagFile);
-                _diagForm.ApplyTheme(CaEditorSettings.MonacoThemeDark);
+                _diagForm.ApplyTheme(ResolveEditorThemeDark());
             }
             _diagForm.UpdateDiagnostics(_lastDiagFile, _lastDiagEntries);
             if (!_diagForm.Visible)
@@ -2059,9 +2083,10 @@ namespace ClarionAssistant
             if (_contentArea != null) _contentArea.BackColor = _isDarkTheme ? Color.FromArgb(12, 12, 12) : Color.White;
 
             // LSP status bar + diagnostics window show diagnostics for the CODE editor, so they
-            // follow the Monaco/CA Editor's own theme (CaEditorSettings.MonacoThemeDark) rather
-            // than this chat pane's own _isDarkTheme — the two are independent settings and can differ.
-            bool monacoDark = CaEditorSettings.MonacoThemeDark;
+            // follow the ACTIVE editor's own theme rather than this chat pane's own _isDarkTheme —
+            // the two are independent settings and can differ. See ResolveEditorThemeDark for why
+            // this asks the active surface instead of reading CaEditorSettings.MonacoThemeDark.
+            bool monacoDark = ResolveEditorThemeDark();
             _lastMonacoThemeDark = monacoDark;
             if (_lspStatusBar != null) _lspStatusBar.ApplyTheme(monacoDark);
             if (_diagForm != null) _diagForm.ApplyTheme(monacoDark);

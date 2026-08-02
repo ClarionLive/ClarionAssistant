@@ -165,6 +165,17 @@ namespace ClarionAssistant.Terminal
         /// "clarion-embeditor-data", matching monaco-embeditor.html).</summary>
         public string VirtualHost { get { return _virtualHost; } }
 
+        /// <summary>
+        /// THIS surface's current dark/light state, as opposed to the process-wide
+        /// CaEditorSettings.MonacoThemeDark mirror — which records whichever page most recently
+        /// booted or toggled, and so does NOT track the editor the user is currently looking at.
+        /// Seeded from the ctor and re-synced on every themeChanged this page posts (boot and each
+        /// toolbar toggle), which is the only way to know a given surface's theme: localStorage is
+        /// shared per-origin, but an already-open page never re-reads it, so its live theme exists
+        /// only in that page's memory until it tells us.
+        /// </summary>
+        public bool IsDark { get; private set; }
+
         public MonacoEditorControl(IMonacoEditorHost host, bool isDark = true,
                                    string htmlFileName = "monaco-embeditor.html",
                                    string virtualHost = "clarion-embeditor-data")
@@ -174,6 +185,7 @@ namespace ClarionAssistant.Terminal
             _virtualHost = string.IsNullOrEmpty(virtualHost) ? "clarion-embeditor-data" : virtualHost;
 
             Dock = DockStyle.Fill;
+            IsDark = isDark;
             BackColor = isDark ? Color.FromArgb(30, 30, 46) : Color.FromArgb(239, 241, 245);
 
             // Plain WebView2 — Monaco's native mouseWheelZoom owns Ctrl+wheel inside the renderer.
@@ -261,7 +273,12 @@ namespace ClarionAssistant.Terminal
                         // see CaEditorSettings.MonacoThemeDark). Handled here — not on IMonacoEditorHost — so
                         // every Monaco surface mirrors it without each host implementing anything. Payload is
                         // our own tiny fixed message, so a literal match beats a JSON round-trip.
-                        try { Services.CaEditorSettings.MonacoThemeDark = json.IndexOf("\"dark\":true", StringComparison.Ordinal) >= 0; }
+                        // Record it PER SURFACE as well as in the global mirror: the mirror only ever
+                        // says "whoever posted last", so it can't answer "what theme is the editor the
+                        // user is looking at right now" once two surfaces disagree. See IsDark.
+                        bool pageIsDark = json.IndexOf("\"dark\":true", StringComparison.Ordinal) >= 0;
+                        IsDark = pageIsDark;
+                        try { Services.CaEditorSettings.MonacoThemeDark = pageIsDark; }
                         catch { }
                         break;
                     case "openLocation":
@@ -563,6 +580,7 @@ namespace ClarionAssistant.Terminal
         /// {type:"applyTheme", isDark} once the surface is live.</summary>
         public void ApplyTheme(bool isDark)
         {
+            IsDark = isDark;
             BackColor = isDark ? Color.FromArgb(30, 30, 46) : Color.FromArgb(239, 241, 245);
             if (_isInitialized)
                 PostJson("{\"type\":\"applyTheme\",\"isDark\":" + (isDark ? "true" : "false") + "}");
