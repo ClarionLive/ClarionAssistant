@@ -162,11 +162,7 @@ namespace ClarionAssistant.Services
                     int off = (lspContext != null) ? lspContext.LineOffset : 0;
                     SharedLspBridge.EnsureBufferSynced(lspFileName,
                         (lspContext != null) ? lspContext.WrapBuffer(buffer) : buffer);
-                    var wait = SharedLspBridge.WaitForDiagnostics(lspFileName, 1500, true);
-                    List<LspClient.DiagnosticEntry> entries =
-                        (wait != null && !wait.Pending && wait.Entries != null)
-                            ? wait.Entries
-                            : (SharedLspBridge.GetCachedDiagnostics(lspFileName) ?? new List<LspClient.DiagnosticEntry>());
+                    List<LspClient.DiagnosticEntry> entries = WaitForSettledDiagnostics(lspFileName);
 
                     foreach (var d in entries)
                     {
@@ -327,6 +323,45 @@ namespace ClarionAssistant.Services
             }
 
             return markers;
+        }
+
+        // The Clarion LSP publishes diagnostics progressively for a file that just changed: an early
+        // batch (sometimes empty) arrives first, with slower checks — e.g. the cross-file scope
+        // resolution behind an undeclared-variable warning — landing in a later republish. A single
+        // bounded WaitForDiagnostics can catch that early batch and mistake it for final: confirmed
+        // live (lsp_diagnostics raced an authoritative-looking "0 entries" twice in a row before the
+        // real, complete set — including the undeclared-variable warning — arrived on the 3rd query).
+        // That empty-but-premature result is indistinguishable from a genuinely clean file using
+        // WasPublished alone (both are "published, zero entries") — the same ambiguity PR #169
+        // (bb77f85) fixed for the diagnostics pill via a null-vs-empty check, which doesn't help here
+        // since this isn't null.
+        //
+        // Only an EMPTY result gets the extra scrutiny — a non-empty result already found something
+        // real and returns immediately, so files with existing diagnostics see no added latency.
+        // For an empty result, keep re-checking the (passive, non-blocking) diagnostics cache for a
+        // short settle window and take whatever lands, so a slow-to-resolve identifier gets the extra
+        // time its diagnostic needs instead of losing the race to the file's first, still-catching-up
+        // publish.
+        private const int SettleIntervalMs = 400;
+        private const int SettleMaxChecks = 5; // ~2s extra ceiling, on top of the initial 1500ms wait
+
+        private static List<LspClient.DiagnosticEntry> WaitForSettledDiagnostics(string lspFileName)
+        {
+            var wait = SharedLspBridge.WaitForDiagnostics(lspFileName, 1500, true);
+            List<LspClient.DiagnosticEntry> last =
+                (wait != null && !wait.Pending && wait.Entries != null)
+                    ? wait.Entries
+                    : (SharedLspBridge.GetCachedDiagnostics(lspFileName) ?? new List<LspClient.DiagnosticEntry>());
+
+            for (int i = 0; last.Count == 0 && i < SettleMaxChecks; i++)
+            {
+                System.Threading.Thread.Sleep(SettleIntervalMs);
+                var next = SharedLspBridge.GetCachedDiagnostics(lspFileName);
+                if (next == null) continue; // no fresher publish yet — keep waiting out the settle window
+                last = next;
+                if (last.Count > 0) break; // a fuller batch landed — done, no need to keep waiting
+            }
+            return last;
         }
 
         private static bool InAnyRange(int line1, List<int[]> ranges)
