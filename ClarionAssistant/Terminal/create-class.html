@@ -359,13 +359,13 @@
       var codePart = commentIdx >= 0 ? line.substring(0, commentIdx) : line;
       var commentPart = commentIdx >= 0 ? '<span class="hl-comment">' + line.substring(commentIdx) + '</span>' : '';
 
-      // Highlight strings
-      codePart = codePart.replace(/'([^']*)'/g, '<span class="hl-string">\'$1\'</span>');
-
       // Highlight keywords
       codePart = codePart.replace(keywords, function(match) {
         return '<span class="hl-keyword">' + match + '</span>';
       });
+
+      // Highlight strings
+      codePart = codePart.replace(/'([^']*)'/g, '<span class="hl-string">\'$1\'</span>');
 
       result.push(codePart + commentPart);
     }
