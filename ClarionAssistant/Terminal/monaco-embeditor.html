@@ -1450,7 +1450,10 @@
     }
 
     // ----- Async request/response to the C# host (for LSP completion + hover) -----
-    function requestFromHost(action, payload) {
+    // timeoutMs is per-call and defaults to 4000: completion/hover are interactive and should give up
+    // fast, but the diagnostics round-trip has a legitimately longer worst case (see DIAG_TIMEOUT_MS)
+    // and must not be judged by the interactive budget.
+    function requestFromHost(action, payload, timeoutMs) {
         return new Promise(function (resolve) {
             var reqId = ++reqSeq;
             pendingRequests[reqId] = resolve;
@@ -1460,7 +1463,7 @@
             // Don't hang a Monaco provider forever if the host never replies.
             setTimeout(function () {
                 if (pendingRequests[reqId]) { delete pendingRequests[reqId]; resolve(null); }
-            }, 4000);
+            }, timeoutMs || 4000);
         });
     }
 
@@ -3450,12 +3453,30 @@
         return embedRanges.map(function (r) { return [r[0], r[1]]; });
     }
 
+    // Must exceed the host's own worst-case diagnostics latency, or a slow-but-successful analysis is
+    // discarded by the client that asked for it. That worst case is the LSP settle window in
+    // ModernEmbeditorDiagnostics (an initial bounded wait plus a bounded poll for a late republish),
+    // plus the buffer sync and marshalling a whole-file buffer across the WebView2 boundary each way —
+    // several seconds on a slow machine or a large file. Deliberately generous: with the timeout no
+    // longer clearing markers (below), overshooting costs nothing but a late no-op.
+    var DIAG_TIMEOUT_MS = 10000;
+
     function refreshDiagnostics() {
         if (!editor) return;
         var model = editor.getModel();
-        requestFromHost('diagnostics', { buffer: model.getValue(), ranges: liveEditableRanges() })
+        requestFromHost('diagnostics', { buffer: model.getValue(), ranges: liveEditableRanges() }, DIAG_TIMEOUT_MS)
             .then(function (resp) {
-                var markers = (resp && resp.markers) || [];
+                // null = the host never replied in time: NO INFORMATION, which is not the same claim as
+                // "this file has zero diagnostics". setModelMarkers REPLACES the whole set, so treating a
+                // timeout as an empty list actively wipes every squiggle AND its gutter/overview-ruler
+                // mark, with no retry until the next edit — the worst possible reading of "don't know".
+                // Keep what's already rendered instead; Monaco tracks those markers across subsequent
+                // edits, and the next successful round-trip replaces them wholesale.
+                // A reply that IS present but carries an empty list still clears, as it should — that
+                // is the host telling us the file really is clean. Same null-vs-empty distinction the
+                // diagnostics pill draws in PollLspUi.
+                if (!resp) return;
+                var markers = resp.markers || [];
                 monaco.editor.setModelMarkers(model, 'clarion', markers.map(function (m) {
                     return {
                         severity: m.severity,

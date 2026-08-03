@@ -612,7 +612,7 @@ validators run over the WHOLE generated buffer, so a user's unterminated IF in a
 balanced/masked by surrounding generated ENDs (reports 0, or flags the wrong line near EOF) and markers on
 read-only generated lines are noise. ⇒ pure-LSP is near-useless for embed-slot editing.
 
-**Implemented hybrid** (`Services/ModernEmbeditorDiagnostics.Compute`):
+**Implemented hybrid** (`Services/ModernEmbeditorDiagnostics.ComputeAsync`):
   - Pass 1 — LSP structural diagnostics, **clamped** to live editable slots (drops generated-line
     noise/mislocations); LSP severity → Monaco MarkerSeverity.
   - Pass 2 — **per-slot structure balance** (open/close stack; opener w/o END or '.' in the slot → Error;

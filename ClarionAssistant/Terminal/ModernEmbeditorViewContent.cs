@@ -2951,18 +2951,19 @@ namespace ClarionAssistant.Terminal
         {
             int reqId; string buffer; List<int[]> ranges;
             if (!ParseDiagnosticsRequest(json, out reqId, out buffer, out ranges)) return;
-            Task.Run(() =>
+            Task.Run(async () =>
             {
                 var markers = new List<Dictionary<string, object>>();
                 try
                 {
-                    markers = ModernEmbeditorDiagnostics.Compute(
+                    markers = await ModernEmbeditorDiagnostics.ComputeAsync(
                         _lspFileName,
                         buffer ?? _sourceText,
                         (ranges != null && ranges.Count > 0) ? ranges : _editableRanges,
                         _procedureName,
                         embedSlotChecks: !_fileMode,    // file mode: LSP only, skip embed-slot heuristics
-                        lspContext: _lspContext);       // #56: wrap the LSP pass with the MEMBER header
+                        lspContext: _lspContext)        // #56: wrap the LSP pass with the MEMBER header
+                        .ConfigureAwait(false);
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] diagnostics: " + ex.Message); }
                 PostResponse(reqId, new Dictionary<string, object> { { "markers", markers } });

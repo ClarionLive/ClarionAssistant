@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 
 namespace ClarionAssistant.Services
 {
@@ -142,7 +143,7 @@ namespace ClarionAssistant.Services
         /// or labels as if a structure opened, producing bogus "FILE is not terminated with END" errors.
         /// The LSP/compiler does real whole-file structure validation, so the heuristic adds only noise.
         /// </summary>
-        public static List<Dictionary<string, object>> Compute(
+        public static async Task<List<Dictionary<string, object>>> ComputeAsync(
             string lspFileName, string buffer, List<int[]> ranges, string procedureName,
             bool embedSlotChecks = true, EmbedLspContext lspContext = null)
         {
@@ -162,7 +163,8 @@ namespace ClarionAssistant.Services
                     int off = (lspContext != null) ? lspContext.LineOffset : 0;
                     SharedLspBridge.EnsureBufferSynced(lspFileName,
                         (lspContext != null) ? lspContext.WrapBuffer(buffer) : buffer);
-                    List<LspClient.DiagnosticEntry> entries = WaitForSettledDiagnostics(lspFileName);
+                    List<LspClient.DiagnosticEntry> entries =
+                        await WaitForSettledDiagnosticsAsync(lspFileName).ConfigureAwait(false);
 
                     foreach (var d in entries)
                     {
@@ -345,7 +347,13 @@ namespace ClarionAssistant.Services
         private const int SettleIntervalMs = 400;
         private const int SettleMaxChecks = 5; // ~2s extra ceiling, on top of the initial 1500ms wait
 
-        private static List<LspClient.DiagnosticEntry> WaitForSettledDiagnostics(string lspFileName)
+        // await Task.Delay, NOT Thread.Sleep: this runs on a thread-pool thread (both call sites
+        // dispatch through Task.Run), and slow typing — keystrokes further apart than the page's 600ms
+        // debounce — puts several of these requests in flight at once. Sleeping would park one pool
+        // thread per request for the whole settle window; past the pool's core-count baseline .NET only
+        // injects replacements at roughly 1-2/sec, so queuing delay compounds exactly when requests
+        // overlap, which is the same slow-machine case this settle window exists to serve.
+        private static async Task<List<LspClient.DiagnosticEntry>> WaitForSettledDiagnosticsAsync(string lspFileName)
         {
             var wait = SharedLspBridge.WaitForDiagnostics(lspFileName, 1500, true);
             List<LspClient.DiagnosticEntry> last =
@@ -355,7 +363,7 @@ namespace ClarionAssistant.Services
 
             for (int i = 0; last.Count == 0 && i < SettleMaxChecks; i++)
             {
-                System.Threading.Thread.Sleep(SettleIntervalMs);
+                await Task.Delay(SettleIntervalMs).ConfigureAwait(false);
                 var next = SharedLspBridge.GetCachedDiagnostics(lspFileName);
                 if (next == null) continue; // no fresher publish yet — keep waiting out the settle window
                 last = next;
