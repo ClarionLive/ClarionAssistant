@@ -326,6 +326,7 @@ namespace ClarionAssistant
                 case "versionChanged": OnVersionChanged(e.Data); break;
                 case "solutionChanged": OnSolutionChanged(e.Data); break;
                 case "themeChanged": OnThemeChanged(e.Data); break;
+                case "toggleDiagBar": OnToggleDiagnosticsBar(); break;
                 case "cheatSheet": OnCheatSheet(); break;
                 case "docs": OnDocs(); break;
                 case "showLog": ShowIndexLog(); break;
@@ -1176,6 +1177,36 @@ namespace ClarionAssistant
             catch { /* fall through to the last-LSP-activity path */ }
 
             return (lsp != null) ? lsp.LastActiveFilePath : null;
+        }
+
+        /// <summary>
+        /// Header ◎ button — show/hide the LSP diagnostics status bar.
+        ///
+        /// The bar carries its own X, and dismissing it left NO way back: Visible=true happens only
+        /// inside SetDiagnostics, which PollLspUi calls only when the diagnostics state actually
+        /// changes, so a stable state meant restarting Clarion was the only recovery. This is the
+        /// explicit way back, and a toggle rather than a bare "show" so the X isn't the only way to
+        /// dismiss it either.
+        ///
+        /// Re-arming the change detector on the way UP matters: the poll tick repaints the pill only
+        /// when it sees a change, so without this the bar would come back wearing whatever text it
+        /// carried when it was dismissed — potentially minutes stale — until something moved.
+        /// Clearing _lastDiagFile guarantees the next tick treats it as new and repaints from the
+        /// current cache.
+        ///
+        /// If no LSP is running the next tick will hide it again (SetDiagnostics(hidden: true)),
+        /// which is the honest outcome — there is genuinely nothing to report — not a failed toggle.
+        /// </summary>
+        private void OnToggleDiagnosticsBar()
+        {
+            try
+            {
+                if (_lspStatusBar == null) return;
+                bool show = !_lspStatusBar.Visible;
+                _lspStatusBar.Visible = show;
+                if (show) _lastDiagFile = null;
+            }
+            catch (Exception ex) { Debug.WriteLine("[AssistantChatControl] toggle diagnostics bar failed: " + ex.Message); }
         }
 
         private void OnDiagnosticsBarClicked(object sender, EventArgs e)
