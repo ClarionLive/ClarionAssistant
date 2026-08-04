@@ -1806,6 +1806,38 @@ namespace ClarionAssistant.Services
 
             string[] lines = CgGetLines(bufferText, filePath);
 
+            // (0) "DO <prefix>" — a DO operand is a ROUTINE label and nothing else, so this context is
+            // completed from routines ALONE and returns without merging any of the sources below.
+            //
+            // Routines are procedure-private, which is why they can't come from the CodeGraph DB: the
+            // scope filter in MergeDbBarePrefix correctly drops every symbol the indexer scoped "local",
+            // and ClarionParser scopes ROUTINEs "local" alongside procedure-local variables. Before that
+            // filter, "DO Refr" was answered by the DB with every same-prefix routine in the SOLUTION
+            // (plus unrelated globals — an observed "DO ref" offered Reflection class methods and not the
+            // RefreshWindow routine three lines up). Parsing them out of the live buffer is both the fix
+            // for that and the only source that can see an unsaved routine, the same reasoning that puts
+            // local VARIABLES on the buffer-parse path at (1) instead of in the DB merge.
+            if (lines != null && CgDoStatement.IsMatch(upToCursor))
+            {
+                var routines = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                MergeRoutineCompletions(primary, seen, prefix, lines, line, routines);
+
+                // Drop anything that isn't one of them — the LSP answers this position from its general
+                // symbol set, which can't be a DO target. Same never-blank-a-working-list guard the
+                // member-access and colon-qualifier scoping passes use: only filter when routines
+                // actually matched, so a prefix with no routine behind it keeps whatever the LSP offered
+                // rather than showing an empty popup. RemoveAll (not reassignment) — `primary` is the
+                // caller's list and a local rebind wouldn't reach it.
+                if (routines.Count > 0)
+                    primary.RemoveAll(it =>
+                    {
+                        if (it == null) return true;
+                        string key = !string.IsNullOrEmpty(it.InsertText) ? it.InsertText : it.Label;
+                        return string.IsNullOrEmpty(key) || !routines.Contains(key);
+                    });
+                return;
+            }
+
             // (1) Local variables (depth-aware) from the enclosing routine + procedure DATA. Never in the
             // CodeGraph (not cross-project) + must reflect unsaved edits, so parse the live buffer. Phase 2.
             if (lines != null) MergeLocalVarCompletions(primary, seen, prefix, lines, line);
@@ -1986,6 +2018,12 @@ namespace ClarionAssistant.Services
         private static readonly Regex CgProcHeaderLabel = new Regex(@"^([A-Za-z_][A-Za-z0-9_.:]*)\s+PROCEDURE\b", RegexOptions.IgnoreCase);
         // Routine header: a column-1 label followed by the ROUTINE keyword (e.g. "TestRoutine ROUTINE").
         private static readonly Regex CgRoutineHeaderPattern = new Regex(@"^[A-Za-z_][A-Za-z0-9_.:]*\s+ROUTINE\b", RegexOptions.IgnoreCase);
+        // Same as above but captures the label (group 1) — used to harvest routine names for DO completion.
+        private static readonly Regex CgRoutineHeaderLabel = new Regex(@"^([A-Za-z_][A-Za-z0-9_.:]*)\s+ROUTINE\b", RegexOptions.IgnoreCase);
+        // A DO statement with the cursor in its operand: "  DO Refr|". DO takes a ROUTINE label and nothing
+        // else, so this context is completed from routines alone — see the DO branch in
+        // MergeBarePrefixCompletions.
+        private static readonly Regex CgDoStatement = new Regex(@"^\s*DO\s+[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.IgnoreCase);
         // The CODE statement that ends a procedure's DATA section.
         private static readonly Regex CgCodeLinePattern = new Regex(@"^\s*CODE\b", RegexOptions.IgnoreCase);
         // A data declaration: a column-1 label (group 1) followed by its type/rest-of-line (group 2).
@@ -2320,6 +2358,49 @@ namespace ClarionAssistant.Services
                 if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !seen.Add(name)) continue;
                 primary.Add(new LspClient.CompletionItemInfo
                 { Label = name, Kind = 3 /*Function*/, Detail = "(local procedure)", InsertText = name });
+            }
+        }
+
+        /// <summary>Merge ROUTINE labels declared in the CURRENT procedure into the completion list (the DO
+        /// branch of MergeBarePrefixCompletions). Scoped to the enclosing procedure because that is a
+        /// routine's actual visibility in Clarion — DO can't reach a routine in another procedure, let alone
+        /// another file, which is exactly the over-reach the CodeGraph scope filter removed.
+        ///
+        /// <paramref name="found"/> collects every prefix-matching routine name seen, whether or not this
+        /// merge added it: a routine the LSP already returned is skipped by the <paramref name="seen"/>
+        /// dedupe but must still survive the caller's scoping filter. Never throws.</summary>
+        private static void MergeRoutineCompletions(
+            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen, string prefix,
+            string[] lines, int line, HashSet<string> found)
+        {
+            if (lines == null || lines.Length == 0) return;
+            int from = line;
+            if (from > lines.Length - 1) from = lines.Length - 1;
+            if (from < 0) return;
+
+            // Enclosing procedure: nearest PROCEDURE header at or above the cursor, ending at the next one.
+            // With no header above (module-level cursor, or a .inc with no implementations) start stays at 0
+            // and the scan simply finds no routine headers, which is the right answer for that position.
+            int start = 0;
+            for (int i = from; i >= 0; i--)
+                if (CgProcHeaderPattern.IsMatch(lines[i])) { start = i; break; }
+            int end = lines.Length;
+            for (int i = start + 1; i < lines.Length; i++)
+                if (CgProcHeaderPattern.IsMatch(lines[i])) { end = i; break; }
+
+            for (int i = start; i < end; i++)
+            {
+                var m = CgRoutineHeaderLabel.Match(lines[i]);
+                if (!m.Success) continue;
+                string name = m.Groups[1].Value;
+                // Dotted/prefixed labels are member-access targets, not DO-callable routines — same
+                // exclusion MergeLocalProcedureCompletions applies to procedure implementations.
+                if (name.IndexOf('.') >= 0 || name.IndexOf(':') >= 0) continue;
+                if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+                if (found != null) found.Add(name);
+                if (!seen.Add(name)) continue;
+                primary.Add(new LspClient.CompletionItemInfo
+                { Label = name, Kind = 2 /*Method*/, Detail = "(routine)", InsertText = name });
             }
         }
 
