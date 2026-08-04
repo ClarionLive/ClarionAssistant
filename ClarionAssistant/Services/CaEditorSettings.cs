@@ -112,6 +112,29 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// The same mirror as <see cref="MonacoThemeDark"/>, but <c>null</c> when it has NEVER been written
+        /// rather than collapsing that case into the light default.
+        ///
+        /// The setting is only ever written by a Monaco page posting <c>themeChanged</c>, so on an install
+        /// where no Monaco surface has opened yet there is nothing to read — and a consumer that can't tell
+        /// "unset" from "explicitly light" has no choice but to render light, which is wrong for a user
+        /// whose IDE is dark. Consumers that have a better last resort than a hardcoded default (the chat
+        /// pane knows its own theme, for one) should read THIS and fall back themselves.
+        /// </summary>
+        public static bool? MonacoThemeDarkIfSet
+        {
+            get
+            {
+                try
+                {
+                    string raw = new SettingsService().Get(KeyThemeDark);
+                    return raw == null ? (bool?)null : ParseBool(raw, false);
+                }
+                catch { return null; }
+            }
+        }
+
+        /// <summary>
         /// Semicolon-separated list of file extensions the source overlay applies to (e.g.
         /// ".clw;.inc;.equ;.txa"). Empty string means "all files". Default
         /// <see cref="DefaultSourceFileTypes"/>.

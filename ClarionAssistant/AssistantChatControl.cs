@@ -1004,6 +1004,9 @@ namespace ClarionAssistant
                 // flattening both to 0/0, which painted a confident green "OK" over a file nothing
                 // had been heard about yet.
                 bool known = raw != null;
+                // Nothing has ever been published for this file — ask, instead of reporting "unknown"
+                // forever at a cache no one is going to fill. See RequestDiagnosticsOnce.
+                if (!known) RequestDiagnosticsOnce(filePath);
                 List<Services.LspClient.DiagnosticEntry> entries = null;
                 int errors = 0, warnings = 0;
                 if (raw != null && raw.Count > 0)
@@ -1096,7 +1099,43 @@ namespace ClarionAssistant
             }
             catch { /* fall through to the global mirror */ }
 
-            return CaEditorSettings.MonacoThemeDark;
+            // The mirror is only written once a Monaco page has posted themeChanged, and its getter
+            // collapses "never written" into LIGHT. Bottoming out there meant the diagnostics window
+            // opened light for a dark-mode user who hadn't opened a CA Editor surface yet — the window
+            // is reachable from the chat pane alone, so that is an ordinary way to arrive here, not an
+            // edge case. Read the mirror only when it actually holds a value, and otherwise fall back
+            // to this chat pane's own theme: it's the surface the user clicked the pill on, so it's a
+            // far better guess than a hardcoded default.
+            bool? mirror = CaEditorSettings.MonacoThemeDarkIfSet;
+            if (mirror.HasValue) return mirror.Value;
+            return _isDarkTheme;
+        }
+
+        // Diagnostics are cached as a SIDE EFFECT of a Monaco surface asking for them (the page's
+        // scheduleDiagnostics → host → SharedLspBridge, which is what fills the cache). PollLspUi only
+        // ever READ that cache, so a file no Monaco page had asked about stayed permanently "unknown":
+        // the pill sat on the muted "○ …" forever and the window opened empty, with nothing in the loop
+        // able to resolve it. Ask once per file so the unknown state can actually settle.
+        //
+        // Once per FILE, not once per tick: this is a real LSP round-trip with a timeout, so re-issuing
+        // it every 2s against a file that genuinely has nothing to say would be a poll loop against the
+        // language server. Switching target files re-arms it. Runs off the UI thread — the poll tick is
+        // on it, and the request blocks.
+        private string _diagRequestedFor;
+        private int _diagRequestInFlight;
+
+        private void RequestDiagnosticsOnce(string filePath)
+        {
+            if (string.IsNullOrEmpty(filePath)) return;
+            if (string.Equals(_diagRequestedFor, filePath, StringComparison.OrdinalIgnoreCase)) return;
+            if (System.Threading.Interlocked.CompareExchange(ref _diagRequestInFlight, 1, 0) != 0) return;
+            _diagRequestedFor = filePath;   // set before dispatch so the next tick can't queue a duplicate
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try { SharedLspBridge.GetDiagnostics(filePath); }
+                catch (Exception ex) { Debug.WriteLine("[AssistantChatControl] diagnostics request failed: " + ex.Message); }
+                finally { System.Threading.Interlocked.Exchange(ref _diagRequestInFlight, 0); }
+            });
         }
 
         /// <summary>
