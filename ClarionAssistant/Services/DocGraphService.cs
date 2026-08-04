@@ -988,6 +988,25 @@ namespace ClarionAssistant.Services
         /// displayed back — every ABC class has an identically-named "Occasional Use" subsection, and
         /// this is what tells them apart.
         /// </summary>
+        /// <summary>
+        /// Collapse the line-wrap variants of a section name to one spelling.
+        ///
+        /// The PDF wraps long section headings, so a single section name reaches the chunker in
+        /// several forms. In ABC Library Reference "Functional Organization--Expected Use" appears
+        /// as five distinct strings — the full form (484 chunks), a truncated "Functional
+        /// Organization--Expected" (42), a bare "Functional Organization" (10), and two em-dash
+        /// variants (7 and 5). Left alone that fragments one section into five for any grouping or
+        /// filtering by section (CA-Terminal-1-CC).
+        /// </summary>
+        private static string NormalizeSectionName(string section)
+        {
+            if (string.IsNullOrEmpty(section)) return section;
+            string s = section.Replace('—', '-').Replace('–', '-');   // em/en dash → hyphen
+            if (s.IndexOf("Functional Organization", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "Functional Organization";
+            return s.Trim();
+        }
+
         private static string BuildHeading(string cls, string section, string subsection, string fallback)
         {
             var parts = new List<string>();
@@ -1059,6 +1078,17 @@ namespace ClarionAssistant.Services
             string currentClass = null;
             string currentSection = null;   // e.g. "Non-Virtual Methods" — the level between class and subsection
             int tocLines = 0, bodyLines = 0;
+            int leaderRun = 0;              // consecutive dot-leader lines, for the index→prose boundary
+
+            // True when currentHeading came from a LEAF detector (a method or PROP: definition) rather
+            // than a section-level one. The middle breadcrumb segment is unreliable for those: walking
+            // a class in document order the parent goes Overview → Properties → Functional
+            // Organization and is then never popped, so every later method inherits "Functional
+            // Organization--Expected Use" even though it belongs under Methods. In ABC that shows up
+            // as 484 chunks carrying that middle vs 375 carrying "Methods" (CA-Terminal-1-CC).
+            // Class and leaf are both correct; only the middle is wrong — so for leaf headings we drop
+            // it rather than assert something false.
+            bool headingIsLeaf = false;
 
             // Emits the pending chunk. Centralised so the three former copies can't drift, and so the
             // TOC/body tally and the class/section breadcrumb are applied identically at each site.
@@ -1078,13 +1108,18 @@ namespace ClarionAssistant.Services
                 if (body.Length < 400 && !isFinal) return;
                 if (body.Length < 30) return;
 
-                bool isToc = tocLines > bodyLines && tocLines > 2;
+                // >= not >: a wrapped index entry is a PAIR of lines — the title on one, the dot
+                // leaders and page numbers on the next — so a page of them sits at exactly 50/50 and
+                // can never exceed. That tie is what let a six-line, 100%-index chunk through wearing
+                // the breadcrumb "FileDropComboClass > ... > OnFieldChange" (CA-Terminal-1-CC).
+                // Prose stays safe: the chunks correctly excluded here run 15-35% leaders.
+                bool isToc = tocLines >= bodyLines && tocLines > 2;
                 chunks.Add(new DocChunk
                 {
                     ClassName = currentClass ?? library,
                     MethodName = null,
                     Topic = isToc ? "index" : "section",
-                    Heading = BuildHeading(currentClass, currentSection, currentHeading,
+                    Heading = BuildHeading(currentClass, headingIsLeaf ? null : currentSection, currentHeading,
                                            currentHeading ?? string.Format("Section {0}", ++chunkIndex)),
                     Content = body,
                     CodeExample = null,
@@ -1110,8 +1145,25 @@ namespace ClarionAssistant.Services
 
                 // Tally TOC-vs-body so the finished chunk can be classified. Counted BEFORE heading
                 // detection because dot-leader lines also match sectionPattern.
-                if (dotLeaderLine.IsMatch(trimmed)) tocLines++;
+                bool isLeaderLine = dotLeaderLine.IsMatch(trimmed);
+                if (isLeaderLine) tocLines++;
                 else if (trimmed.Trim().Length > 0) bodyLines++;
+
+                // Index → prose boundary. Where a run of contents/index entries ends and body text
+                // begins ("Index: 1304" then "Foreword"), that IS a section break, and none of the
+                // heading detectors fire on it. Left unsplit, the tail of the contents is glued to
+                // the start of the prose, producing a chunk that is half pure index — which then
+                // reads as only ~18% leaders because the prose dilutes it, so it escapes the ratio
+                // test too. Splitting here is the actual fix; loosening the ratio to catch the
+                // hybrid would bury genuine prose instead (CA-Terminal-1-CC's reframing — the
+                // defect was the boundary, not the triage).
+                if (!isLeaderLine && leaderRun >= 3 && trimmed.Trim().Length > 0)
+                {
+                    flush(true);   // isFinal: emit regardless of size, the two halves are distinct
+                    currentHeading = null;
+                    headingIsLeaf = false;
+                }
+                leaderRun = isLeaderLine ? leaderRun + 1 : 0;
 
                 // Class-section header — latch the owning class and reset the subsection context.
                 // Dot-leader lines are excluded: the trailing ".*" in the pattern happily swallows
@@ -1123,8 +1175,9 @@ namespace ClarionAssistant.Services
                 {
                     flush(false);
                     currentClass = clsm.Groups[1].Value.Trim();
-                    currentSection = clsm.Groups[2].Value.Trim();
+                    currentSection = NormalizeSectionName(clsm.Groups[2].Value.Trim());
                     currentHeading = null;
+                    headingIsLeaf = false;
                     currentContent.AppendLine(trimmed);
                     continue;
                 }
@@ -1141,6 +1194,7 @@ namespace ClarionAssistant.Services
                 // together, and their text is still searchable because content is an FTS column.
                 bool isHeading = false;
                 string newHeading = null;
+                bool newHeadingIsLeaf = false;   // set by the method / PROP: detectors below
 
                 // Chapter heading: "3 - Variable Declarations"
                 var cm = chapterPattern.Match(trimmed);
@@ -1172,6 +1226,7 @@ namespace ClarionAssistant.Services
                     {
                         isHeading = true;
                         newHeading = mm.Groups[1].Value.Trim();
+                        newHeadingIsLeaf = true;
                     }
                 }
 
@@ -1183,6 +1238,7 @@ namespace ClarionAssistant.Services
                     {
                         isHeading = true;
                         newHeading = pm2.Groups[1].Value.Trim();
+                        newHeadingIsLeaf = true;
                     }
                 }
 
@@ -1200,6 +1256,7 @@ namespace ClarionAssistant.Services
                 if (isHeading)
                 {
                     currentHeading = newHeading;
+                    headingIsLeaf = newHeadingIsLeaf;
                     currentContent.AppendLine(trimmed);
                     continue;
                 }
@@ -1238,13 +1295,34 @@ namespace ClarionAssistant.Services
             {
                 if (ch.Topic == "index" || string.IsNullOrEmpty(ch.Content)) continue;
                 var chunkLines = ch.Content.Split('\n');
-                int leaders = 0, real = 0;
-                foreach (var cl in chunkLines)
+
+                // A long index entry WRAPS: the title sits on one line and the dot leaders with the
+                // page numbers on the next.
+                //
+                //     OnChange (update audit log file after a record change)
+                //     ..................................................... 294, 721
+                //
+                // Counting that title as prose is what caps a page of pure index at 50% and lets it
+                // pass as a section — CA-Terminal-1-CC caught exactly that, a six-line, 100%-index
+                // chunk wearing the breadcrumb "FileDropComboClass > ... > OnFieldChange". A line
+                // whose NEXT non-blank neighbour is a dot-leader belongs to the entry above it, not
+                // to the body, so count the pair together.
+                int indexish = 0, prose = 0;
+                for (int i = 0; i < chunkLines.Length; i++)
                 {
-                    if (cl.Trim().Length == 0) continue;
-                    if (dotLeaderLine.IsMatch(cl)) leaders++; else real++;
+                    if (chunkLines[i].Trim().Length == 0) continue;
+                    if (dotLeaderLine.IsMatch(chunkLines[i])) { indexish++; continue; }
+
+                    bool nextIsLeader = false;
+                    for (int j = i + 1; j < chunkLines.Length; j++)
+                    {
+                        if (chunkLines[j].Trim().Length == 0) continue;
+                        nextIsLeader = dotLeaderLine.IsMatch(chunkLines[j]);
+                        break;
+                    }
+                    if (nextIsLeader) indexish++; else prose++;
                 }
-                if (leaders >= 3 && leaders > real) ch.Topic = "index";
+                if (indexish >= 3 && indexish > prose) ch.Topic = "index";
             }
 
             return chunks;
