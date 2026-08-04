@@ -56,7 +56,7 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ## What's New in v5.6
 
-A maintenance cycle: six fixes across the diagnostics path, completion scoping, and the CA Editor's Monaco overlay.
+A maintenance cycle across the diagnostics path, completion scoping, and the CA Editor's Monaco overlay &mdash; plus a build fix that restores Clarion 10 to the shipped set.
 
 ### Diagnostics stop reporting false corruption (#168)
 
@@ -85,6 +85,18 @@ Follow-up to #159. The CodeGraph backfill in bare-prefix completion matched symb
 ### Ctrl+X in the CA Editor reaches the clipboard (#173)
 
 Clarion-style Ctrl+X posted the cut text to the host before deleting it from the buffer &mdash; and the CA Editor never implemented its half of that contract, so **Ctrl+X deleted the line without putting anything on the Windows clipboard**. Both stubs left inert since the original overlay spike are now wired: the cut text reaches `Clipboard.SetText`, and a Data-pad field dropped directly onto the editor surface now returns activation to the editor's own tab instead of leaving focus stranded on the pad.
+
+### Show the diagnostics bar again after dismissing it
+
+The LSP status bar &mdash; the strip at the bottom of the assistant pane carrying the diagnostics pill &mdash; has always had its own **&#10005;**, and nothing brought it back: restarting Clarion was the only way. A **&#9678;** button joins the header's title-row actions, beside the theme toggle, and shows or hides it on demand. It repaints from the current state on the way back rather than returning with whatever it was showing when dismissed.
+
+### Clarion 10 builds again
+
+`DiffService` called a `FileService` method that doesn't exist on Clarion 10's older SharpDevelop fork, so the C10 build had been failing outright since the CA Compare write-back work landed &mdash; while 11, 11.1 and 12 compiled clean. It now reaches the same information through an API present on every fork, from one code path.
+
+**If you run Clarion 10, this release is the first to include roughly a week of changes** that never made it into a working C10 binary. The installer ships a per-Clarion build (`bin\Debug-C10` and siblings), so a broken build for one release meant that release shipping stale or not at all.
+
+The deploy script no longer lets one bad target take the others down with it, either: a build failure for a single Clarion version used to abort the run *before* the deploy step, so **nothing** was deployed anywhere while the console showed the other three building successfully. Failures are now collected, every version that built is deployed, and the run ends by naming what didn't ship.
 
 ### Class model preview renders again (#171)
 
