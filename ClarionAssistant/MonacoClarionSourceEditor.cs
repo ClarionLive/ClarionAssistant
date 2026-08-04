@@ -1006,7 +1006,9 @@ namespace ClarionAssistant
                 var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
                 var data = ser.DeserializeObject(rawJson) as Dictionary<string, object>;
                 string text = (data != null && data.ContainsKey("text")) ? (data["text"]?.ToString() ?? "") : null;
-                if (text != null) Clipboard.SetText(text.Length == 0 ? " " : text);
+                if (text == null) { MonacoSpikeLog.Write("OnClipboard: no 'text' field in payload (" + (rawJson ?? "").Length + " raw chars)"); return; }
+                Clipboard.SetText(text.Length == 0 ? " " : text);
+                MonacoSpikeLog.Write("OnClipboard: wrote " + text.Length + " chars to clipboard");
             }
             catch (Exception ex) { MonacoSpikeLog.Write("OnClipboard error: " + ex.Message); }
         }
