@@ -459,13 +459,24 @@ namespace ClarionAssistant.Services
         /// IsDirty lives on AbstractViewContent, NOT on the IViewContent that FileService hands back (verified
         /// against this fork's ICSharpCode.SharpDevelop.dll), hence the cast. A view content that is neither
         /// shape is treated as clean rather than blocking the save on something we cannot read.
+        ///
+        /// Reached via GetOpenFile (→ IWorkbenchWindow) rather than GetOpenFileViewContent: the latter does
+        /// not exist on Clarion 10's older SharpDevelop fork, so referencing it broke the C10 build outright
+        /// (CS0117) while C11/11.1/12 compiled fine. GetOpenFile, IWorkbenchWindow.ViewContent and
+        /// AbstractViewContent.IsDirty are all present on BOTH forks — verified by reflecting over C10's and
+        /// C12's own ICSharpCode.SharpDevelop.dll — so this one path serves every version with no reflection
+        /// and no conditional compilation. ActiveViewContent is the fallback for a window whose primary view
+        /// isn't the document (a designer sub-view selected, say).
         /// </summary>
         private static bool IsOpenAndDirtyInIde(string path)
         {
             try
             {
                 if (!ICSharpCode.SharpDevelop.FileService.IsOpen(path)) return false;
-                var vc = ICSharpCode.SharpDevelop.FileService.GetOpenFileViewContent(path) as AbstractViewContent;
+                var window = ICSharpCode.SharpDevelop.FileService.GetOpenFile(path);
+                if (window == null) return false;
+                var vc = window.ViewContent as AbstractViewContent
+                      ?? window.ActiveViewContent as AbstractViewContent;
                 return vc != null && vc.IsDirty;
             }
             catch { return false; }

@@ -215,12 +215,23 @@ $LspNodeModules = @(
 # NOTE: Deployed AFTER indexer items to ensure ClarionAssistant's version wins
 $SqliteFts5Dir = Join-Path $ProjectDir "lib\sqlite-fts5"
 
+# Versions whose build failed this run — excluded from the deploy loop below and reported at the end,
+# so "built but NOT deployed" is never silently indistinguishable from "deployed".
+$FailedBuilds = @()
+
 # --- Build ---
 if (-not $NoBuild) {
     Write-Host "Restoring packages..." -ForegroundColor Cyan
     & $MSBuild $ProjectFile /t:Restore /p:Configuration=Debug /v:minimal
     if ($LASTEXITCODE -ne 0) { Write-Host "Restore failed." -ForegroundColor Red; exit 1 }
 
+    # A build failure for ONE Clarion release must not block shipping to the others. This loop used to
+    # `exit 1` on the first failure — and since the deploy loop runs AFTER every build, a single broken
+    # target meant NOTHING was deployed at all, while the console showed the other three building fine.
+    # The failure line named only the broken version, so it read as "three of four went out" when the
+    # true answer was zero, and the symptom (a stale deployed DLL) is easy to mistake for a code
+    # regression. Collect failures instead, deploy every version that DID build, and report the split
+    # explicitly at the end.
     foreach ($ver in $TargetVersions) {
         Write-Host ""
         if (-not $ResolvedRoots.ContainsKey($ver)) {
@@ -229,8 +240,20 @@ if (-not $NoBuild) {
         }
         Write-Host "Building for Clarion $ver ($($ResolvedRoots[$ver]))..." -ForegroundColor Cyan
         & $MSBuild $ProjectFile /p:Configuration=Debug /p:ClarionVersion=$ver /p:ClarionRoot="$($ResolvedRoots[$ver])" /v:minimal
-        if ($LASTEXITCODE -ne 0) { Write-Host "Build failed for Clarion $ver." -ForegroundColor Red; exit 1 }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Build FAILED for Clarion $ver — it will NOT be deployed." -ForegroundColor Red
+            $FailedBuilds += $ver
+            continue
+        }
         Write-Host "Build succeeded for Clarion $ver." -ForegroundColor Green
+    }
+
+    # Every requested target failed → there is nothing to deploy, so stop here rather than walking a
+    # deploy loop that would skip every entry and still print "All done."
+    if ($FailedBuilds.Count -gt 0 -and $FailedBuilds.Count -eq @($TargetVersions | Where-Object { $ResolvedRoots.ContainsKey($_) }).Count) {
+        Write-Host ""
+        Write-Host "No version built successfully — nothing deployed." -ForegroundColor Red
+        exit 1
     }
 
     if (Test-Path $IndexerFile) {
@@ -260,6 +283,11 @@ foreach ($ver in $TargetVersions) {
     if (-not $ResolvedRoots.ContainsKey($ver)) {
         Write-Host ""
         Write-Host "=== Skipping Clarion $ver deploy (no install found) ===" -ForegroundColor DarkGray
+        continue
+    }
+    if ($FailedBuilds -contains $ver) {
+        Write-Host ""
+        Write-Host "=== Skipping Clarion $ver deploy (its build FAILED — see above) ===" -ForegroundColor Red
         continue
     }
     $cfg         = $Versions[$ver]
@@ -489,4 +517,13 @@ foreach ($ver in $TargetVersions) {
 
 # --- Final summary ---
 Write-Host ""
+if ($FailedBuilds.Count -gt 0) {
+    # Never let a partial run exit 0 with a bare "All done." — that is what made a stale deployed DLL
+    # look like a successful deploy. Name the versions that did NOT ship, and fail the exit code so a
+    # caller (CI, the installer, another script) can't read this run as clean.
+    Write-Host "Done, WITH FAILURES." -ForegroundColor Yellow
+    Write-Host "  NOT deployed (build failed): $($FailedBuilds -join ', ')" -ForegroundColor Red
+    Write-Host "  Every other requested version deployed normally." -ForegroundColor Yellow
+    exit 1
+}
 Write-Host "All done." -ForegroundColor Green
