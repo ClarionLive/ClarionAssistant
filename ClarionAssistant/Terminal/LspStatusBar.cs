@@ -92,8 +92,10 @@ namespace ClarionAssistant.Terminal
 
         /// <summary>
         /// Update the diagnostics count display. Sets color based on severity.
+        /// <paramref name="known"/> false = the server has never published for this file, so the
+        /// counts mean "not told yet", not "none" — see the unknown branch below.
         /// </summary>
-        public void SetDiagnostics(int errors, int warnings, bool hidden)
+        public void SetDiagnostics(int errors, int warnings, bool hidden, bool known = true)
         {
             if (hidden)
             {
@@ -102,6 +104,25 @@ namespace ClarionAssistant.Terminal
             }
 
             Visible = true;
+
+            if (!known)
+            {
+                // Deliberately NOT the "OK" branch. Zero-errors and never-been-told are different
+                // claims, and the green check mark asserts the first while meaning the second —
+                // which is precisely the window where results are still arriving, so it read as
+                // "clean" right before flipping to errors. Muted color so it registers as absence
+                // of information rather than a result. Self-clears on the next poll tick.
+                // U+25CB (hollow) deliberately mirrors the U+25CF filled dot the real states use:
+                // same slot, no result yet — and it's the same Geometric Shapes block already
+                // proven to render in this Cascadia Code label.
+                // Escaped, not literal: this .cs has no BOM, so a non-ASCII literal is at the mercy
+                // of the compiler's encoding guess — same reason the three branches below escape.
+                _diagLabel.Text = "\u25CB \u2026";
+                _diagLabel.ForeColor = _isDark
+                    ? Color.FromArgb(108, 112, 134)   // Catppuccin overlay0
+                    : Color.FromArgb(140, 143, 161);
+                return;
+            }
 
             if (errors > 0)
             {

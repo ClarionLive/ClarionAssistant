@@ -72,7 +72,11 @@ namespace ClarionAssistant
         private string _lastDiagFile;
         private int _lastDiagErrors = -1;
         private int _lastDiagWarnings = -1;
+        // Tri-state guard: unknown and clean are BOTH 0/0, so the counts alone can't tell the
+        // change detector that a file just resolved from "not analyzed" to "analyzed, clean".
+        private bool _lastDiagKnown = true;
         private List<Services.LspClient.DiagnosticEntry> _lastDiagEntries;
+        private bool? _lastMonacoThemeDark; // tracks CaEditorSettings.MonacoThemeDark for live-follow in PollLspUi
 
         public string CurrentSolutionPath { get { return _currentSlnPath; } }
         public SettingsService Settings { get { return _settings; } }
@@ -951,6 +955,17 @@ namespace ClarionAssistant
             {
                 if (_lspStatusBar == null) return;
 
+                // Live-follow the Monaco/CA Editor's own theme toggle (independent of this chat
+                // pane's theme) — the page pushes it to CaEditorSettings on every toolbar toggle,
+                // but nothing notifies this control directly, so pick up a change on the next tick.
+                bool monacoDark = ResolveEditorThemeDark();
+                if (_lastMonacoThemeDark != monacoDark)
+                {
+                    _lastMonacoThemeDark = monacoDark;
+                    _lspStatusBar.ApplyTheme(monacoDark);
+                    if (_diagForm != null) _diagForm.ApplyTheme(monacoDark);
+                }
+
                 // Wire up the OnLspRequest event once the LspClient is available
                 var lsp = _toolRegistry?.LspClientInstance;
                 if (lsp != null && !_lspEventWired)
@@ -959,14 +974,20 @@ namespace ClarionAssistant
                     lsp.OnLspRequest += OnLspRequest;
                 }
 
-                if (lsp == null || !lsp.IsRunning)
+                // Ask the BRIDGE whether an LSP is up, not the bundled LspClient. When the IDE's own
+                // ClarionLsp is the active client the bundled one is never started at all, so
+                // lsp.IsRunning is false and this hid the pill on every tick — even with the CA
+                // Editor showing live squiggles, because the squiggle pass (and every other
+                // consumer) already routes through SharedLspBridge. The two clients also keep
+                // SEPARATE diagnostics caches, so the read below has to go through the bridge too
+                // or it looks in an empty dictionary.
+                if (!SharedLspBridge.IsRunning)
                 {
                     _lspStatusBar.SetDiagnostics(0, 0, hidden: true);
                     return;
                 }
 
-                // Read diagnostics for the last file the LSP operated on
-                string filePath = lsp.LastActiveFilePath;
+                string filePath = ResolveDiagnosticsTarget(lsp);
                 if (string.IsNullOrEmpty(filePath))
                 {
                     _lspStatusBar.SetDiagnostics(0, 0, hidden: true);
@@ -975,7 +996,14 @@ namespace ClarionAssistant
 
                 // Deduplicate diagnostics by (line, message) — the Clarion LSP server
                 // can emit the same diagnostic dozens of times per analysis cycle.
-                var raw = lsp.GetCachedDiagnostics(filePath);
+                var raw = SharedLspBridge.GetCachedDiagnostics(filePath);
+                // null = the server has NEVER published for this file (bundled path reports it via
+                // DiagnosticSet.WasPublished, shared path by the key being absent) — genuinely
+                // unknown, NOT clean. An authoritatively clean file caches an EMPTY list instead,
+                // so null-vs-empty already carries the distinction; it was being thrown away by
+                // flattening both to 0/0, which painted a confident green "OK" over a file nothing
+                // had been heard about yet.
+                bool known = raw != null;
                 List<Services.LspClient.DiagnosticEntry> entries = null;
                 int errors = 0, warnings = 0;
                 if (raw != null && raw.Count > 0)
@@ -994,14 +1022,18 @@ namespace ClarionAssistant
                     }
                 }
 
-                // Only update if the file or counts changed (avoid flicker)
-                if (filePath != _lastDiagFile || errors != _lastDiagErrors || warnings != _lastDiagWarnings)
+                // Only update if the file, the counts, or known-ness changed (avoid flicker).
+                // `known` has to be in this test: unknown and clean are both 0/0, so without it the
+                // pill would stay stuck on "○ …" once a file resolved to genuinely clean.
+                if (filePath != _lastDiagFile || errors != _lastDiagErrors || warnings != _lastDiagWarnings
+                    || known != _lastDiagKnown)
                 {
                     _lastDiagFile = filePath;
                     _lastDiagErrors = errors;
                     _lastDiagWarnings = warnings;
+                    _lastDiagKnown = known;
                     _lastDiagEntries = entries;
-                    _lspStatusBar.SetDiagnostics(errors, warnings, hidden: false);
+                    _lspStatusBar.SetDiagnostics(errors, warnings, hidden: false, known: known);
 
                     // Update the diagnostics form if it's visible
                     if (_diagForm != null && _diagForm.Visible)
@@ -1043,14 +1075,79 @@ namespace ClarionAssistant
             catch { }
         }
 
+        /// <summary>
+        /// Which theme the pill and the diagnostics window should wear: the ACTIVE editor's, not the
+        /// process-wide CaEditorSettings.MonacoThemeDark mirror. That mirror records whichever Monaco
+        /// page most recently booted or toggled — switching tabs posts nothing and moves nothing — so
+        /// polling it alone left the diagnostics window wearing the theme of whatever surface last
+        /// spoke rather than the editor being looked at. Same shape as ResolveDiagnosticsTarget below:
+        /// ask the active editor, fall back to the global. The mirror stays the fallback (and stays a
+        /// mirror), so nothing else that reads it changes behaviour.
+        /// </summary>
+        private bool ResolveEditorThemeDark()
+        {
+            try
+            {
+                bool? overlay = MonacoClarionEditor.ActiveEditorIsDark();
+                if (overlay.HasValue) return overlay.Value;
+
+                bool? modern = ModernEmbeditorViewContent.ActiveViewIsDark();
+                if (modern.HasValue) return modern.Value;
+            }
+            catch { /* fall through to the global mirror */ }
+
+            return CaEditorSettings.MonacoThemeDark;
+        }
+
+        /// <summary>
+        /// Which file the pill and the diagnostics window are about. There are TWO independent
+        /// Monaco-backed editing surfaces in this addin, and either can be the one the developer is
+        /// actually looking at:
+        ///   1. MonacoClarionEditor — a Monaco squiggle OVERLAY on the native Clarion source editor
+        ///      (ClarionEditor). This is what a plain "open a .clw and edit it" session uses, and its
+        ///      _filePath is exactly what EditorService.GetActiveDocumentPath() resolves (confirmed
+        ///      live via inspect_ide: all currently-open windows report as this type; get_active_file,
+        ///      which calls GetActiveDocumentPath(), correctly returned the real path for one).
+        ///   2. ModernEmbeditorViewContent — the separate CA Editor / embeditor tab surface. It does
+        ///      NOT expose FileName/PrimaryFileName (GetActiveDocumentPath's reflection probes miss it
+        ///      entirely), so it needs its own DiagnosticsCacheKey lookup as a distinct path, not a
+        ///      fallback that GetActiveDocumentPath will ever satisfy for it.
+        /// Try (1) first since it's the common case, then (2). LastActiveFilePath is the last resort —
+        /// it follows the last file ANY LSP tool touched, which chat-driven hover/definition lookups
+        /// and full-solution sweeps retarget to files nobody is editing.
+        /// </summary>
+        private string ResolveDiagnosticsTarget(LspClient lsp)
+        {
+            try
+            {
+                string active = _editorService?.GetActiveDocumentPath();
+                // Reject a bare filename with no directory — GetActiveDocumentPath's last-resort
+                // Title fallback returns that shape, and it can't key the diagnostics cache.
+                if (!string.IsNullOrEmpty(active) && active.IndexOf('\\') >= 0)
+                    return active;
+            }
+            catch { /* fall through */ }
+
+            try
+            {
+                var view = ModernEmbeditorViewContent.ActiveModernView();
+                string key = (view != null) ? view.DiagnosticsCacheKey : null;
+                if (!string.IsNullOrEmpty(key)) return key;
+            }
+            catch { /* fall through to the last-LSP-activity path */ }
+
+            return (lsp != null) ? lsp.LastActiveFilePath : null;
+        }
+
         private void OnDiagnosticsBarClicked(object sender, EventArgs e)
         {
             if (_diagForm == null)
             {
                 _diagForm = new Dialogs.DiagnosticsForm(
                     line => _editorService.GoToLine(line),
-                    () => _lastDiagEntries);
-                _diagForm.ApplyTheme(_isDarkTheme);
+                    () => _lastDiagEntries,
+                    () => _lastDiagFile);
+                _diagForm.ApplyTheme(ResolveEditorThemeDark());
             }
             _diagForm.UpdateDiagnostics(_lastDiagFile, _lastDiagEntries);
             if (!_diagForm.Visible)
@@ -1984,8 +2081,15 @@ namespace ClarionAssistant
             _splitter.BackColor = _isDarkTheme ? Color.FromArgb(49, 50, 68) : Color.FromArgb(204, 208, 218);
             if (_tabStrip != null) _tabManager?.ApplyTheme(_isDarkTheme);
             if (_contentArea != null) _contentArea.BackColor = _isDarkTheme ? Color.FromArgb(12, 12, 12) : Color.White;
-            if (_lspStatusBar != null) _lspStatusBar.ApplyTheme(_isDarkTheme);
-            if (_diagForm != null) _diagForm.ApplyTheme(_isDarkTheme);
+
+            // LSP status bar + diagnostics window show diagnostics for the CODE editor, so they
+            // follow the ACTIVE editor's own theme rather than this chat pane's own _isDarkTheme —
+            // the two are independent settings and can differ. See ResolveEditorThemeDark for why
+            // this asks the active surface instead of reading CaEditorSettings.MonacoThemeDark.
+            bool monacoDark = ResolveEditorThemeDark();
+            _lastMonacoThemeDark = monacoDark;
+            if (_lspStatusBar != null) _lspStatusBar.ApplyTheme(monacoDark);
+            if (_diagForm != null) _diagForm.ApplyTheme(monacoDark);
         }
 
         private float GetFontSize()

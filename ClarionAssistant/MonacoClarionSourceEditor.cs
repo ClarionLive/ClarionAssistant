@@ -1458,6 +1458,30 @@ namespace ClarionAssistant
             catch (Exception ex) { MonacoSpikeLog.Write("initial-open focus error: " + ex.Message); }
         }
 
+        /// <summary>
+        /// Dark/light state of the Monaco overlay on the ACTIVE document, or null when the active
+        /// document isn't one of these (or its surface isn't up yet). Mirrors
+        /// ModernEmbeditorViewContent.ActiveModernView()'s reflection walk — the workbench exposes
+        /// ActiveViewContent as an explicit-interface member, so it has to be reached via the window.
+        /// Callers want this in preference to CaEditorSettings.MonacoThemeDark, which records only
+        /// whichever page posted last and so drifts from the active editor as soon as two disagree.
+        /// </summary>
+        public static bool? ActiveEditorIsDark()
+        {
+            try
+            {
+                var wb = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
+                if (wb == null) return null;
+                var aw = ReflectProp(wb, "ActiveWorkbenchWindow");
+                if (aw == null) return null;
+                var vc = ReflectProp(aw, "ActiveViewContent") ?? ReflectProp(aw, "ViewContent");
+                var me = vc as MonacoClarionEditor;
+                if (me == null || me._editor == null) return null;
+                return me._editor.IsDark;
+            }
+            catch { return null; }
+        }
+
         private static object ReflectProp(object obj, string name)
         {
             if (obj == null) return null;

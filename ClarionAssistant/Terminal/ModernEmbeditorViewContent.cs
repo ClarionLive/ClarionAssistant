@@ -1290,6 +1290,32 @@ namespace ClarionAssistant.Terminal
         /// <summary>The file this tab edits (file mode), else null.</summary>
         public string FilePath { get { return _filePath; } }
 
+        /// <summary>
+        /// The key this tab's diagnostics are cached under, or null when that cache isn't safe to
+        /// surface raw. FILE MODE ONLY, deliberately: there _lspFileName is the real file and the
+        /// squiggle pass runs with embedSlotChecks=false, so the cache is exactly what Monaco marked
+        /// up. In embed mode the same cache holds WHOLE-generated-buffer diagnostics that
+        /// ModernEmbeditorDiagnostics.Compute clamps to the editable slots before rendering —
+        /// reporting those unclamped would count generated-line noise the editor never squiggled.
+        /// </summary>
+        public string DiagnosticsCacheKey { get { return _fileMode ? _lspFileName : null; } }
+
+        /// <summary>
+        /// Dark/light state of the ACTIVE Modern tab's Monaco surface, or null when the active
+        /// document isn't one (or its panel isn't up yet). Preferred over
+        /// CaEditorSettings.MonacoThemeDark, which only records whichever page posted last and so
+        /// drifts from the active editor once two surfaces disagree.
+        /// </summary>
+        public static bool? ActiveViewIsDark()
+        {
+            try
+            {
+                var view = ActiveModernView();
+                return (view != null && view._panel != null) ? view._panel.IsDark : (bool?)null;
+            }
+            catch { return null; }
+        }
+
         /// <summary>Find the open file-mode tab for a path, or null. Used by the open command to dedup so the same
         /// file doesn't open in two tabs (→ last-save-wins). Matches on the UNION of two identities:
         ///  • the canonical file ID (vol serial + file index) — collapses path aliases AND hard links;
