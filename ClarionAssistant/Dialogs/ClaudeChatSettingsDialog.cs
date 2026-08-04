@@ -1119,9 +1119,12 @@ namespace ClarionAssistant.Dialogs
 
                         using (var cmd = conn.CreateCommand())
                         {
+                            // source_format is surfaced so the panel can show WHICH files are PDFs —
+                            // needed to spot the ones wanting a re-import after the PdfPig swap (#167),
+                            // and generally useful for telling a CHM apart from a folder of HTML.
                             cmd.CommandText = hasTags
-                                ? "SELECT l.id, l.name, l.vendor, l.tags, COUNT(c.id) as cnt, l.source_path FROM libraries l LEFT JOIN doc_chunks c ON c.library_id = l.id GROUP BY l.id ORDER BY cnt DESC"
-                                : "SELECT l.id, l.name, l.vendor, NULL as tags, COUNT(c.id) as cnt, l.source_path FROM libraries l LEFT JOIN doc_chunks c ON c.library_id = l.id GROUP BY l.id ORDER BY cnt DESC";
+                                ? "SELECT l.id, l.name, l.vendor, l.tags, COUNT(c.id) as cnt, l.source_path, l.source_format FROM libraries l LEFT JOIN doc_chunks c ON c.library_id = l.id GROUP BY l.id ORDER BY cnt DESC"
+                                : "SELECT l.id, l.name, l.vendor, NULL as tags, COUNT(c.id) as cnt, l.source_path, l.source_format FROM libraries l LEFT JOIN doc_chunks c ON c.library_id = l.id GROUP BY l.id ORDER BY cnt DESC";
                             using (var reader = cmd.ExecuteReader())
                             {
                                 while (reader.Read())
@@ -1132,11 +1135,19 @@ namespace ClarionAssistant.Dialogs
                                     string tags = reader.IsDBNull(3) ? "" : reader.GetString(3);
                                     int cnt = reader.GetInt32(4);
                                     string sourcePath = reader.IsDBNull(5) ? "" : reader.GetString(5);
+                                    // Older rows can have a null/blank source_format; fall back to the
+                                    // source_path extension rather than showing an empty cell.
+                                    string format = reader.IsDBNull(6) ? "" : (reader.GetString(6) ?? "");
+                                    if (format.Length == 0 && sourcePath.Length > 0)
+                                    {
+                                        try { format = Path.GetExtension(sourcePath).TrimStart('.').ToLowerInvariant(); }
+                                        catch { }
+                                    }
                                     totalLibs++;
                                     totalChunks += cnt;
                                     if (!first) items.Append(",");
-                                    items.AppendFormat("{{\"id\":{0},\"name\":\"{1}\",\"vendor\":\"{2}\",\"chunks\":{3},\"source\":\"{4}\",\"tags\":\"{5}\",\"path\":\"{6}\"}}",
-                                        id, EscapeJson(name), EscapeJson(vendor), cnt, label, EscapeJson(tags), EscapeJson(sourcePath));
+                                    items.AppendFormat("{{\"id\":{0},\"name\":\"{1}\",\"vendor\":\"{2}\",\"chunks\":{3},\"source\":\"{4}\",\"tags\":\"{5}\",\"path\":\"{6}\",\"format\":\"{7}\"}}",
+                                        id, EscapeJson(name), EscapeJson(vendor), cnt, label, EscapeJson(tags), EscapeJson(sourcePath), EscapeJson(format));
                                     first = false;
                                 }
                             }

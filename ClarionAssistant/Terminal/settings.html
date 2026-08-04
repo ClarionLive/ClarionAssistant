@@ -229,6 +229,18 @@
   .lib-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
   .lib-vendor { width: 90px; color: var(--section-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
   .lib-chunks { width: 50px; text-align: right; color: var(--section-fg); flex-shrink: 0; }
+  .lib-format {
+    width: 46px; flex-shrink: 0; font-size: 10px; font-weight: 600; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--section-fg);
+  }
+  /* PDFs are called out because they are the format whose extraction changed (#167) — the whole
+     point of this column is spotting which libraries want a re-import. */
+  .lib-format.is-pdf { color: var(--accent); }
+  .doc-sort {
+    cursor: pointer; user-select: none; display: flex; align-items: center; gap: 3px;
+  }
+  .doc-sort:hover { color: var(--accent); }
+  .doc-sort .arrow { font-size: 9px; opacity: .85; }
   .lib-tags {
     width: 120px; flex-shrink: 0; height: 24px; padding: 0 6px; font-size: 11px;
     background: var(--input-bg); color: var(--input-fg); border: 1px solid var(--input-border);
@@ -943,6 +955,34 @@
     renderDocTab();
   }
 
+  // Sort state for the Documentation Graph list. Defaults to chunks-descending, which is the order
+  // the C# query already returns — so the first render looks exactly as it did before sorting existed.
+  var _docSort = { key: 'chunks', dir: -1 };
+
+  function sortDocBy(key) {
+    // Re-clicking the active column flips direction; a new column starts descending for the numeric
+    // one and ascending for text, which is what each reads best as by default.
+    if (_docSort.key === key) _docSort.dir = -_docSort.dir;
+    else _docSort = { key: key, dir: key === 'chunks' ? -1 : 1 };
+    renderDocTab();
+  }
+
+  function sortDocItems(items) {
+    var k = _docSort.key, dir = _docSort.dir;
+    // Copy first — this array is a filtered view of _docData.items, but slice() keeps the sort from
+    // depending on filter() having already produced a fresh array.
+    return items.slice().sort(function(a, b) {
+      var av, bv;
+      if (k === 'chunks') { av = a.chunks || 0; bv = b.chunks || 0; }
+      else { av = (a[k] || '').toLowerCase(); bv = (b[k] || '').toLowerCase(); }
+      if (av < bv) return -dir;
+      if (av > bv) return dir;
+      // Stable tiebreak on name, so equal formats/vendors don't shuffle between renders.
+      var an = (a.name || '').toLowerCase(), bn = (b.name || '').toLowerCase();
+      return an < bn ? -1 : an > bn ? 1 : 0;
+    });
+  }
+
   function renderDocTab() {
     var body = document.getElementById('docInfoBody');
     var toolbar = document.getElementById('docToolbar');
@@ -961,12 +1001,24 @@
       return;
     }
 
-    // Header
+    items = sortDocItems(items);
+
+    // Header — every column is a sort toggle; the active one carries the direction arrow.
+    function hdr(key, label, style, align) {
+      var active = _docSort.key === key;
+      var arrow = active ? '<span class="arrow">' + (_docSort.dir > 0 ? '▲' : '▼') + '</span>' : '';
+      var justify = align === 'right' ? 'justify-content:flex-end;' : '';
+      return '<div class="doc-sort" style="' + style + justify + '" onclick="sortDocBy(\'' + key + '\')">'
+           + label + arrow + '</div>';
+    }
+
     var html = '<div style="display:flex;align-items:center;gap:8px;padding:0 0 6px;border-bottom:1px solid var(--card-border);font-size:11px;color:var(--section-fg);font-weight:600">';
     if (isPersonal) html += '<div style="width:15px"></div>';
-    html += '<div style="flex:1">Library</div>';
-    if (!isPersonal) html += '<div style="width:90px">Vendor</div>';
-    html += '<div style="width:50px;text-align:right">Chunks</div></div>';
+    html += hdr('name', 'Library', 'flex:1;');
+    html += hdr('format', 'Type', 'width:46px;');
+    if (!isPersonal) html += hdr('vendor', 'Vendor', 'width:90px;');
+    html += hdr('chunks', 'Chunks', 'width:50px;', 'right');
+    html += '</div>';
 
     // Rows
     items.forEach(function(lib) {
@@ -984,6 +1036,9 @@
         displayName += '<span style="color:var(--desc-fg);font-size:11px;margin-left:6px">' + esc(lib.path) + '</span>';
       }
       html += '<div class="lib-name" title="' + tooltip.replace(/"/g,'&quot;') + '">' + displayName + '</div>';
+      var fmt = (lib.format || '').toLowerCase();
+      html += '<div class="lib-format' + (fmt === 'pdf' ? ' is-pdf' : '') + '" title="' + esc(fmt) + '">'
+            + esc(fmt) + '</div>';
       if (!isPersonal) {
         html += '<div class="lib-vendor" title="' + esc(lib.vendor).replace(/"/g,'&quot;') + '">' + esc(lib.vendor) + '</div>';
       }
