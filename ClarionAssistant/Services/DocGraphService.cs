@@ -941,6 +941,62 @@ namespace ClarionAssistant.Services
         /// Chunks PDF text by detecting heading patterns (ALL CAPS lines, numbered chapters,
         /// keyword definitions like "KEYWORD (description)").
         /// </summary>
+        /// <summary>
+        /// Clarion statements and structure words that appear ALONE on a line inside example code.
+        /// The all-caps heading detector cannot tell them from a real section heading, so 486 chunks
+        /// ended up titled ACCEPT / PROGRAM / RETURN / CASE — pointing at a token from a neighbouring
+        /// code sample rather than the section they contain.
+        /// </summary>
+        private static readonly HashSet<string> ClarionCodeWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "ACCEPT","PROGRAM","CODE","LOOP","END","CASE","IF","ELSE","ELSIF","RETURN","MAP","DATA",
+            "ROUTINE","EXIT","BREAK","CYCLE","OF","OROF","THEN","DO","WINDOW","REPORT","FILE","RECORD",
+            "QUEUE","GROUP","CLASS","MODULE","MEMBER","PROCEDURE","FUNCTION","SECTION","INCLUDE","OMIT",
+            "COMPILE","BEGIN","NEW","DISPOSE","HALT","STOP","YIELD","EQ","NE","LT","GT","LE","GE","NOT",
+            "AND","OR","XOR","SELF","PARENT","NULL","TRUE","FALSE","APPLICATION","MENUBAR","TOOLBAR",
+            "SHEET","TAB","OPTION","ITEM","MENU","VIEW","JOIN","BUFFER","SORT","FIELDS","PROJECT"
+        };
+
+        /// <summary>
+        /// Is this line a plausible section heading, or is it a token lifted out of example code?
+        /// A heading is short, isn't a bare Clarion statement, and doesn't read like a sentence.
+        /// </summary>
+        private static bool IsPlausibleHeading(string candidate)
+        {
+            if (string.IsNullOrWhiteSpace(candidate)) return false;
+            string t = candidate.Trim();
+
+            // Real headings are short. Sentence-length matches are prose that happened to end in ':'
+            // — that is where "It may be merged into a source PROGRAM by placing the follow..." came from.
+            if (t.Length > 70) return false;
+
+            // A bare statement word, or a statement word plus an operand ("RETURN FALSE"), is code.
+            var words = t.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (words.Length > 0 && ClarionCodeWords.Contains(words[0].TrimEnd(':', '.', ',')))
+                return false;
+
+            return true;
+        }
+
+        /// <summary>
+        /// Class &gt; section &gt; subsection breadcrumb, e.g.
+        /// "ASCIIFileClass &gt; Non-Virtual Methods &gt; Occasional Use".
+        ///
+        /// This goes in the chunk's HEADING rather than being prepended to its content, because
+        /// doc_fts indexes heading and class_name as their own FTS columns (see CreateSchema). So the
+        /// class name is matchable by a plain query_docs call without polluting the text that gets
+        /// displayed back — every ABC class has an identically-named "Occasional Use" subsection, and
+        /// this is what tells them apart.
+        /// </summary>
+        private static string BuildHeading(string cls, string section, string subsection, string fallback)
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrEmpty(cls)) parts.Add(cls);
+            if (!string.IsNullOrEmpty(section) && section != subsection) parts.Add(section);
+            if (!string.IsNullOrEmpty(subsection)) parts.Add(subsection);
+            return parts.Count > 0 ? string.Join(" > ", parts.ToArray()) : fallback;
+        }
+
         private List<DocChunk> ChunkPdfText(string text, string library)
         {
             var chunks = new List<DocChunk>();
@@ -956,6 +1012,69 @@ namespace ClarionAssistant.Services
             var sectionPattern = new Regex(@"^\s*([A-Z][A-Za-z\s,/]+(?:\.{2,}|:))\s*\d*\s*$");
             var allCapsHeading = new Regex(@"^\s*([A-Z][A-Z\s]{4,})\s*$");
 
+            // Method definition: "GetLastLineNo (return last line number)" — mixed case, unlike the
+            // all-caps keywordPattern, so these were never detected as headings at all.
+            var methodDefPattern = new Regex(@"^\s*([A-Z][A-Za-z0-9_]*)\s+\(([^)]{3,})\)\s*$");
+
+            // A class-section header: "AsciiFileClass Methods", "ASCIIFileClass Functional
+            // Organization--Expected Use", "<X>Class Overview/Properties". These are the only lines
+            // that name the owning class; every subsection below them ("Non-Virtual Methods",
+            // "Occasional Use:") is identical across every class in the document, so without latching
+            // this we cannot tell one class's "Occasional Use" from another's.
+            var classSectionHeader = new Regex(
+                @"^\s*([A-Za-z][A-Za-z0-9_]*Class)\s+(Overview|Properties|Methods|Concepts|Functional\s+Organization.*)\s*$",
+                RegexOptions.IgnoreCase);
+
+            // A dot-leader line: "GetLine (return line of text) ......... 59". Table-of-contents and
+            // index pages are made of these. They are nearly pure keyword, so bm25 ranks them above
+            // real prose for any class-name query — 28.7% of the index before this was handled.
+            var dotLeaderLine = new Regex(@"\.{4,}\s*\d+\s*$");
+
+            // Page furniture: "ABC Library Reference 54" — the running footer, which lands in the
+            // middle of body text and otherwise gets chunked as content (and can trip heading
+            // detection). Matched against this document's own library name.
+            var pageFooter = new Regex(@"^\s*" + Regex.Escape(library ?? "") + @"\s+\d+\s*$",
+                                       RegexOptions.IgnoreCase);
+
+            string currentClass = null;
+            string currentSection = null;   // e.g. "Non-Virtual Methods" — the level between class and subsection
+            int tocLines = 0, bodyLines = 0;
+
+            // Emits the pending chunk. Centralised so the three former copies can't drift, and so the
+            // TOC/body tally and the class/section breadcrumb are applied identically at each site.
+            Action<bool> flush = isFinal =>
+            {
+                string body = currentContent.ToString().Trim();
+                // 30 chars was the old floor and it let single lines through — "Mainstream Use:
+                // ResizeV  resize and reposition all controls" was landing as a whole chunk, five of
+                // them from five different classes with nothing to tell them apart.
+                //
+                // Returning WITHOUT clearing is deliberate: a subsection too small to stand alone
+                // keeps accumulating into the next flush, so sibling subsections merge back into
+                // their parent section instead of fragmenting. That is what puts all three of
+                // ASCIIFileClass's non-virtual categories (Housekeeping / Mainstream / Occasional,
+                // ~800 chars together, ~150 each) in ONE chunk — which is the difference between
+                // answering T1 in one query and needing three.
+                if (body.Length < 400 && !isFinal) return;
+                if (body.Length < 30) return;
+
+                bool isToc = tocLines > bodyLines && tocLines > 2;
+                chunks.Add(new DocChunk
+                {
+                    ClassName = currentClass ?? library,
+                    MethodName = null,
+                    Topic = isToc ? "index" : "section",
+                    Heading = BuildHeading(currentClass, currentSection, currentHeading,
+                                           currentHeading ?? string.Format("Section {0}", ++chunkIndex)),
+                    Content = body,
+                    CodeExample = null,
+                    Signature = null,
+                    Anchor = null
+                });
+                currentContent.Clear();
+                tocLines = 0; bodyLines = 0;
+            };
+
             foreach (string line in lines)
             {
                 string trimmed = line.TrimEnd();
@@ -964,7 +1083,38 @@ namespace ClarionAssistant.Services
                 if (Regex.IsMatch(trimmed, @"^\s*\d+\s*$"))
                     continue;
 
-                // Detect heading patterns
+                // Drop the running page footer ("ABC Library Reference 54"). It sits in the middle of
+                // body text, so left in it both pollutes chunk content and can trip heading detection.
+                if (!string.IsNullOrEmpty(library) && pageFooter.IsMatch(trimmed))
+                    continue;
+
+                // Tally TOC-vs-body so the finished chunk can be classified. Counted BEFORE heading
+                // detection because dot-leader lines also match sectionPattern.
+                if (dotLeaderLine.IsMatch(trimmed)) tocLines++;
+                else if (trimmed.Trim().Length > 0) bodyLines++;
+
+                // Class-section header — latch the owning class and reset the subsection context.
+                var clsm = classSectionHeader.Match(trimmed);
+                if (clsm.Success)
+                {
+                    flush(false);
+                    currentClass = clsm.Groups[1].Value.Trim();
+                    currentSection = clsm.Groups[2].Value.Trim();
+                    currentHeading = null;
+                    currentContent.AppendLine(trimmed);
+                    continue;
+                }
+
+                // MAJOR vs MINOR headings.
+                //
+                // A major heading starts a new topic and therefore a new chunk: a chapter, a keyword
+                // or method definition, a class section. A minor heading only LABELS part of the
+                // section it sits in — "Non-Virtual Methods", "Mainstream Use:", "Occasional Use:".
+                //
+                // Treating both as chunk boundaries is what split ASCIIFileClass's three non-virtual
+                // categories across separate chunks, so no single result could answer "what are the
+                // three categories". Minor headings now stay inline as content: the section holds
+                // together, and their text is still searchable because content is an FTS column.
                 bool isHeading = false;
                 string newHeading = null;
 
@@ -987,43 +1137,30 @@ namespace ClarionAssistant.Services
                     }
                 }
 
-                // Section header: "Something......:" or "Something:"
-                if (!isHeading)
+                // Method definition: "GetLastLineNo (return last line number)". Mixed case, so the
+                // all-caps keywordPattern above never caught these — which is why a method's
+                // definition used to land inside a chunk headed "Example" carrying the tail of the
+                // PREVIOUS method. Dot-leader lines are excluded, or every TOC entry matches.
+                if (!isHeading && !dotLeaderLine.IsMatch(trimmed))
                 {
-                    var sm = sectionPattern.Match(trimmed);
-                    if (sm.Success)
+                    var mm = methodDefPattern.Match(trimmed);
+                    if (mm.Success)
                     {
                         isHeading = true;
-                        newHeading = sm.Groups[1].Value.Trim().TrimEnd('.', ':');
+                        newHeading = mm.Groups[1].Value.Trim();
                     }
                 }
 
-                // ALL CAPS heading (5+ characters)
-                if (!isHeading)
+                // Reject anything that is really a token out of an example, or a sentence that
+                // happened to end in a colon.
+                if (isHeading && !IsPlausibleHeading(newHeading))
                 {
-                    var am = allCapsHeading.Match(trimmed);
-                    if (am.Success)
-                    {
-                        isHeading = true;
-                        newHeading = am.Groups[1].Value.Trim();
-                    }
+                    isHeading = false;
+                    newHeading = null;
                 }
 
-                if (isHeading && currentContent.Length > 30)
-                {
-                    chunks.Add(new DocChunk
-                    {
-                        ClassName = library,
-                        MethodName = null,
-                        Topic = "section",
-                        Heading = currentHeading ?? string.Format("Section {0}", ++chunkIndex),
-                        Content = currentContent.ToString().Trim(),
-                        CodeExample = null,
-                        Signature = null,
-                        Anchor = null
-                    });
-                    currentContent.Clear();
-                }
+                if (isHeading)
+                    flush(false);
 
                 if (isHeading)
                 {
@@ -1037,40 +1174,20 @@ namespace ClarionAssistant.Services
                 // Split on size if content gets too large
                 if (currentContent.Length > 3000)
                 {
-                    chunks.Add(new DocChunk
-                    {
-                        ClassName = library,
-                        MethodName = null,
-                        Topic = "section",
-                        Heading = currentHeading ?? string.Format("Section {0}", ++chunkIndex),
-                        Content = currentContent.ToString().Trim(),
-                        CodeExample = null,
-                        Signature = null,
-                        Anchor = null
-                    });
-                    currentContent.Clear();
-                    // Keep the heading for continuation
+                    flush(true);   // isFinal: a size split must emit regardless of the minimum
+                    // Number the continuation rather than appending " (cont.)" each time, which
+                    // accumulated into "DISPOSE (cont.) (cont.) (cont.)".
                     if (currentHeading != null)
-                        currentHeading = currentHeading + " (cont.)";
+                    {
+                        var pm = Regex.Match(currentHeading, @"^(.*) \(part (\d+)\)$");
+                        currentHeading = pm.Success
+                            ? string.Format("{0} (part {1})", pm.Groups[1].Value, int.Parse(pm.Groups[2].Value) + 1)
+                            : currentHeading + " (part 2)";
+                    }
                 }
             }
 
-            // Final chunk
-            if (currentContent.Length > 30)
-            {
-                chunks.Add(new DocChunk
-                {
-                    ClassName = library,
-                    MethodName = null,
-                    Topic = "section",
-                    Heading = currentHeading ?? string.Format("Section {0}", ++chunkIndex),
-                    Content = currentContent.ToString().Trim(),
-                    CodeExample = null,
-                    Signature = null,
-                    Anchor = null
-                });
-            }
-
+            flush(true);
             return chunks;
         }
 
@@ -1576,6 +1693,13 @@ namespace ClarionAssistant.Services
                         dc.content,
                         dc.code_example,
                         CASE
+                            -- Table-of-contents / index chunks are demoted BELOW every prose tier.
+                            -- They are nearly pure keyword (a dot-leader line plus a page number),
+                            -- so bm25 ranked them above real content for any class-name query, and
+                            -- they were 28.7% of the index. content_len as a tiebreaker was far too
+                            -- weak: a TOC page is long AND matches heavily. They stay searchable --
+                            -- a page number is occasionally what you want -- just never above prose.
+                            WHEN dc.topic = 'index' THEN 9
                             WHEN dc.method_name = @exact THEN 0
                             WHEN dc.method_name LIKE '%' || @exact || '%' THEN 1
                             WHEN dc.heading = @exact THEN 2
