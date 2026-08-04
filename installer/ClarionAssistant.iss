@@ -535,41 +535,78 @@ begin
   else Result := 'C:\Clarion12';
 end;
 
-// Auto-detect Clarion paths from registry and common locations
+// Where we remember the paths a previous run actually installed to. See SavedClarionPath.
+const
+  PathMemoryKey = 'Software\ClarionAssistant\InstallPaths';
+
+// A path this installer used last time for the given Clarion release, or '' if there isn't one.
+//
+// The registry probe below reads what SoftVelocity's OWN installer registered, which is not
+// necessarily the tree the developer actually launches: a second copy of the same release, or one
+// started with /Configdir= against a different settings folder, is registered under neither. A
+// developer in that position corrects the path in the wizard and — before this — had it discarded,
+// so every release put the addin back in the tree they don't run. That failure is close to silent:
+// the IDE simply keeps loading the old addin, and the symptoms get reported against a version that
+// was replaced weeks ago (issue #142 spent its first round diagnosing exactly that).
+//
+// Validated with DirExists so a remembered path that has since been moved or deleted falls through
+// to detection instead of pinning the installer to somewhere that no longer exists.
+function SavedClarionPath(ValueName: string): string;
+var
+  S: string;
+begin
+  Result := '';
+  if RegQueryStringValue(HKCU, PathMemoryKey, ValueName, S) and (S <> '') and DirExists(S) then
+    Result := S;
+end;
+
+// Auto-detect Clarion paths: remembered choice first, then registry, then common locations.
 procedure DetectClarionPaths;
 var
   Path: string;
 begin
   // Clarion 12
-  C12Path := '';
-  if RegQueryStringValue(HKLM32, 'SOFTWARE\SoftVelocity\Clarion12', 'root', Path) and DirExists(Path) then
-    C12Path := Path
-  else if DirExists('C:\Clarion12') then C12Path := 'C:\Clarion12'
-  else if DirExists('C:\Clarion12d') then C12Path := 'C:\Clarion12d';
+  C12Path := SavedClarionPath('Clarion12');
+  if C12Path = '' then
+  begin
+    if RegQueryStringValue(HKLM32, 'SOFTWARE\SoftVelocity\Clarion12', 'root', Path) and DirExists(Path) then
+      C12Path := Path
+    else if DirExists('C:\Clarion12') then C12Path := 'C:\Clarion12'
+    else if DirExists('C:\Clarion12d') then C12Path := 'C:\Clarion12d';
+  end;
 
   // Clarion 11.1 — a DISTINCT release from 11.0, with its own binding DLLs (see deploy.ps1's
   // Directory.Build.props note). Must never share a path with C11Path below.
-  C111Path := '';
-  if RegQueryStringValue(HKLM32, 'SOFTWARE\SoftVelocity\Clarion11.1', 'root', Path) and DirExists(Path) then
-    C111Path := Path
-  else if RegQueryStringValue(HKLM32, 'SOFTWARE\SoftVelocity\Clarion111', 'root', Path) and DirExists(Path) then
-    C111Path := Path
-  else if DirExists('C:\Clarion11.1') then C111Path := 'C:\Clarion11.1'
-  else if DirExists('d:\Clarion11.1EE') then C111Path := 'd:\Clarion11.1EE';
+  C111Path := SavedClarionPath('Clarion11.1');
+  if C111Path = '' then
+  begin
+    if RegQueryStringValue(HKLM32, 'SOFTWARE\SoftVelocity\Clarion11.1', 'root', Path) and DirExists(Path) then
+      C111Path := Path
+    else if RegQueryStringValue(HKLM32, 'SOFTWARE\SoftVelocity\Clarion111', 'root', Path) and DirExists(Path) then
+      C111Path := Path
+    else if DirExists('C:\Clarion11.1') then C111Path := 'C:\Clarion11.1'
+    else if DirExists('d:\Clarion11.1EE') then C111Path := 'd:\Clarion11.1EE';
+  end;
 
   // Clarion 11 (11.0)
-  C11Path := '';
-  if RegQueryStringValue(HKLM32, 'SOFTWARE\SoftVelocity\Clarion11', 'root', Path) and DirExists(Path) then
-    C11Path := Path
-  else if DirExists('C:\Clarion11') then C11Path := 'C:\Clarion11'
-  else if DirExists('C:\Clarion11-13372') then C11Path := 'C:\Clarion11-13372';
+  C11Path := SavedClarionPath('Clarion11');
+  if C11Path = '' then
+  begin
+    if RegQueryStringValue(HKLM32, 'SOFTWARE\SoftVelocity\Clarion11', 'root', Path) and DirExists(Path) then
+      C11Path := Path
+    else if DirExists('C:\Clarion11') then C11Path := 'C:\Clarion11'
+    else if DirExists('C:\Clarion11-13372') then C11Path := 'C:\Clarion11-13372';
+  end;
 
   // Clarion 10
-  C10Path := '';
-  if RegQueryStringValue(HKLM32, 'SOFTWARE\SoftVelocity\Clarion10', 'root', Path) and DirExists(Path) then
-    C10Path := Path
-  else if DirExists('C:\Clarion10') then C10Path := 'C:\Clarion10'
-  else if DirExists('C:\Clarion10v8') then C10Path := 'C:\Clarion10v8';
+  C10Path := SavedClarionPath('Clarion10');
+  if C10Path = '' then
+  begin
+    if RegQueryStringValue(HKLM32, 'SOFTWARE\SoftVelocity\Clarion10', 'root', Path) and DirExists(Path) then
+      C10Path := Path
+    else if DirExists('C:\Clarion10') then C10Path := 'C:\Clarion10'
+    else if DirExists('C:\Clarion10v8') then C10Path := 'C:\Clarion10v8';
+  end;
 end;
 
 // Check if Claude Code CLI is installed
@@ -904,4 +941,32 @@ begin
     Log('Removing previous C12 addin: ' + C12Path);
     DelTree(C12Path + '\accessory\addins\ClarionAssistant', True, True, True);
   end;
+end;
+
+// Remember which tree each Clarion release was actually installed into, so the next release's
+// wizard offers that instead of re-deriving it from the registry. See SavedClarionPath for why
+// the registry alone is not enough (issue #142).
+//
+// Written at ssPostInstall, not when the wizard page is left: a path is only worth remembering
+// once files have actually been written to it, and a run the user cancels should change nothing.
+//
+// Only NON-EMPTY paths are saved. An empty field means "skip this Clarion", and persisting that
+// would turn one release's skip into a permanent one — a developer who later installs that release
+// would find the addin silently absent, with nothing on screen explaining why. Left unsaved, the
+// field simply falls back to detection next time, which is the pre-existing behaviour.
+procedure SaveClarionPaths;
+begin
+  if WizardIsComponentSelected('clarion12') and (C12Path <> '') then
+    RegWriteStringValue(HKCU, PathMemoryKey, 'Clarion12', C12Path);
+  if WizardIsComponentSelected('clarion111') and (C111Path <> '') then
+    RegWriteStringValue(HKCU, PathMemoryKey, 'Clarion11.1', C111Path);
+  if WizardIsComponentSelected('clarion11') and (C11Path <> '') then
+    RegWriteStringValue(HKCU, PathMemoryKey, 'Clarion11', C11Path);
+  if WizardIsComponentSelected('clarion10') and (C10Path <> '') then
+    RegWriteStringValue(HKCU, PathMemoryKey, 'Clarion10', C10Path);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then SaveClarionPaths;
 end;
