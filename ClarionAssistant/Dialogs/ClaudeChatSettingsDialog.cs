@@ -1262,6 +1262,21 @@ namespace ClarionAssistant.Dialogs
                 var svc = new DocGraphService(DocGraphService.GetPersonalDbPath());
                 svc.EnsureDatabase();
                 int totalChunks = 0;
+                // Whether the user pointed us at any PDF at all. Needed to tell "nothing here" apart
+                // from "PDFs found, but this machine has no way to read them" — see the result
+                // message below (#167).
+                bool sawPdf = false;
+                foreach (string p in paths)
+                {
+                    try
+                    {
+                        if (Directory.Exists(p))
+                            sawPdf = sawPdf || Directory.GetFiles(p, "*.pdf", SearchOption.AllDirectories).Length > 0;
+                        else if (File.Exists(p))
+                            sawPdf = sawPdf || string.Equals(Path.GetExtension(p), ".pdf", StringComparison.OrdinalIgnoreCase);
+                    }
+                    catch { /* unreadable path — the ingest pass below surfaces it */ }
+                }
 
                 foreach (string path in paths)
                 {
@@ -1306,7 +1321,9 @@ namespace ClarionAssistant.Dialogs
 
                 // Only rebuild FTS if single files were added (IngestFolder already rebuilds internally)
                 System.Diagnostics.Debug.WriteLine("[SettingsDialog] Import complete. Total chunks: " + totalChunks);
-                e.Result = totalChunks;
+                // Pack the PDF diagnosis alongside the count — the completion handler has no other
+                // way to know WHY zero came back.
+                e.Result = new object[] { totalChunks, sawPdf && !DocGraphService.IsPdfSupportAvailable() };
             };
             worker.RunWorkerCompleted += (s, e) =>
             {
@@ -1314,10 +1331,25 @@ namespace ClarionAssistant.Dialogs
                 {
                     if (_webView != null && _webView.CoreWebView2 != null)
                     {
-                        int chunks = e.Result is int ? (int)e.Result : 0;
-                        string resultMsg = chunks > 0
-                            ? "Imported " + chunks + " chunks"
-                            : "No documentation files found (htm, html, chm, pdf, md)";
+                        var res = e.Result as object[];
+                        int chunks = (res != null && res.Length > 0 && res[0] is int) ? (int)res[0] : 0;
+                        bool pdfUnsupported = res != null && res.Length > 1 && res[1] is bool && (bool)res[1];
+
+                        // "No documentation files found" was reported for ANY zero-chunk outcome, which
+                        // blamed the folder for a problem that is usually this machine's: PDF text
+                        // extraction shells out to Poppler's pdftotext.exe, which isn't bundled. Git for
+                        // Windows happens to ship one, so PDFs import fine for anyone with Git installed
+                        // and silently yield nothing for everyone else — reported as an empty folder,
+                        // with the word "pdf" right there in the list of supported formats. (#167)
+                        string resultMsg;
+                        if (chunks > 0)
+                            resultMsg = "Imported " + chunks + " chunks";
+                        else if (pdfUnsupported)
+                            resultMsg = "Found PDFs, but this machine has no PDF text extractor, so none could be read. "
+                                      + "Install Poppler's pdftotext.exe (Git for Windows includes one) and import again. "
+                                      + "Other formats (htm, html, chm, md) are unaffected.";
+                        else
+                            resultMsg = "No documentation files found (htm, html, chm, pdf, md)";
                         string msg = "{\"type\":\"importDocResult\",\"success\":" + (chunks > 0 ? "true" : "false")
                             + ",\"message\":\"" + EscapeJson(resultMsg) + "\"}";
                         _webView.CoreWebView2.PostWebMessageAsString(msg);

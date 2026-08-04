@@ -924,6 +924,20 @@ namespace ClarionAssistant.Services
         /// Finds pdftotext.exe by checking known locations and PATH.
         /// Caches the result for subsequent calls.
         /// </summary>
+        /// <summary>
+        /// Can this machine extract text from a PDF at all?
+        ///
+        /// PDF ingestion shells out to Poppler's pdftotext.exe, which is NOT bundled — it is
+        /// discovered opportunistically from a few known locations or PATH. Git for Windows happens
+        /// to ship one, so the feature works on any machine with Git installed and silently produces
+        /// nothing everywhere else. Callers need to be able to tell the user which situation they're
+        /// in, because "0 chunks" on its own is indistinguishable from an empty folder (#167).
+        /// </summary>
+        public static bool IsPdfSupportAvailable()
+        {
+            return FindPdfToText() != null;
+        }
+
         private static string FindPdfToText()
         {
             if (_pdfToTextPath != null)
