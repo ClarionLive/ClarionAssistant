@@ -1005,6 +1005,18 @@ namespace ClarionAssistant.Services
         private static bool IsClassIdentifier(string name)
         {
             if (string.IsNullOrEmpty(name)) return false;
+
+            // Must be MixedCase. An ALL-CAPS token is a Clarion keyword or control type, not a class:
+            // the Language Reference has an "OLE Properties" section, and OLE passes the capital
+            // count easily. Latching it attributed 341 chunks to class "OLE" and — because the
+            // breadcrumb then read "OLE > PROP:ImageBits" instead of "PROP:ImageBits" — dropped the
+            // property out of the exact-heading tier, handing rank back to the CHM copy and undoing
+            // the PROP: ranking win outright. Every real class carries lowercase (WindowManager,
+            // IListControl, TagHTMLHelp); OLE, SHEET, ENTRY do not.
+            bool hasLower = false;
+            foreach (char ch in name) if (char.IsLower(ch)) { hasLower = true; break; }
+            if (!hasLower) return false;
+
             if (name.EndsWith("Class", StringComparison.Ordinal)) return true;
             int caps = 0;
             foreach (char ch in name) if (char.IsUpper(ch)) caps++;
