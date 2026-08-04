@@ -1337,16 +1337,18 @@ namespace ClarionAssistant.Dialogs
 
                         // "No documentation files found" was reported for ANY zero-chunk outcome, which
                         // blamed the folder for a problem that is usually this machine's: PDF text
-                        // extraction shells out to Poppler's pdftotext.exe, which isn't bundled. Git for
-                        // Windows happens to ship one, so PDFs import fine for anyone with Git installed
-                        // and silently yield nothing for everyone else — reported as an empty folder,
-                        // with the word "pdf" right there in the list of supported formats. (#167)
+                        // extraction shells out to an external pdftotext.exe that is NOT bundled and is
+                        // not shipped by anything the addin requires. It works only on machines that
+                        // happen to have one, and silently yields nothing everywhere else — reported as
+                        // an empty folder, with "pdf" right there in the list of supported formats.
+                        // (#167)
                         string resultMsg;
                         if (chunks > 0)
                             resultMsg = "Imported " + chunks + " chunks";
                         else if (pdfUnsupported)
                             resultMsg = "Found PDFs, but this machine has no PDF text extractor, so none could be read. "
-                                      + "Install Poppler's pdftotext.exe (Git for Windows includes one) and import again. "
+                                      + "Install a command-line pdftotext.exe (Xpdf command-line tools, or Poppler) and "
+                                      + "put it on your PATH, then import again. "
                                       + "Other formats (htm, html, chm, md) are unaffected.";
                         else
                             resultMsg = "No documentation files found (htm, html, chm, pdf, md)";

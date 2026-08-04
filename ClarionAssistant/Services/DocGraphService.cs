@@ -927,11 +927,16 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// Can this machine extract text from a PDF at all?
         ///
-        /// PDF ingestion shells out to Poppler's pdftotext.exe, which is NOT bundled — it is
-        /// discovered opportunistically from a few known locations or PATH. Git for Windows happens
-        /// to ship one, so the feature works on any machine with Git installed and silently produces
+        /// PDF ingestion shells out to a command-line pdftotext.exe, which is NOT bundled — it is
+        /// discovered opportunistically from a few hardcoded locations or PATH. Nothing this addin
+        /// requires installs one (checked: Git for Windows does NOT ship it — its mingw64 tree
+        /// carries a share\licenses entry per packaged component and has neither xpdf nor poppler),
+        /// so the feature works only where a developer happens to have put one and silently produces
         /// nothing everywhere else. Callers need to be able to tell the user which situation they're
         /// in, because "0 chunks" on its own is indistinguishable from an empty folder (#167).
+        ///
+        /// Both Xpdf's and Poppler's builds answer to this name and both are accepted — the argument
+        /// form used here ("-layout <file> -") is common to them.
         /// </summary>
         public static bool IsPdfSupportAvailable()
         {
