@@ -989,6 +989,29 @@ namespace ClarionAssistant.Services
         /// this is what tells them apart.
         /// </summary>
         /// <summary>
+        /// Does this identifier name a class, or is it a subsection word that happens to sit in the
+        /// same "&lt;word&gt; Methods" shape?
+        ///
+        /// Broadening the class-section pattern beyond names ending in "Class" also lets in
+        /// "Virtual Methods", "Derived Methods" and "Access Methods" — subsections, not classes.
+        /// Latching those would attribute a class's methods to a heading like "Virtual".
+        ///
+        /// The corpus separates the two cleanly on capital count. Every genuine ABC class or
+        /// interface is compound and carries at least two capitals — FileManager, WindowManager,
+        /// IListControl, DbAuditManager, ErrorLogInterface, TagHTMLHelp. Every false positive is a
+        /// single plain word with one — Virtual, Derived, Access, Crystal8. Verified against all 26
+        /// non-"Class" section heads in ABC Library Reference: 22 real, 4 excluded, no overlap.
+        /// </summary>
+        private static bool IsClassIdentifier(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            if (name.EndsWith("Class", StringComparison.Ordinal)) return true;
+            int caps = 0;
+            foreach (char ch in name) if (char.IsUpper(ch)) caps++;
+            return caps >= 2;
+        }
+
+        /// <summary>
         /// Collapse the line-wrap variants of a section name to one spelling.
         ///
         /// The PDF wraps long section headings, so a single section name reaches the chunker in
@@ -1050,8 +1073,17 @@ namespace ClarionAssistant.Services
             // that name the owning class; every subsection below them ("Non-Virtual Methods",
             // "Occasional Use:") is identical across every class in the document, so without latching
             // this we cannot tell one class's "Occasional Use" from another's.
+            // NOT restricted to names ending in "Class". 26 ABC classes and interfaces don't —
+            // WindowManager, FileManager, RelationManager, ViewManager, IListControl,
+            // ErrorLogInterface and the rest — so the latch ran straight past their sections and
+            // their methods inherited whatever class came before. That is how WindowManager.Update
+            // ended up filed under "WindowResizeClass > Update": not a missing breadcrumb but a
+            // WRONG one, which is worse, and an accidental violation of the assert-less rule the leaf
+            // headings follow by design (CA-Terminal-1-CC).
+            //
+            // IsClassIdentifier below is what keeps this from over-matching; see its note.
             var classSectionHeader = new Regex(
-                @"^\s*([A-Za-z][A-Za-z0-9_]*Class)\s+(Overview|Properties|Methods|Concepts|Functional\s+Organization.*)\s*$",
+                @"^\s*([A-Za-z][A-Za-z0-9_]*)\s+(Overview|Properties|Methods|Concepts|Functional\s+Organization.*)\s*$",
                 RegexOptions.IgnoreCase);
 
             // A dot-leader line: "GetLine (return line of text) ......... 59". Table-of-contents and
@@ -1079,6 +1111,7 @@ namespace ClarionAssistant.Services
             string currentSection = null;   // e.g. "Non-Virtual Methods" — the level between class and subsection
             int tocLines = 0, bodyLines = 0;
             int leaderRun = 0;              // consecutive dot-leader lines, for the index→prose boundary
+            var classCasing = new Dictionary<string, string>();   // lowercase key → first spelling seen
 
             // True when currentHeading came from a LEAF detector (a method or PROP: definition) rather
             // than a section-level one. The middle breadcrumb segment is unreliable for those: walking
@@ -1171,10 +1204,18 @@ namespace ClarionAssistant.Services
                 // section — which is how TOC pages ended up tagged 'section' and escaping the
                 // index demotion.
                 var clsm = dotLeaderLine.IsMatch(trimmed) ? Match.Empty : classSectionHeader.Match(trimmed);
+                if (clsm.Success && !IsClassIdentifier(clsm.Groups[1].Value.Trim())) clsm = Match.Empty;
                 if (clsm.Success)
                 {
                     flush(false);
-                    currentClass = clsm.Groups[1].Value.Trim();
+                    // Canonicalise casing. The same class reaches us spelled two ways —
+                    // ASCIIFileClass and AsciiFileClass, likewise ASCIIPrint/Search/Viewer — which
+                    // would split any class_name= filter in half. First spelling seen in a document
+                    // wins; consistency matters here, not which variant.
+                    string rawClass = clsm.Groups[1].Value.Trim();
+                    string key = rawClass.ToLowerInvariant();
+                    if (!classCasing.ContainsKey(key)) classCasing[key] = rawClass;
+                    currentClass = classCasing[key];
                     currentSection = NormalizeSectionName(clsm.Groups[2].Value.Trim());
                     currentHeading = null;
                     headingIsLeaf = false;
@@ -1322,7 +1363,13 @@ namespace ClarionAssistant.Services
                     }
                     if (nextIsLeader) indexish++; else prose++;
                 }
+                // The >=3 floor exists so a paragraph citing a couple of page numbers isn't mistaken
+                // for a contents page. But a chunk that is ENTIRELY dot-leaders can never reach it
+                // when it is only one or two lines long — 12 such fragments survived corpus-wide,
+                // two of them wearing a class breadcrumb (CA-Terminal-1-CC). Purity is its own
+                // evidence, so no floor applies when there is no prose at all.
                 if (indexish >= 3 && indexish > prose) ch.Topic = "index";
+                else if (indexish > 0 && prose == 0) ch.Topic = "index";
             }
 
             return chunks;
