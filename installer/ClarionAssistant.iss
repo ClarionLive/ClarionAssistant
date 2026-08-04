@@ -1,4 +1,4 @@
-; Clarion Assistant v5.3 Installer
+﻿; Clarion Assistant v5.3 Installer
 ; Inno Setup 6 Script
 ; Supports Clarion 10, 11, 12 — user picks which version(s) to install
 
@@ -183,6 +183,17 @@ Source: "{#SrcC10}\Microsoft.Web.WebView2.WinForms.dll"; DestDir: "{code:GetC10P
 Source: "{#SrcC10}\Microsoft.Web.WebView2.Wpf.dll"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcC10}\WebView2Loader.dll"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcC10}\runtimes\win-x86\native\WebView2Loader.dll"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\runtimes\win-x86\native"; Components: clarion10; Flags: ignoreversion
+;   PdfPig - in-process PDF text extraction for DocGraph ingestion (#167). The UglyToad.*
+;   wildcard covers the seven PdfPig assemblies; the five shims below are NOT inbox on .NET
+;   Framework 4.8 and arrive via PdfPig package dependencies. Omitting any one fails at
+;   RUNTIME on the first PDF import, not at build - so a missing entry here looks exactly
+;   like the silent 'no documents found' bug it replaced. Mirrors the block in deploy.ps1.
+Source: "{#SrcC10}\UglyToad.*.dll"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
+Source: "{#SrcC10}\Microsoft.Bcl.HashCode.dll"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
+Source: "{#SrcC10}\System.Buffers.dll"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
+Source: "{#SrcC10}\System.Memory.dll"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
+Source: "{#SrcC10}\System.Numerics.Vectors.dll"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
+Source: "{#SrcC10}\System.Runtime.CompilerServices.Unsafe.dll"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
 ; Everything SDK native DLL — used by EverythingService P/Invokes (4 MCP search tools).
 ; Harmless if the user has no Everything service running; the DLL is just the SDK shim.
 Source: "{#SrcC10}\Everything32.dll"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
@@ -227,6 +238,17 @@ Source: "{#SrcC11}\Microsoft.Web.WebView2.WinForms.dll"; DestDir: "{code:GetC11P
 Source: "{#SrcC11}\Microsoft.Web.WebView2.Wpf.dll"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcC11}\WebView2Loader.dll"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcC11}\runtimes\win-x86\native\WebView2Loader.dll"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\runtimes\win-x86\native"; Components: clarion11; Flags: ignoreversion
+;   PdfPig - in-process PDF text extraction for DocGraph ingestion (#167). The UglyToad.*
+;   wildcard covers the seven PdfPig assemblies; the five shims below are NOT inbox on .NET
+;   Framework 4.8 and arrive via PdfPig package dependencies. Omitting any one fails at
+;   RUNTIME on the first PDF import, not at build - so a missing entry here looks exactly
+;   like the silent 'no documents found' bug it replaced. Mirrors the block in deploy.ps1.
+Source: "{#SrcC11}\UglyToad.*.dll"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
+Source: "{#SrcC11}\Microsoft.Bcl.HashCode.dll"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
+Source: "{#SrcC11}\System.Buffers.dll"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
+Source: "{#SrcC11}\System.Memory.dll"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
+Source: "{#SrcC11}\System.Numerics.Vectors.dll"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
+Source: "{#SrcC11}\System.Runtime.CompilerServices.Unsafe.dll"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcC11}\Everything32.dll"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcFts5}\System.Data.SQLite.dll"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcFts5}\SQLite.Interop.dll"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
@@ -271,6 +293,17 @@ Source: "{#SrcC11_1}\Microsoft.Web.WebView2.WinForms.dll"; DestDir: "{code:GetC1
 Source: "{#SrcC11_1}\Microsoft.Web.WebView2.Wpf.dll"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcC11_1}\WebView2Loader.dll"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcC11_1}\runtimes\win-x86\native\WebView2Loader.dll"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\runtimes\win-x86\native"; Components: clarion111; Flags: ignoreversion
+;   PdfPig - in-process PDF text extraction for DocGraph ingestion (#167). The UglyToad.*
+;   wildcard covers the seven PdfPig assemblies; the five shims below are NOT inbox on .NET
+;   Framework 4.8 and arrive via PdfPig package dependencies. Omitting any one fails at
+;   RUNTIME on the first PDF import, not at build - so a missing entry here looks exactly
+;   like the silent 'no documents found' bug it replaced. Mirrors the block in deploy.ps1.
+Source: "{#SrcC11_1}\UglyToad.*.dll"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
+Source: "{#SrcC11_1}\Microsoft.Bcl.HashCode.dll"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
+Source: "{#SrcC11_1}\System.Buffers.dll"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
+Source: "{#SrcC11_1}\System.Memory.dll"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
+Source: "{#SrcC11_1}\System.Numerics.Vectors.dll"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
+Source: "{#SrcC11_1}\System.Runtime.CompilerServices.Unsafe.dll"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcC11_1}\Everything32.dll"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcFts5}\System.Data.SQLite.dll"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcFts5}\SQLite.Interop.dll"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
@@ -312,6 +345,17 @@ Source: "{#SrcC12}\Microsoft.Web.WebView2.WinForms.dll"; DestDir: "{code:GetC12P
 Source: "{#SrcC12}\Microsoft.Web.WebView2.Wpf.dll"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcC12}\WebView2Loader.dll"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcC12}\runtimes\win-x86\native\WebView2Loader.dll"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\runtimes\win-x86\native"; Components: clarion12; Flags: ignoreversion
+;   PdfPig - in-process PDF text extraction for DocGraph ingestion (#167). The UglyToad.*
+;   wildcard covers the seven PdfPig assemblies; the five shims below are NOT inbox on .NET
+;   Framework 4.8 and arrive via PdfPig package dependencies. Omitting any one fails at
+;   RUNTIME on the first PDF import, not at build - so a missing entry here looks exactly
+;   like the silent 'no documents found' bug it replaced. Mirrors the block in deploy.ps1.
+Source: "{#SrcC12}\UglyToad.*.dll"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
+Source: "{#SrcC12}\Microsoft.Bcl.HashCode.dll"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
+Source: "{#SrcC12}\System.Buffers.dll"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
+Source: "{#SrcC12}\System.Memory.dll"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
+Source: "{#SrcC12}\System.Numerics.Vectors.dll"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
+Source: "{#SrcC12}\System.Runtime.CompilerServices.Unsafe.dll"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcC12}\Everything32.dll"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcFts5}\System.Data.SQLite.dll"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcFts5}\SQLite.Interop.dll"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion

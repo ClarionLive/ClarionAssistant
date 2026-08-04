@@ -1323,7 +1323,7 @@ namespace ClarionAssistant.Dialogs
                 System.Diagnostics.Debug.WriteLine("[SettingsDialog] Import complete. Total chunks: " + totalChunks);
                 // Pack the PDF diagnosis alongside the count — the completion handler has no other
                 // way to know WHY zero came back.
-                e.Result = new object[] { totalChunks, sawPdf && !DocGraphService.IsPdfSupportAvailable() };
+                e.Result = new object[] { totalChunks, sawPdf };
             };
             worker.RunWorkerCompleted += (s, e) =>
             {
@@ -1333,22 +1333,21 @@ namespace ClarionAssistant.Dialogs
                     {
                         var res = e.Result as object[];
                         int chunks = (res != null && res.Length > 0 && res[0] is int) ? (int)res[0] : 0;
-                        bool pdfUnsupported = res != null && res.Length > 1 && res[1] is bool && (bool)res[1];
+                        bool sawPdf = res != null && res.Length > 1 && res[1] is bool && (bool)res[1];
 
-                        // "No documentation files found" was reported for ANY zero-chunk outcome, which
-                        // blamed the folder for a problem that is usually this machine's: PDF text
-                        // extraction shells out to an external pdftotext.exe that is NOT bundled and is
-                        // not shipped by anything the addin requires. It works only on machines that
-                        // happen to have one, and silently yields nothing everywhere else — reported as
-                        // an empty folder, with "pdf" right there in the list of supported formats.
+                        // Zero chunks used to be reported as "No documentation files found" whatever the
+                        // cause, which blamed the folder for what was usually a missing external
+                        // pdftotext.exe. Extraction is now in-process (PdfPig), so a PDF that yields
+                        // nothing is a property of the FILE — most often a scanned/image-only PDF with
+                        // no text layer at all, which no text extractor can help with. Say that, rather
+                        // than sending the user back to look at a folder that was never the problem.
                         // (#167)
                         string resultMsg;
                         if (chunks > 0)
                             resultMsg = "Imported " + chunks + " chunks";
-                        else if (pdfUnsupported)
-                            resultMsg = "Found PDFs, but this machine has no PDF text extractor, so none could be read. "
-                                      + "Install a command-line pdftotext.exe (Xpdf command-line tools, or Poppler) and "
-                                      + "put it on your PATH, then import again. "
+                        else if (sawPdf)
+                            resultMsg = "Found PDFs, but no text could be read from them. This usually means they are "
+                                      + "scanned images with no text layer — those need OCR, which isn't supported. "
                                       + "Other formats (htm, html, chm, md) are unaffected.";
                         else
                             resultMsg = "No documentation files found (htm, html, chm, pdf, md)";

@@ -159,6 +159,24 @@ $Items = @(
     "Microsoft.Web.WebView2.WinForms.dll"
     "Microsoft.Web.WebView2.Wpf.dll"
     "WebView2Loader.dll"
+    # PdfPig — in-process PDF text extraction for DocGraph ingestion (#167). ALL of these ship:
+    # the five System.*/Microsoft.Bcl shims are NOT inbox on .NET Framework 4.8, they arrive via
+    # PdfPig's own package dependencies, and omitting any one of them fails at RUNTIME (the first
+    # PDF import throws FileNotFoundException) rather than at build — so a missing entry here would
+    # look exactly like the silent "no documents found" bug this replaced. Keep in sync with the
+    # matching block in installer\ClarionAssistant.iss.
+    "UglyToad.PdfPig.dll"
+    "UglyToad.PdfPig.Core.dll"
+    "UglyToad.PdfPig.DocumentLayoutAnalysis.dll"
+    "UglyToad.PdfPig.Fonts.dll"
+    "UglyToad.PdfPig.Package.dll"
+    "UglyToad.PdfPig.Tokenization.dll"
+    "UglyToad.PdfPig.Tokens.dll"
+    "Microsoft.Bcl.HashCode.dll"
+    "System.Buffers.dll"
+    "System.Memory.dll"
+    "System.Numerics.Vectors.dll"
+    "System.Runtime.CompilerServices.Unsafe.dll"
     # DEPLOY INVARIANT: Terminal\ is copied as a whole folder, which is the ONLY safe way to ship the
     # Monaco editor pages. monaco-embeditor.html and monaco-diff.html have a HARD runtime dependency on
     # Terminal\clarion-language.js (the shared Clarion grammar + folding registration, task 04dd97f9) —

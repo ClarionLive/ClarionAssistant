@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Data.SQLite;
 using System.IO;
@@ -884,112 +884,58 @@ namespace ClarionAssistant.Services
         /// Extract text from PDF using pdftotext (xpdf/poppler).
         /// Searches known install locations since IDE process PATH may differ from shell.
         /// </summary>
+        /// <summary>
+        /// Extract a PDF's text with PdfPig (in-process, Apache-2.0).
+        ///
+        /// This replaced shelling out to an external `pdftotext -layout`, for two reasons:
+        ///
+        /// 1. AVAILABILITY. The binary was never bundled and nothing the addin requires installs
+        ///    one — not Git for Windows, whose mingw64 tree carries a share\licenses entry per
+        ///    packaged component and has neither xpdf nor poppler. PDF import therefore worked only
+        ///    on machines where a developer happened to have put one, and silently produced nothing
+        ///    everywhere else, reported to the user as an empty folder (#167).
+        ///
+        /// 2. ACCURACY — the bigger surprise. Measured over 60-page samples of LanguageReference,
+        ///    ABC Library Reference, CapeSoft NetTalk and BoxSoft Super Security, PdfPig recovers
+        ///    100/100/100/98.5% of pdftotext's vocabulary, so nothing is lost. But on multi-column
+        ///    TABLES pdftotext -layout misaligns columns: in LanguageReference's date-picture table
+        ///    it pairs @D6 (dd/mm/yyyy) with "10/1959" — which is @D14's value, and cannot be a
+        ///    dd/mm/yyyy rendering of any date — and drops several cells entirely. PdfPig's
+        ///    reading-order extractor gets every row right. Those tables are exactly what a Clarion
+        ///    developer searches the docs for, so the old path was indexing wrong answers.
+        ///
+        /// ContentOrderTextExtractor (not page.Text) is what produces reading order; page.Text
+        /// returns content-stream order, which is arbitrary.
+        ///
+        /// Per-page failures are tolerated: a damaged page contributes nothing rather than losing
+        /// the whole document.
+        /// </summary>
         private string ExtractPdfText(string pdfPath)
         {
-            string exePath = FindPdfToText();
-            if (exePath == null)
+            try
+            {
+                var sb = new StringBuilder();
+                using (var doc = UglyToad.PdfPig.PdfDocument.Open(pdfPath))
+                {
+                    foreach (var page in doc.GetPages())
+                    {
+                        try
+                        {
+                            sb.AppendLine(UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor
+                                .ContentOrderTextExtractor.GetText(page));
+                        }
+                        catch { /* skip an unreadable page, keep the rest of the document */ }
+                    }
+                }
+                return sb.ToString();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[DocGraph] PDF extraction failed for " + pdfPath + ": " + ex.Message);
                 return "";
-
-            try
-            {
-                var psi = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = exePath,
-                    Arguments = string.Format("-layout \"{0}\" -", pdfPath),
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    StandardOutputEncoding = Encoding.UTF8
-                };
-
-                using (var proc = System.Diagnostics.Process.Start(psi))
-                {
-                    // Drain stderr asynchronously to prevent deadlock when buffer fills
-                    proc.BeginErrorReadLine();
-                    string output = proc.StandardOutput.ReadToEnd();
-                    proc.WaitForExit(60000);
-                    if (proc.ExitCode == 0 && !string.IsNullOrEmpty(output))
-                        return output;
-                }
             }
-            catch { }
-
-            return "";
         }
 
-        private static string _pdfToTextPath;
-
-        /// <summary>
-        /// Finds pdftotext.exe by checking known locations and PATH.
-        /// Caches the result for subsequent calls.
-        /// </summary>
-        /// <summary>
-        /// Can this machine extract text from a PDF at all?
-        ///
-        /// PDF ingestion shells out to a command-line pdftotext.exe, which is NOT bundled — it is
-        /// discovered opportunistically from a few hardcoded locations or PATH. Nothing this addin
-        /// requires installs one (checked: Git for Windows does NOT ship it — its mingw64 tree
-        /// carries a share\licenses entry per packaged component and has neither xpdf nor poppler),
-        /// so the feature works only where a developer happens to have put one and silently produces
-        /// nothing everywhere else. Callers need to be able to tell the user which situation they're
-        /// in, because "0 chunks" on its own is indistinguishable from an empty folder (#167).
-        ///
-        /// Both Xpdf's and Poppler's builds answer to this name and both are accepted — the argument
-        /// form used here ("-layout <file> -") is common to them.
-        /// </summary>
-        public static bool IsPdfSupportAvailable()
-        {
-            return FindPdfToText() != null;
-        }
-
-        private static string FindPdfToText()
-        {
-            if (_pdfToTextPath != null)
-                return _pdfToTextPath == "" ? null : _pdfToTextPath;
-
-            // Known install locations
-            string[] candidates = new[]
-            {
-                @"C:\Program Files\Git\mingw64\bin\pdftotext.exe",
-                @"C:\Program Files (x86)\Git\mingw64\bin\pdftotext.exe",
-                @"C:\msys64\mingw64\bin\pdftotext.exe",
-                @"C:\poppler\bin\pdftotext.exe",
-            };
-
-            foreach (string path in candidates)
-            {
-                if (File.Exists(path))
-                {
-                    _pdfToTextPath = path;
-                    return path;
-                }
-            }
-
-            // Try PATH as fallback
-            try
-            {
-                var psi = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = "pdftotext",
-                    Arguments = "-v",
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
-                using (var proc = System.Diagnostics.Process.Start(psi))
-                {
-                    proc.WaitForExit(5000);
-                    _pdfToTextPath = "pdftotext";
-                    return _pdfToTextPath;
-                }
-            }
-            catch { }
-
-            _pdfToTextPath = "";
-            return null;
-        }
 
         /// <summary>
         /// Chunks PDF text by detecting heading patterns (ALL CAPS lines, numbered chapters,

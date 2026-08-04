@@ -313,6 +313,14 @@
       <Version>1.0.3800.47</Version>
       <GeneratePathProperty>true</GeneratePathProperty>
     </PackageReference>
+    <!-- PDF text extraction for DocGraph ingestion (#167). Replaces shelling out to an external
+         pdftotext.exe, which was neither bundled nor installed by anything we require — so PDF
+         import silently produced nothing on any machine that happened not to have one. Apache-2.0,
+         netstandard2.0, in-process. -->
+    <PackageReference Include="PdfPig">
+      <Version>0.1.10</Version>
+      <GeneratePathProperty>true</GeneratePathProperty>
+    </PackageReference>
   </ItemGroup>
   <!--
     PrebuildVersion: runs Update-Version.ps1 before compile. Increments VersionBuild in
