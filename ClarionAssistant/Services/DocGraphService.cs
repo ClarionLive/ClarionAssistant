@@ -1016,6 +1016,16 @@ namespace ClarionAssistant.Services
             // all-caps keywordPattern, so these were never detected as headings at all.
             var methodDefPattern = new Regex(@"^\s*([A-Z][A-Za-z0-9_]*)\s+\(([^)]{3,})\)\s*$");
 
+            // Property reference: a bare "PROP:NumTabs" on its own line. In the Language Reference
+            // this IS the document's own heading convention for the PROP: section — the same kind of
+            // existing structure methodDefPattern reads, not an invented one. Without it the entire
+            // property reference accumulated under whatever major heading preceded it: 46 parts filed
+            // under "OPEN", which is not OPEN at all. Measured cost (CA-Terminal-1-CC): for
+            // "PROP:ImageBits" the ClarionHelp copy wins on rank purely because its heading names the
+            // property, while the identical LanguageReference text places lower under "OPEN (part 4)".
+            // That damage is currently masked by the CHM duplicating this content.
+            var propRefPattern = new Regex(@"^\s*(PROP:[A-Za-z_][A-Za-z0-9_]*)\s*$", RegexOptions.IgnoreCase);
+
             // A class-section header: "AsciiFileClass Methods", "ASCIIFileClass Functional
             // Organization--Expected Use", "<X>Class Overview/Properties". These are the only lines
             // that name the owning class; every subsection below them ("Non-Virtual Methods",
@@ -1028,7 +1038,17 @@ namespace ClarionAssistant.Services
             // A dot-leader line: "GetLine (return line of text) ......... 59". Table-of-contents and
             // index pages are made of these. They are nearly pure keyword, so bm25 ranks them above
             // real prose for any class-name query — 28.7% of the index before this was handled.
-            var dotLeaderLine = new Regex(@"\.{4,}\s*\d+\s*$");
+            //
+            // Two forms, both needed. An INDEX entry (as opposed to a contents entry) cites several
+            // pages and often ends on a comma — "ASCIISearchClass ........ 85, 86, 87," — which a
+            // trailing "\d+$" misses; and some use a single dot before the list rather than a run of
+            // them: "CreateControl (create the edit-in-place control) . 343, 376,". Missing these was
+            // what left pure-index chunks looking half-prose, so they escaped the ratio test below
+            // and kept their 'section' topic. Found by inspecting the survivors rather than by
+            // loosening the ratio, which would have buried the genuine Foreword and method-body
+            // chunks that legitimately contain a few index-shaped lines.
+            var dotLeaderLine = new Regex(
+                @"(\.{4,}\s*\d+(\s*,\s*\d+)*\s*,?\s*$)|(\.\s*\d+(\s*,\s*\d+)+\s*,?\s*$)");
 
             // Page furniture: "ABC Library Reference 54" — the running footer, which lands in the
             // middle of body text and otherwise gets chunked as content (and can trip heading
@@ -1094,7 +1114,11 @@ namespace ClarionAssistant.Services
                 else if (trimmed.Trim().Length > 0) bodyLines++;
 
                 // Class-section header — latch the owning class and reset the subsection context.
-                var clsm = classSectionHeader.Match(trimmed);
+                // Dot-leader lines are excluded: the trailing ".*" in the pattern happily swallows
+                // "..... 54", so a table-of-contents entry would otherwise be read as a real class
+                // section — which is how TOC pages ended up tagged 'section' and escaping the
+                // index demotion.
+                var clsm = dotLeaderLine.IsMatch(trimmed) ? Match.Empty : classSectionHeader.Match(trimmed);
                 if (clsm.Success)
                 {
                     flush(false);
@@ -1151,6 +1175,17 @@ namespace ClarionAssistant.Services
                     }
                 }
 
+                // Property reference: a bare "PROP:NumTabs" line.
+                if (!isHeading && !dotLeaderLine.IsMatch(trimmed))
+                {
+                    var pm2 = propRefPattern.Match(trimmed);
+                    if (pm2.Success)
+                    {
+                        isHeading = true;
+                        newHeading = pm2.Groups[1].Value.Trim();
+                    }
+                }
+
                 // Reject anything that is really a token out of an example, or a sentence that
                 // happened to end in a colon.
                 if (isHeading && !IsPlausibleHeading(newHeading))
@@ -1188,6 +1223,30 @@ namespace ClarionAssistant.Services
             }
 
             flush(true);
+
+            // Final content-based retag. The running tally above classifies a chunk from the lines
+            // seen while it accumulated, which misses the case where a TOC page OPENS with a line
+            // that looks like a real heading — the dot leaders only start on line 2, so the chunk is
+            // born 'section' and never meets the tier-9 demotion in QueryDocs. 124 such chunks
+            // survived corpus-wide (from 8,241), and one of them was still landing in the top 3 for
+            // a bare class-name query.
+            //
+            // Judging the finished text is simply more truthful than bookkeeping during the walk:
+            // whatever route a chunk took to get here, if most of its lines are "Something ..... 54"
+            // then it is an index page.
+            foreach (var ch in chunks)
+            {
+                if (ch.Topic == "index" || string.IsNullOrEmpty(ch.Content)) continue;
+                var chunkLines = ch.Content.Split('\n');
+                int leaders = 0, real = 0;
+                foreach (var cl in chunkLines)
+                {
+                    if (cl.Trim().Length == 0) continue;
+                    if (dotLeaderLine.IsMatch(cl)) leaders++; else real++;
+                }
+                if (leaders >= 3 && leaders > real) ch.Topic = "index";
+            }
+
             return chunks;
         }
 
