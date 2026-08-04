@@ -1899,6 +1899,13 @@ namespace ClarionAssistant.Services
                     foreach (var s in syms)
                     {
                         if (s == null || string.IsNullOrEmpty(s.Name)) continue;
+                        // A "local" symbol is procedure-private (CodeGraph's own scoping, set by
+                        // ClarionParser) — never a valid completion candidate outside the procedure
+                        // that declared it, let alone from a different file across the whole
+                        // solution. FindSymbols() has no scope awareness (plain name LIKE match), so
+                        // this merge must filter it out itself instead of surfacing every same-prefix
+                        // local from every procedure in every file as if it were global.
+                        if (string.Equals(s.Scope, "local", StringComparison.OrdinalIgnoreCase)) continue;
                         if (!s.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue; // true prefix only
                         if (bareNamesOnly && s.Name.IndexOf('.') >= 0) continue; // ClassName.Method → member-access only
                         if (!seen.Add(s.Name)) continue;
