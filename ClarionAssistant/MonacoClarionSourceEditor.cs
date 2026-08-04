@@ -993,8 +993,25 @@ namespace ClarionAssistant
             });
         }
 
-        // The rest stay inert for now (Step 6 wires Ctrl+D through the embeditor's openDesigner path).
-        void IMonacoEditorHost.OnClipboard(MonacoEditorControl editor, string rawJson) { }
+        /// <summary>{action:"clipboard"} — Clarion-style Ctrl+X (doClarionCut in monaco-embeditor.html) posts the
+        /// cut/removed text here before deleting it from the buffer. This host used to leave the message unhandled,
+        /// so Ctrl+X in the CA Editor silently deleted the line without ever reaching the Windows clipboard —
+        /// unlike the embeditor's own OnClipboard (ModernEmbeditorViewContent.HandleClipboard), which does the
+        /// same Clipboard.SetText call. Clipboard.SetText throws on an empty string, hence the " " fallback,
+        /// matching the embeditor's handling exactly.</summary>
+        void IMonacoEditorHost.OnClipboard(MonacoEditorControl editor, string rawJson)
+        {
+            try
+            {
+                var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                var data = ser.DeserializeObject(rawJson) as Dictionary<string, object>;
+                string text = (data != null && data.ContainsKey("text")) ? (data["text"]?.ToString() ?? "") : null;
+                if (text == null) { MonacoSpikeLog.Write("OnClipboard: no 'text' field in payload (" + (rawJson ?? "").Length + " raw chars)"); return; }
+                Clipboard.SetText(text.Length == 0 ? " " : text);
+                MonacoSpikeLog.Write("OnClipboard: wrote " + text.Length + " chars to clipboard");
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("OnClipboard error: " + ex.Message); }
+        }
 
         // CA Find pad protocol (GitHub #66) — the broker routes to/from the dockable pad.
         void IMonacoEditorHost.OnCaFind(MonacoEditorControl editor, string action, string rawJson)
@@ -1115,7 +1132,23 @@ namespace ClarionAssistant
             filePath = _filePath; line = _lastCursorLine; column = _lastCursorCol;
             return line >= 1 && !string.IsNullOrEmpty(_filePath);
         }
-        void IMonacoEditorHost.OnFocusEditor(MonacoEditorControl editor) { }
+        /// <summary>{action:"focusEditor"} — installDropInsert's native OS drop handler (monaco-embeditor.html)
+        /// posts this after a Data-pad field drag-drop lands directly on the WebView2 surface, since OS keyboard
+        /// focus stays on the Data pad (a separate WebView2) after the drop. This host used to leave the message
+        /// unhandled, so the CA Editor's own workbench tab never reclaimed activation after such a drop — same
+        /// gap as OnClipboard above, just for a different message. Reuses the SelectWindow reflection idiom
+        /// already used elsewhere in this file (e.g. OnWorkbenchWindowSelected, CloseWorkbenchTab).</summary>
+        void IMonacoEditorHost.OnFocusEditor(MonacoEditorControl editor)
+        {
+            try
+            {
+                object wbw = _wbWindow;
+                if (wbw == null) { try { wbw = GetType().GetProperty("WorkbenchWindow")?.GetValue(this, null); } catch { } }
+                if (wbw == null) { MonacoSpikeLog.Write("focusEditor: WorkbenchWindow not available"); return; }
+                wbw.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(wbw, null);
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("OnFocusEditor error: " + ex.Message); }
+        }
 
         // Reload button (fileMode page, two-click confirm): discards the overlay's in-buffer edits and
         // re-reads the file fresh from disk, then resends it as a new setSource — same message shape
