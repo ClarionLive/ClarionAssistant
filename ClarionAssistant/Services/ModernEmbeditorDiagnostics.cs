@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 
 namespace ClarionAssistant.Services
 {
@@ -142,7 +143,7 @@ namespace ClarionAssistant.Services
         /// or labels as if a structure opened, producing bogus "FILE is not terminated with END" errors.
         /// The LSP/compiler does real whole-file structure validation, so the heuristic adds only noise.
         /// </summary>
-        public static List<Dictionary<string, object>> Compute(
+        public static async Task<List<Dictionary<string, object>>> ComputeAsync(
             string lspFileName, string buffer, List<int[]> ranges, string procedureName,
             bool embedSlotChecks = true, EmbedLspContext lspContext = null)
         {
@@ -162,11 +163,8 @@ namespace ClarionAssistant.Services
                     int off = (lspContext != null) ? lspContext.LineOffset : 0;
                     SharedLspBridge.EnsureBufferSynced(lspFileName,
                         (lspContext != null) ? lspContext.WrapBuffer(buffer) : buffer);
-                    var wait = SharedLspBridge.WaitForDiagnostics(lspFileName, 1500, true);
                     List<LspClient.DiagnosticEntry> entries =
-                        (wait != null && !wait.Pending && wait.Entries != null)
-                            ? wait.Entries
-                            : (SharedLspBridge.GetCachedDiagnostics(lspFileName) ?? new List<LspClient.DiagnosticEntry>());
+                        await WaitForSettledDiagnosticsAsync(lspFileName).ConfigureAwait(false);
 
                     foreach (var d in entries)
                     {
@@ -327,6 +325,51 @@ namespace ClarionAssistant.Services
             }
 
             return markers;
+        }
+
+        // The Clarion LSP publishes diagnostics progressively for a file that just changed: an early
+        // batch (sometimes empty) arrives first, with slower checks — e.g. the cross-file scope
+        // resolution behind an undeclared-variable warning — landing in a later republish. A single
+        // bounded WaitForDiagnostics can catch that early batch and mistake it for final: confirmed
+        // live (lsp_diagnostics raced an authoritative-looking "0 entries" twice in a row before the
+        // real, complete set — including the undeclared-variable warning — arrived on the 3rd query).
+        // That empty-but-premature result is indistinguishable from a genuinely clean file using
+        // WasPublished alone (both are "published, zero entries") — the same ambiguity PR #169
+        // (bb77f85) fixed for the diagnostics pill via a null-vs-empty check, which doesn't help here
+        // since this isn't null.
+        //
+        // Only an EMPTY result gets the extra scrutiny — a non-empty result already found something
+        // real and returns immediately, so files with existing diagnostics see no added latency.
+        // For an empty result, keep re-checking the (passive, non-blocking) diagnostics cache for a
+        // short settle window and take whatever lands, so a slow-to-resolve identifier gets the extra
+        // time its diagnostic needs instead of losing the race to the file's first, still-catching-up
+        // publish.
+        private const int SettleIntervalMs = 400;
+        private const int SettleMaxChecks = 5; // ~2s extra ceiling, on top of the initial 1500ms wait
+
+        // await Task.Delay, NOT Thread.Sleep: this runs on a thread-pool thread (both call sites
+        // dispatch through Task.Run), and slow typing — keystrokes further apart than the page's 600ms
+        // debounce — puts several of these requests in flight at once. Sleeping would park one pool
+        // thread per request for the whole settle window; past the pool's core-count baseline .NET only
+        // injects replacements at roughly 1-2/sec, so queuing delay compounds exactly when requests
+        // overlap, which is the same slow-machine case this settle window exists to serve.
+        private static async Task<List<LspClient.DiagnosticEntry>> WaitForSettledDiagnosticsAsync(string lspFileName)
+        {
+            var wait = SharedLspBridge.WaitForDiagnostics(lspFileName, 1500, true);
+            List<LspClient.DiagnosticEntry> last =
+                (wait != null && !wait.Pending && wait.Entries != null)
+                    ? wait.Entries
+                    : (SharedLspBridge.GetCachedDiagnostics(lspFileName) ?? new List<LspClient.DiagnosticEntry>());
+
+            for (int i = 0; last.Count == 0 && i < SettleMaxChecks; i++)
+            {
+                await Task.Delay(SettleIntervalMs).ConfigureAwait(false);
+                var next = SharedLspBridge.GetCachedDiagnostics(lspFileName);
+                if (next == null) continue; // no fresher publish yet — keep waiting out the settle window
+                last = next;
+                if (last.Count > 0) break; // a fuller batch landed — done, no need to keep waiting
+            }
+            return last;
         }
 
         private static bool InAnyRange(int line1, List<int[]> ranges)

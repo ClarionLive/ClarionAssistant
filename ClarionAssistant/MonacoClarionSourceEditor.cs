@@ -984,10 +984,14 @@ namespace ClarionAssistant
         {
             int reqId; string buffer; List<int[]> ranges;
             if (!ParseDiagRequest(rawJson, out reqId, out buffer, out ranges)) return;
-            System.Threading.Tasks.Task.Run(() =>
+            System.Threading.Tasks.Task.Run(async () =>
             {
                 var markers = new List<Dictionary<string, object>>();
-                try { markers = ModernEmbeditorDiagnostics.Compute(_filePath, buffer ?? "", ranges, null, embedSlotChecks: true); }
+                try
+                {
+                    markers = await ModernEmbeditorDiagnostics.ComputeAsync(
+                        _filePath, buffer ?? "", ranges, null, embedSlotChecks: true).ConfigureAwait(false);
+                }
                 catch (Exception ex) { MonacoSpikeLog.Write("overlay diagnostics error: " + ex.Message); }
                 editor.PostResponse(reqId, new Dictionary<string, object> { { "markers", markers } });
             });
