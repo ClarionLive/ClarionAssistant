@@ -355,24 +355,40 @@ namespace ClarionAssistant.Terminal
 
         /// <summary>Send a JSON message host-&gt;page (PostWebMessageAsJson), marshalled to the UI
         /// thread. Note: WebView2 delivers it to JS as a parsed OBJECT, not a string — page handlers
-        /// must not JSON.parse it. Used by the host for the state-assembled messages (SendSource etc.).</summary>
+        /// must not JSON.parse it. Used by the host for the state-assembled messages (SendSource etc.).
+        ///
+        /// GPF-on-close guard: a background continuation (e.g. the diagnostics settle-loop in
+        /// ModernEmbeditorDiagnostics.ComputeAsync, which can now run for several seconds) can still be
+        /// in flight when the embed is closed and DetachOverlay()/Dispose() tears this control down.
+        /// `_webView != null` alone does NOT detect that — Dispose() never nulls the field, only IsDisposed
+        /// flips. Worse, `InvokeRequired` on a control whose handle was just destroyed (mid-teardown, or
+        /// its parent chain was just severed by Controls.Remove) returns FALSE — not because we're on the
+        /// UI thread, but because it has no handle left to compare against — which used to fall through to
+        /// calling the WebView2/CoreWebView2 COM object (STA) directly from a thread-pool thread instead of
+        /// marshalling. That's undefined behaviour for an STA COM object mid-teardown and can produce a
+        /// native access violation no C# try/catch can intercept. IsDisposed is checked before trusting
+        /// InvokeRequired at all, and again inside the marshalled action (the two checks can't be merged
+        /// into one atomic test, but this closes the window down to the marshalling call itself).</summary>
         public void PostJson(string json)
         {
+            if (IsDisposed || _webView == null || _webView.IsDisposed) return;
             Action post = () =>
             {
-                try { if (_webView != null && _webView.CoreWebView2 != null) _webView.CoreWebView2.PostWebMessageAsJson(json); }
+                try { if (_webView != null && !_webView.IsDisposed && _webView.CoreWebView2 != null) _webView.CoreWebView2.PostWebMessageAsJson(json); }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[MonacoEditorControl] PostJson error: " + ex.Message); }
             };
             try { if (InvokeRequired) BeginInvoke(post); else post(); }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[MonacoEditorControl] PostJson marshal error: " + ex.Message); }
         }
 
-        /// <summary>Send a raw string message host-&gt;page (PostWebMessageAsString), UI-thread marshalled.</summary>
+        /// <summary>Send a raw string message host-&gt;page (PostWebMessageAsString), UI-thread marshalled.
+        /// Same GPF-on-close guard as <see cref="PostJson"/> — see its remarks.</summary>
         public void PostString(string message)
         {
+            if (IsDisposed || _webView == null || _webView.IsDisposed) return;
             Action post = () =>
             {
-                try { if (_webView != null && _webView.CoreWebView2 != null) _webView.CoreWebView2.PostWebMessageAsString(message); }
+                try { if (_webView != null && !_webView.IsDisposed && _webView.CoreWebView2 != null) _webView.CoreWebView2.PostWebMessageAsString(message); }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[MonacoEditorControl] PostString error: " + ex.Message); }
             };
             try { if (InvokeRequired) BeginInvoke(post); else post(); }

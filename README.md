@@ -54,6 +54,20 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
+## What's New (Unreleased)
+
+### Fix a WebView2 post-after-dispose race on closing a CA Embeditor tab
+
+A background continuation (e.g. the diagnostics settle-loop from v5.6's #170, which can now stay in flight for several seconds instead of a single bounded 1.5s wait) could still be posting a response after `DetachOverlay()`/`Dispose()` had already started tearing the WebView2 control down.
+
+Two bugs compounded: `_webView != null` doesn't detect disposal (`Dispose()` never nulls the field), and `InvokeRequired` on a control whose window handle was just destroyed returns `false` &mdash; not because the call was already on the UI thread, but because it had no handle left to compare against &mdash; so the post fell through to calling the WebView2/CoreWebView2 COM object (an STA object) directly from a thread-pool thread instead of marshalling. That's undefined behavior for an STA COM object mid-teardown.
+
+`MonacoEditorControl.PostJson`/`PostString` &mdash; the single chokepoint every host&rarr;page message (diagnostics, hover, completion, save results, designer messages, ...) already funnelled through &mdash; now check `IsDisposed` before trusting `InvokeRequired` at all, closing the fallthrough at its source.
+
+This closes a real, distinct race, but it is **not** a full fix for every embed-close crash: a separate, native Access Violation inside Clarion's own Generator ("Internal error: Restore Procedure") reproduced after this fix was deployed &mdash; tracked as #179, likely the same underlying step behind the stale window-designer error icons in #142.
+
+---
+
 ## What's New in v5.6
 
 Documentation search is the headline: PDF text extraction now works on every machine instead of only ones that happened to have a third-party tool installed, the extracted text is more accurate, and it is indexed so that a question is answered by the first result rather than the fifth query. Alongside that, a cycle of fixes across the diagnostics path, completion scoping, and the CA Editor's Monaco overlay &mdash; plus a build fix that restores Clarion 10 to the shipped set.
