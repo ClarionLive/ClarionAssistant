@@ -1,0 +1,30 @@
+Same track again, John — and snap on both your discoveries. I've been living in ClarionCL for about a week building a project I need and it's become the entire build-and-test loop. No IDE opened, ever. Some bugs in MT Claude has issued along the way.
+
+How I'm actually using it
+The core loop for working out a template is a headless round-trip-to-zero rig:
+
+/tr template\Foo.tpl — register the template (machine-global; more on that below)
+/di Foo.dct Foo.txd — build a dictionary from a hand-authored TXD
+/au /ai Foo.app Foo.txa — build the app from a hand-authored TXA (yes — /ai creates the .app if it doesn't exist, same thing you found)
+/win /ag Foo.app — generate source
+MSBuild (32-bit Framework + /p:ClarionBinPath=...) → .exe
+run it windowless, assert HALT(0/1)
+The trick that makes template development testable: I hand-author a TXD + TXA and a hand-coded "reference" of exactly what the generated registration should be, then generate and assert the two are byte-identical, line by line. If they diverge, the template's wrong. That turns "did my template change break anything?" into a green/red exit code instead of eyeballing generated source.
+
+Two more switches earn their keep:
+/dx dict.dct out.txd — export a dictionary to text. This is how I investigate a real 237-table production dictionary without touching the IDE: export, grep, reason about the actual field user-options.
+/win /aru App.app "MyUtility(MyTemplate)" — run a #UTILITY procedure headless. I use this to run a dictionary-audit utility over a dict and diff its text report. (Note the exact form — see the gotchas.)
+Confirming your two findings independently
+"Template prompts are optional." Confirmed, and it's the thing that makes a minimal TXA tiny — Clarion fills every default. My whole global-extension template is a handful of prompts because the ABC defaults do the rest.
+"A partial prompt set is worse than none." Painfully yes. My version of your empty-IF sort-order bug: TXA section order silently matters. If the DICTIONARY 'x.dct' line comes before TODO ABC ToDo in the TXA, the import returns exit 0 — "success" — and then silently drops every later section (extensions, procedures, all of it). A half-imported app that compiles into nothing. Same lesson: partial/malformed beats absent because it fails quietly.
+ClarionCL gotchas worth a skill's error-handling (the real gold)
+These cost real debugging time and I now guard every one:
+GENE000: could not open include file is almost never the file — it's the cwd. ClarionCL resolves the relative .tpl path against the working directory at the moment it runs, and a chained Set-Location doesn't always take effect first. Verify Get-Location is the checkout root before every /tr. The absolute-path form fails the same way, so "use an absolute path" is not the fix.
+/tr is global machine state, and registering from a throwaway directory is a footgun. I run a team of agents each in their own git worktree; one registered the template from its worktree path, the worktree later got pruned, and the registry entry now pointed at a deleted directory. Result: every template op on the machine — even read-only /tl — spun at 100% CPU forever. Heal = /tu <ChainName> (only the chain name is accepted, not the path) then /tr from a stable checkout. New rule: always re-register from a permanent path when you're done.
+/aru silently no-ops in the wrong form. Only /win /aru App.app "Utility(Template)" actually runs it. Drop the /win, or use a bare name, and it exits 0 having done nothing — the worst kind of green.
+The /di TXD importer mangles a few things. FM3IGNORE gets truncated to FM (a digit inside a bare flag trips it). GROUP,OVER(...) overlay components get dropped or inherited from the preceding key. ORDER(...) key components get dropped entirely. Editor-authored DCTs are fine; hand-authored TXDs need workarounds.
+%KeyOrder ≠ %Key. Orders (the 4th key type — Row Key / Runtime Index / Static Index / Order) only appear in the %KeyOrder symbol family, and surface as %KeyOrderIndex = 'ORDER' — an undocumented value; the docs only list KEY/INDEX/DYNAMIC.
+The thing I'd bake into a general skill
+ClarionCL has no quiet/unattended switch (checked the whole /?), and it can pop a modal error dialog a headless agent can't see or dismiss — so the process just hangs. So we built a PowerShell wrapper around it that: verifies cwd + that the target file resolves before launch (kills the GENE000 class), runs with a timeout, and on timeout enumerates the child process tree for a stray dialog, captures its title+text so the agent finally knows what went wrong, dismisses it, and returns an honest exit code. Plus an -ExpectArtifact check that turns the silent /aru no-op into a real failure by asserting the output file is actually fresh. That wrapper — cwd guard + timeout + dialog capture + honest exits — is the reusable core; the round-trip-to-zero rig is the methodology on top.
+
+To your actual question — not a public skill yet, it's grown up inside this one project — but the wrapper + the gotcha list above are the bones of one, and "describe a schema, get a verified template" is looking very reachable from here. Snap indeed. 🤯
