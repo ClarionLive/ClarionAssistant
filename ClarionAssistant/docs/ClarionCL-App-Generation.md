@@ -333,6 +333,10 @@ It raises **modal GUI dialogs** that block indefinitely. Observed trigger: a `.s
 project association does not match the app pops
 *"Clarion loaded the solution 'X.sln', but it does not contain the project 'X.cwproj'"*.
 
+> **Cause identified later — see §4.4.** The `.sln` involved was one *we* hand-wrote, and it was
+> malformed: it omitted the `"Solution Items"` project that associates the `.app` with the
+> solution. It was not "having a `.sln`" that caused this.
+
 While a modal is pending, `/ag` fails with a **misleading** error:
 
 ```
@@ -345,14 +349,14 @@ the app is missing or corrupt.
 **Mitigations, all required for unattended use:**
 - Invoke via `Start-Process` + `WaitForExit(timeout)`; kill and report on timeout. Never assume
   it returns.
-- Keep **no `.sln`** in the folder — MSBuild builds a `.cwproj` directly, and the `.sln` is what
-  triggers the dialog.
+- For a **headless** build, keep **no `.sln`** in the folder — MSBuild builds a `.cwproj` directly,
+  so a solution buys nothing and a *malformed* one is what triggers the dialog. If a human will
+  later open the app in the IDE, write a **correct** one (§4.4) rather than none.
 - Give generated apps **unique app/module names**. A scratch app whose modules were still named
   `cacheMemos*` resolved the *shipped example's* `.sln` out of `C:\Clarion12\Examples` via
   redirection.
-- Do not hand-author a `.cwproj` GUID and expect a match — the `.app` carries its own project
-  identity. Clicking "Add" repeatedly appends duplicate entries (three were observed for one
-  cwproj).
+- Clicking "Add" on that dialog appends a **duplicate** project entry with a fresh GUID each time
+  (three were observed for one cwproj), which compounds the mess rather than fixing it.
 
 ### 4.2 Redirection
 
@@ -375,7 +379,60 @@ the app is missing or corrupt.
 - The error names only the **first** unresolved item, so *"one file not found"* usually means
   **none** resolved. Check the item order before diagnosing.
 - Requires `ClarionBinPath` in the environment; `.NET Framework v4.0.30319 MSBuild` works.
-- **No `.sln` needed** — build the `.cwproj` directly.
+- **No `.sln` needed** — build the `.cwproj` directly. (A solution is only needed for the IDE; see
+  §4.4 for the shape it must have.)
+
+### 4.4 The `.sln` shape (only needed if a human will open the app)
+
+A headless build never needs a solution. But the moment someone opens the generated app in the
+IDE, it does — and **the shape matters**. This is the file the IDE generated for itself, and it is
+the shape to copy:
+
+```
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 2012
+# Clarion 2.1.0.2447
+Project("{12B76EC0-1D7B-4FA7-A7D0-C524288B48A1}") = "FRAME", "FRAME.cwproj", "{<cwproj ProjectGuid>}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{2150E333-8FDC-42A3-9474-1A3956D46DE8}"
+	ProjectSection(SolutionItems) = postProject
+		FRAME.app = FRAME.app
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Win32 = Debug|Win32
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{<cwproj ProjectGuid>}.Debug|Win32.Build.0 = Debug|Win32
+		{<cwproj ProjectGuid>}.Debug|Win32.ActiveCfg = Debug|Win32
+	EndGlobalSection
+EndGlobal
+```
+
+Rules:
+
+- **The second `Project(...)` block — `"Solution Items"` — is what associates the `.app` with the
+  solution, and omitting it is very likely what caused the §4.1 modal.** Our first hand-written
+  `.sln` had only the `.cwproj` entry; both the IDE-generated file and the shipped
+  `cacheMemos.sln` carry this block. *Likely cause, not proven* — we did not isolate it by adding
+  only that section.
+- The first `Project(...)` GUID must equal the `.cwproj`'s own `<ProjectGuid>`, and the same GUID
+  repeats in `ProjectConfigurationPlatforms`. Read it out of the `.cwproj` rather than minting a
+  new one.
+- `{12B76EC0-…}` is the Clarion **project-type** GUID and `{2150E333-…}` the standard VS
+  solution-folder GUID — both are constants, not per-project values.
+- The file starts with a **leading blank line** and uses tab indentation, as the IDE writes it.
+
+> **Retracted:** an earlier draft said *"do not hand-author a `.cwproj` GUID and expect a match —
+> the `.app` carries its own project identity."* That is wrong. The IDE's own solution simply
+> reuses the `.cwproj`'s `ProjectGuid`, and a hand-written `.sln` doing the same opens fine. The
+> original failure was the missing `"Solution Items"` block, not GUID identity.
+
+> **`subst` leaks into artifacts.** The MSBuild workaround in §4.3 puts `Q:\` paths into the
+> `.cwproj`'s `Compile` items. That is invisible headlessly but meaningless to the IDE and to
+> anyone else opening the project. If a `.cwproj` is going to outlive the build, write **real
+> absolute paths** into it.
 
 ## 5. Replication recipe
 
@@ -387,7 +444,8 @@ $dir = "<scratch folder>" # working directory for every step
 # 0. local redirection: derive from global, redirect ONLY output dirs, keep the version name
 #    (replace ..\v8Source -> . , .\Source -> . , ..\v8Obj -> .\obj) into $dir\Clarion120.red
 
-# 1. text -> app   (creates the .app; keep NO .sln in $dir)
+# 1. text -> app   (creates the .app; for a headless build keep NO .sln in $dir.
+#    If a human will open this in the IDE afterwards, write a CORRECT .sln - see 4.4)
 ClarionCL /ai "$dir\$app.app" "$dir\$app.txa"
 
 # 2. app -> source
