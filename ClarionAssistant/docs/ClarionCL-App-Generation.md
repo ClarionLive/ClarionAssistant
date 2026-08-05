@@ -25,6 +25,8 @@ conflated.
 | **Schema authorship** | Write a dictionary from nothing | 1,933-byte hand-written `.dctx` → 32,512-byte `.dct`, round-trip verified |
 | **Data-bound authorship** | Hand-written app **over a hand-written schema** | 1,216-byte TXA + 1,933-byte `.dctx` → `BRW2.exe` (533,644 bytes), full ABC browse |
 | **Multi-procedure CRUD** | Browse + update form, linked | 2,522-byte TXA → `CRUD3.exe` (556,280 bytes), browse/form/insert/change/delete |
+| **Conventional app shape** | APPLICATION frame + menu + MDI children | 3,726-byte TXA → `FRAME.exe` (575,172 bytes) |
+| **Relational schema** | Two tables + a relation, authored | 3,227-byte `.dctx` → exact round-trip |
 
 **The whole application — schema included — can be authored as 3,149 bytes of text.** No IDE,
 no pre-existing app, no pre-existing dictionary.
@@ -256,6 +258,71 @@ Generates `BRW1.AskProcedure = 1 ! Will call: UpdateContact` on the browse side,
 > dictionary has a single table. `/ai` and `/ag` both exit 0 regardless — only the compiler
 > catches it.
 
+### 3.5 APPLICATION frame + MDI children
+
+A frame is `FROM ABC Frame` with `CATEGORY 'Frame'`, and an **`APPLICATION`** window instead of
+`WINDOW`. It needs **no `[ADDITION]` blocks at all** — menu items call procedures purely through
+prompts:
+
+```
+[PROMPTS]
+%ButtonAction DEPEND %Control DEFAULT TIMES 1
+WHEN  ('?BrowseContact') ('Call a Procedure')
+
+%ButtonProcedure DEPEND %Control PROCEDURE TIMES 1
+WHEN  ('?BrowseContact') (BrowseContact)
+
+%ButtonThread DEPEND %Control LONG TIMES 1
+WHEN  ('?BrowseContact') (1)
+```
+
+```
+AppFrame APPLICATION('Contact Manager'),AT(,,360,250),FONT('Segoe UI',10),CENTER,MAX,RESIZE, |
+          STATUS(-1),SYSTEM
+          MENUBAR,USE(?Menubar)
+            MENU('&Browse'),USE(?BrowseMenu)
+              ITEM('&Contacts'),USE(?BrowseContact),MSG('Browse the Contact file')
+            END
+          END
+        END
+```
+
+The `USE` equate on the `ITEM` is the join to the prompt family. Child procedures need **`MDI`**
+on their `WINDOW`. Generates the idiomatic thread launch:
+
+```
+OF ?BrowseContact
+  START(BrowseContact, 25000)
+```
+
+Note this is a **blank-line-separated** prompt family, and a rare case where prompts are
+**mandatory** — like `%UpdateProcedure` (§3.4), nothing else names the target procedure. Only the
+entries you need must be supplied; the other controls fall back to defaults.
+
+Result: `FRAME.exe` (575,172 B) from a 3,726-byte TXA — frame, menu, MDI browse, update form.
+
+### 3.6 Multi-table relational dictionary
+
+`<Relation>` is a **sibling of `<Table>`** at dictionary level, *after* all tables. Everything
+binds by **GUID**, never by name:
+
+```xml
+<Relation Guid="{...}" PrimaryTable="{Company GUID}" ForeignTable="{Contact GUID}"
+                       PrimaryKey="{CompanyIDKey GUID}" ForeignKey="{CompanyKey GUID}">
+	<ForeignMapping Guid="{...}" Field="{Contact.CompanyID GUID}"/>
+	<PrimaryMapping Guid="{...}" Field="{Company.ID GUID}"/>
+</Relation>
+```
+
+> **Gotcha — element order inside `<Relation>` is significant.** `<ForeignMapping>` must come
+> **before** `<PrimaryMapping>`. Written the other way round, the **`ForeignMapping` is silently
+> dropped** — `/di` still **exits 0**, and the round-trip comes back `PriMap=1 FrnMap=0`. XML is
+> normally order-insensitive, which makes this a genuine trap for generated DCTX. Match
+> Northwind's canonical order.
+
+With the correct order a hand-authored 3,227-byte two-table dictionary round-tripped exactly:
+2 tables / 6 fields / 3 keys / 1 relation / 1 PrimaryMapping / 1 ForeignMapping.
+
 ## 4. Environment traps
 
 These cost the majority of the spike. Each one presents as something other than what it is.
@@ -364,10 +431,15 @@ Ordered by how much each would unlock.
    *partial* prompt set actively broke codegen.
 3. ~~Update form + BrowseUpdateButtons~~ — **RESOLVED 2026-08-05.** Two-procedure CRUD app
    compiled clean. See §3.4.
-4. **APPLICATION frame + MDI** — a `FROM ABC Frame` procedure with a menu calling child
-   procedures. Transport proved the generator handles it; authoring is untested. **UNVERIFIED.**
-5. **Relational dictionary** — multiple tables plus a `<Relationship>` element. The `.dctx`
-   schema for relations has not been examined. **UNVERIFIED.**
+4. ~~APPLICATION frame + MDI~~ — **RESOLVED 2026-08-05.** Frame + menu + MDI browse + form
+   compiled to `FRAME.exe`. See §3.5.
+5. ~~Relational dictionary~~ — **RESOLVED 2026-08-05.** Two-table dictionary with a relation
+   round-trips exactly. See §3.6.
+6. **Parent–child browse** (browse filtered by a related parent) — the relation now exists in the
+   dictionary, but no procedure has been authored that *uses* it via `%RangeField`/`%RangeLimit`.
+   **UNVERIFIED.**
+7. **Reproducing Mark's TXD construct bugs** — needs a hand-authored *dictionary* TXD, not the
+   Report-Writer TXD `/dx` emits. **UNVERIFIED.**
 4. Does `/aru` allow running utility templates against a generated app? **UNVERIFIED.**
 5. Correct parameter order for `/up_createapp` / `/up_createappVC` — accepted
    `(Solution, App, TXA)` with exit 0 but produced **nothing**. Not needed once `/ai` is used.
