@@ -7,7 +7,6 @@
     "",
     "After cutting a release, clear 'acknowledgedCommits' — it is scoped to one cycle."
   ],
-
   "$comment_scopeAliases": [
     "Maps a conventional-commit scope to the phrases the release notes actually use for it.",
     "Required because prose and scopes do not agree: scope 'datapad' is written 'Data pad',",
@@ -22,21 +21,65 @@
     "Aliases are ORed. Give each scope every spelling the notes plausibly use for it."
   ],
   "scopeAliases": {
-    "compare": ["CA Compare", "compare"],
-    "explorer": ["CA Explorer", "explorer"],
-    "datapad": ["Data pad", "datapad", "data-pad", "dictionary column"],
-    "editor": ["editor"],
-    "source-editor": ["editor", "source editor"],
-    "ca-editor": ["CA Editor"],
-    "monaco": ["Monaco", "editor"],
-    "embeditor": ["embeditor"],
-    "completion": ["completion"],
-    "hover": ["hover", "completion"],
-    "outline": ["outline", "Document Structure"],
-    "diff": ["diff", "CA Compare"],
-    "cafind": ["CA Find", "find"],
-    "webview2": ["WebView2"],
-    "lsp": ["language server", "LSP", "go-to-definition", "go to definition"],
+    "compare": [
+      "CA Compare",
+      "compare"
+    ],
+    "explorer": [
+      "CA Explorer",
+      "explorer"
+    ],
+    "datapad": [
+      "Data pad",
+      "datapad",
+      "data-pad",
+      "dictionary column"
+    ],
+    "editor": [
+      "editor"
+    ],
+    "source-editor": [
+      "editor",
+      "source editor"
+    ],
+    "ca-editor": [
+      "CA Editor"
+    ],
+    "monaco": [
+      "Monaco",
+      "editor"
+    ],
+    "embeditor": [
+      "embeditor"
+    ],
+    "completion": [
+      "completion"
+    ],
+    "hover": [
+      "hover",
+      "completion"
+    ],
+    "outline": [
+      "outline",
+      "Document Structure"
+    ],
+    "diff": [
+      "diff",
+      "CA Compare"
+    ],
+    "cafind": [
+      "CA Find",
+      "find"
+    ],
+    "webview2": [
+      "WebView2"
+    ],
+    "lsp": [
+      "language server",
+      "LSP",
+      "go-to-definition",
+      "go to definition"
+    ],
     "diagnostics": [
       "diagnostics",
       "END has no matching structure",
@@ -44,7 +87,6 @@
       "structure openers"
     ]
   },
-
   "$comment_ignoreScopes": [
     "Scopes that are never user-facing and so never need a release-note entry.",
     "Commit TYPES chore/docs/test/ci/build/style/refactor are already excluded by type;",
@@ -52,7 +94,6 @@
     "a user would notice. Keep it short — every entry here is a hole in the gate."
   ],
   "ignoreScopes": [],
-
   "$comment_authors": [
     "GitHub login -> the display name used in the 'Thanks' section.",
     "NOT derivable from the GitHub API: login 'asantarelli' has profile name 'SDigitales'",
@@ -67,7 +108,6 @@
     "OkayPlunk": "OkayPlunk",
     "armisoftware": "armisoftware"
   },
-
   "$comment_docsOnlyPathPatterns": [
     "A merged PR touching ONLY these paths is documentation, not a change that needs a",
     "release note, so it is never reported as uncited.",
@@ -84,15 +124,16 @@
     "",
     "Wildcards are PowerShell -like patterns matched against each changed path."
   ],
-  "docsOnlyPathPatterns": ["docs/*", "*.md"],
-
+  "docsOnlyPathPatterns": [
+    "docs/*",
+    "*.md"
+  ],
   "$comment_excludedRefs": [
     "Issue/PR numbers never to report as uncited, whatever their file footprint.",
     "Prefer docsOnlyPathPatterns — it is structural and needs no upkeep. Use this only for a",
     "one-off, and say why."
   ],
   "excludedRefs": {},
-
   "$comment_coveredOverrides": [
     "Escape hatch for a scope whose entry exists but whose title genuinely does not name it,",
     "and where no honest alias would either. Prefer an in-README marker instead:",
@@ -102,7 +143,6 @@
     "will then hide real drift. Use overrides sparingly and say why."
   ],
   "coveredOverrides": {},
-
   "$comment_acknowledgedCommits": [
     "SHA (full or abbreviated) -> why it needs no further action. Covers BOTH cases:",
     "  (a) the commit warrants no release note at all, and",
@@ -123,7 +163,25 @@
     "Scoped to one release cycle — clear this map when a version is cut."
   ],
   "acknowledgedCommits": {
-    "d335b08": "Split-editor pane — documented by the 'Horizontal split panes (#157)' entry; unprefixed subject, so it cannot carry a scope marker.",
-    "4cf141d": "Embeditor close/reopen on Errors-pane clicks — documented by the 'Zero-reload error navigation' entry; unprefixed subject."
+    "f0b6f79": "LSP status bar + diagnostics window follow the CA Editor's theme - documented by the 'Diagnostics window follows the CA Editor's theme' entry (#169); unprefixed subject.",
+    "2ce02f7": "Diagnostics window layout/header theming - same entry (#169); unprefixed subject.",
+    "e44e9c7": "Initial diagnostics window theme + readability - same entry (#169); unprefixed subject.",
+    "cecb45f": "Owner-drawn diagnostics header - same entry (#169); unprefixed subject.",
+    "f1a393c": "Theme-matched grid lines and caption colours - same entry (#169); unprefixed subject.",
+    "282a397": "Neutral selection highlight - same entry (#169); unprefixed subject.",
+    "d207fea": "Per-theme selection tint + double-buffering to stop hover flicker - same entry (#169); unprefixed subject.",
+    "0139783": "Severity text washed out under TextRenderer - same entry (#169); unprefixed subject.",
+    "856427c": "Switch cell/header drawing to GDI+ DrawString - same entry (#169); unprefixed subject.",
+    "1ccd757": "Refresh button tooltip never appeared - same entry (#169); unprefixed subject.",
+    "5943809": "Tooltip wording iteration - same entry (#169); unprefixed subject.",
+    "d90a0fb": "Tooltip wording reverted - same entry (#169); unprefixed subject.",
+    "5259968": "Refresh captioned the window with a stale filename - same entry (#169); unprefixed subject.",
+    "6ec8caf": "Pill stayed hidden while the editor showed squiggles - same entry (#169); unprefixed subject.",
+    "bb77f85": "Pill claimed a green OK for files never published - same entry (#169); unprefixed subject.",
+    "e20a88d": "Severity palette survived a theme switch - same entry (#169); unprefixed subject.",
+    "c93d1a3": "Theme followed the last page to speak, not the active editor - same entry (#169); unprefixed subject.",
+    "9a56ba4": "Squiggles blank behind a premature empty LSP republish - documented by the 'Squiggles stop vanishing' entry (#170); unprefixed subject.",
+    "89614f5": "Timed-out round-trip wiped every squiggle - same entry (#170); unprefixed subject.",
+    "e308153": "cp1252 fallback before pushing source to the LSP - documented by the 'Diagnostics stop reporting false corruption' entry (#168); unprefixed subject."
   }
 }

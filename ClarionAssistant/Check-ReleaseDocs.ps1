@@ -101,6 +101,16 @@ function Get-RefsFromText([string]$Text) {
     # references to issues #6 and #9, and '#666' would read as #666. Requiring a
     # non-alphanumeric on both sides means a colour never parses as a reference, while
     # '(#140)', 'GH #126' and '#159/#160' all still do.
+    #
+    # HTML numeric entities are the other false-positive source, and unlike colours they
+    # are reported as BAD REFERENCE — an entity number is never a real issue, so the tool
+    # calls it a citation of something that does not exist. Release notes use them for
+    # glyphs the prose is describing: '&#8646;' (a dark/light arrow), '&#9678;' (a toolbar
+    # button), '&#10005;' (a close button). The '&' preceding and ';' following are what
+    # distinguish an entity from a reference, and neither is alphanumeric, so the existing
+    # lookarounds cannot see the difference. Strip entities before matching rather than
+    # complicating the pattern.
+    $Text = [regex]::Replace($Text, '&#\d+;', ' ')
     return [regex]::Matches($Text, '(?<![0-9A-Za-z])#(\d{1,5})(?![0-9A-Za-z])') |
         ForEach-Object { [int]$_.Groups[1].Value } |
         Sort-Object -Unique
