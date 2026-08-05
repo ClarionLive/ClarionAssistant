@@ -1017,7 +1017,13 @@ namespace ClarionAssistant.Services
             foreach (char ch in name) if (char.IsLower(ch)) { hasLower = true; break; }
             if (!hasLower) return false;
 
-            if (name.EndsWith("Class", StringComparison.Ordinal)) return true;
+            // Length guard, not just the suffix: "Class".EndsWith("Class") is TRUE, so the bare word
+            // sailed through. BoxSoft's Super Security manual has a section header reading literally
+            // "Class Properties", which latched class="Class" over 11 chunks whose real subject is
+            // the Security class. That is strictly worse than the library fallback it replaced — it
+            // looks authoritative and poisons any class_name= filter (CA-Terminal-1-CC). A class name
+            // needs something in front of the suffix.
+            if (name.Length > 5 && name.EndsWith("Class", StringComparison.Ordinal)) return true;
             int caps = 0;
             foreach (char ch in name) if (char.IsUpper(ch)) caps++;
             return caps >= 2;
@@ -1110,8 +1116,13 @@ namespace ClarionAssistant.Services
             // and kept their 'section' topic. Found by inspecting the survivors rather than by
             // loosening the ratio, which would have buried the genuine Foreword and method-body
             // chunks that legitimately contain a few index-shaped lines.
+            // Two dots is enough, not four. The last surviving short pure-index fragment used a
+            // two-dot leader — "ValidateRecord (evaluate filter during load and save).. 67" — and
+            // escaped any "..." predicate. Measured before loosening: across every non-index chunk
+            // in the corpus, exactly ONE line is newly matched by a 2-dot threshold, and it is that
+            // one. Zero false positives, so the looser bound costs nothing.
             var dotLeaderLine = new Regex(
-                @"(\.{4,}\s*\d+(\s*,\s*\d+)*\s*,?\s*$)|(\.\s*\d+(\s*,\s*\d+)+\s*,?\s*$)");
+                @"(\.{2,}\s*\d+(\s*,\s*\d+)*\s*,?\s*$)|(\.\s*\d+(\s*,\s*\d+)+\s*,?\s*$)");
 
             // Page furniture: "ABC Library Reference 54" — the running footer, which lands in the
             // middle of body text and otherwise gets chunked as content (and can trip heading
