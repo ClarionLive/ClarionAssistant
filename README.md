@@ -54,7 +54,7 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
-## What's New (Unreleased)
+## What's New in v5.6
 
 Documentation search is the headline: PDF text extraction now works on every machine instead of only ones that happened to have a third-party tool installed, the extracted text is more accurate, and it is indexed so that a question is answered by the first result rather than the fifth query. Alongside that, a cycle of fixes across the diagnostics path, completion scoping, and the CA Editor's Monaco overlay &mdash; plus a build fix that restores Clarion 10 to the shipped set.
 
