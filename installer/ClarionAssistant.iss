@@ -3,7 +3,12 @@
 ; Supports Clarion 10, 11, 12 — user picks which version(s) to install
 
 #define MyAppName "Clarion Assistant"
-#define MyAppVersion "5.5"
+; NOTE: this is a MANUAL step at every release cut — Bump-Version.ps1 writes Version.props and
+; regenerates AssemblyVersion.cs / ClarionAssistant.addin, but it does not reach into this file.
+; Left stale it is silent: the freshness gate passes (it compares per-config BINARY stamps), the
+; build succeeds, and the only symptoms are an installer named for the previous version and an
+; Add/Remove Programs entry that disagrees with every DLL it just installed.
+#define MyAppVersion "5.6"
 #define MyAppPublisher "ClarionLive"
 #define MyAppURL "https://clarionlive.com"
 
