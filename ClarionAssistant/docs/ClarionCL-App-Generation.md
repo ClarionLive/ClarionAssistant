@@ -337,18 +337,48 @@ project association does not match the app pops
 > malformed: it omitted the `"Solution Items"` project that associates the `.app` with the
 > solution. It was not "having a `.sln`" that caused this.
 
-While a modal is pending, `/ag` fails with a **misleading** error:
+`/ag` may fail with what looks like a misleading error:
 
 ```
 error 0: The application <path>.app could not be open.
 ```
 
-That message means *"a modal is waiting"* **or** *"redirection is broken"*. It does **not** mean
-the app is missing or corrupt.
+> **CORRECTED 2026-08-05 (this was our mistake, not ClarionCL's).** An earlier draft said this
+> message means *"a modal is waiting"* or *"redirection is broken"*. The first half is **wrong**.
+> Reading the captured stdout afterwards, those runs never blocked at all — they exited in
+> **0.1–0.2 seconds**, and the line **directly above** stated the cause plainly:
+>
+> ```
+> Cannot create an application because no templates have been registered.
+>  error 0: The application ...\CAGENDEMO.app could not be open.
+>  finish at 10:55 AM , elapsed time: 00:00:00.1907310
+> ```
+>
+> The real cause was the hand-written local `.red` of §4.2 — its `*.tp?` rule also matched `.tpl`
+> and severed the app from the template folder. The output said so the whole time.
+>
+> **We never saw it because our own log filter was `Select-String 'successfully|error'`, and that
+> sentence contains neither word.** We discarded the diagnosis in our own tooling and then blamed
+> the tool. **Never filter ClarionCL's output** — the explanatory line is frequently *adjacent to*
+> rather than *inside* the line matching `error`.
+
+So: `could not be open` means the app genuinely could not be opened, and **the reason is on the
+preceding line**. Read the whole log before theorising.
 
 **Mitigations, all required for unattended use:**
 - Invoke via `Start-Process` + `WaitForExit(timeout)`; kill and report on timeout. Never assume
   it returns.
+- **Capture stdout and stderr whole; never grep them down.** See the corrected box above — our
+  filter hid the one line that explained a failure we then misdiagnosed for hours.
+- **A timeout is not proof of a modal.** When ClarionCL genuinely blocks it emits *nothing* —
+  stdout carried only the unrelated `CLCE004` warning and stderr was empty. Conversely, when it
+  prints prompt-shaped text (*"…Do you want to open the backup file?"*) it **does not** block and
+  exits normally. In our data the two never co-occur, so prompt-looking output is evidence
+  *against* a hang. Detecting a real modal requires enumerating child windows — output parsing
+  cannot do it.
+- ClarionCL does emit structured codes on non-modal failures (`GENE000`, `CLCE001`, `CLCE004`,
+  `DCTE004`), so there is real material to parse — it is specifically the modal path that goes
+  dark.
 - For a **headless** build, keep **no `.sln`** in the folder — MSBuild builds a `.cwproj` directly,
   so a solution buys nothing and a *malformed* one is what triggers the dialog. If a human will
   later open the app in the IDE, write a **correct** one (§4.4) rather than none.
