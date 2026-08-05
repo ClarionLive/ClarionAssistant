@@ -322,7 +322,22 @@
             if (isFullComment(trimmed)) {
                 rec.cat = 'comment';
                 rec.col1 = isCol1Comment(raw);
-                rec.bodyCol = codeBodyCol();
+                // A comment inside a DATA structure (GROUP/QUEUE/RECORD/FILE/...) or directly in a
+                // procedure's or routine's DATA section belongs at the FIELD column, not the CODE
+                // column. codeBodyCol() only understands 'code'-kind stack entries, so for anything
+                // else it falls back to the generic CODE indent — which is far shallower than the
+                // column the comment was hand-aligned to, and the comment visibly jumps left while
+                // every declaration around it formats correctly. Tag it here and let
+                // resolveDataCols() give it the same column as its sibling declarations.
+                var dtop = top();
+                if ((dtop && dtop.kind === 'data') ||
+                    (!dtop && (section === 'procData' || section === 'routData'))) {
+                    rec.inDataCtx = true;
+                    rec.enclosingId = enclosingId();
+                    rec.procInst = procInst;
+                } else {
+                    rec.bodyCol = codeBodyCol();
+                }
                 recs.push(rec);
                 continue;   // comments never set the continuation flag
             }
@@ -498,10 +513,14 @@
         var groups = {};
         for (var i = 0; i < recs.length; i++) {
             var r = recs[i];
-            if (r.cat !== 'decl' && r.cat !== 'dataline') continue;
+            // Comments tagged in a DATA context join their siblings' column group so they line up
+            // with the declarations around them. They must NOT widen the column: a long banner
+            // comment would otherwise push every field in the structure to the right.
+            var isDataComment = r.cat === 'comment' && r.inDataCtx;
+            if (r.cat !== 'decl' && r.cat !== 'dataline' && !isDataComment) continue;
             var key = r.enclosingId + '#' + r.procInst;
             var g = groups[key] || (groups[key] = { max: 0, items: [], enclosingId: r.enclosingId, section: r.section });
-            if (r.labelLen > g.max) g.max = r.labelLen;
+            if (!isDataComment && r.labelLen > g.max) g.max = r.labelLen;
             g.items.push(i);
         }
         function enclDepth(id) { var d = 0, c = id; while (c && meta[c]) { d++; c = meta[c].enclosingId; } return d; }
@@ -531,8 +550,14 @@
                 case 'blank': out.push(''); break;
                 case 'comment':
                     if (r.col1 && opts.dontIndentCol1Comments) line = r.trimmed;
-                    else if (!opts.indentComments) line = r.trimmed;
-                    else line = pad(r.bodyCol, opts) + r.trimmed;
+                    // "Indent comments" OFF means LEAVE THE COMMENT WHERE IT IS. Emitting r.trimmed
+                    // here stripped all leading whitespace, so unchecking the option didn't decline
+                    // to re-indent — it deleted the indentation and dumped every comment at column 1,
+                    // including ones hand-aligned deep inside nested control structures.
+                    else if (!opts.indentComments) line = r.raw;
+                    // Tagged DATA-context comments align to the field column their siblings resolved
+                    // to, rather than the CODE-section column.
+                    else line = pad(r.inDataCtx ? r.dataCol : r.bodyCol, opts) + r.trimmed;
                     out.push(line); break;   // comments are never case-normalized
                 case 'cont':
                     out.push(pad(lastCol + opts.contLineMultiplier * T, opts) + nc(r.trimmed, true)); break;   // continued attribute list
