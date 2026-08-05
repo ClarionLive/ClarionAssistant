@@ -1264,8 +1264,7 @@ namespace ClarionAssistant.Terminal
             _fileMode = true;
             _title = Path.GetFileName(_filePath);
             _fileIdentity = CanonicalFileId(_filePath);   // stable identity for dedup/state, survives path aliasing (item 3)
-            _fileEncoding = EncodingHelper.DetectFileEncoding(_filePath);
-            _sourceText = File.ReadAllText(_filePath, _fileEncoding);
+            _sourceText = EncodingHelper.ReadAllText(_filePath, out _fileEncoding);
             _fileEol = DetectEol(_sourceText);
             _fileDiskSig = ReadFileSignature(_filePath);
             _fileLiveText = _sourceText;
@@ -1890,8 +1889,7 @@ namespace ClarionAssistant.Terminal
                 // Re-detect encoding + EOL: the file may have been externally rewritten in a different encoding
                 // since open. Reusing the stale open-time encoding would misdecode and a later save would write the
                 // corrupted text back. (pipeline item 4 — adversary)
-                _fileEncoding = EncodingHelper.DetectFileEncoding(_filePath);
-                _sourceText = File.ReadAllText(_filePath, _fileEncoding);
+                _sourceText = EncodingHelper.ReadAllText(_filePath, out _fileEncoding);
                 _fileEol = DetectEol(_sourceText);
                 _fileDiskSig = ReadFileSignature(_filePath);
                 _fileOverwriteArmedSig = null;

@@ -1189,8 +1189,7 @@ namespace ClarionAssistant
                     return;
                 }
 
-                Encoding enc = EncodingHelper.DetectFileEncoding(_filePath);
-                string text = File.ReadAllText(_filePath, enc);
+                string text = EncodingHelper.ReadAllText(_filePath, out _);
                 _overlayLiveText = text;
                 _overlayDirty = false;
                 RefreshDiskWatchBaseline();   // we just resynced with disk — any pending watcher event is now stale
@@ -1789,8 +1788,7 @@ namespace ClarionAssistant
                 if (string.IsNullOrEmpty(_filePath) || !File.Exists(_filePath)) return;
                 var data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(rawJson) as Dictionary<string, object>;
                 string liveText = (data != null && data.ContainsKey("text")) ? (data["text"] as string ?? "") : (_overlayLiveText ?? "");
-                Encoding enc = EncodingHelper.DetectFileEncoding(_filePath);
-                string diskText = File.ReadAllText(_filePath, enc);
+                string diskText = EncodingHelper.ReadAllText(_filePath, out _);
                 var diff = new MonacoDiffViewContent(
                     "External change: " + Path.GetFileName(_filePath), diskText, liveText, "clarion", false, Services.CaEditorSettings.MonacoThemeDark);
                 // This is a read-only comparison, not a code-review workflow — there's nothing to "apply"

@@ -887,7 +887,7 @@ namespace ClarionAssistant.Services
                 if (!File.Exists(filePath)) return;
 
                 string uri = FilePathToUri(filePath);
-                string content = File.ReadAllText(filePath, EncodingHelper.DetectFileEncoding(filePath));
+                string content = EncodingHelper.ReadAllText(filePath, out _);
 
                 string ext = Path.GetExtension(filePath).ToLower();
                 string languageId = ext == ".inc" || ext == ".clw" || ext == ".equ" ? "clarion" : "plaintext";
@@ -998,7 +998,7 @@ namespace ClarionAssistant.Services
                 }
 
                 string uri = FilePathToUri(filePath);
-                string content = File.ReadAllText(filePath, EncodingHelper.DetectFileEncoding(filePath));
+                string content = EncodingHelper.ReadAllText(filePath, out _);
                 int nextVersion = currentVersion + 1;
 
                 // LSP TextDocumentContentChangeEvent without `range` = full document replacement.

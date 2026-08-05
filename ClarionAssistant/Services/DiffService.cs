@@ -212,7 +212,7 @@ namespace ClarionAssistant.Services
                 string originalText;
                 try
                 {
-                    originalText = ReadOriginalText(originalFile, startLine, endLine, EncodingHelper.DetectFileEncoding(originalFile));
+                    originalText = ReadOriginalText(originalFile, startLine, endLine, out _);
                 }
                 catch (ArgumentException ex)
                 {
@@ -248,13 +248,11 @@ namespace ClarionAssistant.Services
                 if (!File.Exists(modifiedFile))
                     return "Error: Modified file not found: " + modifiedFile;
 
-                // Detected ONCE here and carried on the context — a save must round-trip the encoding the text
-                // was read with, and re-detecting later would mean reading a file we're about to overwrite.
-                Encoding originalEncoding = EncodingHelper.DetectFileEncoding(originalFile);
-                Encoding modifiedEncoding = EncodingHelper.DetectFileEncoding(modifiedFile);
-
-                string originalText = ReadOriginalText(originalFile, origStartLine, origEndLine, originalEncoding);
-                string modifiedText = ReadOriginalText(modifiedFile, modStartLine, modEndLine, modifiedEncoding);
+                // Captured from the READ itself and carried on the context — a save must round-trip the
+                // encoding the text was read with, and re-detecting later would mean reading a file we're
+                // about to overwrite.
+                string originalText = ReadOriginalText(originalFile, origStartLine, origEndLine, out Encoding originalEncoding);
+                string modifiedText = ReadOriginalText(modifiedFile, modStartLine, modEndLine, out Encoding modifiedEncoding);
 
                 // Same "whole file" test ReadOriginalText itself uses, so the editable/read-only decision can
                 // never disagree with whether the panes actually hold the complete file.
@@ -285,11 +283,16 @@ namespace ClarionAssistant.Services
         /// spurious "extra blank line" diff that was never a real edit. A genuine sub-range still
         /// goes through line splitting, since some reconstruction is unavoidable there anyway.
         /// </summary>
-        private static string ReadOriginalText(string filePath, int startLine, int endLine, Encoding encoding)
+        private static string ReadOriginalText(string filePath, int startLine, int endLine, out Encoding encoding)
         {
+            // Whole file: one read gets the text AND the encoding. The sub-range branch still detects
+            // separately because it needs the file in line-split form, which ReadAllLines only gives
+            // for a second read — a rarer path, and not worth re-implementing ReadLine's terminator
+            // and trailing-newline rules by hand just to save it.
             if (startLine <= 1 && endLine == -1)
-                return File.ReadAllText(filePath, encoding);
+                return EncodingHelper.ReadAllText(filePath, out encoding);
 
+            encoding = EncodingHelper.DetectFileEncoding(filePath);
             string[] allLines = File.ReadAllLines(filePath, encoding);
             if (startLine < 1) startLine = 1;
             if (endLine < 1 || endLine > allLines.Length) endLine = allLines.Length;
