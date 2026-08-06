@@ -1295,7 +1295,7 @@ namespace ClarionAssistant.Terminal
         /// surface raw. FILE MODE ONLY, deliberately: there _lspFileName is the real file and the
         /// squiggle pass runs with embedSlotChecks=false, so the cache is exactly what Monaco marked
         /// up. In embed mode the same cache holds WHOLE-generated-buffer diagnostics that
-        /// ModernEmbeditorDiagnostics.Compute clamps to the editable slots before rendering —
+        /// ModernEmbeditorDiagnostics.ComputeAsync clamps to the editable slots before rendering —
         /// reporting those unclamped would count generated-line noise the editor never squiggled.
         /// </summary>
         public string DiagnosticsCacheKey { get { return _fileMode ? _lspFileName : null; } }
