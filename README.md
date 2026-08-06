@@ -54,6 +54,36 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
+## What's New (Unreleased)
+
+<!-- release-docs: covered=vscode-import -->
+### Bring your VS Code editor settings across (one click)
+
+Setting the CA Editor up to feel like the editor you already use meant re-entering by hand what VS Code
+already knows &mdash; font, size, tab width, word wrap, minimap. The gear panel's **Editor** tab gains an
+**Import from VS Code…** button that reads your `settings.json` and offers the changes.
+
+Nothing is written until you say so. The import previews every setting that would change, current value
+next to the incoming one, and applies only on **Import** &mdash; so hand-tuned settings are never silently
+replaced by an editor's defaults. Ten settings are covered: tab size, insert-spaces, smart auto-indent,
+word wrap, minimap, complete-word-on-insert-key, font size, font family, occurrence highlighting, and the
+horizontal scrollbar. The Smart Formatter options, keyboard bindings and split orientation have no VS Code
+equivalent and are never touched; the panel says so rather than leaving you to wonder.
+
+Real `settings.json` files are not plain JSON, and the import expects that: `//` and `/* */` comments and
+trailing commas are all handled, including a `//` that is part of a path inside a string rather than the
+start of a comment. A `"[clarion]"` language block wins over the global value, since that is the setting
+you chose for Clarion files specifically. A CSS font stack like `'Cascadia Code', Consolas, monospace`
+resolves to its first family. Anything VS Code sets that cannot be mapped &mdash; an unrecognised enum, a
+value of the wrong type &mdash; is listed as **Not imported** with the reason, so an ignored setting reads
+as a decision rather than a failure.
+
+Portable and WSL installs live outside the usual `%APPDATA%` locations, so when no `settings.json` is found
+the panel offers **Browse…** to point at one directly. Cancelling that dialog leaves everything exactly as
+it was.
+
+The import is strictly read-only: it never writes to VS Code's configuration.
+
 ## What's New in v5.6
 
 Documentation search is the headline: PDF text extraction now works on every machine instead of only ones that happened to have a third-party tool installed, the extracted text is more accurate, and it is indexed so that a question is answered by the first result rather than the fifth query. Alongside that, a cycle of fixes across the diagnostics path, completion scoping, and the CA Editor's Monaco overlay &mdash; plus a build fix that restores Clarion 10 to the shipped set.
@@ -953,6 +983,28 @@ cd ClarionAssistant
 # Kill the IDE before deploying (when DLLs are locked)
 .\deploy.ps1 -Version 12 -Kill
 ```
+
+### Running the tests
+
+```powershell
+cd ClarionAssistant
+.\tests\Run-Tests.ps1
+```
+
+One entry point for both harness families: standalone `csc` harnesses over IDE-free service code
+(`tests\`), and node harnesses over the Monaco WebView2 pages (`Terminal\test\`). Neither is wired into
+MSBuild &mdash; they exist to be run before you deploy, because the bugs they catch (a NUL byte inside a
+420 KB HTML file, a settings panel that reads fine in dark mode and is illegible in light) pass a clean
+build and fail a human.
+
+Most need nothing installed. One page test needs `jsdom`, declared as a devDependency:
+
+```powershell
+npm install --prefix Terminal\test
+```
+
+Without it that test reports *could not run* and fails the overall run rather than reporting green. See
+[`tests/README.md`](ClarionAssistant/tests/README.md) for what each harness guards.
 
 ---
 

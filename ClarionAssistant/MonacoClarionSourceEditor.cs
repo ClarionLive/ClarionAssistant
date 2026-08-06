@@ -1041,6 +1041,13 @@ namespace ClarionAssistant
             // deac3d16 this was a no-op, so settings changed in the default editor silently vanished. (cross-tab fix)
             Services.MonacoSettingsBroadcaster.SaveAndBroadcastFromBridge(rawJson);
         }
+
+        void IMonacoEditorHost.OnReadVsCodeSettings(MonacoEditorControl editor, string rawJson)
+        {
+            // Read-only preview feed for the gear panel's VS Code import; applying goes back through
+            // OnSaveSettings above, so there is still exactly one write path.
+            Terminal.VsCodeImportBridge.Handle(editor, rawJson);
+        }
         // Find/Replace history, cursor position, and bookmarks are persisted per (solution + file) — the SAME
         // scope a file-mode embeditor uses ("file::<path>"), so state is shared between the two surfaces for the
         // same file. Before deac3d16 these were no-op stubs, so none of it survived a reopen in the default editor.

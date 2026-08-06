@@ -1,0 +1,11 @@
+{
+  "name": "clarionassistant-terminal-tests",
+  "private": true,
+  "description": "Dev-only test dependencies for the Monaco WebView2 page harnesses. Nothing here ships with the addin — the pages themselves have no npm dependencies at runtime.",
+  "scripts": {
+    "test": "node monaco-page-integrity.test.js && node clarion-folding.test.js && node clarion-formatter.test.js && node vscode-import-ui.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  }
+}

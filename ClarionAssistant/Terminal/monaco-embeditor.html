@@ -256,6 +256,54 @@
     #keybindTable .kb-deferred td { opacity: 0.5; }
     .kb-actions { margin-top: 8px; text-align: right; }
     .kb-hint { color: var(--loading-color); font-size: 10px; margin: 4px 0 0; }
+    /* "Import from VS Code…" (gear panel > Editor) — read-only preview, applied via onSettingChanged() */
+    .vsc-import { margin: 12px 0 2px; }
+    .vsc-import .vsc-btn { background: transparent; border: 1px solid var(--toolbar-border); color: var(--fg);
+        border-radius: 4px; padding: 5px 12px; font-size: 12px; cursor: pointer; font-family: inherit; }
+    .vsc-import .vsc-btn:hover { border-color: var(--title-accent); }
+    .vsc-import .vsc-btn[disabled] { opacity: .55; cursor: default; border-color: var(--toolbar-border); }
+    /* Legibility note: dimming with `opacity` reads fine as light-on-dark but washes out badly as
+       dark-on-light, so every muted tone below is tuned for the LIGHT theme (--fg #4c4f69 on
+       --toolbar-bg #dce0e8) and simply reads as comfortably soft in dark. Do not push these back
+       down toward .5 — that is what made the panel unreadable in light mode. */
+    /* WIDTH DISCIPLINE: #settingsPanel is position:absolute with only a min-width, so it is
+       SHRINK-TO-FIT — its width is the widest unbreakable line any child contributes. Every long
+       prose string below therefore needs an explicit max-width, or it stretches the whole gear
+       panel across the editor (measured: one 792px note line pushed the panel from 374px to 818px).
+       Cap the prose; leave .vsc-result itself uncapped so the diff table can still use the panel's
+       natural width. --prose-w is the single knob. */
+    .vsc-import { --prose-w: 330px; }
+    .vsc-note { display: block; font-size: 11px; opacity: .8; margin-top: 5px; line-height: 1.5;
+        max-width: var(--prose-w); }
+    /* Tinted rather than flat: rgba grey darkens over the light panel and lightens over the dark one,
+       so the result box separates from the panel in BOTH themes with one declaration. */
+    .vsc-result { margin-top: 9px; border: 1px solid var(--toolbar-border); border-radius: 5px;
+        padding: 10px 11px; background: rgba(127,127,127,0.09); }
+    .vsc-result.hidden { display: none; }
+    .vsc-msg { font-size: 12px; line-height: 1.55; margin: 0 0 6px; max-width: var(--prose-w); }
+    .vsc-msg.err { color: #c0392b; }
+    body.light .vsc-msg.err { color: #b02a1c; }
+    .vsc-msg code { font-family: Consolas, monospace; }
+    .vsc-path { font-family: Consolas, monospace; font-size: 11px; opacity: .72; word-break: break-all;
+        margin: 0 0 8px; max-width: var(--prose-w); }
+    .vsc-rows { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .vsc-rows td { padding: 4px 4px; vertical-align: top; }
+    .vsc-rows .vl { opacity: 1; }
+    /* The "current" column was --loading-color (#8c8fa1), which sits almost on top of the light
+       panel grey. Dim the real foreground instead so it stays legibly below the imported value. */
+    .vsc-rows .vfrom { color: var(--fg); opacity: .72; white-space: nowrap; text-align: right; }
+    .vsc-rows .varrow { opacity: .72; padding: 0 4px; }
+    .vsc-rows .vto { color: var(--title-accent); font-weight: 600; white-space: nowrap; }
+    .vsc-rows .vcaveat { font-size: 11px; opacity: .75; font-style: italic; line-height: 1.45;
+        max-width: 300px; padding: 0 4px 4px 4px; }
+    .vsc-skipped { font-size: 11px; opacity: .82; margin: 9px 0 0; line-height: 1.55; max-width: var(--prose-w); }
+    .vsc-skipped b { opacity: 1; font-weight: 600; }
+    .vsc-actions { display: flex; gap: 8px; margin-top: 10px; justify-content: flex-end; }
+    .vsc-actions:empty { display: none; }
+    .vsc-actions button { background: transparent; border: 1px solid var(--toolbar-border); color: var(--fg);
+        border-radius: 4px; padding: 4px 13px; font-size: 12px; cursor: pointer; font-family: inherit; }
+    .vsc-actions button:hover { border-color: var(--title-accent); }
+    .vsc-actions button.primary { background: var(--title-accent); border-color: var(--title-accent); color: var(--toolbar-bg); }
     /* Bookmark glyph (Ctrl+F2) in the glyph margin */
     .bookmark-glyph { background: #2563eb; border-radius: 50% 50% 50% 0; transform: rotate(-45deg);
         width: 9px !important; height: 9px !important; margin-left: 5px; margin-top: 5px; box-shadow: 0 0 0 1px rgba(255,255,255,0.5); }
@@ -684,6 +732,13 @@
                 <option value="visible">Show always</option>
                 <option value="hidden">Show never</option>
             </select></label>
+        <div class="vsc-import">
+            <button id="vscImportBtn" class="vsc-btn" type="button"
+                    title="Read your VS Code settings.json and preview which of the settings above would change. Nothing is written until you confirm.">Import from VS Code&hellip;</button>
+            <span class="vsc-note">Previews the changes before applying. Only the editor settings above are
+                imported &mdash; the Smart Formatter options, keyboard bindings and split orientation are not.</span>
+            <div id="vscImportResult" class="vsc-result hidden"></div>
+        </div>
 
         <h4>Smart Formatter — General</h4>
         <label>Preferred column <input type="number" id="setPreferredColumn" min="1" max="120" step="1"></label>
@@ -4062,6 +4117,219 @@
         applyEditorSettings(s);
     }
 
+    // ===================== Import from VS Code (gear panel > Editor) =====================
+    // Read-only round-trip: the host locates and maps VS Code's settings.json (VsCodeSettingsImporter),
+    // this page previews the diff, and confirming writes the values into the SAME gear controls and calls
+    // onSettingChanged() — the existing persist + broadcast + live-apply path. There is deliberately no
+    // second write path here, so an imported setting behaves exactly like one typed into the panel.
+    //   REQUEST : action 'readVsCodeSettings', optional {browse:true} or {path:'...'}
+    //   RESPONSE: {found, path, source, error, values:{camelCase gear keys}, skipped:[{key,reason}], cancelled}
+
+    // The only importable keys, in gear-panel order. `kind` says how to read/write/compare the control.
+    var VSC_IMPORT_MAP = [
+        { key: 'tabSize',             id: 'setTabSize',             label: 'Tab size',                       kind: 'num' },
+        { key: 'insertSpaces',        id: 'setInsertSpaces',        label: 'Insert spaces (not tabs)',       kind: 'chk' },
+        { key: 'autoIndent',          id: 'setAutoIndent',          label: 'Smart auto-indent',              kind: 'chk' },
+        { key: 'wordWrap',            id: 'setWordWrap',            label: 'Word wrap',                      kind: 'chk' },
+        { key: 'minimap',             id: 'setMinimap',             label: 'Minimap',                        kind: 'chk' },
+        { key: 'completeOnInsertKey', id: 'setCompleteOnInsertKey', label: 'Complete word on insert key',    kind: 'chk' },
+        { key: 'fontSize',            id: 'setFontSize',            label: 'Font size',                      kind: 'num' },
+        { key: 'fontFamily',          id: 'setFontFamily',          label: 'Font family',                    kind: 'txt' },
+        { key: 'occurrenceHighlight', id: 'setOccurrenceHighlight', label: 'Highlight matching occurrences', kind: 'chk' },
+        { key: 'horizontalScrollbar', id: 'setHorizontalScrollbar', label: 'Horizontal scrollbar',           kind: 'sel' }
+    ];
+
+    var VSC_READ_TIMEOUT_MS   = 8000;       // locate + read + parse a few-KB file
+    var VSC_BROWSE_TIMEOUT_MS = 300000;     // a modal file dialog the developer may sit on for minutes
+    var vscPendingRows = null;              // the previewed diff, awaiting Import / Cancel
+
+    function vscReadControl(m) {
+        var e = document.getElementById(m.id);
+        if (!e) return null;
+        if (m.kind === 'chk') return !!e.checked;
+        if (m.kind === 'num') { var n = parseInt(e.value, 10); return isNaN(n) ? null : n; }
+        return e.value;
+    }
+
+    function vscWriteControl(m, v) {
+        var e = document.getElementById(m.id);
+        if (!e) return;
+        // Set the control ONLY — deliberately no 'change' dispatch. The import commits once via
+        // onSettingChanged(); firing per-control events would post one saveSettings per imported key.
+        if (m.kind === 'chk') e.checked = !!v; else e.value = String(v);
+    }
+
+    function vscSame(m, cur, imp) {
+        if (m.kind === 'chk') return !!cur === !!imp;
+        if (m.kind === 'num') return Number(cur) === Number(imp);
+        return vscStr(cur) === vscStr(imp);
+    }
+
+    function vscStr(v) { return (v === null || v === undefined) ? '' : String(v); }
+
+    function vscDisplay(m, v) {
+        if (m.kind === 'chk') return v ? 'on' : 'off';
+        if (v === null || v === undefined || v === '') return m.key === 'fontFamily' ? '(default)' : '—';
+        if (m.kind === 'sel') {                       // show the dropdown's wording, not the raw enum
+            var e = document.getElementById(m.id);
+            if (e) for (var i = 0; i < e.options.length; i++)
+                if (e.options[i].value === String(v)) return e.options[i].text;
+        }
+        return String(v);
+    }
+
+    // GH #126: with "Follow Clarion's editor options" ticked the IDE's indentation wins at apply time, so
+    // an imported tabSize/insertSpaces is stored but has no visible effect. Say so on the row rather than
+    // letting the developer import it and conclude the feature is broken.
+    function vscCaveat(key) {
+        if (key !== 'tabSize' && key !== 'insertSpaces') return '';
+        var f = document.getElementById('setFollowIdeIndent');
+        if (!f || !f.checked) return '';
+        return 'stored, but “Follow Clarion’s editor options” is on — the IDE’s value wins';
+    }
+
+    function vscBuildDiff(values) {
+        var rows = [];
+        for (var i = 0; i < VSC_IMPORT_MAP.length; i++) {
+            var m = VSC_IMPORT_MAP[i];
+            if (!values || !values.hasOwnProperty(m.key)) continue;   // VS Code didn't set it (or it was skipped)
+            var cur = vscReadControl(m);
+            if (vscSame(m, cur, values[m.key])) continue;
+            rows.push({ m: m, cur: cur, imp: values[m.key] });
+        }
+        return rows;
+    }
+
+    // Keys VS Code DID set that the importer deliberately did not map (unknown enum value, wrong type, …).
+    // Listing them is the difference between "CA ignored my setting" and "CA decided not to import it".
+    function vscSkippedHtml(skipped) {
+        if (!skipped || !skipped.length) return '';
+        var h = '<p class="vsc-skipped"><b>Not imported:</b>';
+        for (var i = 0; i < skipped.length; i++)
+            h += '<br>' + escHtml(skipped[i].key) + ' — ' + escHtml(skipped[i].reason);
+        return h + '</p>';
+    }
+
+    function vscCountKeys(o) { var n = 0; for (var k in o) if (o.hasOwnProperty(k)) n++; return n; }
+
+    function vscHide() {
+        vscPendingRows = null;
+        var r = document.getElementById('vscImportResult');
+        if (r) { r.innerHTML = ''; r.classList.add('hidden'); }
+    }
+
+    function vscShow(html, actions) {
+        var r = document.getElementById('vscImportResult');
+        if (!r) return;
+        r.innerHTML = html + '<div class="vsc-actions"></div>';
+        var bar = r.querySelector('.vsc-actions');
+        for (var i = 0; i < (actions || []).length; i++) {
+            var a = actions[i];
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = a.label;
+            if (a.primary) b.className = 'primary';
+            b.addEventListener('click', a.run);
+            bar.appendChild(b);
+        }
+        r.classList.remove('hidden');
+    }
+
+    function vscRenderResult(res) {
+        // (d) Browse… dismissed. The developer already said no — leave the panel exactly as it was and
+        // say nothing. A "cancelled" is NOT "not found", which is why the host carries it explicitly.
+        if (res && res.cancelled) { vscHide(); return; }
+
+        // No reply at all: the action never reached the host dispatch case, or the host threw before
+        // answering. Distinct from every response state below, so name it as a timeout.
+        if (!res) {
+            vscShow('<p class="vsc-msg err">No response from the IDE — the import request timed out.</p>',
+                    [{ label: 'Close', run: vscHide }]);
+            return;
+        }
+
+        var pathHtml = res.path ? '<p class="vsc-path">' + escHtml(res.path) + '</p>' : '';
+
+        // (c) Not found. The host only probes %APPDATA%\Code | Code - Insiders | VSCodium, so a portable
+        // or WSL install lands here legitimately — offer to point at the file directly.
+        if (!res.found) {
+            vscShow('<p class="vsc-msg">Couldn\'t find a VS Code <code>settings.json</code> in the usual places ' +
+                    '(Code, Code - Insiders, VSCodium). For a portable or WSL install, point at it directly.</p>',
+                    [{ label: 'Browse…', primary: true, run: function () { vscRequest(true); } },
+                     { label: 'Cancel', run: vscHide }]);
+            return;
+        }
+
+        // Found but unreadable/unparseable — show what went wrong and let them try a different file.
+        if (res.error) {
+            vscShow('<p class="vsc-msg err">' + escHtml(res.error) + '</p>' + pathHtml,
+                    [{ label: 'Browse…', run: function () { vscRequest(true); } },
+                     { label: 'Close', run: vscHide }]);
+            return;
+        }
+
+        var rows = vscBuildDiff(res.values);
+        var skippedHtml = vscSkippedHtml(res.skipped);
+
+        // (b) Found, nothing to change. Common in practice: a settings.json with no editor.* keys at all,
+        // i.e. VS Code is on its defaults for everything CA imports. Distinguish that from "identical".
+        if (!rows.length) {
+            var why = (res.values && vscCountKeys(res.values))
+                ? 'every editor setting it defines already matches your CA settings.'
+                : 'it doesn\'t set any of the editor options CA can import — VS Code is on its defaults for those.';
+            vscShow('<p class="vsc-msg">Read your VS Code settings — nothing to change: ' + why + '</p>' +
+                    pathHtml + skippedHtml, [{ label: 'Close', run: vscHide }]);
+            return;
+        }
+
+        // (a) Found with changes — preview every row; nothing is written until Import is clicked.
+        var html = '<p class="vsc-msg">' + rows.length + (rows.length === 1 ? ' setting' : ' settings') +
+                   ' would change:</p>' + pathHtml + '<table class="vsc-rows">';
+        for (var i = 0; i < rows.length; i++) {
+            var r = rows[i], cav = vscCaveat(r.m.key);
+            html += '<tr><td class="vl">' + escHtml(r.m.label) + '</td>' +
+                    '<td class="vfrom">' + escHtml(vscDisplay(r.m, r.cur)) + '</td>' +
+                    '<td class="varrow">&rarr;</td>' +
+                    '<td class="vto">' + escHtml(vscDisplay(r.m, r.imp)) + '</td></tr>';
+            // The caveat gets its OWN full-width row rather than living inside the label cell: as a
+            // cell child its max-width became the label column's width demand and shoved the whole
+            // gear panel from 377px to 489px. Spanning all four columns lets it wrap in place.
+            if (cav) html += '<tr><td class="vcaveat" colspan="4">' + escHtml(cav) + '</td></tr>';
+        }
+        html += '</table>' + skippedHtml;
+
+        vscPendingRows = rows;
+        vscShow(html, [{ label: 'Import', primary: true, run: vscApply }, { label: 'Cancel', run: vscHide }]);
+    }
+
+    function vscApply() {
+        var rows = vscPendingRows;
+        if (!rows || !rows.length) { vscHide(); return; }
+        for (var i = 0; i < rows.length; i++) vscWriteControl(rows[i].m, rows[i].imp);
+        var n = rows.length;
+        vscHide();
+        onSettingChanged();     // the ONE write path: persist + broadcast to every surface + live-apply
+        showToast('Imported ' + n + (n === 1 ? ' setting' : ' settings') + ' from VS Code.', true);
+    }
+
+    function vscRequest(browse) {
+        var btn = document.getElementById('vscImportBtn');
+        if (btn) btn.disabled = true;
+        vscPendingRows = null;
+        vscShow('<p class="vsc-msg">' + (browse ? 'Waiting for you to pick a settings.json…'
+                                                : 'Reading VS Code settings…') + '</p>', []);
+        requestFromHost('readVsCodeSettings', browse ? { browse: true } : null,
+                        browse ? VSC_BROWSE_TIMEOUT_MS : VSC_READ_TIMEOUT_MS)
+            .then(function (res) {
+                if (btn) btn.disabled = false;
+                try { vscRenderResult(res); }
+                catch (e) {
+                    vscShow('<p class="vsc-msg err">Import failed: ' + escHtml(e && e.message ? e.message : e) + '</p>',
+                            [{ label: 'Close', run: vscHide }]);
+                }
+            });
+    }
+
     // ----- Keyboard rebinding table (gear panel) -----
     function buildKeybindTable() {
         var tb = document.getElementById('keybindRows');
@@ -4298,7 +4566,11 @@
         var btn = document.getElementById('settingsBtn');
         if (btn) btn.addEventListener('click', function () {
             var p = document.getElementById('settingsPanel');
-            if (p) p.classList.toggle('hidden');
+            if (!p) return;
+            p.classList.toggle('hidden');
+            // Drop any VS Code preview on close: it was diffed against the panel as it stood then, and
+            // reopening later must not offer a stale "current → imported" the developer has since changed.
+            if (p.classList.contains('hidden')) vscHide();
         });
         var ids = ['setFollowIdeIndent', 'setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setFontFamily', 'setOccurrenceHighlight', 'setHorizontalScrollbar',
             // Smart Formatter controls
@@ -4327,6 +4599,9 @@
             populateFormatterPanel(merged);
             onSettingChanged();   // apply + persist + broadcast
         });
+        // "Import from VS Code…" — read-only preview; Import commits through onSettingChanged() (vscApply).
+        var vscBtn = document.getElementById('vscImportBtn');
+        if (vscBtn) vscBtn.addEventListener('click', function () { vscRequest(false); });
         var resetAll = document.getElementById('kbResetAll');
         if (resetAll) resetAll.addEventListener('click', function () {
             keyBindings = {};
@@ -4340,7 +4615,7 @@
         document.addEventListener('keydown', function (ev) {
             if (ev.key === 'Escape' && !capturingKey) {
                 var p = document.getElementById('settingsPanel');
-                if (p && !p.classList.contains('hidden')) p.classList.add('hidden');
+                if (p && !p.classList.contains('hidden')) { p.classList.add('hidden'); vscHide(); }
             }
         });
     }

@@ -83,6 +83,12 @@ namespace ClarionAssistant.Terminal
         /// <summary>{action:"saveSettings"} — persist gear-panel settings + broadcast to all tabs.</summary>
         void OnSaveSettings(MonacoEditorControl editor, string rawJson);
 
+        /// <summary>{action:"readVsCodeSettings", browse:bool?, path:string?} — READ-ONLY: locate and map
+        /// the developer's VS Code editor settings for the gear panel's import preview. Replies via
+        /// PostResponse with {found, path, source, error, values, skipped, cancelled}. Applying the result
+        /// goes back through saveSettings, so this action never writes.</summary>
+        void OnReadVsCodeSettings(MonacoEditorControl editor, string rawJson);
+
         /// <summary>{action:"saveHistory"} — persist Find/Replace history + broadcast to all tabs.</summary>
         void OnSaveHistory(MonacoEditorControl editor, string rawJson);
 
@@ -327,6 +333,7 @@ namespace ClarionAssistant.Terminal
                     case "implementation":    h.OnImplementation(this, json); break;
                     case "documentStructure": h.OnDocumentStructure(this, json); break;
                     case "saveSettings":      h.OnSaveSettings(this, json); break;
+                    case "readVsCodeSettings": h.OnReadVsCodeSettings(this, json); break;
                     case "saveHistory":       h.OnSaveHistory(this, json); break;
                     case "snippetCommand":    h.OnSnippetCommand(this, json); break;
                     case "saveCursor":        h.OnSaveCursor(this, json); break;
