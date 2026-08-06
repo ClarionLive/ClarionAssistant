@@ -27,12 +27,13 @@ You have MCP tools that directly control the IDE the developer is using. ALWAYS 
 - `close_file` -Close the active editor tab.
 - `get_open_files` -List all open editor tabs.
 - `get_line_text` -Get text of a specific line from the live editor buffer (includes unsaved changes).
+- `get_lines_range` -Get multiple lines (1-based) from the live editor buffer in one call. Much faster than repeated `get_line_text`.
 - `find_in_file` -Search for text in the active editor buffer. Returns line/col of all matches.
 - `is_modified` -Check if the active file has unsaved changes.
 - `toggle_comment` -Toggle Clarion line comments (!) on a range of lines.
 
 ### Application Tree (Clarion .app files)
-- `open_app` -Open a .app file in the IDE. Must load before listing procedures.
+- **To open a .app file, use `open_file` with the .app path** — it loads the app into the IDE app tree (same underlying call). There is no separate `open_app` tool; it was removed deliberately, and closing apps stays manual. An app must be loaded before listing procedures.
 - `get_app_info` -Get info about the currently open app (name, file, target type).
 - `list_procedures` -List all procedure names in the open app.
 - `get_procedure_details` -Get detailed procedure info (name, prototype, module, parent, template).
@@ -44,6 +45,12 @@ You have MCP tools that directly control the IDE the developer is using. ALWAYS 
 - `next_filled_embed` / `prev_filled_embed` -Navigate to the next/previous filled embed point.
 - `save_and_close_embeditor` -Save changes and close the embeditor.
 - `cancel_embeditor` -Discard changes and close the embeditor.
+- `check_conflicts` -Check if any other IDE instance is editing the same procedure. Call before opening a procedure in the embeditor.
+- `select_procedure` -Select a procedure in the app tree WITHOUT opening the embeditor.
+- `open_embeditor_source` -Open the module .clw source file for the procedure currently shown in the embeditor.
+- `warmup_abc` -Force the IDE's lazy ABC class load now, so the first Modern Embeditor open doesn't pay it concurrently with the WebView2 open. Run once with an .app open.
+- `export_txa` -Export the ENTIRE current app to a TXA file (always all procedures — per-procedure export pops a modal, don't ask for it). For individual procedure code use the embeditor tools instead.
+- `import_txa` -Import a TXA file into the currently open app; `clash_mode` controls procedure-name conflicts. NOTE: this mutates an app the developer already has open. Creating an app from nothing is a different capability (ClarionCL `/ai` creates the .app headlessly if it doesn't exist) — `import_txa` existing does NOT cover it.
 
 ### PWEE Embeditor (reading and writing embed code slots)
 
@@ -53,12 +60,45 @@ When a procedure is open in the embeditor, these tools let you read and write em
 - `get_embed_content` — Read the current code inside one specific embed slot by its line number. Use AFTER `search_embeditor_source` identifies the slot, BEFORE rewriting it.
 - `get_embeditor_source` — Returns the full annotated source with `«E:N/»` (empty) and `«E:N»...«/E:N»` (filled) markers. Only use when you need the complete picture — prefer `search_embeditor_source` for targeted work.
 - `write_embed_content` — Write code into an embed slot. Pass `line_number=N` (the N from the `«E:N»` token). Response reports line delta — if non-zero, any cached line numbers are stale; re-search before writing subsequent embeds.
+- `apply_embed_edits` — Apply one or more embed-slot edits in a SINGLE transient open→write→save→close round-trip, no interactive embeditor session left open. Prefer over `open_procedure_embed` + `write_embed_content` for LARGE procedures where the live PWEE editor is unstable under repeated driving. `edits` = JSON array of `{"line_number":N,"code":"..."}`; applied bottom-to-top; if ANY line_number isn't a current slot start, nothing is written. Do NOT wrap in open/save calls — it manages its own session.
+
+### Diff Review (propose changes visually)
+- `show_diff` — Open a color-coded unified diff viewer in the IDE editor panel with a changes sidebar and inline review notes (BLOCKER/SUGGESTION/NITPICK/QUESTION). Provide `original_text`/`modified_text`, or file paths, or `modified_from_active_editor='true'` to diff the IDE's current unsaved buffer in-process. Always pass `ignore_whitespace`.
+- `get_diff_result` — Poll the viewer outcome: `pending`, `approved` (with modified text), `notes` (array of review notes), or `cancelled`.
+- `get_diff_content` — Get the unified diff for the current/most recent `show_diff`, computed server-side from the exact text passed in. Response scales with change size, not file size — safe for very large files.
+
+### Build Tools (ClarionCL / MSBuild)
+- `build_solution` -Build the entire loaded solution via ClarionCL. Use `build_app` instead for multi-DLL solutions when only one target changed.
+- `build_app` -Build a single .app via ClarionCL. Defaults to the currently active app.
+- `generate_source` -Run template code generation (.clw/.inc) from an .app via ClarionCL WITHOUT a full build. Optional `conditional_generation`/`debug_generation` on/off.
+- `build_com_project` -Build a C# COM control project (.csproj) with VS2022 MSBuild.
+- `run_command` -Execute an arbitrary command-line process and capture output, for build tasks not covered above.
+
+All of these take a `timeout` in seconds (default 120) and kill the process on expiry. The ClarionCL-backed ones pass `/au` (suppresses the app/dct upgrade prompt) and report the ClarionCL exit code as the error count. CAVEAT: ClarionCL can still raise OTHER modal dialogs (e.g. solution-association mismatch, TXD format rejection) which are invisible (`CreateNoWindow`) and surface only as a timeout — if a build "times out" quickly and repeatably, suspect an invisible dialog, not a slow build. The converse also holds: a fast FAILURE with an exit code is usually NOT a dialog — real modals block silently to the timeout, while fast exits carry their explanation in stdout (read the lines ADJACENT to the one matching 'error'; the cause is often there, e.g. "Cannot create an application because no templates have been registered.").
+
+### Dictionary (DCT) Text Exchange
+- `export_dctx` -Export the currently open data dictionary to a human-readable .dctx text file. The dictionary must be open in the IDE.
+- `import_dctx` -Import a .dctx file into the currently open dictionary. WARNING: modifies the dictionary; changes must be saved manually.
 
 ### File System
 - `read_file` -Read file content from disk (into your context, NOT the editor). Supports `start_line` and `end_line` parameters to read a specific line range with line numbers.
 - `write_file` -Write content to a file on disk
 - `append_to_file` -Append text to an existing file
 - `list_directory` -List files in a directory with optional pattern filter
+
+### Everything Search (instant, all indexed drives)
+- `search_files` -Instant file/folder name search via Everything (voidtools).
+- `search_files_advanced` -File search with path, extension, size, and date filters.
+- `search_content` -Search text content within files (requires Everything content indexing).
+- `find_duplicates` -Find duplicate files by filename across all indexed drives.
+
+### Solution, Projects & Redirection
+- `get_solution_info` -Get the currently selected solution, Clarion version/build, .red file path, and CodeGraph database status.
+- `get_project_source_files` -List all .clw/.inc files in the solution with absolute paths, grouped by project. Use to resolve module names (e.g. 'Main001.clw') to paths for the LSP tools.
+- `resolve_red_path` -Resolve a Clarion filename to its full path via the active .red redirection file. Returns the first existing match.
+- `get_red_search_paths` -Get all search directories for a file extension from the .red file. With `project_name` (and LSP running), results are config-aware the way the compiler resolves them.
+- `get_ca_project_info` -Get ClarionAssistant project info for a folder (linked GitHub account, repo name). Use instead of asking the developer.
+- `index_solution` -Index/re-index the currently selected solution into its CodeGraph database.
 
 ### Clarion Class Intelligence
 - `analyze_class` -Parse CLASS definitions from a .inc file. Returns class names, methods, data members, and module references.
@@ -69,6 +109,7 @@ When a procedure is open in the embeditor, these tools let you read and write em
 ### CodeGraph - Solution-Wide Code Intelligence
 - `query_codegraph` - Run SQL queries against the indexed CodeGraph database. This gives you access to every symbol, relationship, and call chain across the ENTIRE Clarion solution.
 - `list_codegraph_databases` - Find available indexed databases.
+- `index_codegraph` - Index a Clarion solution into a CodeGraph database (parses all .clw/.inc). Run on first opening a solution or after code changes.
 
 The CodeGraph database schema:
 - **symbols** table: name, type (procedure/function/class/interface/routine/variable), file_path, line_number, params, return_type, parent_name, scope
@@ -86,12 +127,25 @@ Use `query_codegraph` when the developer asks:
 
 IMPORTANT: Use `query_codegraph` for cross-file and cross-project questions. Use `analyze_class` for detailed single-file CLASS parsing. After finding a symbol with query_codegraph, use `open_file` with the file_path and line_number to navigate the developer there.
 
+### SchemaGraph - Database Schema Intelligence
+- `ingest_schema` -Ingest a Clarion dictionary (.dctx) into a SchemaGraph database (.schemagraph.db alongside the dictionary).
+- `ingest_sql_database` -Ingest schema from a SQL Server database (tables, columns, keys, relationships, procs, functions, views). Merges with existing .dctx data by default.
+- `query_schema` -Read-only SQL against a SchemaGraph database. Tables: tables, columns, keys, key_columns, relationships, relationship_mappings, procedures, procedure_params, views, view_references, schema_fts, schema_metadata.
+- `search_tables` -Search tables by name pattern (returns name, prefix, driver, column/key counts).
+- `search_columns` -Search columns across all tables by name pattern.
+- `get_table` -Full detail for one table: columns, keys with fields, relationships.
+- `get_relationships` -All relationships for a table — parents it references and children referencing it.
+- `validate_names` -Validate table/column names exist (supports Prefix:Column). Suggests corrections for misspellings.
+- `schema_stats` -SchemaGraph statistics: counts, driver breakdown, db size.
+
 ### DocGraph - Third-Party Template Documentation
 - `query_docs` - Search third-party Clarion template documentation using full-text search. Returns method signatures, descriptions, parameters, and code examples ranked by relevance.
 - `ingest_docs` - Ingest documentation from a Clarion installation's `accessory/Documents` folder. Auto-discovers vendors, formats (HTM, CHM, PDF, MD), and chunks docs for search. Run once per Clarion install.
 - `list_doc_libraries` - List all ingested libraries with chunk counts.
 - `discover_docs` - Preview discoverable doc sources without ingesting.
 - `docgraph_stats` - Get database statistics (library count, chunk breakdown).
+- `ingest_web_docs` - Ingest docs from a web URL (start page + linked HTM pages in the same directory). Works great for CapeSoft online docs — point it at the index page; optional explicit `vendor`/`library`.
+- `rebuild_docgraph_fts` - Rebuild the FTS5 search index from the source doc_chunks table. Use when `query_docs` returns 'database disk image is malformed' (inconsistent FTS shadow tables — underlying chunks are unaffected).
 
 Covers:
 - **Core Clarion docs** from the `docs/` folder -- Language Reference, ABC Library Reference, Template Guide, Database Drivers, and more (auto-discovered as vendor "SoftVelocity")
@@ -117,6 +171,7 @@ WARNING: SoftVelocity documentation mixes Clarion and .NET code for the same top
 - `lsp_find_symbol` - Search for symbols across the workspace by name.
 - `lsp_diagnostics` - Get current errors and warnings for a file. Your feedback loop for verifying edits are syntactically valid.
 - `lsp_rename` - Propose a rename of the symbol at a position. Returns the edit list but does NOT apply it — you must present for developer approval first.
+- `lsp_debug_status` - Debug tool: LSP client state, notification counts, diagnostics cache, open documents, last server stderr lines. Use when `lsp_diagnostics` returns `{pending:true}` unexpectedly.
 
 The LSP provides real-time analysis of the actual source code. Use it for:
 - "Where is X defined?" - lsp_definition
@@ -154,6 +209,22 @@ After you write code into the embeditor (via `write_embed_content`, `replace_ran
 4. Apply the edits using `write_embed_content` / `replace_range` / `write_file` depending on where the edits land.
 
 If `lsp_rename` returns `{error: "..."}`, the symbol can't be renamed safely (keyword, built-in, unsupported position). Explain to the developer rather than retrying blindly.
+
+### Multi-Instance Coordination (multiple Clarion IDEs on one solution)
+- `list_instances` -List all running Clarion IDE instances with their open apps, active files, and current work.
+- `send_to_instances` -Send a message to other IDE instances (e.g. 'I changed the API in ProcX, you may need to update callers').
+- `get_instance_messages` -Get unread messages from other instances. Check when starting work.
+
+### Generation Traces (build failure analytics)
+- `query_traces` -SQL over the code-generation trace database (table: clarion_traces) to analyze build failures and recurring error patterns.
+- `trace_stats` -Summary statistics: total traces, build failures, error counts by type.
+
+### IDE Introspection & Diagnostics (advanced, read-mostly)
+- `inspect_ide` -Reflect over live IDE state. Commands: 'active_view', 'editor_text' (includes unsaved changes), 'all_windows', 'all_pads', 'app_details'.
+- `dump_object_api` -DIAGNOSTIC: navigate the IDE object graph from the App object by dot-path (e.g. `path="Dictionary.Files[0]"`) and dump the target's type/properties/fields/methods. No IDE mutation.
+- `dump_appmain_api` -DIAGNOSTIC: dump the native ApplicationMainWindowControl's managed methods and GlobalRequest/GlobalResponse enum values.
+- `execute_command` -Invoke a registered SharpDevelop/Clarion addin command by class name (instantiates and calls Run()). Drives toolbar/menu commands programmatically — use with care.
+- `log_skill_update` -Log a modification to the /clarion skill for changelog tracking. Call after changing a pattern in the skill file.
 
 ### Knowledge & Memory (persistent across sessions)
 - `add_knowledge` — Save a reusable insight to your knowledge base. Categories: `decision`, `pattern`, `gotcha`, `anti_pattern`, `debug_insight`, `preference`. Saved knowledge is auto-injected at the start of future sessions, ranked by how often it's referenced.

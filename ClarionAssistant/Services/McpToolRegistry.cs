@@ -2772,8 +2772,10 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     if (!File.Exists(clarionCl))
                         return "Error: ClarionCL.exe not found at " + clarionCl;
 
-                    string arguments = "/ag \"" + slnPath + "\"";
-                    return RunBuildProcess(clarionCl, arguments, Path.GetDirectoryName(slnPath), timeout, "build_solution", slnPath);
+                    // /au suppresses the app/dct upgrade prompt — a modal dialog would
+                    // otherwise sit invisibly (CreateNoWindow) until the timeout kills us.
+                    string arguments = "/au /ag \"" + slnPath + "\"";
+                    return RunBuildProcess(clarionCl, arguments, Path.GetDirectoryName(slnPath), timeout, "build_solution", slnPath, exitCodeIsErrorCount: true);
                 }
             });
 
@@ -2811,8 +2813,9 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     if (!File.Exists(clarionCl))
                         return "Error: ClarionCL.exe not found at " + clarionCl;
 
-                    string arguments = "/ag \"" + appPath + "\"";
-                    return RunBuildProcess(clarionCl, arguments, Path.GetDirectoryName(appPath), timeout, "build_app", appPath);
+                    // /au suppresses the app/dct upgrade prompt (see build_solution).
+                    string arguments = "/au /ag \"" + appPath + "\"";
+                    return RunBuildProcess(clarionCl, arguments, Path.GetDirectoryName(appPath), timeout, "build_app", appPath, exitCodeIsErrorCount: true);
                 }
             });
 
@@ -2855,13 +2858,14 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                         return "Error: ClarionCL.exe not found at " + clarionCl;
 
                     var argBuilder = new StringBuilder();
-                    argBuilder.Append("/ag \"" + appPath + "\"");
+                    // /au suppresses the app/dct upgrade prompt (see build_solution).
+                    argBuilder.Append("/au /ag \"" + appPath + "\"");
                     if (!string.IsNullOrEmpty(condGen))
                         argBuilder.Append(" /agc " + condGen);
                     if (!string.IsNullOrEmpty(debugGen))
                         argBuilder.Append(" /agd " + debugGen);
 
-                    return RunBuildProcess(clarionCl, argBuilder.ToString(), Path.GetDirectoryName(appPath), timeout, "generate_source", appPath);
+                    return RunBuildProcess(clarionCl, argBuilder.ToString(), Path.GetDirectoryName(appPath), timeout, "generate_source", appPath, exitCodeIsErrorCount: true);
                 }
             });
 
@@ -4138,7 +4142,7 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
 
         #region Build Helpers
 
-        private string RunBuildProcess(string fileName, string arguments, string workingDirectory, int timeoutSeconds, string toolName = null, string targetFile = null)
+        private string RunBuildProcess(string fileName, string arguments, string workingDirectory, int timeoutSeconds, string toolName = null, string targetFile = null, bool exitCodeIsErrorCount = false)
         {
             try
             {
@@ -4198,6 +4202,15 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
 
                     var result = new StringBuilder();
                     bool success = process.ExitCode == 0;
+
+                    // ClarionCL doesn't emit MSBuild-shaped ": error " lines, so the pattern
+                    // counter above sees nothing and a failed run would report "Errors: 0".
+                    // Its exit code is the error count instead (observed: 1 error -> exit 1,
+                    // 3 template parse errors -> exit 3, success -> 0; consistent with the
+                    // behaviour documented in the C7-era Advanced Topics guide). Errors only —
+                    // one integer can't also carry warnings, so those still rely on patterns.
+                    if (exitCodeIsErrorCount && !success)
+                        errorCount = process.ExitCode;
 
                     result.AppendLine(success ? "BUILD SUCCEEDED" : "BUILD FAILED");
                     result.AppendLine(string.Format("Exit code: {0} | Errors: {1} | Warnings: {2}", process.ExitCode, errorCount, warningCount));
