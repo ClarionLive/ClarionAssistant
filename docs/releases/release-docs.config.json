@@ -162,26 +162,5 @@
     "",
     "Scoped to one release cycle — clear this map when a version is cut."
   ],
-  "acknowledgedCommits": {
-    "f0b6f79": "LSP status bar + diagnostics window follow the CA Editor's theme - documented by the 'Diagnostics window follows the CA Editor's theme' entry (#169); unprefixed subject.",
-    "2ce02f7": "Diagnostics window layout/header theming - same entry (#169); unprefixed subject.",
-    "e44e9c7": "Initial diagnostics window theme + readability - same entry (#169); unprefixed subject.",
-    "cecb45f": "Owner-drawn diagnostics header - same entry (#169); unprefixed subject.",
-    "f1a393c": "Theme-matched grid lines and caption colours - same entry (#169); unprefixed subject.",
-    "282a397": "Neutral selection highlight - same entry (#169); unprefixed subject.",
-    "d207fea": "Per-theme selection tint + double-buffering to stop hover flicker - same entry (#169); unprefixed subject.",
-    "0139783": "Severity text washed out under TextRenderer - same entry (#169); unprefixed subject.",
-    "856427c": "Switch cell/header drawing to GDI+ DrawString - same entry (#169); unprefixed subject.",
-    "1ccd757": "Refresh button tooltip never appeared - same entry (#169); unprefixed subject.",
-    "5943809": "Tooltip wording iteration - same entry (#169); unprefixed subject.",
-    "d90a0fb": "Tooltip wording reverted - same entry (#169); unprefixed subject.",
-    "5259968": "Refresh captioned the window with a stale filename - same entry (#169); unprefixed subject.",
-    "6ec8caf": "Pill stayed hidden while the editor showed squiggles - same entry (#169); unprefixed subject.",
-    "bb77f85": "Pill claimed a green OK for files never published - same entry (#169); unprefixed subject.",
-    "e20a88d": "Severity palette survived a theme switch - same entry (#169); unprefixed subject.",
-    "c93d1a3": "Theme followed the last page to speak, not the active editor - same entry (#169); unprefixed subject.",
-    "9a56ba4": "Squiggles blank behind a premature empty LSP republish - documented by the 'Squiggles stop vanishing' entry (#170); unprefixed subject.",
-    "89614f5": "Timed-out round-trip wiped every squiggle - same entry (#170); unprefixed subject.",
-    "e308153": "cp1252 fallback before pushing source to the LSP - documented by the 'Diagnostics stop reporting false corruption' entry (#168); unprefixed subject."
-  }
+  "acknowledgedCommits": {}
 }

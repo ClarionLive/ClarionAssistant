@@ -84,6 +84,41 @@ it was.
 
 The import is strictly read-only: it never writes to VS Code's configuration.
 
+<!-- release-docs: covered=build-tools -->
+### Builds run from the assistant no longer stall, and report real error counts
+
+The ClarionCL-backed build tools (`build_solution`, `build_app`, `generate_source`) now pass `/au`, so the
+app/dictionary upgrade prompt can no longer hold a run open until it times out. That prompt is raised
+invisibly &mdash; the process is launched with no window &mdash; so the only symptom was a build that
+"hung" for its full timeout with nothing to show for it.
+
+A failed build also used to report **"Errors: 0"**. The error count was scraped with MSBuild-shaped
+patterns (`": error "`) that match nothing ClarionCL actually emits, so every ClarionCL failure counted
+zero. The count now comes from ClarionCL's exit code: one error reports 1, three template parse errors
+report 3, success reports 0. Warnings still come from pattern matching, and MSBuild builds are unchanged.
+
+<!-- release-docs: covered=templates -->
+### CAStamp &mdash; a build-stamp extension template
+
+A new Clarion template ships in `ClarionAssistant/templates/CAStamp.tpl`. It is an APPLICATION-scope
+`#EXTENSION` that stamps version, company and application name into the generated program as globals,
+with an optional startup banner &mdash; so a built `.exe` can report what it was built from without that
+being wired up by hand in every app.
+
+MIT licensed and intended for marketplace distribution. To use it, register the template and add the
+extension to your application's global extensions. Install it to `<clarion>\accessory\template\win\`:
+ClarionCL stores a registered template by bare filename rather than by the path you hand it, so a `.tpl`
+registered from outside the redirection search path appears to register successfully and then fails with
+`GENE000` from any other working directory.
+
+### The embedded assistant knows about every tool it has
+
+The tool list in `.claude/CLAUDE.md` was audited against the registry. Fifty-one registered tools were
+documented nowhere &mdash; TXA and DCTX import/export, the build tools, SchemaGraph, Everything search,
+multi-instance coordination, generation traces and more &mdash; so the assistant simply did not reach for
+them. One entry pointed the other way: `open_app`, removed back in v3.0.0, was still listed. Registry and
+documentation are now at parity.
+
 ## What's New in v5.6
 
 Documentation search is the headline: PDF text extraction now works on every machine instead of only ones that happened to have a third-party tool installed, the extracted text is more accurate, and it is indexed so that a question is answered by the first result rather than the fifth query. Alongside that, a cycle of fixes across the diagnostics path, completion scoping, and the CA Editor's Monaco overlay &mdash; plus a build fix that restores Clarion 10 to the shipped set.
