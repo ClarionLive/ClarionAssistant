@@ -45,3 +45,8 @@ ClarionAssistant/knowledge.db
 
 # Pinned-tag LSP build cache (fetched + built by deploy.ps1, GitHub #40)
 ClarionAssistant/.lsp-build/
+
+# Dev-only test dependency (jsdom, for Terminal/test/vscode-import-ui.test.js). Declared in
+# Terminal/test/package.json and installed with `npm install` there — nothing here ships.
+ClarionAssistant/Terminal/test/node_modules/
+ClarionAssistant/Terminal/test/package-lock.json

@@ -1427,6 +1427,9 @@ namespace ClarionAssistant.Terminal
         void IMonacoEditorHost.OnImplementation(MonacoEditorControl editor, string rawJson) { HandleImplementation(rawJson); }
         void IMonacoEditorHost.OnDocumentStructure(MonacoEditorControl editor, string rawJson) { HandleDocumentStructure(rawJson); }
         void IMonacoEditorHost.OnSaveSettings(MonacoEditorControl editor, string rawJson) { HandleSaveSettings(rawJson); }
+        // Read-only preview feed for the gear panel's VS Code import; applying goes back through
+        // OnSaveSettings above, so there is still exactly one write path.
+        void IMonacoEditorHost.OnReadVsCodeSettings(MonacoEditorControl editor, string rawJson) { VsCodeImportBridge.Handle(editor, rawJson); }
         void IMonacoEditorHost.OnSaveHistory(MonacoEditorControl editor, string rawJson) { HandleSaveHistory(rawJson); }
         void IMonacoEditorHost.OnSnippetCommand(MonacoEditorControl editor, string rawJson)
         {
