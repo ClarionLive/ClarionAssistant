@@ -1275,9 +1275,12 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                     int startLine = McpJsonRpc.GetInt(args, "start_line", 0);
                     int endLine = McpJsonRpc.GetInt(args, "end_line", 0);
 
+                    // Encoding-aware on both branches: this is what the assistant sees when it reads
+                    // source, and the no-encoding overload handed it U+FFFD in place of every
+                    // high-bit character in a BOM-less cp1252 file (i.e. most Clarion source).
                     if (startLine > 0 || endLine > 0)
                     {
-                        var allLines = File.ReadAllLines(path);
+                        var allLines = EncodingHelper.ReadAllLines(path, out _);
                         int from = Math.Max(1, startLine) - 1; // convert to 0-based
                         int to = endLine > 0 ? Math.Min(endLine, allLines.Length) : allLines.Length;
                         var sb = new System.Text.StringBuilder();
@@ -1288,7 +1291,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                         return sb.ToString();
                     }
 
-                    return File.ReadAllText(path);
+                    return EncodingHelper.ReadAllText(path, out _);
                 }
             });
 

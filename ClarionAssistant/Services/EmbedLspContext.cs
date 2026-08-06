@@ -123,7 +123,10 @@ namespace ClarionAssistant.Services
             {
                 if (string.IsNullOrEmpty(RealPath) || !File.Exists(RealPath)) return;
                 if (!SharedLspBridge.IsRunning) return;
-                SharedLspBridge.EnsureBufferSynced(RealPath, File.ReadAllText(RealPath));
+                // Encoding-aware: this pushes on-disk .clw text straight back into the LSP buffer, so
+                // the no-encoding overload here reintroduced exactly the U+FFFD diagnostics #168
+                // removed — every embeditor tab teardown re-poisoned the server's view of the file.
+                SharedLspBridge.EnsureBufferSynced(RealPath, EncodingHelper.ReadAllText(RealPath, out _));
                 System.Diagnostics.Debug.WriteLine("[EmbedLspContext] reverted LSP shadow for '" + RealPath + "'.");
             }
             catch (Exception ex)

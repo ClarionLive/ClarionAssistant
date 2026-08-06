@@ -1305,7 +1305,7 @@ namespace ClarionAssistant.Services
                 if (!string.IsNullOrEmpty(bufferText))
                     lines = bufferText.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
                 else if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
-                    lines = File.ReadAllLines(filePath);
+                    lines = EncodingHelper.ReadAllLines(filePath, out _);
                 else
                     return null;
                 if (line < 0 || line >= lines.Length) return null;
@@ -1966,7 +1966,7 @@ namespace ClarionAssistant.Services
                 }
                 if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
                 {
-                    var lines = File.ReadAllLines(filePath);
+                    var lines = EncodingHelper.ReadAllLines(filePath, out _);
                     if (line < lines.Length) return lines[line];
                 }
             }
@@ -2218,7 +2218,7 @@ namespace ClarionAssistant.Services
         private static string[] CgGetLines(string bufferText, string filePath)
         {
             if (!string.IsNullOrEmpty(bufferText)) return bufferText.Replace("\r\n", "\n").Split('\n');
-            try { if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath)) return File.ReadAllLines(filePath); } catch { }
+            try { if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath)) return EncodingHelper.ReadAllLines(filePath, out _); } catch { }
             return null;
         }
 

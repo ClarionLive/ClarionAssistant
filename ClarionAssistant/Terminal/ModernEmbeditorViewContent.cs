@@ -108,7 +108,7 @@ namespace ClarionAssistant.Terminal
                 if (pwee == null || pwee.Length < 4)
                 { ClarionAssistant.MonacoSpikeLog.Write("error reveal: no pwee baseline captured"); return false; }
 
-                var disk = System.IO.File.ReadAllLines(fileName);
+                var disk = EncodingHelper.ReadAllLines(fileName, out _);
                 if (line0 < 0 || line0 >= disk.Length)
                 { ClarionAssistant.MonacoSpikeLog.Write("error reveal: line0 " + line0 + " outside module (" + disk.Length + " lines)"); return false; }
 
@@ -426,7 +426,9 @@ namespace ClarionAssistant.Terminal
                 string res = new AppTreeService().ExportTxa(tmp);
                 if (!string.IsNullOrEmpty(res) && !res.StartsWith("Error") && File.Exists(tmp))
                 {
-                    string text = File.ReadAllText(tmp);
+                    // Clarion writes the .txa as ANSI, so the no-encoding overload turned every
+                    // high-bit character in exported Local/Global Data into mojibake in the pad.
+                    string text = EncodingHelper.ReadAllText(tmp, out _);
                     if (!string.IsNullOrEmpty(text)) lock (_txaLock) { _wholeAppTxa = text; }
                 }
             }

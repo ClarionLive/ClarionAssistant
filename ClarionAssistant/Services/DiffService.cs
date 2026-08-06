@@ -285,15 +285,14 @@ namespace ClarionAssistant.Services
         /// </summary>
         private static string ReadOriginalText(string filePath, int startLine, int endLine, out Encoding encoding)
         {
-            // Whole file: one read gets the text AND the encoding. The sub-range branch still detects
-            // separately because it needs the file in line-split form, which ReadAllLines only gives
-            // for a second read — a rarer path, and not worth re-implementing ReadLine's terminator
-            // and trailing-newline rules by hand just to save it.
+            // Either shape gets the text AND the encoding from a single read. The sub-range branch
+            // used to detect separately for want of a line-split equivalent; EncodingHelper.ReadAllLines
+            // now provides one, and does the split with a real StreamReader.ReadLine rather than
+            // re-implementing its terminator and trailing-newline rules.
             if (startLine <= 1 && endLine == -1)
                 return EncodingHelper.ReadAllText(filePath, out encoding);
 
-            encoding = EncodingHelper.DetectFileEncoding(filePath);
-            string[] allLines = File.ReadAllLines(filePath, encoding);
+            string[] allLines = EncodingHelper.ReadAllLines(filePath, out encoding);
             if (startLine < 1) startLine = 1;
             if (endLine < 1 || endLine > allLines.Length) endLine = allLines.Length;
             if (startLine > endLine)

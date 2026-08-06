@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
@@ -71,10 +72,40 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// Read a file as lines and report the encoding it was decoded with, opening it ONCE.
+        /// Observationally identical to <c>File.ReadAllLines(path, DetectFileEncoding(path))</c>,
+        /// including the line-terminator rules: the split is done by a real
+        /// <c>StreamReader.ReadLine</c> over the bytes already in hand, so CR, LF and CRLF all
+        /// terminate a line and a trailing terminator does NOT produce a final empty entry.
+        /// Hand-rolling those rules on a split string gets the last one wrong.
+        ///
+        /// Costs one read and — on a no-BOM file — one decode to test the UTF-8 hypothesis plus the
+        /// ReadLine decode. Still strictly better than the detect-then-read pair, which costs two of
+        /// each. Use this rather than <see cref="DetectFileEncoding"/> + <c>File.ReadAllLines</c>.
+        /// </summary>
+        public static string[] ReadAllLines(string path, out Encoding encoding)
+        {
+            byte[] bytes = ReadAllBytes(path, FileShare.Read);
+
+            var lines = new List<string>();
+            using (var ms = new MemoryStream(bytes, false))
+            using (var reader = new StreamReader(ms, DetectFromBytes(bytes), true))
+            {
+                string line;
+                while ((line = reader.ReadLine()) != null) lines.Add(line);
+
+                // Post-read, so a BOM the StreamReader sniffed is reflected here rather than the
+                // encoding we guessed going in — same ordering rule as ReadAllText's BOM branch.
+                encoding = reader.CurrentEncoding;
+            }
+            return lines.ToArray();
+        }
+
+        /// <summary>
         /// Detect a file's encoding without keeping the text. Use only where the text is genuinely
-        /// not wanted, or is read in a different shape (e.g. <c>File.ReadAllLines</c> for a
-        /// sub-range) — otherwise <see cref="ReadAllText(string, out Encoding)"/> gets both for the
-        /// price of one read. Returns <c>Encoding.Default</c> if the file can't be read.
+        /// not wanted — otherwise <see cref="ReadAllText(string, out Encoding)"/> or
+        /// <see cref="ReadAllLines(string, out Encoding)"/> gets both for the price of one read.
+        /// Returns <c>Encoding.Default</c> if the file can't be read.
         /// </summary>
         public static Encoding DetectFileEncoding(string path)
         {
