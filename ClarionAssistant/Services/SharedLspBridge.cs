@@ -806,7 +806,7 @@ namespace ClarionAssistant.Services
             // SharedGetDiagnostics and the bundled LspClient.EnsureDocumentOpen. (Bob, ticket 3d9a6ec9)
             if (string.IsNullOrEmpty(bufferText) && !string.IsNullOrEmpty(filePath) && File.Exists(filePath))
             {
-                try { bufferText = File.ReadAllText(filePath, EncodingHelper.DetectFileEncoding(filePath)); } catch { }
+                try { bufferText = EncodingHelper.ReadAllText(filePath, out _); } catch { }
             }
             try
             {
@@ -846,7 +846,7 @@ namespace ClarionAssistant.Services
         {
             string buffer = null;
             if (liveBuffer) { lock (_sharedBufLock) { _sharedBuffers.TryGetValue(filePath, out buffer); } }
-            if (buffer == null && File.Exists(filePath)) { try { buffer = File.ReadAllText(filePath, EncodingHelper.DetectFileEncoding(filePath)); } catch { } }
+            if (buffer == null && File.Exists(filePath)) { try { buffer = EncodingHelper.ReadAllText(filePath, out _); } catch { } }
 
             var result = new LspClient.DiagnosticWaitResult { Entries = new List<LspClient.DiagnosticEntry>(), Pending = true };
             try
