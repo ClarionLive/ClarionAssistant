@@ -2397,8 +2397,8 @@ namespace ClarionAssistant
                 string incPath = Path.Combine(folder, modelName + ".inc");
                 string clwPath = Path.Combine(folder, modelName + ".clw");
 
-                string incContent = File.Exists(incPath) ? File.ReadAllText(incPath) : "";
-                string clwContent = File.Exists(clwPath) ? File.ReadAllText(clwPath) : "";
+                string incContent = File.Exists(incPath) ? Services.EncodingHelper.ReadAllText(incPath, out _) : "";
+                string clwContent = File.Exists(clwPath) ? Services.EncodingHelper.ReadAllText(clwPath, out _) : "";
 
                 view.SendPreviewResult(incContent, clwContent);
             }
@@ -2443,10 +2443,12 @@ namespace ClarionAssistant
                 }
 
                 // Read model files, replace class name, write new files
-                string incContent = File.ReadAllText(srcInc);
+                // Encoding-aware: this is a read-modify-WRITE of Clarion source, so a mis-decoded
+                // high-bit character isn't just displayed wrong — it is written back as U+FFFD.
+                string incContent = Services.EncodingHelper.ReadAllText(srcInc, out _);
                 incContent = incContent.Replace(modelName, newClassName);
 
-                string clwContent = File.ReadAllText(srcClw);
+                string clwContent = Services.EncodingHelper.ReadAllText(srcClw, out _);
                 clwContent = clwContent.Replace(modelName, newClassName);
                 // Also replace INCLUDE reference to .INC file
                 clwContent = clwContent.Replace(

@@ -772,7 +772,7 @@ namespace ClarionCodeGraph.Graph
                     if (fileCount % 50 == 0)
                         ReportProgress(string.Format("  Resolving calls: {0} files, {1} relationships...", fileCount, relCount));
 
-                    var lines = File.ReadAllLines(target.Path);
+                    var lines = ClarionAssistant.Services.EncodingHelper.ReadAllLines(target.Path, out _);
                     bool inCode = false;
                     // Tracks whether the scan is currently inside a procedure-local derived
                     // class's inline body (see classDefRegex above) -- skipped until its own

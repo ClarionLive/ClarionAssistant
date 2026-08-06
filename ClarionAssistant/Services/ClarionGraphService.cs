@@ -381,7 +381,7 @@ namespace ClarionAssistant.Services
         {
             int count = 0;
             string[] lines;
-            try { lines = File.ReadAllLines(filePath); }
+            try { lines = EncodingHelper.ReadAllLines(filePath, out _); }
             catch { return 0; }
 
             for (int i = 0; i < lines.Length; i++)

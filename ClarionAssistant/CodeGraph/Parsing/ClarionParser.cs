@@ -140,7 +140,7 @@ namespace ClarionCodeGraph.Parsing
             if (!File.Exists(filePath))
                 return result;
 
-            var lines = File.ReadAllLines(filePath);
+            var lines = ClarionAssistant.Services.EncodingHelper.ReadAllLines(filePath, out _);
             bool inMap = false;
             bool inModule = false;
             string currentModuleFile = null;
@@ -288,7 +288,7 @@ namespace ClarionCodeGraph.Parsing
         public int FindMainTailStart(string filePath)
         {
             if (!File.Exists(filePath)) return 0;
-            var lines = File.ReadAllLines(filePath);
+            var lines = ClarionAssistant.Services.EncodingHelper.ReadAllLines(filePath, out _);
 
             bool inMap = false;
             bool inModule = false;
@@ -350,7 +350,7 @@ namespace ClarionCodeGraph.Parsing
             if (!File.Exists(filePath))
                 return result;
 
-            var lines = File.ReadAllLines(filePath);
+            var lines = ClarionAssistant.Services.EncodingHelper.ReadAllLines(filePath, out _);
             string memberOf = null;
             string currentProcedure = null;
             bool inCode = false;
@@ -879,7 +879,7 @@ namespace ClarionCodeGraph.Parsing
             if (!File.Exists(filePath))
                 return result;
 
-            var lines = File.ReadAllLines(filePath);
+            var lines = ClarionAssistant.Services.EncodingHelper.ReadAllLines(filePath, out _);
             string currentClassName = null;
             bool inClassBody = false;
             int classEndDepth = 0;

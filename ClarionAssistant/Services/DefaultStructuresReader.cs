@@ -61,7 +61,7 @@ namespace ClarionAssistant
                     body.Clear();
                 }
 
-                foreach (string raw in File.ReadAllLines(path))
+                foreach (string raw in Services.EncodingHelper.ReadAllLines(path, out _))
                 {
                     var m = Regex.Match(raw, @"^\s*!!>\s*(.+?)\s*$");
                     if (m.Success) { Flush(); title = m.Groups[1].Value; continue; }

@@ -97,7 +97,7 @@ namespace ClarionAssistant.Services
 
             try
             {
-                Parse(File.ReadAllLines(redFilePath));
+                Parse(EncodingHelper.ReadAllLines(redFilePath, out _));
                 Active = this;
                 return true;
             }

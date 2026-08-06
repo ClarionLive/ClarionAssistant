@@ -190,7 +190,7 @@ namespace ClarionAssistant.Services
         {
             var tables = new List<TableDef>();
             string[] lines;
-            try { lines = File.ReadAllLines(clwPath); }
+            try { lines = EncodingHelper.ReadAllLines(clwPath, out _); }
             catch { return tables; }
 
             TableDef cur = null;
@@ -952,7 +952,7 @@ namespace ClarionAssistant.Services
         {
             var outp = new List<FieldDef>();
             string[] lines;
-            try { lines = File.ReadAllLines(clwPath); }
+            try { lines = EncodingHelper.ReadAllLines(clwPath, out _); }
             catch { return outp; }
 
             int i = SkipMapBlock(lines);
@@ -996,7 +996,7 @@ namespace ClarionAssistant.Services
             string appClw = FindAppClwPath();
             if (appClw == null) return null;
             string[] lines;
-            try { lines = File.ReadAllLines(appClw); } catch { return null; }
+            try { lines = EncodingHelper.ReadAllLines(appClw, out _); } catch { return null; }
 
             string dir = Path.GetDirectoryName(appClw);
             var moduleRx = new Regex(@"MODULE\(\s*'([^']+)'\s*\)", RegexOptions.IgnoreCase);
@@ -1021,7 +1021,7 @@ namespace ClarionAssistant.Services
             var outp = new List<FieldDef>();
             if (string.IsNullOrEmpty(clwPath)) return outp;
             string[] lines;
-            try { lines = File.ReadAllLines(clwPath); } catch { return outp; }
+            try { lines = EncodingHelper.ReadAllLines(clwPath, out _); } catch { return outp; }
 
             int i = SkipMapBlock(lines);
             int depth = 0;

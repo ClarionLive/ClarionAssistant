@@ -144,7 +144,7 @@ namespace ClarionAssistant.Services
         public List<ClassDefinition> ParseIncFile(string filePath)
         {
             if (!File.Exists(filePath)) return new List<ClassDefinition>();
-            string content = File.ReadAllText(filePath);
+            string content = EncodingHelper.ReadAllText(filePath, out _);
             return ParseIncContent(content, filePath);
         }
 
@@ -332,7 +332,7 @@ namespace ClarionAssistant.Services
         public List<MethodImplementation> ParseClwFile(string filePath)
         {
             if (!File.Exists(filePath)) return new List<MethodImplementation>();
-            string content = File.ReadAllText(filePath);
+            string content = EncodingHelper.ReadAllText(filePath, out _);
             return ParseClwContent(content);
         }
 
@@ -534,7 +534,7 @@ namespace ClarionAssistant.Services
         {
             if (!File.Exists(clwPath)) return null;
 
-            string content = File.ReadAllText(clwPath);
+            string content = EncodingHelper.ReadAllText(clwPath, out _);
             string dir = Path.GetDirectoryName(clwPath);
             string clwBaseName = Path.GetFileNameWithoutExtension(clwPath).ToLower();
 
