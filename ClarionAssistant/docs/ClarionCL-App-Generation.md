@@ -531,9 +531,13 @@ Ordered by how much each would unlock.
    compiled to `FRAME.exe`. See §3.5.
 5. ~~Relational dictionary~~ — **RESOLVED 2026-08-05.** Two-table dictionary with a relation
    round-trips exactly. See §3.6.
-6. **Parent–child browse** (browse filtered by a related parent) — the relation now exists in the
-   dictionary, but no procedure has been authored that *uses* it via `%RangeField`/`%RangeLimit`.
-   **UNVERIFIED.**
+6. **Parent–child browse** (browse filtered by a related parent) — **PARTIAL 2026-08-05.** A
+   two-table app with parent and child browses compiles and runs (§10), and the prompt contract is
+   now known, but the range limit itself **does not wire**: the `%SortOrder` MULTI family is
+   silently dropped when supplied piecemeal. See **§10.3** — this is the main open item, and it has
+   a cheap experiment attached.
+6b. **Reports** — **RESOLVED 2026-08-05.** `FROM ABC Report` with `[FILES]` instance **0**,
+   `[REPORT]`, and the canonical progress `[WINDOW]`. See §10.2.
 7. **Reproducing Mark's TXD construct bugs** — needs a hand-authored *dictionary* TXD, not the
    Report-Writer TXD `/dx` emits. **UNVERIFIED.**
 4. Does `/aru` allow running utility templates against a generated app? **UNVERIFIED.**
@@ -722,7 +726,168 @@ upgrade, and that prompt is invisible to a headless agent. This is why Mark pair
 standard. **Use `/au` on every `/dx`, `/di`, and `/ai`.** It emits a harmless
 `warning CLCE004: … ForceUpgrade …` which can be ignored.
 
-## 10. Related knowledge entries
+## 10. Cold test: authoring from a description (2026-08-05, later the same day)
+
+Everything in §3 was *grown* — the TXA was iterated against compiler errors while the format was
+still being discovered. This section records the first app authored from a **description** instead,
+against the written grammar, as a measurement of whether that grammar is sufficient.
+
+**Spec:** "Customers → Orders, MDI frame, parent–child browse, update forms, orders-by-customer
+report." Chosen to hit the two things §7 listed as unverified.
+
+**Result: green in 3 iterations.** `ORDERS.dctx` (2.1 KB) + `ORDERS.txa` (9.4 KB) → `ORDERS.exe`
+(797 KB), running. Six procedures: frame + menu, two browses, two update forms, one report.
+Artifacts: `ClarionAppGen/specs/orders`. The whole run is one command now — see §11.
+
+Iteration 1 → 29 compile errors, all in the three `Orders` procedures.
+Iteration 2 → 4 errors, all in the report.
+Iteration 3 → green.
+
+### 10.1 CORRECTION: `[INSTANCE]` binds the file to a CONTROL TEMPLATE, not to a table ordinal
+
+This supersedes the §3.4 rule *"both procedures use `[INSTANCE] 1` when the dictionary has a single
+table."* That rule produces working output but the reason it gives is wrong, and the wrong reason
+does not generalize — it predicts that a two-table dictionary needs instance 2 somewhere, which is
+what iteration 1 tried, and every `Orders` procedure failed.
+
+**The actual rule:** `[FILES]`'s `[INSTANCE] N` binds the file to **control-template instance `N`**
+— the same numbering space as `[ADDITION]`/`INSTANCE n` and `#SEQ(n)`. **`0` means the procedure
+itself.**
+
+| Procedure kind | Instance | Why |
+|---|---|---|
+| Browse | `1` | BrowseBox is instance 1 and owns the file |
+| Form | `1` | SaveButton is instance 1 (this is why instance 2 — CancelButton — broke in §3.4) |
+| Report / Process | `0` | no control templates exist to own the file |
+
+Table count is irrelevant. `[INSTANCE]` itself is **mandatory** — omitting the block fails import
+with exit 1.
+
+**Failure signature when it is wrong** — identical to §3.4, and it survives both `/ai` and `/ag`
+with exit 0, failing only at *compile*:
+
+```
+Process:View         VIEW()          ! empty file name
+ThisReport.Init(Process:View, Relate:, ?Progress:PctText, Progress:Thermometer)
+```
+
+```
+error : Must be FILE or KEY label
+error : Unknown identifier: RELATE:
+error : Field not found: SETQUICKSCAN
+```
+
+Read it as *"the file did not bind"*, and check the instance number first.
+
+### 10.2 Reports: `FROM ABC Report`, and the progress `[WINDOW]` is mandatory
+
+No shipped example app under `C:\Clarion12\Examples` contains a report, so there was nothing to
+copy. A report procedure needs, in this order: `[FILES]` (instance **0**), `[REPORT]`, `[WINDOW]`.
+
+The `[WINDOW]` is the **progress window**, and omitting it fails at *generation*:
+
+```
+error GENE000: ASSERT: Main: progress controls use variable not found!
+error GENE000: Main Error: No Window Defined!
+```
+
+The assert is `abprocs.tpw:577` (`%ThermometerUseVariable <> ''`). Copy the window verbatim from
+`ABREPORT.TPW`'s `#DEFAULT` block — `PROGRESS,USE(Progress:Thermometer)` plus
+`?Progress:UserString`, `?Progress:PctText`, `?Progress:Cancel`. Report prompts are all optional
+(`%ReportDataSource` defaults to `'File'`, `%EnablePrintPreview` to 1); the load-bearing parts are
+the file binding and that window.
+
+Given a correct binding the template does the rest — `VIEW(Orders)` with a `PROJECT` per band
+control, `Relate:Orders`, `AddSortOrder(ORD:CustomerKey)`, and `ORD:CustomerID` passed to
+`ThisReport.Init` as the break field.
+
+> **The templates' `#DEFAULT` blocks are canonical TXA fragments.** `ABREPORT.TPW` and
+> `abprocs.tpw` carry complete `[COMMON]/[DATA]/[PROMPTS]/[REPORT]/[WINDOW]` skeletons per
+> procedure type, plus every prompt name, type and default. This is a **better authoring source
+> than reverse-engineering an export**, because it shows what the template *requires* rather than
+> what one app happened to contain. Read the `#PROCEDURE(...)` line for the template name and
+> `#DEFAULT` for the shape.
+
+### 10.3 OPEN: the `%SortOrder` MULTI family cannot be populated a piece at a time
+
+**The one thing the spec asked for that was not delivered.** The Orders browse sorts by customer
+but is **not range-limited** — it lists every order.
+
+The prompt contract is real and was read from the templates (`abprocs.tpw` `%RangeLimitOptions`,
+`ABBROWSE.TPW` line 200+): `%SortRangeField` (the key component), `%SortRangeLimitType`
+(`Current Value|Single Value|Range of Values|File Relationship`), then `%SortRangeLimit` /
+`%SortRangeLow`+`%SortRangeHigh` / `%RangeFile` depending on the type.
+
+Supplying `%SortOrder MULTI LONG (1)` plus the four children needed is **silently dropped in its
+entirety**. `/ai` and `/ag` both exit 0, it compiles, it runs — and `/ax` round-trips the family
+back as:
+
+```
+%SortOrder MULTI LONG  ()
+%SortKey       DEPEND %SortOrder KEY       TIMES 0
+%SortRangeField DEPEND %SortOrder COMPONENT TIMES 0
+...                                        (~20 members, all TIMES 0)
+```
+
+Ruled out: the **type tokens** (`KEY`/`COMPONENT`/`DEFAULT`/`FIELD` match the canonical export
+exactly) and **blank-line separation** (tested both contiguous and separated). The
+`BRW1.AddSortOrder(,ORD:CustomerKey)` in the output is the default sort from `[FILES]/[KEY]` — not
+evidence the prompts were read.
+
+Note this is a *worse* failure mode than the §3.3 sort-order trap, which at least broke the build
+with an empty `IF`. Here a real feature is missing from a green, running app. **A green harness run
+does not prove the app does what the spec asked** — inspect the generated source for the call that
+implements the feature (`AddRange` here), not just the exit code.
+
+Untested hypothesis: the importer may require the family **complete** — all ~20 members, canonical
+order, including the nested `%SortHigherKeys` MULTI. Settling it cheaply needs a **reference app**:
+open the generated `ORDERS.app` in the IDE, set the range limit on the Orders browse by hand, save,
+`/ax`, and diff the `[PROMPTS]` against ours. That is one human interaction and it would yield the
+canonical form for the whole family at once.
+
+### 10.4 Methodological: `/ax` echoing your input proves ACCEPTED, not COMPLETE
+
+The report `[REPORT]` section round-tripped byte-identical on the first try, which was read as
+"the grammar is right". It was accepted and stored — and still failed generation for a missing
+`[WINDOW]` and failed compilation for a wrong `[INSTANCE]`. A clean round-trip is necessary, not
+sufficient. Same family of error as §9's "partial beats absent because it fails quietly": the
+verification has to be *build and run*, not *re-export*.
+
+A second instance of the same lesson, from the tooling side: a probe matrix of four `[FILES]`
+variants all "agreed", which looked like strong evidence. The substitution had silently not
+applied — a `\r\n` pattern against an LF file — so all four runs used identical input. **When
+variants agree suspiciously well, verify the variants actually differ** (byte sizes did, once
+fixed). Incidentally: `/ai` accepts LF-only TXA, so line endings are not load-bearing for import.
+
+## 11. Harness
+
+`ClarionAppGen/tools/New-ClarionApp.ps1` — spec folder in, running `.exe` out, one command:
+
+```powershell
+.\New-ClarionApp.ps1 -SpecPath .\specs\orders -Clean -Run
+```
+
+A spec folder is one `<App>.txa`, optionally one `<App>.dctx`, plus any hand-coded `.clw`/`.inc`.
+It stages a copy (the spec is never written to), derives the `.red`, runs `/di` → `/ai` → `/ag`
+through `Invoke-ClarionCL.ps1` (so a modal is captured, not a hang), writes the `.cwproj` with real
+absolute paths, builds, and optionally launches the exe and watches for error dialogs. Returns
+`{Ok, FailedStep, Steps[]}` with each step's **whole** unfiltered output. This replaces the §5
+recipe as the way to run the pipeline; §5 remains the explanation of what it does.
+
+Two things it encodes that were previously hand-done:
+
+- The `.red` is derived from the global one, localizing **only** entries that *escape* the build
+  dir (`..\`-rooted or dot-dir). Absolute, `%MACRO%` and project-local `.\x` paths survive
+  verbatim — flattening `*.gif = .\images` to `.` is the §4.2 search-path damage. (It also fixes a
+  stray `..\v8obj` the hand-edited example `.red` had missed.)
+- The `.cwproj` gets real absolute `Compile` paths — no `subst` drive leaking into an artifact —
+  and a deterministic `ProjectGuid` so re-runs and the optional `-ForIde` `.sln` always agree.
+
+Validated by two positives (`specs/hello`, `specs/crud` — build *and* run) and one negative
+(`specs/_negative`, a TXA bound to a nonexistent template) that goes RED at `import /ai` carrying
+`GENE000 … Unknown template type NoSuchTemplateXYZ(ABC)` with file/line/column intact.
+
+## 12. Related knowledge entries
 
 `add_knowledge` ids **91** (pipeline), **92** (modal dialogs), **93** (redirection / cwproj),
-**94** (minimal TXA grammar).
+**94** (minimal TXA grammar), **104** (the harness).
