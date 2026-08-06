@@ -61,6 +61,14 @@ CA already shipped `/ag` as `build_solution` / `build_app` / `generate_source`
 (`Services/McpToolRegistry.cs`). `/ai` and `/ax` exist as MCP tools but route through the **IDE**
 and require an app already open; the ClarionCL path needs neither.
 
+> **State change 2026-08-05 (Charlie, `fix/clarioncl-tool-audit` @ 0fa3783):** several findings
+> from this spike landed in CA itself. The three ClarionCL-backed build tools now pass **`/au`**
+> (suppressing the dictionary-upgrade dialog class on the MCP path), report the **ClarionCL exit
+> code as the error count** on failure (the `": error "` pattern counter was blind to every
+> ClarionCL error shape), and the invisible-modal caveat is documented in CLAUDE.md's Build Tools
+> section. Warning counts remain unfixed by design — one integer cannot carry both. Modal
+> *detection* (child-window enumeration) remains future work.
+
 ## 3. Authoring from scratch
 
 ### 3.1 Minimal TXA (window app)
