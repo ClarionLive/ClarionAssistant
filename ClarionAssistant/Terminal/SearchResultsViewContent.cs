@@ -94,14 +94,17 @@ namespace ClarionAssistant.Terminal
             _originKind = originKind ?? "";
             _payloadJson = payloadJson ?? "{}";
             _query = ExtractJsonValue(_payloadJson, "query") ?? "";
-            // Default dark like every other WebView2 view here; there is no static "is dark" query in this
-            // codebase — theme arrives by broadcast (AssistantChatControl -> ApplyThemeToAll) and corrects us.
+            // Read the Assistant's own theme up front rather than defaulting dark and waiting to be
+            // corrected. The ApplyThemeToAll broadcast only fires when the theme CHANGES, so a results
+            // tab opened by a light-mode user who hasn't toggled since startup never received one and
+            // sat there dark for the life of the tab (GH #181).
+            _isDark = ResolveAssistantThemeDark();
             TitleName = BuildTitle();
             // No Save()/SaveAs() here — without this, SharpDevelop treats it as a normal saveable
             // filename-less document (enables Save, then throws when invoked). Same as MonacoDiffViewContent.
             IsViewOnly = true;
 
-            _panel = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(30, 30, 46) };
+            _panel = new Panel { Dock = DockStyle.Fill, BackColor = PanelBackFor(_isDark) };
             _webView = new WebView2 { Dock = DockStyle.Fill };
             _panel.Controls.Add(_webView);
 
@@ -333,12 +336,31 @@ namespace ClarionAssistant.Terminal
             return Path.Combine(assemblyDir, "Terminal", "search-results.html");
         }
 
+        /// <summary>
+        /// The chat pane's own persisted theme — the same key and the same "dark unless explicitly
+        /// light" default AssistantChatControl reads in its constructor, so a results tab opens
+        /// wearing what the Assistant is already wearing instead of waiting for a change broadcast
+        /// that may never come. Deliberately NOT CaEditorSettings.MonacoThemeDark: that mirror tracks
+        /// whichever Monaco editor surface last booted or toggled, which is a different question and
+        /// is unset entirely for a user who has never opened one.
+        /// </summary>
+        private static bool ResolveAssistantThemeDark()
+        {
+            try { return (new Services.SettingsService().Get("Theme") ?? "dark") != "light"; }
+            catch { return true; }
+        }
+
+        /// <summary>The panel backdrop behind the page, kept in step with the page's own theme.</summary>
+        private static Color PanelBackFor(bool isDark)
+        {
+            return isDark ? Color.FromArgb(30, 30, 46) : Color.FromArgb(239, 241, 245);
+        }
+
         /// <summary>Apply light or dark theme to this results tab.</summary>
         public void ApplyTheme(bool isDark)
         {
             _isDark = isDark;
-            if (_panel != null)
-                _panel.BackColor = isDark ? Color.FromArgb(30, 30, 46) : Color.FromArgb(239, 241, 245);
+            if (_panel != null) _panel.BackColor = PanelBackFor(isDark);
             if (_isInitialized) PostToPage("{\"type\":\"applyTheme\",\"isDark\":" + (isDark ? "true" : "false") + "}");
         }
 
