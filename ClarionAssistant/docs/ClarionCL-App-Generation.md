@@ -531,11 +531,11 @@ Ordered by how much each would unlock.
    compiled to `FRAME.exe`. See §3.5.
 5. ~~Relational dictionary~~ — **RESOLVED 2026-08-05.** Two-table dictionary with a relation
    round-trips exactly. See §3.6.
-6. **Parent–child browse** (browse filtered by a related parent) — **PARTIAL 2026-08-05.** A
-   two-table app with parent and child browses compiles and runs (§10), and the prompt contract is
-   now known, but the range limit itself **does not wire**: the `%SortOrder` MULTI family is
-   silently dropped when supplied piecemeal. See **§10.3** — this is the main open item, and it has
-   a cheap experiment attached.
+6. ~~Parent–child browse~~ — **RESOLVED 2026-08-05.** `BRW1.AddRange(ORD:CustomerID,CUS:ID)` from
+   authored text, verified against an IDE-authored reference app. Needs three things that were each
+   individually silent when wrong: `%RangeField`/`%RangeLimitType`/`%RangeLimit` in the **BrowseBox
+   `[ADDITION]`'s own `[PROMPTS]`**, the parent file under `[FILES]`/`[OTHERS]`, and the positional
+   prompt-ownership rule. See §10.3.
 6b. **Reports** — **RESOLVED 2026-08-05.** `FROM ABC Report` with `[FILES]` instance **0**,
    `[REPORT]`, and the canonical progress `[WINDOW]`. See §10.2.
 7. **Reproducing Mark's TXD construct bugs** — needs a hand-authored *dictionary* TXD, not the
@@ -808,42 +808,95 @@ control, `Relate:Orders`, `AddSortOrder(ORD:CustomerKey)`, and `ORD:CustomerID` 
 > what one app happened to contain. Read the `#PROCEDURE(...)` line for the template name and
 > `#DEFAULT` for the shape.
 
-### 10.3 OPEN: the `%SortOrder` MULTI family cannot be populated a piece at a time
+### 10.3 RESOLVED: `[PROMPTS]` ownership is POSITIONAL — a prompt block binds to the `[ADDITION]` it follows
 
-**The one thing the spec asked for that was not delivered.** The Orders browse sorts by customer
-but is **not range-limited** — it lists every order.
+Settled by the reference-app experiment described below. This is the most load-bearing rule in the
+whole document after §10.1, because it silently mis-files *any* prompt, not just range limits.
 
-The prompt contract is real and was read from the templates (`abprocs.tpw` `%RangeLimitOptions`,
-`ABBROWSE.TPW` line 200+): `%SortRangeField` (the key component), `%SortRangeLimitType`
-(`Current Value|Single Value|Range of Values|File Relationship`), then `%SortRangeLimit` /
-`%SortRangeLow`+`%SortRangeHigh` / `%RangeFile` depending on the type.
-
-Supplying `%SortOrder MULTI LONG (1)` plus the four children needed is **silently dropped in its
-entirety**. `/ai` and `/ag` both exit 0, it compiles, it runs — and `/ax` round-trips the family
-back as:
+**The structure, from an IDE-authored browse:**
 
 ```
-%SortOrder MULTI LONG  ()
-%SortKey       DEPEND %SortOrder KEY       TIMES 0
-%SortRangeField DEPEND %SortOrder COMPONENT TIMES 0
-...                                        (~20 members, all TIMES 0)
+[FILES]
+[PRIMARY] / Orders
+[INSTANCE] / 1
+[KEY] / ORD:CustomerKey
+[OTHERS] / Customer
+[PROMPTS]                 <-- the PROCEDURE's own prompts
+[ADDITION]
+NAME ABC BrowseBox
+[INSTANCE] / INSTANCE 1 / PROCPROP
+[PROMPTS]                 <-- BrowseBox's prompts (the range limit lives HERE)
+[ADDITION]
+NAME ABC BrowseUpdateButtons
+[INSTANCE] / INSTANCE 2 / PARENT 1 / PROCPROP
+[PROMPTS]                 <-- BrowseUpdateButtons' prompts (%UpdateProcedure lives HERE)
+[WINDOW]
 ```
 
-Ruled out: the **type tokens** (`KEY`/`COMPONENT`/`DEFAULT`/`FIELD` match the canonical export
-exactly) and **blank-line separation** (tested both contiguous and separated). The
-`BRW1.AddSortOrder(,ORD:CustomerKey)` in the output is the default sort from `[FILES]/[KEY]` — not
-evidence the prompts were read.
+**A `[PROMPTS]` block belongs to the `[ADDITION]` it follows. Procedure-level prompts must come
+BEFORE the first `[ADDITION]`.** Anything placed after the additions is handed to the *last*
+addition; if that template does not define the symbol, it is **silently dropped** — exit 0 from
+`/ai` and `/ag`, compiles, runs, feature simply absent.
 
-Note this is a *worse* failure mode than the §3.3 sort-order trap, which at least broke the build
-with an empty `IF`. Here a real feature is missing from a green, running app. **A green harness run
-does not prove the app does what the spec asked** — inspect the generated source for the call that
-implements the feature (`AddRange` here), not just the exit code.
+This explains two things at once in the §3.4/§3.5 material:
 
-Untested hypothesis: the importer may require the family **complete** — all ~20 members, canonical
-order, including the nested `%SortHigherKeys` MULTI. Settling it cheaply needs a **reference app**:
-open the generated `ORDERS.app` in the IDE, set the range limit on the Orders browse by hand, save,
-`/ax`, and diff the `[PROMPTS]` against ours. That is one human interaction and it would yield the
-canonical form for the whole family at once.
+- `%UpdateProcedure` "worked" after the additions **by luck** — it genuinely belongs to
+  BrowseUpdateButtons, which is the last addition.
+- A `%ButtonAction`/`%ButtonProcedure` family placed in the same spot did **not** work; moved
+  before the first `[ADDITION]`, the button emits `BrowseOrders()` correctly. In §3.5 the frame has
+  no additions at all, which is why its prompts worked wherever they were put.
+
+**The range limit is the FLAT family on the BrowseBox — not `%SortRange*`:**
+
+```
+[ADDITION]
+NAME ABC BrowseBox
+[INSTANCE]
+INSTANCE 1
+PROCPROP
+[PROMPTS]
+%RangeField COMPONENT  (ORD:CustomerID)
+%RangeLimitType DEFAULT  ('Single Value')
+%RangeLimit FIELD  (CUS:ID)
+```
+
+`%SortRangeField`/`%SortRangeLimitType`/`%SortRangeLimit` are the **per-sort-order conditional**
+variants; in a normal browse they stay empty. The IDE-authored reference exports
+`%SortOrder MULTI LONG ()` with all ~20 members at `TIMES 0` *even with a working range limit* —
+which retires the earlier "the MULTI family gets dropped" theory. The family was never the
+mechanism; the wrong family was being populated, in the wrong place.
+
+**The parent file must appear in `[FILES]` under `[OTHERS]`.** Without it the field reference in
+`%RangeLimit` resolves to nothing and you get a range limit with an empty value — again compiling
+and running, and never filtering:
+
+```
+BRW1.AddRange(ORD:CustomerID,)          ! [OTHERS] missing - silently unfiltered
+BRW1.AddRange(ORD:CustomerID,CUS:ID)    ! correct
+```
+
+**Verification — authored text vs the IDE.** Generating from the IDE-authored app and diffing
+against our generated source:
+
+| Module | Difference |
+|---|---|
+| `ORDERS004` parent–child browse | 2 lines, both `? DEBUGHOOK` |
+| `ORDERS006` report | 1 line, `? DEBUGHOOK` |
+| `ORDERS002` customer browse | 27 lines, **all ours only** — the working `?ShowOrders` handler the reference app lacks |
+
+`DEBUGHOOK` is a debug-generation artifact. **Hand-authored text now produces the same source the
+IDE produces.**
+
+> **Method worth reusing: the reference app.** When a feature will not wire and the templates do
+> not say why, generate the app from text, set the feature **by hand in the IDE**, save, `/ax`, and
+> diff the export against your input. One human interaction converted an open-ended guessing
+> problem — four failed hypotheses across the wrong prompt family — into an exact answer in one
+> step. Keep the `.app` as ground truth (`ClarionAppGen/reference/orders-rangelimit`).
+
+> **A green harness run does not prove the app does what the spec asked.** The missing range limit
+> compiled and ran cleanly for three iterations. Inspect the generated source for the call that
+> *implements* the feature — `AddRange` here — not just the exit code. This is the one class of
+> failure the harness structurally cannot catch.
 
 ### 10.4 Methodological: `/ax` echoing your input proves ACCEPTED, not COMPLETE
 
