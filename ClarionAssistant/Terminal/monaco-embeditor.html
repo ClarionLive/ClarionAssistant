@@ -4217,12 +4217,27 @@
 
     var _ideOpts = null;
 
+    // The developer's OWN prefs for the keys follow-mode can take over on screen. Kept SEPARATE from the gear
+    // fields because in follow mode those fields display the IDE's EFFECTIVE value (populateSettingsPanel's
+    // "EFFECTIVE state" rule) — so readSettingsPanel must never treat what's on screen as the stored pref, or
+    // saving ANY unrelated gear control would persist the IDE's value as the developer's own and lose theirs
+    // for good. Captured under the same ideTabSize sentinel as _ideOpts, so it tracks host payloads and
+    // cross-tab broadcasts (which carry the stored prefs) and ignores locally-built ones (which don't).
+    var _storedPrefs = null;
+
     // Cache the ide* bundle when a payload carries one. Host payloads (load) and cross-tab broadcasts do;
     // locally-built payloads from onSettingChanged do NOT, which is exactly why this is cached rather than
     // read per call — otherwise toggling any gear control would drop follow-mode until the next reload.
     // ideTabSize is the sentinel: ToDict ships the whole block or none of it.
     function captureIdeOptions(s) {
         if (typeof s.ideTabSize !== 'number') return;
+        // Null for a key means "the payload didn't carry a pref for it" — storedPref() then leaves the field
+        // in charge, same fall-through as "the IDE has no opinion".
+        _storedPrefs = {
+            fontSize: (typeof s.fontSize === 'number') ? s.fontSize : null,
+            fontFamily: (typeof s.fontFamily === 'string') ? s.fontFamily : null,
+            cursorBehindEOL: (typeof s.cursorBehindEOL === 'boolean') ? s.cursorBehindEOL : null
+        };
         _ideOpts = {
             tabSize: s.ideTabSize,
             insertSpaces: !!s.ideInsertSpaces,
@@ -4236,8 +4251,9 @@
             emptySelectionClipboard: !!s.ideEmptySelectionClipboard,
             autoIndent: s.ideAutoIndent,
             renderLineHighlight: s.ideRenderLineHighlight,
-            // Font keys are OMITTED by the host when Clarion's DefaultFont descriptor didn't parse. Null
-            // here means "IDE has no opinion" and the stored pref wins even in follow mode.
+            // Font keys are OMITTED by the host when Clarion's font descriptor didn't parse — the live
+            // ComponentsFont "TextEditor" entry, or DefaultFont on installs predating it. Null here means
+            // "IDE has no opinion" and the stored pref wins even in follow mode.
             fontFamily: (typeof s.ideFontFamily === 'string' && s.ideFontFamily !== '') ? s.ideFontFamily : null,
             fontSize: (typeof s.ideFontSize === 'number' && s.ideFontSize > 0) ? s.ideFontSize : null
         };
@@ -4250,6 +4266,22 @@
         if (!followIde || !_ideOpts) return stored;
         var v = _ideOpts[key];
         return (v === null || v === undefined) ? stored : v;
+    }
+
+    // The inverse of effIde, for SAVING. effIde answers "what should render"; this answers "what should be
+    // persisted as the developer's own pref". They differ for exactly the keys follow-mode displays an
+    // effective value in: while the IDE owns such a field, the DOM holds the IDE's value, not the developer's,
+    // so persisting `domValue` would silently overwrite their pref (a disabled input's .value still reads
+    // fine in JS, so being grayed out is no protection). Falls through to the DOM whenever the field really
+    // is the pref: follow off, the IDE has no opinion on this key, or no host payload has landed yet.
+    function storedPref(key, domValue) {
+        var f = document.getElementById('setFollowIdeIndent');
+        var followIde = f ? !!f.checked : true;
+        if (!followIde || !_ideOpts || !_storedPrefs) return domValue;
+        var ideVal = _ideOpts[key];
+        if (ideVal === null || ideVal === undefined) return domValue;
+        var stored = _storedPrefs[key];
+        return (stored === null || stored === undefined) ? domValue : stored;
     }
 
     function applyEditorSettings(s) {
@@ -4505,15 +4537,17 @@
             // GH #126: follow-IDE mode (default ON) — the host ships ideTabSize/ideInsertSpaces and the
             // page computes the effective pair; the two stored values below stay the user's own prefs.
             followIdeIndentation: (function () { var e = document.getElementById('setFollowIdeIndent'); return e ? !!e.checked : true; })(),
-            cursorBehindEOL: (function () { var e = document.getElementById('setCursorBehindEol'); return e ? !!e.checked : false; })(),
+            // cursorBehindEOL + the font pair go through storedPref: follow-mode makes their fields display the
+            // IDE's effective value, so the DOM is not the pref while it owns them. See storedPref().
+            cursorBehindEOL: storedPref('cursorBehindEOL', (function () { var e = document.getElementById('setCursorBehindEol'); return e ? !!e.checked : false; })()),
             tabSize: num('setTabSize', 2, 1, 16),
             insertSpaces: chk('setInsertSpaces'),
             autoIndent: chk('setAutoIndent'),
             wordWrap: chk('setWordWrap'),
             minimap: chk('setMinimap'),
             completeOnInsertKey: chk('setCompleteOnInsertKey'),
-            fontSize: num('setFontSize', 13, 6, 48),
-            fontFamily: (function () { var e = document.getElementById('setFontFamily'); return e ? e.value.trim().slice(0, 64) : ''; })(),
+            fontSize: storedPref('fontSize', num('setFontSize', 13, 6, 48)),
+            fontFamily: storedPref('fontFamily', (function () { var e = document.getElementById('setFontFamily'); return e ? e.value.trim().slice(0, 64) : ''; })()),
             occurrenceHighlight: (function () { var e = document.getElementById('setOccurrenceHighlight'); return e ? !!e.checked : true; })(),
             horizontalScrollbar: sel('setHorizontalScrollbar', 'auto'),
             // ----- Smart Formatter -----
@@ -4602,6 +4636,11 @@
         // Set the control ONLY — deliberately no 'change' dispatch. The import commits once via
         // onSettingChanged(); firing per-control events would post one saveSettings per imported key.
         if (m.kind === 'chk') e.checked = !!v; else e.value = String(v);
+        // An import IS a deliberate new stored pref, so update _storedPrefs for the follow-owned keys as well.
+        // Without this, importing a font while follow-mode owns the field would write the value into a control
+        // that storedPref() then overrides on the commit below, and the imported font would vanish silently.
+        if (_storedPrefs && _storedPrefs.hasOwnProperty(m.key))
+            _storedPrefs[m.key] = (m.kind === 'chk') ? !!v : (m.kind === 'num' ? Number(v) : String(v));
     }
 
     function vscSame(m, cur, imp) {
@@ -5029,16 +5068,18 @@
             if (e) e.addEventListener('change', onSettingChanged);
         }
         // GH #126 (+ font-follow-clobber fix): toggling follow-IDE also grays/ungrays the manual pair, then
-        // persists. When turning OFF, font size/family/cursor-behind-EOL must be restored to the STORED pref
-        // FIRST — while follow was on they were showing the EFFECTIVE (IDE) value (populateSettingsPanel's
-        // "EFFECTIVE state" rule), and onSettingChanged() below reads straight off the DOM. Without this,
-        // unchecking silently overwrites the stored pref with whatever IDE font/EOL value was on display.
+        // persists. When turning OFF, font size/family/cursor-behind-EOL must be put back on screen from the
+        // STORED pref FIRST — while follow was on they were showing the EFFECTIVE (IDE) value
+        // (populateSettingsPanel's "EFFECTIVE state" rule), and by the time onSettingChanged() runs the box is
+        // already unchecked, so storedPref() has fallen through to the DOM and whatever is displayed IS what
+        // gets saved. Restored from _storedPrefs, NOT lastSettings: lastSettings is reassigned from every
+        // locally-built payload in applyEditorSettings, so it tracks the panel rather than the developer's pref.
         // (setFollowIdeIndent is deliberately NOT in the generic `ids` loop above — this is its only
         // listener, so the restore always runs before the save it triggers.)
         var fIde = document.getElementById('setFollowIdeIndent');
         if (fIde) fIde.addEventListener('change', function () {
             if (!fIde.checked) {
-                var s = lastSettings || {};
+                var s = _storedPrefs || lastSettings || {};   // _storedPrefs is null until the first host payload
                 var el;
                 if ((el = document.getElementById('setFontSize')) && typeof s.fontSize === 'number') el.value = s.fontSize;
                 if ((el = document.getElementById('setFontFamily'))) el.value = (typeof s.fontFamily === 'string') ? s.fontFamily : '';
