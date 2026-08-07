@@ -1044,13 +1044,9 @@ message names the IDE instead of blaming ClarionCL.
 run stops.** That mismatch is the signature of IDE-side edits the spec does not have, and `-Clean`
 would delete them. `-Force` declares the spec authoritative and accepts the loss.
 
-> **Caveat — do not mix exporters.** The IDE route (`export_txa`) and the ClarionCL route (`/ax`)
-> are different implementations, and their output has not been shown to agree byte-for-byte. The
-> IDE export of the original app was 188,306 bytes; ClarionCL's export of the app rebuilt from it
-> was 191,228. That difference is *not* isolated — it could be the round-trip rather than the
-> exporter, and it could not be separated here because the IDE route only reaches the currently
-> loaded app. Until someone exports one app both ways and diffs, **a drift detector must use one
-> exporter consistently**, or every switch between them reads as a change. **UNVERIFIED.**
+> **Caveat — an export is only as complete as the IDE's ABC cache.** See §13.7. An earlier draft
+> of this section guessed that the IDE and ClarionCL exporters disagree; that guess was wrong, and
+> the real cause is worse for tooling.
 
 > The export step deliberately did **not** go into `New-ClarionApp.ps1`. That script's contract is
 > "spec in, exe out, the spec is never written to", and it runs *after* the spec has been edited —
@@ -1100,4 +1096,51 @@ Consequences:
 `clash_mode` (`rename`/`replace`). Having an explicit clash parameter implies it merges rather than
 replaces, but that is an inference, not a measurement, and it must be tested on a scratch app —
 never on one holding real work.
+
+### 13.7 An export is only as complete as the IDE's ABC cache
+
+The IDE loads ABC class metadata **lazily**. Export before that load has happened and the TXA is
+quietly missing class information; export after, and it is present. **The same app, exported twice
+by the same tool, produces different text.**
+
+Measured 2026-08-07 on ORDERS, both via `export_txa`:
+
+| | bytes | `BrowseCustomers` slice |
+|---|---|---|
+| cold (10:21) | 188,306 | 1,469 lines |
+| warm (12:40, after an embeditor open) | 189,484 | 1,483 lines |
+
+The difference is entirely `%ClassLines`. Cold, the browse class lists two methods
+(`Q`, `Init`). Warm, it lists the full derivable surface — `AppendOrder`, `ApplyRange`, `InitSort`,
+`Kill`, `Next`, `Open`, `Previous`, `ReplaceSort`, `ResetSort`, `RestoreBuffers`, `SetSort`,
+`SetUseMRP`, `TakeKey`, `TakeLocate`, `ValidateRecord` — plus an entire `Locator0` class item that
+is **absent** from the cold export. Same for `WindowResize`: `GetParentControl`, `Resize`,
+`RestoreWindow` appear only warm.
+
+**This was found by accident**, chasing what looked like a difference between per-procedure and
+whole-app export. It is not: a single-procedure export and the corresponding slice of a whole-app
+export taken *in the same IDE state* are byte-identical apart from a trailing `[END]` (1 differing
+line). Against the cold whole-app export the same file differed by 21 lines. **The variable was
+time, not export mode.**
+
+Consequences:
+
+- **A naive drift detector is unusable.** "The export differs from last capture" means "the app
+  changed" *or* "the IDE was colder last time". The second is not a change and there is nothing in
+  the diff that distinguishes it.
+- **Warm the cache before exporting.** CA ships `warmup_abc` precisely to force the lazy ABC load
+  (it exists for a Modern Embeditor timing problem, but it is the same load). Call it, or open any
+  procedure in the embeditor, before `export_txa`. An export taken cold is not wrong so much as
+  *incomplete*, and incompleteness that varies run to run is worse than a stable omission.
+- It is unknown whether a cold export **re-imports** to an equivalent app, since the missing
+  `%ClassLines` are the derivable-method lists the class prompts depend on. The §13.1 round-trip
+  used a cold export and produced a working, functionally-correct app — so the omission appears
+  benign for generation — but that is one data point and it was not the property under test.
+- This likely explains the 188,306 vs 191,228 gap noted earlier between an IDE export and a
+  ClarionCL export of the rebuilt app. Attributing that to two disagreeing exporters was a guess;
+  cache warmth is the simpler explanation and the measured one. **Do not assume the exporters
+  differ** — that has never been demonstrated.
+
+Same family as §10.4: what looked like a property of the *format* was a property of the *moment
+the measurement was taken*.
 
