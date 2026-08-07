@@ -117,22 +117,50 @@ namespace ClarionAssistant.Services
         /// file in the server's view. The transport exposes no didClose, so on tab teardown we push the
         /// REAL on-disk content back. Safe no-op when the LSP isn't running or the file vanished.
         /// </summary>
+        /// <remarks>
+        /// FIRE-AND-FORGET, deliberately (ticket e1162adf). This used to run inline on the UI thread during
+        /// embed teardown, and MEASURED at 57.7s on the first save of a Clarion session — the entire
+        /// "saving takes over a minute" report. Everything else in that teardown totalled under 100ms, and
+        /// the save itself (299 slots) took 664ms.
+        ///
+        /// The cost is not the work; it is sync-over-async. SharedLspBridge.SharedEnsureBufferSynced ends in
+        ///     c.NotifyBufferChangedAsync(...).GetAwaiter().GetResult()
+        /// and blocking a WinForms UI thread on a task whose continuation wants that same thread is the
+        /// classic stalemate. The ~58s is it eventually breaking, not the server being slow.
+        ///
+        /// Moving it off-thread is safe because NOTHING depends on the result: this only restores the
+        /// server's view of a file to its on-disk truth, and no caller inspects an outcome. It is ordering-
+        /// safe too — the shadow it reverts is keyed by path, and a later re-open pushes its own buffer.
+        ///
+        /// The proper fix is to stop blocking on async inside SharedLspBridge, which would also help the
+        /// diagnostics path that calls EnsureBufferSynced the same way. That is a wider change than this
+        /// one and is left to the ticket rather than done the night before a demo.
+        /// </remarks>
         public void RevertShadow()
         {
+            string path = RealPath;   // capture — the context may be torn down under us
             try
             {
-                if (string.IsNullOrEmpty(RealPath) || !File.Exists(RealPath)) return;
+                if (string.IsNullOrEmpty(path) || !File.Exists(path)) return;
                 if (!SharedLspBridge.IsRunning) return;
-                // Encoding-aware: this pushes on-disk .clw text straight back into the LSP buffer, so
-                // the no-encoding overload here reintroduced exactly the U+FFFD diagnostics #168
-                // removed — every embeditor tab teardown re-poisoned the server's view of the file.
-                SharedLspBridge.EnsureBufferSynced(RealPath, EncodingHelper.ReadAllText(RealPath, out _));
-                System.Diagnostics.Debug.WriteLine("[EmbedLspContext] reverted LSP shadow for '" + RealPath + "'.");
             }
-            catch (Exception ex)
+            catch { return; }
+
+            System.Threading.Tasks.Task.Run(() =>
             {
-                System.Diagnostics.Debug.WriteLine("[EmbedLspContext] RevertShadow: " + ex.Message);
-            }
+                try
+                {
+                    // Encoding-aware: this pushes on-disk .clw text straight back into the LSP buffer, so
+                    // the no-encoding overload here reintroduced exactly the U+FFFD diagnostics #168
+                    // removed — every embeditor tab teardown re-poisoned the server's view of the file.
+                    SharedLspBridge.EnsureBufferSynced(path, EncodingHelper.ReadAllText(path, out _));
+                    System.Diagnostics.Debug.WriteLine("[EmbedLspContext] reverted LSP shadow for '" + path + "'.");
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine("[EmbedLspContext] RevertShadow: " + ex.Message);
+                }
+            });
         }
 
         /// <summary>The module's own MEMBER(...) line, verbatim from disk (skipping leading blanks and
