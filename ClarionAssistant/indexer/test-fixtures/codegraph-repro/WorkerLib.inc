@@ -1,3 +1,8 @@
+! Bug Q repro (see README.md): a QUEUE,TYPE used as an optional CLASS-method parameter below.
+TestQtype   QUEUE,TYPE
+MyValue       LONG
+            END
+
 WorkerClass CLASS,TYPE, MODULE('WorkerLib.CLW'), LINK('WorkerLib.CLW', 1 ), DLL( 0 )
 
 Sign          PROCEDURE( LONG pData ), LONG
@@ -12,6 +17,10 @@ Sign          PROCEDURE( LONG pData ), LONG
 ! declaration and every call site in WorkerLib.clw, so the two can be compared side by side: both
 ! resolve now. See WorkerLib.clw for the call sites and README.md for the full writeup.
 Ask           PROCEDURE( LONG pData ), LONG
+! Bug Q repro: a second Ask overload taking a QUEUE,TYPE (TestQtype) as an optional parameter --
+! the real-world shape that motivated this fixture addition (see README.md's Bug Q section and
+! UnreachableLocalRefTest in WorkerLib.clw).
+Ask           PROCEDURE( STRING pText, LONG pValue, <TestQtype pTestQ> ), LONG
             END
 
 OwnerClass CLASS,TYPE, MODULE('WorkerLib.CLW'), LINK('WorkerLib.CLW', 1 ), DLL( 0 )

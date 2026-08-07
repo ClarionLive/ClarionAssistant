@@ -14,7 +14,7 @@ GroupQueueLocalTest PROCEDURE, LONG
 InlineLocalGroupTest PROCEDURE, LONG
 AttrTermLocalGroupTest PROCEDURE, LONG
 LocalDerivedClassTest PROCEDURE, LONG
-UnreachableLocalRefTest PROCEDURE
+UnreachableLocalRefTest PROCEDURE, LONG
     END
 MainHelperProc     PROCEDURE, LONG
   END
@@ -50,7 +50,7 @@ derivedWorker DerivedWorkerClass
     r# = likeMemberBug.CallViaPlainInstanceMember()
     r# = multiLineGroupBug.CallViaAfterMultiLineGroupMember()
     r# = derivedWorker.CallViaInheritedMember()
-    UnreachableLocalRefTest()
+    r# = UnreachableLocalRefTest()
 
 ! Bug A repro: this procedure is implemented directly in the PROGRAM file itself,
 ! rather than in a MEMBER file. ParseMainFile only scans the file's PROGRAM marker,
