@@ -3383,8 +3383,20 @@ namespace ClarionAssistant.Terminal
                 // lineInEditable() guard rejected it (a saved line that is no longer inside an editable
                 // embed slot deliberately falls back to the top), which is a different thing entirely
                 // from the position never being stored.
-                try { MonacoSpikeLog.Write("[cursor] saveCursor received: line=" + line + " col=" + column + " key=" + _histProcKey); } catch { }
                 ModernEmbeditorState.SaveCursor(_histSolutionPath, _histProcKey, line, column);
+                // Log AFTER the write, and read it straight back. Logging before only proved the message
+                // arrived — it could not distinguish "stored" from "silently failed to store", which is
+                // exactly the ambiguity that made the first round of this diagnosis inconclusive.
+                try
+                {
+                    int vl, vc; List<int> vb;
+                    ModernEmbeditorState.Load(_histSolutionPath, _histProcKey, out vl, out vc, out vb);
+                    MonacoSpikeLog.Write("[cursor] saveCursor line=" + line + " col=" + column +
+                        " -> readback line=" + vl + " col=" + vc +
+                        (vl == line ? " OK" : " *** MISMATCH ***") +
+                        " key=" + _histProcKey + " sol=" + (_histSolutionPath ?? "(null)"));
+                }
+                catch { }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] saveCursor: " + ex.Message); }
         }
@@ -3733,7 +3745,9 @@ namespace ClarionAssistant.Terminal
                 // Native-caret override: when the overlay attached to an already-open native embed, land Monaco
                 // at the embed point the developer was on — not the last-saved cursor for this procedure.
                 if (_initialLine > 0) { cursorLine = _initialLine; cursorColumn = 1; _initialLine = 0; }
-                try { MonacoSpikeLog.Write("[cursor] setSource sending line=" + cursorLine + " col=" + cursorColumn + " key=" + _histProcKey); } catch { }
+                // sol= is the missing half: save and load must resolve the SAME state file. A differing
+                // solution tag between the two would read a stale record and look exactly like this bug.
+                try { MonacoSpikeLog.Write("[cursor] setSource sending line=" + cursorLine + " col=" + cursorColumn + " key=" + _histProcKey + " sol=" + (_histSolutionPath ?? "(null)")); } catch { }
 
                 string snippetsJson;
                 try { snippetsJson = SnippetStore.ToJson(SnippetStore.Load()); }

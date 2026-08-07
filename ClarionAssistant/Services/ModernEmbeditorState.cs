@@ -205,7 +205,14 @@ namespace ClarionAssistant.Services
                 root[procKey] = rec;
                 File.WriteAllText(path, new JavaScriptSerializer().Serialize(root), Encoding.UTF8);
             }
-            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditorState] Update: " + ex.Message); }
+            catch (Exception ex)
+            {
+                // A swallowed write is silent state loss — the caller believes it saved. Debug.WriteLine
+                // goes nowhere in a deployed build (see the LoggingService gotcha), so surface it in the
+                // log file that actually exists. Still non-fatal: this is best-effort UI state.
+                System.Diagnostics.Debug.WriteLine("[ModernEmbeditorState] Update: " + ex.Message);
+                try { ClarionAssistant.MonacoSpikeLog.Write("[state] Update FAILED for " + procKey + ": " + ex.Message); } catch { }
+            }
         }
 
         public static string BookmarksJson(IList<int> bookmarks)
