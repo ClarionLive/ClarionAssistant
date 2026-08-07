@@ -2,6 +2,8 @@
 
   INCLUDE('WorkerLib.inc'),ONCE
 
+ProbeGlobalCounter LONG
+
 WorkerClass.Sign PROCEDURE( LONG pData )
   CODE
   RETURN 0
@@ -367,4 +369,38 @@ worker WorkerClass
   result = SELF.Dispatch( 99 )
   result = worker.Ask( result )
   RETURN result
+
+! Bug Q repro: SharedLspBridge.cs's CgDefinitionFromDb (F12/go-to-definition CodeGraph
+! fallback, used whenever the upstream LSP's own scope search already returned nothing --
+! i.e. the word is genuinely undeclared here) never applied the same IsUnreachableLocalVariable
+! guard its sibling CgHoverFromDb already applies. FindSymbolByName's underlying lookup is a
+! flat, unordered "WHERE LOWER(name)=LOWER(@name) LIMIT 1" with no scope filter, so a bare word
+! that only matches OTHER procedures' local variables/parameters resolves to whichever one
+! happens to come back first -- arbitrary and index-order-dependent, never legitimate (Clarion
+! has no mechanism for one procedure to reference another's local).
+!
+! This procedure deliberately declares no local named "result" -- ~20 unrelated procedures above
+! each declare their OWN "result" local (TestSignatureFlow, OmitTest, MainHelperProc,
+! OverloadBugClass.Dispatch, etc.), which is exactly the "many wrong candidates" pool
+! FindSymbolByName's unordered LIMIT-1 picks from. (The probe word lives in this comment rather
+! than as a live statement so this file keeps compiling -- referencing a genuinely undeclared
+! identifier in real code is a hard Clarion compile error. CgDefinitionFromDb has no
+! string/comment awareness on the definition path today, so a commented-out word exercises the
+! identical lookup as one in live code.)
+!
+! Live-IDE F12 check (not exercisable via the indexer alone -- see README's Bug Q section):
+!   place the caret on "result" below and press F12.
+!     result
+!   Before the fix: jumps to one of the ~20 unrelated procedures' own "result" declaration above
+!   -- which one is arbitrary and can change across re-indexes.
+!   After the fix: no definition found -- correct, since "result" is not declared anywhere
+!   reachable from this point.
+!
+! Negative control (over-rejection check): ProbeGlobalCounter (WorkerLib.clw's own module-scope
+! global, declared above WorkerClass.Sign) must still resolve correctly via F12 from here --
+! IsUnreachableLocalVariable's empty-ParentName exemption for genuine globals.
+!     ProbeGlobalCounter
+UnreachableLocalRefTest PROCEDURE()
+  CODE
+  RETURN
 

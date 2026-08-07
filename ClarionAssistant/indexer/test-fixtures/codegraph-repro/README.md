@@ -3,11 +3,14 @@
 Contributed by [@geircodes](https://github.com/geircodes) alongside issues #79–#90, extended for
 the `LIKE(...)`/`EQUATE`-alias CLASS-member fix (PR #92), the GROUP-typed CLASS-member fix
 (PR #93), the inherited-CLASS-member dotted-call resolution fix (PR #112), the
-built-in-name-collision fix (PR #118), issue #97's attrs+same-line-terminator fix, and the
-overload-attribution fix (Bug P, this PR) — a single compiling Clarion solution whose procedures
-each exercise one historical parser/indexer bug. This is currently the only regression coverage the
-CodeGraph parser has; run it after ANY change to `Parsing/ClarionParser.cs` or
-`Graph/CodeGraphIndexer.cs` (either synced copy).
+built-in-name-collision fix (PR #118), issue #97's attrs+same-line-terminator fix, the
+overload-attribution fix (Bug P), and Bug Q (pins the DB shape behind
+`SharedLspBridge.cs`'s F12-definition local-variable-guard fix — see its own section below; unlike
+A–P this isn't a parser/indexer bug, it documents a precondition for a runtime bug in the addin's
+C#) — a single compiling Clarion solution whose procedures each exercise one historical
+parser/indexer bug (plus, for Bug Q, a DB-shape precondition for a runtime bug). This is currently
+the only regression coverage the CodeGraph parser has; run it after ANY change to
+`Parsing/ClarionParser.cs` or `Graph/CodeGraphIndexer.cs` (either synced copy).
 
 Includes `WorkerClass.Ask` — a method whose name collides with the Clarion built-in `ASK()`
 statement — as coverage for Bug N (PR #118). Before that fix its two call sites resolved to
@@ -117,6 +120,43 @@ inside"), not the *callee* side (which overload a given call site actually invok
 caller *counts* (grouping by `to_id` for an overloaded name) remain unreliable; "what does this
 specific overload call" (grouping by `from_id`) is now correct.
 
+### Bug Q: F12/go-to-definition's CodeGraph fallback resolved to an unrelated procedure's local
+
+Not a parser/indexer bug like A–P above — this documents a DB-*shape* precondition for a bug in
+`SharedLspBridge.cs` (the ClarionAssistant addin's runtime C#, a separate assembly from this
+indexer). `CgDefinitionFromDb` (F12's CodeGraph fallback, reached only once the upstream LSP's own
+scope search has already returned nothing) looked symbols up via a flat, unordered
+`WHERE LOWER(name)=LOWER(@name) LIMIT 1` with no scope filter. Its sibling `CgHoverFromDb` already
+guards this exact shape with `IsUnreachableLocalVariable` — a "variable" symbol whose
+`parent_name` resolves to a `procedure`/`routine` symbol can never legitimately be referenced from
+outside that one procedure, so a match like that is always wrong. `CgDefinitionFromDb` never
+called it.
+
+This repro doesn't need a *new* bug pattern — `result` is already declared as a separate local in
+20 different procedures throughout this fixture (`TestSignatureFlow`, `OmitTest`,
+`OverloadBugClass.Dispatch`, etc.), which is exactly the "many wrong candidates, arbitrary pick"
+pool the unguarded lookup drew from. `UnreachableLocalRefTest` (`WorkerLib.clw`, near the end)
+deliberately declares no local of its own named `result`, so a definition lookup on that bare word
+from inside it has nothing legitimate to resolve to. `ProbeGlobalCounter` (`WorkerLib.clw` line 5,
+module scope, no owning procedure) is the negative control — a genuine global must keep resolving
+after the fix, since `IsUnreachableLocalVariable` short-circuits to `false` on an empty
+`parent_name`.
+
+**Live-IDE check** (not exercisable via the indexer alone — this only pins the DB shape the
+runtime bug depends on): open this solution in the IDE with a build of ClarionAssistant carrying
+the fix, place the caret on the commented-out `result` inside `UnreachableLocalRefTest`, press
+F12.
+- **Before the fix**: jumps to one of the 20 unrelated procedures' own `result` declaration —
+  which one is arbitrary and can change across re-indexes (SQLite's `LIMIT 1` with no `ORDER BY`).
+- **After the fix**: no definition found.
+- **Regression check**: F12 on `ProbeGlobalCounter` from the same spot must still resolve.
+
+The probe word lives in a comment rather than a live statement so this file keeps compiling —
+referencing a genuinely undeclared identifier in real code is a hard Clarion compile error, and
+`CgDefinitionFromDb` has no string/comment awareness on the definition path today (a related,
+still-open gap — see PR #166's write-up), so a commented-out word exercises the identical lookup
+as one in live code.
+
 ### Symbols
 
 - 10 `class` symbols: WorkerClass, OwnerClass, DerivableClass, GroupBugClass, PeriodBugClass,
@@ -173,6 +213,11 @@ specific overload call" (grouping by `from_id`) is now correct.
   correctly stored as two distinct symbols (proving, like Bug N, that the bug was entirely in
   relationship resolution, not symbol capture). Compare against the "Bug P" writeup and the
   `WorkerClass.Sign`/`WorkerClass.Ask` caller tables above.
+- `ProbeGlobalCounter` (Bug Q): `type='variable'`, `scope='module'`, `parent_name=NULL` — a
+  genuine module-scope global declared at the top of `WorkerLib.clw`, outside any procedure.
+  `UnreachableLocalRefTest` (Bug Q): a `procedure` symbol like any other; the point is what it
+  does NOT have — no `result`-named local of its own (compare against the 20 procedures above
+  that each declare one).
 
 ### Program symbol (#81)
 
@@ -206,4 +251,16 @@ FROM relationships r
 JOIN symbols s_to ON r.to_id = s_to.id
 JOIN symbols s_from ON r.from_id = s_from.id
 WHERE s_to.name IN ('WorkerClass.Sign','WorkerClass.Ask') AND s_from.name = 'OverloadBugClass.Dispatch';
+
+-- Bug Q: 20 unrelated "result" locals, one per owning procedure -- the wrong-candidate pool
+-- FindSymbolByName's unordered LIMIT-1 draws from. UnreachableLocalRefTest must NOT be among them.
+SELECT COUNT(*) AS result_local_count FROM symbols WHERE name='result' AND type='variable';
+SELECT * FROM symbols WHERE name='result' AND parent_name='UnreachableLocalRefTest'; -- expect 0 rows
+
+-- Bug Q: simulates CodeGraphProvider.FindSymbolByName's exact query shape. Whichever row this
+-- picks, its parent must resolve to type='procedure'/'routine' -- confirming
+-- IsUnreachableLocalVariable would reject it. ProbeGlobalCounter (parent_name IS NULL) must
+-- never be filtered this way -- that's the over-rejection/negative-control check.
+SELECT id, name, type, scope, parent_name FROM symbols WHERE LOWER(name)=LOWER('result') LIMIT 1;
+SELECT name, type, scope, parent_name FROM symbols WHERE name='ProbeGlobalCounter';
 ```
