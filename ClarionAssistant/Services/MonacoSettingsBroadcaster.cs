@@ -28,9 +28,13 @@ namespace ClarionAssistant.Services
         private static readonly List<Action<string>> _sinks = new List<Action<string>>();
         private const int MaxBridgeJsonBytes = 65536;   // mirror ModernEmbeditorViewContent.MaxBridgeJsonBytes
 
-        // GH #126: when the developer OKs Options → Text Editor, re-push the stored settings to every open
-        // Monaco surface — ToDict() re-reads the IDE indentation pair live, so followers pick the new values
-        // up immediately instead of on their next open. Static ctor = hooked once, on first Monaco use.
+        // GH #126 (+ font-follow): when the developer OKs Options → Text Editor, re-push the stored settings
+        // to every open Monaco surface — ToDict() re-reads the IDE indentation/font values live, so followers
+        // pick up the new values immediately instead of on their next open (or a manual uncheck/recheck).
+        // Two bundles matter: "TextEditorSettings" (tab size, indentation, etc. — GH #126's original scope)
+        // and "CoreProperties.ComponentsFont" (the live font list; see IdeEditorOptions.ParseComponentFont —
+        // font is a separate bundle, added later, that this hook originally didn't know about). Static ctor
+        // = hooked once, on first Monaco use.
         static MonacoSettingsBroadcaster()
         {
             try
@@ -39,7 +43,7 @@ namespace ClarionAssistant.Services
                 {
                     try
                     {
-                        if (e != null && e.Key == "TextEditorSettings")
+                        if (e != null && (e.Key == "TextEditorSettings" || e.Key == "CoreProperties.ComponentsFont"))
                             Broadcast(ModernEmbeditorSettings.Load());
                     }
                     catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[MonacoSettingsBroadcaster] ide-options push: " + ex.Message); }

@@ -132,9 +132,15 @@ namespace ClarionAssistant.Services
                 string.Equals((GetString(tes, "LineViewerStyle", "None") ?? "").Trim(), "None",
                               StringComparison.OrdinalIgnoreCase) ? "none" : "line";
 
-            // --- Font. Parse failures leave FontFamily=""/FontSize=0 so the caller falls back to the stored
-            // pref; we never substitute a font of our own choosing. ---
-            ParseFont(GetString(tes, "DefaultFont", null), v);
+            // --- Font. NOT read from the "TextEditorSettings" bundle above: "DefaultFont" there is a
+            // separate, dead property that the live Options dialog does not write to — verified directly
+            // against ClarionProperties.xml (changing font size in Options -> Text Editor updates
+            // ComponentsFont's "TextEditor" entry below, DefaultFont's Size stays wherever it started).
+            // Parse failures leave FontFamily=""/FontSize=0 so the caller falls back to the stored pref; we
+            // never substitute a font of our own choosing. ---
+            ParseComponentFont(v);
+            if (v.FontFamily.Length == 0 && v.FontSize == 0)
+                ParseFont(GetString(tes, "DefaultFont", null), v);   // older installs without the bundle below
 
             values = v;
             return true;
@@ -181,6 +187,56 @@ namespace ClarionAssistant.Services
             {
                 // Leave whatever parsed successfully; the caller falls back per-field.
                 System.Diagnostics.Debug.WriteLine("[IdeEditorOptions] font parse failed: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// The IDE's actual live editor font: "CoreProperties.ComponentsFont" bundle, "ListOfFonts" array,
+        /// one pipe-delimited entry per IDE component, e.g.
+        ///   "TextEditor|Text Editor, Output Window (Proportional Font)|Courier New,20"
+        /// Finds the "TextEditor" entry and parses the trailing "Name,Size" pair off the last pipe segment.
+        /// Size has no explicit unit here (unlike DefaultFont's Units=N) — assumed points, same convention,
+        /// so it goes through the same pt->px conversion. Leaves the fields untouched on anything unexpected,
+        /// same fallback contract as ParseFont.
+        /// </summary>
+        private static void ParseComponentFont(IdeEditorOptionValues v)
+        {
+            try
+            {
+                Properties cf = PropertyService.Get<Properties>("CoreProperties.ComponentsFont", null);
+                if (cf == null) return;
+                string[] fonts = cf.Get<string[]>("ListOfFonts", null);
+                if (fonts == null) return;
+
+                foreach (var entry in fonts)
+                {
+                    if (string.IsNullOrEmpty(entry) || !entry.StartsWith("TextEditor|", StringComparison.Ordinal))
+                        continue;
+
+                    int lastPipe = entry.LastIndexOf('|');
+                    if (lastPipe < 0) continue;
+                    string nameSize = entry.Substring(lastPipe + 1);
+                    int lastComma = nameSize.LastIndexOf(',');
+                    if (lastComma < 0) continue;
+
+                    string fam = nameSize.Substring(0, lastComma).Trim();
+                    string sizeStr = nameSize.Substring(lastComma + 1).Trim();
+
+                    // Same shape-guard as ParseFont: no control chars/quotes that could break the CSS
+                    // font-family string this feeds into.
+                    if (fam.Length > 0 && fam.Length <= 64 && fam.IndexOfAny(new[] { '"', '\'', '{', '}', ';', '\r', '\n' }) < 0)
+                        v.FontFamily = fam;
+
+                    double pts;
+                    if (double.TryParse(sizeStr, NumberStyles.Float, CultureInfo.InvariantCulture, out pts) && pts > 0)
+                        v.FontSize = Clamp((int)Math.Round(pts * 4.0 / 3.0), 6, 48);
+
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[IdeEditorOptions] component font read failed: " + ex.Message);
             }
         }
 
