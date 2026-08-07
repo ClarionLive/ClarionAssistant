@@ -1595,8 +1595,8 @@
         // Checkpoint the fold set on save too, for the same reason bookmarks are: the debounce may not
         // have fired yet, and a save is the natural point to make the current state durable.
         if (_foldPersistTimer) { clearTimeout(_foldPersistTimer); _foldPersistTimer = null; }
-        if (_foldsReady) collapsedFolds(activeEd(), function (folds) {
-            if (folds) postToHost({ action: 'saveFolds', folds: folds });
+        if (_foldsReady) collapsedFolds(activeEd(), function (folds, total) {
+            if (folds) postToHost({ action: 'saveFolds', folds: folds, total: total, via: 'doSave' });
         });
         if (fileMode) {
             // Plain file: hand the host the whole buffer; it writes the file directly (fast, no embeditor).
@@ -3010,7 +3010,9 @@
                     var ln = fm.regions.getStartLineNumber(i);
                     out.push({ line: ln, text: foldFingerprint(model, ln) });
                 }
-                cb(out);
+                // `total` is diagnostic only (91107c1a): the host logs it so an empty result can be read
+                // as "the folding model had no regions at all" vs "it had regions but none were collapsed".
+                cb(out, fm.regions.length);
             }, function () { cb(null); });
         } catch (e) { cb(null); }
     }
@@ -3023,8 +3025,8 @@
         if (_foldPersistTimer) clearTimeout(_foldPersistTimer);
         _foldPersistTimer = setTimeout(function () {
             _foldPersistTimer = null;
-            collapsedFolds(activeEd(), function (folds) {
-                if (folds) postToHost({ action: 'saveFolds', folds: folds });
+            collapsedFolds(activeEd(), function (folds, total) {
+                if (folds) postToHost({ action: 'saveFolds', folds: folds, total: total, via: 'debounce' });
             });
         }, 500);
     }

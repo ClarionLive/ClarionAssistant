@@ -3416,6 +3416,19 @@ namespace ClarionAssistant.Terminal
                 if (data == null) return;
                 var folds = ReadFoldRecords(data);
                 EnsureHistoryScope();
+                // DIAGNOSTIC (91107c1a): folds persisted as an EMPTY array even after collapsing a region.
+                // Log every inbound set with its count + first record, so the log distinguishes "the page
+                // never reported a collapsed fold" from "a later empty persist overwrote a good one".
+                try
+                {
+                    object totObj, viaObj;
+                    string tot = data.TryGetValue("total", out totObj) && totObj != null ? totObj.ToString() : "?";
+                    string via = data.TryGetValue("via", out viaObj) && viaObj != null ? viaObj.ToString() : "?";
+                    MonacoSpikeLog.Write("[folds] saveFolds received: " + folds.Count +
+                        (folds.Count > 0 ? " first=" + folds[0].Line + ":'" + folds[0].Text + "'" : " (EMPTY)") +
+                        " foldableRegions=" + tot + " via=" + via + " key=" + _histProcKey);
+                }
+                catch { }
                 ModernEmbeditorState.SaveFolds(_histSolutionPath, _histProcKey, folds);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] saveFolds: " + ex.Message); }
@@ -3702,7 +3715,12 @@ namespace ClarionAssistant.Terminal
                     List<int> bms;
                     ModernEmbeditorState.Load(_histSolutionPath, _histProcKey, out cursorLine, out cursorColumn, out bms);
                     bookmarksJson = ModernEmbeditorState.BookmarksJson(bms);
-                    foldsJson = ModernEmbeditorState.FoldsJson(ModernEmbeditorState.LoadFolds(_histSolutionPath, _histProcKey));
+                    var loadedFolds = ModernEmbeditorState.LoadFolds(_histSolutionPath, _histProcKey);
+                    foldsJson = ModernEmbeditorState.FoldsJson(loadedFolds);
+                    // DIAGNOSTIC (91107c1a): pairs with the "[folds] saveFolds received" line. Sending N>0 and
+                    // then immediately receiving 0 means restore matched nothing and the persist wiped it;
+                    // sending 0 means nothing was ever stored to begin with. Different bugs, same symptom.
+                    try { MonacoSpikeLog.Write("[folds] setSource sending " + loadedFolds.Count + " key=" + _histProcKey); } catch { }
                 }
                 catch { }
 

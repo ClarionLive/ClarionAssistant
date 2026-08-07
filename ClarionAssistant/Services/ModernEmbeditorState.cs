@@ -98,7 +98,33 @@ namespace ClarionAssistant.Services
         /// <summary>Persist only the collapsed folds for one procedure, preserving cursor/bookmarks + other procs.</summary>
         public static void SaveFolds(string solutionPath, string procKey, IList<FoldRecord> folds)
         {
-            Update(solutionPath, procKey, rec => { rec["folds"] = CleanFolds(folds); });
+            Update(solutionPath, procKey, rec => { rec["folds"] = FoldsToWire(folds); });
+        }
+
+        /// <summary>
+        /// Convert to the on-disk/wire shape: lowercase "line"/"text", matching what the page posts.
+        ///
+        /// Serializing the typed FoldRecord directly was a silent data-loss bug. JavaScriptSerializer DOES
+        /// serialize public fields (verified) — but it names the keys after the MEMBERS, emitting
+        /// {"Line":70,"Text":"..."} while LoadFolds read "line"/"text". DeserializeObject hands back a
+        /// case-SENSITIVE dictionary, so every lookup missed, every record was dropped as line &lt; 1, and
+        /// folds saved fine but always loaded back empty. Building the dictionary explicitly keeps the two
+        /// ends spelled the same and matches the page's own {line,text} payload.
+        /// </summary>
+        private static List<Dictionary<string, object>> FoldsToWire(IList<FoldRecord> folds)
+        {
+            var outp = new List<Dictionary<string, object>>();
+            foreach (var f in CleanFolds(folds))
+                outp.Add(new Dictionary<string, object> { { "line", f.Line }, { "text", f.Text ?? "" } });
+            return outp;
+        }
+
+        /// <summary>Case-tolerant field read, so a record written by any earlier build still loads.</summary>
+        private static bool TryGetEither(IDictionary<string, object> d, string lower, string upper, out object v)
+        {
+            v = null;
+            if (d == null) return false;
+            return d.TryGetValue(lower, out v) || d.TryGetValue(upper, out v);
         }
 
         /// <summary>
@@ -123,10 +149,12 @@ namespace ClarionAssistant.Services
                 {
                     var d = item as Dictionary<string, object>;
                     if (d == null) continue;
-                    int line = ToInt(d, "line");
+                    object lv, tv;
+                    if (!TryGetEither(d, "line", "Line", out lv) || lv == null) continue;
+                    int line;
+                    try { line = Convert.ToInt32(lv); } catch { continue; }
                     if (line < 1) continue;
-                    object t;
-                    string text = (d.TryGetValue("text", out t) && t != null) ? t.ToString() : "";
+                    string text = (TryGetEither(d, "text", "Text", out tv) && tv != null) ? tv.ToString() : "";
                     folds.Add(new FoldRecord { Line = line, Text = text });
                 }
             }
@@ -136,7 +164,8 @@ namespace ClarionAssistant.Services
 
         public static string FoldsJson(IList<FoldRecord> folds)
         {
-            try { return new JavaScriptSerializer().Serialize(CleanFolds(folds)); }
+            // Same wire shape as SaveFolds — the page reads msg.folds[i].line / .text.
+            try { return new JavaScriptSerializer().Serialize(FoldsToWire(folds)); }
             catch { return "[]"; }
         }
 
