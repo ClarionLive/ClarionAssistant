@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using ClarionLsp.Contracts;
 using ClarionCodeGraph.Graph;
 using ClarionCodeGraph.Parsing;
@@ -210,11 +211,17 @@ namespace ClarionAssistant.Services
         {
             try
             {
-                object taskObj = m.Invoke(client, new object[] { filePath, line, character, bufferText, 2000 });
-                var task = taskObj as System.Threading.Tasks.Task;
-                if (task == null) return null;
-                task.GetAwaiter().GetResult();
-                object r = taskObj.GetType().GetProperty("Result").GetValue(taskObj, null);
+                // m.Invoke must happen INSIDE Block, not before it: the async method captures the calling
+                // thread's SynchronizationContext at its first await, so invoking here on the UI thread and
+                // wrapping afterwards would be too late to avoid the deadlock (3fa22a5e).
+                object r = Block(() =>
+                {
+                    object taskObj = m.Invoke(client, new object[] { filePath, line, character, bufferText, 2000 });
+                    var task = taskObj as System.Threading.Tasks.Task;
+                    if (task == null) return Task.FromResult<object>(null);
+                    return task.ContinueWith(_ => taskObj.GetType().GetProperty("Result").GetValue(taskObj, null),
+                                             TaskContinuationOptions.ExecuteSynchronously);
+                }, "signatureHelp");
                 if (r == null) return null;
 
                 var sigList = new List<object>();
@@ -404,11 +411,15 @@ namespace ClarionAssistant.Services
         {
             try
             {
-                object taskObj = m.Invoke(client, new object[] { filePath, line, character });
-                var task = taskObj as System.Threading.Tasks.Task;
-                if (task == null) return null;
-                task.GetAwaiter().GetResult();
-                object r = taskObj.GetType().GetProperty("Result").GetValue(taskObj, null);
+                // Invoke inside Block for the same reason as SharedSignatureHelpViaReflection (3fa22a5e).
+                object r = Block(() =>
+                {
+                    object taskObj = m.Invoke(client, new object[] { filePath, line, character });
+                    var task = taskObj as System.Threading.Tasks.Task;
+                    if (task == null) return Task.FromResult<object>(null);
+                    return task.ContinueWith(_ => taskObj.GetType().GetProperty("Result").GetValue(taskObj, null),
+                                             TaskContinuationOptions.ExecuteSynchronously);
+                }, "implementation");
                 var list = new System.Collections.ArrayList();
                 if (r is System.Collections.IEnumerable locs)
                 {
@@ -713,6 +724,55 @@ namespace ClarionAssistant.Services
         }
 
         // ===========================================================================================
+        // Sync-over-async chokepoint (ticket 3fa22a5e)
+        // ===========================================================================================
+        // Every worker below turns an async client call into a synchronous one, and the caller is very
+        // often the WinForms UI thread. Doing that as
+        //
+        //     c.SomethingAsync(...).GetAwaiter().GetResult()
+        //
+        // is the classic deadlock: the async method STARTS on the UI thread, so it captures the UI
+        // SynchronizationContext at its first await, and its continuation then needs the very thread we
+        // are blocking. MEASURED at 57.7 SECONDS in ticket e1162adf, where one such call (RevertShadow ->
+        // EnsureBufferSynced) froze the IDE on every embed save and cancel. That ticket moved a single
+        // caller off the UI thread; this fixes the pattern.
+        //
+        // Block() starts the call INSIDE Task.Run, so the async method begins on a pool thread with no
+        // SynchronizationContext and its continuations can never need the UI thread. Starting it inside
+        // the lambda is the whole point — wrapping an ALREADY-STARTED task would be too late, since the
+        // context is captured when the method first awaits.
+        //
+        // It also caps the wait, so a wedged server degrades to one failed request instead of a frozen
+        // IDE. The cap throws, and every caller here already has a catch that turns an exception into a
+        // graceful error result — so error handling is unchanged.
+        private const int BlockCapMs = 20000;
+
+        /// <summary>Run an async client call off the UI thread and wait for it, bounded. Exceptions
+        /// surface unwrapped, exactly as .GetAwaiter().GetResult() did, so existing catches still work.</summary>
+        private static T Block<T>(Func<Task<T>> start, string what)
+        {
+            var t = Task.Run(start);
+            if (!WaitBounded(t, what)) throw new TimeoutException("LSP '" + what + "' exceeded " + BlockCapMs + "ms");
+            return t.GetAwaiter().GetResult();
+        }
+
+        /// <summary>Void-returning overload — same contract.</summary>
+        private static void Block(Func<Task> start, string what)
+        {
+            var t = Task.Run(start);
+            if (!WaitBounded(t, what)) throw new TimeoutException("LSP '" + what + "' exceeded " + BlockCapMs + "ms");
+            t.GetAwaiter().GetResult();
+        }
+
+        // Wait swallowing only the AggregateException a faulted task raises, so the caller can rethrow it
+        // UNWRAPPED via GetResult() and preserve the original exception type in the existing catch blocks.
+        private static bool WaitBounded(Task t, string what)
+        {
+            try { return t.Wait(BlockCapMs); }
+            catch (AggregateException) { return true; }   // faulted — let GetResult() rethrow it unwrapped
+        }
+
+        // ===========================================================================================
         // Shared-path workers. These reference the v1.1 methods + Models DTOs and are invoked ONLY
         // when Shared != null (capabilities verified), so they never JIT under a stale contract.
         // ===========================================================================================
@@ -721,7 +781,7 @@ namespace ClarionAssistant.Services
         {
             try
             {
-                LspModels.HoverResult h = c.GetHoverAsync(filePath, line, character, 1500).GetAwaiter().GetResult();
+                LspModels.HoverResult h = Block(() => c.GetHoverAsync(filePath, line, character, 1500), "hover");
                 object result = null;
                 if (h != null)
                 {
@@ -737,13 +797,13 @@ namespace ClarionAssistant.Services
 
         private static Dictionary<string, object> SharedGetDefinition(IClarionLanguageClient c, string filePath, int line, int character)
         {
-            try { return WrapResult(LocationsToList(c.GetDefinitionAsync(filePath, line, character).GetAwaiter().GetResult())); }
+            try { return WrapResult(LocationsToList(Block(() => c.GetDefinitionAsync(filePath, line, character), "definition"))); }
             catch (Exception ex) { return SharedError("definition", ex); }
         }
 
         private static Dictionary<string, object> SharedGetReferences(IClarionLanguageClient c, string filePath, int line, int character)
         {
-            try { return WrapResult(LocationsToList(c.GetReferencesAsync(filePath, line, character, true).GetAwaiter().GetResult())); }
+            try { return WrapResult(LocationsToList(Block(() => c.GetReferencesAsync(filePath, line, character, true), "references"))); }
             catch (Exception ex) { return SharedError("references", ex); }
         }
 
@@ -753,16 +813,16 @@ namespace ClarionAssistant.Services
             {
                 if (!string.IsNullOrEmpty(bufferText))
                 {
-                    try { c.NotifyBufferChangedAsync(filePath, bufferText).GetAwaiter().GetResult(); } catch { }
+                    try { Block(() => c.NotifyBufferChangedAsync(filePath, bufferText), "notifyBufferChanged"); } catch { }
                 }
-                return WrapResult(SymbolsToList(c.GetDocumentSymbolsAsync(filePath).GetAwaiter().GetResult()));
+                return WrapResult(SymbolsToList(Block(() => c.GetDocumentSymbolsAsync(filePath), "documentSymbol")));
             }
             catch (Exception ex) { return SharedError("documentSymbol", ex); }
         }
 
         private static Dictionary<string, object> SharedFindWorkspaceSymbol(IClarionLanguageClient c, string query)
         {
-            try { return WrapResult(SymbolsToList(c.FindWorkspaceSymbolAsync(query).GetAwaiter().GetResult())); }
+            try { return WrapResult(SymbolsToList(Block(() => c.FindWorkspaceSymbolAsync(query), "workspaceSymbol"))); }
             catch (Exception ex) { return SharedError("workspaceSymbol", ex); }
         }
 
@@ -770,7 +830,7 @@ namespace ClarionAssistant.Services
         {
             try
             {
-                LspModels.RenameEdit[] edits = c.RenameAsync(filePath, line, character, newName).GetAwaiter().GetResult();
+                LspModels.RenameEdit[] edits = Block(() => c.RenameAsync(filePath, line, character, newName), "rename");
                 if (edits == null || edits.Length == 0) return WrapResult(null);
 
                 // Fold into an LSP WorkspaceEdit.changes = { uri: [ {range, newText}, ... ] }.
@@ -810,8 +870,9 @@ namespace ClarionAssistant.Services
             }
             try
             {
+                string capturedBuffer = bufferText;
                 LspModels.CompletionResult[] comps =
-                    c.GetCompletionAsync(filePath, line, character, bufferText, timeoutMs).GetAwaiter().GetResult();
+                    Block(() => c.GetCompletionAsync(filePath, line, character, capturedBuffer, timeoutMs), "completion");
                 if (comps != null)
                 {
                     foreach (var item in comps)
@@ -836,7 +897,7 @@ namespace ClarionAssistant.Services
         {
             if (string.IsNullOrEmpty(filePath) || bufferText == null) return;
             lock (_sharedBufLock) { _sharedBuffers[filePath] = bufferText; }
-            try { c.NotifyBufferChangedAsync(filePath, bufferText).GetAwaiter().GetResult(); }
+            try { Block(() => c.NotifyBufferChangedAsync(filePath, bufferText), "notifyBufferChanged"); }
             catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] NotifyBufferChanged failed: " + ex.Message); }
         }
 
@@ -851,8 +912,9 @@ namespace ClarionAssistant.Services
             var result = new LspClient.DiagnosticWaitResult { Entries = new List<LspClient.DiagnosticEntry>(), Pending = true };
             try
             {
+                string capturedBuffer = buffer ?? "";
                 LspModels.DiagnosticResult[] diags =
-                    c.GetDiagnosticsAsync(filePath, buffer ?? "", timeoutMs).GetAwaiter().GetResult();
+                    Block(() => c.GetDiagnosticsAsync(filePath, capturedBuffer, timeoutMs), "diagnostics");
                 result.Entries = DiagnosticsToEntries(diags);
                 result.Pending = false;
                 lock (_sharedDiagLock) { _sharedDiagCache[filePath] = result.Entries; }
