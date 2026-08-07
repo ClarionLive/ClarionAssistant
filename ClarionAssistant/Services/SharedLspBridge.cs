@@ -1409,8 +1409,15 @@ namespace ClarionAssistant.Services
             return null;
         }
 
-        /// <summary>Resolve an exact-name definition from one CodeGraph-schema DB → an LSP location list,
-        /// or null when the DB is missing/unopenable or the symbol isn't found. Never throws.</summary>
+        /// <summary>Resolve an exact-name definition from one CodeGraph-schema DB → an LSP location list, or
+        /// null when the DB is missing/unopenable, the symbol isn't found, or the only match is a "variable"
+        /// scoped to a PROCEDURE/ROUTINE elsewhere (see IsUnreachableLocalVariable — never a legitimate hit,
+        /// since the caller only reaches here after the upstream LSP already searched this file's own
+        /// local/routine/module scope and found nothing). Mirrors CgHoverFromDb's guard — that sibling
+        /// already filters this exact shape for hover; this path never got the same check, so a bare word
+        /// genuinely undeclared in scope (LSP correctly returns empty) could still resolve F12 to an
+        /// unrelated procedure's local via CodeGraphProvider.FindSymbolByName's unordered `LIMIT 1`. Never
+        /// throws.</summary>
         private static Dictionary<string, object> CgDefinitionFromDb(string word, string db)
         {
             try
@@ -1419,9 +1426,10 @@ namespace ClarionAssistant.Services
                 using (var p = new CodeGraphProvider())
                 {
                     if (!p.Open(db)) return null;
-                    var def = p.GetDefinition(word);
-                    if (def == null || string.IsNullOrEmpty(def.FilePath)) return null;
-                    return WrapResult(new System.Collections.ArrayList { CgLocation(def.FilePath, def.LineNumber) });
+                    var sym = p.FindSymbolByName(word);
+                    if (sym == null || string.IsNullOrEmpty(sym.FilePath)) return null;
+                    if (IsUnreachableLocalVariable(p, sym)) return null;
+                    return WrapResult(new System.Collections.ArrayList { CgLocation(sym.FilePath, sym.LineNumber) });
                 }
             }
             catch { return null; }
