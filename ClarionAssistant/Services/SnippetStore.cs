@@ -7,7 +7,7 @@ using System.Web.Script.Serialization;
 namespace ClarionAssistant.Services
 {
     /// <summary>
-    /// A single Ctrl+J code snippet. Body uses Monaco snippet syntax ($1, ${1:default}, $0) plus the
+    /// A single code snippet (inserted from the editor's snippet picker, Ctrl+Shift+J by default). Body uses Monaco snippet syntax ($1, ${1:default}, $0) plus the
     /// CA Embeditor's own ${SELECTED} placeholder, substituted client-side with the text that was
     /// selected when the snippet picker was triggered (see monaco-embeditor.html's snippet picker).
     /// </summary>
@@ -47,7 +47,7 @@ namespace ClarionAssistant.Services
     }
 
     /// <summary>
-    /// Global (NOT per-Clarion-version, NOT per-solution) storage for Ctrl+J code snippets:
+    /// Global (NOT per-Clarion-version, NOT per-solution) storage for the editor's code snippets:
     /// %APPDATA%\ClarionAssistant\snippets.json. A snippet is reusable Clarion source across every
     /// project, so — unlike ModernEmbeditorHistory's per-solution find/replace lists — there is
     /// exactly one file for the whole install. The list is authoritative on every Save (mirrors

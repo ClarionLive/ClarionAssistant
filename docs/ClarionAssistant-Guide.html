@@ -442,7 +442,7 @@
     <a href="#whats-new-55" class="sub">v5.5</a>
     <a href="#whats-new-54" class="sub">v5.4</a>
     <a href="#whats-new-50" class="sub">v5.1</a>
-    <a href="#whats-new-snippets" class="sub">Code Snippets (Ctrl+J)</a>
+    <a href="#whats-new-snippets" class="sub">Code Snippets (Ctrl+Shift+J)</a>
     <a href="#whats-new-sidecar" class="sub">Custom MCP Servers</a>
     <a href="#whats-new-codex" class="sub">Codex Backend</a>
     <a href="#whats-new-selfheal" class="sub">Codex Config Self-Heal</a>
@@ -470,7 +470,8 @@
     <a href="#ca-embeditor">Overview</a>
     <a href="#ca-embeditor-open" class="sub">Opening a Procedure</a>
     <a href="#ca-monaco-editor" class="sub">Monaco Source Editor</a>
-    <a href="#ca-snippets" class="sub">Code Snippets (Ctrl+J)</a>
+    <a href="#ca-embed-nav" class="sub">Embed navigation (Ctrl+J / Ctrl+B)</a>
+    <a href="#ca-snippets" class="sub">Code Snippets (Ctrl+Shift+J)</a>
     <a href="#ca-data-pad" class="sub">CA Explorer</a>
     <a href="#ca-find" class="sub">Find &amp; Replace</a>
     <a href="#ca-outline" class="sub">Document Structure</a>
@@ -599,9 +600,11 @@
   <h3 id="whats-new-snippets">Code Snippets in the CA Embeditor <span style="font-weight:400;font-size:0.85em;color:var(--text-light)">(issue #49)</span></h3>
 
   <p>
-    The CA Embeditor now has a Ctrl+J code-snippet picker, matching the classic Clarion text
+    The CA Embeditor now has a code-snippet picker, matching the classic Clarion text
     editor's Ctrl+J template picker &mdash; see
-    <a href="#ca-snippets">Code Snippets (Ctrl+J)</a> for the full walkthrough.
+    <a href="#ca-snippets">Code Snippets (Ctrl+Shift+J)</a> for the full walkthrough.
+    (The picker moved to Ctrl+Shift+J in 5.7 &mdash; the Clarion embeditor uses Ctrl+J to jump to the
+    next filled embed, so that key now does the same here.)
   </p>
 
   <ul>
@@ -617,7 +620,7 @@
     </li>
     <li>
       <strong><code>${SELECTED}</code></strong> &mdash; a Clarion Assistant-specific placeholder
-      substituted with whatever text was selected when Ctrl+J was pressed (or left as a fillable
+      substituted with whatever text was selected when the picker was opened (or left as a fillable
       tab-stop when nothing was selected).
     </li>
     <li>
@@ -1558,11 +1561,36 @@
     write. The formatter's behavior is configurable from its settings panel.
   </p>
 
-  <h3 id="ca-snippets">Code Snippets (Ctrl+J)</h3>
+  <h3 id="ca-embed-nav">Embed navigation (Ctrl+J / Ctrl+B)</h3>
 
   <p>
-    Press <kbd>Ctrl</kbd>+<kbd>J</kbd> in the CA Embeditor to open the code-snippet picker &mdash;
-    the same shortcut as the classic Clarion text editor's template picker, reimplemented on
+    The native Clarion embeditor walks the <em>filled</em> embed points with <kbd>Ctrl</kbd>+<kbd>J</kbd>
+    (next) and <kbd>Ctrl</kbd>+<kbd>B</kbd> (previous). The CA Embeditor answers the same two keys, so the
+    muscle memory carries over. Navigation wraps around at either end, and acts on whichever split pane has
+    focus. The toolbar's solid-arrow buttons do the same thing.
+  </p>
+
+  <ul>
+    <li>
+      <strong>Filled only, by default</strong> &mdash; these keys skip empty embed points, matching the
+      native behavior. A walk over <em>every</em> embed point is available as <strong>Next Embed (any)</strong>
+      and <strong>Previous Embed (any)</strong> in the gear panel's Keyboard section; both ship unbound, so
+      give them a chord if you want them.
+    </li>
+    <li>
+      <strong>Plain source files</strong> &mdash; a <code>.clw</code>/<code>.inc</code> opened as a file has no
+      embed points, so the keys say so rather than moving the caret.
+    </li>
+  </ul>
+
+  <h3 id="ca-snippets">Code Snippets (Ctrl+Shift+J)</h3>
+
+  <p>
+    Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd> in the CA Embeditor to open the code-snippet
+    picker. The classic Clarion text editor puts its template picker on <kbd>Ctrl</kbd>+<kbd>J</kbd>,
+    but the Clarion <em>embeditor</em> uses that key to jump to the next filled embed &mdash; which the
+    CA Embeditor now does too &mdash; so the picker sits one modifier along. Either can be rebound in
+    the gear panel's Keyboard section. It is reimplemented on
     Monaco's snippet engine. It's a dedicated picker (not folded into regular autocomplete): type
     to filter by trigger or description, use <kbd>&uarr;</kbd>/<kbd>&darr;</kbd> to pick a row, and
     <kbd>Enter</kbd> to insert (<kbd>Esc</kbd> to cancel).
@@ -1584,14 +1612,14 @@
     </li>
     <li>
       <strong><code>${SELECTED}</code></strong> &mdash; select some text before pressing
-      <kbd>Ctrl</kbd>+<kbd>J</kbd> and any <code>${SELECTED}</code> in the chosen snippet's body is
+      <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd> and any <code>${SELECTED}</code> in the chosen snippet's body is
       replaced with it (handy for wrapping an existing variable or file name in a template, e.g. a
       standard <code>SET</code>/<code>LOOP</code> block). If nothing is selected,
       <code>${SELECTED}</code> becomes an ordinary fillable tab-stop instead of inserting blank.
     </li>
     <li>
       <strong>Auto-indent</strong> &mdash; every line of the snippet after the first automatically
-      picks up the indentation of the line Ctrl+J was pressed on, so multi-line bodies (a
+      picks up the indentation of the line the picker was opened on, so multi-line bodies (a
       <code>LOOP</code>/<code>END</code> block, for example) land aligned with the surrounding code.
     </li>
     <li>

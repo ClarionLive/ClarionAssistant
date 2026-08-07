@@ -1435,7 +1435,7 @@ namespace ClarionAssistant.Terminal
         void IMonacoEditorHost.OnSnippetCommand(MonacoEditorControl editor, string rawJson)
         {
             // Gear-panel Code Snippets CRUD — persist via the shared store, then live-broadcast the
-            // updated list to every open tab (refreshes both the Ctrl+J picker and the gear list).
+            // updated list to every open tab (refreshes both the snippet picker and the gear list).
             var updated = SnippetStore.ApplyCommand(rawJson);
             if (updated != null) ApplySnippetsToAll(updated);
         }
@@ -3333,7 +3333,7 @@ namespace ClarionAssistant.Terminal
         // editors too — not just Modern Embeditor tabs.
 
         /// <summary>
-        /// Broadcast the current Ctrl+J snippet list to every open Modern Embeditor tab, so an
+        /// Broadcast the current snippet list to every open Modern Embeditor tab, so an
         /// add/edit/delete in the gear panel's Code Snippets tab is picked up live without reopening
         /// the tab (mirrors ApplySettingsToAll — called by OnSnippetCommand after each CRUD op).
         /// </summary>

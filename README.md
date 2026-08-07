@@ -43,7 +43,8 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 - **Monaco source editor** &mdash; the default editor for Clarion `.clw`/`.inc` source: syntax highlighting, folding, F12/Ctrl+Click go-to-definition, inline diagnostics, and completion (toggleable under Options &rarr; Clarion Assistant &rarr; Editor Surfaces)
 - **Smart Formatter (Ctrl+I)** &mdash; reformats Clarion code with structure indentation and aligned declarations; configurable
 - **CA Embeditor** &mdash; use Clarion's own **Embeditor Source** (right-click a procedure, or the Views toolbar button) and a fast Monaco/WebView2 editor overlays the native embeditor automatically; edits save straight back with Clarion-native Save &amp; Exit
-- **Code Snippets (Ctrl+J)** &mdash; classic Clarion template-picker parity: insert reusable code with tab-stops and a `${SELECTED}` placeholder, managed from Settings &rarr; Snippets
+- **Embed navigation (Ctrl+J / Ctrl+B)** &mdash; jump to the next/previous *filled* embed, the same keys the native Clarion embeditor uses (#185); the toolbar arrows and an unfiltered walk over every embed are there too, and all of it is rebindable
+- **Code Snippets (Ctrl+Shift+J)** &mdash; classic Clarion template-picker parity: insert reusable code with tab-stops and a `${SELECTED}` placeholder, managed from Settings &rarr; Snippets
 - **CA Explorer** &mdash; docked pad showing the active CA Embeditor tab's Local, Module &amp; Global Data, Declared Tables, Other Files, and their Keys, Columns, and Relations; drag a field to the editor or Window designer, copy/paste variables native-style, and a Cheat Sheet tab of editor shortcuts
 - **Evaluate Code** &mdash; interactive code review for entire apps, procedures, open files, or selected code
 - **CA Find & Replace** &mdash; dockable Find pad or classic in-editor overlay (your pick), Find-All with results in their own editor tab, and one shared history across every CA surface
@@ -261,7 +262,7 @@ A new sort toggle in the outline toolbar orders symbols **A&ndash;Z independentl
 
 ### Split a selection into multiple snippet parameters (#154)
 
-Code Snippets (Ctrl+J) gain `${SELECTED:N}` &mdash; the Nth comma-separated part of the current selection (1-based, trimmed), alongside the existing `${SELECTED}` (whole selection). Select `Clientes,CLI:CLI01` and a snippet body like `Access:${SELECTED:1}.Fetch(${SELECTED:2})` expands to `Access:Clientes.Fetch(CLI:CLI01)`. With nothing selected, each distinct `${SELECTED:N}` becomes its own fillable tab-stop instead of a blank hole &mdash; same as `${SELECTED}` already did. See the examples panel (the **?** next to the snippet Body field) for a worked example.
+Code Snippets gain `${SELECTED:N}` &mdash; the Nth comma-separated part of the current selection (1-based, trimmed), alongside the existing `${SELECTED}` (whole selection). Select `Clientes,CLI:CLI01` and a snippet body like `Access:${SELECTED:1}.Fetch(${SELECTED:2})` expands to `Access:Clientes.Fetch(CLI:CLI01)`. With nothing selected, each distinct `${SELECTED:N}` becomes its own fillable tab-stop instead of a blank hole &mdash; same as `${SELECTED}` already did. See the examples panel (the **?** next to the snippet Body field) for a worked example.
 
 ### Field-equate completion on `?` (#159/#160)
 
@@ -423,7 +424,7 @@ There is no longer a separate **Open in CA Embeditor** popup item. Just open an 
 
 A full snippet workflow lands in the Monaco source editor and CA Embeditor:
 
-- **Ctrl+J picker** &mdash; theme-aware, with a **live expansion preview** so you see the resulting code (tab-stops visible) before inserting.
+- **Snippet picker** &mdash; theme-aware, with a **live expansion preview** so you see the resulting code (tab-stops visible) before inserting.
 - **Snippets in completion** &mdash; type a trigger and press **Enter** to expand (Clarion Ctrl+J parity), or use **trigger + space** for Clarion-style expansion.
 - **Manage them in the gear panel** &mdash; edit snippets with examples/help, tab-stop mirroring, and case-insensitive extension scoping.
 
@@ -451,14 +452,18 @@ Clarion source files (`.clw`, `.inc`) open by default in a Monaco-powered editor
 
 Press **Ctrl+I** in the Monaco source editor or CA Embeditor to reformat Clarion code &mdash; consistent indentation for structures (IF/LOOP/CASE/ACCEPT) and aligned data declarations. As-you-type aids apply light formatting while you write, and the formatter's behavior is configurable.
 
-### Code Snippets (Ctrl+J)
+### Embed navigation (Ctrl+J / Ctrl+B)
 
-Press **Ctrl+J** in the CA Embeditor to open a code-snippet picker &mdash; the same shortcut as the classic Clarion text editor's template picker, filterable by trigger/description and scoped to the active file's extension.
+The native Clarion embeditor walks the *filled* embed points with **Ctrl+J** (next) and **Ctrl+B** (previous), and the CA Embeditor now answers the same keys (#185, thanks to BoxSoft). Navigation wraps at either end and acts on whichever split pane has focus. The toolbar's filled-embed arrows do the same thing, and the unfiltered walk over *every* embed &mdash; filled or not &mdash; is available as **Next/Previous Embed (any)** in the gear panel's Keyboard section, unbound by default. In a plain source file there are no embeds, so the keys report that rather than moving the caret.
+
+### Code Snippets (Ctrl+Shift+J)
+
+Press **Ctrl+Shift+J** in the CA Embeditor to open a code-snippet picker &mdash; the classic Clarion text editor puts its template picker on Ctrl+J, but the Clarion *embeditor* uses Ctrl+J to jump to the next filled embed (#185), so the picker takes Ctrl+Shift+J and Ctrl+J is left to mean what it means natively. Both are rebindable in the gear panel's Keyboard section, so you can swap them back if you prefer. The picker is filterable by trigger/description and scoped to the active file's extension.
 
 - **Managed from Settings &rarr; Snippets** &mdash; add/edit/delete snippets (trigger, description, extensions, body); stored globally in `%APPDATA%\ClarionAssistant\snippets.json`.
 - **Tab-stops** &mdash; bodies use VS Code-style snippet syntax (`$1`, `${1:default}`, `$0`); **Tab**/**Shift+Tab** cycles between stops after insertion.
-- **`${SELECTED}`** &mdash; substituted with the text selected when Ctrl+J was pressed, or left as a fillable tab-stop if nothing was selected.
-- **Auto-indent** &mdash; continuation lines match the indentation of the line Ctrl+J was triggered on.
+- **`${SELECTED}`** &mdash; substituted with the text selected when the picker was opened, or left as a fillable tab-stop if nothing was selected.
+- **Auto-indent** &mdash; continuation lines match the indentation of the line the picker was triggered on.
 
 ### CA Embeditor &mdash; right-click a procedure to open it instantly
 

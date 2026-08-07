@@ -1032,7 +1032,7 @@ namespace ClarionAssistant
             if (updated == null) return;
             Terminal.ModernEmbeditorViewContent.ApplySnippetsToAll(updated);   // all embeditor tabs
             // ApplySnippetsToAll reaches embeditor tabs only, not this source-editor host — so echo the
-            // updated list back to our OWN page or its gear list + Ctrl+J picker won't refresh live after
+            // updated list back to our OWN page or its gear list + snippet picker won't refresh live after
             // a CRUD made here (adversary/code-review finding).
             try { editor.PostJson("{\"type\":\"applySnippets\",\"snippets\":" + Services.SnippetStore.ToJson(updated) + "}"); } catch { }
         }

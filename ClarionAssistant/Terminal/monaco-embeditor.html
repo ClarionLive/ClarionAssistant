@@ -221,7 +221,7 @@
     #snipHelp .cb .caret { color: #e0724f; font-weight: 700; }
     #snipHelp .ex { font-size: 12px; line-height: 1.7; }
     #snipHelp .ex code { font-family: Consolas, monospace; color: #dca94a; }
-    /* Ctrl+J snippet picker — theme-aware (follows the editor's light/dark) */
+    /* Snippet picker (Ctrl+Shift+J by default, rebindable) — theme-aware (follows the editor's light/dark) */
     #snippetPicker { position: fixed; inset: 0; z-index: 1001; background: rgba(0,0,0,.28); display: flex; align-items: center; justify-content: center; }
     #snippetPicker .sp-panel { min-width: 640px; max-width: 92vw; background: var(--toolbar-bg); color: var(--fg); border: 1px solid var(--toolbar-border); border-radius: 8px; box-shadow: 0 8px 30px rgba(0,0,0,.35); font-family: 'Segoe UI', Tahoma, sans-serif; overflow: hidden; }
     #snippetPicker .sp-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--toolbar-border); }
@@ -796,7 +796,7 @@
         <div class="kb-actions"><button id="kbResetAll">Reset all keys</button></div>
         </div><!-- /gearPaneEditor -->
         <div class="gear-pane hidden" id="gearPaneSnippets">
-            <p class="snip-intro"><b>Ctrl+J</b> in the editor opens these snippets, scoped to the file's extension.</p>
+            <p class="snip-intro"><b class="kbd-snip">Ctrl+Shift+J</b> in the editor opens these snippets, scoped to the file's extension.</p>
             <div id="snipMgrList"></div>
             <div id="snipMgrEmpty" class="snip-empty">No snippets yet — add one below.</div>
             <button class="snip-add" id="snipAddBtn">+ Add Snippet</button>
@@ -1033,7 +1033,7 @@
     var findOpts = { matchCase: false, wholeWord: false, regex: false, includeReadOnly: true };
     // Monaco's standard word-boundary separators (needed to enable whole-word matching).
 
-    // ----- Snippets (Ctrl+J) state -----
+    // ----- Snippets (Ctrl+Shift+J by default — the 'insertSnippet' command) state -----
     var snippetsList = [];        // [{id,trigger,description,extensions,body}], from setSource + applySnippets broadcast
     var _snippetInsertCmd = null; // Monaco command id that expands a snippet chosen from the completion list
     var WORD_SEPARATORS = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
@@ -1246,7 +1246,9 @@
                 editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, doSave);
                 installCommandPalette(editor); // F1 / Ctrl+Shift+P open Monaco's quick-command palette
                 installFindKeyInterceptor();   // capture-phase Ctrl+F/Ctrl+H/F3 — beats Monaco's stock widgets
-                installSnippetKeyInterceptor(); // capture-phase Ctrl+J — classic Clarion code-snippet picker
+                // The snippet picker is no longer intercepted here: it is an EDITOR_COMMANDS entry
+                // ('insertSnippet', default Ctrl+Shift+J) dispatched by installKeyBindings below, because the
+                // embeditor's Ctrl+J now walks the filled embeds (GH #185).
                 installSnippetTriggerKey();     // capture-phase SPACE — classic Clarion "trigger + space" expansion
                 rebuildChordMap();             // seed the binding map from defaults (settings refine it later)
                 installKeyBindings();          // capture-phase dispatcher for all rebindable Clarion editor keys
@@ -1883,7 +1885,21 @@
         // Format selected block (or current line) with the Clarion Smart Formatter — the native Ctrl+I gesture.
         { id: 'formatLine',        label: 'Format Selection',      def: 'Ctrl+I',       run: cmdFormat },
         // Native-embeditor exit gesture (GH #137): Ctrl+Q then Enter = save and exit.
-        { id: 'saveAndExit',       label: 'Save and Exit',         def: 'Ctrl+Q',       run: cmdSaveAndExit }
+        { id: 'saveAndExit',       label: 'Save and Exit',         def: 'Ctrl+Q',       run: cmdSaveAndExit },
+        // GH #185 (BoxSoft): the native Clarion embeditor uses Ctrl+J / Ctrl+B to walk the FILLED embeds, so
+        // the replacement has to answer the same keys. navEmbed already did the work for the toolbar's
+        // filled-embed buttons — these just put it on the keyboard. Both no-op with a toast in fileMode.
+        { id: 'nextFilledEmbed',   label: 'Next Filled Embed',     def: 'Ctrl+J',       run: function () { navEmbed(1, true); } },
+        { id: 'prevFilledEmbed',   label: 'Previous Filled Embed', def: 'Ctrl+B',       run: function () { navEmbed(-1, true); } },
+        // Ctrl+J USED to open this picker (classic Clarion's snippet gesture in the TEXT editor), but the
+        // embeditor's own Ctrl+J means next-filled-embed and #185 asks for that, so the picker moved to
+        // Ctrl+Shift+J. It lives here rather than in its old standalone interceptor so it is rebindable from
+        // the gear panel like everything else — anyone who wants Ctrl+J back for snippets can just set it.
+        { id: 'insertSnippet',     label: 'Code Snippets',         def: 'Ctrl+Shift+J', run: openSnippetPicker },
+        // No default chord: the unfiltered embed walk stays button-only (the native IDE has no key for it),
+        // but appearing here means it CAN be bound from the gear panel's Keyboard section.
+        { id: 'nextEmbed',         label: 'Next Embed (any)',      def: '',             run: function () { navEmbed(1, false); } },
+        { id: 'prevEmbed',         label: 'Previous Embed (any)',  def: '',             run: function () { navEmbed(-1, false); } }
     ];
 
     function defOf(id) {
@@ -1891,6 +1907,27 @@
         return '';
     }
     function effectiveChord(cmd) { return keyBindings[cmd.id] || cmd.def; }
+
+    // The chord a command is CURRENTLY on, for help text to render. Help that hardcodes a chord goes stale the
+    // moment the developer rebinds it (and went stale wholesale when snippets moved off Ctrl+J for GH #185), so
+    // user-facing copy interpolates this instead of a literal. Falls back to the id so a typo is visible rather
+    // than silently producing an empty <b></b>.
+    function chordForId(id) {
+        for (var i = 0; i < EDITOR_COMMANDS.length; i++)
+            if (EDITOR_COMMANDS[i].id === id) return effectiveChord(EDITOR_COMMANDS[i]) || '(unbound)';
+        return id;
+    }
+
+    // Stamp the live snippet chord into every piece of copy that mentions it (class="kbd-snip" — the Snippets
+    // panel intro and the ${SELECTED}/indentation examples). Called whenever bindings change and after any of
+    // that markup is (re)rendered. textContent, not innerHTML: a chord is plain text and comes from persisted,
+    // user-editable settings, so it must never be parsed as markup (same reasoning as escHtml in the keybind
+    // table). Safe to call before the elements exist — querySelectorAll just returns nothing.
+    function refreshSnippetChordLabels() {
+        var chord = chordForId('insertSnippet');
+        var els = document.querySelectorAll('.kbd-snip');
+        for (var i = 0; i < els.length; i++) els[i].textContent = chord;
+    }
 
     function rebuildChordMap() {
         chordToCmd = {};
@@ -1900,6 +1937,9 @@
             var ch = effectiveChord(c);
             if (ch) chordToCmd[ch] = c;               // last-wins; the panel prevents real conflicts
         }
+        // Every binding change funnels through here (init + each gear-panel rebind), so this is the one place
+        // that has to re-stamp the help copy mentioning the snippet chord.
+        refreshSnippetChordLabels();
     }
 
     // Map a keydown to a canonical chord ("Ctrl+Shift+Y"). Physical keys come from ev.code so layout
@@ -3916,7 +3956,7 @@
                 for (var i = 0; i < snippetsList.length; i++) {
                     var s = snippetsList[i];
                     // ${SELECTED}/${SELECTED:N} snippets wrap the current selection — but typing a trigger to
-                    // autocomplete has already destroyed any selection. They only make sense via Ctrl+J (which
+                    // autocomplete has already destroyed any selection. They only make sense via the picker (which
                     // captures the selection before the picker opens), so keep them OUT of the completion list.
                     if (isWrapStyleSnippet(s.body)) continue;
                     if (!snippetAppliesToExt(s, ext)) continue;   // scoped out (case-insensitive)
@@ -4987,15 +5027,15 @@
         { title: "Wrap a selection", sub: "${SELECTED} — reuse highlighted text",
           body: "IF ${SELECTED}\n  $0\nEND",
           result: "IF <span class=sel>Customer:Name</span>\n  <span class=caret>&#9474;</span>\nEND",
-          explain: "Select some text first (say <code>Customer:Name</code>), then press <b>Ctrl+J</b>. <code>${SELECTED}</code> is replaced with what you had highlighted. If nothing was selected, it becomes a normal fillable tab-stop instead." },
+          explain: "Select some text first (say <code>Customer:Name</code>), then press <b class='kbd-snip'>Ctrl+Shift+J</b>. <code>${SELECTED}</code> is replaced with what you had highlighted. If nothing was selected, it becomes a normal fillable tab-stop instead." },
         { title: "Split a selection into parts", sub: "${SELECTED:1} ${SELECTED:2} — comma-separated pieces",
           body: "Access:${SELECTED:1}.Fetch(${SELECTED:2})",
           result: "Access:<span class=sel>Clientes</span>.Fetch(<span class=sel>CLI:CLI01</span>)",
-          explain: "Select <code>Clientes,CLI:CLI01</code> (say, from inside a <code>GET(Clientes,CLI:CLI01)</code> call) and press <b>Ctrl+J</b>. <code>${SELECTED:1}</code> and <code>${SELECTED:2}</code> are the 1st and 2nd comma-separated parts of the selection, trimmed. Plain <code>${SELECTED}</code> still means the whole selection — mix them freely. With nothing selected, each distinct <code>${SELECTED:N}</code> becomes its own fillable tab-stop instead." },
+          explain: "Select <code>Clientes,CLI:CLI01</code> (say, from inside a <code>GET(Clientes,CLI:CLI01)</code> call) and press <b class='kbd-snip'>Ctrl+Shift+J</b>. <code>${SELECTED:1}</code> and <code>${SELECTED:2}</code> are the 1st and 2nd comma-separated parts of the selection, trimmed. Plain <code>${SELECTED}</code> still means the whole selection — mix them freely. With nothing selected, each distinct <code>${SELECTED:N}</code> becomes its own fillable tab-stop instead." },
         { title: "Multi-line block", sub: "auto-indent + $0",
           body: "LOOP\n  ${1:! your code}\n  $0\nEND",
           result: "    LOOP\n      <span class=ph>! your code</span>\n      <span class=caret>&#9474;</span>\n    END",
-          explain: "Bodies keep their shape: every line after the first is indented to match the line where you pressed <b>Ctrl+J</b>, so the block lands aligned instead of jammed at column&nbsp;1." },
+          explain: "Bodies keep their shape: every line after the first is indented to match the line where you pressed <b class='kbd-snip'>Ctrl+Shift+J</b>, so the block lands aligned instead of jammed at column&nbsp;1." },
         { title: "Branching logic", sub: "IF / ELSIF / ELSE — empty stops",
           body: "IF ${1:cond}\n  $2\nELSIF ${3:cond2}\n  $4\nELSE\n  $0\nEND",
           result: "IF <span class=ph>cond</span>\n  <span class=ph>&#9633;</span>\nELSIF <span class=ph>cond2</span>\n  <span class=ph>&#9633;</span>\nELSE\n  <span class=caret>&#9474;</span>\nEND",
@@ -5003,7 +5043,7 @@
         { title: "Wrap in a transaction", sub: "${SELECTED} + a tab-stop together",
           body: "LOGOUT(2, ${1:File})\nIF ERRORCODE()\n  MESSAGE('Cannot lock')\n  RETURN\nEND\n${SELECTED}\nCOMMIT",
           result: "LOGOUT(2, <span class=ph>File</span>)\nIF ERRORCODE()\n  MESSAGE('Cannot lock')\n  RETURN\nEND\n<span class=sel>PUT(Orders)</span>\nCOMMIT",
-          explain: "Highlight your update statements, press <b>Ctrl+J</b>, and they're wrapped in a LOGOUT/COMMIT transaction via <code>${SELECTED}</code> &mdash; while <code>${1:File}</code> stays a tab-stop for the table name. Mixing a selection <i>and</i> tab-stops is where snippets really pay off." },
+          explain: "Highlight your update statements, press <b class='kbd-snip'>Ctrl+Shift+J</b>, and they're wrapped in a LOGOUT/COMMIT transaction via <code>${SELECTED}</code> &mdash; while <code>${1:File}</code> stays a tab-stop for the table name. Mixing a selection <i>and</i> tab-stops is where snippets really pay off." },
         { title: "Process a file", sub: "the classic Clarion loop (mirrored stop)",
           body: "OPEN(${1:File})\nSET(${1:File})\nLOOP\n  NEXT(${1:File})\n  IF ERRORCODE() THEN BREAK.\n  $0\nEND\nCLOSE(${1:File})",
           result: "OPEN(<span class=ph>Orders</span>)\nSET(<span class=ph>Orders</span>)\nLOOP\n  NEXT(<span class=ph>Orders</span>)\n  IF ERRORCODE() THEN BREAK.\n  <span class=caret>&#9474;</span>\nEND\nCLOSE(<span class=ph>Orders</span>)",
@@ -5022,9 +5062,12 @@
             var e = SNIP_EX[i];
             dt.innerHTML = '<h5>What you type (Body)</h5><div class="arrow">the snippet definition</div>'
                 + '<div class="cb">' + snipEsc(e.body) + '</div>'
-                + '<h5>What it inserts</h5><div class="arrow">after Ctrl+J</div>'
+                + '<h5>What it inserts</h5><div class="arrow">after <span class="kbd-snip">Ctrl+Shift+J</span></div>'
                 + '<div class="cb">' + e.result + '</div>'
                 + '<h5>How it works</h5><div class="ex">' + e.explain + '</div>';
+            // This innerHTML replaces .kbd-snip nodes (the arrow above, plus any inside e.explain) on EVERY
+            // example switch, so the stamp has to run per show() — not once when the dialog opens.
+            refreshSnippetChordLabels();
         }
         SNIP_EX.forEach(function (e, i) {
             var ti = document.createElement('div'); ti.className = 'ti' + (i === 0 ? ' active' : '');
@@ -5221,29 +5264,25 @@
         }, true);   // capture phase — runs ahead of Monaco's own keydown listener
     }
 
-    // ----- Code Snippets (Ctrl+J) picker -----
-    // Classic-Clarion-style Ctrl+J: a dedicated modal picker (NOT folded into the LSP completion
+    // ----- Code Snippets picker (Ctrl+Shift+J by default) -----
+    // Classic-Clarion-style snippet insert (Clarion puts this on Ctrl+J; we default to Ctrl+Shift+J because
+    // the embeditor owes Ctrl+J to next-filled-embed, GH #185): a dedicated modal picker (NOT folded into the LSP completion
     // provider), filterable by trigger/description, scoped to the active file's extension. Modeled
     // on showTemplatePicker's overlay (dynamically-built DOM, centered, native <select> for
     // keyboard nav) rather than the docked Find panel, since this is a one-shot pick-and-insert.
     var snippetPickerOpen = false;
     var currentFilePath = '';   // set from setSource's msg.filePath; used to scope snippets by extension
 
-    function installSnippetKeyInterceptor() {
-        document.addEventListener('keydown', function (ev) {
-            if (capturingKey || snippetPickerOpen) return;   // picker owns its own keydown once open
-            var ctrl = ev.ctrlKey || ev.metaKey;
-            if (ctrl && (ev.keyCode === 74 || ev.key === 'j' || ev.key === 'J')) {   // Ctrl+J
-                ev.preventDefault(); ev.stopImmediatePropagation(); openSnippetPicker();
-            }
-        }, true);   // capture phase — runs ahead of Monaco's own keydown listener
-    }
+    // The picker's hotkey is NOT intercepted here any more — it is the 'insertSnippet' EDITOR_COMMANDS entry
+    // (default Ctrl+Shift+J), dispatched by installKeyBindings. That dispatcher already returns early while
+    // snippetPickerOpen is true, so the old "picker owns its own keydown once open" guard still holds, and the
+    // chord is now rebindable from the gear panel's Keyboard section like every other command.
 
     // Classic Clarion "trigger + <SPACE>" expansion: pressing space right after an EXACT snippet trigger
     // word expands it in place. We own the space key here because Monaco does NOT run a completion item's
     // command when you commit with a space (only on Enter/Tab), so the completion-list route can't expand
     // on space. Fires ONLY on an exact trigger match; any other word lets the space through untouched.
-    // ${SELECTED} snippets are skipped (no selection exists once you've typed a trigger — those are Ctrl+J).
+    // ${SELECTED} snippets are skipped (no selection exists once you've typed a trigger — those need the picker).
     function installSnippetTriggerKey() {
         document.addEventListener('keydown', function (ev) {
             if (ev.code !== 'Space' && ev.keyCode !== 32) return;
@@ -5260,7 +5299,7 @@
             var wl = m[0].toLowerCase(), ext = activeSnippetExtension(), snip = null;
             for (var i = 0; i < snippetsList.length; i++) {
                 var s = snippetsList[i];
-                if (isWrapStyleSnippet(s.body)) continue;   // wrap-style → Ctrl+J only
+                if (isWrapStyleSnippet(s.body)) continue;   // wrap-style → picker only
                 if (!snippetAppliesToExt(s, ext)) continue;
                 if ((s.trigger || '').toLowerCase() === wl) { snip = s; break; }   // EXACT trigger match
             }
@@ -5436,13 +5475,13 @@
     }
 
     // True for a snippet body referencing ${SELECTED} or ${SELECTED:N} — these wrap/consume the current
-    // selection and only make sense via Ctrl+J (which captures the selection before the picker opens), so
+    // selection and only make sense via the picker chord (which captures the selection before it opens), so
     // trigger-word completion (which has already destroyed any selection by the time you finish typing the
     // trigger) must keep them out of its list.
     function isWrapStyleSnippet(body) { return !!body && /\$\{SELECTED(?::|\})/.test(body); }
 
     // Substitutes ${SELECTED} / ${SELECTED:N} in the snippet body: with the text that was selected when
-    // Ctrl+J was pressed, or — if nothing was selected — with a new editable tab-stop (so the snippet
+    // the picker was opened, or — if nothing was selected — with a new editable tab-stop (so the snippet
     // never inserts a blank hole). A literal '$' inside the selected text is escaped so parseSnippetBody
     // doesn't mistake it for the start of another tab-stop.
     //
