@@ -3036,13 +3036,24 @@
     function resolveFoldLine(model, startLines, rec) {
         var want = normalizeFoldText(rec.text);
         if (!want) return startLines[rec.line] ? rec.line : 0;
+        // The saved line still starting a region with the same text is not a guess — it's an exact hit.
+        // Take it even if that text repeats elsewhere in the buffer.
         if (startLines[rec.line] && foldFingerprint(model, rec.line) === want) return rec.line;
+        // DRIFTED. Scan the whole window and require EXACTLY ONE candidate.
+        //
+        // This matters much more for structure folds than for regions. "!REGION Setup cards" is
+        // effectively unique in a file; "Rec GROUP", "  CODE" or a bare IF is not — generated Clarion
+        // repeats those constantly. First-match-wins would then silently collapse a DIFFERENT region
+        // that merely reads the same, which is the exact failure this whole fingerprint scheme exists
+        // to prevent. Ambiguous means restore nothing.
+        var found = 0, hit = 0;
         for (var d = 1; d <= 40; d++) {
             var a = rec.line - d, b = rec.line + d;
-            if (a >= 1 && startLines[a] && foldFingerprint(model, a) === want) return a;
-            if (b <= model.getLineCount() && startLines[b] && foldFingerprint(model, b) === want) return b;
+            if (a >= 1 && startLines[a] && foldFingerprint(model, a) === want) { found++; if (found === 1) hit = a; }
+            if (b <= model.getLineCount() && startLines[b] && foldFingerprint(model, b) === want) { found++; if (found === 1) hit = b; }
+            if (found > 1) return 0;   // ambiguous — bail as soon as a second candidate appears
         }
-        return 0;
+        return found === 1 ? hit : 0;   // `hit` is the NEAREST match, since d grows outward
     }
 
     // Monaco computes folding ranges ASYNCHRONOUSLY after a model is set, so this polls for a folding

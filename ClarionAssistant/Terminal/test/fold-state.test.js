@@ -130,6 +130,39 @@ section('Buffer drift — the case this whole design exists for:');
         env.resolveFoldLine(drifted, startsOf(3), { line: 1, text: 'GONE ENTIRELY' }) === 0);
 }
 
+section('Ambiguity — the case that matters for STRUCTURE folds, not regions:');
+{
+    // "!REGION Setup cards" is effectively unique. "Rec GROUP" is not — generated Clarion repeats
+    // structure headers constantly, so a drifted lookup could land on a different-but-identical region.
+    // Two identical GROUP headers, and the saved line no longer starts a region:
+    const dup = makeModel([
+        '! header',        // 1  (saved fold was here)
+        'Rec GROUP',       // 2
+        '  F1 LONG',       // 3
+        'END',             // 4
+        'Rec GROUP',       // 5  <- identical header
+        '  F2 LONG',       // 6
+        'END',             // 7
+    ]);
+    ok('two identical candidates in the window → restore NOTHING',
+        env.resolveFoldLine(dup, startsOf(2, 5), { line: 1, text: 'REC GROUP' }) === 0,
+        'got ' + env.resolveFoldLine(dup, startsOf(2, 5), { line: 1, text: 'REC GROUP' }));
+
+    // But an exact hit at the saved line is not a guess — duplicates elsewhere must not suppress it.
+    ok('exact line match still wins despite duplicates elsewhere',
+        env.resolveFoldLine(dup, startsOf(2, 5), { line: 2, text: 'REC GROUP' }) === 2);
+
+    // And a single candidate still resolves — the guard must not make drift-matching useless.
+    const single = makeModel(['! header', 'Rec GROUP', '  F1 LONG', 'END', 'Other GROUP', 'END']);
+    ok('one candidate in the window still restores',
+        env.resolveFoldLine(single, startsOf(2, 5), { line: 1, text: 'REC GROUP' }) === 2);
+
+    // Nearest wins when only one matches.
+    const near = makeModel(['Rec GROUP', 'END', '! filler', 'Other GROUP', 'END']);
+    ok('the single match is returned regardless of direction',
+        env.resolveFoldLine(near, startsOf(1, 4), { line: 3, text: 'REC GROUP' }) === 1);
+}
+
 section('Records written by an older build (no fingerprint):');
 {
     const model = makeModel(['Rec GROUP', 'END']);
