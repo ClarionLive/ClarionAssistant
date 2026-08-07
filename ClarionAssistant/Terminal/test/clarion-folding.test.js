@@ -118,5 +118,104 @@ foldsAre('bare TOOLBAR opens, "Toolbar ToolbarClass" does not', [
     'END',
 ], ['2-5', '3-4']);
 
+// ---- !REGION / !ENDREGION ----
+// User-defined folds requested 2026-08-06. Markers are Clarion COMMENTS, so the whole feature
+// depends on being read from the raw line before the comment strip — if that ever regresses, every
+// case in this section goes to zero folds at once.
+console.log('\n!REGION / !ENDREGION:');
+foldsAre('simple region folds', [
+    '!REGION Setup',
+    '  A = 1',
+    '!ENDREGION',
+], ['1-3']);
+
+foldsAre('case-insensitive — lower', ['!region', '  A = 1', '!endregion'], ['1-3']);
+foldsAre('case-insensitive — mixed', ['!Region', '  A = 1', '!EndRegion'], ['1-3']);
+foldsAre('space after the bang is tolerated', ['! REGION', '  A = 1', '! ENDREGION'], ['1-3']);
+
+foldsAre('regions nest', [
+    '!REGION outer',
+    '  !REGION inner',
+    '    A = 1',
+    '  !ENDREGION',
+    '!ENDREGION',
+], ['1-5', '2-4']);
+
+foldsAre('two sibling regions', [
+    '!REGION one',
+    '  A = 1',
+    '!ENDREGION',
+    '!REGION two',
+    '  B = 2',
+    '!ENDREGION',
+], ['1-3', '4-6']);
+
+// The bug in the reference implementation (startsWith("!REGION")) — a perfectly ordinary comment
+// would open a region that never closes and swallow the rest of the file.
+foldsAre('"!Regional settings" is a comment, not a region', [
+    '!Regional settings',
+    'Rec GROUP',
+    'F1  LONG',
+    'END',
+], ['2-4']);
+foldsAre('"!ENDREGIONAL" is not a terminator', [
+    '!REGION open',
+    '  A = 1',
+    '!ENDREGIONAL',
+], []);
+
+foldsAre('unterminated region does NOT fold to EOF', [
+    '!REGION open',
+    '  A = 1',
+    '  B = 2',
+], []);
+foldsAre('stray !ENDREGION with nothing open is ignored', [
+    '  A = 1',
+    '!ENDREGION',
+], []);
+
+foldsAre('a marker trailing real code is just a comment', [
+    'Rec GROUP  !REGION not-a-region',
+    'F1  LONG',
+    'END',
+], ['1-3']);
+
+// Regions are comment-based, so they must be independent of the structure/PROCEDURE machinery.
+foldsAre('region spanning a PROCEDURE boundary does not corrupt it', [
+    '!REGION both procs',
+    'Foo PROCEDURE',
+    '  A = 1',
+    'Bar PROCEDURE',
+    '  B = 2',
+    '!ENDREGION',
+], ['1-6', '2-3', '4-6']);
+
+foldsAre('region wrapping a structure keeps both folds', [
+    '!REGION data',
+    'Rec GROUP',
+    'F1  LONG',
+    'END',
+    '!ENDREGION',
+], ['1-5', '2-4']);
+
+foldsAre('a region marker inside an OMIT block stays omitted', [
+    "  OMIT('***')",
+    '!REGION swallowed',
+    '  A = 1',
+    '!ENDREGION',
+    '  ***',
+], ['1-5']);
+
+// kind: Monaco marks user regions so Fold/Unfold All Regions can target them. Under Node `monaco`
+// is undefined, so the provider must degrade to an undefined kind rather than throw.
+(function () {
+    var lines = ['!REGION r', '  A = 1', '!ENDREGION'];
+    var model = { getLineCount: function () { return lines.length; },
+                  getLineContent: function (i) { return lines[i - 1]; } };
+    var rs = L.clarionFoldingRanges(model);
+    ok('provider does not throw without a global monaco', rs.length === 1, JSON.stringify(rs));
+    ok('region range carries a kind property', rs.length === 1 && 'kind' in rs[0], JSON.stringify(rs[0]));
+})();
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed.');
 process.exit(fail ? 1 : 0);

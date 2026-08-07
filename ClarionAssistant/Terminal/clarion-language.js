@@ -85,6 +85,7 @@ function registerClarionLanguage() {
 // Clarion code folding: data/control structures close with END (or a lone '.'); PROCEDURE and
 // ROUTINE have no END, so they fold to the next ROUTINE/PROCEDURE boundary (or end of buffer).
 // OMIT('term')/COMPILE('term') directives fold to the line containing their terminator (GH #133).
+// !REGION ... !ENDREGION comment markers fold as user-defined regions — case-insensitive, nestable.
 // Shared by the embeditor AND the diff editor — also feeds Monaco's sticky-scroll scope headers.
 // Register once per Monaco page (folding providers are global per language id, but each WebView2
 // page hosts its own Monaco instance).
@@ -135,6 +136,20 @@ var STRUCT = /\b(GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|CLASS|IN
     // bodies, legitimately bare) and are split out alongside TOOLBAR for the same reason.
 var TOOLBAR_OPEN = /^\s*(?:TOOLBAR|MENUBAR|MENU|SHEET|TAB|OPTION)\b(?=\s*(?:[(,!]|$))/i;
 
+// Monaco's FoldingRangeKind.Region marks a range as a USER-defined region, which is what makes
+// "Fold All Regions" / "Unfold All Regions" (Ctrl+K Ctrl+8 / Ctrl+K Ctrl+9) act on !REGION blocks
+// and leave structure folds alone. Resolved lazily and defensively: this file is also loaded under
+// Node by clarion-folding.test.js, where `monaco` doesn't exist, and in the browser the script can
+// load before the AMD loader has defined it. An undefined kind is valid — Monaco treats the range
+// as a plain fold, so the worst case is losing the Fold-All-Regions grouping, not a broken provider.
+function foldKindRegion() {
+    try {
+        if (typeof monaco !== 'undefined' && monaco.languages && monaco.languages.FoldingRangeKind)
+            return monaco.languages.FoldingRangeKind.Region;
+    } catch (e) { }
+    return undefined;
+}
+
 // The fold computation, split out from the provider registration so it can be exercised directly
 // by Terminal/test/clarion-folding.test.js without a Monaco instance. Takes anything with
 // getLineCount()/getLineContent(i) — the real model in the browser, a plain stub under Node.
@@ -144,6 +159,8 @@ function clarionFoldingRanges(model) {
             var n = model.getLineCount();
             var lastProc = -1, lastRoutine = -1;
             var omit = null;    // active OMIT/COMPILE region: {start, term} (GH #133)
+            var regions = [];   // open !REGION markers, innermost last — regions NEST, unlike OMIT
+            var regionKind = foldKindRegion();
             for (var i = 1; i <= n; i++) {
                 // OMIT('term') / COMPILE('term') fold to the line CONTAINING the terminator (GH #133).
                 // The terminator scan uses the RAW line — it commonly sits inside a comment ("!***") or on
@@ -154,6 +171,31 @@ function clarionFoldingRanges(model) {
                     if (model.getLineContent(i).toUpperCase().indexOf(omit.term) >= 0) {
                         if (i > omit.start) ranges.push({ start: omit.start, end: i });
                         omit = null;
+                    }
+                    continue;
+                }
+                // !REGION / !ENDREGION user-defined folds. Both markers are Clarion COMMENTS, so they
+                // MUST be read from the RAW line: splitClarionLine strips the comment, leaving `code`
+                // empty, and the `code === ''` guard below would drop the line before any test saw it.
+                // Same reason the OMIT terminator scan above reads raw.
+                //
+                // Deliberately anchored at the start of the line (^\s*!) — a marker trailing real code
+                // ("X = 1  !REGION foo") is not a region, it's a comment that happens to say "region".
+                //
+                // The \b after REGION is load-bearing. The reference implementation this mirrors
+                // (Clarion-Extension, server/src/ClarionFoldingProvider.ts) tests
+                // upperValue.startsWith("!REGION"), which also fires on an ordinary comment like
+                // "!Regional settings" and opens a region that never closes — swallowing the rest of
+                // the file into a phantom fold. \b makes "!Regional" a plain comment again.
+                //
+                // Regions NEST (a stack), which is the one place they differ from OMIT/COMPILE.
+                var reg = /^\s*!\s*(END)?REGION\b/i.exec(model.getLineContent(i));
+                if (reg) {
+                    if (reg[1]) {                                   // !ENDREGION closes the innermost open region
+                        var openReg = regions.pop();
+                        if (openReg && i > openReg) ranges.push({ start: openReg, end: i, kind: regionKind });
+                    } else {
+                        regions.push(i);
                     }
                     continue;
                 }
@@ -200,6 +242,11 @@ function clarionFoldingRanges(model) {
                 }
             }
             if (omit && n > omit.start) ranges.push({ start: omit.start, end: n });   // unterminated → rest of file is omitted
+            // Unterminated !REGIONs are deliberately DROPPED, unlike the unterminated OMIT above. The
+            // difference is semantic: an unterminated OMIT genuinely omits the rest of the file from
+            // compilation, so folding it is truthful. A !REGION with no !ENDREGION is just a typo (or a
+            // half-typed one), and making the remainder of the file collapsible on every keystroke while
+            // the developer is still writing it would be actively annoying.
             if (lastRoutine !== -1 && n > lastRoutine) ranges.push({ start: lastRoutine, end: n });
             if (lastProc !== -1 && n > lastProc) ranges.push({ start: lastProc, end: n });
             return ranges;
