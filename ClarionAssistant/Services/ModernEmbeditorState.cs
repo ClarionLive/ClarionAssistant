@@ -86,19 +86,19 @@ namespace ClarionAssistant.Services
             {
                 rec["cursorLine"] = line < 1 ? 1 : line;
                 rec["cursorColumn"] = column < 1 ? 1 : column;
-            });
+            }, "SaveCursor");
         }
 
         /// <summary>Persist only the bookmark lines for one procedure, preserving its cursor + other procs.</summary>
         public static void SaveBookmarks(string solutionPath, string procKey, IList<int> bookmarks)
         {
-            Update(solutionPath, procKey, rec => { rec["bookmarks"] = CleanLines(bookmarks); });
+            Update(solutionPath, procKey, rec => { rec["bookmarks"] = CleanLines(bookmarks); }, "SaveBookmarks");
         }
 
         /// <summary>Persist only the collapsed folds for one procedure, preserving cursor/bookmarks + other procs.</summary>
         public static void SaveFolds(string solutionPath, string procKey, IList<FoldRecord> folds)
         {
-            Update(solutionPath, procKey, rec => { rec["folds"] = FoldsToWire(folds); });
+            Update(solutionPath, procKey, rec => { rec["folds"] = FoldsToWire(folds); }, "SaveFolds");
         }
 
         /// <summary>
@@ -192,7 +192,8 @@ namespace ClarionAssistant.Services
 
         // Read-modify-write the whole file: load (or start) the proc-keyed map, mutate this proc's record,
         // write it all back. Preserves every other procedure and any field the mutator doesn't touch.
-        private static void Update(string solutionPath, string procKey, Action<Dictionary<string, object>> mutate)
+        private static void Update(string solutionPath, string procKey, Action<Dictionary<string, object>> mutate,
+                                   string who = "?")
         {
             if (string.IsNullOrEmpty(procKey)) return;
             try
@@ -201,7 +202,20 @@ namespace ClarionAssistant.Services
                 var root = ReadStateFile(path) ?? new Dictionary<string, object>();
                 var rec = (root.ContainsKey(procKey) ? root[procKey] as Dictionary<string, object> : null)
                           ?? new Dictionary<string, object>();
+                // DIAGNOSTIC (7d807826): the cursor is written, verified by read-back, and gone moments
+                // later with no SaveCursor in between. Update() is read-modify-write over the WHOLE file,
+                // so ANY writer that read a stale copy silently reverts every field it didn't touch.
+                // Log what each writer carries IN and OUT — a caller that reports cursorLine=1 on the way
+                // in while SaveCursor had just stored 60 is the clobberer, named outright.
+                int before = ToInt(rec, "cursorLine");
                 mutate(rec);
+                int after = ToInt(rec, "cursorLine");
+                try
+                {
+                    ClarionAssistant.MonacoSpikeLog.Write("[state] " + who + " key=" + procKey +
+                        " cursorLine read=" + before + " -> writing=" + after);
+                }
+                catch { }
                 root[procKey] = rec;
                 File.WriteAllText(path, new JavaScriptSerializer().Serialize(root), Encoding.UTF8);
             }
