@@ -3378,6 +3378,12 @@ namespace ClarionAssistant.Terminal
                 int column = data.ContainsKey("column") ? Convert.ToInt32(data["column"]) : 0;
                 if (line < 1) return;
                 EnsureHistoryScope();
+                // DIAGNOSTIC: cursor restore reported as landing on line 1. Pairs with the
+                // "[cursor] setSource sending" line — saving N and sending N back means the page's
+                // lineInEditable() guard rejected it (a saved line that is no longer inside an editable
+                // embed slot deliberately falls back to the top), which is a different thing entirely
+                // from the position never being stored.
+                try { MonacoSpikeLog.Write("[cursor] saveCursor received: line=" + line + " col=" + column + " key=" + _histProcKey); } catch { }
                 ModernEmbeditorState.SaveCursor(_histSolutionPath, _histProcKey, line, column);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] saveCursor: " + ex.Message); }
@@ -3727,6 +3733,7 @@ namespace ClarionAssistant.Terminal
                 // Native-caret override: when the overlay attached to an already-open native embed, land Monaco
                 // at the embed point the developer was on — not the last-saved cursor for this procedure.
                 if (_initialLine > 0) { cursorLine = _initialLine; cursorColumn = 1; _initialLine = 0; }
+                try { MonacoSpikeLog.Write("[cursor] setSource sending line=" + cursorLine + " col=" + cursorColumn + " key=" + _histProcKey); } catch { }
 
                 string snippetsJson;
                 try { snippetsJson = SnippetStore.ToJson(SnippetStore.Load()); }
