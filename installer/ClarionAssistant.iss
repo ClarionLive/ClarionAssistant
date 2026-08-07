@@ -561,8 +561,15 @@ Type: filesandordirs; Name: "{code:GetC12Path}\accessory\addins\ClarionAssistant
 [Code]
 var
   C10Path, C11Path, C111Path, C12Path: string;
+  // ADDITIONAL installations of the SAME release, ';'-separated. A developer can have e.g. two
+  // Clarion 12 trees; the four rows below can only name one each, so the extras are mirrored after
+  // install (MirrorExtras). Empty = just the one folder on that row, which is the common case.
+  C10Extra, C11Extra, C111Extra, C12Extra: string;
   ClarionPathPage: TInputQueryWizardPage;
   BrowseBtn0, BrowseBtn1, BrowseBtn2, BrowseBtn3: TNewButton;
+  AddBtn0, AddBtn1, AddBtn2, AddBtn3: TNewButton;
+  ClearExtrasBtn: TNewButton;
+  ExtrasLabel: TNewStaticText;
 
 function GetC10Path(Param: string): string; begin Result := C10Path; end;
 function GetC11Path(Param: string): string; begin Result := C11Path; end;
@@ -609,11 +616,48 @@ begin
     Result := S;
 end;
 
+// A remembered list of extra same-version folders, dropping any that no longer look like a Clarion
+// install. Filtering here (rather than at copy time) keeps a deleted or moved tree from silently
+// reappearing in the summary and from being re-created by robocopy's ForceDirectories.
+function SavedExtraPaths(ValueName: string): string;
+var
+  Raw, Item, Kept: string;
+  P: Integer;
+begin
+  Result := '';
+  if not RegQueryStringValue(HKCU, PathMemoryKey, ValueName, Raw) then Exit;
+  Kept := '';
+  while Raw <> '' do
+  begin
+    P := Pos(';', Raw);
+    if P > 0 then
+    begin
+      Item := Trim(Copy(Raw, 1, P - 1));
+      Raw := Copy(Raw, P + 1, Length(Raw));
+    end
+    else
+    begin
+      Item := Trim(Raw);
+      Raw := '';
+    end;
+    if (Item <> '') and DirExists(AddBackslash(Item) + 'bin') then
+    begin
+      if Kept = '' then Kept := Item else Kept := Kept + ';' + Item;
+    end;
+  end;
+  Result := Kept;
+end;
+
 // Auto-detect Clarion paths: remembered choice first, then registry, then common locations.
 procedure DetectClarionPaths;
 var
   Path: string;
 begin
+  C12Extra := SavedExtraPaths('Clarion12Extra');
+  C111Extra := SavedExtraPaths('Clarion11.1Extra');
+  C11Extra := SavedExtraPaths('Clarion11Extra');
+  C10Extra := SavedExtraPaths('Clarion10Extra');
+
   // Clarion 12
   C12Path := SavedClarionPath('Clarion12');
   if C12Path = '' then
@@ -690,20 +734,196 @@ begin
     Result := RegQueryStringValue(HKLM, 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', Version);
 end;
 
+// ============================================================
+// Row identity, version detection, and ADDITIONAL folders per version
+// ============================================================
+// Each row installs a DIFFERENT build of the addin: SrcC10..SrcC12 are separate outputs, each
+// compiled against its own Clarion's ICSharpCode.*/CWBinding/CommonSources (see the HintPaths in
+// ClarionAssistant.csproj). So a row is not a free-form path slot — putting a Clarion 12 folder in
+// the Clarion 10 row ships the C10 build into a C12 tree, which does not load. A user asked exactly
+// that on Discord ("may I use the 3 entrys ... no matter if the prompt says Clarion10?"), which is
+// what these three additions answer: clearer wording, a per-row "+" for MORE folders of the SAME
+// version, and a version check on whatever gets typed or picked.
+
+function ExpectedVersionForRow(Row: Integer): string;
+begin
+  case Row of
+    0: Result := '12';
+    1: Result := '11.1';
+    2: Result := '11';
+    3: Result := '10';
+  else
+    Result := '';
+  end;
+end;
+
+// The Clarion release actually sitting in Path: '12' | '11.1' | '11' | '10', or '' when unknown.
+// bin\ClarionCL.exe carries it cleanly (verified across all four local installs: 12.0.0.14000,
+// 11.1.0.13815, 11.0.0.13630, 10.0.0.12799), and the MINOR word is what separates 11.1 from 11.0.
+// Do NOT use bin\ICSharpCode.SharpDevelop.dll — it is 2.1.0.2447 in every one of them.
+function DetectedClarionVersion(Path: string): string;
+var
+  Exe: string;
+  VerMS, VerLS: Cardinal;
+  Major, Minor: Integer;
+begin
+  Result := '';
+  if Trim(Path) = '' then Exit;
+  Exe := AddBackslash(Path) + 'bin\ClarionCL.exe';
+  if not FileExists(Exe) then Exe := AddBackslash(Path) + 'bin\Clarion.exe';
+  if not FileExists(Exe) then Exit;
+  if not GetVersionNumbers(Exe, VerMS, VerLS) then Exit;
+  Major := VerMS shr 16;
+  Minor := VerMS and $FFFF;
+  if Major = 12 then Result := '12'
+  else if Major = 11 then
+  begin
+    if Minor >= 1 then Result := '11.1' else Result := '11';
+  end
+  else if Major = 10 then Result := '10';
+end;
+
+// True = the caller may proceed with this path on this row. Silent when the folder's version can't
+// be determined — an unreadable/repackaged install must not be un-installable, so we only ever warn
+// on a CONFIDENT mismatch. Defaults to "No" because continuing is nearly always a mistake.
+function ConfirmVersionMatch(Row: Integer; Path: string): Boolean;
+var
+  Found, Want: string;
+begin
+  Result := True;
+  Want := ExpectedVersionForRow(Row);
+  Found := DetectedClarionVersion(Path);
+  if (Found = '') or (Found = Want) then Exit;
+  Result := (MsgBox('This folder looks like Clarion ' + Found + ', but it was entered as a Clarion ' + Want + ' folder:' + #13#10 +
+                    Path + #13#10#13#10 +
+                    'Each Clarion version needs its OWN build of the addin, compiled against that version''s IDE files. ' +
+                    'Installing the Clarion ' + Want + ' build into a Clarion ' + Found + ' installation will not work.' + #13#10#13#10 +
+                    'Put this folder in the "Clarion ' + Found + ' folder" row instead. If you have more than one Clarion ' +
+                    Found + ' installed, use the "+" button on that row to add the second one.' + #13#10#13#10 +
+                    'Continue anyway?', mbError, MB_YESNO or MB_DEFBUTTON2) = IDYES);
+end;
+
+function GetExtrasFor(Row: Integer): string;
+begin
+  case Row of
+    0: Result := C12Extra;
+    1: Result := C111Extra;
+    2: Result := C11Extra;
+    3: Result := C10Extra;
+  else
+    Result := '';
+  end;
+end;
+
+procedure SetExtrasFor(Row: Integer; Value: string);
+begin
+  case Row of
+    0: C12Extra := Value;
+    1: C111Extra := Value;
+    2: C11Extra := Value;
+    3: C10Extra := Value;
+  end;
+end;
+
+function GetPrimaryFor(Row: Integer): string;
+begin
+  case Row of
+    0: Result := C12Path;
+    1: Result := C111Path;
+    2: Result := C11Path;
+    3: Result := C10Path;
+  else
+    Result := '';
+  end;
+end;
+
+function ExtrasLine(Want, List: string): string;
+begin
+  if List = '' then Result := '' else Result := '    Clarion ' + Want + ':  ' + List + #13#10;
+end;
+
+procedure RefreshExtrasLabel;
+var
+  S: string;
+begin
+  if ExtrasLabel = nil then Exit;
+  S := ExtrasLine('12', C12Extra) + ExtrasLine('11.1', C111Extra) +
+       ExtrasLine('11', C11Extra) + ExtrasLine('10', C10Extra);
+  if S = '' then
+    ExtrasLabel.Caption := 'Extra folders: none.  Got the same Clarion version installed twice? Use "+" on that row.'
+  else
+    ExtrasLabel.Caption := 'Extra folders (each gets a copy of that row''s addin after install):' + #13#10 + S;
+  if ClearExtrasBtn <> nil then ClearExtrasBtn.Enabled := (S <> '');
+end;
+
 procedure BrowseForPath(EditIndex: Integer);
 var
   Dir: string;
 begin
   Dir := ClarionPathPage.Values[EditIndex];
   if Dir = '' then Dir := 'C:\';
-  if BrowseForFolder('Select Clarion installation folder:', Dir, False) then
+  if BrowseForFolder('Select Clarion ' + ExpectedVersionForRow(EditIndex) + ' installation folder:', Dir, False) then
     ClarionPathPage.Values[EditIndex] := Dir;
+end;
+
+// "+" — register ANOTHER installation of this row's version. The extra target receives a copy of
+// whatever this row installs (see MirrorExtras at ssPostInstall); [Files] entries are static, so a
+// second destination cannot be expressed there.
+procedure AddExtraForRow(Row: Integer);
+var
+  Dir, Cur, Want: string;
+begin
+  Want := ExpectedVersionForRow(Row);
+  if Trim(ClarionPathPage.Values[Row]) = '' then
+  begin
+    MsgBox('Fill in the main "Clarion ' + Want + ' folder" first.' + #13#10#13#10 +
+           'Extra folders receive a copy of what gets installed there, so there has to be a first one.',
+           mbInformation, MB_OK);
+    Exit;
+  end;
+  Dir := ClarionPathPage.Values[Row];
+  if not BrowseForFolder('Select ANOTHER Clarion ' + Want + ' installation folder:', Dir, False) then Exit;
+  Dir := Trim(Dir);
+  if Dir = '' then Exit;
+  if not DirExists(AddBackslash(Dir) + 'bin') then
+  begin
+    MsgBox('That folder does not look like a Clarion installation (no "bin" directory):' + #13#10 + Dir, mbError, MB_OK);
+    Exit;
+  end;
+  if CompareText(RemoveBackslashUnlessRoot(Dir), RemoveBackslashUnlessRoot(Trim(ClarionPathPage.Values[Row]))) = 0 then
+  begin
+    MsgBox('That is already the main Clarion ' + Want + ' folder for this row.', mbInformation, MB_OK);
+    Exit;
+  end;
+  if not ConfirmVersionMatch(Row, Dir) then Exit;
+  Cur := GetExtrasFor(Row);
+  if Pos(';' + Uppercase(Dir) + ';', ';' + Uppercase(Cur) + ';') > 0 then
+  begin
+    MsgBox('That folder is already in the list for Clarion ' + Want + '.', mbInformation, MB_OK);
+    Exit;
+  end;
+  if Cur = '' then Cur := Dir else Cur := Cur + ';' + Dir;
+  SetExtrasFor(Row, Cur);
+  RefreshExtrasLabel;
 end;
 
 procedure BrowseBtn0Click(Sender: TObject); begin BrowseForPath(0); end;
 procedure BrowseBtn1Click(Sender: TObject); begin BrowseForPath(1); end;
 procedure BrowseBtn2Click(Sender: TObject); begin BrowseForPath(2); end;
 procedure BrowseBtn3Click(Sender: TObject); begin BrowseForPath(3); end;
+
+procedure AddBtn0Click(Sender: TObject); begin AddExtraForRow(0); end;
+procedure AddBtn1Click(Sender: TObject); begin AddExtraForRow(1); end;
+procedure AddBtn2Click(Sender: TObject); begin AddExtraForRow(2); end;
+procedure AddBtn3Click(Sender: TObject); begin AddExtraForRow(3); end;
+
+procedure ClearExtrasBtnClick(Sender: TObject);
+begin
+  if MsgBox('Remove all extra folders from the list?' + #13#10#13#10 +
+            'The main folder on each row is not affected.', mbConfirmation, MB_YESNO) <> IDYES then Exit;
+  C12Extra := ''; C111Extra := ''; C11Extra := ''; C10Extra := '';
+  RefreshExtrasLabel;
+end;
 
 procedure InitializeWizard;
 var
@@ -712,9 +932,10 @@ var
 begin
   DetectClarionPaths;
 
-  DetectedMsg := 'Select the Clarion installation folders.' + #13#10#13#10 +
-    'Auto-detected paths are shown below. Edit any path that is incorrect,' + #13#10 +
-    'or leave a field empty to skip that version.';
+  DetectedMsg := 'Each row installs the addin built for THAT Clarion version — the builds are not' + #13#10 +
+    'interchangeable, so please don''t point a row at a different version''s folder.' + #13#10#13#10 +
+    'Auto-detected paths are shown below. Correct any that are wrong, or leave a row' + #13#10 +
+    'empty to skip that version. Two installations of the SAME version? Use "+".';
 
   ClarionPathPage := CreateInputQueryPage(wpLicense,
     'Clarion Installation Paths',
@@ -726,8 +947,9 @@ begin
   ClarionPathPage.Add('Clarion 11 folder:', False);
   ClarionPathPage.Add('Clarion 10 folder:', False);
 
-  // Shrink edit fields to make room for browse buttons
-  EditWidth := ClarionPathPage.Edits[0].Width - 85;
+  // Shrink edit fields to make room for the Browse button AND the "+" (add-another-folder) button:
+  // 6 gap + 75 Browse + 6 gap + 24 "+" + 4 slack.
+  EditWidth := ClarionPathPage.Edits[0].Width - 115;
 
   // Add Browse buttons next to each field
   BrowseBtn0 := TNewButton.Create(WizardForm);
@@ -770,11 +992,77 @@ begin
   BrowseBtn3.OnClick := @BrowseBtn3Click;
   ClarionPathPage.Edits[3].Width := EditWidth;
 
+  // "+" buttons — add ANOTHER installation folder of the same version to that row.
+  AddBtn0 := TNewButton.Create(WizardForm);
+  AddBtn0.Parent := ClarionPathPage.Edits[0].Parent;
+  AddBtn0.Caption := '+';
+  AddBtn0.Hint := 'Add another Clarion 12 installation folder';
+  AddBtn0.ShowHint := True;
+  AddBtn0.Left := ClarionPathPage.Edits[0].Left + EditWidth + 87;
+  AddBtn0.Top := ClarionPathPage.Edits[0].Top;
+  AddBtn0.Width := 24;
+  AddBtn0.Height := ClarionPathPage.Edits[0].Height;
+  AddBtn0.OnClick := @AddBtn0Click;
+
+  AddBtn1 := TNewButton.Create(WizardForm);
+  AddBtn1.Parent := ClarionPathPage.Edits[1].Parent;
+  AddBtn1.Caption := '+';
+  AddBtn1.Hint := 'Add another Clarion 11.1 installation folder';
+  AddBtn1.ShowHint := True;
+  AddBtn1.Left := ClarionPathPage.Edits[1].Left + EditWidth + 87;
+  AddBtn1.Top := ClarionPathPage.Edits[1].Top;
+  AddBtn1.Width := 24;
+  AddBtn1.Height := ClarionPathPage.Edits[1].Height;
+  AddBtn1.OnClick := @AddBtn1Click;
+
+  AddBtn2 := TNewButton.Create(WizardForm);
+  AddBtn2.Parent := ClarionPathPage.Edits[2].Parent;
+  AddBtn2.Caption := '+';
+  AddBtn2.Hint := 'Add another Clarion 11 installation folder';
+  AddBtn2.ShowHint := True;
+  AddBtn2.Left := ClarionPathPage.Edits[2].Left + EditWidth + 87;
+  AddBtn2.Top := ClarionPathPage.Edits[2].Top;
+  AddBtn2.Width := 24;
+  AddBtn2.Height := ClarionPathPage.Edits[2].Height;
+  AddBtn2.OnClick := @AddBtn2Click;
+
+  AddBtn3 := TNewButton.Create(WizardForm);
+  AddBtn3.Parent := ClarionPathPage.Edits[3].Parent;
+  AddBtn3.Caption := '+';
+  AddBtn3.Hint := 'Add another Clarion 10 installation folder';
+  AddBtn3.ShowHint := True;
+  AddBtn3.Left := ClarionPathPage.Edits[3].Left + EditWidth + 87;
+  AddBtn3.Top := ClarionPathPage.Edits[3].Top;
+  AddBtn3.Width := 24;
+  AddBtn3.Height := ClarionPathPage.Edits[3].Height;
+  AddBtn3.OnClick := @AddBtn3Click;
+
+  // Running summary of the extra folders, so the list is never invisible state.
+  ExtrasLabel := TNewStaticText.Create(WizardForm);
+  ExtrasLabel.Parent := ClarionPathPage.Edits[3].Parent;
+  ExtrasLabel.Left := ClarionPathPage.Edits[3].Left;
+  ExtrasLabel.Top := ClarionPathPage.Edits[3].Top + ClarionPathPage.Edits[3].Height + 18;
+  ExtrasLabel.Width := EditWidth + 111;
+  ExtrasLabel.AutoSize := False;
+  ExtrasLabel.WordWrap := True;
+  ExtrasLabel.Height := 46;
+
+  ClearExtrasBtn := TNewButton.Create(WizardForm);
+  ClearExtrasBtn.Parent := ClarionPathPage.Edits[3].Parent;
+  ClearExtrasBtn.Caption := 'Clear extra folders';
+  ClearExtrasBtn.Left := ClarionPathPage.Edits[3].Left;
+  ClearExtrasBtn.Top := ExtrasLabel.Top + ExtrasLabel.Height + 4;
+  ClearExtrasBtn.Width := 120;
+  ClearExtrasBtn.Height := ClarionPathPage.Edits[3].Height;
+  ClearExtrasBtn.OnClick := @ClearExtrasBtnClick;
+
   // Pre-fill with detected paths
   ClarionPathPage.Values[0] := C12Path;
   ClarionPathPage.Values[1] := C111Path;
   ClarionPathPage.Values[2] := C11Path;
   ClarionPathPage.Values[3] := C10Path;
+
+  RefreshExtrasLabel;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -803,6 +1091,12 @@ begin
         Result := False;
         Exit;
       end;
+      // Is this really a Clarion 12 tree? A wrong-row path installs the wrong build.
+      if not ConfirmVersionMatch(0, C12Path) then
+      begin
+        Result := False;
+        Exit;
+      end;
       AnyValid := True;
     end;
 
@@ -812,6 +1106,12 @@ begin
       begin
         MsgBox('Clarion 11.1 path does not appear valid (no "bin" directory):' + #13#10 + C111Path + #13#10#13#10 +
                'Leave the field empty to skip Clarion 11.1, or correct the path.', mbError, MB_OK);
+        Result := False;
+        Exit;
+      end;
+      // Is this really a Clarion 11.1 tree? A wrong-row path installs the wrong build.
+      if not ConfirmVersionMatch(1, C111Path) then
+      begin
         Result := False;
         Exit;
       end;
@@ -827,6 +1127,12 @@ begin
         Result := False;
         Exit;
       end;
+      // Is this really a Clarion 11 tree? A wrong-row path installs the wrong build.
+      if not ConfirmVersionMatch(2, C11Path) then
+      begin
+        Result := False;
+        Exit;
+      end;
       AnyValid := True;
     end;
 
@@ -836,6 +1142,12 @@ begin
       begin
         MsgBox('Clarion 10 path does not appear valid (no "bin" directory):' + #13#10 + C10Path + #13#10#13#10 +
                'Leave the field empty to skip Clarion 10, or correct the path.', mbError, MB_OK);
+        Result := False;
+        Exit;
+      end;
+      // Is this really a Clarion 10 tree? A wrong-row path installs the wrong build.
+      if not ConfirmVersionMatch(3, C10Path) then
+      begin
         Result := False;
         Exit;
       end;
@@ -1013,9 +1325,106 @@ begin
     RegWriteStringValue(HKCU, PathMemoryKey, 'Clarion11', C11Path);
   if WizardIsComponentSelected('clarion10') and (C10Path <> '') then
     RegWriteStringValue(HKCU, PathMemoryKey, 'Clarion10', C10Path);
+
+  // Extra same-version folders, remembered for the same reason as the primaries: a developer with two
+  // Clarion 12 trees installs every release, and re-adding the second one by hand each time is exactly
+  // the kind of step that gets forgotten — after which that install silently keeps an old addin.
+  // Written UNCONDITIONALLY (including empty) so clearing the list actually sticks, unlike the
+  // primaries above where an empty field means "skip", not "forget".
+  if WizardIsComponentSelected('clarion12') then
+    RegWriteStringValue(HKCU, PathMemoryKey, 'Clarion12Extra', C12Extra);
+  if WizardIsComponentSelected('clarion111') then
+    RegWriteStringValue(HKCU, PathMemoryKey, 'Clarion11.1Extra', C111Extra);
+  if WizardIsComponentSelected('clarion11') then
+    RegWriteStringValue(HKCU, PathMemoryKey, 'Clarion11Extra', C11Extra);
+  if WizardIsComponentSelected('clarion10') then
+    RegWriteStringValue(HKCU, PathMemoryKey, 'Clarion10Extra', C10Extra);
+end;
+
+// ============================================================
+// ADDITIONAL same-version folders: mirror the installed addin into each one
+// ============================================================
+// [Files] destinations are static — one DestDir per Source line, resolved through {code:GetCxxPath}
+// — so a second folder for the same Clarion release cannot be expressed there. Instead we let the
+// row install normally and then copy the finished folder across. That is exactly the manual
+// workaround ("copy accessory\addins\ClarionAssistant to the other install"), just automated, and it
+// is safe precisely BECAUSE both targets are the same release and take the same build.
+//
+// robocopy rather than a hand-rolled recursive copy: the tree has several levels (Terminal,
+// TaskLifecycleBoard, runtimes, lsp-server\node_modules, x86) and /MIR also removes a stale earlier
+// copy in the target, which is the same cleanup PrepareToInstall does for the primary paths. Exit
+// codes 0-7 are success for robocopy; 8+ is a real failure.
+function MirrorAddin(SrcRoot, DstRoot: string): Boolean;
+var
+  Src, Dst: string;
+  ResultCode: Integer;
+begin
+  Result := False;
+  Src := AddBackslash(SrcRoot) + 'accessory\addins\ClarionAssistant';
+  Dst := AddBackslash(DstRoot) + 'accessory\addins\ClarionAssistant';
+  if not DirExists(Src) then
+  begin
+    Log('MirrorAddin: source missing, nothing to copy: ' + Src);
+    Exit;
+  end;
+  if CompareText(RemoveBackslashUnlessRoot(Src), RemoveBackslashUnlessRoot(Dst)) = 0 then Exit;
+  ForceDirectories(Dst);
+  Result := Exec(ExpandConstant('{sys}\robocopy.exe'),
+                 '"' + RemoveBackslashUnlessRoot(Src) + '" "' + RemoveBackslashUnlessRoot(Dst) + '" ' +
+                 '/MIR /NFL /NDL /NJH /NJS /NP /R:1 /W:1',
+                 '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode < 8);
+  Log('MirrorAddin ' + Src + ' -> ' + Dst + ' rc=' + IntToStr(ResultCode) + ' ok=' + IntToStr(Ord(Result)));
+end;
+
+// Copy this row's installed addin into every extra folder registered for it.
+procedure MirrorExtras(Row: Integer; ComponentName: string);
+var
+  List, Item, Primary: string;
+  P, Done, Failed: Integer;
+begin
+  List := GetExtrasFor(Row);
+  Primary := GetPrimaryFor(Row);
+  if (List = '') or (Primary = '') then Exit;
+  if not WizardIsComponentSelected(ComponentName) then
+  begin
+    Log('MirrorExtras: component ' + ComponentName + ' not selected — skipping ' + List);
+    Exit;
+  end;
+  Done := 0; Failed := 0;
+  while List <> '' do
+  begin
+    P := Pos(';', List);
+    if P > 0 then
+    begin
+      Item := Trim(Copy(List, 1, P - 1));
+      List := Copy(List, P + 1, Length(List));
+    end
+    else
+    begin
+      Item := Trim(List);
+      List := '';
+    end;
+    if Item = '' then Continue;
+    if MirrorAddin(Primary, Item) then Done := Done + 1 else Failed := Failed + 1;
+  end;
+  Log('MirrorExtras row ' + IntToStr(Row) + ': copied=' + IntToStr(Done) + ' failed=' + IntToStr(Failed));
+  if Failed > 0 then
+    MsgBox('Clarion ' + ExpectedVersionForRow(Row) + ': ' + IntToStr(Failed) +
+           ' extra folder(s) could not be updated.' + #13#10#13#10 +
+           'The main folder installed normally. Check the install log for "MirrorAddin", and make sure ' +
+           'Clarion is closed in the other installation(s).', mbError, MB_OK);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssPostInstall then SaveClarionPaths;
+  if CurStep = ssPostInstall then
+  begin
+    // Extras first: SaveClarionPaths persists the list, and a run that failed to copy should still
+    // remember what the developer asked for so the next release retries it.
+    MirrorExtras(0, 'clarion12');
+    MirrorExtras(1, 'clarion111');
+    MirrorExtras(2, 'clarion11');
+    MirrorExtras(3, 'clarion10');
+    SaveClarionPaths;
+  end;
 end;
