@@ -3744,7 +3744,19 @@ namespace ClarionAssistant.Terminal
 
                 // Native-caret override: when the overlay attached to an already-open native embed, land Monaco
                 // at the embed point the developer was on — not the last-saved cursor for this procedure.
-                if (_initialLine > 0) { cursorLine = _initialLine; cursorColumn = 1; _initialLine = 0; }
+                //
+                // The test is > 1, NOT > 0 (ticket 7d807826). GetNativeCaretLine() returns
+                // Caret.Line + 1 to convert ICSharpCode's 0-based caret, so a freshly-opened native embed
+                // sitting at its default position reports 1 — indistinguishable from a developer who
+                // deliberately parked on line 1. Treating that as a real position meant the override fired
+                // on EVERY overlay open and silently replaced the saved cursor with 1:1, which is exactly
+                // why the column was always 1 while the stored value on disk was always correct.
+                //
+                // Line 1 is therefore read as "no meaningful native position, use the saved cursor". The
+                // cost is that genuinely parking the native caret on line 1 now restores the saved cursor
+                // instead — far rarer, and far less annoying, than losing the position on every open.
+                if (_initialLine > 1) { cursorLine = _initialLine; cursorColumn = 1; }
+                _initialLine = 0;   // one-shot regardless, so a later reload can't re-apply a stale native line
                 // sol= is the missing half: save and load must resolve the SAME state file. A differing
                 // solution tag between the two would read a stale record and look exactly like this bug.
                 try { MonacoSpikeLog.Write("[cursor] setSource sending line=" + cursorLine + " col=" + cursorColumn + " key=" + _histProcKey + " sol=" + (_histSolutionPath ?? "(null)")); } catch { }
