@@ -1441,6 +1441,7 @@ namespace ClarionAssistant.Terminal
         }
         void IMonacoEditorHost.OnSaveCursor(MonacoEditorControl editor, string rawJson) { HandleSaveCursor(rawJson); }
         void IMonacoEditorHost.OnSaveBookmarks(MonacoEditorControl editor, string rawJson) { HandleSaveBookmarks(rawJson); }
+        void IMonacoEditorHost.OnSaveFolds(MonacoEditorControl editor, string rawJson) { HandleSaveFolds(rawJson); }
         void IMonacoEditorHost.OnSelectionChanged(MonacoEditorControl editor, string rawJson) { HandleSelectionChanged(rawJson); }
         void IMonacoEditorHost.OnFocusEditor(MonacoEditorControl editor) { BringToFront(); }   // Data-pad drag-drop
         void IMonacoEditorHost.OnReload(MonacoEditorControl editor) { HandleReload(); }        // file mode
@@ -3329,6 +3330,47 @@ namespace ClarionAssistant.Terminal
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] saveBookmarks: " + ex.Message); }
         }
 
+        /// <summary>Persist the collapsed fold set (sent whenever it changes) per solution+procedure.</summary>
+        private void HandleSaveFolds(string json)
+        {
+            try
+            {
+                var data = ParseBoundedBridgeJson(json);
+                if (data == null) return;
+                var folds = ReadFoldRecords(data);
+                EnsureHistoryScope();
+                ModernEmbeditorState.SaveFolds(_histSolutionPath, _histProcKey, folds);
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] saveFolds: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// Pull the {line,text} fold records out of a bridge payload. Bounded ingestion for the same reason
+        /// HandleSaveBookmarks bounds its array: the page is untrusted input, so stop collecting well before
+        /// anything huge is allocated and let ModernEmbeditorState's CleanFolds do the final clamping.
+        /// Shared by both IMonacoEditorHost implementations so the two surfaces can't drift apart.
+        /// </summary>
+        internal static List<Services.FoldRecord> ReadFoldRecords(IDictionary<string, object> data)
+        {
+            var folds = new List<Services.FoldRecord>();
+            object o;
+            if (data == null || !data.TryGetValue("folds", out o) || !(o is object[])) return folds;
+            var arr = (object[])o;
+            for (int i = 0; i < arr.Length && folds.Count < 1000; i++)
+            {
+                var d = arr[i] as Dictionary<string, object>;
+                if (d == null) continue;
+                int line;
+                object lv, tv;
+                if (!d.TryGetValue("line", out lv) || lv == null) continue;
+                try { line = Convert.ToInt32(lv); } catch { continue; }
+                if (line < 1) continue;
+                string text = (d.TryGetValue("text", out tv) && tv != null) ? tv.ToString() : "";
+                folds.Add(new Services.FoldRecord { Line = line, Text = text });
+            }
+            return folds;
+        }
+
         /// <summary>
         /// Cache the Monaco selection pushed by the page (onDidChangeCursorSelection). Mirrors the
         /// saveCursor/saveBookmarks push model — read by the embeditor_get_selection MCP tool, no round-trip.
@@ -3571,6 +3613,7 @@ namespace ClarionAssistant.Terminal
                 string findHistJson = "[]", replHistJson = "[]", procHistJson = "[]";
                 int cursorLine = 0, cursorColumn = 0;
                 string bookmarksJson = "[]";
+                string foldsJson = "[]";
                 try
                 {
                     EnsureHistoryScope();
@@ -3582,6 +3625,7 @@ namespace ClarionAssistant.Terminal
                     List<int> bms;
                     ModernEmbeditorState.Load(_histSolutionPath, _histProcKey, out cursorLine, out cursorColumn, out bms);
                     bookmarksJson = ModernEmbeditorState.BookmarksJson(bms);
+                    foldsJson = ModernEmbeditorState.FoldsJson(ModernEmbeditorState.LoadFolds(_histSolutionPath, _histProcKey));
                 }
                 catch { }
 
@@ -3616,6 +3660,7 @@ namespace ClarionAssistant.Terminal
                     "\"cursorLine\":" + cursorLine + "," +
                     "\"cursorColumn\":" + cursorColumn + "," +
                     "\"bookmarks\":" + bookmarksJson + "," +
+                    "\"folds\":" + foldsJson + "," +
                     "\"snippets\":" + snippetsJson + "," +
                     "\"sourceUrl\":\"https://" + VIRTUAL_HOST + "/source.txt\"}";
                 _panel.PostJson(json);

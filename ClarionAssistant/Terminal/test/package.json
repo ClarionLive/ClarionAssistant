@@ -3,7 +3,7 @@
   "private": true,
   "description": "Dev-only test dependencies for the Monaco WebView2 page harnesses. Nothing here ships with the addin — the pages themselves have no npm dependencies at runtime.",
   "scripts": {
-    "test": "node monaco-page-integrity.test.js && node clarion-folding.test.js && node clarion-formatter.test.js && node vscode-import-ui.test.js && node caret-behind-eol.test.js"
+    "test": "node monaco-page-integrity.test.js && node clarion-folding.test.js && node clarion-formatter.test.js && node vscode-import-ui.test.js && node caret-behind-eol.test.js && node fold-state.test.js"
   },
   "devDependencies": {
     "jsdom": "^24.0.0"

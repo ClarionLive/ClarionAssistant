@@ -17,9 +17,28 @@ namespace ClarionAssistant.Services
     /// read-modify-write preserving every other procedure's record and the untouched field (cursor vs
     /// bookmarks), matching the history class's last-writer-wins simplicity — this is non-critical state.
     /// </summary>
+    /// <summary>
+    /// One collapsed fold, remembered as a line number PLUS a fingerprint of that line's text.
+    ///
+    /// The line number alone is not enough. The embeditor's buffer is GENERATED source: line numbers move
+    /// when templates regenerate or an embed slot grows. A drifted bookmark is cosmetic, but a drifted
+    /// FOLD hides code the developer never asked to hide. The fingerprint lets the page verify it is
+    /// collapsing the region it actually meant, and skip rather than guess when the buffer has moved on.
+    ///
+    /// Text is normalized page-side (trimmed, inner whitespace collapsed, uppercased) so the live keyword
+    /// casing and the Smart Formatter can't invalidate a fingerprint by re-casing the line.
+    /// </summary>
+    public sealed class FoldRecord
+    {
+        public int Line;
+        public string Text;
+    }
+
     public static class ModernEmbeditorState
     {
         private const int BookmarkCap = 200;       // guard against an unbounded bookmark list bloating the file
+        private const int FoldCap = 300;           // same idea for folds — a big procedure has plenty of foldable regions
+        private const int MaxFoldTextLen = 120;    // fingerprints are for matching, not for reproducing the line
         private const int MaxStateFileBytes = 2 * 1024 * 1024;  // refuse to parse an oversized state file (DoS guard)
 
         // Read + deserialize the state file with size/length caps so a hostile or corrupt file can't force
@@ -74,6 +93,72 @@ namespace ClarionAssistant.Services
         public static void SaveBookmarks(string solutionPath, string procKey, IList<int> bookmarks)
         {
             Update(solutionPath, procKey, rec => { rec["bookmarks"] = CleanLines(bookmarks); });
+        }
+
+        /// <summary>Persist only the collapsed folds for one procedure, preserving cursor/bookmarks + other procs.</summary>
+        public static void SaveFolds(string solutionPath, string procKey, IList<FoldRecord> folds)
+        {
+            Update(solutionPath, procKey, rec => { rec["folds"] = CleanFolds(folds); });
+        }
+
+        /// <summary>
+        /// Read the saved folds for one procedure (empty when none). Deliberately a SEPARATE read rather than
+        /// another out-param on Load: Load is shared by the embeditor and the plain source editor, and leaving
+        /// its signature alone keeps the cursor/bookmark path completely untouched by this feature. The extra
+        /// read is one small JSON file, once per editor open.
+        /// </summary>
+        public static List<FoldRecord> LoadFolds(string solutionPath, string procKey)
+        {
+            var folds = new List<FoldRecord>();
+            if (string.IsNullOrEmpty(procKey)) return folds;
+            try
+            {
+                var root = ReadStateFile(FilePath(solutionPath));
+                object pv;
+                if (root == null || !root.TryGetValue(procKey, out pv)) return folds;
+                var rec = pv as Dictionary<string, object>;
+                object o;
+                if (rec == null || !rec.TryGetValue("folds", out o) || !(o is object[])) return folds;
+                foreach (var item in (object[])o)
+                {
+                    var d = item as Dictionary<string, object>;
+                    if (d == null) continue;
+                    int line = ToInt(d, "line");
+                    if (line < 1) continue;
+                    object t;
+                    string text = (d.TryGetValue("text", out t) && t != null) ? t.ToString() : "";
+                    folds.Add(new FoldRecord { Line = line, Text = text });
+                }
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditorState] LoadFolds: " + ex.Message); }
+            return CleanFolds(folds);
+        }
+
+        public static string FoldsJson(IList<FoldRecord> folds)
+        {
+            try { return new JavaScriptSerializer().Serialize(CleanFolds(folds)); }
+            catch { return "[]"; }
+        }
+
+        // Distinct by line, positive, ascending, capped, fingerprint length-bounded — the fold equivalent of
+        // CleanLines. Applied on the way IN and on the way OUT, so a hand-edited state file can't smuggle an
+        // oversized list or a huge string past the page.
+        private static List<FoldRecord> CleanFolds(IList<FoldRecord> folds)
+        {
+            var outp = new List<FoldRecord>();
+            if (folds == null) return outp;
+            var seen = new HashSet<int>();
+            foreach (var f in folds)
+            {
+                if (f == null || f.Line < 1 || seen.Contains(f.Line)) continue;
+                seen.Add(f.Line);
+                string text = f.Text ?? "";
+                if (text.Length > MaxFoldTextLen) text = text.Substring(0, MaxFoldTextLen);
+                outp.Add(new FoldRecord { Line = f.Line, Text = text });
+                if (outp.Count >= FoldCap) break;
+            }
+            outp.Sort((a, b) => a.Line.CompareTo(b.Line));
+            return outp;
         }
 
         // Read-modify-write the whole file: load (or start) the proc-keyed map, mutate this proc's record,

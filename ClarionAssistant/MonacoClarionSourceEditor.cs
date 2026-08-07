@@ -554,7 +554,7 @@ namespace ClarionAssistant
 
                 // Restore persisted Find history / cursor / bookmarks for this file (shared scope with a file-mode
                 // embeditor). A parked debugger nav (navLine) still wins over the saved cursor. (deac3d16)
-                string findHistJson = "[]", replHistJson = "[]", procHistJson = "[]", bookmarksJson = "[]";
+                string findHistJson = "[]", replHistJson = "[]", procHistJson = "[]", bookmarksJson = "[]", foldsJson = "[]";
                 int savedCursorLine = 0, savedCursorCol = 0;
                 try
                 {
@@ -567,6 +567,7 @@ namespace ClarionAssistant
                     List<int> bms;
                     ModernEmbeditorState.Load(sol, key, out savedCursorLine, out savedCursorCol, out bms);
                     bookmarksJson = ModernEmbeditorState.BookmarksJson(bms);
+                    foldsJson = ModernEmbeditorState.FoldsJson(ModernEmbeditorState.LoadFolds(sol, key));
                 }
                 catch { }
                 int curLine = navLine >= 1 ? navLine : savedCursorLine;
@@ -597,6 +598,7 @@ namespace ClarionAssistant
                     + "\"findHistory\":" + findHistJson + ",\"replaceHistory\":" + replHistJson + ",\"procHistory\":" + procHistJson + ","
                     + "\"cursorLine\":" + curLine + ",\"cursorColumn\":" + curCol + ","
                     + "\"bookmarks\":" + bookmarksJson + ","
+                    + "\"folds\":" + foldsJson + ","
                     + "\"snippets\":" + Services.SnippetStore.ToJson(Services.SnippetStore.Load()) + ","
                     + "\"breakpoints\":[" + bpCsv + "],"
                     + "\"sourceUrl\":\"https://clarion-embeditor-data/source.txt\"}";
@@ -1100,6 +1102,22 @@ namespace ClarionAssistant
             catch (Exception ex) { MonacoSpikeLog.Write("overlay saveBookmarks error: " + ex.Message); }
         }
 
+        /// <summary>Persist the collapsed fold set for this file. Shares ReadFoldRecords with the embeditor
+        /// so the two IMonacoEditorHost implementations parse the payload identically — the failure mode this
+        /// avoids is one surface silently storing nothing while the other works.</summary>
+        void IMonacoEditorHost.OnSaveFolds(MonacoEditorControl editor, string rawJson)
+        {
+            try
+            {
+                var data = new JavaScriptSerializer { MaxJsonLength = 65536 }.DeserializeObject(rawJson) as Dictionary<string, object>;
+                if (data == null) return;
+                var folds = Terminal.ModernEmbeditorViewContent.ReadFoldRecords(data);
+                string sol, key; ResolveHistoryScope(out sol, out key);
+                ModernEmbeditorState.SaveFolds(sol, key, folds);
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("overlay saveFolds error: " + ex.Message); }
+        }
+
         /// <summary>Per-(solution + file) scope key for history/cursor/bookmarks. Matches the embeditor's
         /// file-mode key so the two surfaces share saved state for the same file. Recomputed each call so it
         /// stays correct after _filePath resolves in OnReady.</summary>
@@ -1245,6 +1263,10 @@ namespace ClarionAssistant
                     + "\"findHistory\":" + findHistJson + ",\"replaceHistory\":" + replHistJson + ",\"procHistory\":" + procHistJson + ","
                     + "\"cursorLine\":" + curLine + ",\"cursorColumn\":" + curCol + ","
                     + "\"bookmarks\":[],"
+                    // Empty on reload for the same reason bookmarks are: a reload replaces the buffer from
+                    // disk, and re-asserting saved folds over a buffer that may have changed underneath is
+                    // exactly the "restored the wrong region" failure this feature is designed to avoid.
+                    + "\"folds\":[],"
                     + "\"snippets\":" + Services.SnippetStore.ToJson(Services.SnippetStore.Load()) + ","
                     + "\"breakpoints\":[" + bpCsv + "],"
                     + "\"sourceUrl\":\"https://clarion-embeditor-data/source.txt\"}";

@@ -102,6 +102,15 @@ namespace ClarionAssistant.Terminal
         /// <summary>{action:"saveBookmarks"} — persist bookmark lines per proc+solution.</summary>
         void OnSaveBookmarks(MonacoEditorControl editor, string rawJson);
 
+        /// <summary>
+        /// {action:"saveFolds"} — persist the collapsed fold set per proc+solution, as {line,text} records.
+        /// Deliberately a first-class interface member rather than an OnUnknownAction case: there are TWO
+        /// IMonacoEditorHost implementations (this view and MonacoClarionEditor), and a state-persisting
+        /// callback that only ONE of them handles fails silently on the other surface. Putting it on the
+        /// interface makes the compiler refuse to build until both are wired.
+        /// </summary>
+        void OnSaveFolds(MonacoEditorControl editor, string rawJson);
+
         /// <summary>{action:"selectionChanged"} — cache the Monaco selection snapshot.</summary>
         void OnSelectionChanged(MonacoEditorControl editor, string rawJson);
 
@@ -338,6 +347,7 @@ namespace ClarionAssistant.Terminal
                     case "snippetCommand":    h.OnSnippetCommand(this, json); break;
                     case "saveCursor":        h.OnSaveCursor(this, json); break;
                     case "saveBookmarks":     h.OnSaveBookmarks(this, json); break;
+                    case "saveFolds":         h.OnSaveFolds(this, json); break;
                     case "selectionChanged":  h.OnSelectionChanged(this, json); break;
                     case "focusEditor":       h.OnFocusEditor(this); break;
                     case "reload":            h.OnReload(this); break;

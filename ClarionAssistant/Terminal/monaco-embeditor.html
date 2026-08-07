@@ -1592,6 +1592,12 @@
         // timer would have fired. (Security + adversary finding.)
         if (_bookmarkPersistTimer) { clearTimeout(_bookmarkPersistTimer); _bookmarkPersistTimer = null; }
         postToHost({ action: 'saveBookmarks', bookmarks: bookmarkLines() });
+        // Checkpoint the fold set on save too, for the same reason bookmarks are: the debounce may not
+        // have fired yet, and a save is the natural point to make the current state durable.
+        if (_foldPersistTimer) { clearTimeout(_foldPersistTimer); _foldPersistTimer = null; }
+        if (_foldsReady) collapsedFolds(activeEd(), function (folds) {
+            if (folds) postToHost({ action: 'saveFolds', folds: folds });
+        });
         if (fileMode) {
             // Plain file: hand the host the whole buffer; it writes the file directly (fast, no embeditor).
             // Stamp it with editSeq so the host echoes it back — we clear the ● only if no edit happened since.
@@ -2659,6 +2665,10 @@
         // this is strictly additive for the plain source-file editor. Deliberately skips recordNavAt —
         // a reload isn't a new navigation, so it shouldn't push a Navigate-Back entry.
         if (msg && msg.reload) {
+            // A reload deliberately carries folds:[] (re-asserting saved folds over a buffer just re-read
+            // from disk is the "restored the wrong region" risk this feature avoids) — but the gate must
+            // still open, or fold saving would stay disabled for the rest of this tab's life.
+            _foldsReady = true;
             var rModel = editor.getModel(), rLc = rModel.getLineCount();
             var rl = msg.cursorLine, rc = msg.cursorColumn || 1;
             if (rl && rl >= 1 && rl <= rLc && lineInEditable(rl)) {
@@ -2670,7 +2680,7 @@
             }
             return;
         }
-        if (stateRestored) { editor.revealLine(1); return; }
+        if (stateRestored) { _foldsReady = true; editor.revealLine(1); return; }   // same gate-opening rule as the reload path
         stateRestored = true;
         var model = editor.getModel(), lc = model.getLineCount();
         if (msg && msg.bookmarks && msg.bookmarks.length) {
@@ -2681,6 +2691,10 @@
             }
             if (decos.length) bookmarkDecos = model.deltaDecorations(bookmarkDecos, decos);   // model-level (both panes)
         }
+        // Re-collapse the sections that were folded last time. Asynchronous + self-gating: restoreFolds
+        // opens the persist gate on every exit path, so a buffer with nothing to restore doesn't leave
+        // fold saving permanently disabled.
+        restoreFolds(msg && msg.folds);
         // Only restore the cursor if its saved line is still inside an editable slot. Generated code can
         // regenerate between sessions and shift line numbers, so a raw saved line could otherwise land the
         // cursor on unrelated read-only code (silent-wrong-location). If it no longer maps to an editable
@@ -2934,6 +2948,10 @@
         ed.onDidChangeModelDecorations(function () {
             if (foldRefreshTimer) clearTimeout(foldRefreshTimer);
             foldRefreshTimer = setTimeout(function () { foldRefreshTimer = null; refreshFoldBtn(); }, 120);
+            // Folding is decoration-backed, so this is also the change signal for the fold set. It fires
+            // for unrelated decorations too (bookmarks, diagnostics, occurrence highlights) — harmless,
+            // since scheduleFoldPersist is debounced and re-reads the live folding model anyway.
+            scheduleFoldPersist();
         });
         ed.onDidFocusEditorText(function () { refreshFoldBtn(); });   // button follows the focused pane
     }
@@ -2946,6 +2964,122 @@
             b.title = (expand ? 'Expand all (everything is folded)' : 'Contract all (fold every structure)')
                     + ' — right-click for both';
         });
+    }
+
+    // ===================== Fold state persistence (contract/expand survives reopen) =====================
+    // Remembers which regions were collapsed and re-collapses them next time this procedure/file opens,
+    // alongside the saved cursor and bookmarks (host side: ModernEmbeditorState).
+    //
+    // Folds are stored as {line, text}, NOT a bare line number. The embeditor's buffer is GENERATED
+    // source: line numbers move when templates regenerate or an embed slot grows. A drifted bookmark is
+    // cosmetic; a drifted FOLD hides code nobody asked to hide. The text is a fingerprint of the fold's
+    // start line, and restore refuses to collapse a line whose fingerprint doesn't match.
+    var _foldPersistTimer = null;
+    var _foldsRestoring = false;   // replaying folds must not echo straight back out as a save
+    var _foldsReady = false;       // and nothing may be saved until the restore attempt has settled
+
+    // ONE definition of "normalized", used for both the fingerprint we store and the saved text we
+    // compare against. Keeping these in separate expressions let them drift: an earlier version
+    // uppercased the stored text but only collapsed whitespace on the live side, so any record that
+    // hadn't been through foldFingerprint compared unequal and silently failed to restore.
+    // Normalizing at all is what stops the live keyword casing (GH #138) and the Smart Formatter from
+    // invalidating a fingerprint just by re-casing or re-spacing the line. Cap matches the host's
+    // MaxFoldTextLen so a round-trip through storage can't change the value.
+    function normalizeFoldText(s) {
+        return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toUpperCase().substring(0, 120);
+    }
+
+    function foldFingerprint(model, line) {
+        try {
+            if (!model || line < 1 || line > model.getLineCount()) return '';
+            return normalizeFoldText(model.getLineContent(line));
+        } catch (e) { return ''; }
+    }
+
+    // The currently collapsed regions as {line, text}. Same access path as foldingState().
+    function collapsedFolds(ed, cb) {
+        try {
+            var c = ed && ed.getContribution && ed.getContribution('editor.contrib.folding');
+            var p = c && typeof c.getFoldingModel === 'function' ? c.getFoldingModel() : null;
+            if (!p || typeof p.then !== 'function') { cb(null); return; }
+            p.then(function (fm) {
+                if (!fm || !fm.regions) { cb(null); return; }
+                var model = ed.getModel(), out = [];
+                for (var i = 0; i < fm.regions.length; i++) {
+                    if (!fm.regions.isCollapsed(i)) continue;
+                    var ln = fm.regions.getStartLineNumber(i);
+                    out.push({ line: ln, text: foldFingerprint(model, ln) });
+                }
+                cb(out);
+            }, function () { cb(null); });
+        } catch (e) { cb(null); }
+    }
+
+    // Debounced. Deliberately gated on _foldsReady: on open the model lands, decorations change, and this
+    // would otherwise fire BEFORE the (asynchronous, retrying) restore had run — posting an empty set and
+    // wiping the very state we were about to restore.
+    function scheduleFoldPersist() {
+        if (!_foldsReady || _foldsRestoring) return;
+        if (_foldPersistTimer) clearTimeout(_foldPersistTimer);
+        _foldPersistTimer = setTimeout(function () {
+            _foldPersistTimer = null;
+            collapsedFolds(activeEd(), function (folds) {
+                if (folds) postToHost({ action: 'saveFolds', folds: folds });
+            });
+        }, 500);
+    }
+
+    // Exact line first, then a small window either side (the buffer may have shifted), else give up.
+    // Returning 0 means "don't collapse anything for this record" — skipping is always better than
+    // folding the wrong region. A record with no fingerprint (written by an older build) falls back to
+    // the plain line check, which Monaco already makes safe by ignoring lines that start no region.
+    function resolveFoldLine(model, startLines, rec) {
+        var want = normalizeFoldText(rec.text);
+        if (!want) return startLines[rec.line] ? rec.line : 0;
+        if (startLines[rec.line] && foldFingerprint(model, rec.line) === want) return rec.line;
+        for (var d = 1; d <= 40; d++) {
+            var a = rec.line - d, b = rec.line + d;
+            if (a >= 1 && startLines[a] && foldFingerprint(model, a) === want) return a;
+            if (b <= model.getLineCount() && startLines[b] && foldFingerprint(model, b) === want) return b;
+        }
+        return 0;
+    }
+
+    // Monaco computes folding ranges ASYNCHRONOUSLY after a model is set, so this polls for a folding
+    // model that actually has regions rather than guessing a single delay. Bounded (20 x 150ms) so a
+    // buffer with nothing foldable doesn't retry forever — and every exit path opens the persist gate.
+    function restoreFolds(saved, attempt) {
+        if (!saved || !saved.length || !editor) { _foldsReady = true; return; }
+        attempt = attempt || 0;
+        function retry() {
+            if (attempt < 20) setTimeout(function () { restoreFolds(saved, attempt + 1); }, 150);
+            else _foldsReady = true;                       // gave up — allow saving again
+        }
+        var c = editor.getContribution && editor.getContribution('editor.contrib.folding');
+        var p = c && typeof c.getFoldingModel === 'function' ? c.getFoldingModel() : null;
+        if (!p || typeof p.then !== 'function') { retry(); return; }
+        p.then(function (fm) {
+            if (!fm || !fm.regions || !fm.regions.length) { retry(); return; }
+            var model = editor.getModel();
+            var startLines = {};
+            for (var i = 0; i < fm.regions.length; i++) startLines[fm.regions.getStartLineNumber(i)] = true;
+            var lines = [];
+            for (var k = 0; k < saved.length; k++) {
+                var rec = saved[k];
+                if (!rec || !rec.line) continue;
+                var target = resolveFoldLine(model, startLines, rec);
+                if (target) lines.push(target);
+            }
+            if (lines.length) {
+                _foldsRestoring = true;
+                // Folding changes DECORATIONS, not content — onDidChangeModelContent never fires, so this
+                // cannot mark the buffer dirty or push a bogus buffer to the host.
+                try { editor.trigger('restoreFolds', 'editor.fold', { selectionLines: lines }); } catch (e) { }
+                setTimeout(function () { _foldsRestoring = false; _foldsReady = true; }, 800);
+            } else {
+                _foldsReady = true;
+            }
+        }, function () { retry(); });
     }
 
     // Right-click menu on the fold button — same #ftabMenu element and shape as showSplitMenu, so
