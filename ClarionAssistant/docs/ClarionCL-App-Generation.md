@@ -943,4 +943,125 @@ Validated by two positives (`specs/hello`, `specs/crud` — build *and* run) and
 ## 12. Related knowledge entries
 
 `add_knowledge` ids **91** (pipeline), **92** (modal dialogs), **93** (redirection / cwproj),
-**94** (minimal TXA grammar), **104** (the harness).
+**94** (minimal TXA grammar), **104** (the harness), **107** (the `status 32` IDE lock),
+**108** (export is a complete serialization — §13).
+
+## 13. The `.app` as source of truth — export round-trip (2026-08-07)
+
+§1–§11 treat the authored text as the source of truth and the `.app` as a disposable build
+artifact. That breaks the first time someone opens the generated app in the IDE, because **an
+embed lives only in the `.app`** — the authored `.txa` has no record of it and the next build
+silently discards it. This section records whether the reverse direction (`app → text`) is good
+enough to make the `.app` authoritative instead.
+
+**It is.** The export is a *complete* serialization, not merely a readable one.
+
+### 13.1 The test
+
+Take a built app carrying edits the authored spec never had — an embed added by hand in the IDE,
+plus four `WindowResize` instances with per-instance `%AppStrategy` prompts — export it, and
+rebuild from that export alone in a *different directory*:
+
+```
+.app --/ax--> .txa --/ai--> new .app --/ag--> .clw --MSBuild--> .exe --> runs
+```
+
+| Carried across | Result |
+|---|---|
+| Hand-added embed (`MESSAGE` in `ThisWindow.Init`, priority 2500) | survived to generated source |
+| Per-instance `%AppStrategy` (`Surface`×2, `Resize`×2) | all four correct |
+| `BRW1.AddRange(ORD:CustomerID,CUS:ID)` — the §10.3 fragile one | intact |
+| All six `.INC` module maps | byte-identical |
+| Runs | yes |
+
+Embeds export with full addressing, so the round-trip is not lossy about *where* code sits:
+
+```
+WHEN 'Init'
+[INSTANCES]
+WHEN '(),BYTE'
+[DEFINITION]
+[SOURCE]
+PROPERTY:BEGIN
+PRIORITY 2500
+PROPERTY:END
+MESSAGE('I am here')
+```
+
+### 13.2 Functionally exact, NOT byte-exact
+
+One systematic difference across all five window procedures — `SELF.AddItem(Toolbar)` generates
+two lines later, after the `CLEAR(GlobalRequest)`/`CLEAR(GlobalResponse)` pair instead of before
+it. The exes are the same size but differ in bytes. Cause is addition ordering: the export writes
+the app's internal order, which is not the order the additions were authored in.
+
+Benign — registering the toolbar with the window manager does not interact with clearing the
+globals — but it matters for tooling: **the first export after adopting this workflow shows a diff
+in every window procedure.** Anything that treats "export differs from last export" as "the app
+changed" needs to absorb that one-off.
+
+### 13.3 `/ax` cannot read an app the IDE has open
+
+ClarionCL fails with `Could not gain access … after 50 attempts` / `error GENE000: Cannot open
+application … (status 32)`. This hits `/ax`, `/ag` and `/di` alike — anything that opens the
+`.app`. There is no PowerShell-side workaround.
+
+The only exporter that works on a *loaded* app is the IDE itself, via CA's `export_txa` MCP tool
+(which routes through the IDE object model rather than spawning ClarionCL). So the capture step is
+IDE-dependent: **it cannot run headless or in CI while the app is open.** Close the application in
+the IDE — the solution may stay open — or export through CA.
+
+### 13.4 The 20× problem, and why there are two files
+
+An exported TXA is not a substitute for an authored one:
+
+| | bytes | lines |
+|---|---|---|
+| Authored `ORDERS.txa` | 9,197 | 316 |
+| Exported from the same app | 188,306 | 5,890 |
+
+Section *counts* barely move (12 `[ADDITION]`, 6 `[PROCEDURE]` either way) — the bloat is inside
+them: every prompt written out at its default, nothing inferred. Machine-editable, not
+hand-authorable.
+
+So keep both, with distinct jobs:
+
+- **`<App>.txa`** — the authored bootstrap. Small, readable, frozen once the `.app` exists. This
+  is the artifact that proves authorship-from-nothing (§1), and regenerating it from an export
+  would destroy that claim.
+- **`<App>.export.txa`** — machine snapshot of the live app, refreshed on demand and committed.
+  Its diff is the drift detector.
+
+### 13.5 Tooling
+
+`tools/Sync-SpecFromApp.ps1` — `.app → <App>.export.txa` in the spec folder. Exports via a temp
+file so a failed `/ax` cannot leave a truncated snapshot that looks like a good one, refuses any
+export under 1 KB (§10.4 again: check the artifact, not the exit code), reports changed vs
+unchanged against the previous capture, and detects the `status 32` lock specifically so the
+message names the IDE instead of blaming ClarionCL.
+
+`New-ClarionApp.ps1` gained a matching guard: **if the `.app` is newer than the spec `.txa`, the
+run stops.** That mismatch is the signature of IDE-side edits the spec does not have, and `-Clean`
+would delete them. `-Force` declares the spec authoritative and accepts the loss.
+
+> **Caveat — do not mix exporters.** The IDE route (`export_txa`) and the ClarionCL route (`/ax`)
+> are different implementations, and their output has not been shown to agree byte-for-byte. The
+> IDE export of the original app was 188,306 bytes; ClarionCL's export of the app rebuilt from it
+> was 191,228. That difference is *not* isolated — it could be the round-trip rather than the
+> exporter, and it could not be separated here because the IDE route only reaches the currently
+> loaded app. Until someone exports one app both ways and diffs, **a drift detector must use one
+> exporter consistently**, or every switch between them reads as a change. **UNVERIFIED.**
+
+> The export step deliberately did **not** go into `New-ClarionApp.ps1`. That script's contract is
+> "spec in, exe out, the spec is never written to", and it runs *after* the spec has been edited —
+> an export stage inside it would clobber the very edit that triggered the run. Capture is a
+> separate, deliberate action taken *before* editing.
+
+### 13.6 Still unverified
+
+`/ai` has only ever been run against a **non-existent** app. Importing a modified export back into
+an *existing* app is untested — merge vs replace, and how name clashes resolve. The ClarionCL path
+exposes no clash switch at all, while CA's `import_txa` MCP tool exposes `rename`/`replace`.
+Settle this before relying on incremental re-import; the round-trip above always built into an
+empty directory.
+
