@@ -131,6 +131,39 @@ namespace ClarionCodeGraph.Graph
         }
 
         /// <summary>
+        /// EVERY exact-name match (case-insensitive), not just the first. <see cref="FindSymbolByName"/>'s
+        /// unordered `LIMIT 1` is fine when any one declaration will do, but it is the wrong primitive for
+        /// "does a declaration of this name with property X exist anywhere?" — with several same-named symbols
+        /// it answers with an arbitrary one, so the caller's test can pass or fail on index order alone.
+        /// Callers that need to reason about the SET of declarations (e.g. is any of them non-local?) use this.
+        /// Returns empty (never null/throws); ordered so broader scopes come first, then by file for stability.
+        /// </summary>
+        public List<CodeGraphSymbol> FindAllSymbolsByName(string name, int limit = 50)
+        {
+            var results = new List<CodeGraphSymbol>();
+            if (_connection == null || string.IsNullOrEmpty(name)) return results;
+            try
+            {
+                string sql = SymbolSelect +
+                    "WHERE LOWER(s.name) = LOWER(@name) " +
+                    "ORDER BY CASE LOWER(COALESCE(s.scope,'')) " +
+                    "           WHEN 'global' THEN 0 WHEN 'module' THEN 1 WHEN 'class' THEN 2 " +
+                    "           WHEN 'local' THEN 4 WHEN 'parameter' THEN 5 ELSE 3 END, " +
+                    "         s.file_path, s.line_number " +
+                    "LIMIT @limit";
+                using (var cmd = new SQLiteCommand(sql, _connection))
+                {
+                    cmd.Parameters.AddWithValue("@name", name);
+                    cmd.Parameters.AddWithValue("@limit", limit);
+                    using (var reader = cmd.ExecuteReader())
+                        while (reader.Read()) results.Add(MapSymbol(reader));
+                }
+            }
+            catch { }
+            return results;
+        }
+
+        /// <summary>
         /// All members (methods + data members) declared under a CLASS, looked up by parent_name
         /// (case-insensitive). Backs ABC/library member-access completion (oInstance.Method).
         /// Member names are stored DOTTED as "Parent.Member" — callers slice the suffix after the dot.

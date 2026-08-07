@@ -690,11 +690,11 @@ namespace ClarionAssistant.Services
             if (c == null)
             {
                 var lsp = LspClient.Active;
-                return lsp != null
+                return DropUndeclaredWeCanResolve(lsp != null
                     ? lsp.WaitForDiagnostics(filePath, timeoutMs, forceRefresh)
-                    : new LspClient.DiagnosticWaitResult { Entries = new List<LspClient.DiagnosticEntry>(), Pending = true };
+                    : new LspClient.DiagnosticWaitResult { Entries = new List<LspClient.DiagnosticEntry>(), Pending = true }, filePath);
             }
-            return SharedGetDiagnostics(c, filePath, timeoutMs, true);
+            return DropUndeclaredWeCanResolve(SharedGetDiagnostics(c, filePath, timeoutMs, true), filePath);
         }
 
         /// <summary>Diagnostics for an on-disk file (MCP lsp_diagnostics tool).</summary>
@@ -704,11 +704,209 @@ namespace ClarionAssistant.Services
             if (c == null)
             {
                 var lsp = LspClient.Active;
-                return lsp != null
+                return DropUndeclaredWeCanResolve(lsp != null
                     ? lsp.GetDiagnostics(filePath, timeoutMs)
-                    : new LspClient.DiagnosticWaitResult { Entries = new List<LspClient.DiagnosticEntry>(), Pending = true };
+                    : new LspClient.DiagnosticWaitResult { Entries = new List<LspClient.DiagnosticEntry>(), Pending = true }, filePath);
             }
-            return SharedGetDiagnostics(c, filePath, timeoutMs, false);
+            return DropUndeclaredWeCanResolve(SharedGetDiagnostics(c, filePath, timeoutMs, false), filePath);
+        }
+
+        // ===========================================================================================
+        // "'X' is not declared in this file." false positives for app globals
+        // ===========================================================================================
+        // The server's undeclared-variable diagnostic and its own hover/F12 resolve globals through two
+        // DIFFERENT code paths (upstream Clarion-Extension #115 chose the SymbolFinder fallback over reusing
+        // hover's loadGlobalScopeForCursor), so a name the server itself hovers as a global can still be
+        // flagged as undeclared. Most visible in the CA Embeditor, where the buffer is generated source and
+        // the global lives in the .app's PROGRAM module: red squiggle on dbgCount, correct global tooltip on
+        // the same word.
+        //
+        // This is a CA-side stopgap, not the fix — see the upstream ticket. It leans on the server's own
+        // stated contract for this diagnostic ("if ANY of our own resolution paths knows the name, don't flag
+        // it"): CodeGraph is a resolution path the server does not have, so when it can point at a
+        // non-local declaration of the name we drop the diagnostic rather than show a squiggle we know is wrong.
+        //
+        // Deliberately narrow, so a genuinely undeclared variable still gets flagged:
+        //   * ONLY this exact message shape is ever considered; every other diagnostic passes through.
+        //   * A name is cleared only by a declaration that could actually be referenced from another file —
+        //     global / module / class scope, or a top-level symbol kind (procedure, class, program…).
+        //     A 'local' or 'parameter' match clears NOTHING: that is another procedure's private data, which
+        //     is exactly the case the server is right about (same reasoning as IsUnreachableLocalVariable,
+        //     which guards the F12 fallback).
+        //   * The SET of same-named declarations is examined via FindAllSymbolsByName, not FindSymbolByName's
+        //     arbitrary LIMIT 1 — otherwise "is any of them global?" would be decided by index order.
+        //   * Unknown to CodeGraph (nothing indexed, stale index, no DB) => keep the diagnostic. The server
+        //     stays the default; we only ever overrule it with positive evidence.
+        private static readonly Regex UndeclaredMessagePattern = new Regex(
+            @"^\s*'([A-Za-z_][A-Za-z0-9_]*)'\s+is\s+not\s+declared\s+in\s+this\s+file\.?\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static LspClient.DiagnosticWaitResult DropUndeclaredWeCanResolve(
+            LspClient.DiagnosticWaitResult result, string filePath)
+        {
+            try
+            {
+                if (result == null || result.Entries == null || result.Entries.Count == 0) return result;
+
+                // Collect the candidate names first: no DB is opened at all unless this message shape is present.
+                var names = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+                foreach (var e in result.Entries)
+                {
+                    if (e == null || string.IsNullOrEmpty(e.Message)) continue;
+                    var m = UndeclaredMessagePattern.Match(e.Message);
+                    if (m.Success) names[m.Groups[1].Value] = false;
+                }
+                if (names.Count == 0) return result;
+
+                // The reported case (app globals) FIRST: one file read clears the whole batch, and it is the
+                // only source that knows them — the CodeGraph parser indexes `variable` symbols exclusively
+                // at Scope="local" (procedure locals), so no DB below can ever answer for global data.
+                ResolveNamesFromProgramGlobals(names, filePath);
+
+                // Then one pass per DB for the whole batch (not per name), project graph then library graph.
+                // These cover the other kinds a bare word can legitimately be: a global CLASS/INTERFACE, a
+                // module procedure, an ABC library symbol.
+                ResolveNonLocalNames(names, ResolveCodeGraphDb(filePath));
+                ResolveNonLocalNames(names, ClarionGraphService.ResolveDbPath());
+
+                var kept = new List<LspClient.DiagnosticEntry>(result.Entries.Count);
+                int dropped = 0;
+                foreach (var e in result.Entries)
+                {
+                    bool suppress = false;
+                    if (e != null && !string.IsNullOrEmpty(e.Message))
+                    {
+                        var m = UndeclaredMessagePattern.Match(e.Message);
+                        bool known;
+                        if (m.Success && names.TryGetValue(m.Groups[1].Value, out known) && known) suppress = true;
+                    }
+                    if (suppress) dropped++; else kept.Add(e);
+                }
+                if (dropped == 0) return result;
+
+                Debug.WriteLine("[SharedLspBridge] suppressed " + dropped
+                    + " 'not declared in this file' diagnostic(s) CodeGraph resolves non-locally in '" + filePath + "'.");
+                return new LspClient.DiagnosticWaitResult { Entries = kept, Pending = result.Pending };
+            }
+            catch (Exception ex)
+            {
+                // A filter must never cost the caller its diagnostics.
+                Debug.WriteLine("[SharedLspBridge] DropUndeclaredWeCanResolve: " + ex.Message);
+                return result;
+            }
+        }
+
+        // The MEMBER('Prog.clw') statement at the top of a generated module — the link to the PROGRAM file
+        // whose declaration section holds the .app's global data.
+        private static readonly Regex CgMemberTarget = new Regex(
+            @"^\s*MEMBER\s*\(\s*'([^']+)'", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// Clear every still-unresolved name that the owning PROGRAM module declares as global data. Follows
+        /// <paramref name="modulePath"/>'s own MEMBER('…') line to the PROGRAM .clw, then looks for a
+        /// column-1 label in its DECLARATION section (everything before the global CODE, per
+        /// ClarionParser.FindMainTailStart). Column-1 anchoring is what keeps indented MAP prototypes and
+        /// nested structure fields out; GROUP/QUEUE depth tracking in FindDataLabelInRange does the rest.
+        ///
+        /// This is the .app-globals case the whole filter exists for: in the CA Embeditor the buffer is a
+        /// generated module and EmbedLspContext addresses it to that module's REAL path, so filePath is
+        /// exactly the file whose MEMBER line we need. Silently does nothing when the module, the MEMBER
+        /// line, or the PROGRAM file can't be found — the diagnostic then stands.
+        ///
+        /// KNOWN LOOSENESS, accepted: template-generated PROGRAM files put global CLASS members at column 1
+        /// too (ABC's `Dictionary CLASS,THREAD` is followed by `Construct  PROCEDURE` / `Destruct  PROCEDURE`
+        /// at column 1), and FindDataLabelInRange's depth tracking only counts GROUP/QUEUE — so a bare word
+        /// matching such a member name is treated as declared. It errs toward SILENCE on a diagnostic we
+        /// already know misfires, which is the safer direction here; global MAP prototypes matching likewise
+        /// is not looseness at all, since a name in the global MAP genuinely is globally declared.
+        /// </summary>
+        private static void ResolveNamesFromProgramGlobals(Dictionary<string, bool> names, string modulePath)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(modulePath) || !File.Exists(modulePath)) return;
+
+                string memberTarget = null;
+                foreach (var line in File.ReadLines(modulePath))
+                {
+                    var t = line.TrimStart();
+                    if (t.Length == 0 || t[0] == '!') continue;
+                    var m = CgMemberTarget.Match(line);
+                    if (m.Success) { memberTarget = m.Groups[1].Value.Trim(); break; }
+                    // A PROGRAM file IS its own global scope — its data section is right here.
+                    if (t.StartsWith("PROGRAM", StringComparison.OrdinalIgnoreCase)) { memberTarget = ""; break; }
+                    if (t.StartsWith("MEMBER", StringComparison.OrdinalIgnoreCase)) break;   // unparsable form
+                }
+                if (memberTarget == null) return;
+
+                string programPath;
+                if (memberTarget.Length == 0) programPath = modulePath;      // already the PROGRAM
+                else
+                {
+                    // Generated app modules and their PROGRAM file are emitted side by side, so the .app
+                    // directory is the reliable lookup — no redirection walk needed for the generated set.
+                    string dir = Path.GetDirectoryName(modulePath);
+                    if (string.IsNullOrEmpty(dir)) return;
+                    string file = Path.GetFileName(memberTarget);
+                    if (!Path.HasExtension(file)) file += ".clw";
+                    programPath = Path.Combine(dir, file);
+                    if (!File.Exists(programPath)) return;
+                }
+
+                int tailStart;
+                try { tailStart = new ClarionParser().FindMainTailStart(programPath); }
+                catch { return; }
+
+                var lines = EncodingHelper.ReadAllLines(programPath, out _);
+                if (lines == null || lines.Length == 0) return;
+                if (tailStart <= 0 || tailStart > lines.Length) tailStart = lines.Length;
+
+                var pending = new List<string>();
+                foreach (var kv in names) if (!kv.Value) pending.Add(kv.Key);
+                foreach (var name in pending)
+                    if (FindDataLabelInRange(lines, 0, tailStart, name) != null) names[name] = true;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("[SharedLspBridge] ResolveNamesFromProgramGlobals('" + modulePath + "'): " + ex.Message);
+            }
+        }
+
+        /// <summary>Mark every still-unresolved name in <paramref name="names"/> that this DB declares at a
+        /// scope reachable from another file. Leaves the rest untouched so the next DB can try.</summary>
+        private static void ResolveNonLocalNames(Dictionary<string, bool> names, string db)
+        {
+            if (string.IsNullOrEmpty(db) || !File.Exists(db)) return;
+            try
+            {
+                using (var p = new CodeGraphProvider())
+                {
+                    if (!p.Open(db)) return;
+                    var pending = new List<string>();
+                    foreach (var kv in names) if (!kv.Value) pending.Add(kv.Key);
+                    foreach (var name in pending)
+                        if (IsDeclaredNonLocally(p, name)) names[name] = true;
+                }
+            }
+            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] ResolveNonLocalNames('" + db + "'): " + ex.Message); }
+        }
+
+        /// <summary>True when this DB has a declaration of <paramref name="name"/> that another file could
+        /// legitimately reference. Procedure/routine-private data ('local', 'parameter') does NOT count.</summary>
+        private static bool IsDeclaredNonLocally(CodeGraphProvider p, string name)
+        {
+            foreach (var sym in p.FindAllSymbolsByName(name))
+            {
+                if (sym == null) continue;
+                string scope = (sym.Scope ?? "").Trim();
+                if (scope.Equals("local", StringComparison.OrdinalIgnoreCase) ||
+                    scope.Equals("parameter", StringComparison.OrdinalIgnoreCase)) continue;
+                // A variable with no scope recorded is only trustworthy when it isn't some other procedure's
+                // local — reuse the F12 guard rather than inventing a second rule.
+                if (scope.Length == 0 && IsUnreachableLocalVariable(p, sym)) continue;
+                return true;
+            }
+            return false;
         }
 
         /// <summary>Last diagnostics computed for a file (no re-query).</summary>
