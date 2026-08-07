@@ -704,7 +704,8 @@
         </div>
         <div class="gear-pane" id="gearPaneEditor">
         <h4>Editor settings</h4>
-        <label title="Use Clarion's own Options &#8594; Text Editor &#8594; Behavior values (Indentation size, Tab size, Convert Tabs to Spaces) so typing and the Smart Formatter match the native editor. Untick to set the two values below yourself. (GH #126)">Follow Clarion's editor options <input type="checkbox" id="setFollowIdeIndent"></label>
+        <label title="Use Clarion's own Options &#8594; Text Editor values so this editor matches the native one: indentation (Indentation size, Tab size, Convert Tabs to Spaces), Can move caret behind EOL, line numbers, folding, whitespace display, Ctrl+wheel zoom, vertical ruler, bracket highlighting, cut/copy whole line, indent style, editor font and current-line highlight. Untick to set them yourself below. (GH #126)">Follow Clarion's editor options <input type="checkbox" id="setFollowIdeIndent"></label>
+        <label title="Clarion's &#8220;Can move caret behind EOL&#8221;: right-arrow at the end of a line keeps moving right instead of wrapping, and clicking past the end of a line puts the caret where you clicked. No spaces are saved &#8212; padding is removed as soon as the caret leaves the line.">Caret can move behind end of line <input type="checkbox" id="setCursorBehindEol"></label>
         <label>Tab size <input type="number" id="setTabSize" min="1" max="16" step="1"></label>
         <label>Insert spaces (not tabs) <input type="checkbox" id="setInsertSpaces"></label>
         <label>Smart auto-indent <input type="checkbox" id="setAutoIndent"></label>
@@ -961,6 +962,7 @@
     // is modest (hand-coded Clarion source) so a per-edit postMessage is cheap.
     function pushFileState() {
         if (!fileMode || !editor) return;
+        trimPad();   // file mode's equivalent of the gatherSlots() chokepoint — never mirror padding to the host
         postToHost({ action: 'fileState', dirty: isDirty, seq: editSeq, text: editor.getModel().getValue() });
     }
     // Unsaved edits stashed by the host from an externally torn-down overlay, waiting for the async
@@ -1252,6 +1254,7 @@
                 addFormatAction(editor);       // right-click → Format Selection (Ctrl+I dispatched via keybindings)
                 installAutoCase(editor);        // as-you-type keyword casing (of → OF on word boundary)
                 installFormatOnEnter(editor);   // format the completed line on Enter (Clarion-style)
+                installCaretBehindEol(editor);  // Clarion "Can move caret behind EOL" (inert until settings arm it)
                 document.getElementById('saveBtn').addEventListener('click', doSave);
                 var _cancelBtn = document.getElementById('cancelBtn');
                 if (_cancelBtn) _cancelBtn.addEventListener('click', doCancel);
@@ -1560,6 +1563,11 @@
     // Gather each editable slot's CURRENT full-line text from its live (decoration-tracked) range,
     // in the same order as the C# editable ranges, and hand them to the host to persist.
     function gatherSlots() {
+        // Belt-and-braces against caret-behind-EOL padding: this is the chokepoint every slot payload goes
+        // through (save AND the per-edit mirror to the host), so trimming here guarantees no slot text can
+        // carry our spaces into the .app even if a caret-move trigger were somehow missed. Cheap no-op when
+        // nothing is padded.
+        trimPad();
         var model = editor.getModel();
         // Use embedRanges (source of truth, kept in sync by the guard) so appended lines are captured
         // and the slot COUNT always matches the C# original ranges the save round-trip expects.
@@ -1572,6 +1580,10 @@
     function doSave() {
         if (!saveEnabled) { showToast('Save not available (mirror mode)', false); return; }
         if (_snippetTabState) clearSnippetTabState();   // converge any in-progress mirrored stops before persisting (adversary FAILURE 2)
+        // Drop any caret-behind-EOL padding BEFORE the cursor is captured, so we neither save the spaces
+        // (file mode reads getValue() directly, bypassing gatherSlots) nor persist a caret sitting in
+        // padding that won't exist when the procedure is reopened.
+        trimPad();
         // Persist the cursor on save (#13) — from the FOCUSED pane — restored next time the proc opens.
         var cpos = activeEd().getPosition();
         if (cpos) postToHost({ action: 'saveCursor', line: cpos.lineNumber, column: cpos.column });
@@ -2797,6 +2809,7 @@
         addFormatAction(editor2);       // right-click → Format Selection in the split pane too
         installAutoCase(editor2);       // as-you-type keyword casing in the split pane too
         installFormatOnEnter(editor2);  // format the completed line on Enter in the split pane too
+        installCaretBehindEol(editor2); // caret-behind-EOL in the split pane too (shared model, one padded line)
         installDropInsert(editor2);    // accept Data-pad drops in the split pane too
         wireGlyphBookmark(editor2);
         wireCtrlClickDefinition(editor2);   // Ctrl+Click go-to-definition in the split pane too (#40)
@@ -3851,7 +3864,248 @@
     // tab changes them). Editing a control applies live AND posts to the host to persist + broadcast.
     // GH #126: last IDE-shipped indentation pair (Options → Text Editor), cached across payloads so
     // locally-built settings (which carry only stored prefs) keep honoring follow-IDE mode.
-    var _ideTabSize = null, _ideInsertSpaces = false;
+    // ===================== Caret behind EOL ("Can move caret behind EOL") =====================
+    // Clarion lets the caret sit past the end of a line: right-arrow at EOL keeps going right instead of
+    // wrapping, and a click past EOL lands where you clicked. Monaco has NO virtual space — setPosition
+    // clamps through model.validatePosition — so the caret can only occupy a column that actually exists.
+    // We therefore pad the line with real spaces on demand and take them away again the moment the caret
+    // leaves, so nothing is ever saved with our padding in it.
+    //
+    // Invariant: AT MOST ONE line is padded at any moment, and it is the caret's line. Everything below
+    // exists to preserve that.
+    //
+    // Three rules that make the padding safe:
+    //   1. Edits go through model.applyEdits (NOT pushEditOperations) — no undo stop, so Ctrl+Z can never
+    //      strand the user inside phantom spaces.
+    //   2. Every pad/trim runs under the page's existing `guarding` flag, which is what the
+    //      onDidChangeModelContent handlers already check before calling setDirty(true). Padding therefore
+    //      cannot light the ● indicator or push a bogus buffer to the host.
+    //   3. In embed mode we refuse to pad outside an editable slot — generated code is never touched, and
+    //      the caret just behaves as it did before on those lines.
+    var caretBehindEolOn = false;
+    var _pad = null;            // { ed, line, origMax, count } — the single padded line, or null
+    var _padGoal = null;        // our own goal column for up/down (Monaco's is clamped and unusable)
+
+    function setCaretBehindEol(on) {
+        on = !!on;
+        if (caretBehindEolOn === on) return;
+        caretBehindEolOn = on;
+        if (!on) { trimPad(); _padGoal = null; }
+    }
+
+    function spaces(n) { return n > 0 ? new Array(n + 1).join(' ') : ''; }
+
+    // Never pad a read-only editor, and in embed mode never pad outside an editable slot.
+    function padAllowed(ed, line) {
+        try {
+            if (ed.getOption && monaco.editor.EditorOption &&
+                ed.getOption(monaco.editor.EditorOption.readOnly)) return false;
+            var m = ed.getModel().getLineMaxColumn(line);
+            return isEditableRange(new monaco.Range(line, m, line, m));
+        } catch (e) { return false; }
+    }
+
+    // Run a padding edit under the dirty-suppressing guard. Returns false if anything looks off.
+    function padEdit(ed, range, text) {
+        var prev = guarding;
+        guarding = true;
+        try { ed.getModel().applyEdits([{ range: range, text: text }]); return true; }
+        catch (e) { return false; }
+        finally { guarding = prev; }
+    }
+
+    // Make `column` a valid position on `line`, padding with spaces if it lies past the real text.
+    // Returns true when the caret may legally be placed there.
+    function ensurePad(ed, line, column) {
+        if (!caretBehindEolOn || !ed) return false;
+        var model = ed.getModel();
+        if (!model || line < 1 || line > model.getLineCount()) return false;
+        if (_pad && !(_pad.ed === ed && _pad.line === line)) trimPad();
+        if (!_pad) {
+            var m = model.getLineMaxColumn(line);
+            if (column <= m) return true;                 // nothing virtual about this column
+            if (!padAllowed(ed, line)) return false;
+            _pad = { ed: ed, line: line, origMax: m, count: 0 };
+        }
+        var want = Math.max(0, column - _pad.origMax);
+        if (want === _pad.count) return true;
+        var from = _pad.origMax + _pad.count;             // current end-of-line column
+        var ok = (want > _pad.count)
+            ? padEdit(ed, new monaco.Range(line, from, line, from), spaces(want - _pad.count))
+            : padEdit(ed, new monaco.Range(line, _pad.origMax + want, line, from), '');
+        if (!ok) { trimPad(); return false; }
+        _pad.count = want;
+        if (want === 0) _pad = null;                      // fully collapsed — stop tracking
+        return true;
+    }
+
+    // Remove our padding run. Deliberately conservative: if the tail is no longer pure spaces the user has
+    // typed at the virtual column, which means those spaces became content they committed to (exactly what
+    // native Clarion does) — we stop tracking and leave the line alone.
+    function trimPad() {
+        if (!_pad) return;
+        var p = _pad;
+        _pad = null;
+        if (p.count <= 0) return;
+        try {
+            var model = p.ed.getModel();
+            if (!model || p.line > model.getLineCount()) return;
+            var end = model.getLineMaxColumn(p.line);
+            var start = end - p.count;
+            if (start < p.origMax) return;                // line shrank under us — not ours to trim
+            var tail = model.getValueInRange(new monaco.Range(p.line, start, p.line, end));
+            if (!/^ +$/.test(tail)) return;               // user typed here; the spaces are real now
+            padEdit(p.ed, new monaco.Range(p.line, start, p.line, end), '');
+        } catch (e) { }
+    }
+
+    function installCaretBehindEol(ed) {
+        if (!ed || ed._cbeolInstalled) return;
+        ed._cbeolInstalled = true;
+
+        // Click past EOL. e.target.mouseColumn is the UNCLAMPED column under the pointer — e.target.position
+        // is already clamped to the line end and is useless for this.
+        ed.onMouseDown(function (e) {
+            if (!caretBehindEolOn || !e || !e.target) return;
+            var pos = e.target.position;
+            var mc = e.target.mouseColumn;
+            if (!pos || typeof mc !== 'number' || mc <= pos.column) return;
+            if (e.event && e.event.altKey) return;          // leave column-select / multi-cursor alone
+            if (!ensurePad(ed, pos.lineNumber, mc)) return;
+            if (e.event && e.event.shiftKey) {
+                // Shift+click past EOL extends the existing selection out to the clicked column.
+                var s0 = ed.getSelection();
+                ed.setSelection({
+                    selectionStartLineNumber: s0 ? s0.selectionStartLineNumber : pos.lineNumber,
+                    selectionStartColumn: s0 ? s0.selectionStartColumn : pos.column,
+                    positionLineNumber: pos.lineNumber,
+                    positionColumn: mc
+                });
+            } else {
+                ed.setPosition({ lineNumber: pos.lineNumber, column: mc });
+            }
+            _padGoal = mc;
+        });
+
+        ed.onKeyDown(function (e) {
+            if (!caretBehindEolOn) return;
+            var pos = ed.getPosition();
+            if (!pos) return;
+            var model = ed.getModel();
+            if (!model) return;
+            var KC = monaco.KeyCode;
+            var sel = ed.getSelection();
+            var hasSel = sel && !sel.isEmpty();
+
+            // Right-arrow at the end of the line: go right instead of wrapping to the next line.
+            // NOTE the !e.shiftKey guard — on the FIRST shift+right the selection is still empty, so hasSel
+            // is false and this branch would otherwise swallow the keystroke and collapse the selection.
+            if (e.keyCode === KC.RightArrow && !e.ctrlKey && !e.altKey && !e.shiftKey && !hasSel) {
+                if (pos.column >= model.getLineMaxColumn(pos.lineNumber)) {
+                    if (ensurePad(ed, pos.lineNumber, pos.column + 1)) {
+                        e.preventDefault(); e.stopPropagation();
+                        ed.setPosition({ lineNumber: pos.lineNumber, column: pos.column + 1 });
+                        _padGoal = pos.column + 1;
+                    }
+                }
+                return;
+            }
+            // Shift+right at EOL extends the selection past the end of the line.
+            if (e.keyCode === KC.RightArrow && e.shiftKey && !e.ctrlKey && !e.altKey) {
+                if (pos.column >= model.getLineMaxColumn(pos.lineNumber)) {
+                    if (ensurePad(ed, pos.lineNumber, pos.column + 1)) {
+                        e.preventDefault(); e.stopPropagation();
+                        ed.setSelection({
+                            selectionStartLineNumber: sel ? sel.selectionStartLineNumber : pos.lineNumber,
+                            selectionStartColumn: sel ? sel.selectionStartColumn : pos.column,
+                            positionLineNumber: pos.lineNumber,
+                            positionColumn: pos.column + 1
+                        });
+                        _padGoal = pos.column + 1;
+                    }
+                }
+                return;
+            }
+            // End goes to the REAL end of the line, not the end of our padding (Clarion semantics).
+            if (e.keyCode === KC.End && !e.ctrlKey && !e.shiftKey && !hasSel && _pad && _pad.line === pos.lineNumber) {
+                var real = _pad.origMax;
+                e.preventDefault(); e.stopPropagation();
+                trimPad();
+                ed.setPosition({ lineNumber: pos.lineNumber, column: real });
+                _padGoal = null;
+                return;
+            }
+            // Up/down keep the virtual column. Monaco's own goal column is clamped, so we carry our own and
+            // re-pad the destination line to it.
+            // Shift is excluded for the same first-keystroke reason as right-arrow: vertical selection stays
+            // with Monaco (clamped to real text), rather than us half-owning it.
+            if ((e.keyCode === KC.UpArrow || e.keyCode === KC.DownArrow) && !e.ctrlKey && !e.altKey && !e.shiftKey && !hasSel) {
+                var goal = _padGoal || pos.column;
+                var target = pos.lineNumber + (e.keyCode === KC.DownArrow ? 1 : -1);
+                if (target < 1 || target > model.getLineCount()) return;
+                if (goal <= model.getLineMaxColumn(target)) return;   // real text reaches that far — let Monaco do it
+                e.preventDefault(); e.stopPropagation();
+                trimPad();
+                if (ensurePad(ed, target, goal)) ed.setPosition({ lineNumber: target, column: goal });
+                else ed.setPosition({ lineNumber: target, column: ed.getModel().getLineMaxColumn(target) });
+                _padGoal = goal;
+                return;
+            }
+            // Any other navigation key resets the goal column, matching Monaco's own behaviour.
+            if (e.keyCode === KC.LeftArrow || e.keyCode === KC.Home || e.keyCode === KC.PageUp || e.keyCode === KC.PageDown)
+                _padGoal = null;
+        });
+
+        // Central reconciler: whenever the caret ends up somewhere else, make the invariant true again.
+        // Moving off the padded line trims it; moving left inside the padding shrinks it to fit.
+        ed.onDidChangeCursorPosition(function (e) {
+            if (!_pad) return;
+            var pos = e.position;
+            if (_pad.ed !== ed || _pad.line !== pos.lineNumber) { trimPad(); return; }
+            if (pos.column < _pad.origMax + _pad.count) ensurePad(ed, pos.lineNumber, pos.column);
+        });
+
+        // Blur is the other way the caret "leaves" — a tab switch or a click into a pad must not freeze
+        // padding into the buffer.
+        ed.onDidBlurEditorText(function () { trimPad(); });
+    }
+
+    var _ideOpts = null;
+
+    // Cache the ide* bundle when a payload carries one. Host payloads (load) and cross-tab broadcasts do;
+    // locally-built payloads from onSettingChanged do NOT, which is exactly why this is cached rather than
+    // read per call — otherwise toggling any gear control would drop follow-mode until the next reload.
+    // ideTabSize is the sentinel: ToDict ships the whole block or none of it.
+    function captureIdeOptions(s) {
+        if (typeof s.ideTabSize !== 'number') return;
+        _ideOpts = {
+            tabSize: s.ideTabSize,
+            insertSpaces: !!s.ideInsertSpaces,
+            cursorBehindEOL: !!s.ideCursorBehindEOL,
+            lineNumbers: s.ideLineNumbers,
+            folding: !!s.ideFolding,
+            renderWhitespace: s.ideRenderWhitespace,
+            mouseWheelZoom: !!s.ideMouseWheelZoom,
+            rulers: (s.ideRulers && s.ideRulers.length !== undefined) ? s.ideRulers : [],
+            matchBrackets: s.ideMatchBrackets,
+            emptySelectionClipboard: !!s.ideEmptySelectionClipboard,
+            autoIndent: s.ideAutoIndent,
+            renderLineHighlight: s.ideRenderLineHighlight,
+            // Font keys are OMITTED by the host when Clarion's DefaultFont descriptor didn't parse. Null
+            // here means "IDE has no opinion" and the stored pref wins even in follow mode.
+            fontFamily: (typeof s.ideFontFamily === 'string' && s.ideFontFamily !== '') ? s.ideFontFamily : null,
+            fontSize: (typeof s.ideFontSize === 'number' && s.ideFontSize > 0) ? s.ideFontSize : null
+        };
+    }
+
+    // Effective value for one key: the IDE's when follow-mode is on and the IDE actually supplied it,
+    // otherwise the caller's stored/default value. `stored` doubles as the pre-sweep hardcoded default for
+    // the keys that never had a gear pref, so follow-mode OFF is byte-identical to the old behaviour.
+    function effIde(followIde, key, stored) {
+        if (!followIde || !_ideOpts) return stored;
+        var v = _ideOpts[key];
+        return (v === null || v === undefined) ? stored : v;
+    }
 
     function applyEditorSettings(s) {
         if (!s) return;
@@ -3859,13 +4113,19 @@
         // formatterOptions() (Ctrl+I can't fire pre-init anyway, but the next one will then honor it). (deac3d16 adversary LOW)
         lastSettings = s;
         if (s.splitOrientation === 'v' || s.splitOrientation === 'h') splitOrientation = s.splitOrientation;
+        // Capture + resolve follow-mode BEFORE building opts — the font and the swept options below all
+        // need it, not just the indentation pair at the end.
+        captureIdeOptions(s);
+        var followIde = (s.followIdeIndentation !== false);
         if (!editor) return;
         var opts = {};
-        if (typeof s.fontSize === 'number') opts.fontSize = s.fontSize;
+        var effFontSize = effIde(followIde, 'fontSize', s.fontSize);
+        if (typeof effFontSize === 'number') opts.fontSize = effFontSize;
         // Font family (#60): blank = Monaco's Windows default. Monaco falls back per CSS rules if the
         // named font isn't installed, so a typo degrades gracefully to monospace.
         var ff = (typeof s.fontFamily === 'string') ? s.fontFamily.trim() : '';
-        opts.fontFamily = ff !== '' ? ff : "Consolas, 'Courier New', monospace";
+        var effFF = effIde(followIde, 'fontFamily', ff);
+        opts.fontFamily = effFF !== '' ? effFF : "Consolas, 'Courier New', monospace";
         // Same-name highlight (#62): occurrencesHighlight is an ENUM in Monaco 0.37+ ('off'|'singleFile'|
         // 'multiFile'); selectionHighlight is still a boolean. One toggle drives both. Turning OFF also
         // needs a manual sweep (below, after updateOptions) — the word/selection highlighter contributions
@@ -3876,7 +4136,20 @@
         opts.wordWrap = s.wordWrap ? 'on' : 'off';
         opts.minimap = { enabled: !!s.minimap };
         opts.scrollbar = { horizontal: s.horizontalScrollbar || 'auto' };   // auto | visible | hidden (task 37e2079f)
-        opts.autoIndent = s.autoIndent ? 'full' : 'keep';
+        opts.autoIndent = effIde(followIde, 'autoIndent', s.autoIndent ? 'full' : 'keep');
+        // --- Swept Options → Text Editor keys. None of these ever had a gear pref: the `stored` argument is
+        // the literal that used to be hardcoded at editor-create time, so with follow-mode OFF this block is
+        // a no-op and behaviour is byte-identical to before the sweep. Setting them HERE (rather than editing
+        // the two createEditor option blocks) is deliberate — applyEditorSettings already fans out to the
+        // split pane via editor2.updateOptions(opts), so one code path keeps both panes from drifting.
+        opts.lineNumbers = effIde(followIde, 'lineNumbers', 'on');
+        opts.folding = effIde(followIde, 'folding', true);
+        opts.renderWhitespace = effIde(followIde, 'renderWhitespace', 'selection');
+        opts.mouseWheelZoom = effIde(followIde, 'mouseWheelZoom', true);
+        opts.rulers = effIde(followIde, 'rulers', []);
+        opts.matchBrackets = effIde(followIde, 'matchBrackets', 'always');
+        opts.emptySelectionClipboard = effIde(followIde, 'emptySelectionClipboard', true);
+        opts.renderLineHighlight = effIde(followIde, 'renderLineHighlight', 'line');
         // Live insert-key acceptance: read by toMonacoCompletion on the next keystroke (default ON if absent).
         if (typeof s.completeOnInsertKey === 'boolean') commitKeysEnabled = s.completeOnInsertKey;
         // Live as-you-type aids (deac3d16): keyword casing follows the formatter's keywordCase, and the
@@ -3901,12 +4174,13 @@
         // broadcasts carry them; locally-built payloads from onSettingChanged don't, so the last
         // host-shipped pair is cached). Effective pair = follow-mode ? IDE : stored. The Smart
         // Formatter inherits automatically — formatterOptions() reads the live model options back.
-        if (typeof s.ideTabSize === 'number') { _ideTabSize = s.ideTabSize; _ideInsertSpaces = !!s.ideInsertSpaces; }
-        var followIde = (s.followIdeIndentation !== false);
-        var effTab = (followIde && _ideTabSize !== null) ? _ideTabSize : s.tabSize;
-        var effSpaces = (followIde && _ideTabSize !== null) ? _ideInsertSpaces : !!s.insertSpaces;
+        var effTab = effIde(followIde, 'tabSize', s.tabSize);
+        var effSpaces = !!effIde(followIde, 'insertSpaces', !!s.insertSpaces);
         if (model && typeof effTab === 'number')
             model.updateOptions({ tabSize: effTab, insertSpaces: effSpaces });
+        // Caret-behind-EOL has no Monaco option — it arms the page's own pad/trim engine instead. When this
+        // resolves false NOTHING in that engine engages, which is the regression floor for the whole feature.
+        setCaretBehindEol(!!effIde(followIde, 'cursorBehindEOL', !!s.cursorBehindEOL));
         // Key-binding overrides (command id -> chord). Replace the live map and re-dispatch from it.
         if (s.keyBindings && typeof s.keyBindings === 'object') {
             keyBindings = sanitizeLoadedKeyBindings(s.keyBindings);
@@ -3964,14 +4238,17 @@
         return clean;
     }
 
-    // GH #126: gray out the manual Tab size / Insert spaces inputs while follow-IDE mode owns them.
-    // The inputs keep showing the STORED prefs (not the IDE values), so unticking restores them exactly.
+    // GH #126: gray out the manual inputs while follow-IDE mode owns them. Tab size / Insert spaces keep
+    // showing the STORED prefs (not the IDE values), so unticking restores them exactly. Caret-behind-EOL
+    // is the exception: it's a single checkbox with no separate display, so populateSettingsPanel shows the
+    // EFFECTIVE state there — disabled, but honest about what's actually in force.
     function syncFollowIdeUi() {
         var f = document.getElementById('setFollowIdeIndent');
         var on = !!(f && f.checked);
         var el;
         if ((el = document.getElementById('setTabSize'))) el.disabled = on;
         if ((el = document.getElementById('setInsertSpaces'))) el.disabled = on;
+        if ((el = document.getElementById('setCursorBehindEol'))) el.disabled = on;
     }
 
     function populateSettingsPanel(s) {
@@ -3980,6 +4257,12 @@
         if ((el = document.getElementById('setFollowIdeIndent'))) el.checked = (s.followIdeIndentation !== false);   // default ON (GH #126)
         if ((el = document.getElementById('setTabSize')) && typeof s.tabSize === 'number') el.value = s.tabSize;
         if ((el = document.getElementById('setInsertSpaces'))) el.checked = !!s.insertSpaces;
+        // Show the EFFECTIVE state: in follow mode the IDE's value is what's actually in force, so the box
+        // reflects that rather than the stored pref sitting behind it (syncFollowIdeUi disables it there).
+        if ((el = document.getElementById('setCursorBehindEol'))) {
+            var followingEol = (s.followIdeIndentation !== false) && (typeof s.ideCursorBehindEOL === 'boolean');
+            el.checked = followingEol ? !!s.ideCursorBehindEOL : !!s.cursorBehindEOL;
+        }
         syncFollowIdeUi();
         if ((el = document.getElementById('setAutoIndent'))) el.checked = !!s.autoIndent;
         if ((el = document.getElementById('setWordWrap'))) el.checked = !!s.wordWrap;
@@ -4061,6 +4344,7 @@
             // GH #126: follow-IDE mode (default ON) — the host ships ideTabSize/ideInsertSpaces and the
             // page computes the effective pair; the two stored values below stay the user's own prefs.
             followIdeIndentation: (function () { var e = document.getElementById('setFollowIdeIndent'); return e ? !!e.checked : true; })(),
+            cursorBehindEOL: (function () { var e = document.getElementById('setCursorBehindEol'); return e ? !!e.checked : false; })(),
             tabSize: num('setTabSize', 2, 1, 16),
             insertSpaces: chk('setInsertSpaces'),
             autoIndent: chk('setAutoIndent'),
@@ -4572,7 +4856,7 @@
             // reopening later must not offer a stale "current → imported" the developer has since changed.
             if (p.classList.contains('hidden')) vscHide();
         });
-        var ids = ['setFollowIdeIndent', 'setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setFontFamily', 'setOccurrenceHighlight', 'setHorizontalScrollbar',
+        var ids = ['setFollowIdeIndent', 'setCursorBehindEol', 'setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setFontFamily', 'setOccurrenceHighlight', 'setHorizontalScrollbar',
             // Smart Formatter controls
             'setPreferredColumn', 'setContLineMultiplier', 'setIndentComments', 'setDontIndentCol1Comments', 'setFormatLineOnEnter',
             'setAutoSpaceEquals', 'setLiveKeywordCase',

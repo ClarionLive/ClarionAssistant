@@ -44,6 +44,13 @@ namespace ClarionAssistant.Services
         // Split-editor pane orientation: "v" (side by side) | "h" (top / bottom). Default v.
         public string SplitOrientation = "v";
 
+        // Clarion's "Can move caret behind EOL": right-arrow at EOL keeps going right on the same line
+        // instead of wrapping, and a click past EOL lands where you clicked. Monaco has NO virtual space
+        // (setPosition clamps through validatePosition), so the page emulates it with transient space
+        // padding that is trimmed before anything is saved. Default OFF — this is the stored pref used
+        // when "Follow Clarion's editor options" is unticked; in follow mode ideCursorBehindEOL wins.
+        public bool CursorBehindEOL = false;
+
         /// <summary>
         /// User key-binding OVERRIDES only: command id → canonical chord string (e.g. "Ctrl+Shift+Y").
         /// The default chord for every command lives in the HTML command table — C# stores only the
@@ -102,6 +109,7 @@ namespace ClarionAssistant.Services
                 s.OccurrenceHighlight = GetBool(sv, "OccurrenceHighlight", s.OccurrenceHighlight);
                 s.HorizontalScrollbar = NormalizeScrollbar(sv.Get(Prefix + "HorizontalScrollbar"));
                 s.SplitOrientation = NormalizeSplitOrientation(sv.Get(Prefix + "SplitOrientation"));
+                s.CursorBehindEOL = GetBool(sv, "CursorBehindEOL", s.CursorBehindEOL);
                 s.KeyBindings = ParseKeyBindings(sv.Get(Prefix + "KeyBindings"));
                 s.Formatter = ParseFormatter(sv.Get(Prefix + "Formatter"));
             }
@@ -125,6 +133,7 @@ namespace ClarionAssistant.Services
             sv.Set(Prefix + "OccurrenceHighlight", OccurrenceHighlight ? "true" : "false");
             sv.Set(Prefix + "HorizontalScrollbar", NormalizeScrollbar(HorizontalScrollbar));
             sv.Set(Prefix + "SplitOrientation", NormalizeSplitOrientation(SplitOrientation));
+            sv.Set(Prefix + "CursorBehindEOL", CursorBehindEOL ? "true" : "false");
             // Compact JSON, single line — SettingsService rejects CR/LF in values, and the serializer
             // never emits them. Empty map persists as "{}" (clears any prior overrides).
             sv.Set(Prefix + "KeyBindings", new JavaScriptSerializer().Serialize(SanitizeBindings(KeyBindings)));
@@ -156,6 +165,7 @@ namespace ClarionAssistant.Services
             object so;
             if (d.TryGetValue("splitOrientation", out so) && so != null)
                 s.SplitOrientation = NormalizeSplitOrientation(so.ToString());
+            s.CursorBehindEOL = ToBool(d, "cursorBehindEOL", s.CursorBehindEOL);
             object kb;
             if (d.TryGetValue("keyBindings", out kb) && kb is IDictionary<string, object>)
             {
@@ -192,20 +202,35 @@ namespace ClarionAssistant.Services
                 { "occurrenceHighlight", OccurrenceHighlight },
                 { "horizontalScrollbar", HorizontalScrollbar },
                 { "splitOrientation", SplitOrientation },
+                { "cursorBehindEOL", CursorBehindEOL },
                 { "keyBindings", SanitizeBindings(KeyBindings) }
             };
             // Merge the formatter pass-through bag so the bridge payload (load + cross-tab broadcast) carries
             // the gear-panel formatter options the same way it carries the editor keys.
             foreach (var kv in SanitizeFormatter(Formatter)) dict[kv.Key] = kv.Value;
-            // GH #126: ship the IDE's live Options → Text Editor indentation pair ALONGSIDE the stored
-            // prefs (never instead of them). The page computes the effective tabSize/insertSpaces
+            // GH #126 (+ sweep): ship the IDE's live Options → Text Editor values ALONGSIDE the stored prefs
+            // (never instead of them). The page computes the effective value per key
             // (followIdeIndentation ? ide : stored), so persisted prefs survive the follow mode and
             // unticking restores them exactly. Read fresh per payload — PropertyService is live.
-            int ideTab; bool ideSpaces;
-            if (IdeEditorOptions.TryRead(out ideTab, out ideSpaces))
+            IdeEditorOptionValues ide;
+            if (IdeEditorOptions.TryReadAll(out ide))
             {
-                dict["ideTabSize"] = ideTab;
-                dict["ideInsertSpaces"] = ideSpaces;
+                dict["ideTabSize"] = ide.TabSize;
+                dict["ideInsertSpaces"] = ide.InsertSpaces;
+                dict["ideCursorBehindEOL"] = ide.CursorBehindEOL;
+                dict["ideLineNumbers"] = ide.LineNumbers;
+                dict["ideFolding"] = ide.Folding;
+                dict["ideRenderWhitespace"] = ide.RenderWhitespace;
+                dict["ideMouseWheelZoom"] = ide.MouseWheelZoom;
+                dict["ideRulers"] = ide.Rulers;
+                dict["ideMatchBrackets"] = ide.MatchBrackets;
+                dict["ideEmptySelectionClipboard"] = ide.EmptySelectionClipboard;
+                dict["ideAutoIndent"] = ide.AutoIndent;
+                dict["ideRenderLineHighlight"] = ide.RenderLineHighlight;
+                // Font keys ship ONLY when the IDE's descriptor actually parsed. Omitting them is the
+                // signal for the page to keep using the stored pref — never substitute a font of our own.
+                if (!string.IsNullOrEmpty(ide.FontFamily)) dict["ideFontFamily"] = ide.FontFamily;
+                if (ide.FontSize > 0) dict["ideFontSize"] = ide.FontSize;
             }
             return dict;
         }
