@@ -1585,6 +1585,11 @@ namespace ClarionAssistant.Terminal
             // reentrant stack that deadlocks the IDE — the same failure mode the deferred ShowView fixed on
             // open. Post it so this handler returns and the round-trip runs on a settled UI turn.
             var captured = current;
+            // DIAGNOSTIC (e1162adf): log the handoff, so the gap between THIS line and "[save-timing] enter"
+            // in the log measures how long the BeginInvoke sat queued. A large gap here means the UI thread
+            // was already blocked before the save even started — a completely different fault than a slow
+            // save round-trip, and worth being able to tell apart.
+            try { MonacoSpikeLog.Write("[save-timing] posted to UI thread (slots=" + captured.Count + ")"); } catch { }
             if (_panel != null && _panel.IsHandleCreated)
                 _panel.BeginInvoke((Action)(() => RunSaveRoundTrip(captured)));
             else
@@ -1915,12 +1920,34 @@ namespace ClarionAssistant.Terminal
         // WebView2 message loop and deadlock the IDE.
         private void RunSaveRoundTrip(List<string> current)
         {
+            // DIAGNOSTIC (ticket e1162adf): the FIRST embed save after a fresh Clarion start blocks ~60s
+            // before the embeditor closes; later saves in the same session take seconds. The page posts its
+            // "Saving…" toast and hands off immediately, so the stall is somewhere below this line — but
+            // "somewhere" is not good enough to fix it. These marks pin the phase to the millisecond.
+            // Pure logging: no behaviour change, no control flow depends on it.
+            var swSave = System.Diagnostics.Stopwatch.StartNew();
+            long lastMark = 0;
+            Action<string> mark = phase =>
+            {
+                try
+                {
+                    long now = swSave.ElapsedMilliseconds;
+                    MonacoSpikeLog.Write("[save-timing] " + phase + " +" + (now - lastMark) + "ms (total " + now + "ms)");
+                    lastMark = now;
+                }
+                catch { }
+            };
+
+            mark("enter");
             bool ok;
             string msg;
             // LIVE fast-path (ticket a5bbf005): if THIS tab still holds its native embed open, write straight back
             // into it (no re-open, no locator re-type). Otherwise — a demoted/background tab — fall back to the
             // proven re-open Save. Both share the same per-slot write + SaveAndClose tail.
             bool live = _liveLinked && IsStillLive();
+            // IsStillLive() calls AppTreeService().GetEmbedInfo() — an IDE round-trip, and a candidate in its
+            // own right for a first-call cost, so it gets its own mark rather than being folded into "enter".
+            mark("liveCheck(live=" + live + ",overlay=" + _embedOverlay + ",slots=" + current.Count + ")");
 
             // OVERLAY save-and-exit (a5bbf005): tear the Monaco surface OFF the embed host BEFORE SaveLive closes the
             // native embed. Closing it disposes the ClaGenEditor host panel, which would otherwise cascade-dispose
@@ -1932,7 +1959,9 @@ namespace ClarionAssistant.Terminal
             {
                 _teardownIntentional = true;   // save-and-exit — the buffer is being persisted, don't stash (d19c036d)
                 DetachOverlay();
+                mark("detachOverlay");
                 msg = ModernEmbeditorSaver.SaveLive(_procedureName, _editableRanges, _originalSlotTexts, current, out ok);
+                mark("SaveLive(overlay) ok=" + ok);
                 if (ok) _editStash = null;     // saved — any stash for this proc is now stale
                 try
                 {
@@ -1940,6 +1969,7 @@ namespace ClarionAssistant.Terminal
                     else MessageBox.Show(msg, "CA Embeditor — save", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
                 catch { }
+                mark("refreshPadSources(overlay) — DONE");
                 return;
             }
 
@@ -1947,6 +1977,9 @@ namespace ClarionAssistant.Terminal
                 msg = ModernEmbeditorSaver.SaveLive(_procedureName, _editableRanges, _originalSlotTexts, current, out ok);
             else
                 msg = ModernEmbeditorSaver.Save(_procedureName, _editableRanges, _originalSlotTexts, current, out ok);
+            // The prime suspect: Save() RE-OPENS the native embeditor and pumps DoEvents, which is where a
+            // one-time-per-session lazy ABC class load would be paid (see the warmup_abc tool).
+            mark((live ? "SaveLive" : "Save(re-open)") + " ok=" + ok);
 
             // A successful live save closed the native embed (SAVE-AND-EXIT) — drop the live link so Dispose won't
             // try to cancel an already-closed embed, and clear the global live pointer if it's us.
@@ -1961,9 +1994,12 @@ namespace ClarionAssistant.Terminal
             if (ok) { _mirroredDirty = false; _editStash = null; }   // persisted — mirror clean, stash stale (d19c036d)
             // The save activated the app tree to drive the embeditor — bring this tab back to the front.
             BringToFront();
+            mark("bringToFront");
             // Refresh the pad's IDE-sourced caches (UI thread) so Local/Global Data + Other Files reflect the save.
             if (ok) RefreshPadSources();
+            mark("refreshPadSources");
             PostSaveResult(ok, msg);
+            mark("postSaveResult — DONE");
 
             // SAVE-AND-EXIT (live mode only): once the round-trip has settled and the result posted, close this
             // tab — mirroring native Clarion embed editing. Deferred so it runs after the WebView2 gets its save
