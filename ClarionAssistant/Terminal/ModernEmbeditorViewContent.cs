@@ -2657,12 +2657,27 @@ namespace ClarionAssistant.Terminal
         {
             if (_sessionTornDown) return;
             _sessionTornDown = true;
+            // DIAGNOSTIC (e1162adf) — see DetachOverlay. RevertShadow makes a SYNCHRONOUS LSP call, so it is
+            // a prime suspect for the ~65s stall; these marks say so rather than leaving it inferred.
+            var swT = System.Diagnostics.Stopwatch.StartNew();
+            long lastT = 0;
+            Action<string> markT = phase =>
+            {
+                try
+                {
+                    long now = swT.ElapsedMilliseconds;
+                    MonacoSpikeLog.Write("[teardown-timing] " + phase + " +" + (now - lastT) + "ms (total " + now + "ms)");
+                    lastT = now;
+                }
+                catch { }
+            };
 
             // CA Find pad (#66): stop routing find traffic to this editor. Without this the broker keeps a
             // DEAD entry under this session's key (embed::<proc> / file path) forever; re-opening the same
             // procedure registers a second, live entry under the SAME key and any key-based lookup (the
             // search results tab) can pick the corpse and post into a disposed control — click does nothing.
             try { Services.CaFindBroker.UnregisterHost(this); } catch { }
+            markT("caFindUnregister");
 
             // #56: while this session was up, every LSP request pushed the wrapped embed buffer to the server
             // under the generated module's REAL path, overriding the on-disk file in the server's view. There
@@ -2670,10 +2685,13 @@ namespace ClarionAssistant.Terminal
             // thing that un-shadows it — without it the server keeps answering hover/definition/references
             // for that .clw from a closed buffer, silently, for the rest of the session.
             try { if (_lspContext != null) _lspContext.RevertShadow(); } catch { }
+            markT("lspRevertShadow(ctx=" + (_lspContext != null) + ")");
 
             lock (_instances) { _instances.Remove(this); }
+            markT("instancesRemove");
             try { _settingsReg?.Dispose(); } catch { }
             _settingsReg = null;
+            markT("settingsRegDispose — DONE");
         }
 
         /// <summary>Remove the Monaco surface (and cover) from the embeditor host and dispose it. Idempotent. The
@@ -2683,8 +2701,25 @@ namespace ClarionAssistant.Terminal
         {
             if (_overlayDetached) return;
             _overlayDetached = true;
+            // DIAGNOSTIC (e1162adf): the save-timing marks proved the ~65s stall lives HERE, not in the save
+            // (SaveLive itself takes ~700ms). These bisect DetachOverlay's steps so the next reproduction
+            // names the culprit outright instead of narrowing it again.
+            var swD = System.Diagnostics.Stopwatch.StartNew();
+            long lastD = 0;
+            Action<string> markD = phase =>
+            {
+                try
+                {
+                    long now = swD.ElapsedMilliseconds;
+                    MonacoSpikeLog.Write("[detach-timing] " + phase + " +" + (now - lastD) + "ms (total " + now + "ms)");
+                    lastD = now;
+                }
+                catch { }
+            };
             UnhookOverlayTeardown();
+            markD("unhookOverlayTeardown");
             UnwireNativeEmbedCaretMirror();   // stop mirroring BEFORE the native embed (and its caret) is torn down
+            markD("unwireCaretMirror");
 
             // Data-loss guard (d19c036d): an EXTERNAL teardown (Clarion's error→embed navigation closing the
             // native embed under us — anything but our own Save/Cancel) with unsaved Monaco edits stashes the
@@ -2705,9 +2740,12 @@ namespace ClarionAssistant.Terminal
             // Overlay mode is never ShowView'd, so the workbench never calls our Dispose() — this IS the
             // teardown for the shared session-scoped state too (broker entry, LSP shadow, instance list). (#119)
             TeardownSession();
+            markD("teardownSession");
 
             RestoreNativeChrome();
+            markD("restoreNativeChrome");
             RemoveOverlayCover();
+            markD("removeOverlayCover");
             try
             {
                 // Reparent the WebView2 out of the host FIRST (so a host disposal in flight can't cascade into it),
@@ -2715,11 +2753,14 @@ namespace ClarionAssistant.Terminal
                 if (_panel != null)
                 {
                     _panel.Parent?.Controls.Remove(_panel);
+                    markD("panelReparent");
                     _panel.Dispose();
+                    markD("panelDispose(WebView2)");
                     _panel = null;
                 }
             }
             catch { }
+            markD("DONE");
             if (ReferenceEquals(_liveInstance, this)) _liveInstance = null;
             _liveLinked = false;
             _embedOverlay = false;
