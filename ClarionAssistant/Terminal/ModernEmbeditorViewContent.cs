@@ -121,9 +121,19 @@ namespace ClarionAssistant.Terminal
                 { ClarionAssistant.MonacoSpikeLog.Write("error reveal: context for module line0 " + line0 + " not located uniquely in pwee doc — native fallback"); return false; }
 
                 live._panel.RevealLine(pweeLine0 + 1, col0 + 1);  // 0-based → Monaco 1-based
-                live.BringToFront();
+                // FocusOwningTab, NOT BringToFront: in overlay mode BringToFront only re-asserts the Monaco
+                // panel's z-order INSIDE the embeditor's host, which is invisible when some other document is
+                // the foreground tab. That is reachable from the Errors pane in two clicks (John's repro,
+                // 2026-08-07, errors in two procedures): click a row this overlay can't map (generated code
+                // belonging to the other procedure) and the native
+                // fallback opens the generated .clw as the active tab; every later row that DOES map then
+                // revealed correctly — the log showed the right pwee line each time — behind the .clw, so it
+                // read as "the Errors pane stopped navigating". FocusOwningTab raises the gen editor we are
+                // docked over, which is the tab that actually owns this session.
+                live.FocusOwningTab();
                 ClarionAssistant.MonacoSpikeLog.Write("error revealed in live overlay: module line0 " + line0 +
-                    " -> pwee line " + (pweeLine0 + 1) + " (context match, " + System.IO.Path.GetFileName(fileName) + ")");
+                    " -> pwee line " + (pweeLine0 + 1) + " (context match, " + System.IO.Path.GetFileName(fileName) +
+                    ") + raised owning tab");
                 return true;
             }
             catch (Exception ex)
