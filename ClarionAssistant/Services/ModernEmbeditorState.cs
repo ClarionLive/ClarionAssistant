@@ -202,20 +202,7 @@ namespace ClarionAssistant.Services
                 var root = ReadStateFile(path) ?? new Dictionary<string, object>();
                 var rec = (root.ContainsKey(procKey) ? root[procKey] as Dictionary<string, object> : null)
                           ?? new Dictionary<string, object>();
-                // DIAGNOSTIC (7d807826): the cursor is written, verified by read-back, and gone moments
-                // later with no SaveCursor in between. Update() is read-modify-write over the WHOLE file,
-                // so ANY writer that read a stale copy silently reverts every field it didn't touch.
-                // Log what each writer carries IN and OUT — a caller that reports cursorLine=1 on the way
-                // in while SaveCursor had just stored 60 is the clobberer, named outright.
-                int before = ToInt(rec, "cursorLine");
                 mutate(rec);
-                int after = ToInt(rec, "cursorLine");
-                try
-                {
-                    ClarionAssistant.MonacoSpikeLog.Write("[state] " + who + " key=" + procKey +
-                        " cursorLine read=" + before + " -> writing=" + after);
-                }
-                catch { }
                 root[procKey] = rec;
                 File.WriteAllText(path, new JavaScriptSerializer().Serialize(root), Encoding.UTF8);
             }
@@ -225,7 +212,7 @@ namespace ClarionAssistant.Services
                 // goes nowhere in a deployed build (see the LoggingService gotcha), so surface it in the
                 // log file that actually exists. Still non-fatal: this is best-effort UI state.
                 System.Diagnostics.Debug.WriteLine("[ModernEmbeditorState] Update: " + ex.Message);
-                try { ClarionAssistant.MonacoSpikeLog.Write("[state] Update FAILED for " + procKey + ": " + ex.Message); } catch { }
+                try { ClarionAssistant.MonacoSpikeLog.Write("[state] " + who + " FAILED for " + procKey + ": " + ex.Message); } catch { }
             }
         }
 

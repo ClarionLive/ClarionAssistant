@@ -3378,25 +3378,7 @@ namespace ClarionAssistant.Terminal
                 int column = data.ContainsKey("column") ? Convert.ToInt32(data["column"]) : 0;
                 if (line < 1) return;
                 EnsureHistoryScope();
-                // DIAGNOSTIC: cursor restore reported as landing on line 1. Pairs with the
-                // "[cursor] setSource sending" line — saving N and sending N back means the page's
-                // lineInEditable() guard rejected it (a saved line that is no longer inside an editable
-                // embed slot deliberately falls back to the top), which is a different thing entirely
-                // from the position never being stored.
                 ModernEmbeditorState.SaveCursor(_histSolutionPath, _histProcKey, line, column);
-                // Log AFTER the write, and read it straight back. Logging before only proved the message
-                // arrived — it could not distinguish "stored" from "silently failed to store", which is
-                // exactly the ambiguity that made the first round of this diagnosis inconclusive.
-                try
-                {
-                    int vl, vc; List<int> vb;
-                    ModernEmbeditorState.Load(_histSolutionPath, _histProcKey, out vl, out vc, out vb);
-                    MonacoSpikeLog.Write("[cursor] saveCursor line=" + line + " col=" + column +
-                        " -> readback line=" + vl + " col=" + vc +
-                        (vl == line ? " OK" : " *** MISMATCH ***") +
-                        " key=" + _histProcKey + " sol=" + (_histSolutionPath ?? "(null)"));
-                }
-                catch { }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] saveCursor: " + ex.Message); }
         }
@@ -3434,19 +3416,6 @@ namespace ClarionAssistant.Terminal
                 if (data == null) return;
                 var folds = ReadFoldRecords(data);
                 EnsureHistoryScope();
-                // DIAGNOSTIC (91107c1a): folds persisted as an EMPTY array even after collapsing a region.
-                // Log every inbound set with its count + first record, so the log distinguishes "the page
-                // never reported a collapsed fold" from "a later empty persist overwrote a good one".
-                try
-                {
-                    object totObj, viaObj;
-                    string tot = data.TryGetValue("total", out totObj) && totObj != null ? totObj.ToString() : "?";
-                    string via = data.TryGetValue("via", out viaObj) && viaObj != null ? viaObj.ToString() : "?";
-                    MonacoSpikeLog.Write("[folds] saveFolds received: " + folds.Count +
-                        (folds.Count > 0 ? " first=" + folds[0].Line + ":'" + folds[0].Text + "'" : " (EMPTY)") +
-                        " foldableRegions=" + tot + " via=" + via + " key=" + _histProcKey);
-                }
-                catch { }
                 ModernEmbeditorState.SaveFolds(_histSolutionPath, _histProcKey, folds);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] saveFolds: " + ex.Message); }
@@ -3733,12 +3702,8 @@ namespace ClarionAssistant.Terminal
                     List<int> bms;
                     ModernEmbeditorState.Load(_histSolutionPath, _histProcKey, out cursorLine, out cursorColumn, out bms);
                     bookmarksJson = ModernEmbeditorState.BookmarksJson(bms);
-                    var loadedFolds = ModernEmbeditorState.LoadFolds(_histSolutionPath, _histProcKey);
-                    foldsJson = ModernEmbeditorState.FoldsJson(loadedFolds);
-                    // DIAGNOSTIC (91107c1a): pairs with the "[folds] saveFolds received" line. Sending N>0 and
-                    // then immediately receiving 0 means restore matched nothing and the persist wiped it;
-                    // sending 0 means nothing was ever stored to begin with. Different bugs, same symptom.
-                    try { MonacoSpikeLog.Write("[folds] setSource sending " + loadedFolds.Count + " key=" + _histProcKey); } catch { }
+                    foldsJson = ModernEmbeditorState.FoldsJson(
+                        ModernEmbeditorState.LoadFolds(_histSolutionPath, _histProcKey));
                 }
                 catch { }
 
@@ -3757,9 +3722,6 @@ namespace ClarionAssistant.Terminal
                 // instead — far rarer, and far less annoying, than losing the position on every open.
                 if (_initialLine > 1) { cursorLine = _initialLine; cursorColumn = 1; }
                 _initialLine = 0;   // one-shot regardless, so a later reload can't re-apply a stale native line
-                // sol= is the missing half: save and load must resolve the SAME state file. A differing
-                // solution tag between the two would read a stale record and look exactly like this bug.
-                try { MonacoSpikeLog.Write("[cursor] setSource sending line=" + cursorLine + " col=" + cursorColumn + " key=" + _histProcKey + " sol=" + (_histSolutionPath ?? "(null)")); } catch { }
 
                 string snippetsJson;
                 try { snippetsJson = SnippetStore.ToJson(SnippetStore.Load()); }
