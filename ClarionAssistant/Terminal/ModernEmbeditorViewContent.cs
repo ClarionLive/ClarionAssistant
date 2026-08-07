@@ -1031,7 +1031,16 @@ namespace ClarionAssistant.Terminal
                 try
                 {
                     var ww = ed.GetType().GetProperty("WorkbenchWindow")?.GetValue(ed, null);
-                    if (ww != null) ww.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(ww, null);
+                    if (ww != null)
+                    {
+                        ww.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(ww, null);
+                        // SelectWindow only raises the DOCUMENT. The gen editor is not that document — it is a
+                        // SECONDARY view inside it (the app window's own view tabs), so the window comes forward
+                        // still showing whichever view was last active. That is the app tree, which is exactly
+                        // what John saw after this path started raising anything at all: the Errors row moved
+                        // focus to the app window but not onto the embeditor. Switch the inner view too.
+                        SwitchToView(ww, ed);
+                    }
                     try { if (_panel != null) _panel.BringToFront(); } catch { }   // Monaco back on top inside that host
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] FocusOwningTab: " + ex.Message); }
@@ -1040,6 +1049,53 @@ namespace ClarionAssistant.Terminal
             // reentrant stack is the deadlock we guard against everywhere else here.
             var ctx = System.Threading.SynchronizationContext.Current;
             if (ctx != null) ctx.Post(_ => raise(), null); else raise();
+        }
+
+        /// <summary>
+        /// Make <paramref name="target"/> the VISIBLE view inside its workbench window.
+        ///
+        /// SwitchView(int) is the only lever this fork gives us: ActiveViewContent is GET-ONLY on
+        /// IWorkbenchWindow (verified by reflecting ICSharpCode.SharpDevelop.dll — it exposes
+        /// get_ActiveViewContent with no setter, so assigning it was never an option). Index convention is
+        /// SharpDevelop's: 0 = the window's primary ViewContent, 1..n = ViewContent.SecondaryViewContents in
+        /// order. The ClaGenEditor lives in that secondary collection.
+        ///
+        /// Returns without touching anything when the target is ALREADY the active view — which is the
+        /// overwhelmingly common case (reveal into an embeditor that is already in front), so the switch only
+        /// ever runs for the cross-document case it exists to fix. That matters: switching views is the one
+        /// operation here with the potential to disturb the native surface our overlay is docked onto, and
+        /// this keeps it off the working path entirely.
+        /// </summary>
+        private static void SwitchToView(object ww, object target)
+        {
+            try
+            {
+                if (ww == null || target == null) return;
+                var active = ww.GetType().GetProperty("ActiveViewContent")?.GetValue(ww, null);
+                if (ReferenceEquals(active, target)) return;      // already showing — don't churn the tab
+
+                var primary = ww.GetType().GetProperty("ViewContent")?.GetValue(ww, null);
+                int index = -1;
+                if (ReferenceEquals(primary, target)) index = 0;
+                else if (primary != null)
+                {
+                    var sec = primary.GetType().GetProperty("SecondaryViewContents")?.GetValue(primary, null)
+                              as System.Collections.IEnumerable;
+                    if (sec != null)
+                    {
+                        int i = 1;
+                        foreach (var v in sec) { if (ReferenceEquals(v, target)) { index = i; break; } i++; }
+                    }
+                }
+                if (index < 0)
+                {
+                    ClarionAssistant.MonacoSpikeLog.Write("SwitchToView: target view not found among the window's views — left as-is");
+                    return;
+                }
+                ww.GetType().GetMethod("SwitchView", new[] { typeof(int) })?.Invoke(ww, new object[] { index });
+                ClarionAssistant.MonacoSpikeLog.Write("SwitchToView: switched owning window to view index " + index);
+            }
+            catch (Exception ex) { ClarionAssistant.MonacoSpikeLog.Write("SwitchToView error: " + ex.Message); }
         }
 
         /// <summary>If a Modern Embeditor tab for this procedure is already open, focus it. Returns true if found.</summary>
