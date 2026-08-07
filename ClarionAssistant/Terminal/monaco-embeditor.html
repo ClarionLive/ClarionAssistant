@@ -4249,6 +4249,13 @@
         if ((el = document.getElementById('setTabSize'))) el.disabled = on;
         if ((el = document.getElementById('setInsertSpaces'))) el.disabled = on;
         if ((el = document.getElementById('setCursorBehindEol'))) el.disabled = on;
+        // Font is CONDITIONAL, unlike the three above: the host omits ideFontFamily/ideFontSize when the
+        // IDE's font descriptor didn't parse, and in that case the stored pref still wins even with follow
+        // on — so only gray out the field the IDE actually has an opinion on.
+        if ((el = document.getElementById('setFontSize')))
+            el.disabled = on && !!_ideOpts && typeof _ideOpts.fontSize === 'number';
+        if ((el = document.getElementById('setFontFamily')))
+            el.disabled = on && !!_ideOpts && typeof _ideOpts.fontFamily === 'string' && _ideOpts.fontFamily !== '';
     }
 
     function populateSettingsPanel(s) {
@@ -4268,8 +4275,17 @@
         if ((el = document.getElementById('setWordWrap'))) el.checked = !!s.wordWrap;
         if ((el = document.getElementById('setMinimap'))) el.checked = !!s.minimap;
         if ((el = document.getElementById('setCompleteOnInsertKey'))) el.checked = (s.completeOnInsertKey !== false);
-        if ((el = document.getElementById('setFontSize')) && typeof s.fontSize === 'number') el.value = s.fontSize;
-        if ((el = document.getElementById('setFontFamily'))) el.value = (typeof s.fontFamily === 'string') ? s.fontFamily : '';
+        // Show the EFFECTIVE state (mirrors setCursorBehindEol above): while follow-mode owns the field via
+        // syncFollowIdeUi, display what's actually rendering rather than the stale stored pref sitting
+        // behind it.
+        if ((el = document.getElementById('setFontSize'))) {
+            var followingFontSize = (s.followIdeIndentation !== false) && _ideOpts && typeof _ideOpts.fontSize === 'number';
+            el.value = followingFontSize ? _ideOpts.fontSize : (typeof s.fontSize === 'number' ? s.fontSize : 13);
+        }
+        if ((el = document.getElementById('setFontFamily'))) {
+            var followingFontFamily = (s.followIdeIndentation !== false) && _ideOpts && typeof _ideOpts.fontFamily === 'string' && _ideOpts.fontFamily !== '';
+            el.value = followingFontFamily ? _ideOpts.fontFamily : ((typeof s.fontFamily === 'string') ? s.fontFamily : '');
+        }
         if ((el = document.getElementById('setOccurrenceHighlight'))) el.checked = (s.occurrenceHighlight !== false);   // default ON (#62)
         if ((el = document.getElementById('setHorizontalScrollbar'))) el.value = s.horizontalScrollbar || 'auto';
         populateFormatterPanel(s);
@@ -4856,7 +4872,7 @@
             // reopening later must not offer a stale "current → imported" the developer has since changed.
             if (p.classList.contains('hidden')) vscHide();
         });
-        var ids = ['setFollowIdeIndent', 'setCursorBehindEol', 'setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setFontFamily', 'setOccurrenceHighlight', 'setHorizontalScrollbar',
+        var ids = ['setCursorBehindEol', 'setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setFontFamily', 'setOccurrenceHighlight', 'setHorizontalScrollbar',
             // Smart Formatter controls
             'setPreferredColumn', 'setContLineMultiplier', 'setIndentComments', 'setDontIndentCol1Comments', 'setFormatLineOnEnter',
             'setAutoSpaceEquals', 'setLiveKeywordCase',
@@ -4867,9 +4883,25 @@
             var e = document.getElementById(ids[i]);
             if (e) e.addEventListener('change', onSettingChanged);
         }
-        // GH #126: toggling follow-IDE also grays/ungrays the manual pair (onSettingChanged persists it).
+        // GH #126 (+ font-follow-clobber fix): toggling follow-IDE also grays/ungrays the manual pair, then
+        // persists. When turning OFF, font size/family/cursor-behind-EOL must be restored to the STORED pref
+        // FIRST — while follow was on they were showing the EFFECTIVE (IDE) value (populateSettingsPanel's
+        // "EFFECTIVE state" rule), and onSettingChanged() below reads straight off the DOM. Without this,
+        // unchecking silently overwrites the stored pref with whatever IDE font/EOL value was on display.
+        // (setFollowIdeIndent is deliberately NOT in the generic `ids` loop above — this is its only
+        // listener, so the restore always runs before the save it triggers.)
         var fIde = document.getElementById('setFollowIdeIndent');
-        if (fIde) fIde.addEventListener('change', syncFollowIdeUi);
+        if (fIde) fIde.addEventListener('change', function () {
+            if (!fIde.checked) {
+                var s = lastSettings || {};
+                var el;
+                if ((el = document.getElementById('setFontSize')) && typeof s.fontSize === 'number') el.value = s.fontSize;
+                if ((el = document.getElementById('setFontFamily'))) el.value = (typeof s.fontFamily === 'string') ? s.fontFamily : '';
+                if ((el = document.getElementById('setCursorBehindEol'))) el.checked = !!s.cursorBehindEOL;
+            }
+            syncFollowIdeUi();
+            onSettingChanged();
+        });
         // Seed the formatter controls from DEFAULTS immediately (before host settings arrive) so a keybind
         // persist that runs first doesn't read empty/unchecked formatter controls and clobber the defaults.
         populateFormatterPanel(lastSettings);
