@@ -1057,11 +1057,47 @@ would delete them. `-Force` declares the spec authoritative and accepts the loss
 > an export stage inside it would clobber the very edit that triggered the run. Capture is a
 > separate, deliberate action taken *before* editing.
 
-### 13.6 Still unverified
+### 13.6 RESOLVED: `/ai` into an existing app REPLACES it — silently, exit 0
 
-`/ai` has only ever been run against a **non-existent** app. Importing a modified export back into
-an *existing* app is untested — merge vs replace, and how name clashes resolve. The ClarionCL path
-exposes no clash switch at all, while CA's `import_txa` MCP tool exposes `rename`/`replace`.
-Settle this before relying on incremental re-import; the round-trip above always built into an
-empty directory.
+Tested 2026-08-07. A six-procedure app carrying a hand-added embed and four per-instance
+`WindowResize` prompts; a TXA fragment declaring one new procedure imported into it with
+`/ai`. **The entire application was destroyed and rebuilt from the fragment.**
+
+| | before | after |
+|---|---|---|
+| Procedures | Main, BrowseCustomers, BrowseOrders, UpdateCustomer, UpdateOrders, OrdersReport | Main, AboutBox |
+| `MESSAGE` embed | present | **gone** |
+| `%AppStrategy` prompts | 4 | 0 |
+| `%RangeField` (range limit) | 1 | 0 |
+| `[ADDITION]` blocks (BrowseBox etc.) | many | 0 |
+| `.app` on disk | 245 KB | 41 KB |
+
+`Main` survived as a **name only** — declared in the fragment's `[APPLICATION]` header, with no
+window, no menubar, no additions. Everything the fragment did not mention was discarded.
+
+**Exit code 0. No warning, no prompt, no backup.** Nothing in stdout but the usual unrelated
+`CLCE004`. This is the §10.4 lesson in its most expensive form: the exit code says the operation
+succeeded, and it did — the operation is simply *replace*.
+
+Re-tested with a fragment carrying **no `[APPLICATION]` header** (bare `[MODULE]`/`[PROCEDURE]`),
+in case the header was the "this is the whole app" signal. Identical outcome: app 245 KB → 38 KB,
+embed gone. **The header is not the trigger; `/ai` has no merge mode.**
+
+Consequences:
+
+- `/ai` is only ever safe against a **non-existent** app — i.e. bootstrapping, which is all §1–§11
+  ever did. Treat it as `CREATE`, never `IMPORT`, whatever the switch is named.
+- **The handoff to the IDE is one-way on the ClarionCL path.** Once a developer has put work into
+  the `.app`, text can no longer contribute to it through `/ai`. Structural additions (a new browse
+  over a new table) must be made in the IDE, or the whole app re-bootstrapped from a spec that
+  already contains them.
+- Any harness or script that runs `/ai` against a path where an `.app` might already exist is one
+  stale file away from silent data loss. `New-ClarionApp.ps1` is safe by construction (`-Clean`
+  into a build dir, plus the app-newer-than-spec guard), but nothing else should call `/ai`
+  without checking first.
+
+**Still untested:** CA's `import_txa` MCP tool, which routes through the IDE and exposes
+`clash_mode` (`rename`/`replace`). Having an explicit clash parameter implies it merges rather than
+replaces, but that is an inference, not a measurement, and it must be tested on a scratch app —
+never on one holding real work.
 
