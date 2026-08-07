@@ -4,10 +4,13 @@ Contributed by [@geircodes](https://github.com/geircodes) alongside issues #79�
 the `LIKE(...)`/`EQUATE`-alias CLASS-member fix (PR #92), the GROUP-typed CLASS-member fix
 (PR #93), the inherited-CLASS-member dotted-call resolution fix (PR #112), the
 built-in-name-collision fix (PR #118), issue #97's attrs+same-line-terminator fix, and the
-overload-attribution fix (Bug P, this PR) — a single compiling Clarion solution whose procedures
-each exercise one historical parser/indexer bug. This is currently the only regression coverage the
+overload-attribution fix (Bug P) — a single compiling Clarion solution whose procedures each
+exercise one historical parser/indexer bug. This is currently the only regression coverage the
 CodeGraph parser has; run it after ANY change to `Parsing/ClarionParser.cs` or
 `Graph/CodeGraphIndexer.cs` (either synced copy).
+
+**Bug Q is the one exception**: `UnreachableLocalRefTest` (bottom of `WorkerLib.clw`) does NOT
+compile — deliberately; see its own section below for why that's fine here.
 
 Includes `WorkerClass.Ask` — a method whose name collides with the Clarion built-in `ASK()`
 statement — as coverage for Bug N (PR #118). Before that fix its two call sites resolved to
@@ -22,37 +25,40 @@ indexer\bin\Debug\clarion-indexer.exe index test-fixtures\codegraph-repro\ReproS
 ```
 
 ## Expected results (verified 2026-07-17 with all #79–#90 fixes applied, plus #92, #93, #112, and
-#118, then re-verified with #97 and with Bug P (this PR); line numbers below reflect the fixture
-AFTER Bug P's `OverloadBugClass.Dispatch` addition)
+#118, then re-verified with #97, with Bug P, and with Bug Q (2026-08-07); line numbers below
+reflect the fixture AFTER Bug Q's `WorkerLib.inc`/`WorkerLib.clw` additions — Bug Q added 14 lines
+before `OverloadBugClass.Dispatch`, so every line number at or after it shifted +14 from the
+Bug-P-era numbers previously documented here, and 2 lines were added to `Worker.clw` before
+`MainHelperProc`, shifting it +2)
 
 ### Callers of `WorkerClass.Sign` — exactly 22 `calls` rows
 
 | Caller | Line | Proves issue |
 |---|---|---|
-| TestSignatureFlow | 25 | baseline (direct call) |
-| TestSignatureFlow | 31 | baseline (second call shape) |
-| ParameterTest | 43 | #87 (call through PROCEDURE parameter) |
-| ReturnTest | 52 | baseline (inline RETURN call shape) |
-| MainHelperProc | 64 | #81 (procedure in main PROGRAM file) |
-| OwnerClass.CallViaMember | 63 | #84+#86 (.inc member, cross-file type) |
-| OwnerClass.CallViaCommentedMember | 85 | #85+#86 (trailing-comment member) |
-| CommentedLocalTest | 101 | #85 (trailing-comment DATA local) |
-| GroupBugClass.CallViaAfterGroupMember | 119 | #88 (member after inline GROUP END) |
-| PeriodBugClass.CallViaAfterPeriodMember | 135 | #88 (member after inline GROUP period) |
-| OmitTest | 172 | #79 (call after OMIT block) |
-| AfterOmitProc | 181 | #79 (procedure after OMIT block) |
-| CommentEmbeddedTest | 198 | #80 (call with embedded comment) |
-| ConditionalOmitTest | 212 | #79 (conditional OMIT/COMPILE) |
-| GroupQueueLocalTest | 231 | #89 (local after GROUP(Type) two-line) |
-| InlineLocalGroupTest | 246 | #89 (local after GROUP(Type) END inline) |
-| AttrTermLocalGroupTest | 266 | #97 (local after GROUP(Type),attrs + same-line terminator) |
-| LocalDerivedClassTest | 292 | #90 (attribution after local CLASS(Parent)) |
-| LikeMemberBugClass.CallViaPlainInstanceMember | 309 | #92 (call through a reference CLASS member, unaffected control) |
-| MultiLineGroupBugClass.CallViaAfterMultiLineGroupMember | 327 | #93 (member after multi-line GROUP with its own extra field) |
-| DerivedWorkerClass.CallViaInheritedMember | 338 | #112 (member declared on a BASE class, accessed via SELF. from a DERIVED class's own method) |
-| OverloadBugClass.Dispatch (LONG overload) | 349 | Bug P (own overload's call, correctly self-attributed — not misattributed to the CSTRING overload) |
+| TestSignatureFlow | 39 | baseline (direct call) |
+| TestSignatureFlow | 45 | baseline (second call shape) |
+| ParameterTest | 57 | #87 (call through PROCEDURE parameter) |
+| ReturnTest | 66 | baseline (inline RETURN call shape) |
+| MainHelperProc | 66 (`Worker.clw`) | #81 (procedure in main PROGRAM file) |
+| OwnerClass.CallViaMember | 77 | #84+#86 (.inc member, cross-file type) |
+| OwnerClass.CallViaCommentedMember | 99 | #85+#86 (trailing-comment member) |
+| CommentedLocalTest | 115 | #85 (trailing-comment DATA local) |
+| GroupBugClass.CallViaAfterGroupMember | 133 | #88 (member after inline GROUP END) |
+| PeriodBugClass.CallViaAfterPeriodMember | 149 | #88 (member after inline GROUP period) |
+| OmitTest | 186 | #79 (call after OMIT block) |
+| AfterOmitProc | 195 | #79 (procedure after OMIT block) |
+| CommentEmbeddedTest | 212 | #80 (call with embedded comment) |
+| ConditionalOmitTest | 226 | #79 (conditional OMIT/COMPILE) |
+| GroupQueueLocalTest | 245 | #89 (local after GROUP(Type) two-line) |
+| InlineLocalGroupTest | 260 | #89 (local after GROUP(Type) END inline) |
+| AttrTermLocalGroupTest | 280 | #97 (local after GROUP(Type),attrs + same-line terminator) |
+| LocalDerivedClassTest | 306 | #90 (attribution after local CLASS(Parent)) |
+| LikeMemberBugClass.CallViaPlainInstanceMember | 323 | #92 (call through a reference CLASS member, unaffected control) |
+| MultiLineGroupBugClass.CallViaAfterMultiLineGroupMember | 341 | #93 (member after multi-line GROUP with its own extra field) |
+| DerivedWorkerClass.CallViaInheritedMember | 352 | #112 (member declared on a BASE class, accessed via SELF. from a DERIVED class's own method) |
+| OverloadBugClass.Dispatch (LONG overload) | 363 | Bug P (own overload's call, correctly self-attributed — not misattributed to the CSTRING overload) |
 
-### Callers of `WorkerClass.Ask` — exactly 3 `calls` rows (Bug N fixed in #118, +1 from Bug P)
+### Callers of `WorkerClass.Ask` — exactly 5 `calls` rows (Bug N fixed in #118, +1 from Bug P, +2 from Bug Q)
 
 `Ask` is identical in shape to `Sign` (same class, same signature) — the only difference is its
 name, which happens to collide with the Clarion built-in `ASK()` window/UI statement. Both call
@@ -61,9 +67,11 @@ SAME call site, so the two can be compared line-for-line:
 
 | Caller | Line | Same-site `Sign` call (for comparison) | Path proven fixed |
 |---|---|---|---|
-| TestSignatureFlow | 30 | line 25 (`worker.Sign( 1 )`) | DATA-section local variable (baseline path) |
-| OwnerClass.CallViaMember | 69 | line 63 (`SELF.MyWorker.Sign( 10 )`) | cross-file CLASS member (#84/#86, and #112's inheritance walk when applicable) |
-| OverloadBugClass.Dispatch (CSTRING overload) | 368 | line 349 (`worker.Sign( pValue )`, LONG overload) | Bug P — sibling overload's call, correctly self-attributed to the CSTRING overload's own line (363), not the LONG overload's (346) |
+| TestSignatureFlow | 44 | line 39 (`worker.Sign( 1 )`) | DATA-section local variable (baseline path) |
+| OwnerClass.CallViaMember | 83 | line 77 (`SELF.MyWorker.Sign( 10 )`) | cross-file CLASS member (#84/#86, and #112's inheritance walk when applicable) |
+| OverloadBugClass.Dispatch (CSTRING overload) | 382 | line 363 (`worker.Sign( pValue )`, LONG overload) | Bug P — sibling overload's call, correctly self-attributed to the CSTRING overload's own line (377), not the LONG overload's (360) |
+| UnreachableLocalRefTest | 417 | n/a — calls the QUEUE,TYPE overload directly, no `Sign` call at this site | Bug Q — the call *resolves* correctly (its target, `worker`, is legitimately declared); Bug Q is about whether its bare-word ARGUMENT (`MyValue`) wrongly resolves, not about this relationship |
+| UnreachableLocalRefTest | 418 | n/a | Bug Q — same call, second argument (`TestQ`) is the one under test here |
 
 **Root cause (fixed by #118)**: `"ASK"` is in `ClarionBuiltins.cs`'s `_builtins` set (window/UI
 statement). Before #118 both the `SELF.Method` and the dotted `ObjectName.Method` call-detection
@@ -102,20 +110,75 @@ bodies' own calls can be told apart in the results:
   (inside the CSTRING overload) would be attributed as coming from the SAME one overload symbol —
   whichever loaded last — never from their own respective overloads.
 - **After the fix**: `WorkerClass.Sign` gains exactly one caller row from `OverloadBugClass.Dispatch`
-  at line 349, correctly attributed to the LONG overload's own definition line (346). `WorkerClass.Ask`
-  gains exactly one caller row from `OverloadBugClass.Dispatch` at line 368, correctly attributed to
-  the CSTRING overload's own definition line (363) — a different id than the Sign caller above, even
+  at line 363, correctly attributed to the LONG overload's own definition line (360). `WorkerClass.Ask`
+  gains exactly one caller row from `OverloadBugClass.Dispatch` at line 382, correctly attributed to
+  the CSTRING overload's own definition line (377) — a different id than the Sign caller above, even
   though both share the literal name `OverloadBugClass.Dispatch`.
 
 **Deliberately NOT fixed by this change, and not a regression if still true**: the
-`SELF.Dispatch(99)` call at line 367 (inside the CSTRING overload, intending to call the LONG
+`SELF.Dispatch(99)` call at line 381 (inside the CSTRING overload, intending to call the LONG
 overload) still resolves its call *target* to the CSTRING overload itself (i.e. `to_id`'s
-definition line is 363, not 346) — call-target resolution for an overloaded name still isn't
+definition line is 377, not 360) — call-target resolution for an overloaded name still isn't
 type-aware; it still picks whichever overload loaded last, same as before this fix. This fix only
 corrects the *caller* side (`currentProcId`/`currentProcName` — "which procedure is this line
 inside"), not the *callee* side (which overload a given call site actually invokes). Per-overload
 caller *counts* (grouping by `to_id` for an overloaded name) remain unreliable; "what does this
 specific overload call" (grouping by `from_id`) is now correct.
+
+### Bug Q: F12/Ctrl+Click's CodeGraph fallback resolved to an unrelated procedure's local
+
+Not a parser/indexer bug like A–P above — this reproduces the exact real-world trigger for a
+runtime bug in `SharedLspBridge.cs` (the ClarionAssistant addin's C#, a separate assembly this
+indexer never touches), discovered live: a call argument left undeclared by a typo/omission,
+whose name happened to already be a local elsewhere in the class.
+
+`CgDefinitionFromDb` (F12/Ctrl+Click's CodeGraph fallback, reached only once the upstream LSP's
+own scope search has already returned nothing) looked symbols up via a flat, unordered
+`WHERE LOWER(name)=LOWER(@name) LIMIT 1`, with no scope filter. Its sibling `CgHoverFromDb`
+already guards this exact shape with `IsUnreachableLocalVariable` — a "variable" symbol whose
+`parent_name` resolves to a `procedure`/`routine` symbol can never legitimately be referenced from
+outside that one procedure. `CgDefinitionFromDb` never called it.
+
+`MyValue` (a `LONG`) and `TestQ` (a `QUEUE(TestQtype)`) are declared ONLY as locals of
+`WorkerClass.Sign` (`WorkerLib.clw` line 10/11) — nowhere else in the solution.
+`UnreachableLocalRefTest` (bottom of `WorkerLib.clw`) references both by bare name as call
+arguments to `WorkerClass.Ask`'s new QUEUE-taking overload, without declaring either itself:
+
+```clarion
+result = worker.Ask( MyValue )                  ! MyValue undeclared here
+result = worker.Ask( 'test', result, TestQ )     ! TestQ undeclared here
+```
+
+This file therefore does **not** compile — deliberately, and unlike every other bug in this
+fixture. Referencing a genuinely undeclared identifier in real code is a hard Clarion compile
+error; that's the whole point (it's literally the compile error that led to this fixture addition
+— "no matching procedure", traced to this exact undeclared-argument shape). The indexer parses
+text regardless of compile state, and F12/hover/Ctrl+Click work off the live buffer regardless too
+— compiling was never a precondition for reproducing or fixing this.
+
+**Live-confirmed 2026-08-07** (`ClarionAssistant-git` = pre-fix, `ClarionAssistant-consolidated` =
+post-fix; both freshly re-indexed before each check — a stale `.codegraph.db` from a previous
+build gives misleading results, see [[gotcha_reindex_when_switching_ca_builds]]):
+- **F12 on `MyValue`**: pre-fix jumped to `WorkerClass.Sign`'s `MyValue` declaration — wrong (the
+  guard was missing). Post-fix: no definition found — correct.
+- **F12 / Ctrl+Click on `TestQ`**: post-fix, no definition found, no hover — correct. (Not
+  independently confirmed pre-fix; `MyValue`'s result already demonstrates the same code path,
+  and `TestQ` has the identical single-candidate DB shape.)
+
+**A second, independent bug was found alongside this one, upstream in Clarion-Extension**:
+hovering `MyValue` returned a *third* wrong answer — `WorkerLib.inc`'s `TestQtype` QUEUE,TYPE
+field declaration — which is neither of the two locations above and cannot have come from
+ClarionAssistant's CodeGraph fallback at all (confirmed: **no CodeGraph symbol exists for
+`TestQtype` or its `MyValue` field** — see the Symbols section below and
+[[gotcha_queue_type_invisible_to_codegraph]]). Root cause: Clarion-Extension's
+`MemberLocatorService.isVariableLookupCandidate` guards against resolving into a CLASS/INTERFACE
+member (`context.inClass || context.inInterface`, added for a prior bug — bare-word hover
+resolving to an unrelated class member) but has no equivalent check for `context.inQueueOrGroupOrRecord`,
+even though `StructureContext` already exposes that flag. A QUEUE/GROUP/RECORD field has the same
+property a CLASS member does — only reachable via qualified access (`TestQ.MyValue`), never as a
+bare word — so the same guard needs the same third condition. This is almost certainly also why
+the original "undeclared variable" diagnostic never fired: the resolver believes the name exists.
+Tracked separately; not fixed by this change.
 
 ### Symbols
 
@@ -168,17 +231,25 @@ specific overload call" (grouping by `from_id`) is now correct.
   as correctly as `WorkerClass.Sign` right next to it (proving the symbol/parsing side was always
   unaffected) — the bug was entirely in call-site resolution, not symbol capture. Compare against
   the "Callers of `WorkerClass.Ask`" table above.
-- `OverloadBugClass.Dispatch` (Bug P, this PR): two `procedure` symbols sharing the identical
-  name, at lines 346 (`( LONG pValue )`) and 363 (`( *CSTRING pValue )`) — both were ALWAYS
+- `OverloadBugClass.Dispatch` (Bug P): two `procedure` symbols sharing the identical
+  name, at lines 360 (`( LONG pValue )`) and 377 (`( *CSTRING pValue )`) — both were ALWAYS
   correctly stored as two distinct symbols (proving, like Bug N, that the bug was entirely in
   relationship resolution, not symbol capture). Compare against the "Bug P" writeup and the
   `WorkerClass.Sign`/`WorkerClass.Ask` caller tables above.
+- `MyValue` and `TestQ` (Bug Q): both `type='variable'`, `scope='local'`, `parent_name='WorkerClass.Sign'`
+  — the ONE legitimate declaration of each, and (since `FindSymbolByName`'s lookup is unordered
+  and unscoped) also the arbitrary wrong answer the pre-fix bug returned. `TestQtype` (the
+  `QUEUE,TYPE` in `WorkerLib.inc`) and its `MyValue` field: **no symbol at all** — confirmed by
+  direct query, not merely absent from this list — see [[gotcha_queue_type_invisible_to_codegraph]].
+  `UnreachableLocalRefTest` (Bug Q): a `procedure` symbol like any other; the point is what it does
+  NOT have — no `MyValue`- or `TestQ`-named local of its own.
 
 ### Program symbol (#81)
 
 - `Worker` (`type='program'`) has `calls` rows to every procedure invoked from the global
-  CODE section (11 rows), and **zero** incoming `calls` — the local variable named `worker`
-  must never resolve to the program symbol despite the case-insensitive name collision.
+  CODE section (13 rows — 12 before Bug Q's `UnreachableLocalRefTest()` call was added), and
+  **zero** incoming `calls` — the local variable named `worker` must never resolve to the program
+  symbol despite the case-insensitive name collision.
 
 ## Verify queries
 
@@ -187,10 +258,11 @@ SELECT s2.name, r.line_number FROM relationships r
 JOIN symbols s1 ON r.to_id=s1.id JOIN symbols s2 ON r.from_id=s2.id
 WHERE s1.name='WorkerClass.Sign' AND r.type='calls' ORDER BY r.line_number;
 
--- Bug N (fixed in #118): expect 3 rows (TestSignatureFlow line 30, OwnerClass.CallViaMember
--- line 69, OverloadBugClass.Dispatch line 368 -- the last one is Bug P's addition, not Bug N's).
--- If this drops back to 0, Bug N has regressed — the built-in-named method is being erased at
--- the dotted/SELF. call sites again.
+-- Bug N (fixed in #118): expect 5 rows (TestSignatureFlow line 44, OwnerClass.CallViaMember
+-- line 83, OverloadBugClass.Dispatch line 382 -- Bug P's addition; UnreachableLocalRefTest lines
+-- 417+418 -- Bug Q's addition, unrelated to Bug N's own collision). If the TestSignatureFlow/
+-- OwnerClass.CallViaMember/OverloadBugClass.Dispatch rows drop out, Bug N has regressed -- the
+-- built-in-named method is being erased at the dotted/SELF. call sites again.
 SELECT s2.name, r.line_number FROM relationships r
 JOIN symbols s1 ON r.to_id=s1.id JOIN symbols s2 ON r.from_id=s2.id
 WHERE s1.name='WorkerClass.Ask' AND r.type='calls' ORDER BY r.line_number;
@@ -198,12 +270,29 @@ WHERE s1.name='WorkerClass.Ask' AND r.type='calls' ORDER BY r.line_number;
 SELECT name, type, scope, parent_name, params FROM symbols WHERE type='class' OR scope='parameter'
 OR name IN ('LocalDerived','workerRef','LocalGroup','InlineLocalGroup','GenCertData','SomeHandle','InlineGroup','InlineGroupPeriod','MultiLineGroup','HiddenGroupMember','AttrTermGroup','AttrTermGroupPeriod','BaseWorker');
 
--- Bug P: expect the LONG overload (line 346) as the sole caller of WorkerClass.Sign here, and
--- the CSTRING overload (line 363) as the sole caller of WorkerClass.Ask -- never the same
+-- Bug P: expect the LONG overload (line 360) as the sole caller of WorkerClass.Sign here, and
+-- the CSTRING overload (line 377) as the sole caller of WorkerClass.Ask -- never the same
 -- overload's line for both.
 SELECT s_to.name AS callee, r.line_number, s_from.line_number AS from_overload_def_line
 FROM relationships r
 JOIN symbols s_to ON r.to_id = s_to.id
 JOIN symbols s_from ON r.from_id = s_from.id
 WHERE s_to.name IN ('WorkerClass.Sign','WorkerClass.Ask') AND s_from.name = 'OverloadBugClass.Dispatch';
+
+-- Bug Q: MyValue and TestQ each have exactly ONE row -- their sole legitimate declaration in
+-- WorkerClass.Sign -- and UnreachableLocalRefTest must not be among the results (it deliberately
+-- declares neither as its own local).
+SELECT name, type, scope, parent_name FROM symbols WHERE name IN ('MyValue','TestQ');
+SELECT * FROM symbols WHERE name IN ('MyValue','TestQ') AND parent_name='UnreachableLocalRefTest'; -- expect 0 rows
+
+-- Bug Q: simulates CodeGraphProvider.FindSymbolByName's exact query shape. Whichever row this
+-- picks, its parent must resolve to type='procedure'/'routine' -- confirming
+-- IsUnreachableLocalVariable would reject it.
+SELECT id, name, type, scope, parent_name FROM symbols WHERE LOWER(name)=LOWER('MyValue') LIMIT 1;
+SELECT id, name, type, scope, parent_name FROM symbols WHERE LOWER(name)=LOWER('TestQ') LIMIT 1;
+
+-- Bug Q (related upstream finding, not this fix): TestQtype and its MyValue field produce NO
+-- CodeGraph symbol at all -- confirms a wrong hover/F12 on either cannot have come from
+-- CgHoverFromDb/CgDefinitionFromDb; it's Clarion-Extension's own resolver.
+SELECT * FROM symbols WHERE name='TestQtype'; -- expect 0 rows
 ```

@@ -3,6 +3,12 @@
   INCLUDE('WorkerLib.inc'),ONCE
 
 WorkerClass.Sign PROCEDURE( LONG pData )
+! Bug Q repro: MyValue and TestQ are declared ONLY here, as locals of THIS procedure -- nowhere
+! else in the solution. UnreachableLocalRefTest below references both by bare name without
+! declaring its own locals of the same name, exercising CgDefinitionFromDb's
+! IsUnreachableLocalVariable guard (see README.md's Bug Q section).
+MyValue LONG
+TestQ   QUEUE(TestQType) END
   CODE
   RETURN 0
 
@@ -10,6 +16,14 @@ WorkerClass.Sign PROCEDURE( LONG pData )
 ! identical in shape to Sign above -- only its name differs, and that name happens to collide
 ! with the Clarion built-in ASK() keyword, which used to erase its calls at dotted/SELF. sites.
 WorkerClass.Ask PROCEDURE( LONG pData )
+  CODE
+  RETURN 0
+
+! Bug Q repro: the QUEUE,TYPE-taking overload declared in WorkerLib.inc. Implementation body is
+! irrelevant to Bug Q -- only the declaration (WorkerClass.Ask exists, takes a TestQtype) matters,
+! so UnreachableLocalRefTest's calls below resolve to a real method and the ONLY question is
+! whether their bare-word ARGUMENTS (MyValue, TestQ) wrongly resolve.
+WorkerClass.Ask PROCEDURE( STRING pText, LONG pValue, <TestQtype pTestQ> )
   CODE
   RETURN 0
 
@@ -366,5 +380,41 @@ worker WorkerClass
   CODE
   result = SELF.Dispatch( 99 )
   result = worker.Ask( result )
+  RETURN result
+
+! Bug Q repro: SharedLspBridge.cs's CgDefinitionFromDb (F12/Ctrl+Click's CodeGraph fallback, used
+! whenever the upstream LSP's own scope search already returned nothing -- i.e. the word is
+! genuinely undeclared here) never applied the same IsUnreachableLocalVariable guard its sibling
+! CgHoverFromDb already applies. FindSymbolByName's underlying lookup is a flat, unordered
+! "WHERE LOWER(name)=LOWER(@name) LIMIT 1" with no scope filter, so a bare word that only matches
+! ANOTHER procedure's local variable resolves to it -- arbitrary, and never legitimate (Clarion
+! has no mechanism for one procedure to reference another's local).
+!
+! This is the real-world trigger, reproduced directly (not a synthetic stand-in): a call argument
+! left undeclared by mistake, whose name happens to already be a local elsewhere -- exactly what
+! motivated this fixture addition. MyValue and TestQ are declared ONLY in WorkerClass.Sign above
+! (line 6); this procedure references both by bare name in a real call, without declaring either
+! itself. This file therefore does NOT compile -- expected and deliberate, since the whole point
+! is a genuinely undeclared identifier; the indexer parses text regardless, and F12/hover/
+! Ctrl+Click work off the live buffer regardless of compile state.
+!
+! Confirmed live 2026-08-07 (ClarionAssistant-git = pre-fix, ClarionAssistant-consolidated =
+! post-fix, both freshly re-indexed before each check):
+!   F12 on "MyValue" below:
+!     pre-fix:  jumped to WorkerClass.Sign's MyValue declaration above (line 6) -- wrong.
+!     post-fix: no definition found -- correct.
+!   F12 / Ctrl+Click on "TestQ" below:
+!     post-fix: no definition found, no hover -- correct (not independently confirmed pre-fix;
+!     MyValue's result already demonstrates the same code path).
+!
+! Negative control (over-rejection check, not yet live-verified): WorkerClass.Ask itself, and the
+! "worker" local below, must keep resolving normally -- only the two undeclared arguments should
+! be affected.
+UnreachableLocalRefTest PROCEDURE, LONG
+result LONG
+worker WorkerClass
+  CODE
+  result = worker.Ask( MyValue )
+  result = worker.Ask( 'test', result, TestQ )
   RETURN result
 
