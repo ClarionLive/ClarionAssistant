@@ -102,6 +102,29 @@ namespace ClarionAssistant.Terminal
                 var live = _liveInstance;
                 if (live == null || !live._embedOverlay || live._panel == null)
                 { ClarionAssistant.MonacoSpikeLog.Write("error reveal: no live overlay (live=" + (live != null) + ")"); return false; }
+
+                // The native embed must still be OPEN UNDERNEATH — same test Save uses to pick its path
+                // (_liveLinked && IsStillLive()), deliberately, so the two can't disagree about liveness.
+                //
+                // Why this is load-bearing: when an Errors row lands in generated code this overlay can't map,
+                // the native fallback opens the module .clw, and THAT closes the native embed — the log says
+                // "[embed-monitor] dedup reset — pwee gone, editor alive". The overlay is then ORPHANED: it
+                // still holds the procedure's text and its pwee baseline, so FindPweeLineByContext still finds
+                // a unique match and the reveal looks completely healthy. Revealing into it is wrong twice:
+                // the developer gets a surface with no embed behind it, where Save logs
+                // liveCheck(live=False,overlay=True), takes the re-open path and reports "nothing to save",
+                // and Cancel blanks the buffer (John, 2026-08-07 — reachable only once the reveal started
+                // raising the tab, which is what made the orphan visible instead of hidden behind the .clw).
+                //
+                // Returning false hands the row to the native path, which re-opens the embeditor properly and
+                // re-attaches a healthy overlay. Costs one GetEmbedInfo round-trip per Errors click, checked
+                // BEFORE the disk read below so the orphaned path is the cheap one.
+                if (!live._liveLinked || !live.IsStillLive())
+                {
+                    ClarionAssistant.MonacoSpikeLog.Write("error reveal: overlay orphaned — native embed gone (liveLinked="
+                        + live._liveLinked + ") — native fallback re-opens it");
+                    return false;
+                }
                 if (string.IsNullOrEmpty(fileName) || !System.IO.File.Exists(fileName))
                 { ClarionAssistant.MonacoSpikeLog.Write("error reveal: row file missing (" + (fileName ?? "null") + ")"); return false; }
                 var pwee = live._pweeBaselineLines;
