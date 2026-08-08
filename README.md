@@ -70,6 +70,26 @@ Both copies are now the same document, and a check enforces that they stay that 
 
 If you noticed the assistant ignoring a tool you knew it had, this was why.
 
+<!-- release-docs: covered=docgraph -->
+### Documentation search stops mangling accented characters
+
+Every non-ASCII character in the ingested documentation came back corrupted: em-dashes as `&acirc;&euro;&rdquo;`, "Inicio R&aacute;pido" as "Inicio RÃ¡pido". The documents themselves were never at fault &mdash; they declare `<meta charset="UTF-8">` and are valid UTF-8 on disk. The ingester simply read them as the machine's ANSI codepage instead.
+
+Not a forgotten argument, either, which is why it survived two previous encoding sweeps: the wrong encoding was passed *explicitly*, so an audit hunting for reads that omitted one walked straight past it. The same assumption sat in the CHM path, over the HTML files a decompiled help file leaves behind.
+
+HTML is the one format here that declares its own character set, so it now gets a ladder that respects that: byte-order mark, then the document's own declaration, then a validating UTF-8 attempt, then ANSI. A document claiming UTF-8 is deliberately not taken at its word &mdash; it is verified, so a mislabelled file falls back rather than filling your search results with replacement characters.
+
+Measured against the affected documents, the corruption goes to zero &mdash; 240 occurrences in one Spanish reference, 7 in its English counterpart, none introduced anywhere.
+
+**Re-import any documentation you have already ingested.** The fix corrects reading, not what is already stored; existing entries keep their mangled text until re-run.
+
+<!-- release-docs: covered=assistant -->
+### The assistant picks up what it was left waiting on
+
+Deploying a new build closes the assistant's terminal, and until now anything it had been asked to do next died with it. That is the worst possible moment to lose the thread, because waiting for that deploy is usually *why* something was still outstanding &mdash; a re-index to run, a corpus to re-import, a check to repeat once the new build is in.
+
+It now records outstanding work the moment it becomes blocked rather than at the end of a session, since a session that ends by being killed has no end to write at. On its next start it leads with what was pending instead of waiting to be reminded.
+
 ---
 
 ## What's New in v5.7

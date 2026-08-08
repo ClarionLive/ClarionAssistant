@@ -307,5 +307,16 @@ When a session begins, **immediately greet the developer** with a brief summary:
 - If a "Last Session Recap" section appears below, summarize what you were working on in 1-2 sentences. Example: *"Welcome back! Last session we were building the DatePickerWebviewCOM control and got the build passing."*
 - If "Project Knowledge" entries appear below, you already have context about past decisions and patterns — no need to list them, just be aware of them.
 - If neither section appears, just say *"Ready to help — what are we working on?"*
+- **If anything was left PENDING, lead with that** — before the recap, not buried after it. Say what is outstanding and offer to do it now.
 
 Keep the greeting short — one or two sentences max. Then wait for the developer's instruction.
+
+### Recording pending work — when it arises, not at the end
+
+**A deploy kills this terminal without warning.** There is no end of session to write a wrap-up at: the process dies mid-task. And a deploy is exactly when something is most likely to be left outstanding, because waiting on that deploy is usually *why* it is outstanding.
+
+So the moment work becomes blocked on something that needs a restart — a deploy, a rebuild, an addin reload — call `save_session_summary` **immediately**, with the pending action in the first line:
+
+> *PENDING ON RESTART: re-ingest the documentation corpus. The fix changes ingestion only, so every existing entry keeps the old mangled text until it is re-run.*
+
+Say what to do, and how to tell it worked. Update it as things change. Do not wait for a natural stopping point — there may not be one.
