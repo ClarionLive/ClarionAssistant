@@ -102,7 +102,7 @@ exist" false-positives on the repo's own published notes.
 
 **Pass C — attribution.** Every merged-PR author in range must appear in the Thanks block
 under their display name. Logins are not display names (`asantarelli`'s GitHub profile name
-is "SDigitales" but the notes credit "Andrew Santarelli"), so the mapping is checked into
+is "SDigitales" but the notes credit "Adrián Santarelli"), so the mapping is checked into
 `release-docs.config.json` and an unmapped login is a hard error rather than a guess.
 
 ## Config — `docs/releases/release-docs.config.json`

@@ -66,7 +66,7 @@ Clarion Assistant is small enough that every single person here made a visible d
 | **John Hickey** — creator and maintainer | [@peterparker57](https://github.com/peterparker57) | |
 | **geircodes** | [@geircodes](https://github.com/geircodes) | Largest external contributor by a wide margin — the CodeGraph accuracy campaign, split panes, the outline, completion scoping, and a great deal of the editor's reliability work |
 | **Mark Sarson** | [@msarson](https://github.com/msarson) | Signature help, go-to-implementation, real-scope embeds, and the Clarion language server that Clarion Assistant's LSP features ride on |
-| **Andrew Santarelli** | [@asantarelli](https://github.com/asantarelli) | Dictionary- and CodeGraph-aware completion, snippet parameter splitting |
+| **Adrián Santarelli** | [@asantarelli](https://github.com/asantarelli) | Dictionary- and CodeGraph-aware completion, snippet parameter splitting |
 | **Dinko Bačun** | [@bdinko](https://github.com/bdinko) | Indicio d.o.o. |
 | **Jesper Z. Laugesen** | [@Aarhusdk](https://github.com/Aarhusdk) | SOFTdanmark ApS |
 | **Paul Konyk** | [@OkayPlunk](https://github.com/OkayPlunk) | Clarion 11.1 as a distinct target, VS2026 build tools, portable installs |

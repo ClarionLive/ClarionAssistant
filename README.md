@@ -88,7 +88,7 @@ Collapsed **folds** are restored on reopen (the state saved but always read back
 ### Thanks
 
 - **[@geircodes](https://github.com/geircodes)** &mdash; [#182](https://github.com/ClarionLive/ClarionAssistant/pull/182) and [#183](https://github.com/ClarionLive/ClarionAssistant/pull/183), with reproducers and live verification against a real IDE.
-- **Andrew Santarelli** &mdash; the WebView2 post-after-dispose fix, reporting [#179](https://github.com/ClarionLive/ClarionAssistant/issues/179), and the original Ctrl+J snippet requests ([#49](https://github.com/ClarionLive/ClarionAssistant/issues/49), [#154](https://github.com/ClarionLive/ClarionAssistant/issues/154)).
+- **Adrián Santarelli** &mdash; the WebView2 post-after-dispose fix, reporting [#179](https://github.com/ClarionLive/ClarionAssistant/issues/179), and the original Ctrl+J snippet requests ([#49](https://github.com/ClarionLive/ClarionAssistant/issues/49), [#154](https://github.com/ClarionLive/ClarionAssistant/issues/154)).
 - **BoxSoft** &mdash; [#185](https://github.com/ClarionLive/ClarionAssistant/issues/185), the embed-navigation hotkeys.
 
 ---
@@ -283,7 +283,7 @@ Hovers render **below** the hovered line instead of above it, nudged clear of th
 
 - **geircodes** &mdash; the bulk of this cycle: horizontal split panes (#157), outline sort (#153), field-equate completion (#159/#160), scoping fixes (#152), GROUP/RECORD and keyword-as-label diagnostics (#132, #136, #150, #156), cold-open navigation (#162), completion dedupe (#151), CA Editor reliability (#134, #135, #146), WebView2 profile isolation (#141), CA Find focus (#139), Errors-pane caret mirroring (#144), go-to-definition self-jump (#143), `get_diff_content` (#131), and the cross-addin cursor contract (#149).
 - **Mark Sarson** &mdash; removing the dead overlay Find-All results-tools row (#116/#145).
-- **Andrew Santarelli** &mdash; snippet parameter splitting (#155).
+- **Adrián Santarelli** &mdash; snippet parameter splitting (#155).
 - **BoxSoft** &mdash; Ctrl+Q parity (#137), the as-you-type opt-outs (#138), and the case for quoting code over line numbers (#69).
 - **armisoftware** &mdash; OMIT/COMPILE folding (#133), Contract all / Expand all (#147), and the Find pad's theme (#148).
 - **geircodes** also root-caused the phantom fold triangles (#158), including the measurement &mdash; 64 colliding string literals in a single 9,000-line file &mdash; that showed it was systemic rather than a two-line curiosity; and closed out the cycle with the CodeGraph overload-attribution fix (#165), the string/comment hover guard (#166), and the hover placement work (#164). The overload fix shipped with a compiling repro fixture and its own regression SQL, and quantified the damage first: 4,372 relationship rows collapsed onto one overload per name, with 79 of 145 overload symbols completely invisible as callers.
@@ -322,7 +322,7 @@ Clarion **11.1** is a distinct build/deploy/install target; the build supports V
 Live-buffer diffs with encoding detection (#94), a current-line comparison panel (#96), clipboard-image paste as @-reference (#95); embeditor tab-switch no longer reloads/loses edits (#76), WebView2 crash process reaping (#109/#120), bundled LSP re-pinned to Clarion-Extension v1.0.0 (#77 &mdash; the per-configuration redirection fix), server re-root on solution switch (#106).
 
 ### Thanks
-Community contributions from **Mark Sarson**, **geircodes**, **Andrew Santarelli**, **OkayPlunk**, plus reports from **BoxSoft** and **Bill Atchison**.
+Community contributions from **Mark Sarson**, **geircodes**, **Adrián Santarelli**, **OkayPlunk**, plus reports from **BoxSoft** and **Bill Atchison**.
 
 ---
 
@@ -362,7 +362,7 @@ Bare-prefix completion now also surfaces **module-level data** (variables declar
 
 ### Thanks
 
-Community contributions in this release from **Andrew Santarelli** (#71), **Mark Sarson** (#68), **bdinko** (#59), and **Aarhusdk** (#57).
+Community contributions in this release from **Adrián Santarelli** (#71), **Mark Sarson** (#68), **bdinko** (#59), and **Aarhusdk** (#57).
 
 ---
 

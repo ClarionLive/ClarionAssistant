@@ -97,13 +97,13 @@
   "$comment_authors": [
     "GitHub login -> the display name used in the 'Thanks' section.",
     "NOT derivable from the GitHub API: login 'asantarelli' has profile name 'SDigitales'",
-    "but the notes credit 'Andrew Santarelli'; 'msarson' is credited 'Mark Sarson'.",
+    "but the notes credit 'Adrián Santarelli'; 'msarson' is credited 'Mark Sarson'.",
     "This map is the attribution source of truth. An unmapped login is a hard error rather",
     "than a guess, because silently crediting the wrong name is worse than failing loudly."
   ],
   "authors": {
     "geircodes": "geircodes",
-    "asantarelli": "Andrew Santarelli",
+    "asantarelli": "Adrián Santarelli",
     "msarson": "Mark Sarson",
     "OkayPlunk": "OkayPlunk",
     "armisoftware": "armisoftware"
