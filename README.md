@@ -563,4 +563,6 @@ Clarion Assistant is built with the help of these open-source projects and contr
 
 ## License
 
-[MIT License](LICENSE) &mdash; &copy; 2026 ClarionLive.
+[MIT License](LICENSE) &mdash; &copy; 2025-2026 ClarionLive.
+
+The MIT license covers Clarion Assistant's own source. The installer additionally bundles third-party components that keep their own licenses &mdash; PdfPig (Apache-2.0), the Microsoft Edge WebView2 runtime, SQLite, and Node.js with the bundled language server. Clarion IDE assemblies are referenced from your existing Clarion installation and are not redistributed.
