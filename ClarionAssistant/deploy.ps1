@@ -194,7 +194,14 @@ $Items = @(
 # tag checkout produced by lsp-server-sync\Sync-LspServer.ps1 -Pure, cached under .lsp-build\<tag>.
 # $env:CLARIONLSP_ROOT still overrides (dev escape hatch) if you deliberately want a custom server tree.
 function Resolve-LspBuild {
-    if ($env:CLARIONLSP_ROOT) { return $env:CLARIONLSP_ROOT }   # explicit override wins
+    if ($env:CLARIONLSP_ROOT) {
+        # Loud, because this is the one path that bypasses the tag-in-path pin check below: whatever
+        # is in that tree ships, while lsp-snapshot.json goes on asserting resolvedCommit. A consumer
+        # then has no way to tell which server they actually received.
+        Write-Host "  WARN  CLARIONLSP_ROOT is set — shipping an UNPINNED LSP from $env:CLARIONLSP_ROOT" -ForegroundColor Yellow
+        Write-Host "  WARN  lsp-snapshot.json will NOT describe what ships. Do not use this for a release build." -ForegroundColor Yellow
+        return $env:CLARIONLSP_ROOT
+    }
     $syncScript = Join-Path $ProjectDir "lsp-server-sync\Sync-LspServer.ps1"
     $manifest   = Get-Content (Join-Path $ProjectDir "lsp-server-sync\lsp-snapshot.json") -Raw | ConvertFrom-Json
     $tag        = if ($manifest.resolvedTag) { $manifest.resolvedTag } else { $manifest.targetPin.tag }
@@ -212,6 +219,38 @@ function Resolve-LspBuild {
     return $pureDir
 }
 $LspSourceDir = Resolve-LspBuild
+
+# --- Verify the LSP about to ship IS the pinned one --------------------------------------------
+# Previously nothing checked this. lsp-snapshot.json could assert resolvedCommit while a different
+# server.js was copied (CLARIONLSP_ROOT override, hand-edited tree, an out/ built from another tag),
+# and the manifest is the ONLY thing a consumer can inspect to know what they got. Assert before any
+# copy so "what shipped" and "what is pinned" cannot silently diverge.
+function Assert-LspPin($sourceDir) {
+    $manifest = Get-Content (Join-Path $ProjectDir "lsp-server-sync\lsp-snapshot.json") -Raw | ConvertFrom-Json
+    $pinned   = $manifest.resolvedCommit
+    if (-not $pinned) {
+        Write-Host "  WARN  manifest has no resolvedCommit — cannot verify the bundled LSP." -ForegroundColor Yellow
+        return
+    }
+    $head = (git -C $sourceDir rev-parse --short HEAD 2>$null)
+    if (-not $head) {
+        Write-Host "  WARN  $sourceDir is not a git tree — cannot verify it matches pin $pinned." -ForegroundColor Yellow
+        return
+    }
+    # Prefix compare: `git rev-parse --short` auto-scales its length, so 7- and 8-char forms of the
+    # same commit must still count as a match.
+    if (-not ($head.StartsWith($pinned) -or $pinned.StartsWith($head))) {
+        if ($env:CLARIONLSP_ROOT) {
+            Write-Host "  WARN  bundled LSP is $head but the pin says $pinned (CLARIONLSP_ROOT override in effect)." -ForegroundColor Yellow
+            return
+        }
+        Write-Host "  FAIL  bundled LSP is $head but lsp-snapshot.json pins $pinned." -ForegroundColor Red
+        Write-Host "        Re-run lsp-server-sync\Sync-LspServer.ps1 -Pure, or bump the pin deliberately." -ForegroundColor Red
+        exit 7
+    }
+    Write-Host "  OK    bundled LSP matches pin: $pinned ($($manifest.resolvedTag))" -ForegroundColor Green
+}
+Assert-LspPin $LspSourceDir
 # Pure v1.0.0 runtime deps only — NO better-sqlite3/bindings/file-uri-to-path (those backed the retired
 # CodeGraph overlay). With better-sqlite3 absent the #42 ABI check below self-skips ("module not deployed").
 # iconv-lite (+ its dep safer-buffer) is NEW at v1.0.0: UnicodeDiagnostics requires it in the EAGER
