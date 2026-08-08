@@ -566,10 +566,7 @@ var
   // install (MirrorExtras). Empty = just the one folder on that row, which is the common case.
   C10Extra, C11Extra, C111Extra, C12Extra: string;
   ClarionPathPage: TInputQueryWizardPage;
-  BrowseBtn0, BrowseBtn1, BrowseBtn2, BrowseBtn3: TNewButton;
   AddBtn0, AddBtn1, AddBtn2, AddBtn3: TNewButton;
-  ClearExtrasBtn: TNewButton;
-  ExtrasLabel: TNewStaticText;
 
 function GetC10Path(Param: string): string; begin Result := C10Path; end;
 function GetC11Path(Param: string): string; begin Result := C11Path; end;
@@ -837,93 +834,162 @@ begin
   end;
 end;
 
-function ExtrasLine(Want, List: string): string;
+procedure SetPrimaryFor(Row: Integer; Value: string);
 begin
-  if List = '' then Result := '' else Result := '    Clarion ' + Want + ':  ' + List + #13#10;
+  case Row of
+    0: C12Path := Value;
+    1: C111Path := Value;
+    2: C11Path := Value;
+    3: C10Path := Value;
+  end;
 end;
 
-procedure RefreshExtrasLabel;
+// ---- ';'-separated path lists -------------------------------------------------------------------
+// A row's edit field IS the list: the folders are visible and editable right there, so a wrong entry
+// is corrected or deleted like any other text. (First design put extras in a label with the paths in
+// a tooltip and an all-or-nothing "Clear extras" — John's review: invisible, unintuitive, and no way
+// to fix ONE bad entry out of three. The field is the better home.)
+// Entry 0 is the PRIMARY: that is what [Files] installs into via {code:GetCxxPath}. Entries 1..n are
+// copied from the primary afterwards by MirrorExtras.
+
+function PathCount(List: string): Integer;
 var
-  S: string;
+  P: Integer;
 begin
-  if ExtrasLabel = nil then Exit;
-  S := ExtrasLine('12', C12Extra) + ExtrasLine('11.1', C111Extra) +
-       ExtrasLine('11', C11Extra) + ExtrasLine('10', C10Extra);
-  if S = '' then
-    ExtrasLabel.Caption := 'Extra folders: none.  Got the same Clarion version installed twice? Use "+" on that row.'
-  else
-    ExtrasLabel.Caption := 'Extra folders (each gets a copy of that row''s addin after install):' + #13#10 + S;
-  if ClearExtrasBtn <> nil then ClearExtrasBtn.Enabled := (S <> '');
+  Result := 0;
+  while List <> '' do
+  begin
+    P := Pos(';', List);
+    if P > 0 then
+    begin
+      if Trim(Copy(List, 1, P - 1)) <> '' then Result := Result + 1;
+      List := Copy(List, P + 1, Length(List));
+    end
+    else
+    begin
+      if Trim(List) <> '' then Result := Result + 1;
+      List := '';
+    end;
+  end;
 end;
 
-procedure BrowseForPath(EditIndex: Integer);
+// 0-based; '' when Index is past the end. Skips blank entries so "a;;b" behaves as "a;b".
+function PathItem(List: string; Index: Integer): string;
 var
-  Dir: string;
+  P, N: Integer;
+  Item: string;
 begin
-  Dir := ClarionPathPage.Values[EditIndex];
-  if Dir = '' then Dir := 'C:\';
-  if BrowseForFolder('Select Clarion ' + ExpectedVersionForRow(EditIndex) + ' installation folder:', Dir, False) then
-    ClarionPathPage.Values[EditIndex] := Dir;
+  Result := '';
+  N := 0;
+  while List <> '' do
+  begin
+    P := Pos(';', List);
+    if P > 0 then
+    begin
+      Item := Trim(Copy(List, 1, P - 1));
+      List := Copy(List, P + 1, Length(List));
+    end
+    else
+    begin
+      Item := Trim(List);
+      List := '';
+    end;
+    if Item = '' then Continue;
+    if N = Index then
+    begin
+      Result := Item;
+      Exit;
+    end;
+    N := N + 1;
+  end;
 end;
 
-// "+" — register ANOTHER installation of this row's version. The extra target receives a copy of
-// whatever this row installs (see MirrorExtras at ssPostInstall); [Files] entries are static, so a
-// second destination cannot be expressed there.
-procedure AddExtraForRow(Row: Integer);
+// Everything after the first entry, re-joined — the folders that get a copy after install.
+function PathRest(List: string): string;
 var
-  Dir, Cur, Want: string;
+  i: Integer;
+  Item: string;
+begin
+  Result := '';
+  i := 1;
+  Item := PathItem(List, i);
+  while Item <> '' do
+  begin
+    if Result = '' then Result := Item else Result := Result + ';' + Item;
+    i := i + 1;
+    Item := PathItem(List, i);
+  end;
+end;
+
+// True when Candidate is already somewhere in List (case-insensitive, trailing-slash tolerant).
+function PathListContains(List, Candidate: string): Boolean;
+var
+  i: Integer;
+  Item, Want: string;
+begin
+  Result := False;
+  Want := Uppercase(RemoveBackslashUnlessRoot(Trim(Candidate)));
+  i := 0;
+  Item := PathItem(List, i);
+  while Item <> '' do
+  begin
+    if Uppercase(RemoveBackslashUnlessRoot(Item)) = Want then
+    begin
+      Result := True;
+      Exit;
+    end;
+    i := i + 1;
+    Item := PathItem(List, i);
+  end;
+end;
+
+function ComposeField(Primary, Extras: string): string;
+begin
+  if Trim(Primary) = '' then Result := ''
+  else if Trim(Extras) = '' then Result := Trim(Primary)
+  else Result := Trim(Primary) + ';' + Trim(Extras);
+end;
+
+// "+" — the row's ONLY button: pick a Clarion installation folder and append it to the field as a
+// ';'-separated entry. It handles an empty field too (first entry, no separator), which is why the
+// separate "Browse..." button it replaced was pure duplication — John's review: "why have two buttons
+// when one simple one will do?" Everything it adds is ordinary editable text, so a mistake is
+// corrected or deleted in place.
+procedure AddFolderForRow(Row: Integer);
+var
+  Dir, Field, Want: string;
 begin
   Want := ExpectedVersionForRow(Row);
-  if Trim(ClarionPathPage.Values[Row]) = '' then
-  begin
-    MsgBox('Fill in the main "Clarion ' + Want + ' folder" first.' + #13#10#13#10 +
-           'Extra folders receive a copy of what gets installed there, so there has to be a first one.',
-           mbInformation, MB_OK);
-    Exit;
-  end;
-  Dir := ClarionPathPage.Values[Row];
-  if not BrowseForFolder('Select ANOTHER Clarion ' + Want + ' installation folder:', Dir, False) then Exit;
+  Field := Trim(ClarionPathPage.Values[Row]);
+
+  // Start the picker at the last folder already listed, so a sibling install is a click or two away.
+  Dir := PathItem(Field, PathCount(Field) - 1);
+  if Dir = '' then Dir := 'C:\';
+
+  if not BrowseForFolder('Select a Clarion ' + Want + ' installation folder:', Dir, False) then Exit;
   Dir := Trim(Dir);
   if Dir = '' then Exit;
+
   if not DirExists(AddBackslash(Dir) + 'bin') then
   begin
     MsgBox('That folder does not look like a Clarion installation (no "bin" directory):' + #13#10 + Dir, mbError, MB_OK);
     Exit;
   end;
-  if CompareText(RemoveBackslashUnlessRoot(Dir), RemoveBackslashUnlessRoot(Trim(ClarionPathPage.Values[Row]))) = 0 then
+  if PathListContains(Field, Dir) then
   begin
-    MsgBox('That is already the main Clarion ' + Want + ' folder for this row.', mbInformation, MB_OK);
+    MsgBox('That folder is already listed on the Clarion ' + Want + ' row.', mbInformation, MB_OK);
     Exit;
   end;
   if not ConfirmVersionMatch(Row, Dir) then Exit;
-  Cur := GetExtrasFor(Row);
-  if Pos(';' + Uppercase(Dir) + ';', ';' + Uppercase(Cur) + ';') > 0 then
-  begin
-    MsgBox('That folder is already in the list for Clarion ' + Want + '.', mbInformation, MB_OK);
-    Exit;
-  end;
-  if Cur = '' then Cur := Dir else Cur := Cur + ';' + Dir;
-  SetExtrasFor(Row, Cur);
-  RefreshExtrasLabel;
+
+  if Field = '' then Field := Dir else Field := Field + ';' + Dir;
+  ClarionPathPage.Values[Row] := Field;
 end;
 
-procedure BrowseBtn0Click(Sender: TObject); begin BrowseForPath(0); end;
-procedure BrowseBtn1Click(Sender: TObject); begin BrowseForPath(1); end;
-procedure BrowseBtn2Click(Sender: TObject); begin BrowseForPath(2); end;
-procedure BrowseBtn3Click(Sender: TObject); begin BrowseForPath(3); end;
-
-procedure AddBtn0Click(Sender: TObject); begin AddExtraForRow(0); end;
-procedure AddBtn1Click(Sender: TObject); begin AddExtraForRow(1); end;
-procedure AddBtn2Click(Sender: TObject); begin AddExtraForRow(2); end;
-procedure AddBtn3Click(Sender: TObject); begin AddExtraForRow(3); end;
-
-procedure ClearExtrasBtnClick(Sender: TObject);
-begin
-  if MsgBox('Remove all extra folders from the list?' + #13#10#13#10 +
-            'The main folder on each row is not affected.', mbConfirmation, MB_YESNO) <> IDYES then Exit;
-  C12Extra := ''; C111Extra := ''; C11Extra := ''; C10Extra := '';
-  RefreshExtrasLabel;
-end;
+procedure AddBtn0Click(Sender: TObject); begin AddFolderForRow(0); end;
+procedure AddBtn1Click(Sender: TObject); begin AddFolderForRow(1); end;
+procedure AddBtn2Click(Sender: TObject); begin AddFolderForRow(2); end;
+procedure AddBtn3Click(Sender: TObject); begin AddFolderForRow(3); end;
 
 procedure InitializeWizard;
 var
@@ -934,8 +1000,9 @@ begin
 
   DetectedMsg := 'Each row installs the addin built for THAT Clarion version — the builds are not' + #13#10 +
     'interchangeable, so please don''t point a row at a different version''s folder.' + #13#10#13#10 +
-    'Auto-detected paths are shown below. Correct any that are wrong, or leave a row' + #13#10 +
-    'empty to skip that version. Two installations of the SAME version? Use "+".';
+    'Auto-detected paths are shown below. Correct any that are wrong, or empty a row to' + #13#10 +
+    'skip it. Same version installed more than once? List the folders separated by' + #13#10 +
+    'semicolons — "+" picks one for you. All of them get the addin.';
 
   ClarionPathPage := CreateInputQueryPage(wpLicense,
     'Clarion Installation Paths',
@@ -947,58 +1014,23 @@ begin
   ClarionPathPage.Add('Clarion 11 folder:', False);
   ClarionPathPage.Add('Clarion 10 folder:', False);
 
-  // Shrink edit fields to make room for the Browse button AND the "+" (add-another-folder) button:
-  // 6 gap + 75 Browse + 6 gap + 24 "+" + 4 slack.
-  EditWidth := ClarionPathPage.Edits[0].Width - 115;
+  // Shrink the edit fields just enough for the single "+" button: 6 gap + 24 button + 4 slack.
+  // (Browse... used to sit here too; "+" does the same job including the first entry, so the
+  // field gets those 81px back.)
+  EditWidth := ClarionPathPage.Edits[0].Width - 34;
 
-  // Add Browse buttons next to each field
-  BrowseBtn0 := TNewButton.Create(WizardForm);
-  BrowseBtn0.Parent := ClarionPathPage.Edits[0].Parent;
-  BrowseBtn0.Caption := 'Browse...';
-  BrowseBtn0.Left := ClarionPathPage.Edits[0].Left + EditWidth + 6;
-  BrowseBtn0.Top := ClarionPathPage.Edits[0].Top;
-  BrowseBtn0.Width := 75;
-  BrowseBtn0.Height := ClarionPathPage.Edits[0].Height;
-  BrowseBtn0.OnClick := @BrowseBtn0Click;
   ClarionPathPage.Edits[0].Width := EditWidth;
-
-  BrowseBtn1 := TNewButton.Create(WizardForm);
-  BrowseBtn1.Parent := ClarionPathPage.Edits[1].Parent;
-  BrowseBtn1.Caption := 'Browse...';
-  BrowseBtn1.Left := ClarionPathPage.Edits[1].Left + EditWidth + 6;
-  BrowseBtn1.Top := ClarionPathPage.Edits[1].Top;
-  BrowseBtn1.Width := 75;
-  BrowseBtn1.Height := ClarionPathPage.Edits[1].Height;
-  BrowseBtn1.OnClick := @BrowseBtn1Click;
   ClarionPathPage.Edits[1].Width := EditWidth;
-
-  BrowseBtn2 := TNewButton.Create(WizardForm);
-  BrowseBtn2.Parent := ClarionPathPage.Edits[2].Parent;
-  BrowseBtn2.Caption := 'Browse...';
-  BrowseBtn2.Left := ClarionPathPage.Edits[2].Left + EditWidth + 6;
-  BrowseBtn2.Top := ClarionPathPage.Edits[2].Top;
-  BrowseBtn2.Width := 75;
-  BrowseBtn2.Height := ClarionPathPage.Edits[2].Height;
-  BrowseBtn2.OnClick := @BrowseBtn2Click;
   ClarionPathPage.Edits[2].Width := EditWidth;
-
-  BrowseBtn3 := TNewButton.Create(WizardForm);
-  BrowseBtn3.Parent := ClarionPathPage.Edits[3].Parent;
-  BrowseBtn3.Caption := 'Browse...';
-  BrowseBtn3.Left := ClarionPathPage.Edits[3].Left + EditWidth + 6;
-  BrowseBtn3.Top := ClarionPathPage.Edits[3].Top;
-  BrowseBtn3.Width := 75;
-  BrowseBtn3.Height := ClarionPathPage.Edits[3].Height;
-  BrowseBtn3.OnClick := @BrowseBtn3Click;
   ClarionPathPage.Edits[3].Width := EditWidth;
 
-  // "+" buttons — add ANOTHER installation folder of the same version to that row.
+  // "+" — the one button per row: pick a folder and append it to that row's list.
   AddBtn0 := TNewButton.Create(WizardForm);
   AddBtn0.Parent := ClarionPathPage.Edits[0].Parent;
   AddBtn0.Caption := '+';
-  AddBtn0.Hint := 'Add another Clarion 12 installation folder';
+  AddBtn0.Hint := 'Add a Clarion 12 installation folder to this row';
   AddBtn0.ShowHint := True;
-  AddBtn0.Left := ClarionPathPage.Edits[0].Left + EditWidth + 87;
+  AddBtn0.Left := ClarionPathPage.Edits[0].Left + EditWidth + 6;
   AddBtn0.Top := ClarionPathPage.Edits[0].Top;
   AddBtn0.Width := 24;
   AddBtn0.Height := ClarionPathPage.Edits[0].Height;
@@ -1007,9 +1039,9 @@ begin
   AddBtn1 := TNewButton.Create(WizardForm);
   AddBtn1.Parent := ClarionPathPage.Edits[1].Parent;
   AddBtn1.Caption := '+';
-  AddBtn1.Hint := 'Add another Clarion 11.1 installation folder';
+  AddBtn1.Hint := 'Add a Clarion 11.1 installation folder to this row';
   AddBtn1.ShowHint := True;
-  AddBtn1.Left := ClarionPathPage.Edits[1].Left + EditWidth + 87;
+  AddBtn1.Left := ClarionPathPage.Edits[1].Left + EditWidth + 6;
   AddBtn1.Top := ClarionPathPage.Edits[1].Top;
   AddBtn1.Width := 24;
   AddBtn1.Height := ClarionPathPage.Edits[1].Height;
@@ -1018,9 +1050,9 @@ begin
   AddBtn2 := TNewButton.Create(WizardForm);
   AddBtn2.Parent := ClarionPathPage.Edits[2].Parent;
   AddBtn2.Caption := '+';
-  AddBtn2.Hint := 'Add another Clarion 11 installation folder';
+  AddBtn2.Hint := 'Add a Clarion 11 installation folder to this row';
   AddBtn2.ShowHint := True;
-  AddBtn2.Left := ClarionPathPage.Edits[2].Left + EditWidth + 87;
+  AddBtn2.Left := ClarionPathPage.Edits[2].Left + EditWidth + 6;
   AddBtn2.Top := ClarionPathPage.Edits[2].Top;
   AddBtn2.Width := 24;
   AddBtn2.Height := ClarionPathPage.Edits[2].Height;
@@ -1029,128 +1061,71 @@ begin
   AddBtn3 := TNewButton.Create(WizardForm);
   AddBtn3.Parent := ClarionPathPage.Edits[3].Parent;
   AddBtn3.Caption := '+';
-  AddBtn3.Hint := 'Add another Clarion 10 installation folder';
+  AddBtn3.Hint := 'Add a Clarion 10 installation folder to this row';
   AddBtn3.ShowHint := True;
-  AddBtn3.Left := ClarionPathPage.Edits[3].Left + EditWidth + 87;
+  AddBtn3.Left := ClarionPathPage.Edits[3].Left + EditWidth + 6;
   AddBtn3.Top := ClarionPathPage.Edits[3].Top;
   AddBtn3.Width := 24;
   AddBtn3.Height := ClarionPathPage.Edits[3].Height;
   AddBtn3.OnClick := @AddBtn3Click;
 
-  // Running summary of the extra folders, so the list is never invisible state.
-  ExtrasLabel := TNewStaticText.Create(WizardForm);
-  ExtrasLabel.Parent := ClarionPathPage.Edits[3].Parent;
-  ExtrasLabel.Left := ClarionPathPage.Edits[3].Left;
-  ExtrasLabel.Top := ClarionPathPage.Edits[3].Top + ClarionPathPage.Edits[3].Height + 18;
-  ExtrasLabel.Width := EditWidth + 111;
-  ExtrasLabel.AutoSize := False;
-  ExtrasLabel.WordWrap := True;
-  ExtrasLabel.Height := 46;
-
-  ClearExtrasBtn := TNewButton.Create(WizardForm);
-  ClearExtrasBtn.Parent := ClarionPathPage.Edits[3].Parent;
-  ClearExtrasBtn.Caption := 'Clear extra folders';
-  ClearExtrasBtn.Left := ClarionPathPage.Edits[3].Left;
-  ClearExtrasBtn.Top := ExtrasLabel.Top + ExtrasLabel.Height + 4;
-  ClearExtrasBtn.Width := 120;
-  ClearExtrasBtn.Height := ClarionPathPage.Edits[3].Height;
-  ClearExtrasBtn.OnClick := @ClearExtrasBtnClick;
-
-  // Pre-fill with detected paths
-  ClarionPathPage.Values[0] := C12Path;
-  ClarionPathPage.Values[1] := C111Path;
-  ClarionPathPage.Values[2] := C11Path;
-  ClarionPathPage.Values[3] := C10Path;
-
-  RefreshExtrasLabel;
+  // Pre-fill each row with its remembered list: primary first, then any additional folders for the
+  // same release. No separate summary widget — the field is the list.
+  ClarionPathPage.Values[0] := ComposeField(C12Path, C12Extra);
+  ClarionPathPage.Values[1] := ComposeField(C111Path, C111Extra);
+  ClarionPathPage.Values[2] := ComposeField(C11Path, C11Extra);
+  ClarionPathPage.Values[3] := ComposeField(C10Path, C10Extra);
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   AnyValid: Boolean;
+  Row, Idx: Integer;
+  Field, Item, Want: string;
 begin
   Result := True;
 
   if CurPageID = ClarionPathPage.ID then
   begin
-    // Read user-edited paths
-    C12Path := ClarionPathPage.Values[0];
-    C111Path := ClarionPathPage.Values[1];
-    C11Path := ClarionPathPage.Values[2];
-    C10Path := ClarionPathPage.Values[3];
-
-    // Validate non-empty paths
+    // Each row may now hold SEVERAL ';'-separated folders for that one Clarion release. Validate
+    // every entry, then split the row: entry 0 is the primary that [Files] installs into, the rest
+    // are mirrored from it after install.
     AnyValid := False;
-
-    if C12Path <> '' then
+    for Row := 0 to 3 do
     begin
-      if not DirExists(C12Path + '\bin') then
+      Want := ExpectedVersionForRow(Row);
+      Field := Trim(ClarionPathPage.Values[Row]);
+      ClarionPathPage.Values[Row] := Field;
+      if Field = '' then
       begin
-        MsgBox('Clarion 12 path does not appear valid (no "bin" directory):' + #13#10 + C12Path + #13#10#13#10 +
-               'Leave the field empty to skip Clarion 12, or correct the path.', mbError, MB_OK);
-        Result := False;
-        Exit;
+        SetPrimaryFor(Row, '');
+        SetExtrasFor(Row, '');
+        Continue;
       end;
-      // Is this really a Clarion 12 tree? A wrong-row path installs the wrong build.
-      if not ConfirmVersionMatch(0, C12Path) then
+      Idx := 0;
+      Item := PathItem(Field, Idx);
+      while Item <> '' do
       begin
-        Result := False;
-        Exit;
+        if not DirExists(AddBackslash(Item) + 'bin') then
+        begin
+          MsgBox('This Clarion ' + Want + ' folder does not look valid (no "bin" directory):' + #13#10 +
+                 Item + #13#10#13#10 +
+                 'Correct it, remove it from the row, or empty the row to skip Clarion ' + Want + '.',
+                 mbError, MB_OK);
+          Result := False;
+          Exit;
+        end;
+        // Wrong-row paths install the wrong build — see ConfirmVersionMatch.
+        if not ConfirmVersionMatch(Row, Item) then
+        begin
+          Result := False;
+          Exit;
+        end;
+        Idx := Idx + 1;
+        Item := PathItem(Field, Idx);
       end;
-      AnyValid := True;
-    end;
-
-    if C111Path <> '' then
-    begin
-      if not DirExists(C111Path + '\bin') then
-      begin
-        MsgBox('Clarion 11.1 path does not appear valid (no "bin" directory):' + #13#10 + C111Path + #13#10#13#10 +
-               'Leave the field empty to skip Clarion 11.1, or correct the path.', mbError, MB_OK);
-        Result := False;
-        Exit;
-      end;
-      // Is this really a Clarion 11.1 tree? A wrong-row path installs the wrong build.
-      if not ConfirmVersionMatch(1, C111Path) then
-      begin
-        Result := False;
-        Exit;
-      end;
-      AnyValid := True;
-    end;
-
-    if C11Path <> '' then
-    begin
-      if not DirExists(C11Path + '\bin') then
-      begin
-        MsgBox('Clarion 11 path does not appear valid (no "bin" directory):' + #13#10 + C11Path + #13#10#13#10 +
-               'Leave the field empty to skip Clarion 11, or correct the path.', mbError, MB_OK);
-        Result := False;
-        Exit;
-      end;
-      // Is this really a Clarion 11 tree? A wrong-row path installs the wrong build.
-      if not ConfirmVersionMatch(2, C11Path) then
-      begin
-        Result := False;
-        Exit;
-      end;
-      AnyValid := True;
-    end;
-
-    if C10Path <> '' then
-    begin
-      if not DirExists(C10Path + '\bin') then
-      begin
-        MsgBox('Clarion 10 path does not appear valid (no "bin" directory):' + #13#10 + C10Path + #13#10#13#10 +
-               'Leave the field empty to skip Clarion 10, or correct the path.', mbError, MB_OK);
-        Result := False;
-        Exit;
-      end;
-      // Is this really a Clarion 10 tree? A wrong-row path installs the wrong build.
-      if not ConfirmVersionMatch(3, C10Path) then
-      begin
-        Result := False;
-        Exit;
-      end;
+      SetPrimaryFor(Row, PathItem(Field, 0));
+      SetExtrasFor(Row, PathRest(Field));
       AnyValid := True;
     end;
 
