@@ -129,7 +129,7 @@ Four things were wrong at once. **Nothing identified the owning class** &mdash; 
 
 Chunks now carry their real class, contents pages rank below prose, headings read `ASCIIFileClass > GetLastLineNo`, and a section stays whole. Property references in the Language Reference (`PROP:NumTabs` and the rest) get their own headings too, so the definition outranks a passing mention in an example.
 
-Verified against a fixed set of eight retrieval tests, kept with the code at `docs/DocGraph-Chunking-Verification.md`, including a guard on the date-picture table above so a future chunking change cannot quietly undo the extraction fix.
+Verified against a fixed set of eight retrieval tests, kept with the code at [`ClarionAssistant/docs/DocGraph-Chunking-Verification.md`](ClarionAssistant/docs/DocGraph-Chunking-Verification.md), including a guard on the date-picture table above so a future chunking change cannot quietly undo the extraction fix.
 
 Index-noise suppression currently covers documentation whose contents pages put the title and page number on one line &mdash; SoftVelocity's and CapeSoft's. BoxSoft's manuals wrap them across two lines and are not yet recognised.
 
