@@ -26,13 +26,13 @@ SOFTWARE.
 THIRD-PARTY COMPONENTS
 
 The license above covers Clarion Assistant's own source code. This installer
-additionally bundles third-party components that remain under their own
-licenses, including:
+additionally redistributes third-party components that remain under their own
+licenses and their own copyrights, including PdfPig (Apache License 2.0), the
+Microsoft Edge WebView2 SDK, SQLite, the Node.js runtime, and the language
+server's npm dependencies.
 
-  - PdfPig                     Apache License 2.0
-  - Microsoft Edge WebView2    Microsoft's own distribution terms
-  - SQLite / Microsoft.Data.Sqlite
-  - Node.js and the bundled Clarion language server
+The complete list, with versions and full license texts, is installed as
+THIRD-PARTY-NOTICES.md in the Clarion Assistant program folder.
 
 Clarion IDE assemblies (ICSharpCode.*, CWBinding, CommonSources) are referenced
 from your existing Clarion installation and are not redistributed.

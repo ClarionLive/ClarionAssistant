@@ -60,6 +60,8 @@
 #define SrcNodeExe GetEnv("CLARIONLSP_NODE") != "" ? GetEnv("CLARIONLSP_NODE") : "C:\Program Files\nodejs\node.exe"
 ; The directory containing this .iss file itself (SourcePath already ends in "\").
 #define SrcInstaller Copy(SourcePath, 1, Len(SourcePath)-1)
+; Repo root — for THIRD-PARTY-NOTICES.md, which must ship wherever the addin does.
+#define SrcRepoRoot SourcePath + ".."
 
 ; ---- Optional-source presence flags ----
 ; Each probes a sentinel FILE (never a bare directory — ISPP #ifexist/FileExists return FALSE
@@ -212,6 +214,8 @@ Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC10Path}\accessory\addins\Clarion
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
+; Third-party license notices — ships wherever the addin does; the obligation travels with the binaries.
+Source: "{#SrcRepoRoot}\THIRD-PARTY-NOTICES.md"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion10 and docs; Flags: ignoreversion
 ; --- Clarion 10 LSP Server ---
 #if HaveNodeExe
@@ -263,6 +267,8 @@ Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC11Path}\accessory\addins\Clarion
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
+; Third-party license notices — ships wherever the addin does; the obligation travels with the binaries.
+Source: "{#SrcRepoRoot}\THIRD-PARTY-NOTICES.md"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion11 and docs; Flags: ignoreversion
 ; --- Clarion 11 LSP Server ---
 #if HaveNodeExe
@@ -318,6 +324,8 @@ Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC111Path}\accessory\addins\Clario
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
+; Third-party license notices — ships wherever the addin does; the obligation travels with the binaries.
+Source: "{#SrcRepoRoot}\THIRD-PARTY-NOTICES.md"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion111 and docs; Flags: ignoreversion
 ; --- Clarion 11.1 LSP Server ---
 #if HaveNodeExe
@@ -370,6 +378,8 @@ Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC12Path}\accessory\addins\Clarion
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
+; Third-party license notices — ships wherever the addin does; the obligation travels with the binaries.
+Source: "{#SrcRepoRoot}\THIRD-PARTY-NOTICES.md"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion12 and docs; Flags: ignoreversion
 ; --- Clarion 12 LSP Server ---
 #if HaveNodeExe

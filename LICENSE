@@ -25,13 +25,11 @@ SOFTWARE.
 THIRD-PARTY COMPONENTS
 
 The MIT license above covers Clarion Assistant's own source code. The
-distributed installer additionally bundles third-party components that remain
-under their own licenses, including:
+distributed installer additionally redistributes third-party components that
+remain under their own licenses and their own copyrights.
 
-  - PdfPig                     Apache License 2.0
-  - Microsoft Edge WebView2    Microsoft's own distribution terms
-  - SQLite / Microsoft.Data.Sqlite
-  - Node.js and the bundled Clarion language server
+Those components, their versions, and their full license texts are listed in
+THIRD-PARTY-NOTICES.md, alongside this file.
 
 Clarion IDE assemblies (ICSharpCode.*, CWBinding, CommonSources) are referenced
 from your existing Clarion installation and are not redistributed.
