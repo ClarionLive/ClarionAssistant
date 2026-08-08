@@ -486,7 +486,12 @@ Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{app}"; Components: 
 Source: "{#SrcInstaller}\configure.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 ; --- CLAUDE.md reference ---
-Source: "{#SrcInstaller}\CLAUDE.md"; DestDir: "{%USERPROFILE}\.claude"; DestName: "clarion-assistant-reference.md"; Flags: ignoreversion
+; Sourced from the BUNDLED prompt, not a hand-maintained copy. There used to be an
+; installer\CLAUDE.md here; it silently drifted to a 133-line snapshot that was missing
+; eight whole tool sections and still documented the removed `open_app` tool. Same bug
+; class as the 51-missing-tools prompt drift. One source of truth -- do not reintroduce
+; a second copy of this document.
+Source: "{#SrcTerminal}\clarion-assistant-prompt.md"; DestDir: "{%USERPROFILE}\.claude"; DestName: "clarion-assistant-reference.md"; Flags: ignoreversion
 
 ; ============================================================
 ; DIRECTORIES
