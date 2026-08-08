@@ -37,7 +37,7 @@ selected.
 
 | Component | Version | Licence |
 |---|---|---|
-| [Node.js](https://nodejs.org/) | v24.13.0 | MIT, plus the licences of its own bundled dependencies — see below |
+| [Node.js](https://nodejs.org/) | v24.13.0 | MIT, plus the licences of its own bundled dependencies — full text vendored, see below |
 | iconv-lite | 0.7.3 | MIT |
 | safer-buffer | 2.1.2 | MIT |
 | sax | 1.4.1 | ISC |
@@ -105,12 +105,13 @@ Node.js is licensed under the MIT License, but its distribution aggregates a lar
 dependencies under their own licences — including V8, OpenSSL, ICU, zlib, llhttp and others. That
 combined notice is far too large to reproduce here and is maintained upstream.
 
-The authoritative licence text for the exact version redistributed is:
-<https://github.com/nodejs/node/blob/v24.13.0/LICENSE>
+A complete copy of that combined notice is redistributed with Clarion Assistant. It is vendored in
+this repository at [`third-party/node-v24.13.0-LICENSE.txt`](third-party/node-v24.13.0-LICENSE.txt),
+reproduced verbatim from
+[the v24.13.0 tag](https://github.com/nodejs/node/blob/v24.13.0/LICENSE), and the installer places it
+next to `node.exe` as `lsp-server\node-LICENSE.txt`.
 
-> **Known gap.** This is a reference, not a copy. The Windows Node.js installer does not place a
-> `LICENSE` file on disk, so there was no local copy to vendor. Shipping recipients an actual copy of
-> Node's licence bundle is tracked as an open item on ticket `c93e3f55` and is not yet done.
+If the bundled Node version changes, re-vendor that file from the matching tag in the same commit.
 
 ---
 

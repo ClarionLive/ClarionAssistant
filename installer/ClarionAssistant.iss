@@ -220,6 +220,9 @@ Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC10Path}\ac
 ; --- Clarion 10 LSP Server ---
 #if HaveNodeExe
 Source: "{#SrcNodeExe}"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server"; Components: clarion10 and lsp; Flags: ignoreversion
+; Node's own license bundle (V8, OpenSSL, ICU, zlib and the rest), shipped beside the binary
+; it covers. Stable DestName so a Node upgrade replaces it instead of leaving the old one behind.
+Source: "{#SrcRepoRoot}\third-party\node-v24.13.0-LICENSE.txt"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server"; DestName: "node-LICENSE.txt"; Components: clarion10 and lsp; Flags: ignoreversion
 #endif
 #if HaveLsp
 Source: "{#SrcLsp}\out\server\*"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server\out\server"; Components: clarion10 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -273,6 +276,9 @@ Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC11Path}\ac
 ; --- Clarion 11 LSP Server ---
 #if HaveNodeExe
 Source: "{#SrcNodeExe}"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server"; Components: clarion11 and lsp; Flags: ignoreversion
+; Node's own license bundle (V8, OpenSSL, ICU, zlib and the rest), shipped beside the binary
+; it covers. Stable DestName so a Node upgrade replaces it instead of leaving the old one behind.
+Source: "{#SrcRepoRoot}\third-party\node-v24.13.0-LICENSE.txt"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server"; DestName: "node-LICENSE.txt"; Components: clarion11 and lsp; Flags: ignoreversion
 #endif
 #if HaveLsp
 Source: "{#SrcLsp}\out\server\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server\out\server"; Components: clarion11 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -330,6 +336,9 @@ Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC111Path}\a
 ; --- Clarion 11.1 LSP Server ---
 #if HaveNodeExe
 Source: "{#SrcNodeExe}"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server"; Components: clarion111 and lsp; Flags: ignoreversion
+; Node's own license bundle (V8, OpenSSL, ICU, zlib and the rest), shipped beside the binary
+; it covers. Stable DestName so a Node upgrade replaces it instead of leaving the old one behind.
+Source: "{#SrcRepoRoot}\third-party\node-v24.13.0-LICENSE.txt"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server"; DestName: "node-LICENSE.txt"; Components: clarion111 and lsp; Flags: ignoreversion
 #endif
 #if HaveLsp
 Source: "{#SrcLsp}\out\server\*"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server\out\server"; Components: clarion111 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -384,6 +393,9 @@ Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC12Path}\ac
 ; --- Clarion 12 LSP Server ---
 #if HaveNodeExe
 Source: "{#SrcNodeExe}"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server"; Components: clarion12 and lsp; Flags: ignoreversion
+; Node's own license bundle (V8, OpenSSL, ICU, zlib and the rest), shipped beside the binary
+; it covers. Stable DestName so a Node upgrade replaces it instead of leaving the old one behind.
+Source: "{#SrcRepoRoot}\third-party\node-v24.13.0-LICENSE.txt"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server"; DestName: "node-LICENSE.txt"; Components: clarion12 and lsp; Flags: ignoreversion
 #endif
 #if HaveLsp
 Source: "{#SrcLsp}\out\server\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\out\server"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
