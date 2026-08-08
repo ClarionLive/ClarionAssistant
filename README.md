@@ -57,7 +57,18 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ## What's New (Unreleased)
 
-*Nothing yet.* Work landed since 5.7 is documented here as it merges — see [the release-docs workflow](docs/releases/README.md), and run `Check-ReleaseDocs.ps1` before cutting a release.
+Work landed since 5.7 is documented here as it merges — see [the release-docs workflow](docs/releases/README.md), and run `Check-ReleaseDocs.ps1` before cutting a release.
+
+<!-- release-docs: covered=prompt -->
+### The embedded assistant knows about every tool it has &mdash; this time in the copy that ships
+
+An audit before 5.7 found 51 registered tools documented nowhere in the assistant's system prompt &mdash; the build tools, TXA/DCTX import and export, SchemaGraph, Everything search, multi-instance coordination, generation traces and more. The assistant simply never reached for them, because as far as its instructions were concerned they didn't exist.
+
+That audit landed in the wrong file. The prompt lives in two places: a bundled copy the installer ships, and a per-project copy the addin writes on every terminal start. The fix went into the second, which is overwritten from the first each time a terminal opens &mdash; so the repository was correct and every shipped build was not. 5.7 went out with the Jul 30 prompt, still missing all 51.
+
+Both copies are now the same document, and a check enforces that they stay that way: it fails loudly on drift and names the tools the shipped prompt would omit, since the whole failure mode here was staying quiet.
+
+If you noticed the assistant ignoring a tool you knew it had, this was why.
 
 ---
 
