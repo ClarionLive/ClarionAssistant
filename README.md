@@ -57,143 +57,39 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ## What's New (Unreleased)
 
-<!-- release-docs: covered=vscode-import -->
-### Bring your VS Code editor settings across (one click)
+*Nothing yet.* Work landed since 5.7 is documented here as it merges — see [the release-docs workflow](docs/releases/README.md), and run `Check-ReleaseDocs.ps1` before cutting a release.
 
-Setting the CA Editor up to feel like the editor you already use meant re-entering by hand what VS Code
-already knows &mdash; font, size, tab width, word wrap, minimap. The gear panel's **Editor** tab gains an
-**Import from VS Code…** button that reads your `settings.json` and offers the changes.
+---
 
-Nothing is written until you say so. The import previews every setting that would change, current value
-next to the incoming one, and applies only on **Import** &mdash; so hand-tuned settings are never silently
-replaced by an editor's defaults. Ten settings are covered: tab size, insert-spaces, smart auto-indent,
-word wrap, minimap, complete-word-on-insert-key, font size, font family, occurrence highlighting, and the
-horizontal scrollbar. The Smart Formatter options, keyboard bindings and split orientation have no VS Code
-equivalent and are never touched; the panel says so rather than leaving you to wonder.
+## What's New in v5.7
 
-Real `settings.json` files are not plain JSON, and the import expects that: `//` and `/* */` comments and
-trailing commas are all handled, including a `//` that is part of a path inside a string rather than the
-start of a comment. A `"[clarion]"` language block wins over the global value, since that is the setting
-you chose for Clarion files specifically. A CSS font stack like `'Cascadia Code', Consolas, monospace`
-resolves to its first family. Anything VS Code sets that cannot be mapped &mdash; an unrecognised enum, a
-value of the wrong type &mdash; is listed as **Not imported** with the reason, so an ignored setting reads
-as a decision rather than a failure.
+5.7 is a parity-and-reliability release. Full notes: **[docs/releases/v5.7.0.md](docs/releases/v5.7.0.md)**.
 
-Portable and WSL installs live outside the usual `%APPDATA%` locations, so when no `settings.json` is found
-the panel offers **Browse…** to point at one directly. Cancelling that dialog leaves everything exactly as
-it was.
+### Native embeditor parity &mdash; Ctrl+J / Ctrl+B
 
-The import is strictly read-only: it never writes to VS Code's configuration.
+The CA Embeditor answers **Ctrl+J** (next filled embed) and **Ctrl+B** (previous) like the native one, wrapping at either end and acting on the focused split pane ([#185](https://github.com/ClarionLive/ClarionAssistant/issues/185), BoxSoft). The code-snippet picker moves to **Ctrl+Shift+J** &mdash; Ctrl+J is classic Clarion's snippet gesture in the *text* editor, but the *embeditor* owes it to embed navigation &mdash; and becomes rebindable like every other command, so it can be put back if you prefer. An unfiltered **Next/Previous Embed (any)** ships unbound.
 
-<!-- release-docs: covered=build-tools -->
-### Builds run from the assistant no longer stall, and report real error counts
+### Errors-pane navigation survives opening a generated .clw
 
-The ClarionCL-backed build tools (`build_solution`, `build_app`, `generate_source`) now pass `/au`, so the
-app/dictionary upgrade prompt can no longer hold a run open until it times out. That prompt is raised
-invisibly &mdash; the process is launched with no window &mdash; so the only symptom was a build that
-"hung" for its full timeout with nothing to show for it.
+Clicking a row for one procedure after another row had opened the generated `.clw` appeared to do nothing. The reveal was always computing the right line &mdash; but the embeditor is a view *inside* the application window rather than a tab of its own, so raising it needed both levels, and opening the `.clw` closes the native embed underneath, leaving a surface where **Save** said "nothing to save" and **Cancel** blanked the buffer. Such a row now goes to Clarion's own navigation, which re-opens the embeditor properly.
 
-A failed build also used to report **"Errors: 0"**. The error count was scraped with MSBuild-shaped
-patterns (`": error "`) that match nothing ClarionCL actually emits, so every ClarionCL failure counted
-zero. The count now comes from ClarionCL's exit code: one error reports 1, three template parse errors
-report 3, success reports 0. Warnings still come from pattern matching, and MSBuild builds are unchanged.
+### A language server call can no longer freeze the IDE
 
-<!-- release-docs: covered=templates -->
-### CAStamp &mdash; a build-stamp extension template
+An embed save or cancel could hang the IDE for close to a minute &mdash; measured at 57.7s &mdash; waiting synchronously on an async language-server call from the UI thread. An audit found **twelve** such sites, not the two reported, so the pattern is fixed rather than one more symptom. Separately, an application **global** flagged `'X' is not declared in this file` while hovering correctly as a global is suppressed pending the upstream fix ([Clarion-Extension issue 396](https://github.com/msarson/Clarion-Extension/issues/396)).
 
-A new Clarion template ships in `ClarionAssistant/templates/CAStamp.tpl`. It is an APPLICATION-scope
-`#EXTENSION` that stamps version, company and application name into the generated program as globals,
-with an optional startup banner &mdash; so a built `.exe` can report what it was built from without that
-being wired up by hand in every app.
+### Community fixes
 
-MIT licensed and intended for marketplace distribution. To use it, register the template and add the
-extension to your application's global extensions. Install it to `<clarion>\accessory\template\win\`:
-ClarionCL stores a registered template by bare filename rather than by the path you hand it, so a `.tpl`
-registered from outside the redirection search path appears to register successfully and then fails with
-`GENE000` from any other working directory.
+**Go-to-definition** stops resolving to an unrelated procedure's local variable ([#182](https://github.com/ClarionLive/ClarionAssistant/pull/182)) &mdash; a guard the hover path already used and the definition path never called. The **editor follows Clarion's live font** ([#183](https://github.com/ClarionLive/ClarionAssistant/pull/183)): it had been reading a property the Options dialog no longer writes to, so font changes never reached the editor. Both from [@geircodes](https://github.com/geircodes). Reviewing #183 turned up a way to lose your own font &mdash; with following on, any unrelated gear change persisted the IDE's font as your stored preference &mdash; fixed before release, along with the same shape in cursor-behind-EOL.
 
-### The embedded assistant knows about every tool it has
+### Folds, encoding, search, installer
 
-The tool list in `.claude/CLAUDE.md` was audited against the registry. Fifty-one registered tools were
-documented nowhere &mdash; TXA and DCTX import/export, the build tools, SchemaGraph, Everything search,
-multi-instance coordination, generation traces and more &mdash; so the assistant simply did not reach for
-them. One entry pointed the other way: `open_app`, removed back in v3.0.0, was still listed. Registry and
-documentation are now at parity.
-
-<!-- release-docs: covered=embeditor-post-dispose -->
-### Fix a WebView2 post-after-dispose race on closing a CA Embeditor tab
-
-A background continuation (e.g. the diagnostics settle-loop from v5.6's #170, which can now stay in flight for several seconds instead of a single bounded 1.5s wait) could still be posting a response after `DetachOverlay()`/`Dispose()` had already started tearing the WebView2 control down.
-
-Two bugs compounded: `_webView != null` doesn't detect disposal (`Dispose()` never nulls the field), and `InvokeRequired` on a control whose window handle was just destroyed returns `false` &mdash; not because the call was already on the UI thread, but because it had no handle left to compare against &mdash; so the post fell through to calling the WebView2/CoreWebView2 COM object (an STA object) directly from a thread-pool thread instead of marshalling. That's undefined behavior for an STA COM object mid-teardown.
-
-`MonacoEditorControl.PostJson`/`PostString` &mdash; the single chokepoint every host&rarr;page message (diagnostics, hover, completion, save results, designer messages, ...) already funnelled through &mdash; now check `IsDisposed` before trusting `InvokeRequired` at all, closing the fallthrough at its source.
-
-This closes a real, distinct race, but it is **not** a full fix for every embed-close crash: a separate, native Access Violation inside Clarion's own Generator ("Internal error: Restore Procedure") reproduced after this fix was deployed &mdash; tracked as #179, likely the same underlying step behind the stale window-designer error icons in #142.
-
-### Ctrl+J and Ctrl+B walk the filled embeds, the way Clarion always has ([#185](https://github.com/ClarionLive/ClarionAssistant/issues/185))
-
-The native Clarion embeditor jumps to the next filled embed point with **Ctrl+J** and the previous one with **Ctrl+B**. The CA Embeditor answers the same two keys now, so the muscle memory carries over. Navigation wraps at either end and acts on whichever split pane has focus &mdash; the toolbar's solid-arrow buttons do the same job. A walk over *every* embed point, filled or not, is available as **Next/Previous Embed (any)** in the gear panel's Keyboard section, unbound by default.
-
-Ctrl+J was already spoken for: it opened the code-snippet picker, because that is what classic Clarion's **text** editor uses it for. Same key, two different Clarion surfaces. The picker moves to **Ctrl+Shift+J**, and moves out of its own hard-wired interceptor into the rebindable command table &mdash; so it now appears in the Keyboard section alongside everything else, is covered by the panel's conflict detection, and anyone who prefers the old gesture can put it straight back on Ctrl+J. The help text renders whichever chord the picker is actually bound to instead of a hardcoded one, so it can't go stale again.
-
-Reported by BoxSoft.
-
-### Clicking an Errors-pane row keeps working after it opens a generated .clw
-
-With build errors in two procedures, clicking a row for the first procedure opened its embeditor and positioned the caret correctly. Clicking a row from the second procedure opened the generated `.clw` &mdash; that error is in generated code, outside any embed, so the source file is the right answer. But from then on, rows belonging to the first procedure appeared to do nothing at all.
-
-The reveal was working the whole time: it computed the right line on every click. Two things were wrong behind that. Raising the embeditor only re-ordered the Monaco surface inside its host panel, which is invisible while another document is the foreground tab &mdash; and the embeditor is not itself a tab but a view *inside* the application window, so bringing that window forward still left whichever view was last active on screen. Both levels are handled now.
-
-Underneath was the real bug. Opening the `.clw` closes the native embed, which leaves the overlay holding a procedure's text with nothing behind it. It looked healthy enough to reveal into, and landing there was worse than the original symptom: **Save** reported "nothing to save" and **Cancel** blanked the buffer. An Errors row now checks the native embed is genuinely still open &mdash; the same test Save uses, so the two cannot disagree &mdash; and hands the row to Clarion's own navigation when it isn't, which re-opens the embeditor properly.
-
-### Go-to-definition stops resolving to an unrelated procedure's local variable ([#182](https://github.com/ClarionLive/ClarionAssistant/pull/182))
-
-Go-to-definition's CodeGraph fallback could jump to a local variable or parameter belonging to some *other* procedure instead of reporting no definition &mdash; arbitrary, and index-order-dependent, so the target could move between re-indexes with the code unchanged. It fired exactly where landing anywhere is most wrong: on a name that is genuinely undeclared, which is the case the upstream language server correctly returns nothing for.
-
-The guard already existed and was already used by the sibling hover path; the definition path had simply never called it. A variable whose parent resolves to a procedure or routine can't be referenced from outside it, so such a match is never legitimate. Module- and global-scope variables are unaffected. Thanks to [@geircodes](https://github.com/geircodes), who also contributed a reproducer to the CodeGraph regression fixture.
-
-### The editor follows Clarion's live font &mdash; and stops overwriting the font you chose ([#183](https://github.com/ClarionLive/ClarionAssistant/pull/183))
-
-"Follow Clarion's editor options" mirrors Options &rarr; Text Editor, but never worked for the font: it read `TextEditorSettings.DefaultFont`, a property the current Options dialog doesn't write to, so changing the font in Options changed nothing the editor used. The value the dialog actually writes &mdash; and that the native editor windows themselves use &mdash; lives in a different bundle, `CoreProperties.ComponentsFont`. Thanks to [@geircodes](https://github.com/geircodes), who also fixed the font fields not graying out while following, and an IDE font change not reaching open editors until you toggled the checkbox off and on.
-
-Making those fields display the IDE's *effective* value opened a way to lose your own preference, found in review and fixed before release. The panel read the font straight off the fields when saving, and being grayed out doesn't stop that &mdash; so with following on, changing any unrelated setting (the minimap, word wrap, a formatter option) persisted the IDE's font as *your* stored preference, permanently. Cursor-behind-EOL had the same shape and is fixed with it. Your stored font is now kept separate from what the fields display, and an import from VS Code still counts as a deliberate change.
-
-### A language server call can no longer freeze the IDE for a minute
-
-Saving or cancelling an embeditor froze the IDE for close to a minute &mdash; measured at 57.7 seconds &mdash; on the first one of each Clarion session. The cause was a synchronous wait on an async language-server call, made from the UI thread; the fix moves the work off that thread. An audit then found **twelve** such call sites rather than the two originally reported, so the whole pattern is corrected rather than one more symptom, with a bounded cap instead of an unbounded wait.
-
-Separately, a variable declared in an application's **global data** could be underlined as `'X' is not declared in this file.` while hovering the very same word correctly described it as a global. That is an upstream split &mdash; the diagnostic and hover resolve globals through two different paths &mdash; reported as [Clarion-Extension issue 396](https://github.com/msarson/Clarion-Extension/issues/396). Until it lands, the assistant suppresses that one message when it can point at a genuine declaration of the name in the application's PROGRAM module. Deliberately narrow: only that exact message is considered, and a name that is only ever a *local* somewhere else clears nothing, so a real typo still gets flagged.
-
-### Folds are restored when you reopen a procedure, and an ambiguous one is refused
-
-Collapsed regions saved correctly and always loaded back empty &mdash; the state was written with keys that could not be read back. Folds now survive a reopen: regions, `OMIT`/`COMPILE` blocks, procedures, routines and structures.
-
-The recovery that matches a saved fold to a possibly-drifted buffer is also stricter. A fold is identified by the text of its start line, which is effectively unique for `!REGION Setup cards` and not remotely unique for `Rec GROUP`, a bare `CODE`, or an `IF` &mdash; generated Clarion repeats structure headers constantly. The search now requires exactly one candidate in its window and declines when there are several, rather than collapsing whichever it found first. Refusing to restore a fold is a small annoyance; collapsing the wrong region is the failure the fingerprint exists to prevent.
-
-### Clarion source encoding: the sweep is finished
-
-.NET only auto-detects an encoding from a byte-order mark, and Clarion source is Windows-1252 without one &mdash; so every read that passed no encoding decoded high-bit characters to `U+FFFD`. Two earlier passes each said they had found them all (four, then seven). This is the full sweep of the main assembly, so the count stops moving: **nineteen** further reads, across the class-model chat, the class parser feeding `analyze_class`/`sync_check`/`generate_stubs`, and the module readers.
-
-Some of those were worse than a display problem. Two were read-modify-**write**: the text came back with a replacement character, was rewritten with the class name substituted, and the original byte was gone. Another was the code path that pushes on-disk text back into the language server when an embeditor tab closes &mdash; the same defect an earlier fix had removed, reintroduced on every tab close.
-
-Reads are also cheaper. Detecting an encoding is not a quick sniff: it read the entire file and decoded it once purely to test whether the decode succeeded, then threw that result away, so every read opened and decoded the file twice and discarded a full byte array and string. On a generated `.clw` both discards were large enough to reach the large-object heap, once per change on the sync path. One read, one decode, keep the result.
-
-### CA Search opens in your theme instead of always dark ([#181](https://github.com/ClarionLive/ClarionAssistant/issues/181))
-
-Search results defaulted to dark and relied on a theme-changed broadcast to correct themselves. That broadcast only fires when the theme actually *changes*, so a light-mode user who hadn't toggled since startup never got one and every results tab stayed dark for its whole life. The view resolves the assistant's own saved theme when it is created now, and comes up correct without a second round trip.
-
-### The installer no longer lets a row install the wrong build, and handles two installs of one version
-
-Each row on the installer's paths page installs the addin built *for that Clarion version*, compiled against that version's own IDE assemblies. Nothing said so, and the rows are freely editable, so pointing the "Clarion 10 folder" row at a Clarion 12 installation looked reasonable and produced an addin that could not load. The page now says the builds are not interchangeable, and checks what you actually entered: a folder whose Clarion version doesn't match its row is named, told which row it belongs in, and warned about before anything is written. A folder whose version can't be determined is left alone rather than blocked.
-
-More than one installation of the **same** version is supported too, which the four fixed rows couldn't express. Each row accepts several folders separated by semicolons, and the **`+`** button on the row picks one for you &mdash; including the first, which is why the old Browse button is gone. Everything `+` adds is ordinary editable text, so a wrong entry is corrected or removed in place. The first folder on a row is installed into; the rest receive a copy once the install finishes, and the list is remembered for next time so a second tree doesn't quietly keep an old addin. Raised on Discord.
+Collapsed **folds** are restored on reopen (the state saved but always read back empty), and an ambiguous drifted fold is refused rather than collapsing the wrong region. The Windows-1252 **encoding** sweep is finished &mdash; nineteen more reads, two of them read-modify-*write* &mdash; and reads no longer decode every file twice. **CA Search** opens in your theme instead of always dark ([#181](https://github.com/ClarionLive/ClarionAssistant/issues/181)). The **installer** checks that a folder's Clarion version matches the row it was entered in, and a row now accepts several folders for the same version via **`+`**, closing the gap 5.5's known issues warned about.
 
 ### Thanks
 
-- **[@geircodes](https://github.com/geircodes)** &mdash; the go-to-definition local-variable guard ([#182](https://github.com/ClarionLive/ClarionAssistant/pull/182)) and the live-font fix ([#183](https://github.com/ClarionLive/ClarionAssistant/pull/183)), both with reproducers and live verification against a real IDE.
-- **Andrew Santarelli** &mdash; the WebView2 post-after-dispose fix on closing an embeditor tab, and for reporting the Generator Access Violation that is still open as [#179](https://github.com/ClarionLive/ClarionAssistant/issues/179). The Ctrl+J snippet picker that moves to Ctrl+Shift+J in this release was his request originally ([#49](https://github.com/ClarionLive/ClarionAssistant/issues/49), [#154](https://github.com/ClarionLive/ClarionAssistant/issues/154)).
-- **BoxSoft** &mdash; for [#185](https://github.com/ClarionLive/ClarionAssistant/issues/185), the embed-navigation hotkeys.
+- **[@geircodes](https://github.com/geircodes)** &mdash; [#182](https://github.com/ClarionLive/ClarionAssistant/pull/182) and [#183](https://github.com/ClarionLive/ClarionAssistant/pull/183), with reproducers and live verification against a real IDE.
+- **Andrew Santarelli** &mdash; the WebView2 post-after-dispose fix, reporting [#179](https://github.com/ClarionLive/ClarionAssistant/issues/179), and the original Ctrl+J snippet requests ([#49](https://github.com/ClarionLive/ClarionAssistant/issues/49), [#154](https://github.com/ClarionLive/ClarionAssistant/issues/154)).
+- **BoxSoft** &mdash; [#185](https://github.com/ClarionLive/ClarionAssistant/issues/185), the embed-navigation hotkeys.
 
 ---
 
