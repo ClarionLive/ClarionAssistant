@@ -26,6 +26,8 @@
 .PARAMETER LspRoot
     The upstream clone (a git checkout of msarson/Clarion-Extension with our overlay).
     Defaults to $env:CLARIONLSP_ROOT, else H:\DevLaptop\ClarionLSP (legacy dev path).
+    ONLY used by the legacy overlay path (-Apply). -Pure ignores it entirely and clones
+    source.repo itself, so a contributor with no such clone can still build the pinned server.
 
 .PARAMETER Tag
     Target release tag to pin to. Defaults to targetPin.tag from lsp-snapshot.json.
@@ -43,6 +45,7 @@
     under $PureRoot (default <repo>\.lsp-build\<Tag>) which deploy.ps1 sources instead of the overlay clone.
     Independent of -Apply (which is the legacy overlay-keeping path). Idempotent: skips the rebuild if a
     pure build is already present. VERIFIES the built server.js contains ZERO codegraph refs.
+    Requires NOTHING but git + npm + network: the tree is cloned from source.repo at $Tag.
 
 .PARAMETER PureRoot
     Where the pure build lives / is created. Defaults to <repo>\.lsp-build\<Tag>.
@@ -83,6 +86,20 @@ function Fail($m) { Line 'FAIL' $m 'Red' }
 # resolvedTag/resolvedCommit/lastSync, leaving targetPin/currentPin frozen at whatever hand-written
 # audit they last held -- after the v1.0.0 re-pin the manifest still reported targetPin v0.9.8 and a
 # June currentPin, so a first read said "behind" when the bundle was current. One writer, all fields.
+# Read/write the manifest without mangling it. Windows PowerShell 5.1 defaults `Get-Content` to the
+# system ANSI codepage and `Set-Content -Encoding UTF8` to UTF8-WITH-BOM, so a read/write round-trip
+# on this UTF-8 file turned the em dash in $comment into mojibake and prepended a BOM. PS 7 defaults
+# to UTF-8 and hides the problem, which is why it survived. ConvertTo-Json in 5.1 also escapes
+# & < > ' as \uXXXX with no -EscapeHandling to turn it off, so unescape those four back.
+function Read-Manifest($path) {
+    Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+}
+function Save-Manifest($manifest, $path) {
+    $json = ($manifest | ConvertTo-Json -Depth 12) `
+        -replace '\\u0026', '&' -replace '\\u003c', '<' -replace '\\u003e', '>' -replace '\\u0027', "'"
+    [System.IO.File]::WriteAllText($path, $json, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 function Update-PinFields($manifest, $Tag, $repoRoot) {
     $commit     = (git -C $repoRoot rev-parse --short HEAD)
     $commitDate = (git -C $repoRoot show -s --format=%cs HEAD)
@@ -100,19 +117,124 @@ function Update-PinFields($manifest, $Tag, $repoRoot) {
 
 # --- Resolve inputs -------------------------------------------------------------------
 if (-not (Test-Path $ManifestPath)) { throw "Manifest not found: $ManifestPath" }
-$manifest = Get-Content $ManifestPath -Raw | ConvertFrom-Json
+$manifest = Read-Manifest $ManifestPath
 
-if (-not $LspRoot) { $LspRoot = if ($env:CLARIONLSP_ROOT) { $env:CLARIONLSP_ROOT } else { 'H:\DevLaptop\ClarionLSP' } }
-if (-not $Tag)     { $Tag = $manifest.targetPin.tag }
+if (-not $Tag) { $Tag = $manifest.targetPin.tag }
 
 Write-Host ""
 Write-Host "Clarion LSP server sync (GitHub #40)" -ForegroundColor White
-Write-Host "  LspRoot : $LspRoot"
 Write-Host "  Tag     : $Tag"
-Write-Host "  Mode    : $(if ($Apply) { 'APPLY' } else { 'dry run (read-only)' })"
+Write-Host "  Mode    : $(if ($Pure) { 'PURE build' } elseif ($Apply) { 'APPLY' } else { 'dry run (read-only)' })"
 Write-Host ""
 
-if (-not (Test-Path (Join-Path $LspRoot '.git'))) { Fail "Not a git clone: $LspRoot"; exit 2 }
+# --- PURE mode (#40) ---------------------------------------------------------------------
+# Build STOCK upstream at $Tag with NO CodeGraph overlay, into $PureRoot. The overlay is retired;
+# CodeGraph is C#-side now.
+#
+# SELF-CONTAINED BY CONSTRUCTION: this path clones $manifest.source.repo directly, so it needs no
+# pre-existing clone and never touches $LspRoot. It previously ran `git worktree add` against
+# $LspRoot, which made -Pure unusable on any machine without the maintainer's clone -- a pin bump
+# then aborted deploy.ps1 outright instead of rebuilding the pinned server. Runs BEFORE the
+# $LspRoot resolution below for exactly that reason.
+if ($Pure) {
+    if (-not $PureRoot) {
+        $RepoRoot = Split-Path -Parent $ScriptDir      # ...\ClarionAssistant
+        $PureRoot = Join-Path $RepoRoot (".lsp-build\" + $Tag)
+    }
+    $builtServer = Join-Path $PureRoot $manifest.source.buildOutput   # out/server/src/server.js
+    $repoUrl     = $manifest.source.repo
+    Info "PURE build target: $PureRoot (tag $Tag, NO overlay)"
+
+    # Ensure a clean tag checkout at $PureRoot, cloned from source.repo.
+    if ((Test-Path (Join-Path $PureRoot 'package.json')) -and -not (Test-Path (Join-Path $PureRoot '.git'))) {
+        Info "Using existing (non-git) pure tree as-is"
+    } else {
+        if (Test-Path (Join-Path $PureRoot '.git')) {
+            Info "Refreshing existing checkout -> $Tag"
+        } else {
+            Info "Cloning $repoUrl -> $PureRoot ..."
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $PureRoot) | Out-Null
+            git clone --quiet $repoUrl $PureRoot
+            if ($LASTEXITCODE) { Fail "clone failed ($LASTEXITCODE): $repoUrl"; exit 2 }
+        }
+
+        # Assert this is the expected upstream repo before we build anything out of it.
+        $pureOrigin = (git -C $PureRoot remote get-url origin 2>$null)
+        if ($pureOrigin -notmatch 'Clarion-Extension') {
+            Fail "origin of $PureRoot is '$pureOrigin' — expected msarson/Clarion-Extension. Aborting."
+            exit 2
+        }
+        OK "origin: $pureOrigin"
+
+        git -C $PureRoot fetch --tags --prune --quiet origin
+        if (-not (git -C $PureRoot tag --list $Tag)) {
+            Fail "Tag '$Tag' does not exist in $repoUrl. Available recent tags:"
+            git -C $PureRoot tag --sort=-creatordate | Select-Object -First 8 | ForEach-Object { Write-Host "         $_" }
+            exit 2
+        }
+        git -C $PureRoot checkout --quiet --force $Tag
+        if ($LASTEXITCODE) { Fail "checkout of '$Tag' failed in $PureRoot"; exit 2 }
+        OK "checked out $Tag"
+    }
+
+    # Assert PURE source: the overlay .ts must NOT be present in this tree.
+    foreach ($f in $manifest.codeGraphOverlay.overlayFiles) {
+        if (Test-Path (Join-Path $PureRoot $f)) {
+            Fail "PURE tree contains overlay file '$f' — not pure. Use a clean checkout."; exit 6
+        }
+    }
+    OK "no CodeGraph overlay in source (pure)"
+
+    # Build (idempotent: skip if a pure build is already present)
+    if ($SkipBuild) {
+        Warn "Skipping build (-SkipBuild)."
+    } elseif ((Test-Path $builtServer) -and ((Get-Content $builtServer -Raw) -notmatch 'codegraph|CodeGraph')) {
+        OK "pure build already present (skipping rebuild; delete out/ to force)"
+    } else {
+        Info "Building (npm ci && npm run compile) — can take a minute..."
+        Push-Location $PureRoot
+        try {
+            npm ci;          if ($LASTEXITCODE) { throw "npm ci failed ($LASTEXITCODE)" }
+            npm run compile; if ($LASTEXITCODE) { throw "npm run compile failed ($LASTEXITCODE)" }
+        } finally { Pop-Location }
+        OK "build complete"
+    }
+
+    # Verify PURE: built server.js must contain ZERO codegraph refs.
+    if (Test-Path $builtServer) {
+        if ((Get-Content $builtServer -Raw) -match 'codegraph|CodeGraph') {
+            Fail "Built server.js STILL contains CodeGraph refs — not pure. Aborting."; exit 6
+        }
+        OK "verified PURE: no CodeGraph refs in built server.js"
+    } elseif (-not $SkipBuild) {
+        Fail "Expected build output not found: $builtServer"; exit 6
+    }
+
+    # Record the pure pin (targetPin/currentPin included -- see Update-PinFields)
+    $resolved = (git -C $PureRoot rev-parse --short HEAD 2>$null)
+    Update-PinFields $manifest $Tag $PureRoot
+    $manifest | Add-Member -NotePropertyName 'pure'           -NotePropertyValue $true   -Force
+    $manifest | Add-Member -NotePropertyName 'resolvedCommit' -NotePropertyValue $resolved -Force
+    $manifest | Add-Member -NotePropertyName 'resolvedTag'    -NotePropertyValue $Tag      -Force
+    $manifest | Add-Member -NotePropertyName 'lastSync'       -NotePropertyValue (Get-Date -Format 'yyyy-MM-dd') -Force
+    Save-Manifest $manifest $ManifestPath
+    OK "manifest updated: pure=true tag=$Tag resolvedCommit=$resolved"
+    Write-Host ""
+    OK "PURE sync complete. deploy.ps1 sources the pure build from $PureRoot."
+    exit 0
+}
+
+# --- Legacy overlay path (-Apply) ---------------------------------------------------------
+# Only this path needs a pre-existing clone with our untracked overlay .ts files in it.
+if (-not $LspRoot) { $LspRoot = if ($env:CLARIONLSP_ROOT) { $env:CLARIONLSP_ROOT } else { 'H:\DevLaptop\ClarionLSP' } }
+Write-Host "  LspRoot : $LspRoot"
+Write-Host ""
+
+# NOTE: string-concatenate the path rather than Join-Path. Join-Path VALIDATES the drive qualifier
+# and THROWS "Cannot find drive" on a non-existent drive, which under deploy.ps1's
+# $ErrorActionPreference='Stop' killed the whole deploy instead of failing soft the way
+# deploy.ps1's "LSP copy will be skipped" warning intends. Test-Path alone returns $false.
+if (-not (Test-Path -LiteralPath "$LspRoot\.git")) { Fail "Not a git clone: $LspRoot"; exit 2 }
 
 Push-Location $LspRoot
 try {
@@ -136,79 +258,6 @@ try {
         exit 2
     }
     OK "target tag exists: $Tag ($(git show -s --format='%ci' $Tag 2>$null | Select-Object -First 1))"
-
-    # --- PURE mode (#40) -------------------------------------------------------------
-    # Build STOCK upstream at $Tag with NO CodeGraph overlay, into $PureRoot. The overlay is retired;
-    # CodeGraph is C#-side now. Self-contained: creates/refreshes a clean tag checkout (untracked overlay
-    # .ts files in $LspRoot do NOT propagate into a fresh worktree), builds, verifies purity, records pin.
-    if ($Pure) {
-        if (-not $PureRoot) {
-            $RepoRoot = Split-Path -Parent $ScriptDir      # ...\ClarionAssistant
-            $PureRoot = Join-Path $RepoRoot (".lsp-build\" + $Tag)
-        }
-        $builtServer = Join-Path $PureRoot $manifest.source.buildOutput   # out/server/src/server.js
-        Write-Host ""
-        Info "PURE build target: $PureRoot (tag $Tag, NO overlay)"
-
-        # Ensure a clean tag checkout at $PureRoot
-        if (Test-Path (Join-Path $PureRoot '.git')) {
-            Info "Refreshing existing checkout -> $Tag"
-            git -C $PureRoot fetch --tags --quiet origin 2>$null
-            git -C $PureRoot checkout --quiet --force $Tag
-        } elseif (Test-Path (Join-Path $PureRoot 'package.json')) {
-            Info "Using existing (non-git) pure tree as-is"
-        } else {
-            Info "Creating clean worktree at $PureRoot ..."
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $PureRoot) | Out-Null
-            git worktree add --force $PureRoot $Tag
-        }
-
-        # Assert PURE source: the overlay .ts must NOT be present in this tree.
-        foreach ($f in $manifest.codeGraphOverlay.overlayFiles) {
-            if (Test-Path (Join-Path $PureRoot $f)) {
-                Fail "PURE tree contains overlay file '$f' — not pure. Use a clean checkout."; exit 6
-            }
-        }
-        OK "no CodeGraph overlay in source (pure)"
-
-        # Build (idempotent: skip if a pure build is already present)
-        if ($SkipBuild) {
-            Warn "Skipping build (-SkipBuild)."
-        } elseif ((Test-Path $builtServer) -and ((Get-Content $builtServer -Raw) -notmatch 'codegraph|CodeGraph')) {
-            OK "pure build already present (skipping rebuild; delete out/ to force)"
-        } else {
-            Info "Building (npm ci && npm run compile) — can take a minute..."
-            Push-Location $PureRoot
-            try {
-                npm ci;          if ($LASTEXITCODE) { throw "npm ci failed ($LASTEXITCODE)" }
-                npm run compile; if ($LASTEXITCODE) { throw "npm run compile failed ($LASTEXITCODE)" }
-            } finally { Pop-Location }
-            OK "build complete"
-        }
-
-        # Verify PURE: built server.js must contain ZERO codegraph refs.
-        if (Test-Path $builtServer) {
-            if ((Get-Content $builtServer -Raw) -match 'codegraph|CodeGraph') {
-                Fail "Built server.js STILL contains CodeGraph refs — not pure. Aborting."; exit 6
-            }
-            OK "verified PURE: no CodeGraph refs in built server.js"
-        } elseif (-not $SkipBuild) {
-            Fail "Expected build output not found: $builtServer"; exit 6
-        }
-
-        # Record the pure pin (targetPin/currentPin included -- see Update-PinFields)
-        $resolved = (git -C $PureRoot rev-parse --short HEAD 2>$null)
-        Update-PinFields $manifest $Tag $PureRoot
-        $manifest | Add-Member -NotePropertyName 'pure'           -NotePropertyValue $true   -Force
-        $manifest | Add-Member -NotePropertyName 'resolvedCommit' -NotePropertyValue $resolved -Force
-        $manifest | Add-Member -NotePropertyName 'resolvedTag'    -NotePropertyValue $Tag      -Force
-        $manifest | Add-Member -NotePropertyName 'lastSync'       -NotePropertyValue (Get-Date -Format 'yyyy-MM-dd') -Force
-        ($manifest | ConvertTo-Json -Depth 12) | Set-Content -Path $ManifestPath -Encoding UTF8
-        OK "manifest updated: pure=true tag=$Tag resolvedCommit=$resolved"
-        Write-Host ""
-        OK "PURE sync complete. deploy.ps1 sources the pure build from $PureRoot."
-        exit 0
-    }
 
     # 2. Drift report — current HEAD vs target tag
     $head       = (git rev-parse --short HEAD)
@@ -305,7 +354,7 @@ try {
     $manifest.resolvedCommit = $resolved
     $manifest | Add-Member -NotePropertyName 'resolvedTag' -NotePropertyValue $Tag -Force
     $manifest.lastSync = (Get-Date -Format 'yyyy-MM-dd')
-    ($manifest | ConvertTo-Json -Depth 12) | Set-Content -Path $ManifestPath -Encoding UTF8
+    Save-Manifest $manifest $ManifestPath
     OK "manifest updated: resolvedCommit=$resolved lastSync=$($manifest.lastSync)"
 
     Write-Host ""
