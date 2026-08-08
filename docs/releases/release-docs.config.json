@@ -162,5 +162,11 @@
     "",
     "Scoped to one release cycle — clear this map when a version is cut."
   ],
-  "acknowledgedCommits": {}
+  "acknowledgedCommits": {
+    "a13b984": "diag only - temporary embed-state writer tracing for the fold/cursor round-trip hunt. The per-feature marks it added were stripped again in b7e06d1 before release, so nothing user-facing shipped from it. The bugs it FOUND are documented (see the folds and cursor entries).",
+    "fc0aa5c": "diag only - read-back verification while chasing the cursor-restore bug; scaffolding, removed in b7e06d1. The fix it led to is documented.",
+    "e33b5f1": "diag only - cursor save/restore round-trip tracing, removed in b7e06d1.",
+    "a626ffc": "diag only - DetachOverlay/TeardownSession timing bisect used to find the 58s embed-save freeze. The [detach-timing]/[teardown-timing] marks were KEPT on purpose (they fire once per save and are the cheapest detector if it regresses), but they are developer diagnostics with no user-facing behaviour; the freeze fix itself is documented in the language-server entry.",
+    "dc020ba": "diag only - per-phase save-round-trip timing, same investigation as a626ffc."
+  }
 }
