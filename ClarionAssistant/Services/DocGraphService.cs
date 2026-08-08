@@ -455,7 +455,8 @@ namespace ClarionAssistant.Services
 
         private int IngestHtml(DocSource source)
         {
-            string html = File.ReadAllText(source.FilePath, Encoding.Default);
+            Encoding htmlEncoding;
+            string html = EncodingHelper.ReadHtml(source.FilePath, out htmlEncoding);
             var chunks = ParseCapesoftHtml(html, source.Library);
 
             if (chunks.Count == 0)
@@ -828,7 +829,8 @@ namespace ClarionAssistant.Services
                 var allChunks = new List<DocChunk>();
                 foreach (string htmlFile in htmlFiles)
                 {
-                    string html = File.ReadAllText(htmlFile, Encoding.Default);
+                    Encoding chmHtmlEncoding;
+                    string html = EncodingHelper.ReadHtml(htmlFile, out chmHtmlEncoding);
                     var chunks = ParseCapesoftHtml(html, source.Library);
                     if (chunks.Count == 0)
                         chunks = ParseGenericHtml(html, source.Library);
@@ -1462,7 +1464,11 @@ namespace ClarionAssistant.Services
             string text;
             try
             {
-                text = File.ReadAllText(source.FilePath, Encoding.UTF8);
+                // Markdown carries no charset declaration, so the plain ladder applies. Encoding.UTF8
+                // here was less wrong than the HTML path's Encoding.Default, but it still used the
+                // replacement fallback: an ANSI-saved .md decoded to U+FFFD rather than falling back.
+                Encoding markdownEncoding;
+                text = EncodingHelper.ReadAllText(source.FilePath, out markdownEncoding);
             }
             catch
             {
