@@ -57,6 +57,8 @@ namespace ClarionAssistant
         private string _filePath;        // the source file we edit (from the native editor), saved to disk by Monaco
         private bool _overlayDirty;      // mirrored from the page (fileState) — drives save-on-close
         private string _overlayLiveText; // last live buffer the page mirrored, for the close-save write
+        private long _overlayLiveSeq;    // the page's edit seq for _overlayLiveText — echoed back on save so
+                                         // the page only clears its ● if nothing changed in the meantime
         private IDisposable _settingsReg; // registration in MonacoSettingsBroadcaster (cross-surface gear-settings sync, deac3d16)
 
         // External disk watch: SourceSafe checkout/checkin flips the Windows read-only attribute, and any
@@ -247,9 +249,32 @@ namespace ClarionAssistant
             {
                 if (!(_overlayDirty && _overlayLiveText != null && !string.IsNullOrEmpty(_filePath))) return;
                 if (IsFileReadOnly()) return;
+                long seq = _overlayLiveSeq;
                 int n = WriteToDisk(_overlayLiveText);
                 _overlayDirty = false;
-                MonacoSpikeLog.Write("overlay build-triggered save wrote: " + _filePath + " (" + n + " chars)");
+                MonacoSpikeLog.Write("overlay build-triggered save wrote: " + _filePath + " (" + n + " chars, seq " + seq + ")");
+
+                // Tell the PAGE it was saved, exactly as OnSave does. Clearing _overlayDirty alone left the two
+                // sides disagreeing: the host thought the file was clean while the page still showed its ● and
+                // still believed it held unsaved edits. That is not cosmetic — the page's own external-change
+                // and close handling branch on that flag, so it would reason about a saved file as if the work
+                // were still only in the buffer.
+                //
+                // Echoing the seq is what keeps this honest. If the developer typed between the mirror we wrote
+                // and this confirmation, the page's editSeq has moved on, the seqs no longer match, and it
+                // correctly STAYS dirty rather than marking unsaved keystrokes as saved.
+                //
+                // Marshalled: the IDE's own build raises this on the UI thread, but the MCP build tools call it
+                // from a request thread, and posting to WebView2 from there is not safe. Same hop the disk
+                // watcher uses. Note it must NOT reload — PostSaveResult only clears the dot and toasts.
+                var ed = _editor;
+                if (ed != null)
+                {
+                    Action post = () => { try { ed.PostSaveResult(true, "Saved before build", seq); } catch { } };
+                    var form = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
+                    if (form != null && form.InvokeRequired) form.BeginInvoke(post);
+                    else post();
+                }
             }
             catch (Exception ex) { MonacoSpikeLog.Write("overlay build-triggered save error: " + ex.Message); }
         }
@@ -1313,6 +1338,11 @@ namespace ClarionAssistant
                 if (data == null) return;
                 if (data.ContainsKey("text") && data["text"] is string) _overlayLiveText = (string)data["text"];
                 if (data.ContainsKey("dirty")) _overlayDirty = Convert.ToBoolean(data["dirty"]);
+                // The page stamps every mirror with its edit sequence. Keep it: a save that writes
+                // _overlayLiveText has, by definition, saved the buffer AS OF this seq, and the page clears
+                // its ● only when the seq we confirm still matches its current one. Without capturing it,
+                // a build-triggered save cannot honestly tell the page what it saved.
+                try { if (data.ContainsKey("seq")) _overlayLiveSeq = Convert.ToInt64(data["seq"]); } catch { }
                 EnsureCloseHook();   // the page is live now → the workbench window is realized; safe to subscribe
             }
             catch { }
