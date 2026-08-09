@@ -58,6 +58,16 @@
 #define SrcLsp SrcBase + "\.lsp-build\v1.0.0"
 ; Bundled node.exe (so end users don't need Node.js installed). Override: CLARIONLSP_NODE
 #define SrcNodeExe GetEnv("CLARIONLSP_NODE") != "" ? GetEnv("CLARIONLSP_NODE") : "C:\Program Files\nodejs\node.exe"
+; Bundled Markdown Editor — msarson/ClarionMarkdownEditor, redistributed under MIT. Upstream ships a
+; PREBUILT release zip, so unlike the LSP there is nothing to compile: Sync-MarkdownEditor.ps1 just
+; downloads, verifies and extracts it. Tag tracks markdown-editor-sync\markdown-snapshot.json
+; "resolvedTag"; bump BOTH defines below when the pin bumps (Sync-MarkdownEditor.ps1 -Tag <tag>).
+#define SrcMarkdown SrcBase + "\.markdown-build\v1.2.0"
+; The version the only-if-newer check compares against a user's existing install. MUST equal
+; markdown-snapshot.json "resolvedIdentityVersion" — which is the <Identity version> from the .addin,
+; NOT the DLL's FileVersion. Upstream freezes FileVersion at 1.0.2.0 across every release, so Inno's
+; built-in newer-file comparison cannot tell v1.0.2 from v1.2.0 and must not be relied on here.
+#define MarkdownPinVersion "1.2.0"
 ; The directory containing this .iss file itself (SourcePath already ends in "\").
 #define SrcInstaller Copy(SourcePath, 1, Len(SourcePath)-1)
 
@@ -67,6 +77,11 @@
 ; below, so the packaging log always shows what was omitted from the installer.
 #define HaveNodeExe FileExists(SrcNodeExe)
 #define HaveLsp FileExists(SrcLsp + "\out\server\src\server.js")
+; Two sentinels, deliberately: the .addin is the payload, and the LICENSE is the MIT notice we are
+; obliged to redistribute with it. The sync stages the licence because upstream's zip omits it, so
+; a payload present WITHOUT it means someone unzipped by hand and we must not ship that.
+#define HaveMarkdown FileExists(SrcMarkdown + "\ClarionMarkdownEditor.addin")
+#define HaveMarkdownLicense FileExists(SrcMarkdown + "\LICENSE-ClarionMarkdownEditor.txt")
 #define HaveC11_1 FileExists(SrcC11_1 + "\ClarionAssistant.dll")
 #define HaveComForClarion FileExists(SrcComForClarion + "\ClarionCOMBrowser.dll")
 #define HaveUltimateClasses FileExists(SrcUltimateClasses + "\UltimateCOM.inc")
@@ -82,6 +97,14 @@
 #endif
 #if !HaveLsp
 #pragma message "WARNING: bundled LSP build missing (" + SrcLsp + ") - shipping WITHOUT the Clarion LSP server. Run Sync-LspServer.ps1 -Pure first."
+#endif
+#if !HaveMarkdown
+#pragma message "WARNING: bundled Markdown Editor missing (" + SrcMarkdown + ") - shipping WITHOUT the Markdown Editor addin. Run markdown-editor-sync\Sync-MarkdownEditor.ps1 first."
+#endif
+; Not a nice-to-have: MIT requires the notice to travel with the copy. Refuse to ship the payload
+; silently stripped of it — this warning fails the build the same way a missing payload does.
+#if HaveMarkdown && !HaveMarkdownLicense
+#pragma message "WARNING: Markdown Editor LICENSE missing (" + SrcMarkdown + "\LICENSE-ClarionMarkdownEditor.txt) - shipping WITHOUT the MIT notice we are required to redistribute. Re-run Sync-MarkdownEditor.ps1 -Force."
 #endif
 #if !HaveC11_1
 #pragma message "WARNING: bin\Debug-C11.1 missing - shipping WITHOUT the Clarion 11.1 addin (build it via deploy.ps1 -Version 11.1)."
@@ -168,6 +191,12 @@ Name: "plugin"; Description: "Clarion Assistant Plugin (installed from GitHub ma
 Name: "plugin\skills"; Description: "Clarion Assistant templates (blank dictionary, class models)"; Types: full custom; Flags: fixed
 Name: "agents"; Description: "Claude Code Quality Agents"; Types: full custom
 Name: "lsp"; Description: "Clarion Language Server (LSP)"; Types: full custom
+; Third-party addin (msarson/ClarionMarkdownEditor, MIT) installed into its OWN addin folder, NOT
+; under ClarionAssistant\. Clarion scans every subfolder of accessory\addins, and two copies sharing
+; the ClarionMarkdownEditor Identity fail IDE startup outright ("Identity name used by multiple
+; addins") — so the canonical folder is the only safe destination. Guarded by ShouldInstallMarkdown:
+; an existing install that is NEWER than our pin is left alone.
+Name: "markdown"; Description: "Markdown Editor addin (by Mark Sarson)"; Types: full custom
 Name: "docgraph"; Description: "Pre-loaded Documentation Database"; Types: full custom
 Name: "docs"; Description: "User Guide"; Types: full custom
 
@@ -390,6 +419,27 @@ Source: "{#SrcLsp}\node_modules\iconv-lite\*"; DestDir: "{code:GetC12Path}\acces
 Source: "{#SrcLsp}\node_modules\safer-buffer\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\node_modules\safer-buffer"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
 #endif
 
+; --- Markdown Editor addin (third-party: msarson/ClarionMarkdownEditor, MIT) ---
+; All four Clarion roots are listed together rather than interleaved with each version's block,
+; because this payload is identical for every root and is NOT built per Clarion release — it is a
+; prebuilt upstream zip staged by markdown-editor-sync\Sync-MarkdownEditor.ps1.
+;
+; Destination is accessory\addins\MarkdownEditor — its OWN folder, deliberately NOT a subfolder of
+; ClarionAssistant. See the [Components] note: a duplicate Identity anywhere under accessory\addins
+; stops the IDE starting.
+;
+; ignoreversion is REQUIRED, not incidental. Upstream never bumps the DLL's FileVersion resource
+; (v1.2.0 still reports 1.0.2.0), so Inno's default version comparison would compare equal and
+; behave unpredictably across releases. All freshness logic lives in ShouldInstallMarkdown, which
+; reads the <Identity version> out of any already-installed .addin and declines to overwrite a copy
+; NEWER than our pin — so a user tracking upstream directly is never silently downgraded.
+#if HaveMarkdown && HaveMarkdownLicense
+Source: "{#SrcMarkdown}\*"; DestDir: "{code:GetC10Path}\accessory\addins\MarkdownEditor"; Components: clarion10 and markdown; Check: ShouldInstallMarkdown('10'); Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SrcMarkdown}\*"; DestDir: "{code:GetC11Path}\accessory\addins\MarkdownEditor"; Components: clarion11 and markdown; Check: ShouldInstallMarkdown('11'); Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SrcMarkdown}\*"; DestDir: "{code:GetC111Path}\accessory\addins\MarkdownEditor"; Components: clarion111 and markdown; Check: ShouldInstallMarkdown('111'); Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SrcMarkdown}\*"; DestDir: "{code:GetC12Path}\accessory\addins\MarkdownEditor"; Components: clarion12 and markdown; Check: ShouldInstallMarkdown('12'); Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
+
 ; --- COM for Clarion: IDE Addin (installs to whichever Clarion version is selected — uses C12 path) ---
 ; ClarionCOMBrowser is a separate repo (see SrcComForClarion above) — skip if not present at compile time.
 #if HaveComForClarion
@@ -586,6 +636,128 @@ begin
   else if (C11Path <> '') and DirExists(C11Path) then Result := C11Path
   else if (C10Path <> '') and DirExists(C10Path) then Result := C10Path
   else Result := 'C:\Clarion12';
+end;
+
+// ============================================================
+// Markdown Editor — only-if-newer install decision
+// ============================================================
+// The Markdown Editor is a THIRD-PARTY addin (msarson/ClarionMarkdownEditor, MIT) that the user may
+// already have, installed from upstream's own release zip or via ClarionAddinFinder. We redistribute
+// a pinned copy so CA users get a current one by default, but we must never silently DOWNGRADE
+// somebody who is ahead of our pin.
+//
+// The comparison has to read <Identity version="..."/> out of the .addin manifest. It cannot use the
+// DLL: upstream does not bump the FileVersion resource, so v1.2.0 and v1.0.2 both report 1.0.2.0.
+// That also means Inno's own "replace only if newer" file-version logic is blind here — hence
+// ignoreversion on the [Files] entries and all the real logic in this function.
+
+function ReadAddinIdentityVersion(AddinPath: String): String;
+var
+  Raw: AnsiString;
+  T: String;
+  P, Q: Integer;
+begin
+  Result := '';
+  if not FileExists(AddinPath) then Exit;
+  if not LoadStringFromFile(AddinPath, Raw) then Exit;
+  T := String(Raw);
+  P := Pos('<Identity', T);
+  if P = 0 then Exit;
+  T := Copy(T, P, Length(T) - P + 1);
+  P := Pos('version="', T);
+  if P = 0 then Exit;
+  T := Copy(T, P + Length('version="'), Length(T));
+  Q := Pos('"', T);
+  if Q = 0 then Exit;
+  Result := Copy(T, 1, Q - 1);
+end;
+
+// Consumes the leading dotted component of S and returns it as an integer, leaving the remainder.
+// A missing or non-numeric component reads as 0, so '1.2' and '1.2.0' compare equal.
+function NextVersionPart(var S: String): Integer;
+var
+  P: Integer;
+begin
+  P := Pos('.', S);
+  if P = 0 then
+  begin
+    Result := StrToIntDef(S, 0);
+    S := '';
+  end
+  else
+  begin
+    Result := StrToIntDef(Copy(S, 1, P - 1), 0);
+    S := Copy(S, P + 1, Length(S));
+  end;
+end;
+
+// -1 if A < B, 0 if equal, 1 if A > B. Component-wise, so 1.10.0 correctly beats 1.9.0 — which a
+// string comparison would get backwards.
+function CompareDottedVersion(A, B: String): Integer;
+var
+  PA, PB: Integer;
+begin
+  Result := 0;
+  while (A <> '') or (B <> '') do
+  begin
+    PA := NextVersionPart(A);
+    PB := NextVersionPart(B);
+    if PA > PB then begin Result := 1; Exit; end;
+    if PA < PB then begin Result := -1; Exit; end;
+  end;
+end;
+
+function MarkdownRootFor(Which: String): String;
+begin
+  if Which = '10' then Result := C10Path
+  else if Which = '11' then Result := C11Path
+  else if Which = '111' then Result := C111Path
+  else Result := C12Path;
+end;
+
+// [Files] Check function. Param is the Clarion release discriminator ('10','11','111','12') rather
+// than a path, so the decision reads the same globals the wizard populated and does not depend on
+// constant expansion inside a Check parameter.
+function ShouldInstallMarkdown(Param: String): Boolean;
+var
+  Root, AddinPath, Installed: String;
+begin
+  Root := MarkdownRootFor(Param);
+  if Root = '' then
+  begin
+    Result := False;
+    Exit;
+  end;
+
+  AddinPath := Root + '\accessory\addins\MarkdownEditor\ClarionMarkdownEditor.addin';
+
+  if not FileExists(AddinPath) then
+  begin
+    Log('Markdown[' + Param + ']: no existing install -> installing pinned {#MarkdownPinVersion}');
+    Result := True;
+    Exit;
+  end;
+
+  Installed := ReadAddinIdentityVersion(AddinPath);
+  if Installed = '' then
+  begin
+    // Present but with no readable Identity: the IDE cannot load that manifest either, so replacing
+    // it is a repair rather than a downgrade.
+    Log('Markdown[' + Param + ']: existing .addin has no readable <Identity version> (malformed) -> installing pinned {#MarkdownPinVersion}');
+    Result := True;
+    Exit;
+  end;
+
+  if CompareDottedVersion('{#MarkdownPinVersion}', Installed) > 0 then
+  begin
+    Log('Markdown[' + Param + ']: installed ' + Installed + ' is older than pinned {#MarkdownPinVersion} -> upgrading');
+    Result := True;
+  end
+  else
+  begin
+    Log('Markdown[' + Param + ']: installed ' + Installed + ' is >= pinned {#MarkdownPinVersion} -> leaving the user''s copy alone');
+    Result := False;
+  end;
 end;
 
 // Where we remember the paths a previous run actually installed to. See SavedClarionPath.

@@ -5,7 +5,8 @@ param(
     [switch]$SkipBuild,
     [switch]$Sign,
     [switch]$NoDocGraph,
-    [switch]$AllowStaleBins   # bypass the per-config version freshness gate (escape hatch only)
+    [switch]$AllowStaleBins,          # bypass the per-config version freshness gate (escape hatch only)
+    [switch]$AllowMissingComponents   # ship even if ISCC reported "shipping WITHOUT ..." (escape hatch only)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -205,14 +206,52 @@ if (-not (Test-Path $outputDir)) {
     New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 }
 
-& $innoSetup $issFile
-if ($LASTEXITCODE -ne 0) {
+# Output is TEED, not just streamed: it has to stay on screen (this compile takes a
+# minute and its progress is worth watching) while also being inspectable below.
+& $innoSetup $issFile 2>&1 | Tee-Object -Variable isccOutput | Out-Host
+$isccExit = $LASTEXITCODE
+
+if ($isccExit -ne 0) {
     Write-Error "Inno Setup compilation failed"
     # Clean up temp file if created
     if (Test-Path (Join-Path $scriptDir 'ClarionAssistant.iss.tmp')) {
         Remove-Item (Join-Path $scriptDir 'ClarionAssistant.iss.tmp') -Force
     }
     exit 1
+}
+
+# ── Missing-component gate ──
+# The .iss guards every optional source with an ISPP presence flag and announces absence
+# with `#pragma message "... shipping WITHOUT ..."`. A pragma message does NOT affect
+# ISCC's exit code -- "shipping WITHOUT the Clarion LSP server" and "Successful compile"
+# appear in the same run, and the compile returns 0. So exit-code checking alone reports
+# success for an installer that is quietly missing components users expect.
+#
+# That is the same failure that shipped from deploy.ps1 (ticket 0cd0b20c): a component
+# silently absent from a build, evidenced by one line nobody reads. This is the installer
+# half of it. Roughly ten sources are guarded this way -- node.exe, the bundled LSP,
+# bin\Debug-C11.1, ClarionCOMBrowser, the three UltimateCOM sets, ComForClarion docs,
+# ClarionCOM tooling, blank.dct and the Claude agents -- and ANY of them can go missing.
+#
+# Mirrors the existing stale-bins gate above: fail by default, name what is wrong, and
+# provide one explicit override for people who genuinely want a partial build.
+$missing = @($isccOutput | Where-Object { "$_" -match 'shipping WITHOUT' })
+if ($missing.Count -gt 0) {
+    Write-Host ""
+    Write-Host "Installer compiled, but $($missing.Count) component(s) were NOT included:" -ForegroundColor Red
+    foreach ($m in $missing) { Write-Host "  $("$_".Trim())" -ForegroundColor Red }
+    Write-Host ""
+    if (-not $AllowMissingComponents) {
+        Write-Host "The compile itself succeeded -- ISCC reports missing optional sources as warnings," -ForegroundColor Yellow
+        Write-Host "not errors -- so this would otherwise have been reported as a clean build." -ForegroundColor Yellow
+        Write-Host "Populate the missing source(s) and re-run, or pass -AllowMissingComponents if a" -ForegroundColor Yellow
+        Write-Host "partial installer is genuinely what you want." -ForegroundColor Yellow
+        if (Test-Path (Join-Path $scriptDir 'ClarionAssistant.iss.tmp')) {
+            Remove-Item (Join-Path $scriptDir 'ClarionAssistant.iss.tmp') -Force
+        }
+        exit 1
+    }
+    Write-Host "-AllowMissingComponents was passed - shipping the partial installer anyway." -ForegroundColor Yellow
 }
 
 # Clean up temp file if created

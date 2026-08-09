@@ -4145,8 +4145,33 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
 
         #region Build Helpers
 
+        // Build tools that compile CLARION SOURCE, and therefore must see unsaved CA Editor edits.
+        // Deliberately excludes build_com_project (compiles a C# project — Clarion source is irrelevant
+        // to it) and the bare run_command passthrough, where toolName is null: flushing editors as a side
+        // effect of an arbitrary command the user asked to run would be a surprising write.
+        private static readonly HashSet<string> ClarionSourceBuildTools =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "build_solution", "build_app", "generate_source" };
+
         private string RunBuildProcess(string fileName, string arguments, string workingDirectory, int timeoutSeconds, string toolName = null, string targetFile = null, bool exitCodeIsErrorCount = false)
         {
+            // Flush unsaved CA Editor tabs before ClarionCL reads the files off disk.
+            //
+            // The IDE's own toolbar build is covered by SaveSourceEditorsBeforeBuildCommand, which hangs off
+            // ProjectService.StartBuild. These tools never go near that: they shell straight out to
+            // ClarionCL.exe, so StartBuild is never raised and that hook never runs. The result was that
+            // asking the assistant to build compiled the last SAVED version of a file still being edited in
+            // the CA Editor — silently, and indistinguishably from a real compile error or its absence.
+            //
+            // Racy by nature (the mirror is written on the UI thread, we read it here on the MCP thread),
+            // but benignly so: the page pushes fileState on every edit and is explicitly not debounced, so
+            // the worst case is text from moments ago rather than stale-since-last-save. Best-effort — a
+            // failure here must never block the build the user actually asked for.
+            if (toolName != null && ClarionSourceBuildTools.Contains(toolName))
+            {
+                try { MonacoClarionEditor.SaveAllDirtyBeforeBuild(); }
+                catch (Exception ex) { MonacoSpikeLog.Write("[save-before-build] " + toolName + " pre-flush failed: " + ex.Message); }
+            }
+
             try
             {
                 var startInfo = new ProcessStartInfo

@@ -57,6 +57,14 @@ namespace ClarionAssistant
         private string _filePath;        // the source file we edit (from the native editor), saved to disk by Monaco
         private bool _overlayDirty;      // mirrored from the page (fileState) — drives save-on-close
         private string _overlayLiveText; // last live buffer the page mirrored, for the close-save write
+        private long _overlayLiveSeq;    // the page's edit seq for _overlayLiveText — echoed back on save so
+                                         // the page only clears its ● if nothing changed in the meantime
+        private DateTime _selfWriteUtc = DateTime.MinValue;  // when WE last wrote the file (see NativeCaretPositionChanged)
+        // How long after our own write a native caret jump to line 1 is treated as the native editor's
+        // reload reset rather than a real navigation. Generous enough to cover the IDE noticing the change
+        // and reloading (observed immediate, but it is a watcher + UI hop), short enough that a genuine
+        // jump to the top seconds later still mirrors.
+        private const int SelfWriteCaretGraceMs = 2000;
         private IDisposable _settingsReg; // registration in MonacoSettingsBroadcaster (cross-surface gear-settings sync, deac3d16)
 
         // External disk watch: SourceSafe checkout/checkin flips the Windows read-only attribute, and any
@@ -131,6 +139,25 @@ namespace ClarionAssistant
         {
             List<MonacoClarionEditor> snapshot;
             lock (_instances) { snapshot = new List<MonacoClarionEditor>(_instances); }
+
+            // Census BEFORE saving, and unconditionally. A tab that is clean writes nothing, so without
+            // this line an empty log is ambiguous between "no CA Editor tabs open", "tabs open but the
+            // page never mirrored a dirty state to us", and "the hook never ran at all" — three
+            // different faults with three different fixes. Cheap: a handful of tabs, once per build.
+            var census = new System.Text.StringBuilder();
+            census.Append("[save-before-build] tabs=").Append(snapshot.Count);
+            foreach (var inst in snapshot)
+            {
+                try
+                {
+                    census.Append(" | ").Append(System.IO.Path.GetFileName(inst._filePath ?? "?"))
+                          .Append(" dirty=").Append(inst._overlayDirty)
+                          .Append(" mirrored=").Append(inst._overlayLiveText != null);
+                }
+                catch { census.Append(" | <unreadable>"); }
+            }
+            MonacoSpikeLog.Write(census.ToString());
+
             foreach (var inst in snapshot)
             {
                 try { inst.SaveDirtyBeforeBuild(); }
@@ -228,9 +255,32 @@ namespace ClarionAssistant
             {
                 if (!(_overlayDirty && _overlayLiveText != null && !string.IsNullOrEmpty(_filePath))) return;
                 if (IsFileReadOnly()) return;
+                long seq = _overlayLiveSeq;
                 int n = WriteToDisk(_overlayLiveText);
                 _overlayDirty = false;
-                MonacoSpikeLog.Write("overlay build-triggered save wrote: " + _filePath + " (" + n + " chars)");
+                MonacoSpikeLog.Write("overlay build-triggered save wrote: " + _filePath + " (" + n + " chars, seq " + seq + ")");
+
+                // Tell the PAGE it was saved, exactly as OnSave does. Clearing _overlayDirty alone left the two
+                // sides disagreeing: the host thought the file was clean while the page still showed its ● and
+                // still believed it held unsaved edits. That is not cosmetic — the page's own external-change
+                // and close handling branch on that flag, so it would reason about a saved file as if the work
+                // were still only in the buffer.
+                //
+                // Echoing the seq is what keeps this honest. If the developer typed between the mirror we wrote
+                // and this confirmation, the page's editSeq has moved on, the seqs no longer match, and it
+                // correctly STAYS dirty rather than marking unsaved keystrokes as saved.
+                //
+                // Marshalled: the IDE's own build raises this on the UI thread, but the MCP build tools call it
+                // from a request thread, and posting to WebView2 from there is not safe. Same hop the disk
+                // watcher uses. Note it must NOT reload — PostSaveResult only clears the dot and toasts.
+                var ed = _editor;
+                if (ed != null)
+                {
+                    Action post = () => { try { ed.PostSaveResult(true, "Saved before build", seq); } catch { } };
+                    var form = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
+                    if (form != null && form.InvokeRequired) form.BeginInvoke(post);
+                    else post();
+                }
             }
             catch (Exception ex) { MonacoSpikeLog.Write("overlay build-triggered save error: " + ex.Message); }
         }
@@ -469,6 +519,27 @@ namespace ClarionAssistant
                 if (line == _lastMirroredCaretLine) return;   // coalesce GoToLine's Line+Column double-fire
                 _lastMirroredCaretLine = line;
                 int column = _watchedCaret.Column;
+
+                // Do NOT mirror the native editor snapping back to the top right after we wrote the file
+                // ourselves. Monaco owns the buffer; the native editor below is a shell that still has the
+                // same path open, so our save looks to it like an external change and it reloads, parking
+                // its caret at line 1. Mirroring that is how a build-triggered save yanked the developer's
+                // cursor to the top of the file — it reads as "the page reloaded", though nothing reloads:
+                // no setSource is sent, only the caret moves.
+                //
+                // Deliberately narrow. It suppresses ONLY line 1, and only within a short window of OUR OWN
+                // write, because that is the exact signature of a reload-reset. A real navigation to line 1
+                // in that window is both unlikely and harmless to miss; anything below line 1, or later than
+                // the window, still mirrors as before — so Errors-pane, Bookmarks and Find Next keep working.
+                double sinceSelfWriteMs = (DateTime.UtcNow - _selfWriteUtc).TotalMilliseconds;
+                if (line == 0 && sinceSelfWriteMs < SelfWriteCaretGraceMs)
+                {
+                    MonacoSpikeLog.Write("caret-mirror SUPPRESSED: native jumped to line 1 " +
+                        (int)sinceSelfWriteMs + "ms after our own write (post-save reload reset)");
+                    return;
+                }
+                MonacoSpikeLog.Write("caret-mirror: native line " + (line + 1) +
+                    " -> Monaco (since self-write " + (_selfWriteUtc == DateTime.MinValue ? "never" : (int)sinceSelfWriteMs + "ms") + ")");
 
                 // PositionChanged's firing thread isn't guaranteed across every native caller — marshal
                 // defensively, same pattern as MonacoSourceNavigator.NavigateToFileAndLine.
@@ -1294,6 +1365,11 @@ namespace ClarionAssistant
                 if (data == null) return;
                 if (data.ContainsKey("text") && data["text"] is string) _overlayLiveText = (string)data["text"];
                 if (data.ContainsKey("dirty")) _overlayDirty = Convert.ToBoolean(data["dirty"]);
+                // The page stamps every mirror with its edit sequence. Keep it: a save that writes
+                // _overlayLiveText has, by definition, saved the buffer AS OF this seq, and the page clears
+                // its ● only when the seq we confirm still matches its current one. Without capturing it,
+                // a build-triggered save cannot honestly tell the page what it saved.
+                try { if (data.ContainsKey("seq")) _overlayLiveSeq = Convert.ToInt64(data["seq"]); } catch { }
                 EnsureCloseHook();   // the page is live now → the workbench window is realized; safe to subscribe
             }
             catch { }
@@ -1639,6 +1715,11 @@ namespace ClarionAssistant
             if (enc == null || enc is UTF8Encoding) enc = NoBomUtf8;
             File.WriteAllText(_filePath, normalized, enc);
             RefreshDiskWatchBaseline();   // this write is OURS — bring the baseline current so the watcher doesn't mistake it for an external change
+            // Stamp the write. The NATIVE editor underneath still has this file open, and it reloads its own
+            // document when the file changes on disk — which parks its caret back at the top. That native
+            // caret move is then mirrored into Monaco by NativeCaretPositionChanged, yanking the developer's
+            // cursor to line 1. See the suppression window there; this timestamp is what it keys off.
+            _selfWriteUtc = DateTime.UtcNow;
             return normalized.Length;
         }
 

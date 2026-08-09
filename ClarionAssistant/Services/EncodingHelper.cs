@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace ClarionAssistant.Services
 {
@@ -53,11 +54,22 @@ namespace ClarionAssistant.Services
                 }
             }
 
-            // No BOM — the common Clarion case, and the one worth the fast path. A strict decode
-            // both TESTS the UTF-8 hypothesis and PRODUCES the text, so a UTF-8 file is decoded
-            // exactly once; DetectFileEncoding has to throw this same string away. When it isn't
-            // UTF-8 the attempt aborts at the first invalid byte rather than decoding the whole
-            // buffer, so the cp1252 path costs one full decode, not two.
+            return DecodeNoBom(bytes, out encoding);
+        }
+
+        /// <summary>
+        /// The no-BOM ladder: strict UTF-8, falling back to ANSI. A strict decode both TESTS the
+        /// UTF-8 hypothesis and PRODUCES the text, so a UTF-8 file is decoded exactly once;
+        /// DetectFileEncoding has to throw this same string away. When it isn't UTF-8 the attempt
+        /// aborts at the first invalid byte rather than decoding the whole buffer, so the cp1252
+        /// path costs one full decode, not two.
+        ///
+        /// Shared by <see cref="ReadAllText(string, out Encoding)"/> and
+        /// <see cref="ReadHtml(string, out Encoding)"/> deliberately: two copies of encoding logic
+        /// is how they drift apart, and drifting encoding logic is what both of them exist to fix.
+        /// </summary>
+        private static string DecodeNoBom(byte[] bytes, out Encoding encoding)
+        {
             try
             {
                 string text = new UTF8Encoding(false, true).GetString(bytes);
@@ -99,6 +111,82 @@ namespace ClarionAssistant.Services
                 encoding = reader.CurrentEncoding;
             }
             return lines.ToArray();
+        }
+
+        /// <summary>
+        /// Read an HTML file, honouring the character set the document declares about itself.
+        ///
+        /// HTML is the one format here that carries its own encoding declaration, so it gets its own
+        /// ladder: BOM, then <c>&lt;meta charset&gt;</c>, then the usual strict-UTF-8/ANSI fallback.
+        /// Plain <see cref="ReadAllText(string, out Encoding)"/> would already fix the common case —
+        /// UTF-8 with no BOM decodes correctly under the strict attempt — but it cannot honour a
+        /// document that declares something neither UTF-8 nor the machine's ANSI codepage, and a
+        /// documentation corpus is exactly where such a file turns up.
+        ///
+        /// A declared UTF-8 is deliberately NOT trusted on its word: it routes into the strict
+        /// decode instead, which validates and falls back to ANSI. Trusting it would emit U+FFFD
+        /// for a mislabelled file — the same replacement character the Clarion-source work exists
+        /// to avoid.
+        /// </summary>
+        public static string ReadHtml(string path, out Encoding encoding)
+        {
+            byte[] bytes = ReadAllBytes(path, FileShare.Read);
+
+            // A BOM outranks any in-document declaration — same precedence a browser applies.
+            if (StartsWithBom(bytes))
+            {
+                using (var ms = new MemoryStream(bytes, false))
+                using (var reader = new StreamReader(ms, DetectFromBytes(bytes), true))
+                {
+                    string bomText = reader.ReadToEnd();
+                    encoding = reader.CurrentEncoding;
+                    return bomText;
+                }
+            }
+
+            Encoding declared = SniffHtmlCharset(bytes);
+            if (declared != null)
+            {
+                encoding = declared;
+                return declared.GetString(bytes);
+            }
+
+            return DecodeNoBom(bytes, out encoding);
+        }
+
+        /// <summary>
+        /// Find a <c>&lt;meta&gt;</c> character-set declaration in the head of an HTML buffer.
+        /// Returns null when there is none, when the name is one .NET does not know, or when the
+        /// declaration says UTF-8 — the caller handles all three the same way, by falling through
+        /// to the validating strict-UTF-8 ladder.
+        /// </summary>
+        private static Encoding SniffHtmlCharset(byte[] bytes)
+        {
+            // Declarations are ASCII and required to appear early. 4 KB is the window browsers use
+            // for the same sniff; reading further would mostly decode body text to find nothing.
+            int window = bytes.Length < 4096 ? bytes.Length : 4096;
+            string head = Encoding.ASCII.GetString(bytes, 0, window);
+
+            // Covers both spellings: <meta charset="utf-8"> and the older
+            // <meta http-equiv="Content-Type" content="text/html; charset=utf-8">.
+            // The quote is optional and must NOT be required — requiring it is precisely the
+            // mistake that made this bug look like a missing declaration when it wasn't.
+            Match m = Regex.Match(head, "<meta[^>]*charset\\s*=\\s*[\"']?\\s*([A-Za-z0-9_.:-]+)",
+                                  RegexOptions.IgnoreCase);
+            if (!m.Success) return null;
+
+            Encoding enc;
+            try
+            {
+                enc = Encoding.GetEncoding(m.Groups[1].Value);
+            }
+            catch (System.ArgumentException)
+            {
+                return null;   // unknown or malformed charset name
+            }
+
+            // 65001 = UTF-8. See the remarks on ReadHtml: validate rather than trust.
+            return enc.CodePage == 65001 ? null : enc;
         }
 
         /// <summary>

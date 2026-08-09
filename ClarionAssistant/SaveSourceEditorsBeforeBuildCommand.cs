@@ -47,36 +47,60 @@ namespace ClarionAssistant
             {
                 SubscribeStartBuild();
             }
-            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[SaveSourceEditorsBeforeBuild] subscribe failed: " + ex.Message); }
+            catch (Exception ex) { MonacoSpikeLog.Write("[save-before-build] subscribe threw: " + ex.Message); }
         }
 
         /// <summary>
         /// Subscribes to ICSharpCode.SharpDevelop.Project.ProjectService.StartBuild via reflection
         /// (same assembly/type EditorService/LspAutostartCommand use).
+        ///
+        /// Every bail-out below is LOGGED, deliberately. This is a reflection probe into a SharpDevelop
+        /// FORK, where window/service shapes differ from stock and a wrong guess fails by returning null
+        /// rather than throwing (see the SD-fork memory). The original version returned silently on all
+        /// five, and logged only via Debug.WriteLine — which goes to an attached debugger, i.e. nowhere
+        /// on a deployed addin. The net effect was that "the hook is not wired" and "the hook is wired
+        /// and working" produced byte-identical evidence: nothing. That ambiguity is what made a user
+        /// report of "it does not save before build" impossible to confirm or refute.
         /// </summary>
         private void SubscribeStartBuild()
         {
             var sharpDevelopAsm = Assembly.Load("ICSharpCode.SharpDevelop");
-            if (sharpDevelopAsm == null) return;
+            if (sharpDevelopAsm == null)
+            { MonacoSpikeLog.Write("[save-before-build] NOT WIRED: ICSharpCode.SharpDevelop did not load"); return; }
 
             var projectServiceType = sharpDevelopAsm.GetType("ICSharpCode.SharpDevelop.Project.ProjectService");
-            if (projectServiceType == null) return;
+            if (projectServiceType == null)
+            { MonacoSpikeLog.Write("[save-before-build] NOT WIRED: ProjectService type not found"); return; }
 
             var evt = projectServiceType.GetEvent("StartBuild", BindingFlags.Public | BindingFlags.Static);
-            if (evt == null) return;
+            if (evt == null)
+            { MonacoSpikeLog.Write("[save-before-build] NOT WIRED: ProjectService.StartBuild (public static) not found on this fork"); return; }
 
             MethodInfo handlerMethod = typeof(SaveSourceEditorsBeforeBuildCommand).GetMethod(
                 "OnStartBuild", BindingFlags.NonPublic | BindingFlags.Static);
-            if (handlerMethod == null) return;
+            if (handlerMethod == null)
+            { MonacoSpikeLog.Write("[save-before-build] NOT WIRED: OnStartBuild handler method not found"); return; }
 
             _startBuildHandler = Delegate.CreateDelegate(evt.EventHandlerType, handlerMethod);
             evt.AddEventHandler(null, _startBuildHandler);
+            MonacoSpikeLog.Write("[save-before-build] WIRED: subscribed to ProjectService.StartBuild");
         }
 
+        /// <summary>
+        /// Fires when a build starts. Logs on ENTRY, before doing any work — so the log distinguishes
+        /// "the build never raised StartBuild" (no line at all) from "it fired and found nothing dirty"
+        /// (a line saying so). Without the entry line those two look the same from the log, and they
+        /// need completely different fixes: the first means this event is the wrong chokepoint for the
+        /// Clarion build button, the second means the dirty-state mirror is not being updated.
+        /// </summary>
         private static void OnStartBuild(object sender, EventArgs e)
         {
-            try { MonacoClarionEditor.SaveAllDirtyBeforeBuild(); }
-            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[SaveSourceEditorsBeforeBuild] OnStartBuild failed: " + ex.Message); }
+            try
+            {
+                MonacoSpikeLog.Write("[save-before-build] StartBuild fired -> flushing dirty CA Editor tabs");
+                MonacoClarionEditor.SaveAllDirtyBeforeBuild();
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[save-before-build] OnStartBuild failed: " + ex.Message); }
         }
     }
 }
