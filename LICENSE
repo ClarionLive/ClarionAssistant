@@ -1,5 +1,3 @@
-Clarion Assistant License
-
 MIT License
 
 Copyright (c) 2025-2026 ClarionLive
@@ -22,26 +20,20 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+---
 
 THIRD-PARTY COMPONENTS
 
-The license above covers Clarion Assistant's own source code. This installer
-additionally redistributes third-party components that remain under their own
-licenses and their own copyrights, including PdfPig (Apache License 2.0), the
-Microsoft Edge WebView2 SDK, SQLite, the Node.js runtime, and the language
-server's npm dependencies.
+The MIT license above covers Clarion Assistant's own source code. The
+distributed installer additionally redistributes third-party components that
+remain under their own licenses and their own copyrights.
 
-The complete list, with versions and full license texts, is installed as
-THIRD-PARTY-NOTICES.md in the Clarion Assistant program folder.
+Those components, their versions, and their full license texts are listed in
+THIRD-PARTY-NOTICES.md, alongside this file.
 
 Clarion IDE assemblies (ICSharpCode.*, CWBinding, CommonSources) are referenced
 from your existing Clarion installation and are not redistributed.
 
-
-ABOUT CLAUDE CODE
-
 Clarion Assistant requires a separate Claude Code subscription from Anthropic.
 ClarionLive is not affiliated with Anthropic and does not provide Claude Code
 licenses.
-
-For support and feedback, visit: https://clarionlive.com

@@ -70,6 +70,8 @@
 #define MarkdownPinVersion "1.2.0"
 ; The directory containing this .iss file itself (SourcePath already ends in "\").
 #define SrcInstaller Copy(SourcePath, 1, Len(SourcePath)-1)
+; Repo root — for THIRD-PARTY-NOTICES.md, which must ship wherever the addin does.
+#define SrcRepoRoot SourcePath + ".."
 
 ; ---- Optional-source presence flags ----
 ; Each probes a sentinel FILE (never a bare directory — ISPP #ifexist/FileExists return FALSE
@@ -241,10 +243,15 @@ Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC10Path}\accessory\addins\Clarion
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
+; Third-party license notices — ships wherever the addin does; the obligation travels with the binaries.
+Source: "{#SrcRepoRoot}\THIRD-PARTY-NOTICES.md"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion10 and docs; Flags: ignoreversion
 ; --- Clarion 10 LSP Server ---
 #if HaveNodeExe
 Source: "{#SrcNodeExe}"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server"; Components: clarion10 and lsp; Flags: ignoreversion
+; Node's own license bundle (V8, OpenSSL, ICU, zlib and the rest), shipped beside the binary
+; it covers. Stable DestName so a Node upgrade replaces it instead of leaving the old one behind.
+Source: "{#SrcRepoRoot}\third-party\node-v24.13.0-LICENSE.txt"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server"; DestName: "node-LICENSE.txt"; Components: clarion10 and lsp; Flags: ignoreversion
 #endif
 #if HaveLsp
 Source: "{#SrcLsp}\out\server\*"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\lsp-server\out\server"; Components: clarion10 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -292,10 +299,15 @@ Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC11Path}\accessory\addins\Clarion
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
+; Third-party license notices — ships wherever the addin does; the obligation travels with the binaries.
+Source: "{#SrcRepoRoot}\THIRD-PARTY-NOTICES.md"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion11 and docs; Flags: ignoreversion
 ; --- Clarion 11 LSP Server ---
 #if HaveNodeExe
 Source: "{#SrcNodeExe}"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server"; Components: clarion11 and lsp; Flags: ignoreversion
+; Node's own license bundle (V8, OpenSSL, ICU, zlib and the rest), shipped beside the binary
+; it covers. Stable DestName so a Node upgrade replaces it instead of leaving the old one behind.
+Source: "{#SrcRepoRoot}\third-party\node-v24.13.0-LICENSE.txt"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server"; DestName: "node-LICENSE.txt"; Components: clarion11 and lsp; Flags: ignoreversion
 #endif
 #if HaveLsp
 Source: "{#SrcLsp}\out\server\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\lsp-server\out\server"; Components: clarion11 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -347,10 +359,15 @@ Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC111Path}\accessory\addins\Clario
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
+; Third-party license notices — ships wherever the addin does; the obligation travels with the binaries.
+Source: "{#SrcRepoRoot}\THIRD-PARTY-NOTICES.md"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion111 and docs; Flags: ignoreversion
 ; --- Clarion 11.1 LSP Server ---
 #if HaveNodeExe
 Source: "{#SrcNodeExe}"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server"; Components: clarion111 and lsp; Flags: ignoreversion
+; Node's own license bundle (V8, OpenSSL, ICU, zlib and the rest), shipped beside the binary
+; it covers. Stable DestName so a Node upgrade replaces it instead of leaving the old one behind.
+Source: "{#SrcRepoRoot}\third-party\node-v24.13.0-LICENSE.txt"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server"; DestName: "node-LICENSE.txt"; Components: clarion111 and lsp; Flags: ignoreversion
 #endif
 #if HaveLsp
 Source: "{#SrcLsp}\out\server\*"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\lsp-server\out\server"; Components: clarion111 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -399,10 +416,15 @@ Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC12Path}\accessory\addins\Clarion
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
+; Third-party license notices — ships wherever the addin does; the obligation travels with the binaries.
+Source: "{#SrcRepoRoot}\THIRD-PARTY-NOTICES.md"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion12 and docs; Flags: ignoreversion
 ; --- Clarion 12 LSP Server ---
 #if HaveNodeExe
 Source: "{#SrcNodeExe}"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server"; Components: clarion12 and lsp; Flags: ignoreversion
+; Node's own license bundle (V8, OpenSSL, ICU, zlib and the rest), shipped beside the binary
+; it covers. Stable DestName so a Node upgrade replaces it instead of leaving the old one behind.
+Source: "{#SrcRepoRoot}\third-party\node-v24.13.0-LICENSE.txt"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server"; DestName: "node-LICENSE.txt"; Components: clarion12 and lsp; Flags: ignoreversion
 #endif
 #if HaveLsp
 Source: "{#SrcLsp}\out\server\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\lsp-server\out\server"; Components: clarion12 and lsp; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -536,7 +558,12 @@ Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{app}"; Components: 
 Source: "{#SrcInstaller}\configure.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 ; --- CLAUDE.md reference ---
-Source: "{#SrcInstaller}\CLAUDE.md"; DestDir: "{%USERPROFILE}\.claude"; DestName: "clarion-assistant-reference.md"; Flags: ignoreversion
+; Sourced from the BUNDLED prompt, not a hand-maintained copy. There used to be an
+; installer\CLAUDE.md here; it silently drifted to a 133-line snapshot that was missing
+; eight whole tool sections and still documented the removed `open_app` tool. Same bug
+; class as the 51-missing-tools prompt drift. One source of truth -- do not reintroduce
+; a second copy of this document.
+Source: "{#SrcTerminal}\clarion-assistant-prompt.md"; DestDir: "{%USERPROFILE}\.claude"; DestName: "clarion-assistant-reference.md"; Flags: ignoreversion
 
 ; ============================================================
 ; DIRECTORIES

@@ -1,6 +1,6 @@
 # Release documentation workflow
 
-Release notes for Clarion Assistant live in three places, and they are **not** three copies
+Release notes for Clarion Assistant live in several places, and they are **not** copies
 of the same thing:
 
 | Where | What it is | Written how |
@@ -9,10 +9,26 @@ of the same thing:
 | `docs/releases/vX.Y.0.md` | the full per-minor release notes | by hand at release time, from the Unreleased block |
 | GitHub Release body | mirror of `docs/releases/vX.Y.0.md` | copied at release time |
 | `README.md` → `## What's New in vX.Y` | running historical digest | by hand — an *editorial compression*, deliberately shorter than the release file |
+| `docs/releases/CHANGELOG.md` | digests for releases older than the two the README keeps | moved out of the README at cut time |
 
-That last row is why the release file is not simply generated into the README: the README
+That fourth row is why the release file is not simply generated into the README: the README
 digest condenses a five-bullet release-notes section into a paragraph, on purpose, for
 someone scrolling a landing page.
+
+## Keeping the README short
+
+The README keeps **the current release and the one before it**. At each cut, move the
+now-third-oldest `## What's New in vX.Y` section into `docs/releases/CHANGELOG.md` and leave
+the `## Release History` pointer where it is.
+
+This is safe to do without touching anything else — `Check-ReleaseDocs.ps1` reads only from
+the Unreleased heading to the next `##`, so historical sections are invisible to the gate.
+Two things to watch when moving a section:
+
+- **Links go stale in the move.** A `](docs/releases/vX.Y.0.md)` written relative to the repo
+  root becomes `](vX.Y.0.md)` once it lives inside `docs/releases/`.
+- **Archive, never delete.** For 4.x and 3.x no release-notes file was ever written, so those
+  digests are the only record of those releases.
 
 ## The drift problem
 

@@ -1,0 +1,5 @@
+# Vendored third-party license texts are reproduced VERBATIM from upstream.
+# core.autocrlf is true on this repo, which would rewrite their line endings on
+# checkout. These are legal documents we redistribute on someone else's behalf --
+# keep them byte-identical to what was published.
+third-party/** -text
