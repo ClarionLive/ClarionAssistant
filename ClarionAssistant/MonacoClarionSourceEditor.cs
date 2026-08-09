@@ -131,6 +131,25 @@ namespace ClarionAssistant
         {
             List<MonacoClarionEditor> snapshot;
             lock (_instances) { snapshot = new List<MonacoClarionEditor>(_instances); }
+
+            // Census BEFORE saving, and unconditionally. A tab that is clean writes nothing, so without
+            // this line an empty log is ambiguous between "no CA Editor tabs open", "tabs open but the
+            // page never mirrored a dirty state to us", and "the hook never ran at all" — three
+            // different faults with three different fixes. Cheap: a handful of tabs, once per build.
+            var census = new System.Text.StringBuilder();
+            census.Append("[save-before-build] tabs=").Append(snapshot.Count);
+            foreach (var inst in snapshot)
+            {
+                try
+                {
+                    census.Append(" | ").Append(System.IO.Path.GetFileName(inst._filePath ?? "?"))
+                          .Append(" dirty=").Append(inst._overlayDirty)
+                          .Append(" mirrored=").Append(inst._overlayLiveText != null);
+                }
+                catch { census.Append(" | <unreadable>"); }
+            }
+            MonacoSpikeLog.Write(census.ToString());
+
             foreach (var inst in snapshot)
             {
                 try { inst.SaveDirtyBeforeBuild(); }
