@@ -201,7 +201,24 @@ function Resolve-LspBuild {
     $pureDir    = Join-Path $ProjectDir (".lsp-build\" + $tag)
     if (-not (Test-Path (Join-Path $pureDir "out\server\src\server.js"))) {
         Write-Host "  INFO  pure LSP build for $tag missing — building via Sync-LspServer.ps1 -Pure ..." -ForegroundColor Cyan
-        & $syncScript -Pure -Tag $tag
+        # | Out-Host is load-bearing, do NOT drop it. A PowerShell function returns EVERYTHING written
+        # to its output stream, not just what `return` names. Without this, every line git and npm emit
+        # (checkout notice, "added 255 packages", the whole tsc/copy-data transcript) became part of
+        # this function's return value, so $LspSourceDir came back as an ARRAY of output lines with the
+        # real path merely last.
+        #
+        # That failed in the worst possible way -- silently, and only on the FIRST deploy in a fresh
+        # tree, the one run that has to build. `if (Test-Path $LspSourceDir)` passed, because a
+        # non-empty array is truthy, so node.exe still copied and the block looked alive. But
+        # "$LspSourceDir\out\server" interpolated the whole array space-joined into a nonsense path, so
+        # the server copy was skipped with one DarkGray line. The guard below missed it too: it tests
+        # $pureDir directly, which is still a clean string inside the function. Second runs worked
+        # because the build already existed and this branch never ran.
+        #
+        # Net effect before the fix: a release built from a fresh worktree in one pass shipped an addin
+        # with NO language server. Out-Host writes the transcript to the console without putting it on
+        # the pipeline. Ticket 0cd0b20c.
+        & $syncScript -Pure -Tag $tag | Out-Host
         if ($LASTEXITCODE -ne 0) { Write-Host "  WARN  pure LSP build failed (exit $LASTEXITCODE) — LSP copy will be skipped." -ForegroundColor Yellow }
         # Loud guard: on a from-scratch build the out/ is created mid-run; if it's not visible yet the copy
         # below would SILENTLY skip and ship an addin with NO server. Fail loudly so the installer never does.
