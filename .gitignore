@@ -46,6 +46,12 @@ ClarionAssistant/knowledge.db
 # Pinned-tag LSP build cache (fetched + built by deploy.ps1, GitHub #40)
 ClarionAssistant/.lsp-build/
 
+# Pinned-tag Markdown Editor payload (downloaded + extracted by Sync-MarkdownEditor.ps1).
+# Third-party redistributable binaries — regenerated from the pin, never committed. Without this
+# entry only the .dll files are caught, and then only on a machine whose GLOBAL gitignore excludes
+# *.dll; the Resources/*.js|css|html and the .addin would be committed by everyone else.
+ClarionAssistant/.markdown-build/
+
 # Dev-only test dependency (jsdom, for Terminal/test/vscode-import-ui.test.js). Declared in
 # Terminal/test/package.json and installed with `npm install` there — nothing here ships.
 ClarionAssistant/Terminal/test/node_modules/

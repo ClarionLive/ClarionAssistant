@@ -59,6 +59,26 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 Work landed since 5.7 is documented here as it merges — see [the release-docs workflow](docs/releases/README.md), and run `Check-ReleaseDocs.ps1` before cutting a release.
 
+<!-- release-docs: covered=installer -->
+### The Markdown editor now installs with Clarion Assistant &mdash; the maintained one
+
+Markdown files have been openable in the IDE for a while, but only if you went and found the addin yourself. It now ships in the installer, pinned to a specific upstream release the same way the bundled language server is.
+
+The version that ships is [Mark Sarson's](https://github.com/msarson/ClarionMarkdownEditor), which began as our own editor and has been developed well past it since. Pointing our installer at the maintained line means one editor to report problems against instead of two drifting copies, and it is why a markdown question is best raised upstream rather than here.
+
+It installs as its own addin, not as part of Clarion Assistant, because that is what it is &mdash; useful whether or not you use any AI tooling, and removable on its own.
+
+**If you already have it, we will not touch it unless ours is newer.** The check reads the version out of the addin's own manifest rather than trusting the DLL's version resource, which upstream leaves frozen at `1.0.2.0` across every release &mdash; so anyone tracking upstream directly, or installing through Mark's addin finder, keeps the newer copy. The MIT licence travels with it, and the installer build now fails outright if that notice ever goes missing, alongside the existing check that fails the build when a component would ship absent without saying so.
+
+<!-- release-docs: covered=deploy -->
+### A release could ship with no language server and say so almost silently
+
+Building a release in a fresh checkout produced an addin with no language server in it. The only sign was a single grey line among thirty green ones, and it happened only on the *first* build in a new tree &mdash; every later build worked, which made it look like flaky timing rather than a defect.
+
+The cause was that the deploy script captured the language-server build's own console output as if it were the path that build returned. The path was still in there, last, behind every line git and npm had printed. What made it dangerous is how it failed: the check guarding the copy still passed, so the step looked alive while quietly skipping the server.
+
+The build transcript still prints &mdash; it is a minute of genuinely useful output &mdash; it just no longer contaminates the value the function hands back.
+
 <!-- release-docs: covered=prompt -->
 ### The embedded assistant knows about every tool it has &mdash; this time in the copy that ships
 
