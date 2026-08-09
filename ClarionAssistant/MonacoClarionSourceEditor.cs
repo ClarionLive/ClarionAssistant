@@ -59,6 +59,12 @@ namespace ClarionAssistant
         private string _overlayLiveText; // last live buffer the page mirrored, for the close-save write
         private long _overlayLiveSeq;    // the page's edit seq for _overlayLiveText — echoed back on save so
                                          // the page only clears its ● if nothing changed in the meantime
+        private DateTime _selfWriteUtc = DateTime.MinValue;  // when WE last wrote the file (see NativeCaretPositionChanged)
+        // How long after our own write a native caret jump to line 1 is treated as the native editor's
+        // reload reset rather than a real navigation. Generous enough to cover the IDE noticing the change
+        // and reloading (observed immediate, but it is a watcher + UI hop), short enough that a genuine
+        // jump to the top seconds later still mirrors.
+        private const int SelfWriteCaretGraceMs = 2000;
         private IDisposable _settingsReg; // registration in MonacoSettingsBroadcaster (cross-surface gear-settings sync, deac3d16)
 
         // External disk watch: SourceSafe checkout/checkin flips the Windows read-only attribute, and any
@@ -513,6 +519,27 @@ namespace ClarionAssistant
                 if (line == _lastMirroredCaretLine) return;   // coalesce GoToLine's Line+Column double-fire
                 _lastMirroredCaretLine = line;
                 int column = _watchedCaret.Column;
+
+                // Do NOT mirror the native editor snapping back to the top right after we wrote the file
+                // ourselves. Monaco owns the buffer; the native editor below is a shell that still has the
+                // same path open, so our save looks to it like an external change and it reloads, parking
+                // its caret at line 1. Mirroring that is how a build-triggered save yanked the developer's
+                // cursor to the top of the file — it reads as "the page reloaded", though nothing reloads:
+                // no setSource is sent, only the caret moves.
+                //
+                // Deliberately narrow. It suppresses ONLY line 1, and only within a short window of OUR OWN
+                // write, because that is the exact signature of a reload-reset. A real navigation to line 1
+                // in that window is both unlikely and harmless to miss; anything below line 1, or later than
+                // the window, still mirrors as before — so Errors-pane, Bookmarks and Find Next keep working.
+                double sinceSelfWriteMs = (DateTime.UtcNow - _selfWriteUtc).TotalMilliseconds;
+                if (line == 0 && sinceSelfWriteMs < SelfWriteCaretGraceMs)
+                {
+                    MonacoSpikeLog.Write("caret-mirror SUPPRESSED: native jumped to line 1 " +
+                        (int)sinceSelfWriteMs + "ms after our own write (post-save reload reset)");
+                    return;
+                }
+                MonacoSpikeLog.Write("caret-mirror: native line " + (line + 1) +
+                    " -> Monaco (since self-write " + (_selfWriteUtc == DateTime.MinValue ? "never" : (int)sinceSelfWriteMs + "ms") + ")");
 
                 // PositionChanged's firing thread isn't guaranteed across every native caller — marshal
                 // defensively, same pattern as MonacoSourceNavigator.NavigateToFileAndLine.
@@ -1688,6 +1715,11 @@ namespace ClarionAssistant
             if (enc == null || enc is UTF8Encoding) enc = NoBomUtf8;
             File.WriteAllText(_filePath, normalized, enc);
             RefreshDiskWatchBaseline();   // this write is OURS — bring the baseline current so the watcher doesn't mistake it for an external change
+            // Stamp the write. The NATIVE editor underneath still has this file open, and it reloads its own
+            // document when the file changes on disk — which parks its caret back at the top. That native
+            // caret move is then mirrored into Monaco by NativeCaretPositionChanged, yanking the developer's
+            // cursor to line 1. See the suppression window there; this timestamp is what it keys off.
+            _selfWriteUtc = DateTime.UtcNow;
             return normalized.Length;
         }
 
