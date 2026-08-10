@@ -284,11 +284,59 @@ function Invoke-GitQuiet([string[]]$GitArgs) {
 # final summary below is built around. The caller skips just the LSP copy instead, so every version
 # still deploys and keeps whatever server it already had, and the run ends non-zero so nobody reads
 # it as clean.
+# Lowercase hex sha256 of a file's BYTES — see the matching helper in Sync-LspServer.ps1. Read the
+# bytes explicitly: this hash identifies the exact artifact that ships, so nothing about it may
+# depend on an encoding or line-ending interpretation.
+function Get-FileSha256($path) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($path)
+        return -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+    } finally { $sha.Dispose() }
+}
+
 function Test-LspPin($sourceDir) {
     $manifest = Get-Content (Join-Path $ProjectDir "lsp-server-sync\lsp-snapshot.json") -Raw | ConvertFrom-Json
-    $pinned   = $manifest.resolvedCommit
+
+    # --- Primary check: the ARTIFACT about to be copied ---------------------------------------
+    # The commit check below verifies the SOURCE checkout, which is not what ships. out/ is
+    # gitignored, survives `git checkout --force`, and the sync skips rebuilding when a server.js
+    # already exists -- so a tree whose HEAD matches the pin exactly can still hold an overlay build
+    # or a build from another tag. Hash the file that actually gets copied.
+    $pinnedHash = $manifest.resolvedServerSha256
+    $shippingJs = Join-Path $sourceDir "out\server\src\server.js"
+    if (-not $pinnedHash) {
+        # Manifests written before resolvedServerSha256 existed. Say so rather than implying the
+        # artifact was checked; the commit check below still runs.
+        Write-Host "  WARN  manifest has no resolvedServerSha256 — the shipped server.js is NOT verified." -ForegroundColor Yellow
+        Write-Host "        Re-run lsp-server-sync\Sync-LspServer.ps1 -Pure to record it." -ForegroundColor Yellow
+    } elseif (-not (Test-Path -LiteralPath $shippingJs)) {
+        # Not a failure here: the copy below reports "build output not found" on its own.
+        Write-Host "  WARN  no built server.js at $shippingJs — nothing to verify." -ForegroundColor Yellow
+    } else {
+        $actualHash = Get-FileSha256 $shippingJs
+        if ($actualHash -ne $pinnedHash) {
+            if ($env:CLARIONLSP_ROOT) {
+                Write-Host "  WARN  shipped server.js hashes $($actualHash.Substring(0,16))… but the pin says $($pinnedHash.Substring(0,16))… (CLARIONLSP_ROOT override in effect)." -ForegroundColor Yellow
+                return $true
+            }
+            Write-Host "  FAIL  shipped server.js does NOT match the pin." -ForegroundColor Red
+            Write-Host "        built  : $actualHash" -ForegroundColor Red
+            Write-Host "        pinned : $pinnedHash" -ForegroundColor Red
+            Write-Host "        The source tree may sit at the right commit while out/ was built from another." -ForegroundColor Red
+            Write-Host "        Delete $sourceDir\out and re-run lsp-server-sync\Sync-LspServer.ps1 -Pure." -ForegroundColor Red
+            Write-Host "        The LSP copy will be SKIPPED for every version; the rest of the deploy continues." -ForegroundColor Red
+            return $false
+        }
+        Write-Host "  OK    shipped server.js matches pin: $($pinnedHash.Substring(0,16))…" -ForegroundColor Green
+    }
+
+    # --- Secondary check: which SOURCE the artifact came from ----------------------------------
+    # Kept alongside the hash: the hash says "this is the right file", the commit says "and it came
+    # from the right tag", and a mismatch between the two is itself worth seeing.
+    $pinned = $manifest.resolvedCommit
     if (-not $pinned) {
-        Write-Host "  WARN  manifest has no resolvedCommit — cannot verify the bundled LSP." -ForegroundColor Yellow
+        Write-Host "  WARN  manifest has no resolvedCommit — cannot verify the LSP source tree." -ForegroundColor Yellow
         return $true
     }
     $head = Invoke-GitQuiet @('-C', $sourceDir, 'rev-parse', '--short', 'HEAD')
@@ -300,15 +348,15 @@ function Test-LspPin($sourceDir) {
     # same commit must still count as a match.
     if (-not ($head.StartsWith($pinned) -or $pinned.StartsWith($head))) {
         if ($env:CLARIONLSP_ROOT) {
-            Write-Host "  WARN  bundled LSP is $head but the pin says $pinned (CLARIONLSP_ROOT override in effect)." -ForegroundColor Yellow
+            Write-Host "  WARN  LSP source tree is at $head but the pin says $pinned (CLARIONLSP_ROOT override in effect)." -ForegroundColor Yellow
             return $true
         }
-        Write-Host "  FAIL  bundled LSP is $head but lsp-snapshot.json pins $pinned." -ForegroundColor Red
+        Write-Host "  FAIL  LSP source tree is at $head but lsp-snapshot.json pins $pinned." -ForegroundColor Red
         Write-Host "        Re-run lsp-server-sync\Sync-LspServer.ps1 -Pure, or bump the pin deliberately." -ForegroundColor Red
         Write-Host "        The LSP copy will be SKIPPED for every version; the rest of the deploy continues." -ForegroundColor Red
         return $false
     }
-    Write-Host "  OK    bundled LSP matches pin: $pinned ($($manifest.resolvedTag))" -ForegroundColor Green
+    Write-Host "  OK    LSP source tree matches pin: $pinned ($($manifest.resolvedTag))" -ForegroundColor Green
     return $true
 }
 $LspPinOK = Test-LspPin $LspSourceDir

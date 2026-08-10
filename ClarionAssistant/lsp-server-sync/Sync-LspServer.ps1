@@ -124,6 +124,17 @@ function Invoke-GitQuiet([string[]]$GitArgs) {
 function Read-Manifest($path) {
     Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
 }
+
+# Lowercase hex sha256 of a file's BYTES. Get-FileHash exists on 5.1, but read the bytes explicitly:
+# the point of this hash is to identify the exact artifact that ships, so nothing about it may depend
+# on an encoding or line-ending interpretation.
+function Get-FileSha256($path) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($path)
+        return -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+    } finally { $sha.Dispose() }
+}
 # The unescape has to be backslash-aware. A blanket `-replace '\\u0026', '&'` over the SERIALIZED
 # TEXT cannot tell an escape ConvertTo-Json just emitted from characters that belong to a value.
 # Put a backslash followed by the characters u0026 into a note as ordinary prose, and
@@ -162,8 +173,11 @@ function Save-Manifest($manifest, $path) {
 }
 
 function Update-PinFields($manifest, $Tag, $repoRoot) {
-    $commit     = (git -C $repoRoot rev-parse --short HEAD)
-    $commitDate = (git -C $repoRoot show -s --format=%cs HEAD)
+    # Via Invoke-GitQuiet: on the supported non-git pure tree these two printed two bare
+    # "fatal: not a git repository" lines into an otherwise clean run and recorded null anyway.
+    # Same result, without the noise that reads like something went wrong.
+    $commit     = Invoke-GitQuiet @('-C', $repoRoot, 'rev-parse', '--short', 'HEAD')
+    $commitDate = Invoke-GitQuiet @('-C', $repoRoot, 'show', '-s', '--format=%cs', 'HEAD')
     $manifest | Add-Member -NotePropertyName 'targetPin' -NotePropertyValue ([pscustomobject]@{
         note = "Tag to sync toward; -Tag overrides. AUTO-UPDATED to the last successfully synced tag by Sync-LspServer.ps1 -- edit by hand only to stage a pin to a NEWER release before running the sync."
         tag  = $Tag
@@ -258,12 +272,34 @@ if ($Pure) {
     }
     OK "no CodeGraph overlay in source (pure)"
 
-    # Build (idempotent: skip if a pure build is already present)
+    # Which commit produced the out/ that is sitting there? out/ is gitignored and survives
+    # `git checkout --force`, so its presence says nothing about WHICH tag built it. The stamp lives
+    # inside out/ deliberately: delete out/ to force a rebuild (as the message below advertises) and
+    # the stamp goes with it, so a stale stamp can never outlive the build it describes.
+    $buildStamp = Join-Path $PureRoot 'out\.pure-build-stamp.json'
+    $stampedCommit = $null
+    if (Test-Path -LiteralPath $buildStamp) {
+        try { $stampedCommit = (Get-Content -LiteralPath $buildStamp -Raw -Encoding UTF8 | ConvertFrom-Json).commit }
+        catch { $stampedCommit = $null }   # unreadable stamp == no stamp, so we rebuild
+    }
+    $headNow = Invoke-GitQuiet @('-C', $PureRoot, 'rev-parse', 'HEAD')
+
+    # Build (idempotent: skip if a pure build is already present FOR THIS COMMIT)
     if ($SkipBuild) {
         Warn "Skipping build (-SkipBuild)."
-    } elseif ((Test-Path $builtServer) -and ((Get-Content $builtServer -Raw) -notmatch 'codegraph|CodeGraph')) {
-        OK "pure build already present (skipping rebuild; delete out/ to force)"
+    } elseif ((Test-Path $builtServer) -and ((Get-Content $builtServer -Raw) -notmatch 'codegraph|CodeGraph') `
+              -and $headNow -and $stampedCommit -and ($stampedCommit -eq $headNow)) {
+        OK "pure build already present for $($headNow.Substring(0,8)) (skipping rebuild; delete out/ to force)"
     } else {
+        # Rebuild when the stamp is missing or names a different commit. Without this, a re-pointed
+        # upstream tag was invisible: the refresh moved HEAD, out/ was already there so the rebuild
+        # was skipped, and the manifest was then rewritten with the NEW commit describing an OLD
+        # artifact -- a manifest that agreed with itself and was wrong.
+        if ((Test-Path $builtServer) -and $headNow -and $stampedCommit -and ($stampedCommit -ne $headNow)) {
+            Info "existing out/ was built from $($stampedCommit.Substring(0,8)) but HEAD is now $($headNow.Substring(0,8)) — rebuilding"
+        } elseif ((Test-Path $builtServer) -and -not $stampedCommit) {
+            Info "existing out/ has no build stamp — rebuilding so the manifest can describe it honestly"
+        }
         Info "Building (npm ci && npm run compile) — can take a minute..."
         Push-Location $PureRoot
         try {
@@ -283,6 +319,26 @@ if ($Pure) {
         Fail "Expected build output not found: $builtServer"; exit 6
     }
 
+    # Hash the ARTIFACT, not just the source. A commit alone cannot describe what ships: out/ is
+    # gitignored, survives `git checkout --force`, and this script skips the rebuild when a server.js
+    # is already present -- so an overlay build, or a build from another tag, could sit under a
+    # checkout whose HEAD matches the pin perfectly. The hash is of the exact file deploy.ps1 and
+    # the installer copy, so it is the only field that says what a consumer actually received.
+    $serverHash = $null
+    if (Test-Path $builtServer) {
+        $serverHash = Get-FileSha256 $builtServer
+        OK "server.js sha256: $($serverHash.Substring(0,16))..."
+        # Stamp the build so a later run can tell WHICH commit produced this out/ (see $buildStamp).
+        $stamp = [pscustomobject]@{
+            commit = $headNow
+            tag    = $Tag
+            sha256 = $serverHash
+            builtAt = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssK')
+        }
+        [System.IO.File]::WriteAllText($buildStamp, ($stamp | ConvertTo-Json),
+                                       (New-Object System.Text.UTF8Encoding($false)))
+    }
+
     # Record the pure pin (targetPin/currentPin included -- see Update-PinFields)
     $resolved = Invoke-GitQuiet @('-C', $PureRoot, 'rev-parse', '--short', 'HEAD')
     if (-not $resolved) {
@@ -294,6 +350,7 @@ if ($Pure) {
     Update-PinFields $manifest $Tag $PureRoot
     $manifest | Add-Member -NotePropertyName 'pure'           -NotePropertyValue $true   -Force
     $manifest | Add-Member -NotePropertyName 'resolvedCommit' -NotePropertyValue $resolved -Force
+    $manifest | Add-Member -NotePropertyName 'resolvedServerSha256' -NotePropertyValue $serverHash -Force
     $manifest | Add-Member -NotePropertyName 'resolvedTag'    -NotePropertyValue $Tag      -Force
     $manifest | Add-Member -NotePropertyName 'lastSync'       -NotePropertyValue (Get-Date -Format 'yyyy-MM-dd') -Force
     Save-Manifest $manifest $ManifestPath
