@@ -112,11 +112,14 @@ All of these take a `timeout` in seconds (default 120) and kill the process on e
 - `index_codegraph` - Index a Clarion solution into a CodeGraph database (parses all .clw/.inc). Run on first opening a solution or after code changes.
 
 The CodeGraph database schema:
-- **symbols** table: name, type (procedure/function/class/interface/routine/variable), file_path, line_number, params, return_type, parent_name, scope
+- **symbols** table: name, type (procedure/function/class/interface/routine/variable/module/include), file_path, line_number, params, return_type, parent_name, scope (global/module/local/class/parameter — variables at scope='global' are the PROGRAM file's global data section; 'module' is MEMBER-file data before the first procedure)
 - **relationships** table: from_id, to_id, type (calls/do/inherits/implements/references), file_path, line_number
 - **projects** table: name, cwproj_path, sln_path
+- **indexed_files** table: project_id, file_name, resolved_path, outcome (resolved_parsed/resolved_no_symbols/unresolved/skipped_outside_solution/skipped_clw_include), symbol_count, pass — the per-file audit of what the last index run did. Query it when a symbol seems missing: it tells you whether the file was even indexed, and why not.
 
 Use `query_codegraph` when the developer asks:
+- "Where is this global declared?" - query symbols where scope='global'
+- "Was this file indexed at all?" - query indexed_files by file_name
 - "Who calls X?" or "Where is X used?" - query relationships where to_id matches the symbol
 - "What does X call?" - query relationships where from_id matches
 - "Find all procedures named..." - query symbols table

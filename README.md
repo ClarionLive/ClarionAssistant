@@ -59,6 +59,21 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 Work landed since 5.7 is documented here as it merges — see [the release-docs workflow](docs/releases/README.md), and run `Check-ReleaseDocs.ps1` before cutting a release.
 
+<!-- release-docs: covered=codegraph -->
+### CodeGraph indexes more than twice as much of your solution &mdash; including, at last, your globals
+
+Measured against a real 27-app production solution, the index went from 170 thousand symbols to 385 thousand, and from 53 thousand call relationships to 392 thousand. Not from new cleverness in the parser &mdash; from finally looking where your code actually is.
+
+The biggest miss was the redirection file. The indexer resolved source by convention &mdash; `.\source`, project root &mdash; and only consulted a `.red` if one sat next to the `.sln`. Most installs keep it in the Clarion `bin` folder, so every file your `.red` places elsewhere &mdash; shared class sources, `Compile\` output &mdash; silently fell off the index. The indexer now uses the same active redirection the IDE has loaded, and the standalone indexer takes `--red`.
+
+Second: **global data was never indexed.** The declaration section of your main PROGRAM file &mdash; six thousand lines of it, in one app we measured &mdash; was skipped entirely, so no global variable, GROUP, or EQUATE existed anywhere in the graph. They are indexed now, with `scope='global'`, so "where is this global declared?" finally has an answer. Declarations sized with nested parentheses &mdash; `CSTRING(CHR(10))` &mdash; also no longer vanish, a quiet loss that had applied to locals too.
+
+The two indexing tools also stopped disagreeing: `index_codegraph` ran without the library paths and redirection that `index_solution` used, so how complete your database was depended on which one had run last. They now share one implementation. Include chains are followed recursively instead of one level deep, and the addin and the standalone `clarion-indexer` are built from one shared source instead of two copies that had already drifted apart.
+
+Finally, the index now audits itself. Every file the indexer touches gets a row in a new `indexed_files` table saying what happened to it &mdash; parsed, empty, unresolved, or skipped and why &mdash; and the run ends with a warning naming anything that did not resolve rather than leaving silence. On its first real run that audit caught a genuine bug: two files whose `$`-containing names the project file stores percent-encoded, which the indexer had been dropping without a trace. Fixed, of course.
+
+**Re-index your solutions after updating** &mdash; the improvements apply to what gets indexed, so existing databases keep their old blind spots until re-run.
+
 <!-- release-docs: covered=source-editor -->
 ### Template files listed in the editor settings now actually open in the editor
 
