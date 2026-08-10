@@ -19,6 +19,16 @@ namespace ClarionCodeGraph.Graph
         private SourceResolver _resolver;
         private readonly ClarionParser _clarionParser;
 
+        /// <summary>
+        /// The ACTIVE redirection service to resolve source files with, supplied by the host
+        /// (the IDE's loaded .red — version-level file plus any local project override). When
+        /// null, IndexSolution falls back to probing the solution directory for a *.red, which
+        /// only works for solutions that keep their .red beside the .sln — many keep it in the
+        /// Clarion bin folder instead (e.g. C:\Clarion10v8\bin\Clarion10v61.red), where the
+        /// probe never looks. Hosts that know the real .red MUST inject it here.
+        /// </summary>
+        public ClarionAssistant.Services.RedFileService RedService { get; set; }
+
         public event Action<string> OnProgress;
 
         public CodeGraphIndexer(CodeGraphDatabase db)
@@ -52,9 +62,18 @@ namespace ClarionCodeGraph.Graph
             var projects = _slnParser.Parse(slnPath);
             result.ProjectCount = projects.Count;
 
-            // Load redirection file so SourceResolver can find files in Compile\, Classes\, etc.
+            // Redirection for SourceResolver (files in Compile\, Classes\, SharedLibsrc etc.):
+            // prefer the host-injected ACTIVE .red; fall back to probing the solution dir.
             string slnDir = Path.GetDirectoryName(slnPath);
-            _resolver = new SourceResolver(TryLoadRedFile(slnDir));
+            var red = RedService;
+            if (red != null)
+                ReportProgress(string.Format("Using redirection file: {0} (host-supplied)",
+                    string.IsNullOrEmpty(red.RedFilePath) ? "(in-memory)" : Path.GetFileName(red.RedFilePath)));
+            else
+                red = TryLoadRedFile(slnDir);
+            if (red == null)
+                ReportProgress("No redirection file in effect — resolution limited to .\\source, project root, and explicit search paths.");
+            _resolver = new SourceResolver(red);
 
             // For full re-index, wipe everything and start fresh
             if (!incremental)
@@ -417,19 +436,22 @@ namespace ClarionCodeGraph.Graph
                         result.SymbolCount += parseResult.Symbols.Count;
                     }
 
-                    // The main PROGRAM file's tail (global CODE + hand-written procedure
-                    // implementations after it) is MEMBER-shaped source that Pass 1 never
-                    // scans — run it through the member-file parser from the boundary.
+                    // The main PROGRAM file: run the WHOLE file through the member-file parser
+                    // (startLine 0), not just the post-CODE tail. The parser's PROGRAM handler
+                    // opens the DATA machinery over the declaration section, capturing the app's
+                    // GLOBAL data as scope='global' symbols — previously that entire section
+                    // (~6,000 lines in a large app main) was never scanned and every global was
+                    // invisible (ticket d1a0aea6). The MAP block is depth-skipped, so Pass 1's
+                    // procedure declarations don't repeat; INCLUDE symbols DO repeat (Pass 1
+                    // already captured them for this same file), so they're filtered here —
+                    // they still feed discoveredIncludeNames, which is a set.
                     string tailMainPath;
                     if (mainFiles.TryGetValue(proj.Id, out tailMainPath))
                     {
-                        int tailStart = _clarionParser.FindMainTailStart(tailMainPath);
-                        var tailResult = _clarionParser.ParseMemberFile(tailMainPath, proj.Id, null, tailStart);
+                        var tailResult = _clarionParser.ParseMemberFile(tailMainPath, proj.Id, null, 0);
+                        int inserted = 0;
                         foreach (var sym in tailResult.Symbols)
                         {
-                            long symId = _db.InsertSymbol(sym);
-                            sym.Id = symId;
-
                             if (sym.Type == "include")
                             {
                                 HashSet<string> names;
@@ -439,9 +461,14 @@ namespace ClarionCodeGraph.Graph
                                     discoveredIncludeNames[proj.Id] = names;
                                 }
                                 names.Add(sym.Name);
+                                continue; // Pass 1 already inserted this file's include symbols
                             }
+
+                            long symId = _db.InsertSymbol(sym);
+                            sym.Id = symId;
+                            inserted++;
                         }
-                        result.SymbolCount += tailResult.Symbols.Count;
+                        result.SymbolCount += inserted;
                     }
                 }
 

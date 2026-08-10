@@ -1672,10 +1672,18 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                         db.Open(dbPath);
 
                         var indexer = new ClarionCodeGraph.Graph.CodeGraphIndexer(db);
+                        // PARITY with RunIndex/index_solution: same active .red, same library
+                        // paths. This handler used to pass neither, so the same db was more or
+                        // less complete depending on which tool indexed last (ticket d1a0aea6).
+                        if (_chatControl != null)
+                        {
+                            indexer.RedService = _chatControl.ActiveRedFileService;
+                        }
                         var progress = new System.Text.StringBuilder();
                         indexer.OnProgress += msg => progress.AppendLine(msg);
 
-                        var result = indexer.IndexSolution(slnPath, incremental);
+                        var result = indexer.IndexSolution(slnPath, incremental,
+                            _chatControl != null ? _chatControl.BuildIndexLibraryPaths() : null);
                         db.Close();
 
                         return string.Format(

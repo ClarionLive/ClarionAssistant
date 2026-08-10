@@ -1961,6 +1961,26 @@ namespace ClarionAssistant
 
         #region Indexing
 
+        /// <summary>The IDE's active redirection service (version .red + local project override),
+        /// for hosts that construct their own CodeGraphIndexer (index_codegraph parity).</summary>
+        public Services.RedFileService ActiveRedFileService
+        {
+            get { return _redFileService; }
+        }
+
+        /// <summary>
+        /// Library paths for CodeGraph indexing, derived from the active .red's .inc search
+        /// paths. ONE implementation shared by RunIndex (index_solution) and the index_codegraph
+        /// MCP tool — the two used to disagree (index_codegraph passed none at all), so how
+        /// complete the graph was depended on which tool indexed last (ticket d1a0aea6).
+        /// </summary>
+        public List<string> BuildIndexLibraryPaths()
+        {
+            if (_redFileService == null) return null;
+            var incPaths = _redFileService.GetSearchPaths(".inc");
+            return incPaths.Count > 0 ? incPaths : null;
+        }
+
         public void RunIndex(bool incremental)
         {
             if (string.IsNullOrEmpty(_currentSlnPath) || !File.Exists(_currentSlnPath))
@@ -1975,13 +1995,8 @@ namespace ClarionAssistant
             string slnPath = _currentSlnPath;
 
             // Build library paths from RED file .inc search paths
-            List<string> libPaths = null;
-            if (_redFileService != null)
-            {
-                var incPaths = _redFileService.GetSearchPaths(".inc");
-                if (incPaths.Count > 0)
-                    libPaths = incPaths;
-            }
+            List<string> libPaths = BuildIndexLibraryPaths();
+            var activeRed = _redFileService;
 
             _header.ClearIndexLog();
 
@@ -1997,6 +2012,7 @@ namespace ClarionAssistant
                 db.Open(dbPath);
 
                 var indexer = new ClarionCodeGraph.Graph.CodeGraphIndexer(db);
+                indexer.RedService = activeRed; // the IDE's ACTIVE .red — version file + local override
                 indexer.OnProgress += msg =>
                 {
                     ((BackgroundWorker)s).ReportProgress(0, msg);

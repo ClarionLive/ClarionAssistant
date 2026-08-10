@@ -44,7 +44,7 @@ namespace ClarionIndexer
             Console.Error.WriteLine("ClarionIndexer - Build and query Clarion code graph databases");
             Console.Error.WriteLine();
             Console.Error.WriteLine("Usage:");
-            Console.Error.WriteLine("  clarion-indexer index <solution.sln> [--db <path>] [--incremental] [--lib-paths \"path1;path2\"]");
+            Console.Error.WriteLine("  clarion-indexer index <solution.sln> [--db <path>] [--incremental] [--lib-paths \"path1;path2\"] [--red <file.red>]");
             Console.Error.WriteLine("  clarion-indexer query <db-path> <command> [args...]");
             Console.Error.WriteLine("  clarion-indexer stats <db-path>");
             Console.Error.WriteLine("  clarion-indexer <solution.sln>              (shorthand for index)");
@@ -54,6 +54,10 @@ namespace ClarionIndexer
             Console.Error.WriteLine("    --db <path>      Custom database output path (default: <sln-dir>/<sln-name>.codegraph.db)");
             Console.Error.WriteLine("    --incremental    Only re-index changed projects");
             Console.Error.WriteLine("    --lib-paths      Semicolon-delimited library .inc search directories");
+            Console.Error.WriteLine("    --red <file>     Clarion redirection file for source resolution (e.g.");
+            Console.Error.WriteLine("                     C:\\Clarion11\\bin\\Clarion110.red). %THISDIR% anchors to the");
+            Console.Error.WriteLine("                     .red's own folder; without this flag, only a *.red found in");
+            Console.Error.WriteLine("                     the solution directory is used.");
             Console.Error.WriteLine();
             Console.Error.WriteLine("Query Commands:");
             Console.Error.WriteLine("  query <db> find-symbol <name>          Search symbols by name");
@@ -82,6 +86,7 @@ namespace ClarionIndexer
             string dbPath = null;
             bool incremental = false;
             List<string> libraryPaths = null;
+            string redPath = null;
 
             for (int i = 2; i < args.Length; i++)
             {
@@ -104,6 +109,10 @@ namespace ClarionIndexer
                             libraryPaths.Add(Path.GetFullPath(trimmed));
                     }
                 }
+                else if (args[i] == "--red" && i + 1 < args.Length)
+                {
+                    redPath = Path.GetFullPath(args[++i]);
+                }
             }
 
             if (!File.Exists(slnPath))
@@ -119,11 +128,51 @@ namespace ClarionIndexer
                     Path.GetFileNameWithoutExtension(slnPath) + ".codegraph.db");
             }
 
+            // Load an explicit redirection file when given. %THISDIR%/%REDDIR% anchor to the
+            // .red's own folder; %ROOT% is derived when the .red sits in a Clarion-style bin\
+            // folder (C:\Clarion11\bin\Clarion110.red -> ROOT=C:\Clarion11). Without --red the
+            // indexer falls back to probing the solution directory for a *.red, which misses
+            // installs that keep the .red in the Clarion bin folder.
+            ClarionAssistant.Services.RedFileService red = null;
+            if (redPath != null)
+            {
+                if (!File.Exists(redPath))
+                {
+                    Console.Error.WriteLine("Error: redirection file not found: " + redPath);
+                    return 1;
+                }
+                string redDir = Path.GetDirectoryName(redPath);
+                var macros = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["THISDIR"] = redDir,
+                    ["REDDIR"] = redDir
+                };
+                if (string.Equals(Path.GetFileName(redDir), "bin", StringComparison.OrdinalIgnoreCase))
+                    macros["ROOT"] = Path.GetDirectoryName(redDir);
+                red = new ClarionAssistant.Services.RedFileService();
+                if (!red.Load(redPath, macros))
+                {
+                    Console.Error.WriteLine("Error: failed to parse redirection file: " + redPath);
+                    return 1;
+                }
+
+                // Parity with the addin's RunIndex: when no explicit --lib-paths, derive the
+                // library sweep dirs from the .red's .inc search paths.
+                if (libraryPaths == null)
+                {
+                    var incPaths = red.GetSearchPaths(".inc");
+                    if (incPaths.Count > 0)
+                        libraryPaths = incPaths;
+                }
+            }
+
             Console.Error.WriteLine("Indexing: " + slnPath);
             Console.Error.WriteLine("Database: " + dbPath);
             Console.Error.WriteLine("Mode: " + (incremental ? "incremental" : "full"));
             if (libraryPaths != null && libraryPaths.Count > 0)
                 Console.Error.WriteLine("Library paths: " + string.Join("; ", libraryPaths));
+            if (redPath != null)
+                Console.Error.WriteLine("Redirection: " + redPath);
             Console.Error.WriteLine();
 
             try
@@ -132,6 +181,7 @@ namespace ClarionIndexer
                 db.Open(dbPath);
 
                 var indexer = new CodeGraphIndexer(db);
+                indexer.RedService = red;
                 indexer.OnProgress += msg => Console.Error.WriteLine("  " + msg);
 
                 var sw = Stopwatch.StartNew();

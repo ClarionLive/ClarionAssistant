@@ -51,9 +51,12 @@ namespace ClarionCodeGraph.Parsing
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // Variable declaration: VarName TYPE[(size)] [,attributes]
-        // Matches names with colons (Loc:Name) and standard Clarion data types
+        // Matches names with colons (Loc:Name) and standard Clarion data types.
+        // The size group tolerates ONE level of nested parens — "CSTRING(CHR(10))",
+        // "STRING(SIZE(SomeGroup))" — which the old \([^)]*\) form stopped at the first ')',
+        // silently dropping the whole declaration (ticket d1a0aea6, found via PRM001's LF/FF/CR).
         private static readonly Regex VariableDeclRegex = new Regex(
-            @"^([\w:]+)\s+(BYTE|SHORT|USHORT|LONG|ULONG|SIGNED|UNSIGNED|SREAL|REAL|BFLOAT4|BFLOAT8|DECIMAL|PDECIMAL|STRING|ASTRING|CSTRING|PSTRING|DATE|TIME|BOOL|ANY)\s*(\([^)]*\))?\s*(,.*)?$",
+            @"^([\w:]+)\s+(BYTE|SHORT|USHORT|LONG|ULONG|SIGNED|UNSIGNED|SREAL|REAL|BFLOAT4|BFLOAT8|DECIMAL|PDECIMAL|STRING|ASTRING|CSTRING|PSTRING|DATE|TIME|BOOL|ANY)\s*(\((?:[^()]|\([^)]*\))*\))?\s*(,.*)?$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // Reference variable: VarName &TYPE
@@ -361,6 +364,8 @@ namespace ClarionCodeGraph.Parsing
             string currentClassName = null;
             bool inClassBody = false;
             int classEndDepth = 0;
+            // PROGRAM (main) file: pre-procedure data is the app's GLOBAL data section
+            bool isProgramFile = false;
 
             for (int i = startLine; i < lines.Length; i++)
             {
@@ -390,6 +395,21 @@ namespace ClarionCodeGraph.Parsing
                 if (MemberEmptyRegex.IsMatch(line) && memberOf == null)
                 {
                     memberOf = ""; // universal member
+                    inData = true;
+                    dataGroupDepth = 0;
+                    continue;
+                }
+
+                // PROGRAM main file: everything between PROGRAM and the global CODE statement is
+                // the app's GLOBAL data section. Open the same DATA machinery MEMBER does, but
+                // flag the file so those declarations get scope='global' instead of 'module' —
+                // before this, the indexer never scanned the section at all and every global in
+                // an .app was invisible (ticket d1a0aea6; the PRM001 main file alone carries
+                // ~6,000 declaration lines). memberOf is deliberately left untouched: tail
+                // procedures keep their existing member_of value.
+                if (ProgramRegex.IsMatch(line))
+                {
+                    isProgramFile = true;
                     inData = true;
                     dataGroupDepth = 0;
                     continue;
@@ -663,8 +683,10 @@ namespace ClarionCodeGraph.Parsing
                         continue;
                     }
 
-                    // Determine scope: module-level (before first PROCEDURE) vs local
-                    string varScope = currentProcedure != null ? "local" : "module";
+                    // Determine scope: local (inside a procedure), global (PROGRAM file's
+                    // declaration section), or module-level (before first PROCEDURE in a MEMBER)
+                    string varScope = currentProcedure != null ? "local"
+                        : (isProgramFile ? "global" : "module");
                     string varOwner = currentProcedure;
 
                     // Strip a trailing inline comment before type-matching -- a declaration like
