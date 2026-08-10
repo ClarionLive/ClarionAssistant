@@ -133,6 +133,29 @@ namespace ClarionCodeGraph.Parsing
             @"^([\w:]+)\s+(\w+)\s*(,[^!]*)?\s*(!.*)?$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        // EXTERNAL attribute on a data declaration: the symbol is declared here but OWNED by
+        // another module/DLL. Answers "which of the N same-named globals is the real one" —
+        // the one WITHOUT this (ticket b7553893).
+        private static readonly Regex ExternalAttrRegex = new Regex(
+            @",\s*EXTERNAL\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        /// <summary>The declaration/definition line as a self-explaining preview, trimmed and
+        /// capped — so query results identify themselves without a file read (b7553893).</summary>
+        private static string Preview(string line)
+        {
+            if (line == null) return null;
+            string t = line.Trim();
+            if (t.Length == 0) return null;
+            return t.Length > 200 ? t.Substring(0, 200) : t;
+        }
+
+        /// <summary>'external' when the declaration carries the EXTERNAL attribute, else the
+        /// supplied default (normally null for plain data declarations).</summary>
+        private static string VarDeclKind(string declLine)
+        {
+            return declLine != null && ExternalAttrRegex.IsMatch(declLine) ? "external" : null;
+        }
+
         /// <summary>
         /// Pass 1: Parse a main .clw file (the one with PROGRAM keyword) for MAP declarations.
         /// Returns symbols for each MODULE's procedure declarations.
@@ -256,7 +279,9 @@ namespace ClarionCodeGraph.Parsing
                             Params = procParams,
                             ReturnType = isFunction ? ExtractReturnType(attributes) : null,
                             MemberOf = currentModuleFile,
-                            Scope = "global"
+                            Scope = "global",
+                            DeclKind = "prototype", // MAP declaration — the body lives in the module
+                            SourcePreview = Preview(line)
                         });
                     }
                 }
@@ -487,7 +512,9 @@ namespace ClarionCodeGraph.Parsing
                                 ReturnType = ExtractReturnType(attributes),
                                 MemberOf = memberOf,
                                 ParentName = currentClassName,
-                                Scope = isVirtual || isDerived ? "virtual" : "class"
+                                Scope = isVirtual || isDerived ? "virtual" : "class",
+                                DeclKind = "prototype", // CLASS-body declaration — body is elsewhere
+                                SourcePreview = Preview(line)
                             });
                         }
                     }
@@ -514,7 +541,9 @@ namespace ClarionCodeGraph.Parsing
                         ProjectId = projectId,
                         Params = procParams,
                         MemberOf = memberOf,
-                        Scope = "module"
+                        Scope = "module",
+                        DeclKind = "implementation",
+                        SourcePreview = Preview(line)
                     });
                     ExtractNamedParameters(procParams, currentProcedure, filePath, lineNum, projectId, result);
                     continue;
@@ -540,7 +569,9 @@ namespace ClarionCodeGraph.Parsing
                         ProjectId = projectId,
                         Params = funcParams,
                         MemberOf = memberOf,
-                        Scope = "module"
+                        Scope = "module",
+                        DeclKind = "implementation",
+                        SourcePreview = Preview(line)
                     });
                     ExtractNamedParameters(funcParams, currentProcedure, filePath, lineNum, projectId, result);
                     continue;
@@ -562,7 +593,14 @@ namespace ClarionCodeGraph.Parsing
                         LineNumber = lineNum,
                         ProjectId = projectId,
                         MemberOf = memberOf,
-                        Scope = "local"
+                        // Routines are procedure-local: record WHICH procedure, or "DO X" can
+                        // never be resolved among the dozens of same-named template routines
+                        // (BRW10::ProcessScroll ...) across a solution. Locals always carried
+                        // ParentName; routines just didn't (b7553893 #4).
+                        ParentName = currentProcedure,
+                        Scope = "local",
+                        DeclKind = "implementation",
+                        SourcePreview = Preview(line)
                     });
                     continue;
                 }
@@ -750,7 +788,9 @@ namespace ClarionCodeGraph.Parsing
                             ProjectId = projectId,
                             Params = gqType + gqNamedType + (prefix != null ? ",PRE(" + prefix + ")" : ""),
                             ParentName = varOwner,
-                            Scope = varScope
+                            Scope = varScope,
+                            DeclKind = VarDeclKind(dataForTypeMatch),
+                            SourcePreview = Preview(line)
                         });
 
                         // A named-type form (e.g. "PersonData GROUP(PTJ_PersonDataGroupType)") can be
@@ -791,7 +831,9 @@ namespace ClarionCodeGraph.Parsing
                             ProjectId = projectId,
                             Params = varType + varSize,
                             ParentName = varOwner,
-                            Scope = varScope
+                            Scope = varScope,
+                            DeclKind = VarDeclKind(dataForTypeMatch),
+                            SourcePreview = Preview(line)
                         });
                         continue;
                     }
@@ -812,7 +854,9 @@ namespace ClarionCodeGraph.Parsing
                             ProjectId = projectId,
                             Params = "&" + refType.ToUpperInvariant(),
                             ParentName = varOwner,
-                            Scope = varScope
+                            Scope = varScope,
+                            DeclKind = VarDeclKind(dataForTypeMatch),
+                            SourcePreview = Preview(line)
                         });
                         continue;
                     }
@@ -832,7 +876,9 @@ namespace ClarionCodeGraph.Parsing
                             ProjectId = projectId,
                             Params = "EQUATE",
                             ParentName = varOwner,
-                            Scope = varScope
+                            Scope = varScope,
+                            DeclKind = VarDeclKind(dataForTypeMatch),
+                            SourcePreview = Preview(line)
                         });
                         continue;
                     }
@@ -853,7 +899,9 @@ namespace ClarionCodeGraph.Parsing
                             ProjectId = projectId,
                             Params = "LIKE(" + likeTarget + ")",
                             ParentName = varOwner,
-                            Scope = varScope
+                            Scope = varScope,
+                            DeclKind = VarDeclKind(dataForTypeMatch),
+                            SourcePreview = Preview(line)
                         });
                         continue;
                     }
@@ -879,7 +927,9 @@ namespace ClarionCodeGraph.Parsing
                                 ProjectId = projectId,
                                 Params = ciType.ToUpperInvariant(),
                                 ParentName = varOwner,
-                                Scope = varScope
+                                Scope = varScope,
+                                DeclKind = VarDeclKind(dataForTypeMatch),
+                                SourcePreview = Preview(line)
                             });
                         }
                         continue;
@@ -1048,7 +1098,9 @@ namespace ClarionCodeGraph.Parsing
                                 Params = methodParams,
                                 ReturnType = ExtractReturnType(attributes),
                                 ParentName = currentClassName,
-                                Scope = isVirtual || isDerived ? "virtual" : "class"
+                                Scope = isVirtual || isDerived ? "virtual" : "class",
+                                DeclKind = "prototype", // .inc CLASS-body declaration — body is in the .clw
+                                SourcePreview = Preview(line)
                             });
                         }
                     }

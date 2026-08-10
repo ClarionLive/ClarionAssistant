@@ -14,5 +14,9 @@ namespace ClarionCodeGraph.Parsing.Models
         public string MemberOf { get; set; }       // MEMBER('parent.clw') value
         public string Scope { get; set; }          // global (in MAP), local (routine), module
         public string SourcePreview { get; set; }
+        // prototype (MAP or CLASS-body declaration), implementation (parsed body), or
+        // external (variable carrying the EXTERNAL attribute — declared here, owned elsewhere).
+        // Null on symbol kinds where the distinction is meaningless.
+        public string DeclKind { get; set; }
     }
 }
