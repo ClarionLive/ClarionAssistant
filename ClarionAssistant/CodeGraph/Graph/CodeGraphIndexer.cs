@@ -548,10 +548,34 @@ namespace ClarionCodeGraph.Graph
                         foreach (var f in knownIncs)
                             alreadyKnown.Add(f.FileName);
 
-                    foreach (string includeName in kvp.Value)
+                    // RECURSIVE work-list (ticket d1a0aea6, Phase 3): an .inc swept in here is
+                    // parsed, and the INCLUDE() targets IT declares are queued in turn — real
+                    // class .inc files routinely include their base class's .inc. alreadyKnown
+                    // is the cycle guard; the depth cap is belt-and-braces against pathological
+                    // chains. INCLUDE of a .clw is a source FRAGMENT (can be arbitrary code out
+                    // of any context, not MEMBER-shaped) — parsing one here would mis-attribute
+                    // its content, so it is recorded and skipped rather than silently dropped.
+                    const int MaxIncludeDepth = 5;
+                    var includeWork = new Queue<KeyValuePair<string, int>>();
+                    foreach (string seedName in kvp.Value)
+                        includeWork.Enqueue(new KeyValuePair<string, int>(seedName, 0));
+
+                    while (includeWork.Count > 0)
                     {
-                        if (!includeName.EndsWith(".inc", StringComparison.OrdinalIgnoreCase)) continue;
+                        var workItem = includeWork.Dequeue();
+                        string includeName = workItem.Key;
+                        int depth = workItem.Value;
+
                         if (alreadyKnown.Contains(includeName)) continue;
+                        if (!includeName.EndsWith(".inc", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (includeName.EndsWith(".clw", StringComparison.OrdinalIgnoreCase))
+                            {
+                                _db.InsertIndexedFile(projectId, includeName, null, "skipped_clw_include", 0, "pass2b-include");
+                                alreadyKnown.Add(includeName);
+                            }
+                            continue; // .equ/.def/etc: equate soup, nothing symbol-shaped to gain
+                        }
 
                         var resolvedList = _resolver.Resolve(projectDir, new List<string> { includeName }, libraryPaths);
                         var resolved = resolvedList.Count > 0 ? resolvedList[0] : null;
@@ -586,6 +610,16 @@ namespace ClarionCodeGraph.Graph
                             parseResult.Symbols.Count > 0 ? "resolved_parsed" : "resolved_no_symbols",
                             parseResult.Symbols.Count, "pass2b-include");
                         alreadyKnown.Add(includeName); // avoid double-parse if INCLUDE()'d from multiple files
+
+                        // Follow THIS file's own INCLUDE() targets
+                        if (depth < MaxIncludeDepth)
+                        {
+                            foreach (var sym in parseResult.Symbols)
+                            {
+                                if (sym.Type == "include" && !alreadyKnown.Contains(sym.Name))
+                                    includeWork.Enqueue(new KeyValuePair<string, int>(sym.Name, depth + 1));
+                            }
+                        }
                     }
                 }
 
