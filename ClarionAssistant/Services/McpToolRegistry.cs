@@ -1713,19 +1713,25 @@ Use this tool to discover IDE APIs and understand what's available for automatio
 
 TABLES:
 - projects (id, name, guid, cwproj_path, output_type, sln_path)
-- symbols (id, name, type, file_path, line_number, project_id, params, return_type, parent_name, member_of, scope, source_preview)
-  - type values: 'procedure', 'function', 'class', 'interface', 'routine', 'variable', 'include'
-  - scope values: 'global', 'local'
-- relationships (id, from_id, to_id, type, file_path, line_number)
-  - type values: 'calls', 'do', 'inherits', 'implements', 'references'
+- symbols (id, name, type, file_path, line_number, project_id, params, return_type, parent_name, member_of, scope, source_preview, decl_kind)
+  - type values: 'procedure', 'function', 'class', 'interface', 'routine', 'variable', 'include', 'module', 'program'
+  - scope values: 'global' (PROGRAM-file data + MAP declarations), 'module', 'local', 'class', 'parameter'
+  - decl_kind values: 'prototype' (MAP or CLASS-body declaration), 'implementation' (parsed body), 'external' (variable with EXTERNAL — declared here, owned elsewhere), NULL (unclassified/plain)
+  - source_preview: the declaration/definition line itself — results self-explain without opening the file
+- relationships (id, from_id, to_id, type, file_path, line_number, ambiguous)
+  - type values: 'calls', 'do' (routine calls), 'inherits', 'implements', 'references', 'uses_type'
+  - ambiguous=1: resolution had multiple equal-rank candidates (usually same-name overloads) and picked deterministically — treat the target as one of several
 - project_dependencies (project_id, depends_on_id)
+- indexed_files (project_id, file_name, resolved_path, outcome, symbol_count, pass) — per-file audit of the last index run
 - index_metadata (key, value)
 
 COMMON QUERIES:
-- Find symbol: SELECT * FROM symbols WHERE name LIKE '%search%' AND type IN ('procedure','function','class')
-- Who calls X: SELECT s.name, r.file_path, r.line_number FROM relationships r JOIN symbols s ON r.from_id = s.id WHERE r.to_id = (SELECT id FROM symbols WHERE name = 'X') AND r.type = 'calls'
+- Find symbol: SELECT name, file_path, line_number, source_preview FROM symbols WHERE name LIKE '%search%' AND type IN ('procedure','function','class')
+- Who calls X: SELECT s.name, r.file_path, r.line_number FROM relationships r JOIN symbols s ON r.from_id = s.id WHERE r.to_id = (SELECT id FROM symbols WHERE name = 'X' AND decl_kind = 'implementation') AND r.type = 'calls'
 - What does X call: SELECT s.name FROM relationships r JOIN symbols s ON r.to_id = s.id WHERE r.from_id = (SELECT id FROM symbols WHERE name = 'X') AND r.type = 'calls'
-- Dead code: SELECT name, file_path FROM symbols WHERE type IN ('procedure','function') AND scope = 'global' AND id NOT IN (SELECT to_id FROM relationships WHERE type IN ('calls','do'))
+- Owning declaration of a global (vs its EXTERNAL imports): SELECT file_path, line_number, source_preview FROM symbols WHERE name = 'PRE:Name' AND scope = 'global' AND (decl_kind IS NULL OR decl_kind <> 'external')
+- Dead code: SELECT name, file_path FROM symbols WHERE type IN ('procedure','function') AND decl_kind = 'implementation' AND id NOT IN (SELECT to_id FROM relationships WHERE type IN ('calls','do'))
+  (NEVER filter dead code on scope='global' — those are MAP PROTOTYPES, which never receive call edges; calls land on the implementations. The old recipe returned 98.7% false positives.)
 - Class hierarchy: SELECT name, parent_name, file_path FROM symbols WHERE type = 'class'",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
