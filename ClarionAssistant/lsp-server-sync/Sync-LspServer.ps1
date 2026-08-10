@@ -82,6 +82,36 @@ function Info($m) { Line 'INFO' $m 'Cyan' }
 function Warn($m) { Line 'WARN' $m 'Yellow' }
 function Fail($m) { Line 'FAIL' $m 'Red' }
 
+# Run git and return its stdout, or $null if it failed for ANY reason. Do NOT replace this with a
+# bare `git ... 2>$null`.
+#
+# Under Windows PowerShell 5.1, redirecting a NATIVE command's stderr wraps the output in a
+# NativeCommandError record, and the $ErrorActionPreference='Stop' set above makes that record
+# TERMINATING -- so the `Fail ...; exit 2` the caller wrote never runs; the script throws on the git
+# line instead. Because deploy.ps1 invokes this script with & under ITS own Stop, that throw
+# propagates and kills the whole deploy. Concrete trigger: a .lsp-build\<tag> left over from the old
+# `git worktree add` implementation, whose .git file points into a parent clone that has since moved.
+#
+# Relaxing $ErrorActionPreference locally makes the NativeCommandError non-terminating; 2>&1 keeps
+# git's stderr off the console; the ErrorRecord filter keeps it out of the return value; the
+# try/catch covers git being absent from PATH entirely (CommandNotFoundException terminates
+# regardless of the preference).
+function Invoke-GitQuiet([string[]]$GitArgs) {
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & git @GitArgs 2>&1
+        if ($LASTEXITCODE -ne 0) { return $null }
+        $clean = $out | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+        if (-not $clean) { return $null }
+        return (($clean -join "`n").Trim())
+    } catch {
+        return $null
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+}
+
 # Keep ALL pin fields honest on a successful sync (#77 housekeeping): the sync used to update only
 # resolvedTag/resolvedCommit/lastSync, leaving targetPin/currentPin frozen at whatever hand-written
 # audit they last held -- after the v1.0.0 re-pin the manifest still reported targetPin v0.9.8 and a
@@ -159,7 +189,7 @@ if ($Pure) {
         }
 
         # Assert this is the expected upstream repo before we build anything out of it.
-        $pureOrigin = (git -C $PureRoot remote get-url origin 2>$null)
+        $pureOrigin = Invoke-GitQuiet @('-C', $PureRoot, 'remote', 'get-url', 'origin')
         if ($pureOrigin -notmatch 'Clarion-Extension') {
             Fail "origin of $PureRoot is '$pureOrigin' — expected msarson/Clarion-Extension. Aborting."
             exit 2
@@ -211,7 +241,13 @@ if ($Pure) {
     }
 
     # Record the pure pin (targetPin/currentPin included -- see Update-PinFields)
-    $resolved = (git -C $PureRoot rev-parse --short HEAD 2>$null)
+    $resolved = Invoke-GitQuiet @('-C', $PureRoot, 'rev-parse', '--short', 'HEAD')
+    if (-not $resolved) {
+        # Supported case: the "Using existing (non-git) pure tree as-is" branch above. Say so out
+        # loud rather than writing a silent null -- deploy.ps1's pin assert then reports "manifest
+        # has no resolvedCommit" instead of implying the shipped server was verified against a pin.
+        Warn "cannot resolve HEAD of $PureRoot (not a git tree) — resolvedCommit will be empty."
+    }
     Update-PinFields $manifest $Tag $PureRoot
     $manifest | Add-Member -NotePropertyName 'pure'           -NotePropertyValue $true   -Force
     $manifest | Add-Member -NotePropertyName 'resolvedCommit' -NotePropertyValue $resolved -Force

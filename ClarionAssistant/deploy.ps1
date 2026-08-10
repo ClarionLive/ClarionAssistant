@@ -242,6 +242,41 @@ $LspSourceDir = Resolve-LspBuild
 # server.js was copied (CLARIONLSP_ROOT override, hand-edited tree, an out/ built from another tag),
 # and the manifest is the ONLY thing a consumer can inspect to know what they got. Assert before any
 # copy so "what shipped" and "what is pinned" cannot silently diverge.
+
+# Run git and return its stdout, or $null if it failed for ANY reason. Do NOT replace this with a
+# bare `git ... 2>$null`.
+#
+# Under Windows PowerShell 5.1, redirecting a NATIVE command's stderr wraps the output in a
+# NativeCommandError record, and $ErrorActionPreference='Stop' (set at the top of this file) makes
+# that record TERMINATING. So `$x = (git ... 2>$null); if (-not $x) { warn; return }` never reaches
+# the soft-fail branch -- the script dies on the git line. Reproduced on 5.1.19041.6456 and on
+# 5.1.26100.8972; the identical code under pwsh 7 returns empty and continues, which is why the bug
+# looks like it isn't there when tested from a pwsh prompt.
+#
+# That is the exact failure this file's LSP handling is supposed to avoid: a contributor whose pure
+# build fails, or whose CLARIONLSP_ROOT is a plain unpacked server tree with no .git, would see the
+# WARN and then have the whole deploy abort anyway -- before a single Clarion version builds.
+#
+# Relaxing $ErrorActionPreference locally makes the NativeCommandError non-terminating; 2>&1 keeps
+# git's stderr off the console; the ErrorRecord filter keeps it out of the return value; the
+# try/catch covers git being absent from PATH entirely (CommandNotFoundException terminates
+# regardless of the preference).
+function Invoke-GitQuiet([string[]]$GitArgs) {
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & git @GitArgs 2>&1
+        if ($LASTEXITCODE -ne 0) { return $null }
+        $clean = $out | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+        if (-not $clean) { return $null }
+        return (($clean -join "`n").Trim())
+    } catch {
+        return $null
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+}
+
 function Assert-LspPin($sourceDir) {
     $manifest = Get-Content (Join-Path $ProjectDir "lsp-server-sync\lsp-snapshot.json") -Raw | ConvertFrom-Json
     $pinned   = $manifest.resolvedCommit
@@ -249,7 +284,7 @@ function Assert-LspPin($sourceDir) {
         Write-Host "  WARN  manifest has no resolvedCommit — cannot verify the bundled LSP." -ForegroundColor Yellow
         return
     }
-    $head = (git -C $sourceDir rev-parse --short HEAD 2>$null)
+    $head = Invoke-GitQuiet @('-C', $sourceDir, 'rev-parse', '--short', 'HEAD')
     if (-not $head) {
         Write-Host "  WARN  $sourceDir is not a git tree — cannot verify it matches pin $pinned." -ForegroundColor Yellow
         return
