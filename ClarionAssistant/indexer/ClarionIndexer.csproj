@@ -4,15 +4,21 @@
     clarion-indexer — standalone console tool that builds/queries the CodeGraph SQLite DB
     consumed by the bundled LSP server (CodeGraphBridge).
 
-    VENDORED, SELF-CONTAINED COPY (GitHub #30, ticket 939865f1).
-    Previously this project lived at H:\DevLaptop\ClarionLSP\indexer and <Compile Include>'d
-    its Graph/Parsing source from the sibling ..\..\ClarionCodeGraphAddin\ClarionCodeGraph tree.
-    That made the contribution path impossible to rebuild without two un-published external repos.
+    SINGLE SHARED SOURCE (ticket d1a0aea6; supersedes the vendored copy from GitHub #30).
+    The Graph/Parsing layer is <Compile Include>'d from ..\CodeGraph\ — the SAME files the
+    addin compiles — so the two builds cannot drift. The original reason for vendoring
+    (the link target lived in a different, un-published repo) no longer applies: everything
+    linked here is inside THIS repo, so a clean checkout still builds self-contained.
 
-    The Graph/ and Parsing/ source here is the IDE-FREE variant of the CodeGraph layer — it must
-    NOT depend on ClarionAssistant.Services (RedFileService etc.). The CA addin keeps its own,
-    IDE-coupled copy under ..\CodeGraph\; do NOT rewire this project to point there or the
-    standalone exe stops compiling. Keep the two in sync deliberately. See CONTRIBUTING.md.
+    The vendored copies under this project's Graph\ and Parsing\ folders are GONE — do not
+    recreate them; edits go in ..\CodeGraph\ (and ..\Services\ for the three helpers below)
+    and serve both projects. History for the drift this caused: three of six shared files
+    had silently diverged by 2026-08-10.
+
+    The linked Services files (RedFileService, ClarionVersionService, EncodingHelper) are
+    IDE-FREE — pure System.*; ClarionVersionService touches ICSharpCode.Core only via
+    reflection in a try/catch, so it compiles and runs (returning null) without the IDE.
+    Anything IDE-coupled must stay out of the shared layer.
   -->
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
@@ -61,23 +67,27 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
-    <!-- Entry point -->
+    <!-- Entry point (owned by this project) -->
     <Compile Include="Program.cs" />
-    <!-- Graph layer (IDE-free) -->
-    <Compile Include="Graph\CodeGraphDatabase.cs" />
-    <Compile Include="Graph\CodeGraphIndexer.cs" />
-    <Compile Include="Graph\CodeGraphQuery.cs" />
-    <!-- Parsing layer (IDE-free) -->
-    <Compile Include="Parsing\ClarionParser.cs" />
-    <Compile Include="Parsing\ClarionBuiltins.cs" />
-    <Compile Include="Parsing\SolutionParser.cs" />
-    <Compile Include="Parsing\ProjectParser.cs" />
-    <Compile Include="Parsing\SourceResolver.cs" />
-    <!-- Models -->
-    <Compile Include="Parsing\Models\ClarionSymbol.cs" />
-    <Compile Include="Parsing\Models\ClarionRelationship.cs" />
-    <Compile Include="Parsing\Models\SolutionProject.cs" />
-    <Compile Include="Parsing\Models\ParseResult.cs" />
+    <!-- Graph layer — SHARED with the addin, linked from ..\CodeGraph\ (one copy on disk) -->
+    <Compile Include="..\CodeGraph\Graph\CodeGraphDatabase.cs"><Link>Graph\CodeGraphDatabase.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Graph\CodeGraphIndexer.cs"><Link>Graph\CodeGraphIndexer.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Graph\CodeGraphQuery.cs"><Link>Graph\CodeGraphQuery.cs</Link></Compile>
+    <!-- Parsing layer — SHARED, linked from ..\CodeGraph\ -->
+    <Compile Include="..\CodeGraph\Parsing\ClarionParser.cs"><Link>Parsing\ClarionParser.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Parsing\ClarionBuiltins.cs"><Link>Parsing\ClarionBuiltins.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Parsing\SolutionParser.cs"><Link>Parsing\SolutionParser.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Parsing\ProjectParser.cs"><Link>Parsing\ProjectParser.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Parsing\SourceResolver.cs"><Link>Parsing\SourceResolver.cs</Link></Compile>
+    <!-- Models — SHARED, linked from ..\CodeGraph\ -->
+    <Compile Include="..\CodeGraph\Parsing\Models\ClarionSymbol.cs"><Link>Parsing\Models\ClarionSymbol.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Parsing\Models\ClarionRelationship.cs"><Link>Parsing\Models\ClarionRelationship.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Parsing\Models\SolutionProject.cs"><Link>Parsing\Models\SolutionProject.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Parsing\Models\ParseResult.cs"><Link>Parsing\Models\ParseResult.cs</Link></Compile>
+    <!-- IDE-free Services the shared layer needs (see header comment) -->
+    <Compile Include="..\Services\RedFileService.cs"><Link>Services\RedFileService.cs</Link></Compile>
+    <Compile Include="..\Services\ClarionVersionService.cs"><Link>Services\ClarionVersionService.cs</Link></Compile>
+    <Compile Include="..\Services\EncodingHelper.cs"><Link>Services\EncodingHelper.cs</Link></Compile>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- Copy x86 SQLite.Interop.dll to output directory after build -->

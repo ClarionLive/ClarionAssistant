@@ -139,7 +139,7 @@ namespace ClarionCodeGraph.Graph
                 string projectDir = Path.GetDirectoryName(proj.CwprojPath);
                 projectDirs[proj.Id] = projectDir;
                 var projResult = _projParser.Parse(proj.CwprojPath);
-                var resolved = _resolver.Resolve(projectDir, projResult.SourceFiles);
+                var resolved = _resolver.Resolve(projectDir, projResult.SourceFiles, libraryPaths);
 
                 var members = new List<ResolvedFile>();
                 var includes = new List<ResolvedFile>();
@@ -480,7 +480,7 @@ namespace ClarionCodeGraph.Graph
                         if (!includeName.EndsWith(".inc", StringComparison.OrdinalIgnoreCase)) continue;
                         if (alreadyKnown.Contains(includeName)) continue;
 
-                        var resolvedList = _resolver.Resolve(projectDir, new List<string> { includeName });
+                        var resolvedList = _resolver.Resolve(projectDir, new List<string> { includeName }, libraryPaths);
                         var resolved = resolvedList.Count > 0 ? resolvedList[0] : null;
                         if (resolved == null || !resolved.Found) continue; // unresolvable -- leave alone
 

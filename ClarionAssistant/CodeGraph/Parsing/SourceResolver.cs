@@ -7,7 +7,11 @@ namespace ClarionCodeGraph.Parsing
 {
     /// <summary>
     /// Locates actual .clw/.inc source files on disk.
-    /// Searches .\source\, project root, then falls back to the .red redirection paths.
+    /// Searches .\source\, project root, explicit search paths, then falls back to the
+    /// .red redirection service when one was supplied.
+    /// SHARED FILE: compiled into BOTH the addin (ClarionAssistant.csproj) and the standalone
+    /// indexer (indexer\ClarionIndexer.csproj, via a linked Compile Include). There is ONE copy
+    /// on disk — do not fork it back into the indexer tree.
     /// </summary>
     public class SourceResolver
     {
@@ -24,13 +28,21 @@ namespace ClarionCodeGraph.Parsing
         /// Given a project directory and a list of source file names from the .cwproj,
         /// resolves each to its full path by searching known locations.
         /// </summary>
-        public List<ResolvedFile> Resolve(string projectDir, List<string> fileNames)
+        /// <param name="searchPaths">
+        /// Optional Clarion redirection (.red) search directories — e.g. <c>.\Generated</c>,
+        /// <c>.\obj</c>, or config-specific output dirs. The .cwproj lists generated source
+        /// as bare filenames and the .red maps them to these directories, so without them the
+        /// resolver misses generated .clw/.inc files that don't sit in .\source\ or the project
+        /// root. Relative entries are resolved against <paramref name="projectDir"/>; absolute
+        /// entries are used as-is. (GitHub #36)
+        /// </param>
+        public List<ResolvedFile> Resolve(string projectDir, List<string> fileNames, List<string> searchPaths = null)
         {
             var results = new List<ResolvedFile>();
 
             foreach (string fileName in fileNames)
             {
-                string resolved = FindFile(projectDir, fileName);
+                string resolved = FindFile(projectDir, fileName, searchPaths);
                 results.Add(new ResolvedFile
                 {
                     FileName = fileName,
@@ -42,9 +54,14 @@ namespace ClarionCodeGraph.Parsing
             return results;
         }
 
-        private string FindFile(string projectDir, string fileName)
+        private string FindFile(string projectDir, string fileName, List<string> searchPaths)
         {
+            // Search order:
             // 1. .\source\ subfolder (primary convention)
+            // 2. Project root directory (fallback)
+            // 3. Explicit search paths (.red-derived dirs, e.g. .\Generated) — GitHub #36
+            // 4. Redirection service fallback (Clarion .red — e.g. %THISDIR%\Compile)
+
             string sourcePath = Path.Combine(projectDir, "source", fileName);
             if (File.Exists(sourcePath))
                 return sourcePath;
@@ -54,12 +71,39 @@ namespace ClarionCodeGraph.Parsing
             if (File.Exists(sourcePathAlt))
                 return sourcePathAlt;
 
-            // 2. Project root directory
             string rootPath = Path.Combine(projectDir, fileName);
             if (File.Exists(rootPath))
                 return rootPath;
 
-            // 3. Redirection file search paths (Clarion .red — e.g. %THISDIR%\Compile)
+            // Follow the project's redirection search paths. Generated source is listed in
+            // the .cwproj as a bare filename and physically lives under a .red-mapped dir
+            // (commonly .\Generated). Probe each search dir with both the bare name and the
+            // original (possibly sub-pathed) name.
+            if (searchPaths != null)
+            {
+                string baseName = Path.GetFileName(fileName);
+                foreach (string sp in searchPaths)
+                {
+                    if (string.IsNullOrEmpty(sp))
+                        continue;
+
+                    string dir = Path.IsPathRooted(sp) ? sp : Path.Combine(projectDir, sp);
+
+                    string candidate = Path.Combine(dir, baseName);
+                    if (File.Exists(candidate))
+                        return candidate;
+
+                    if (!string.Equals(baseName, fileName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        string candidateFull = Path.Combine(dir, fileName);
+                        if (File.Exists(candidateFull))
+                            return candidateFull;
+                    }
+                }
+            }
+
+            // Redirection file search paths (Clarion .red — e.g. %THISDIR%\Compile). Anchors the
+            // .red's relative entries to the project dir, the way the compiler resolves them.
             if (_redService != null)
             {
                 string resolved = _redService.ResolveFrom(fileName, projectDir, "Common", "Debug", "Release");
