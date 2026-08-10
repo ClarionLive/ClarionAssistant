@@ -124,9 +124,40 @@ function Invoke-GitQuiet([string[]]$GitArgs) {
 function Read-Manifest($path) {
     Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
 }
+# The unescape has to be backslash-aware. A blanket `-replace '\\u0026', '&'` over the SERIALIZED
+# TEXT cannot tell an escape ConvertTo-Json just emitted from characters that belong to a value.
+# Put a backslash followed by the characters u0026 into a note as ordinary prose, and
+# ConvertTo-Json escapes that backslash, so the JSON text holds TWO backslashes then u0026. The
+# blanket replace matches on the second backslash and collapses it plus the u0026 into a single
+# ampersand, leaving backslash-ampersand -- not a valid JSON escape. The manifest then no longer
+# parses, and every later run dies in Read-Manifest instead. Nothing in the file trips it today,
+# but targetPin.note and $comment are free-form prose maintained by hand, and the failure would
+# land on whoever runs the sync NEXT rather than on whoever wrote the prose.
+#
+# Parity decides it: count the backslashes immediately before uXXXX. Odd means the last one is a
+# real escape introducer, so drop it and substitute the character. Even means they all pair up into
+# literal backslashes and uXXXX is ordinary text, so leave the match alone.
+$Script:JsonUnescapeMap = @{ '0026' = '&'; '003c' = '<'; '003e' = '>'; '0027' = "'" }
+function Restore-JsonLiterals([string]$json) {
+    $evaluator = {
+        param($m)
+        $slashes = $m.Groups[1].Value
+        if ($slashes.Length % 2 -eq 0) { return $m.Value }
+        return $slashes.Substring(0, $slashes.Length - 1) + $Script:JsonUnescapeMap[$m.Groups[2].Value.ToLower()]
+    }
+    return [regex]::Replace($json, '(\\+)u(0026|003c|003e|0027)', $evaluator,
+                            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+}
 function Save-Manifest($manifest, $path) {
-    $json = ($manifest | ConvertTo-Json -Depth 12) `
-        -replace '\\u0026', '&' -replace '\\u003c', '<' -replace '\\u003e', '>' -replace '\\u0027', "'"
+    $json = Restore-JsonLiterals ($manifest | ConvertTo-Json -Depth 12)
+    # Fail CLOSED. If the text we are about to write is not valid JSON, the on-disk manifest is
+    # still good; overwriting it with something unparseable would take the whole sync down on the
+    # next run, with a stack trace pointing at Read-Manifest rather than at whatever produced it.
+    try {
+        $json | ConvertFrom-Json | Out-Null
+    } catch {
+        throw "Refusing to write $path -- the serialized manifest is not valid JSON: $($_.Exception.Message)"
+    }
     [System.IO.File]::WriteAllText($path, $json, (New-Object System.Text.UTF8Encoding($false)))
 }
 
