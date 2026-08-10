@@ -366,6 +366,15 @@ namespace ClarionCodeGraph.Parsing
             int classEndDepth = 0;
             // PROGRAM (main) file: pre-procedure data is the app's GLOBAL data section
             bool isProgramFile = false;
+            // Explicit MAP tracking. Pass 1 (ParseMainFile) owns MAP contents; here a MAP must be
+            // skipped WHOLESALE, because prototypes inside it may legally start at column 0
+            // ("TestSignatureFlow PROCEDURE, LONG" — the codegraph-repro fixture compiles) and
+            // would otherwise hit the column-0-anchored PROCEDURE-definition check below, minting
+            // phantom procedure symbols and clobbering currentProcedure/inData state. The old
+            // implicit skip (dataGroupDepth++ on MAP inside the DATA branch) was defeated by
+            // exactly that shape, and by nested MODULE(...)...END decrementing the depth early.
+            bool inMap = false;
+            int mapDepth = 0;
 
             for (int i = startLine; i < lines.Length; i++)
             {
@@ -382,6 +391,28 @@ namespace ClarionCodeGraph.Parsing
                 // OMIT/COMPILE('terminator') — skip block
                 int newI = SkipConditionalBlock(lines, i, line);
                 if (newI > i) { i = newI; continue; }
+
+                // Inside a MAP: consume until its own END, tracking nested MODULE(...)/MAP blocks.
+                // Everything in here is prototype territory — no symbols, no state changes.
+                if (inMap)
+                {
+                    if (MapStartRegex.IsMatch(line) || ModuleRegex.Match(line).Success)
+                    {
+                        mapDepth++;
+                    }
+                    else if (EndRegex.IsMatch(line) || PeriodTermRegex.IsMatch(line))
+                    {
+                        mapDepth--;
+                        if (mapDepth <= 0) inMap = false;
+                    }
+                    continue;
+                }
+                if (MapStartRegex.IsMatch(line))
+                {
+                    inMap = true;
+                    mapDepth = 1;
+                    continue;
+                }
 
                 // Detect MEMBER('parent.clw') or MEMBER()
                 var memberMatch = MemberRegex.Match(line);

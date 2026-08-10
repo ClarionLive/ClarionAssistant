@@ -247,9 +247,32 @@ Tracked separately; not fixed by this change.
 ### Program symbol (#81)
 
 - `Worker` (`type='program'`) has `calls` rows to every procedure invoked from the global
-  CODE section (13 rows — 12 before Bug Q's `UnreachableLocalRefTest()` call was added), and
-  **zero** incoming `calls` — the local variable named `worker` must never resolve to the program
-  symbol despite the case-insensitive name collision.
+  CODE section (**21 rows** — was 13 before global-data indexing, 12 before Bug Q's
+  `UnreachableLocalRefTest()` call was added), and **zero** incoming `calls` — the local variable
+  named `worker` must never resolve to the program symbol despite the case-insensitive name
+  collision. The 8 rows added by ticket d1a0aea6 are the dotted calls through the global class
+  instances (`owner.CallViaMember()` at line 40 → `OwnerClass.CallViaMember`, and likewise for
+  `groupBug`/`periodBug`/`afterBug`/`likeMemberBug`/`multiLineGroupBug`/`derivedWorker`): before
+  globals were indexed, those instance variables had no symbol, so the dotted-call resolver could
+  not type them and the calls were silently absent. If this count drops back to 13, global-data
+  indexing has regressed.
+
+### Global data (ticket d1a0aea6)
+
+- Exactly **7** `type='variable', scope='global'` symbols — the class instances declared between
+  `Worker.clw`'s MAP and its global CODE: `owner`, `groupBug`, `periodBug`, `afterBug`,
+  `likeMemberBug`, `multiLineGroupBug`, `derivedWorker`, each with `params` naming its class type.
+  Before d1a0aea6 this count was **0**: the PROGRAM file's declaration section was never scanned.
+- Total symbols: **119** (was 112) — the +7 is exactly these globals.
+- **Zero** phantom `procedure` symbols in `Worker.clw` for the MAP prototypes
+  (`TestSignatureFlow`/`ParameterTest`/...). This fixture's MAP writes prototypes at COLUMN 0,
+  which is legal and compiles — the full-file parse must skip the MAP block wholesale (explicit
+  MAP depth tracking in ParseMemberFile), or each column-0 prototype is minted as a phantom
+  procedure definition and the state machine derails. If phantom `TestSignatureFlow` (etc.) rows
+  appear in `Worker.clw`, that tracking has regressed.
+- Class symbol count is **11**, not the 10 the list above says — `OverloadBugClass` (Bug P) was
+  never added to that list's count when it was introduced; 11 was already the correct pinned
+  value before d1a0aea6 (verified against the pre-d1a0aea6 build).
 
 ## Verify queries
 
