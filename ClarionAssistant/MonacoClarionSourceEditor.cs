@@ -2304,6 +2304,29 @@ namespace ClarionAssistant
             MonacoSpikeLog.Write("CreateClarionEditor -> MonacoClarionEditor (our DisplayBinding won)");
             return new MonacoClarionEditor();
         }
+
+        /// <summary>
+        /// ADDITIVE ONLY. The base decides which files the stock Clarion editor handles (.clw/.inc);
+        /// we never turn a base "true" into "false" or we start losing files it would have opened.
+        /// We only ADD claims, for types the user explicitly listed in the Editor Surfaces filter
+        /// (e.g. .tpl/.tpw), which the base is never offered.
+        /// </summary>
+        public override bool CanCreateContentForFile(string fileName)
+        {
+            bool baseSays = false;
+            try { baseSays = base.CanCreateContentForFile(fileName); } catch { }
+            if (baseSays) return true;
+            try
+            {
+                if (!CaEditorSettings.MonacoSourceEnabled) return false;
+                if (!CaEditorSettings.IsExplicitlySelectedSource(fileName)) return false;
+                // Distinguishes "we claimed it" from "the base did" from "nobody did" — exactly the
+                // ambiguity that made this ticket hard to diagnose.
+                MonacoSpikeLog.Write("DisplayBinding: claiming extra configured type " + fileName);
+                return true;
+            }
+            catch { return false; }
+        }
     }
 
     /// <summary>

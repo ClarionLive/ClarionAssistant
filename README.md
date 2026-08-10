@@ -59,6 +59,15 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 Work landed since 5.7 is documented here as it merges — see [the release-docs workflow](docs/releases/README.md), and run `Check-ReleaseDocs.ps1` before cutting a release.
 
+<!-- release-docs: covered=source-editor -->
+### Template files listed in the editor settings now actually open in the editor
+
+`.tpl` and `.tpw` were in the Editor Surfaces file-type list out of the box, and adding them changed nothing. The setting was not being ignored &mdash; it was never consulted, because the IDE only ever offered our editor the file types the stock Clarion editor already handles. Anything else was decided before our code got a say, so the list could name a type all it liked and no one ever asked.
+
+Our editor now also claims the types you have explicitly listed. Only those: it adds to what the stock editor would have opened and never takes anything away, and a type you have not asked for is left exactly where it was. Turning the master Editor Surfaces switch off returns everything to Clarion's own editor as before.
+
+A second problem sat underneath, and it was the quieter of the two. Writing an entry the way file filters are normally written &mdash; `*.tpl` rather than `.tpl` &mdash; produced a pattern that could never match any file. It did not warn or fall back; the entry simply sat there doing nothing, which reads exactly like the feature being broken. Both spellings work now, as do `tpl`, and `*.*` no longer turns "every file" into "no files".
+
 <!-- release-docs: covered=installer -->
 ### The Markdown editor now installs with Clarion Assistant &mdash; the maintained one
 

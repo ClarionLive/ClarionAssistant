@@ -173,6 +173,29 @@ namespace ClarionAssistant.Services
             catch { return true; }
         }
 
+        /// <summary>
+        /// True only when <paramref name="filePath"/>'s extension is EXPLICITLY listed in a
+        /// non-empty filter. Unlike <see cref="SourceAppliesTo"/>, an empty filter means NO here —
+        /// this answers "did the user ask for this type?", not "may we exclude it?".
+        /// </summary>
+        /// <remarks>
+        /// Do NOT substitute <see cref="SourceAppliesTo"/> in a DisplayBinding gate: its
+        /// "don't exclude" semantics would make CA claim every file in the IDE, .cs/.png included.
+        /// </remarks>
+        public static bool IsExplicitlySelectedSource(string filePath)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(filePath)) return false;
+                var exts = ParseExtensions(MonacoSourceFileTypes);
+                if (exts.Count == 0) return false;
+                string ext = Path.GetExtension(filePath);
+                if (string.IsNullOrEmpty(ext)) return false;
+                return exts.Contains(ext.ToLowerInvariant());
+            }
+            catch { return false; }
+        }
+
         // ── helpers ──────────────────────────────────────────────────────────
 
         // Writes never propagate to UI hot paths; SettingsService can throw SettingsLockedException
@@ -217,6 +240,13 @@ namespace ClarionAssistant.Services
             {
                 string tok = tokRaw.Trim().ToLowerInvariant();
                 if (tok.Length == 0) continue;
+                // Accept glob spellings ("*.tpl", "*.*"): strip the '*'s BEFORE the leading-dot
+                // rule, or "*.tpl" normalizes to ".*.tpl" and never matches anything.
+                while (tok.Length > 0 && tok[0] == '*') tok = tok.Substring(1);
+                while (tok.Length > 0 && tok[tok.Length - 1] == '*') tok = tok.Substring(0, tok.Length - 1);
+                // Bare "*" / "*.*" -> drop. Keeping them would leave a NON-EMPTY set of patterns
+                // that match no real extension, i.e. "all files" would silently mean "no files".
+                if (tok.Length == 0 || tok == ".") continue;
                 if (tok[0] != '.') tok = "." + tok;
                 set.Add(tok);
             }
