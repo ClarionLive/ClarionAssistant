@@ -1,0 +1,16 @@
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <ProjectGuid>{22222222-3333-4444-5555-666666666666}</ProjectGuid>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">Win32</Platform>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>ReproProject2</RootNamespace>
+    <AssemblyName>ReproProject2</AssemblyName>
+    <OutputName>ReproProject2</OutputName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Worker2.clw" />
+    <Compile Include="Worker2Lib.clw" />
+  </ItemGroup>
+  <Import Project="$(ClarionBinPath)\SoftVelocity.Build.Clarion.targets" />
+</Project>

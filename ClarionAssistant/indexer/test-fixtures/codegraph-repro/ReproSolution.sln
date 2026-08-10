@@ -4,6 +4,8 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Clarion 2.1.0.2447
 Project("{12B76EC0-1D7B-4FA7-A7D0-C524288B48A1}") = "ReproProject", "ReproProject.cwproj", "{11111111-2222-3333-4444-555555555555}"
 EndProject
+Project("{12B76EC0-1D7B-4FA7-A7D0-C524288B48A1}") = "ReproProject2", "proj2\ReproProject2.cwproj", "{22222222-3333-4444-5555-666666666666}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Win32 = Debug|Win32

@@ -20,8 +20,12 @@ namespace ClarionCodeGraph.Parsing
             @"^\s*MAP\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex ModuleRegex = new Regex(
             @"MODULE\s*\(\s*'([^']+)'\s*\)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // MAP prototypes come in TWO legal spellings: the bare form template generators emit
+        // ("fe_ClassVersion(byte Flag=0),string,...") and the keyword form hand-written MAPs
+        // use ("MainHelperProc PROCEDURE, LONG"). The optional (?i:PROCEDURE|FUNCTION) group
+        // accepts the keyword form, which was previously invisible (b7553893).
         private static readonly Regex MapProcDeclRegex = new Regex(
-            @"^\s{2,}(\w+)\s*(\([^)]*\))?\s*(,.*)?$", RegexOptions.Compiled);
+            @"^\s{2,}(\w+)(?:\s+(?i:PROCEDURE|FUNCTION))?\s*(\([^)]*\))?\s*(,.*)?$", RegexOptions.Compiled);
         private static readonly Regex MemberRegex = new Regex(
             @"MEMBER\s*\(\s*'([^']+)'\s*\)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex MemberEmptyRegex = new Regex(
