@@ -60,6 +60,23 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 Work landed since 5.7 is documented here as it merges — see [the release-docs workflow](docs/releases/README.md), and run `Check-ReleaseDocs.ps1` before cutting a release.
 
 <!-- release-docs: covered=codegraph -->
+### CodeGraph stops giving confidently wrong answers about who calls what
+
+The entry below this one made the index twice as big; this one makes it tell the truth. Field testing on a 27-app production solution found that "who calls X" could answer with the wrong X entirely: when the same procedure name exists in several apps &mdash; and in generated Clarion code, dozens do &mdash; every call in every app resolved to one arbitrary copy. Not missing answers. Wrong ones.
+
+Call resolution is now scoped the way the compiler thinks: the same file first, then the same project, then the projects yours actually depends on. On that test solution, every one of 27 apps now resolves its calls to its own copy, and the share of calls crossing project boundaries fell from 49% to the 24% that genuinely are DLL calls. Where several same-named overloads truly cannot be told apart, the pick is now deterministic and **marked** &mdash; a new `ambiguous` flag on the relationship says "one of several" instead of asserting certainty the index doesn't have.
+
+Three more answers the graph could not give before:
+
+**"Is this the declaration or the body?"** MAP prototypes and real implementations carried identical rows, making go-to-definition a coin flip &mdash; and quietly poisoning the documented dead-code query, which turned out to return 98.7% false positives (it filtered on exactly the prototype rows, which never receive calls). A new `decl_kind` column separates prototype, implementation, and external; the dead-code recipe is fixed in the docs, and calls never resolve to a prototype when a body exists.
+
+**"Where does DO go?"** Routine calls &mdash; the primary control flow inside any generated Clarion procedure &mdash; were never captured: the schema documented the edge type, and there were zero rows, partly because routine labels with colons (`BRW10::ProcessScroll`, which is to say most of them) didn't even match the pattern. The test solution now carries 29,326 of them, each resolved to the routine of the right procedure.
+
+**"Which of these eight is the real one?"** A global declared in one DLL appears in every app that imports it, and the rows were indistinguishable. Externals are now marked as such, and every symbol carries its declaration line in `source_preview` &mdash; so results explain themselves without opening a single file.
+
+**Re-index after updating**, same as below &mdash; existing databases keep their old answers until re-run.
+
+<!-- release-docs: covered=codegraph -->
 ### CodeGraph indexes more than twice as much of your solution &mdash; including, at last, your globals
 
 Measured against a real 27-app production solution, the index went from 170 thousand symbols to 385 thousand, and from 53 thousand call relationships to 392 thousand. Not from new cleverness in the parser &mdash; from finally looking where your code actually is.

@@ -274,6 +274,31 @@ Tracked separately; not fixed by this change.
   never added to that list's count when it was introduced; 11 was already the correct pinned
   value before d1a0aea6 (verified against the pre-d1a0aea6 build).
 
+### Scope-ordered call resolution + DO + decl_kind (ticket b7553893)
+
+A SECOND project, `proj2\ReproProject2`, exists purely for these pins. Its `MainHelperProc`
+deliberately shares its name with ReproProject's. No pre-existing fixture file was changed, so
+every line pin above survives. Totals become **127 symbols / 4 files / 2 projects**.
+
+- `MainHelperProc` has **2** `decl_kind='implementation'` rows (one per project) — and each
+  project's call resolves to ITS OWN copy: ReproProject's program-CODE call (line 39) to
+  `Worker.clw`'s, `Caller2`'s call to `proj2\Worker2Lib.clw`'s, both `ambiguous=0`. Before
+  scope-ordered resolution, both landed on whichever row was inserted last. If either row
+  flips file, resolution has regressed.
+- Exactly **1** `type='do'` edge: `Caller2 -> Tidy:Up2`, whose routine symbol carries
+  `parent_name='Caller2'`. The label deliberately contains a colon — the old `\w+` DO regex
+  missed every template-style routine name. If this count is 0, DO capture regressed.
+- Exactly **2** `decl_kind='prototype'` rows: `Worker2.clw`'s MAP prototypes at lines 14–15,
+  written in the KEYWORD form (`Name PROCEDURE, LONG`) that `MapProcDeclRegex` never matched
+  before b7553893. (`Worker.clw`'s own MAP prototypes remain uncaptured — its column-0 style
+  fails the regex's leading-whitespace requirement; pre-existing, documented above.)
+- **Zero** `calls` rows target a `decl_kind='prototype'` symbol — implementations always win.
+- **6** `ambiguous=1` edges, all genuine same-name overload collisions (`WorkerClass.Ask` ×3
+  callers can't be type-matched across its 3 overloads; `OverloadBugClass.Dispatch` likewise) —
+  the documented Bug-P callee-side limitation, now FLAGGED instead of silent. If this count
+  grows, scope resolution is leaking; if it drops to 0 without type-aware overload resolution
+  having been built, the flag is broken.
+
 ## Verify queries
 
 ```sql
