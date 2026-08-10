@@ -146,6 +146,9 @@ namespace ClarionCodeGraph.Graph
             var changedProjects = new HashSet<int>(); // projects that need re-parsing
             var projectDirs = new Dictionary<int, string>();
             var discoveredIncludeNames = new Dictionary<int, HashSet<string>>();
+            var allResolved = new Dictionary<int, List<ResolvedFile>>(); // per-file outcome audit
+            var mainMapSymCount = new Dictionary<int, int>(); // Pass 1 MAP symbol count per main file
+            int unresolvedCount = 0;
 
             foreach (var proj in projects)
             {
@@ -182,6 +185,7 @@ namespace ClarionCodeGraph.Graph
 
                 memberFiles[proj.Id] = members;
                 incFiles[proj.Id] = includes;
+                allResolved[proj.Id] = resolved;
 
                 // Check if this project has changed since last index
                 if (incremental)
@@ -234,6 +238,28 @@ namespace ClarionCodeGraph.Graph
                 }
             }
 
+            // Per-file outcome audit (ticket d1a0aea6): reset the changed projects' rows and
+            // record every .cwproj-listed file that failed to resolve — previously those files
+            // simply left no trace, indistinguishable from files that parsed to zero symbols.
+            // Parsed outcomes are recorded at each parse site below. Unchanged incremental
+            // projects keep their previous rows (their files were not re-examined).
+            using (var txn = _db.BeginTransaction())
+            {
+                foreach (int pid in changedProjects)
+                {
+                    _db.ClearIndexedFiles(pid);
+                    List<ResolvedFile> resolvedList;
+                    if (!allResolved.TryGetValue(pid, out resolvedList)) continue;
+                    foreach (var file in resolvedList)
+                    {
+                        if (file.Found) continue;
+                        _db.InsertIndexedFile(pid, file.FileName, null, "unresolved", 0, "resolve");
+                        unresolvedCount++;
+                    }
+                }
+                txn.Commit();
+            }
+
             // Pass 1: Parse main files and .inc files for changed projects
             ReportProgress("Pass 1: Parsing MAP declarations...");
             using (var txn = _db.BeginTransaction())
@@ -264,6 +290,7 @@ namespace ClarionCodeGraph.Graph
                         }
                     }
                     result.SymbolCount += parseResult.Symbols.Count;
+                    mainMapSymCount[projectId] = parseResult.Symbols.Count;
                 }
 
                 foreach (var proj in projects)
@@ -282,6 +309,9 @@ namespace ClarionCodeGraph.Graph
                             sym.Id = symId;
                         }
                         result.SymbolCount += parseResult.Symbols.Count;
+                        _db.InsertIndexedFile(proj.Id, file.FileName, file.FullPath,
+                            parseResult.Symbols.Count > 0 ? "resolved_parsed" : "resolved_no_symbols",
+                            parseResult.Symbols.Count, "pass1-inc");
                     }
                 }
 
@@ -349,6 +379,7 @@ namespace ClarionCodeGraph.Graph
 
                     using (var txn = _db.BeginTransaction())
                     {
+                        _db.ClearIndexedFiles(libProjectId);
                         foreach (string libDir in libraryPaths)
                         {
                             if (!Directory.Exists(libDir))
@@ -386,6 +417,9 @@ namespace ClarionCodeGraph.Graph
                                     libSymCount += parseResult.Symbols.Count;
                                 }
                                 libFileCount++;
+                                _db.InsertIndexedFile(libProjectId, Path.GetFileName(fullPath), fullPath,
+                                    parseResult.Symbols.Count > 0 ? "resolved_parsed" : "resolved_no_symbols",
+                                    parseResult.Symbols.Count, "pass1b-library");
                             }
                         }
 
@@ -434,6 +468,9 @@ namespace ClarionCodeGraph.Graph
                             }
                         }
                         result.SymbolCount += parseResult.Symbols.Count;
+                        _db.InsertIndexedFile(proj.Id, file.FileName, file.FullPath,
+                            parseResult.Symbols.Count > 0 ? "resolved_parsed" : "resolved_no_symbols",
+                            parseResult.Symbols.Count, "pass2-member");
                     }
 
                     // The main PROGRAM file: run the WHOLE file through the member-file parser
@@ -469,6 +506,15 @@ namespace ClarionCodeGraph.Graph
                             inserted++;
                         }
                         result.SymbolCount += inserted;
+
+                        // The main file's audit row combines Pass 1 (MAP declarations) and this
+                        // full parse (global data + tail procedures).
+                        int mapCount;
+                        mainMapSymCount.TryGetValue(proj.Id, out mapCount);
+                        int mainTotal = mapCount + inserted;
+                        _db.InsertIndexedFile(proj.Id, Path.GetFileName(tailMainPath), tailMainPath,
+                            mainTotal > 0 ? "resolved_parsed" : "resolved_no_symbols",
+                            mainTotal, "main");
                     }
                 }
 
@@ -509,13 +555,25 @@ namespace ClarionCodeGraph.Graph
 
                         var resolvedList = _resolver.Resolve(projectDir, new List<string> { includeName }, libraryPaths);
                         var resolved = resolvedList.Count > 0 ? resolvedList[0] : null;
-                        if (resolved == null || !resolved.Found) continue; // unresolvable -- leave alone
+                        if (resolved == null || !resolved.Found)
+                        {
+                            // Unresolvable — leave alone, but leave a trace (audit, d1a0aea6)
+                            _db.InsertIndexedFile(projectId, includeName, null, "unresolved", 0, "pass2b-include");
+                            alreadyKnown.Add(includeName); // one audit row per name, not per referencing file
+                            continue;
+                        }
 
                         string fullPath = Path.GetFullPath(resolved.FullPath);
                         bool insideSolution =
                             fullPath.StartsWith(slnRootFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
                             fullPath.StartsWith(slnRootFull + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
-                        if (!insideSolution) continue; // vendor/template path -- leave to --lib-paths
+                        if (!insideSolution)
+                        {
+                            // Vendor/template path — deliberately left to --lib-paths; record why
+                            _db.InsertIndexedFile(projectId, includeName, fullPath, "skipped_outside_solution", 0, "pass2b-include");
+                            alreadyKnown.Add(includeName);
+                            continue;
+                        }
 
                         var parseResult = _clarionParser.ParseIncFile(fullPath, projectId);
                         foreach (var sym in parseResult.Symbols)
@@ -524,6 +582,9 @@ namespace ClarionCodeGraph.Graph
                             sym.Id = symId;
                         }
                         result.SymbolCount += parseResult.Symbols.Count;
+                        _db.InsertIndexedFile(projectId, includeName, fullPath,
+                            parseResult.Symbols.Count > 0 ? "resolved_parsed" : "resolved_no_symbols",
+                            parseResult.Symbols.Count, "pass2b-include");
                         alreadyKnown.Add(includeName); // avoid double-parse if INCLUDE()'d from multiple files
                     }
                 }
@@ -560,6 +621,14 @@ namespace ClarionCodeGraph.Graph
             string mode = incremental ? "Incremental" : "Full";
             ReportProgress(string.Format("{0} indexing complete: {1} projects, {2} files, {3} symbols in {4}ms",
                 mode, result.ProjectCount, result.FileCount, result.SymbolCount, result.DurationMs));
+            // No silent gaps (ticket d1a0aea6): say when cwproj-listed files did not resolve,
+            // and where the per-file audit lives either way.
+            if (unresolvedCount > 0)
+                ReportProgress(string.Format(
+                    "WARNING: {0} cwproj-listed file(s) did not resolve — SELECT * FROM indexed_files WHERE outcome='unresolved'",
+                    unresolvedCount));
+            else
+                ReportProgress("All cwproj-listed files resolved. Per-file audit: indexed_files table.");
 
             return result;
         }

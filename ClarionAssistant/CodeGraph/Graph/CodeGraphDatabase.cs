@@ -88,6 +88,23 @@ namespace ClarionCodeGraph.Graph
                     value TEXT
                 );
 
+                -- Per-file indexing outcome, written every run (ticket d1a0aea6). Makes gaps
+                -- AUDITABLE: without it, a .cwproj-listed file that failed to resolve and one
+                -- that parsed to zero symbols are indistinguishable — both just leave no rows.
+                -- outcome: resolved_parsed | resolved_no_symbols | unresolved | skipped_outside_solution
+                CREATE TABLE IF NOT EXISTS indexed_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER REFERENCES projects(id),
+                    file_name TEXT NOT NULL,
+                    resolved_path TEXT,
+                    outcome TEXT NOT NULL,
+                    symbol_count INTEGER NOT NULL DEFAULT 0,
+                    pass TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_ixf_outcome ON indexed_files(outcome);
+                CREATE INDEX IF NOT EXISTS idx_ixf_project ON indexed_files(project_id);
+
                 CREATE INDEX IF NOT EXISTS idx_sym_name ON symbols(name);
                 CREATE INDEX IF NOT EXISTS idx_sym_type ON symbols(type);
                 CREATE INDEX IF NOT EXISTS idx_sym_file ON symbols(file_path);
@@ -111,9 +128,37 @@ namespace ClarionCodeGraph.Graph
                 DELETE FROM project_dependencies;
                 DELETE FROM projects;
                 DELETE FROM index_metadata;
+                DELETE FROM indexed_files;
             ";
             using (var cmd = new SQLiteCommand(sql, _connection))
             {
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        /// <summary>Record one file's indexing outcome (ticket d1a0aea6). Call per file, per run.</summary>
+        public void InsertIndexedFile(int projectId, string fileName, string resolvedPath, string outcome, int symbolCount, string pass)
+        {
+            string sql = @"INSERT INTO indexed_files (project_id, file_name, resolved_path, outcome, symbol_count, pass)
+                           VALUES (@proj, @name, @path, @outcome, @syms, @pass)";
+            using (var cmd = new SQLiteCommand(sql, _connection))
+            {
+                cmd.Parameters.AddWithValue("@proj", projectId);
+                cmd.Parameters.AddWithValue("@name", fileName);
+                cmd.Parameters.AddWithValue("@path", (object)resolvedPath ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("@outcome", outcome);
+                cmd.Parameters.AddWithValue("@syms", symbolCount);
+                cmd.Parameters.AddWithValue("@pass", (object)pass ?? DBNull.Value);
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        /// <summary>Clear one project's per-file outcomes before re-recording them (incremental runs).</summary>
+        public void ClearIndexedFiles(int projectId)
+        {
+            using (var cmd = new SQLiteCommand("DELETE FROM indexed_files WHERE project_id = @proj", _connection))
+            {
+                cmd.Parameters.AddWithValue("@proj", projectId);
                 cmd.ExecuteNonQuery();
             }
         }
