@@ -196,7 +196,19 @@ if ($Pure) {
         }
         OK "origin: $pureOrigin"
 
+        # Check the fetch. Leaving its exit status unread -- alone among the git calls in this block
+        # -- opens a hole nothing downstream can close: offline, the fetch fails, `git tag --list`
+        # still finds the STALE cached tag, the checkout "succeeds", the rebuild is skipped because
+        # out/ is already present, and that stale commit is written into the manifest as
+        # authoritative -- all while the run prints "OK PURE sync complete" and deploy.ps1's pin
+        # check agrees with it. A tag that cannot be confirmed against origin is not a pin.
         git -C $PureRoot fetch --tags --prune --quiet origin
+        if ($LASTEXITCODE) {
+            Fail "fetch from origin failed ($LASTEXITCODE) in $PureRoot — cannot confirm '$Tag' against upstream."
+            Write-Host "         A locally cached tag may be stale, so pinning the manifest to it would be a lie." -ForegroundColor Red
+            Write-Host "         Re-run with a working network connection." -ForegroundColor Red
+            exit 2
+        }
         if (-not (git -C $PureRoot tag --list $Tag)) {
             Fail "Tag '$Tag' does not exist in $repoUrl. Available recent tags:"
             git -C $PureRoot tag --sort=-creatordate | Select-Object -First 8 | ForEach-Object { Write-Host "         $_" }
