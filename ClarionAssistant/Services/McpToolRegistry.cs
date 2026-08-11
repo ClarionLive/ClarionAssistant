@@ -1720,7 +1720,7 @@ TABLES:
   - source_preview: the declaration/definition line itself — results self-explain without opening the file
 - relationships (id, from_id, to_id, type, file_path, line_number, ambiguous)
   - type values: 'calls', 'do' (routine calls), 'inherits', 'implements', 'references', 'uses_type'
-  - ambiguous=1: resolution had multiple equal-rank candidates (usually same-name overloads) and picked deterministically — treat the target as one of several
+  - ambiguous=1: resolution had multiple equal-rank candidates (same-name call overloads, or a references edge re-pointed to one of several same-named global owners) and picked deterministically — treat the target as one of several
 - project_dependencies (project_id, depends_on_id)
 - indexed_files (project_id, file_name, resolved_path, outcome, symbol_count, pass) — per-file audit of the last index run
 - index_metadata (key, value)
