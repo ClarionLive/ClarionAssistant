@@ -74,6 +74,8 @@ Three more answers the graph could not give before:
 
 **"Which of these eight is the real one?"** A global declared in one DLL appears in every app that imports it, and the rows were indistinguishable. Externals are now marked as such, and every symbol carries its declaration line in `source_preview` &mdash; so results explain themselves without opening a single file.
 
+Field testing round two found one more, and it was the biggest single blind spot of all: **a procedure whose label contains a colon was never indexed as a procedure**. In template-generated code that is the entire referential-integrity layer &mdash; every `RIDelete:` and `RIUpdate:` procedure, nearly nineteen thousand declarations in the test solution &mdash; and because the relationship scanner shared the same blind spot, whole `_RD`/`_RU` files contributed no edges at all: the cascade-delete graph simply did not exist, and "what breaks if I delete from this table" returned nothing. One character class in four patterns. After the fix the test solution gained 31,860 symbols and 52,483 relationships, and every routine in those files found its owning procedure.
+
 **Re-index after updating**, same as below &mdash; existing databases keep their old answers until re-run.
 
 <!-- release-docs: covered=codegraph -->
