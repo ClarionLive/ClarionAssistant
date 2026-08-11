@@ -470,6 +470,20 @@ edges. (5) The indexer's routine DATA-block peek now uses the exact
 positive). Plus: files skipped for want of a parent procedure are now counted and
 reported at end of run (`WARNING: N file(s) skipped by the body scan`).
 
+- **Hardened build re-verified on v61** (2026-08-11): a fresh index with the post-hardening
+  build is BYTE-IDENTICAL on every headline number to the pre-hardening round-5 run —
+  422,971 symbols / 1,191,410 relationships, routine-parented locals 9,021,
+  refs-to-externals 0, `ambiguous=1` references 0. All five hardened defect shapes are
+  absent from v61 (CC battery, same date, confirmed independently: zero PROGRAM-global
+  routines with DATA; 749 multi-owner global names exist but their intersection with
+  `,EXTERNAL`-imported names is exactly 0, so the re-point provably never sees one — the
+  964 references landing on them are direct same-file matches, not re-points). Battery
+  assertion for the ambiguous flag is therefore DOUBLE-SIDED (per CC): (a) references to
+  multi-owner names carry ambiguous=0 AND (b) multi-owner ∩ external-imported = 0. If a
+  future codebase makes (b) non-zero while (a) stays 0, THAT is the defect — a
+  single-sided (a) cannot tell "never armed" from "armed and silent". The hardening is
+  pure safety margin on this corpus; the numbers below stand for the shipped build.
+
 - v61 round-5 scale (measured 2026-08-11, round-4 db vs round-5 db, same source): 422,971
   symbols (was 414,240 — the +8,731 is EXACTLY the new routine-parented locals, 290 → 9,021;
   CC's 9,261 text-level estimate included shapes the parser correctly excludes);
