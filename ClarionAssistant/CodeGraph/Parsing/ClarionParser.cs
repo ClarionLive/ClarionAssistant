@@ -50,6 +50,10 @@ namespace ClarionCodeGraph.Parsing
             @"^\s*\.\s*$", RegexOptions.Compiled);
         private static readonly Regex CodeRegex = new Regex(
             @"^\s*CODE\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // A ROUTINE's explicit DATA statement — opens the routine's own declaration section,
+        // terminated by its CODE line (round 5: routine-DATA declarations were never scanned).
+        private static readonly Regex DataStatementRegex = new Regex(
+            @"^\s*DATA\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex OmitCompileRegex = new Regex(
             @"^\s*(OMIT|COMPILE)\s*\(\s*'([^']+)'\s*(?:,\s*([^)]+?)\s*)?\)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -385,6 +389,11 @@ namespace ClarionCodeGraph.Parsing
             var lines = ClarionAssistant.Services.EncodingHelper.ReadAllLines(filePath, out _);
             string memberOf = null;
             string currentProcedure = null;
+            // The ROUTINE whose body/DATA section the parser is inside (null outside routines).
+            // A routine's DATA-block declarations are emitted with the ROUTINE's name as
+            // ParentName (scope='local') — parent chain: procedure → routine → variable. The
+            // enclosing procedure is recoverable via the routine symbol's own ParentName.
+            string currentRoutine = null;
             bool inCode = false;
             bool inData = false; // True when between PROCEDURE def and CODE keyword
             int dataGroupDepth = 0; // Track nested GROUP/QUEUE/RECORD in DATA sections
@@ -530,6 +539,7 @@ namespace ClarionCodeGraph.Parsing
                 if (procMatch.Success)
                 {
                     currentProcedure = procMatch.Groups[1].Value;
+                    currentRoutine = null;
                     inCode = false;
                     inData = true;
                     dataGroupDepth = 0;
@@ -558,6 +568,7 @@ namespace ClarionCodeGraph.Parsing
                 if (funcMatch.Success)
                 {
                     currentProcedure = funcMatch.Groups[1].Value;
+                    currentRoutine = null;
                     inCode = false;
                     inData = true;
                     dataGroupDepth = 0;
@@ -587,6 +598,7 @@ namespace ClarionCodeGraph.Parsing
                 {
                     string routineName = routineMatch.Groups[1].Value;
                     localRoutines.Add(routineName);
+                    currentRoutine = routineName;
                     inCode = false;
 
                     result.Symbols.Add(new ClarionSymbol
@@ -720,6 +732,19 @@ namespace ClarionCodeGraph.Parsing
                     continue;
                 }
 
+                // A ROUTINE's explicit DATA block (round 5): the ROUTINE handler above closes
+                // inCode but nothing ever re-opened declaration scanning, so every routine-DATA
+                // declaration was silently invisible (v61: 9,261 across 890 generated files —
+                // and their references then emitted nothing either). Only fires between a
+                // ROUTINE label and its CODE line; a procedure's own declaration section opens
+                // via the PROCEDURE handler and never passes through here.
+                if (currentRoutine != null && !inCode && !inData && DataStatementRegex.IsMatch(line))
+                {
+                    inData = true;
+                    dataGroupDepth = 0;
+                    continue;
+                }
+
                 // Detect INCLUDE
                 var includeMatch = IncludeRegex.Match(line);
                 if (includeMatch.Success)
@@ -759,10 +784,13 @@ namespace ClarionCodeGraph.Parsing
                     }
 
                     // Determine scope: local (inside a procedure), global (PROGRAM file's
-                    // declaration section), or module-level (before first PROCEDURE in a MEMBER)
+                    // declaration section), or module-level (before first PROCEDURE in a MEMBER).
+                    // Inside a ROUTINE's DATA block the owner is the ROUTINE itself (round 5):
+                    // parent chain procedure → routine → variable, and the relationship
+                    // scanner's scope check accepts the routine's name while inside its body.
                     string varScope = currentProcedure != null ? "local"
                         : (isProgramFile ? "global" : "module");
-                    string varOwner = currentProcedure;
+                    string varOwner = currentRoutine ?? currentProcedure;
 
                     // Strip a trailing inline comment before type-matching -- a declaration like
                     // "PrivKey &SomeClass !some comment" would otherwise never match any of the

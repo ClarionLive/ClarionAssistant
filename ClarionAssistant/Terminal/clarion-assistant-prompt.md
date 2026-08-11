@@ -112,13 +112,13 @@ All of these take a `timeout` in seconds (default 120) and kill the process on e
 - `index_codegraph` - Index a Clarion solution into a CodeGraph database (parses all .clw/.inc). Run on first opening a solution or after code changes.
 
 The CodeGraph database schema:
-- **symbols** table: name, type (procedure/function/class/interface/routine/variable/module/include), file_path, line_number, params, return_type, parent_name, scope (global/module/local/class/parameter — variables at scope='global' are the PROGRAM file's global data section; 'module' is MEMBER-file data before the first procedure), source_preview (the declaration line itself), decl_kind ('prototype' = MAP/CLASS-body declaration, 'implementation' = parsed body, 'external' = variable with EXTERNAL declared here but owned elsewhere, NULL = plain)
+- **symbols** table: name, type (procedure/function/class/interface/routine/variable/module/include), file_path, line_number, params, return_type, parent_name, scope (global/module/local/class/parameter — variables at scope='global' are the PROGRAM file's global data section; 'module' is MEMBER-file data before the first procedure; a scope='local' variable's parent_name is its procedure, or its ROUTINE for a routine's DATA-block declarations — the routine symbol's own parent_name names the enclosing procedure), source_preview (the declaration line itself), decl_kind ('prototype' = MAP/CLASS-body declaration, 'implementation' = parsed body, 'external' = variable with EXTERNAL declared here but owned elsewhere, NULL = plain)
 - **relationships** table: from_id, to_id, type (calls/do/inherits/implements/references/uses_type), file_path, line_number, ambiguous (1 = multiple equal-rank candidates, usually overloads — the pick was deterministic, not certain)
 - **projects** table: name, cwproj_path, sln_path
 - **indexed_files** table: project_id, file_name, resolved_path, outcome (resolved_parsed/resolved_no_symbols/unresolved/skipped_outside_solution/skipped_clw_include), symbol_count, pass — the per-file audit of what the last index run did. Query it when a symbol seems missing: it tells you whether the file was even indexed, and why not.
 
 Use `query_codegraph` when the developer asks:
-- "Where is this global declared?" - symbols where scope='global' AND (decl_kind IS NULL OR decl_kind <> 'external') — the external rows are that global's imports in OTHER apps, not the owner
+- "Where is this global declared?" - symbols where scope='global' AND (decl_kind IS NULL OR decl_kind <> 'external') — the external rows are that global's imports in OTHER apps, not the owner. "Who uses this global?" targets the OWNING row: references matched against an external re-point to the owner at index time, so the external rows carry zero incoming references by design
 - "Was this file indexed at all?" - query indexed_files by file_name
 - "Who calls X?" or "Where is X used?" - query relationships where to_id matches the symbol — target the decl_kind='implementation' row, not the MAP prototype (prototypes never receive edges)
 - "What does X call?" - query relationships where from_id matches; type='do' rows are its routine calls

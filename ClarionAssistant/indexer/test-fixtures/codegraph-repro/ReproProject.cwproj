@@ -11,7 +11,11 @@
   <ItemGroup>
     <Compile Include="Worker.clw" />
     <Compile Include="WorkerLib.clw" />
+    <Compile Include="ExternalRef.clw" />
+    <Compile Include="RoutineData.clw" />
+    <Compile Include="DualMapLib.clw" />
     <None Include="WorkerLib.inc" />
+    <None Include="DualMapProtos.inc" />
   </ItemGroup>
   <Import Project="$(ClarionBinPath)\SoftVelocity.Build.Clarion.targets" />
 </Project>

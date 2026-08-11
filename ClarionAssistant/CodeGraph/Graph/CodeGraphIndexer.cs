@@ -960,8 +960,17 @@ namespace ClarionCodeGraph.Graph
             // class-member resolution gap). Last-wins on duplicate names, consistent with
             // symbolNameToId's existing behavior elsewhere in this method.
             var variablesByName = new Dictionary<string, VariableInfo>(StringComparer.OrdinalIgnoreCase);
+            // Owning declarations for names that also appear as EXTERNAL rows: a reference
+            // matched against a decl_kind='external' row is re-pointed to the owner (same
+            // name, scope='global', decl_kind not 'external'). The EXTERNAL row is an import
+            // statement, not a thing that is "used" — before this, the co-located external
+            // absorbed every reference edge and the owner starved (round 5: externals held
+            // 2,863 incoming refs vs owners' 1,031; owners alone were 93.9% zero-incoming).
+            // Multiple owners of the same name (unrelated apps reusing a global name) resolve
+            // to the lowest id — deterministic, mirroring resolveCallTarget's tie-break.
+            var globalOwnerByName = new Dictionary<string, VariableInfo>(StringComparer.OrdinalIgnoreCase);
             var allVarDt = _db.ExecuteQuery(
-                "SELECT id, name, file_path, parent_name, scope, params FROM symbols WHERE type = 'variable'");
+                "SELECT id, name, file_path, parent_name, scope, params, decl_kind FROM symbols WHERE type = 'variable'");
 
             foreach (System.Data.DataRow row in allVarDt.Rows)
             {
@@ -971,8 +980,9 @@ namespace ClarionCodeGraph.Graph
                 string parentName = row["parent_name"] != DBNull.Value ? row["parent_name"].ToString() : null;
                 string scope = row["scope"] != DBNull.Value ? row["scope"].ToString() : "local";
                 string varParams = row["params"] != DBNull.Value ? row["params"].ToString() : null;
+                string varDeclKind = row["decl_kind"] != DBNull.Value ? row["decl_kind"].ToString() : null;
 
-                var varInfo = new VariableInfo { Name = name, Id = id, ParentName = parentName, Scope = scope, Params = varParams };
+                var varInfo = new VariableInfo { Name = name, Id = id, ParentName = parentName, Scope = scope, Params = varParams, DeclKind = varDeclKind };
 
                 List<VariableInfo> fileVars;
                 if (!variablesByFile.TryGetValue(fp, out fileVars))
@@ -983,6 +993,14 @@ namespace ClarionCodeGraph.Graph
                 fileVars.Add(varInfo);
 
                 variablesByName[name] = varInfo;
+
+                if (string.Equals(scope, "global", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(varDeclKind, "external", StringComparison.OrdinalIgnoreCase))
+                {
+                    VariableInfo existingOwner;
+                    if (!globalOwnerByName.TryGetValue(name, out existingOwner) || id < existingOwner.Id)
+                        globalOwnerByName[name] = varInfo;
+                }
             }
 
             int totalVarCount = allVarDt.Rows.Count;
@@ -1139,14 +1157,41 @@ namespace ClarionCodeGraph.Graph
                     if (!variablesByFile.TryGetValue(target.Path, out currentFileVars))
                         currentFileVars = null;
 
-                    // Pre-scan: find parent procedure and collect local MAP names
+                    // Pre-scan: find parent procedure and collect local MAP names.
+                    // MAP-aware BEFORE the first procedure too (round 5): a MEMBER library
+                    // file's own top-level MAP(s) contain prototype lines shaped exactly like
+                    // procedure definitions ("Name PROCEDURE(...)"). Taking one of those as the
+                    // parent procedure fails the by-line symbol lookup (ParseMemberFile skips
+                    // MAPs wholesale, so no symbol exists at that line), parentProcId stayed -1,
+                    // and the ENTIRE file's body scan was skipped — zero calls/do/references
+                    // (round 5: 4 NYS library files, each with a second sibling top-level MAP
+                    // holding INCLUDE + nested MODULE blocks, had zero body edges). Top-level
+                    // MAP prototypes are deliberately NOT collected into localMapNames: their
+                    // implementations are real same-file symbols and calls must resolve to them.
                     bool foundFirstProc = false;
                     bool inLocalMap = false;
+                    int preScanMapDepth = 0;  // >0 = inside a top-level MAP before the first procedure
+                    int localMapDepth = 0;
                     for (int p = target.StartLine; p < lines.Length; p++)
                     {
                         string scanLine = lines[p].TrimStart();
                         if (!foundFirstProc)
                         {
+                            if (preScanMapDepth > 0)
+                            {
+                                // MODULE('...') sub-blocks carry their own ENDs — track depth so
+                                // they don't end the MAP early (the exact NYSCommon derailment).
+                                if (System.Text.RegularExpressions.Regex.IsMatch(scanLine, @"^MODULE\s*\(", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                                    preScanMapDepth++;
+                                else if (endOrPeriodRegex.IsMatch(lines[p]))
+                                    preScanMapDepth--;
+                                continue;
+                            }
+                            if (System.Text.RegularExpressions.Regex.IsMatch(scanLine, @"^MAP\s*([!].*)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                            {
+                                preScanMapDepth = 1;
+                                continue;
+                            }
                             var firstMatch = procDefRegex.Match(scanLine);
                             if (firstMatch.Success)
                             {
@@ -1166,15 +1211,31 @@ namespace ClarionCodeGraph.Graph
                         // After first PROCEDURE, look for MAP...END block
                         if (!inLocalMap)
                         {
-                            if (System.Text.RegularExpressions.Regex.IsMatch(scanLine, @"^MAP\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                            if (System.Text.RegularExpressions.Regex.IsMatch(scanLine, @"^MAP\s*([!].*)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                            {
                                 inLocalMap = true;
+                                localMapDepth = 1;
+                            }
                             else if (codeRegex.IsMatch(lines[p]))
                                 break; // Hit CODE section, no more MAP blocks to find
                             continue;
                         }
-                        // Inside local MAP — collect procedure/function names
-                        if (System.Text.RegularExpressions.Regex.IsMatch(scanLine, @"^END\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
-                            break; // End of local MAP
+                        // Inside local MAP — collect procedure/function names. MODULE('...')
+                        // sub-blocks (external DLL declarations) carry their own ENDs; only the
+                        // MAP's own END/period ends the block (previously the first nested END
+                        // ended collection AND the whole pre-scan early).
+                        if (System.Text.RegularExpressions.Regex.IsMatch(scanLine, @"^MODULE\s*\(", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                        {
+                            localMapDepth++;
+                            continue;
+                        }
+                        if (endOrPeriodRegex.IsMatch(lines[p]))
+                        {
+                            localMapDepth--;
+                            if (localMapDepth <= 0)
+                                break; // End of local MAP
+                            continue;
+                        }
                         var localMatch = procDefRegex.Match(scanLine);
                         if (localMatch.Success)
                             localMapNames.Add(localMatch.Groups[1].Value);
@@ -1197,6 +1258,10 @@ namespace ClarionCodeGraph.Graph
                     // belong to the procedure, and DO targets resolve against it.
                     long currentFromId = parentProcId;
                     bool seenFirstCode = false;
+                    // Name of the ROUTINE whose body is being scanned (null outside routines).
+                    // Routine-DATA declarations carry the ROUTINE's name as parent_name (round
+                    // 5) — this is what lets the local-variable scope check below match them.
+                    string currentRoutineName = null;
 
                     for (int i = target.StartLine; i < lines.Length; i++)
                     {
@@ -1304,6 +1369,7 @@ namespace ClarionCodeGraph.Graph
                             // Reset currentProcId to the parent so their calls are
                             // attributed to the parent procedure, not to whatever
                             // non-local proc happened to be defined before them.
+                            currentRoutineName = null; // a new procedure body ends any routine
                             if (localMapNames.Contains(matchedName))
                             {
                                 currentProcId = parentProcId;
@@ -1345,6 +1411,7 @@ namespace ClarionCodeGraph.Graph
                         if (routineDefM.Success && seenFirstCode)
                         {
                             string rn = routineDefM.Groups[1].Value;
+                            currentRoutineName = rn;
                             long rId = -1;
                             Dictionary<string, Dictionary<string, long>> rByProc;
                             if (routinesByFileProc.TryGetValue(target.Path, out rByProc))
@@ -1679,21 +1746,42 @@ namespace ClarionCodeGraph.Graph
                                     // Check if this var belongs to the current procedure.
                                     // currentProcName is tracked directly alongside currentProcId
                                     // (overload-safe -- see the update above), not reverse-scanned
-                                    // from a name-keyed symbol lookup.
-                                    if (currentProcName == null ||
-                                        !string.Equals(varInfo.ParentName, currentProcName, StringComparison.OrdinalIgnoreCase))
+                                    // from a name-keyed symbol lookup. Routine-DATA declarations
+                                    // carry the ROUTINE's name as parent_name (round 5), so inside
+                                    // a routine body the routine's own locals match too. Known
+                                    // limitation (documented, accepted): two same-named routines in
+                                    // the SAME file each declaring a same-named DATA local would
+                                    // both match here — template-generated routine names carry
+                                    // instance prefixes (BRW10::...), making that collision rare.
+                                    bool ownedByProc = currentProcName != null &&
+                                        string.Equals(varInfo.ParentName, currentProcName, StringComparison.OrdinalIgnoreCase);
+                                    bool ownedByRoutine = currentRoutineName != null &&
+                                        string.Equals(varInfo.ParentName, currentRoutineName, StringComparison.OrdinalIgnoreCase);
+                                    if (!ownedByProc && !ownedByRoutine)
                                         continue;
                                 }
 
                                 if (LineContainsVariable(trimmed, varInfo.Name))
                                 {
-                                    string relKey = string.Format("{0}|{1}|references|{2}", currentFromId, varInfo.Id, i + 1);
+                                    // A decl_kind='external' row is this file's IMPORT of a global
+                                    // owned elsewhere — re-point the edge to the owning declaration
+                                    // so the owner accrues its real usage. Falls back to the external
+                                    // row itself when no owner is indexed (owner app outside the
+                                    // solution) — an edge to the import beats no edge at all.
+                                    long refTargetId = varInfo.Id;
+                                    if (string.Equals(varInfo.DeclKind, "external", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        VariableInfo owner;
+                                        if (globalOwnerByName.TryGetValue(varInfo.Name, out owner))
+                                            refTargetId = owner.Id;
+                                    }
+                                    string relKey = string.Format("{0}|{1}|references|{2}", currentFromId, refTargetId, i + 1);
                                     if (insertedRels.Add(relKey))
                                     {
                                         _db.InsertRelationship(new ClarionRelationship
                                         {
                                             FromId = currentFromId,
-                                            ToId = varInfo.Id,
+                                            ToId = refTargetId,
                                             Type = "references",
                                             FilePath = target.Path,
                                             LineNumber = i + 1
@@ -2212,6 +2300,9 @@ namespace ClarionCodeGraph.Graph
         public string ParentName { get; set; }
         public string Scope { get; set; }
         public string Params { get; set; }
+        // 'external' = declared here with the EXTERNAL attribute but OWNED elsewhere.
+        // References matched against such a row are re-pointed to the owning declaration.
+        public string DeclKind { get; set; }
     }
 
     /// <summary>

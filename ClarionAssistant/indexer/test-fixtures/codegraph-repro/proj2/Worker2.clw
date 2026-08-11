@@ -18,6 +18,13 @@
      END
    END
 
+! Round 5 (globals rescoped): the OWNING declaration of PTS::ProgPath — scope='global',
+! decl_kind NULL. ReproProject's ExternalRef.clw imports it with ,EXTERNAL; that file's
+! reference must re-point HERE (cross-project), and the program-CODE assignment below
+! pins the owner's own direct reference edge.
+PTS::ProgPath  CSTRING(256)
+
  CODE
+    PTS::ProgPath = 'C:\FIXTURE'
     r# = Caller2()
     r# = RIDelete:Fixture()
