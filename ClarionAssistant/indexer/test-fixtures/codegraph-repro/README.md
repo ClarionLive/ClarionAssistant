@@ -315,6 +315,13 @@ Totals become **133 symbols**; prototype count becomes **4**.
   (1 `calls` edge) — colon names survive the whole pipeline, not just symbol capture.
 - `source_preview` is non-null for **11/11** classes (was absent for the whole category).
 
+**Definitional pin — "cross-project calls %"**: quoted over edges whose TARGET is
+`decl_kind='implementation'`. Edges landing on prototypes (bodiless WinAPI/external
+declarations resolve to a prototype INSIDE the calling project by design) are excluded from
+both numerator and denominator. On v61 round 3 that is 17.05% (14,256/83,600); the
+all-edges cut gives 18.0% — both correct, different denominators. Agreed with
+CA-v61POSitive-CC 2026-08-11 so the number doesn't get re-litigated per round.
+
 ## Verify queries
 
 ```sql
