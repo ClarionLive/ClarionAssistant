@@ -25,15 +25,15 @@ namespace ClarionCodeGraph.Parsing
         // use ("MainHelperProc PROCEDURE, LONG"). The optional (?i:PROCEDURE|FUNCTION) group
         // accepts the keyword form, which was previously invisible (b7553893).
         private static readonly Regex MapProcDeclRegex = new Regex(
-            @"^\s{2,}(\w+)(?:\s+(?i:PROCEDURE|FUNCTION))?\s*(\([^)]*\))?\s*(,.*)?$", RegexOptions.Compiled);
+            @"^\s{2,}([\w:]+)(?:\s+(?i:PROCEDURE|FUNCTION))?\s*(\([^)]*\))?\s*(,.*)?$", RegexOptions.Compiled);
         private static readonly Regex MemberRegex = new Regex(
             @"MEMBER\s*\(\s*'([^']+)'\s*\)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex MemberEmptyRegex = new Regex(
             @"^\s*MEMBER\s*(\(\s*\))?\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex ProcedureDefRegex = new Regex(
-            @"^([\w.]+)\s+PROCEDURE\s*(\([^)]*\))?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            @"^([\w.:]+)\s+PROCEDURE\s*(\([^)]*\))?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex FunctionDefRegex = new Regex(
-            @"^([\w.]+)\s+FUNCTION\s*(\([^)]*\))?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            @"^([\w.:]+)\s+FUNCTION\s*(\([^)]*\))?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex RoutineDefRegex = new Regex(
             @"^([\w:]+)\s+ROUTINE\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex ClassDefRegex = new Regex(
@@ -677,7 +677,8 @@ namespace ClarionCodeGraph.Parsing
                         LineNumber = lineNum,
                         ProjectId = projectId,
                         ParentName = parentClass,
-                        Scope = "global"
+                        Scope = "global",
+                        SourcePreview = Preview(line)
                     });
 
                     // Enter CLASS body to extract method prototypes
@@ -699,7 +700,8 @@ namespace ClarionCodeGraph.Parsing
                         FilePath = filePath,
                         LineNumber = lineNum,
                         ProjectId = projectId,
-                        Scope = "global"
+                        Scope = "global",
+                        SourcePreview = Preview(line)
                     });
 
                     // Enter INTERFACE body to extract method prototypes
@@ -1227,7 +1229,8 @@ namespace ClarionCodeGraph.Parsing
                         LineNumber = lineNum,
                         ProjectId = projectId,
                         ParentName = parentClass,
-                        Scope = "global"
+                        Scope = "global",
+                        SourcePreview = Preview(line)
                     });
 
                     currentClassName = className;
@@ -1247,7 +1250,8 @@ namespace ClarionCodeGraph.Parsing
                         FilePath = filePath,
                         LineNumber = lineNum,
                         ProjectId = projectId,
-                        Scope = "global"
+                        Scope = "global",
+                        SourcePreview = Preview(line)
                     });
 
                     currentClassName = ifaceName;

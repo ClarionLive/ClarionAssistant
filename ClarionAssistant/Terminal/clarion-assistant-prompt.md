@@ -124,7 +124,7 @@ Use `query_codegraph` when the developer asks:
 - "What does X call?" - query relationships where from_id matches; type='do' rows are its routine calls
 - "Find all procedures named..." - query symbols table (include source_preview — results self-explain)
 - "What classes are in this project?" - query symbols by type and project
-- "Show me dead code" - implementations with no incoming calls/do edges: decl_kind='implementation' AND id NOT IN (SELECT to_id FROM relationships WHERE type IN ('calls','do')). NEVER filter on scope='global' — those are MAP prototypes and never receive edges (98.7% false positives)
+- "Show me dead code" - implementations with no incoming calls/do edges: decl_kind='implementation' AND id NOT IN (SELECT to_id FROM relationships WHERE type IN ('calls','do')). NEVER filter on scope='global' — those are MAP prototypes; a prototype WITH a body never receives edges (98.7% false positives). Prototypes WITHOUT a body in the solution (WinAPI/external DLL declarations) DO receive their callers' edges — deliberate, so those calls aren't lost
 - "What's the class hierarchy?" - query inherits relationships
 - "If I change X, what breaks?" - recursive CTE on relationships for impact analysis
 

@@ -13,8 +13,11 @@
      MODULE('Worker2Lib.clw')
        MainHelperProc PROCEDURE, LONG
        Caller2        PROCEDURE, LONG
+       RIDelete:Fixture PROCEDURE, LONG
+       Preview:SelectFixture PROCEDURE( *LONG pA, *LONG pB )
      END
    END
 
  CODE
     r# = Caller2()
+    r# = RIDelete:Fixture()

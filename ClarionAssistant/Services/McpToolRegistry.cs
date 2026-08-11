@@ -1731,7 +1731,7 @@ COMMON QUERIES:
 - What does X call: SELECT s.name FROM relationships r JOIN symbols s ON r.to_id = s.id WHERE r.from_id = (SELECT id FROM symbols WHERE name = 'X') AND r.type = 'calls'
 - Owning declaration of a global (vs its EXTERNAL imports): SELECT file_path, line_number, source_preview FROM symbols WHERE name = 'PRE:Name' AND scope = 'global' AND (decl_kind IS NULL OR decl_kind <> 'external')
 - Dead code: SELECT name, file_path FROM symbols WHERE type IN ('procedure','function') AND decl_kind = 'implementation' AND id NOT IN (SELECT to_id FROM relationships WHERE type IN ('calls','do'))
-  (NEVER filter dead code on scope='global' — those are MAP PROTOTYPES, which never receive call edges; calls land on the implementations. The old recipe returned 98.7% false positives.)
+  (NEVER filter dead code on scope='global' — those are MAP PROTOTYPES. A prototype WITH an implementation never receives call edges; calls land on the implementation. The exception is deliberate: a prototype with NO body in the solution — WinAPI/external DLL declarations like CloseHandle — receives its callers' edges directly, so those edges are correct, not a bug. The old scope='global' recipe returned 98.7% false positives.)
 - Class hierarchy: SELECT name, parent_name, file_path FROM symbols WHERE type = 'class'",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>

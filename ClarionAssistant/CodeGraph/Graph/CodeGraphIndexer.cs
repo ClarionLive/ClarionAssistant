@@ -1015,7 +1015,7 @@ namespace ClarionCodeGraph.Graph
 
             // Compiled regex patterns (reuse across all files)
             var procDefRegex = new System.Text.RegularExpressions.Regex(
-                @"^([\w.]+)\s+(PROCEDURE|FUNCTION)\s*(\([^)]*\))?",
+                @"^([\w.:]+)\s+(PROCEDURE|FUNCTION)\s*(\([^)]*\))?",
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             var codeRegex = new System.Text.RegularExpressions.Regex(
                 @"^\s*CODE\s*([!].*)?$",

@@ -299,6 +299,22 @@ every line pin above survives. Totals become **127 symbols / 4 files / 2 project
   grows, scope resolution is leaking; if it drops to 0 without type-aware overload resolution
   having been built, the flag is broken.
 
+### Colon-labelled procedures (CC's round-2 battery find, b7553893)
+
+The `[\w.]+` PROCEDURE/FUNCTION definition regexes (parser AND relationship scanner) matched
+dots but not colons, so ANY colon-bearing label — 18,877 declarations in v61, the entire
+template-generated RI layer — yielded ZERO procedure symbols, zero relationship rows from its
+files, and orphaned every routine inside them. `Worker2Lib.clw` now ends with the two field
+repro shapes: `RIDelete:Fixture FUNCTION` and `Preview:SelectFixture PROCEDURE(*LONG,*LONG)`,
+prototyped in `Worker2.clw`'s MAP (which also pins the colon fix in `MapProcDeclRegex`).
+Totals become **133 symbols**; prototype count becomes **4**.
+
+- Exactly **4** colon-named `procedure`/`function` symbols: each repro shape twice — MAP
+  `prototype` + body `implementation`. If this hits 0, the colon fix regressed.
+- The program's bare call `r# = RIDelete:Fixture()` resolves to the IMPLEMENTATION row
+  (1 `calls` edge) — colon names survive the whole pipeline, not just symbol capture.
+- `source_preview` is non-null for **11/11** classes (was absent for the whole category).
+
 ## Verify queries
 
 ```sql
