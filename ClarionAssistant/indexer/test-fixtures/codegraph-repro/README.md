@@ -318,9 +318,12 @@ Totals become **133 symbols**; prototype count becomes **4**.
 **Definitional pin — "cross-project calls %"**: quoted over edges whose TARGET is
 `decl_kind='implementation'`. Edges landing on prototypes (bodiless WinAPI/external
 declarations resolve to a prototype INSIDE the calling project by design) are excluded from
-both numerator and denominator. On v61 round 3 that is 17.05% (14,256/83,600); the
-all-edges cut gives 18.0% — both correct, different denominators. Agreed with
-CA-v61POSitive-CC 2026-08-11 so the number doesn't get re-litigated per round.
+both numerator and denominator. Agreed with CA-v61POSitive-CC 2026-08-11 so the number
+doesn't get re-litigated per round. The DEFINITION is the pin; the VALUE is not: round 3
+measured 17.05% (14,256/83,600; all-edges cut 18.0%), but that graph is missing every call
+issued from inside a ROUTINE body (ticket 9a73aa5d — routine bodies are never scanned at
+all), and cross-DLL calls disproportionately live in exactly those routines. Expect the
+percentage to MOVE when routine scanning lands — that will be the repair, not a regression.
 
 ## Verify queries
 
