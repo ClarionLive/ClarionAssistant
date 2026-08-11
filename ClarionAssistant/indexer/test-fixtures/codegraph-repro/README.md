@@ -449,3 +449,15 @@ WHERE v.name IN ('r:Count','r:Multiplier','r:Copy') AND f.name='TS::MakeCalendar
 -- Round 5 pin: dual-MAP file has body edges at all (was 0 rows total). Expect 2 calls + 4 references.
 SELECT r.type, COUNT(*) FROM relationships r WHERE r.file_path LIKE '%DualMapLib.clw' GROUP BY r.type;
 ```
+
+- v61 round-5 scale (measured 2026-08-11, round-4 db vs round-5 db, same source): 422,971
+  symbols (was 414,240 — the +8,731 is EXACTLY the new routine-parented locals, 290 → 9,021;
+  CC's 9,261 text-level estimate included shapes the parser correctly excludes);
+  1,191,410 relationships (was 1,106,910). References landing on `decl_kind='external'`
+  rows: 2,863 → **0** — the re-point is total. Owner-globals zero-incoming: 6,051/6,446
+  (93.9%) → 5,545/6,446 (**86.0%**); `PTS::ProgPath`'s owner 0 → **140** incoming with all
+  its external rows at 0. The four NYS library files: 26 relationship rows (uses_type
+  only) → **19,808** (2,376 calls + 17,406 references). Remaining owner-global
+  zero-incoming is dominated by the documented round-4 residual (cross-file global
+  references — declared in the main file, used in member files — are still a follow-up),
+  not by external absorption, which is now structurally impossible.
