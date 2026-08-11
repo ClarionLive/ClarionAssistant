@@ -1015,7 +1015,12 @@ namespace ClarionCodeGraph.Graph
 
             // Compiled regex patterns (reuse across all files)
             var procDefRegex = new System.Text.RegularExpressions.Regex(
-                @"^([\w.:]+)\s+(PROCEDURE|FUNCTION)\s*(\([^)]*\))?",
+                // \b after the keyword is LOAD-BEARING (ticket 9a73aa5d): without it, an indented
+                // "DO ProcedureReturn" prefix-matches PROCEDURE (IgnoreCase, matched on the
+                // TRIMMED line), the scanner believes a procedure named "DO" was just defined,
+                // sets inCode=false, and every edge for the rest of the body dies until the next
+                // literal CODE line — CC's DateRanger truncation AND the attribution spillover.
+                @"^([\w.:]+)\s+(PROCEDURE|FUNCTION)\b\s*(\([^)]*\))?",
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             var codeRegex = new System.Text.RegularExpressions.Regex(
                 @"^\s*CODE\s*([!].*)?$",
@@ -1028,6 +1033,11 @@ namespace ClarionCodeGraph.Graph
             var doRegex = new System.Text.RegularExpressions.Regex(
                 @"\bDO\s+([\w:]+)",
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            // Dotted MEMBER access (no call parens required): owner.Member — for class data-member
+            // reference edges (9a73aa5d #3). Owner is SELF/PARENT or a typed variable.
+            var memberRefRegex = new System.Text.RegularExpressions.Regex(
+                @"\b([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
             var startCallRegex = new System.Text.RegularExpressions.Regex(
                 @"\bSTART\s*\(\s*(\w+)",
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
@@ -1180,6 +1190,12 @@ namespace ClarionCodeGraph.Graph
 
                     long currentProcId = parentProcId;
                     string currentProcName = parentProcName;
+                    // The symbol edges are attributed FROM. Usually the current procedure, but
+                    // inside a ROUTINE body it is the routine's own symbol (9a73aa5d #1 — rolls
+                    // up to the procedure via the routine's parent_name). currentProcId/Name stay
+                    // the ENCLOSING procedure throughout: locals/parameters in a routine body
+                    // belong to the procedure, and DO targets resolve against it.
+                    long currentFromId = parentProcId;
                     bool seenFirstCode = false;
 
                     for (int i = target.StartLine; i < lines.Length; i++)
@@ -1292,6 +1308,7 @@ namespace ClarionCodeGraph.Graph
                             {
                                 currentProcId = parentProcId;
                                 currentProcName = parentProcName;
+                                currentFromId = parentProcId;
                                 continue;
                             }
                             // Resolve by (file, exact definition line) rather than name alone --
@@ -1313,13 +1330,56 @@ namespace ClarionCodeGraph.Graph
                                 currentProcId = parentProcId;
                                 currentProcName = parentProcName;
                             }
+                            currentFromId = currentProcId;
                             continue;
                         }
 
-                        // ROUTINE definitions toggle scanning off until next CODE
-                        if (routineRegex.IsMatch(trimmed))
+                        // ROUTINE label: scan its body too (9a73aa5d #1 — previously this set
+                        // inCode=false and waited for a CODE line plain routine bodies don't
+                        // have, so ALL 55,318 routines emitted zero calls/do/references). Edges
+                        // from here on are attributed to the ROUTINE's own symbol; the enclosing
+                        // procedure context is kept for local/parameter scope matching and DO
+                        // resolution. A routine with an explicit DATA block defers to its CODE
+                        // line, exactly like a procedure's declaration section.
+                        var routineDefM = routineRegex.Match(trimmed);
+                        if (routineDefM.Success && seenFirstCode)
                         {
-                            inCode = false;
+                            string rn = routineDefM.Groups[1].Value;
+                            long rId = -1;
+                            Dictionary<string, Dictionary<string, long>> rByProc;
+                            if (routinesByFileProc.TryGetValue(target.Path, out rByProc))
+                            {
+                                Dictionary<string, long> rByName;
+                                if (currentProcName != null && rByProc.TryGetValue(currentProcName, out rByName))
+                                    rByName.TryGetValue(rn, out rId);
+                                if (rId <= 0)
+                                {
+                                    Dictionary<string, long> fileR;
+                                    long fb;
+                                    if (routinesByFileOnly.TryGetValue(target.Path, out fileR) &&
+                                        fileR.TryGetValue(rn, out fb) && fb > 0)
+                                        rId = fb;
+                                }
+                            }
+                            currentFromId = rId > 0 ? rId : currentProcId;
+
+                            // Peek: DATA block? Then the body starts at its CODE line.
+                            bool hasData = false;
+                            for (int p = i + 1; p < lines.Length && p <= i + 5; p++)
+                            {
+                                string pt = lines[p].TrimStart();
+                                if (pt.Length == 0 || pt.StartsWith("!")) continue;
+                                hasData = pt.Equals("DATA", StringComparison.OrdinalIgnoreCase) ||
+                                          pt.StartsWith("DATA ", StringComparison.OrdinalIgnoreCase) ||
+                                          pt.StartsWith("DATA\t", StringComparison.OrdinalIgnoreCase);
+                                break;
+                            }
+                            inCode = !hasData;
+                            continue;
+                        }
+                        if (routineDefM.Success)
+                        {
+                            inCode = false; // pre-CODE routine-shaped line: declaration territory
                             continue;
                         }
 
@@ -1358,12 +1418,12 @@ namespace ClarionCodeGraph.Graph
                                 }
                                 if (routineId > 0)
                                 {
-                                    string doKey = string.Format("{0}|{1}|do|{2}", currentProcId, routineId, i + 1);
+                                    string doKey = string.Format("{0}|{1}|do|{2}", currentFromId, routineId, i + 1);
                                     if (insertedRels.Add(doKey))
                                     {
                                         _db.InsertRelationship(new ClarionRelationship
                                         {
-                                            FromId = currentProcId,
+                                            FromId = currentFromId,
                                             ToId = routineId,
                                             Type = "do",
                                             FilePath = target.Path,
@@ -1387,12 +1447,12 @@ namespace ClarionCodeGraph.Graph
                                 targetId = resolveCallTarget(targetProc, target.ProjectId, target.Path, trimmed, out startAmbiguous);
                             if (targetId >= 0)
                             {
-                                string relKey = string.Format("{0}|{1}|calls|{2}", currentProcId, targetId, i + 1);
+                                string relKey = string.Format("{0}|{1}|calls|{2}", currentFromId, targetId, i + 1);
                                 if (insertedRels.Add(relKey))
                                 {
                                     _db.InsertRelationship(new ClarionRelationship
                                     {
-                                        FromId = currentProcId,
+                                        FromId = currentFromId,
                                         ToId = targetId,
                                         Type = "calls",
                                         FilePath = target.Path,
@@ -1436,12 +1496,12 @@ namespace ClarionCodeGraph.Graph
                                 long targetId = resolveCallTarget(fullMethodName, target.ProjectId, target.Path, trimmed, out selfAmbiguous);
                                 if (targetId >= 0)
                                 {
-                                    string relKey = string.Format("{0}|{1}|calls|{2}", currentProcId, targetId, i + 1);
+                                    string relKey = string.Format("{0}|{1}|calls|{2}", currentFromId, targetId, i + 1);
                                     if (insertedRels.Add(relKey))
                                     {
                                         _db.InsertRelationship(new ClarionRelationship
                                         {
-                                            FromId = currentProcId,
+                                            FromId = currentFromId,
                                             ToId = targetId,
                                             Type = "calls",
                                             FilePath = target.Path,
@@ -1556,12 +1616,12 @@ namespace ClarionCodeGraph.Graph
                             long targetId = resolveCallTarget(fullName, target.ProjectId, target.Path, trimmed, out dottedAmbiguous);
                             if (targetId >= 0)
                             {
-                                string relKey = string.Format("{0}|{1}|calls|{2}", currentProcId, targetId, i + 1);
+                                string relKey = string.Format("{0}|{1}|calls|{2}", currentFromId, targetId, i + 1);
                                 if (insertedRels.Add(relKey))
                                 {
                                     _db.InsertRelationship(new ClarionRelationship
                                     {
-                                        FromId = currentProcId,
+                                        FromId = currentFromId,
                                         ToId = targetId,
                                         Type = "calls",
                                         FilePath = target.Path,
@@ -1590,12 +1650,12 @@ namespace ClarionCodeGraph.Graph
                                 long bareTargetId = resolveCallTarget(procName, target.ProjectId, target.Path, trimmed, out bareAmbiguous);
                                 if (bareTargetId < 0) continue;
 
-                                string relKey = string.Format("{0}|{1}|calls|{2}", currentProcId, bareTargetId, i + 1);
+                                string relKey = string.Format("{0}|{1}|calls|{2}", currentFromId, bareTargetId, i + 1);
                                 if (!insertedRels.Add(relKey)) continue;
 
                                 _db.InsertRelationship(new ClarionRelationship
                                 {
-                                    FromId = currentProcId,
+                                    FromId = currentFromId,
                                     ToId = bareTargetId,
                                     Type = "calls",
                                     FilePath = target.Path,
@@ -1627,12 +1687,12 @@ namespace ClarionCodeGraph.Graph
 
                                 if (LineContainsVariable(trimmed, varInfo.Name))
                                 {
-                                    string relKey = string.Format("{0}|{1}|references|{2}", currentProcId, varInfo.Id, i + 1);
+                                    string relKey = string.Format("{0}|{1}|references|{2}", currentFromId, varInfo.Id, i + 1);
                                     if (insertedRels.Add(relKey))
                                     {
                                         _db.InsertRelationship(new ClarionRelationship
                                         {
-                                            FromId = currentProcId,
+                                            FromId = currentFromId,
                                             ToId = varInfo.Id,
                                             Type = "references",
                                             FilePath = target.Path,
@@ -1641,6 +1701,69 @@ namespace ClarionCodeGraph.Graph
                                         relCount++;
                                     }
                                 }
+                            }
+                        }
+
+                        // Class data-member references (9a73aa5d #3 — scope='class' was
+                        // 13,385/13,385 zero-incoming). Dotted MEMBER access: SELF.X / PARENT.X
+                        // via the current method's class (+ inheritance walk), Object.X via the
+                        // object's declared class type. Only an exact Class.Member hit in
+                        // variablesByName emits — method names aren't in that map, so calls
+                        // don't double-count, and unresolvable owners emit nothing.
+                        int memBang = trimmed.IndexOf('!');
+                        string memScan = memBang >= 0 ? trimmed.Substring(0, memBang) : trimmed;
+                        foreach (System.Text.RegularExpressions.Match mm in memberRefRegex.Matches(memScan))
+                        {
+                            string ownerTok = mm.Groups[1].Value;
+                            string memberTok = mm.Groups[2].Value;
+                            string ownerClass = null;
+                            if (string.Equals(ownerTok, "SELF", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(ownerTok, "PARENT", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (currentProcName != null && currentProcName.Contains("."))
+                                    ownerClass = currentProcName.Substring(0, currentProcName.LastIndexOf('.'));
+                            }
+                            else if (currentFileVars != null)
+                            {
+                                foreach (var vi in currentFileVars)
+                                {
+                                    if (!string.Equals(vi.Name, ownerTok, StringComparison.OrdinalIgnoreCase)) continue;
+                                    if (string.Equals(vi.Scope, "parameter", StringComparison.OrdinalIgnoreCase) &&
+                                        (currentProcName == null || !string.Equals(vi.ParentName, currentProcName, StringComparison.OrdinalIgnoreCase)))
+                                        continue;
+                                    string tn;
+                                    if (TryResolveVariableClassType(vi.Params, out tn)) ownerClass = tn;
+                                    break;
+                                }
+                            }
+                            if (ownerClass == null) continue;
+
+                            VariableInfo memberVar = null;
+                            string sc = ownerClass;
+                            int hop = 0;
+                            while (sc != null && hop < 25)
+                            {
+                                if (variablesByName.TryGetValue(sc + "." + memberTok, out memberVar)) break;
+                                memberVar = null;
+                                string pc;
+                                if (!classParentByName.TryGetValue(sc, out pc) ||
+                                    string.Equals(pc, sc, StringComparison.OrdinalIgnoreCase)) break;
+                                sc = pc; hop++;
+                            }
+                            if (memberVar == null) continue;
+
+                            string mrKey = string.Format("{0}|{1}|references|{2}", currentFromId, memberVar.Id, i + 1);
+                            if (insertedRels.Add(mrKey))
+                            {
+                                _db.InsertRelationship(new ClarionRelationship
+                                {
+                                    FromId = currentFromId,
+                                    ToId = memberVar.Id,
+                                    Type = "references",
+                                    FilePath = target.Path,
+                                    LineNumber = i + 1
+                                });
+                                relCount++;
                             }
                         }
                     }

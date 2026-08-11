@@ -31,9 +31,9 @@ namespace ClarionCodeGraph.Parsing
         private static readonly Regex MemberEmptyRegex = new Regex(
             @"^\s*MEMBER\s*(\(\s*\))?\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex ProcedureDefRegex = new Regex(
-            @"^([\w.:]+)\s+PROCEDURE\s*(\([^)]*\))?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            @"^([\w.:]+)\s+PROCEDURE\b\s*(\([^)]*\))?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex FunctionDefRegex = new Regex(
-            @"^([\w.:]+)\s+FUNCTION\s*(\([^)]*\))?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            @"^([\w.:]+)\s+FUNCTION\b\s*(\([^)]*\))?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex RoutineDefRegex = new Regex(
             @"^([\w:]+)\s+ROUTINE\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex ClassDefRegex = new Regex(
