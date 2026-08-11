@@ -389,3 +389,63 @@ SELECT * FROM symbols WHERE name='TestQtype'; -- expect 0 rows
   post-repair floor the b7553893 pin anticipated. KNOWN residual: globals stay ~84%
   zero-incoming — the reference scan is per-file and globals are declared in the main file but
   used in member files (cross-file global references = follow-up).
+
+### Round 5 — external rows re-pointed, routine-DATA declarations, dual-MAP member files (ticket 7e44c54c)
+
+Three new fixture files in ReproProject (`ExternalRef.clw`, `RoutineData.clw`,
+`DualMapLib.clw` + `DualMapProtos.inc`) and one appended owner declaration in
+`proj2\Worker2.clw` (inserted AFTER the MAP's END — the line-14–15 prototype pins are
+untouched). No pre-existing fixture line moved. Totals become **147 symbols / 7 files /
+2 projects** (+14 symbols over the 133 pinned above). Supersessions of earlier absolute
+counts, both from the new files: `type='do'` edges are now **2** (b7553893's "exactly 1"
+plus `RoutineDataTest -> TS::MakeCalendar:8`), and `scope='global'` variables are now **8**
+(d1a0aea6's "exactly 7" plus the `PTS::ProgPath` owner). Every other pinned count above
+(22/5 callers, 21 program calls, 4 prototypes, 6 ambiguous, 11 classes, 0 calls-to-prototype)
+re-verified unchanged 2026-08-11.
+
+- **Externals re-pointed to owners** (`ExternalRef.clw` + `proj2\Worker2.clw`):
+  `PTS::ProgPath` exists twice — the OWNER (`Worker2.clw`, `scope='global'`,
+  `decl_kind` NULL) and the import (`ExternalRef.clw`, `,EXTERNAL` →
+  `decl_kind='external'`). The owner has exactly **2** incoming `references`
+  (`ExternalRefTest` — a CROSS-PROJECT re-point — and program `Worker2`'s own
+  assignment); the external row has exactly **0**. Before round 5 the co-located
+  external absorbed the reference and the owner starved (v61: externals held 2,863
+  incoming refs vs owners' 1,031). Like Bug Q's file, `ExternalRef.clw` is
+  parse-territory only: the fixture never links proj1, so the EXTERNAL is deliberately
+  unresolved by any real export.
+- **Routine-DATA declarations** (`RoutineData.clw`, the PRMBase002.clw:1119-1126 shape):
+  `r:Count BYTE(1)`, `r:Multiplier DECIMAL(14,4)`, `r:Copy LIKE(loc:Total)` are
+  `type='variable'`, `scope='local'`, `parent_name='TS::MakeCalendar:8'` — the ROUTINE,
+  not the enclosing procedure (parent chain: procedure → routine → variable; the
+  enclosing procedure is recoverable via the routine symbol's own `parent_name`). The
+  routine's body emits `references` to all three (v61 scale: 9,261 such declarations
+  across 890 generated files were invisible, and their references emitted nothing).
+  Known accepted limitation, documented at the scanner's scope check: two same-named
+  routines in the SAME file each declaring a same-named DATA local would cross-match.
+- **Dual-MAP member file scanned** (`DualMapLib.clw`, the NYSCommon.CLW shape): a
+  MEMBER() library file with TWO sibling top-level MAP blocks before the first
+  implementation, the second holding an INCLUDE plus a nested `MODULE('Win32API')`
+  with its own END. The pre-scan used to take the first MAP prototype as the file's
+  parent procedure, fail the by-line symbol lookup, and skip the ENTIRE file (v61: 4
+  NYS library files with zero body edges). Pinned: `DualMapProcA` has `calls` edges to
+  `DualMapHelper` and `DualMapIncProc` (both implementation rows) and 4 `references`
+  to `loc:Ticks`. Top-level member-MAP prototypes are deliberately NOT collected into
+  `localMapNames` — calls must resolve to the same-file implementations.
+
+```sql
+-- Round 5 pin: owner vs external. Expect the scope='global' row (Worker2.clw) with 2
+-- incoming references, and the decl_kind='external' row (ExternalRef.clw) with 0.
+SELECT s.file_path, s.scope, s.decl_kind,
+  (SELECT COUNT(*) FROM relationships r WHERE r.to_id=s.id AND r.type='references') AS incoming
+FROM symbols s WHERE s.name='PTS::ProgPath';
+
+-- Round 5 pin: routine-DATA symbols + their references. Expect 3 rows, all
+-- parent_name='TS::MakeCalendar:8', and 6 references edges from the routine to them.
+SELECT name, scope, parent_name, params FROM symbols WHERE name IN ('r:Count','r:Multiplier','r:Copy');
+SELECT COUNT(*) FROM relationships r JOIN symbols v ON r.to_id=v.id
+JOIN symbols f ON r.from_id=f.id
+WHERE v.name IN ('r:Count','r:Multiplier','r:Copy') AND f.name='TS::MakeCalendar:8' AND r.type='references';
+
+-- Round 5 pin: dual-MAP file has body edges at all (was 0 rows total). Expect 2 calls + 4 references.
+SELECT r.type, COUNT(*) FROM relationships r WHERE r.file_path LIKE '%DualMapLib.clw' GROUP BY r.type;
+```
