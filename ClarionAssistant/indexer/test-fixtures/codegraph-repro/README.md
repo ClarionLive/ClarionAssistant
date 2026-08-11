@@ -370,3 +370,22 @@ SELECT id, name, type, scope, parent_name FROM symbols WHERE LOWER(name)=LOWER('
 -- CgHoverFromDb/CgDefinitionFromDb; it's Clarion-Extension's own resolver.
 SELECT * FROM symbols WHERE name='TestQtype'; -- expect 0 rows
 ```
+
+### Round 4 — routine bodies scanned, scanner wipeout fixed (ticket 9a73aa5d)
+
+- `Tidy:Up2` emits a `references` edge to `R2` — the fixture's first routine-sourced edge of
+  any kind. If routine-sourced edges drop to zero, the ROUTINE-label scanning regressed.
+- The `\b` after `(PROCEDURE|FUNCTION)` in the scanner's procDefRegex is LOAD-BEARING: without
+  it, an indented `DO ProcedureReturn` prefix-matches PROCEDURE (IgnoreCase, trimmed line),
+  the scanner believes a procedure named "DO" was defined, and every edge for the rest of the
+  body dies until the next literal CODE line. v61 evidence: DateRanger (PRMBase002.clw) edges
+  stopped at :327 (the line before its first DO ProcedureReturn) and resumed at :1128; after
+  the fix the file scans to :1594 and the canaries (WindowInitialized 4 refs, FilesOpened 2,
+  Lcl:TempDate 19) all resolve. Same bug caused the attribution spillover (Defect 4).
+- Class data members receive `references` edges via dotted member access (fixture: 12, was 0).
+- v61 round-4 scale: 1,106,910 relationships (was 478,427); routine-sourced = 33,983 calls +
+  66,706 do + 446,373 references; zero-incoming locals 64%->37%, class 100%->92%, routines
+  without incoming DO 60%->9%. Cross-project calls (impl-target definition) = 23.9% — the
+  post-repair floor the b7553893 pin anticipated. KNOWN residual: globals stay ~84%
+  zero-incoming — the reference scan is per-file and globals are declared in the main file but
+  used in member files (cross-file global references = follow-up).
