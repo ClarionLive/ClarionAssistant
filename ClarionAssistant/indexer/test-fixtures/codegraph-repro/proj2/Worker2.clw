@@ -28,3 +28,15 @@ PTS::ProgPath  CSTRING(256)
     PTS::ProgPath = 'C:\FIXTURE'
     r# = Caller2()
     r# = RIDelete:Fixture()
+    DO Main:Tally
+
+! Round 5 / pipeline run-1: a ROUTINE attached to the PROGRAM's own global CODE section
+! (legal, hand-written mains have these). Its DATA-block local must be scope='local'
+! with parent_name='Main:Tally' — NOT scope='global' (currentProcedure is null here;
+! before the fix that leaked it into the global namespace and even made it a candidate
+! external re-point owner).
+Main:Tally ROUTINE
+  DATA
+r:MainCount  LONG
+  CODE
+  r:MainCount += 1

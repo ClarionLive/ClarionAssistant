@@ -967,8 +967,12 @@ namespace ClarionCodeGraph.Graph
             // absorbed every reference edge and the owner starved (round 5: externals held
             // 2,863 incoming refs vs owners' 1,031; owners alone were 93.9% zero-incoming).
             // Multiple owners of the same name (unrelated apps reusing a global name) resolve
-            // to the lowest id — deterministic, mirroring resolveCallTarget's tie-break.
+            // to the lowest id — deterministic, mirroring resolveCallTarget's tie-break — and
+            // the emitted edge is FLAGGED ambiguous (pipeline run-1: an unmarked cross-app
+            // guess is the same "asserting certainty the index doesn't have" problem the
+            // ambiguous column exists for; project-aware ranking is round-6 territory).
             var globalOwnerByName = new Dictionary<string, VariableInfo>(StringComparer.OrdinalIgnoreCase);
+            var globalOwnerCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             var allVarDt = _db.ExecuteQuery(
                 "SELECT id, name, file_path, parent_name, scope, params, decl_kind FROM symbols WHERE type = 'variable'");
 
@@ -1000,6 +1004,9 @@ namespace ClarionCodeGraph.Graph
                     VariableInfo existingOwner;
                     if (!globalOwnerByName.TryGetValue(name, out existingOwner) || id < existingOwner.Id)
                         globalOwnerByName[name] = varInfo;
+                    int ownerCount;
+                    globalOwnerCounts.TryGetValue(name, out ownerCount);
+                    globalOwnerCounts[name] = ownerCount + 1;
                 }
             }
 
@@ -1081,9 +1088,24 @@ namespace ClarionCodeGraph.Graph
             var endOrPeriodRegex = new System.Text.RegularExpressions.Regex(
                 @"^\s*(END\s*([!].*)?|\.)\s*$",
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            // Pre-scan MAP tracking (round 5). Hoisted here with the rest of the compiled set —
+            // static Regex.IsMatch inside the per-line pre-scan pays a locked cache lookup per line.
+            var mapStartRegex = new System.Text.RegularExpressions.Regex(
+                @"^MAP\s*([!].*)?$",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            var moduleStartRegex = new System.Text.RegularExpressions.Regex(
+                @"^MODULE\s*\(",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            // Routine DATA-block opener — kept IDENTICAL to ClarionParser.DataStatementRegex; the
+            // two sides deciding "does this routine have a DATA block" differently is exactly how
+            // declaration lines end up scanned as code (pipeline run-1 debugger finding).
+            var dataStatementRegex = new System.Text.RegularExpressions.Regex(
+                @"^\s*DATA\s*([!].*)?$",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
             int fileCount = 0;
             int relCount = 0;
+            int skippedNoParent = 0;
             // Track inserted relationships to avoid duplicates. For "calls"/"references" the key
             // includes the line number ("fromId|toId|type|line") so distinct call/reference sites
             // in the same procedure are each kept — dedup only collapses the same site being
@@ -1174,44 +1196,75 @@ namespace ClarionCodeGraph.Graph
                     int localMapDepth = 0;
                     for (int p = target.StartLine; p < lines.Length; p++)
                     {
+                        // Unconditional OMIT blocks are dead code in every build — skip them
+                        // here exactly as the body loop below does. Without this, a stray END
+                        // inside an OMIT'd fragment of a top-level MAP desyncs preScanMapDepth
+                        // and the whole file silently scans zero (pipeline run-1 debugger
+                        // finding — the same wipeout class round 5 set out to remove).
+                        var preOmitMatch = omitRegex.Match(lines[p]);
+                        if (preOmitMatch.Success)
+                        {
+                            if (preOmitMatch.Groups[1].Value.ToUpperInvariant() == "OMIT" && !preOmitMatch.Groups[3].Success)
+                            {
+                                string preTerminator = preOmitMatch.Groups[2].Value;
+                                p++;
+                                while (p < lines.Length && !lines[p].Contains(preTerminator))
+                                    p++;
+                            }
+                            continue;
+                        }
                         string scanLine = lines[p].TrimStart();
                         if (!foundFirstProc)
                         {
+                            var firstMatch = procDefRegex.Match(scanLine);
+                            if (firstMatch.Success)
+                            {
+                                // Resolve by (file, definition line), not name alone -- see the
+                                // overload note where currentProcId is updated the same way below.
+                                // A line that RESOLVES to a symbol is authoritative regardless of
+                                // MAP depth: member-file MAP prototypes never carry a by-line
+                                // symbol (ParseMemberFile skips MAPs wholesale) while real
+                                // definitions always do — so this also self-heals any depth
+                                // desync from a MAP shape the tracking above didn't model.
+                                long id;
+                                if (currentFileSymbolsByLine.TryGetValue(p + 1, out id))
+                                {
+                                    foundFirstProc = true;
+                                    parentProcId = id;
+                                    parentProcName = firstMatch.Groups[1].Value;
+                                    preScanMapDepth = 0;
+                                    continue;
+                                }
+                                if (preScanMapDepth == 0)
+                                {
+                                    // Procedure-shaped line outside any MAP with no symbol —
+                                    // pre-existing behavior: latch, leave parentProcId at -1.
+                                    foundFirstProc = true;
+                                }
+                                // Inside a MAP: an unresolved prototype line — keep scanning.
+                                continue;
+                            }
                             if (preScanMapDepth > 0)
                             {
                                 // MODULE('...') sub-blocks carry their own ENDs — track depth so
                                 // they don't end the MAP early (the exact NYSCommon derailment).
-                                if (System.Text.RegularExpressions.Regex.IsMatch(scanLine, @"^MODULE\s*\(", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                                if (moduleStartRegex.IsMatch(scanLine))
                                     preScanMapDepth++;
                                 else if (endOrPeriodRegex.IsMatch(lines[p]))
                                     preScanMapDepth--;
                                 continue;
                             }
-                            if (System.Text.RegularExpressions.Regex.IsMatch(scanLine, @"^MAP\s*([!].*)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                            if (mapStartRegex.IsMatch(scanLine))
                             {
                                 preScanMapDepth = 1;
                                 continue;
-                            }
-                            var firstMatch = procDefRegex.Match(scanLine);
-                            if (firstMatch.Success)
-                            {
-                                foundFirstProc = true;
-                                string matchName = firstMatch.Groups[1].Value;
-                                // Resolve by (file, definition line), not name alone -- see the
-                                // overload note where currentProcId is updated the same way below.
-                                long id;
-                                if (currentFileSymbolsByLine.TryGetValue(p + 1, out id))
-                                {
-                                    parentProcId = id;
-                                    parentProcName = matchName;
-                                }
                             }
                             continue;
                         }
                         // After first PROCEDURE, look for MAP...END block
                         if (!inLocalMap)
                         {
-                            if (System.Text.RegularExpressions.Regex.IsMatch(scanLine, @"^MAP\s*([!].*)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                            if (mapStartRegex.IsMatch(scanLine))
                             {
                                 inLocalMap = true;
                                 localMapDepth = 1;
@@ -1223,8 +1276,12 @@ namespace ClarionCodeGraph.Graph
                         // Inside local MAP — collect procedure/function names. MODULE('...')
                         // sub-blocks (external DLL declarations) carry their own ENDs; only the
                         // MAP's own END/period ends the block (previously the first nested END
-                        // ended collection AND the whole pre-scan early).
-                        if (System.Text.RegularExpressions.Regex.IsMatch(scanLine, @"^MODULE\s*\(", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                        // ended collection AND the whole pre-scan early). Only depth-1 prototypes
+                        // are collected: localMapNames means "implementation detail of the parent
+                        // procedure", and a nested MODULE('other.clw'/'dll') block names
+                        // procedures implemented OUTSIDE this file — collecting those would
+                        // suppress their real calls edges (pipeline run-1 debugger finding).
+                        if (moduleStartRegex.IsMatch(scanLine))
                         {
                             localMapDepth++;
                             continue;
@@ -1236,9 +1293,12 @@ namespace ClarionCodeGraph.Graph
                                 break; // End of local MAP
                             continue;
                         }
-                        var localMatch = procDefRegex.Match(scanLine);
-                        if (localMatch.Success)
-                            localMapNames.Add(localMatch.Groups[1].Value);
+                        if (localMapDepth == 1)
+                        {
+                            var localMatch = procDefRegex.Match(scanLine);
+                            if (localMatch.Success)
+                                localMapNames.Add(localMatch.Groups[1].Value);
+                        }
                     }
 
                     // Main-file tail: the global CODE section's calls belong to the program
@@ -1246,8 +1306,11 @@ namespace ClarionCodeGraph.Graph
                     if (target.ForcedParentId >= 0)
                         parentProcId = target.ForcedParentId;
 
-                    // Skip files where we couldn't find the parent procedure
-                    if (parentProcId < 0) continue;
+                    // Skip files where we couldn't find the parent procedure. COUNTED and
+                    // surfaced in the end-of-run summary: this silent exit is precisely the
+                    // failure shape that took a field battery to find in round 5 — a skip
+                    // that at least announces itself makes the next one cheap to catch.
+                    if (parentProcId < 0) { skippedNoParent++; continue; }
 
                     long currentProcId = parentProcId;
                     string currentProcName = parentProcName;
@@ -1430,15 +1493,20 @@ namespace ClarionCodeGraph.Graph
                             }
                             currentFromId = rId > 0 ? rId : currentProcId;
 
-                            // Peek: DATA block? Then the body starts at its CODE line.
+                            // Peek: DATA block? Then the body starts at its CODE line. The first
+                            // non-blank/non-comment line decides — no line cap (a cap made 5+
+                            // comment lines between ROUTINE and DATA scan the declarations as
+                            // code), and the shape test is dataStatementRegex, kept IDENTICAL to
+                            // the parser's DataStatementRegex so the two sides can't disagree
+                            // about whether a DATA block exists (pipeline run-1 debugger finding:
+                            // the old StartsWith("DATA ") accepted "DATA <token>" lines the
+                            // parser rejects).
                             bool hasData = false;
-                            for (int p = i + 1; p < lines.Length && p <= i + 5; p++)
+                            for (int p = i + 1; p < lines.Length; p++)
                             {
                                 string pt = lines[p].TrimStart();
                                 if (pt.Length == 0 || pt.StartsWith("!")) continue;
-                                hasData = pt.Equals("DATA", StringComparison.OrdinalIgnoreCase) ||
-                                          pt.StartsWith("DATA ", StringComparison.OrdinalIgnoreCase) ||
-                                          pt.StartsWith("DATA\t", StringComparison.OrdinalIgnoreCase);
+                                hasData = dataStatementRegex.IsMatch(lines[p]);
                                 break;
                             }
                             inCode = !hasData;
@@ -1767,13 +1835,22 @@ namespace ClarionCodeGraph.Graph
                                     // owned elsewhere — re-point the edge to the owning declaration
                                     // so the owner accrues its real usage. Falls back to the external
                                     // row itself when no owner is indexed (owner app outside the
-                                    // solution) — an edge to the import beats no edge at all.
+                                    // solution) — an edge to the import beats no edge at all. When
+                                    // more than one owner claims the name (unrelated apps reusing a
+                                    // global name), the lowest-id pick is deterministic but a GUESS —
+                                    // flagged ambiguous, same contract as call resolution.
                                     long refTargetId = varInfo.Id;
+                                    bool refAmbiguous = false;
                                     if (string.Equals(varInfo.DeclKind, "external", StringComparison.OrdinalIgnoreCase))
                                     {
                                         VariableInfo owner;
                                         if (globalOwnerByName.TryGetValue(varInfo.Name, out owner))
+                                        {
                                             refTargetId = owner.Id;
+                                            int ownerCount;
+                                            globalOwnerCounts.TryGetValue(varInfo.Name, out ownerCount);
+                                            refAmbiguous = ownerCount > 1;
+                                        }
                                     }
                                     string relKey = string.Format("{0}|{1}|references|{2}", currentFromId, refTargetId, i + 1);
                                     if (insertedRels.Add(relKey))
@@ -1784,7 +1861,8 @@ namespace ClarionCodeGraph.Graph
                                             ToId = refTargetId,
                                             Type = "references",
                                             FilePath = target.Path,
-                                            LineNumber = i + 1
+                                            LineNumber = i + 1,
+                                            Ambiguous = refAmbiguous
                                         });
                                         relCount++;
                                     }
@@ -2035,6 +2113,8 @@ namespace ClarionCodeGraph.Graph
 
             ReportProgress(string.Format("  Created {0} includes relationships", includesCount));
             ReportProgress(string.Format("  Resolved {0} relationships across {1} files", relCount, fileCount));
+            if (skippedNoParent > 0)
+                ReportProgress(string.Format("  WARNING: {0} file(s) skipped by the body scan — no parent procedure found (their symbols exist but they contributed zero call/do/references edges)", skippedNoParent));
         }
 
         // Resolve a variable's declared class type from its raw params string, mirroring the

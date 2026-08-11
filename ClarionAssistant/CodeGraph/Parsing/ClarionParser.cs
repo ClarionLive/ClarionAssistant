@@ -788,7 +788,12 @@ namespace ClarionCodeGraph.Parsing
                     // Inside a ROUTINE's DATA block the owner is the ROUTINE itself (round 5):
                     // parent chain procedure → routine → variable, and the relationship
                     // scanner's scope check accepts the routine's name while inside its body.
-                    string varScope = currentProcedure != null ? "local"
+                    // currentRoutine counts as "inside a procedure" here: a ROUTINE in a PROGRAM
+                    // file's global CODE section (legal, hand-written mains) has
+                    // currentProcedure == null but its DATA locals are still routine-local —
+                    // without this they'd be emitted scope='global' and even become candidate
+                    // re-point owners (pipeline run-1 debugger finding).
+                    string varScope = (currentProcedure != null || currentRoutine != null) ? "local"
                         : (isProgramFile ? "global" : "module");
                     string varOwner = currentRoutine ?? currentProcedure;
 

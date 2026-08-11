@@ -450,6 +450,26 @@ WHERE v.name IN ('r:Count','r:Multiplier','r:Copy') AND f.name='TS::MakeCalendar
 SELECT r.type, COUNT(*) FROM relationships r WHERE r.file_path LIKE '%DualMapLib.clw' GROUP BY r.type;
 ```
 
+**Pipeline run-1 hardening (same ticket, post-review):** the review pipeline's debugger
+gate found five latent defects in the round-5 code before it shipped to testing; all
+fixed in-place. (1) A ROUTINE attached to a PROGRAM's own global CODE section emitted
+its DATA locals as `scope='global'` — pinned: `Worker2.clw`'s `Main:Tally` routine,
+whose `r:MainCount` must be `scope='local'`, `parent_name='Main:Tally'`, with 1
+`references` edge from the routine (and the program gains a third `do` edge —
+`type='do'` count is now **3**). Totals become **149 symbols**. (2) A multi-owner
+external re-point now writes `ambiguous=1` (deterministic lowest-id pick, flagged as
+the guess it is — no fixture shape; single-owner pins stay `ambiguous=0`). (3) The
+pre-scan runs the same unconditional-OMIT skip as the body loop, and a
+procedure-shaped line that RESOLVES to a by-line symbol is authoritative regardless of
+MAP depth (self-heals any depth desync — member-file MAP prototypes never carry
+symbols, real definitions always do). (4) Only depth-1 prototypes of a
+procedure-local MAP are collected into `localMapNames`; nested `MODULE('...')`
+prototypes name procedures implemented elsewhere and no longer suppress their calls
+edges. (5) The indexer's routine DATA-block peek now uses the exact
+`DataStatementRegex` shape the parser uses (no line cap, no `DATA <token>` false
+positive). Plus: files skipped for want of a parent procedure are now counted and
+reported at end of run (`WARNING: N file(s) skipped by the body scan`).
+
 - v61 round-5 scale (measured 2026-08-11, round-4 db vs round-5 db, same source): 422,971
   symbols (was 414,240 — the +8,731 is EXACTLY the new routine-parented locals, 290 → 9,021;
   CC's 9,261 text-level estimate included shapes the parser correctly excludes);
