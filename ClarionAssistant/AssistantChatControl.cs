@@ -2000,29 +2000,100 @@ namespace ClarionAssistant
 
             _header.ClearIndexLog();
 
+            string dbPath = Path.Combine(
+                Path.GetDirectoryName(slnPath),
+                Path.GetFileNameWithoutExtension(slnPath) + ".codegraph.db");
+
+            // ETA seed for the progress window: the previous run's persisted duration
+            // (index_duration_ms metadata). Best-effort — a missing/locked db just means
+            // the window shows no estimate until live throughput takes over.
+            long lastRunMs = 0;
+            try
+            {
+                if (File.Exists(dbPath))
+                {
+                    var seedDb = new ClarionCodeGraph.Graph.CodeGraphDatabase();
+                    seedDb.Open(dbPath);
+                    long.TryParse(seedDb.GetMetadata("index_duration_ms"), out lastRunMs);
+                    seedDb.Close();
+                }
+            }
+            catch { lastRunMs = 0; }
+
+            // Always-on per-run transcript (ticket 0d788f8b) — survives an IDE crash or a
+            // closed window; the progress form's Open Log button points here.
+            var runLog = new ClarionAssistant.Services.IndexRunLog(Path.GetFileNameWithoutExtension(slnPath));
+
+            var progressForm = new Dialogs.IndexProgressForm(
+                Path.GetFileNameWithoutExtension(slnPath), runLog.LogPath, lastRunMs);
+            try
+            {
+                // Full project inventory up front (cheap .sln text parse) so every app is
+                // visible as Pending before the first file parses.
+                var slnProjects = new ClarionCodeGraph.Parsing.SolutionParser().Parse(slnPath);
+                var projectNames = new List<string>();
+                foreach (var p in slnProjects) projectNames.Add(p.Name);
+                progressForm.SetProjects(projectNames);
+            }
+            catch { }
+
+            // Cooperative cancel: the form's Cancel sets the flag; the indexer polls it at
+            // file boundaries. Interlocked because the poll happens on the worker thread.
+            int cancelFlag = 0;
+            progressForm.CancelClicked += () => System.Threading.Interlocked.Exchange(ref cancelFlag, 1);
+            progressForm.Show();
+
             var worker = new BackgroundWorker();
             worker.WorkerReportsProgress = true;
+            bool wasCancelled = false;
             worker.DoWork += (s, e) =>
             {
-                string dbPath = Path.Combine(
-                    Path.GetDirectoryName(slnPath),
-                    Path.GetFileNameWithoutExtension(slnPath) + ".codegraph.db");
-
                 var db = new ClarionCodeGraph.Graph.CodeGraphDatabase();
                 db.Open(dbPath);
-
-                var indexer = new ClarionCodeGraph.Graph.CodeGraphIndexer(db);
-                indexer.RedService = activeRed; // the IDE's ACTIVE .red — version file + local override
-                indexer.OnProgress += msg =>
+                try
                 {
-                    ((BackgroundWorker)s).ReportProgress(0, msg);
-                };
-                var result = indexer.IndexSolution(slnPath, incremental, libPaths);
-                db.Close();
-                e.Result = result;
+                    var indexer = new ClarionCodeGraph.Graph.CodeGraphIndexer(db);
+                    indexer.RedService = activeRed; // the IDE's ACTIVE .red — version file + local override
+                    indexer.CancelRequested = () =>
+                        System.Threading.Interlocked.CompareExchange(ref cancelFlag, 0, 0) == 1;
+                    indexer.OnProgress += msg =>
+                    {
+                        runLog.WriteLine(msg);
+                        ((BackgroundWorker)s).ReportProgress(0, msg);
+                    };
+                    indexer.OnProgressEvent += ev =>
+                    {
+                        ((BackgroundWorker)s).ReportProgress(1, ev);
+                    };
+                    var result = indexer.IndexSolution(slnPath, incremental, libPaths);
+                    e.Result = result;
+                }
+                catch (OperationCanceledException)
+                {
+                    wasCancelled = true;
+                }
+                finally
+                {
+                    db.Close();
+                }
+
+                // A cancelled FULL index cleared the database up front, so what's on disk is
+                // a partial graph that would silently masquerade as a complete one. Delete it;
+                // the status line tells the dev to re-run. (Incremental keeps the file — old
+                // data plus a partial update — and the status line says not to trust it yet.)
+                if (wasCancelled && !incremental)
+                {
+                    try { File.Delete(dbPath); } catch { }
+                }
             };
             worker.ProgressChanged += (s, e) =>
             {
+                var ev = e.UserState as ClarionCodeGraph.Graph.IndexProgressEvent;
+                if (ev != null)
+                {
+                    progressForm.OnEvent(ev);
+                    return;
+                }
                 string msg = e.UserState as string;
                 if (msg != null)
                     _header.AppendIndexLog(msg);
@@ -2030,10 +2101,35 @@ namespace ClarionAssistant
             worker.RunWorkerCompleted += (s, e) =>
             {
                 _header.SetIndexButtonsEnabled(true);
-                UpdateIndexStatus();
 
                 if (e.Error != null)
+                {
+                    runLog.WriteLine("FAILED: " + e.Error.Message);
+                    runLog.Dispose();
+                    progressForm.RunFailed(e.Error.Message);
                     _header.SetIndexStatus("Error: " + e.Error.Message, "error");
+                    UpdateIndexStatus();
+                    return;
+                }
+
+                if (wasCancelled)
+                {
+                    string disposition = incremental
+                        ? "The database keeps its previous contents plus a partial update — re-run the index before trusting queries."
+                        : "The partial database was deleted — run the index again to rebuild it.";
+                    runLog.WriteLine("CANCELLED. " + disposition);
+                    runLog.Dispose();
+                    progressForm.RunCancelled(disposition);
+                    _header.SetIndexStatus("Index cancelled", "error");
+                    UpdateIndexStatus();
+                    return;
+                }
+
+                var result = e.Result as ClarionCodeGraph.Graph.IndexResult;
+                runLog.Dispose();
+                if (result != null)
+                    progressForm.RunCompleted(result);
+                UpdateIndexStatus();
             };
             worker.RunWorkerAsync();
         }

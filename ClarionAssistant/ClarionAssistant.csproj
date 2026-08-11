@@ -92,6 +92,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="MonacoClarionSourceEditor.cs" />
+    <Compile Include="Services\IndexRunLog.cs" />
     <Compile Include="Services\DocumentOutlineBuilder.cs" />
     <Compile Include="Services\EditorFocusGuard.cs" />
     <Compile Include="Services\IdeEditorOptions.cs" />
@@ -175,6 +176,7 @@
     <Compile Include="Services\StructureDesignerService.cs" />
     <Compile Include="Services\FieldDropService.cs" />
     <Compile Include="Services\DefaultStructuresReader.cs" />
+    <Compile Include="Dialogs\IndexProgressForm.cs" />
     <Compile Include="Dialogs\ModernEmbeditorPickerDialog.cs" />
     <Compile Include="Dialogs\ClaudeChatSettingsDialog.cs" />
     <Compile Include="Dialogs\CheatSheetDialog.cs" />
@@ -220,6 +222,7 @@
     <Compile Include="CodeGraph\Graph\CodeGraphDatabase.cs" />
     <Compile Include="CodeGraph\Graph\CodeGraphProvider.cs" />
     <Compile Include="CodeGraph\Graph\CodeGraphIndexer.cs" />
+    <Compile Include="CodeGraph\Graph\IndexProgress.cs" />
     <Compile Include="CodeGraph\Graph\CodeGraphQuery.cs" />
     <Compile Include="CodeGraph\Parsing\ClarionParser.cs" />
     <Compile Include="CodeGraph\Parsing\ClarionBuiltins.cs" />

@@ -31,6 +31,44 @@ namespace ClarionCodeGraph.Graph
 
         public event Action<string> OnProgress;
 
+        /// <summary>
+        /// Structured progress (ticket 0d788f8b) alongside the string channel — phase, current
+        /// file, per-phase done/total — for UI consumers that need more than log lines. The
+        /// string channel is NOT going away: the console exe and the header log live on it.
+        /// </summary>
+        public event Action<IndexProgressEvent> OnProgressEvent;
+
+        /// <summary>
+        /// Cooperative cancellation probe, polled between files. When it returns true the run
+        /// stops at the next file boundary and IndexSolution returns with Cancelled=true. A
+        /// cancelled FULL index leaves a partial database (the run cleared it up front) — the
+        /// caller decides whether to delete it; it must never be presented as a complete index.
+        /// </summary>
+        public Func<bool> CancelRequested { get; set; }
+
+        private void EmitProgress(string phase, string projectName, string currentFile, int filesDone, int filesTotal, int symbolCount, int relCount)
+        {
+            var handler = OnProgressEvent;
+            if (handler == null) return;
+            handler(new IndexProgressEvent
+            {
+                Phase = phase,
+                ProjectName = projectName,
+                CurrentFile = currentFile,
+                FilesDone = filesDone,
+                FilesTotal = filesTotal,
+                SymbolCount = symbolCount,
+                RelationshipCount = relCount
+            });
+        }
+
+        private void ThrowIfCancelled()
+        {
+            var probe = CancelRequested;
+            if (probe != null && probe())
+                throw new OperationCanceledException("Index cancelled by user.");
+        }
+
         public CodeGraphIndexer(CodeGraphDatabase db)
         {
             _db = db;
@@ -439,6 +477,17 @@ namespace ClarionCodeGraph.Graph
 
             // Pass 2: Parse member files for changed projects
             ReportProgress("Pass 2: Parsing member files...");
+            // Per-phase progress denominator (ticket 0d788f8b): only projects this run will
+            // actually parse count toward the total, so incremental runs report an honest %.
+            int parseFilesTotal = 0;
+            int parseFilesDone = 0;
+            foreach (var proj in projects)
+            {
+                if (!changedProjects.Contains(proj.Id)) continue;
+                List<ResolvedFile> countMembers;
+                if (memberFiles.TryGetValue(proj.Id, out countMembers)) parseFilesTotal += countMembers.Count;
+                if (mainFiles.ContainsKey(proj.Id)) parseFilesTotal++;
+            }
             using (var txn = _db.BeginTransaction())
             {
                 foreach (var proj in projects)
@@ -448,8 +497,11 @@ namespace ClarionCodeGraph.Graph
                     List<ResolvedFile> members;
                     if (!memberFiles.TryGetValue(proj.Id, out members)) continue;
 
+                    EmitProgress(IndexProgressEvent.PhaseParsing, proj.Name, null, parseFilesDone, parseFilesTotal, result.SymbolCount, 0);
+
                     foreach (var file in members)
                     {
+                        ThrowIfCancelled();
                         var parseResult = _clarionParser.ParseMemberFile(file.FullPath, proj.Id, null);
                         foreach (var sym in parseResult.Symbols)
                         {
@@ -471,6 +523,8 @@ namespace ClarionCodeGraph.Graph
                         _db.InsertIndexedFile(proj.Id, file.FileName, file.FullPath,
                             parseResult.Symbols.Count > 0 ? "resolved_parsed" : "resolved_no_symbols",
                             parseResult.Symbols.Count, "pass2-member");
+                        parseFilesDone++;
+                        EmitProgress(IndexProgressEvent.PhaseParsing, proj.Name, file.FileName, parseFilesDone, parseFilesTotal, result.SymbolCount, 0);
                     }
 
                     // The main PROGRAM file: run the WHOLE file through the member-file parser
@@ -485,6 +539,7 @@ namespace ClarionCodeGraph.Graph
                     string tailMainPath;
                     if (mainFiles.TryGetValue(proj.Id, out tailMainPath))
                     {
+                        ThrowIfCancelled();
                         var tailResult = _clarionParser.ParseMemberFile(tailMainPath, proj.Id, null, 0);
                         int inserted = 0;
                         foreach (var sym in tailResult.Symbols)
@@ -515,6 +570,8 @@ namespace ClarionCodeGraph.Graph
                         _db.InsertIndexedFile(proj.Id, Path.GetFileName(tailMainPath), tailMainPath,
                             mainTotal > 0 ? "resolved_parsed" : "resolved_no_symbols",
                             mainTotal, "main");
+                        parseFilesDone++;
+                        EmitProgress(IndexProgressEvent.PhaseParsing, proj.Name, Path.GetFileName(tailMainPath), parseFilesDone, parseFilesTotal, result.SymbolCount, 0);
                     }
                 }
 
@@ -631,7 +688,7 @@ namespace ClarionCodeGraph.Graph
             using (var txn = _db.BeginTransaction())
             {
                 _db.ClearRelationships();
-                ResolveRelationships(projects, memberFiles, mainFiles);
+                result.RelationshipCount = ResolveRelationships(projects, memberFiles, mainFiles);
                 txn.Commit();
             }
 
@@ -686,8 +743,22 @@ namespace ClarionCodeGraph.Graph
             return false;
         }
 
-        private void ResolveRelationships(List<SolutionProject> projects, Dictionary<int, List<ResolvedFile>> memberFiles, Dictionary<int, string> mainFiles)
+        /// <summary>Returns the number of relationships inserted (surfaced on IndexResult for
+        /// the progress UI's completion summary — ticket 0d788f8b).</summary>
+        private int ResolveRelationships(List<SolutionProject> projects, Dictionary<int, List<ResolvedFile>> memberFiles, Dictionary<int, string> mainFiles)
         {
+            // Per-phase progress denominator (ticket 0d788f8b): one scan target per member
+            // file plus one per main-file tail — known before the walk starts, so the
+            // relationship phase can report an honest done/total.
+            int scanTargetsTotal = 0;
+            foreach (var projCount in projects)
+            {
+                List<ResolvedFile> countMembers;
+                if (memberFiles.TryGetValue(projCount.Id, out countMembers)) scanTargetsTotal += countMembers.Count;
+                if (mainFiles != null && mainFiles.ContainsKey(projCount.Id)) scanTargetsTotal++;
+            }
+            EmitProgress(IndexProgressEvent.PhaseResolving, null, null, 0, scanTargetsTotal, 0, 0);
+
             // Load ALL symbols into memory once — eliminates per-line DB queries
             var symbolNameToId = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
             var procNames = new List<string>(); // ordered list for matching
@@ -1147,10 +1218,14 @@ namespace ClarionCodeGraph.Graph
                 foreach (var target in scanTargets)
                 {
                     if (!File.Exists(target.Path)) continue;
+                    ThrowIfCancelled();
                     fileCount++;
 
                     if (fileCount % 50 == 0)
                         ReportProgress(string.Format("  Resolving calls: {0} files, {1} relationships...", fileCount, relCount));
+                    // Per-file structured event (0d788f8b): this phase averages seconds per
+                    // file on large solutions, so per-file emission is low-frequency here.
+                    EmitProgress(IndexProgressEvent.PhaseResolving, null, Path.GetFileName(target.Path), fileCount, scanTargetsTotal, 0, relCount);
 
                     var lines = ClarionAssistant.Services.EncodingHelper.ReadAllLines(target.Path, out _);
                     bool inCode = false;
@@ -1937,6 +2012,7 @@ namespace ClarionCodeGraph.Graph
             }
 
             // Build class/interface lookup dictionary for inheritance + uses_type
+            EmitProgress(IndexProgressEvent.PhaseFinishing, null, null, fileCount, fileCount, 0, relCount);
             var classNameToId = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
             var classIfaceDt = _db.ExecuteQuery(
                 "SELECT id, name FROM symbols WHERE type IN ('class','interface')");
@@ -2115,6 +2191,7 @@ namespace ClarionCodeGraph.Graph
             ReportProgress(string.Format("  Resolved {0} relationships across {1} files", relCount, fileCount));
             if (skippedNoParent > 0)
                 ReportProgress(string.Format("  WARNING: {0} file(s) skipped by the body scan — no parent procedure found (their symbols exist but they contributed zero call/do/references edges)", skippedNoParent));
+            return relCount;
         }
 
         // Resolve a variable's declared class type from its raw params string, mirroring the
@@ -2370,6 +2447,7 @@ namespace ClarionCodeGraph.Graph
         public int ProjectCount { get; set; }
         public int FileCount { get; set; }
         public int SymbolCount { get; set; }
+        public int RelationshipCount { get; set; }
         public long DurationMs { get; set; }
     }
 

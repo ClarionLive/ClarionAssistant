@@ -72,6 +72,7 @@
     <!-- Graph layer — SHARED with the addin, linked from ..\CodeGraph\ (one copy on disk) -->
     <Compile Include="..\CodeGraph\Graph\CodeGraphDatabase.cs"><Link>Graph\CodeGraphDatabase.cs</Link></Compile>
     <Compile Include="..\CodeGraph\Graph\CodeGraphIndexer.cs"><Link>Graph\CodeGraphIndexer.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Graph\IndexProgress.cs"><Link>Graph\IndexProgress.cs</Link></Compile>
     <Compile Include="..\CodeGraph\Graph\CodeGraphQuery.cs"><Link>Graph\CodeGraphQuery.cs</Link></Compile>
     <!-- Parsing layer — SHARED, linked from ..\CodeGraph\ -->
     <Compile Include="..\CodeGraph\Parsing\ClarionParser.cs"><Link>Parsing\ClarionParser.cs</Link></Compile>
