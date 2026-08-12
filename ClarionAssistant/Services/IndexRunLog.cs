@@ -24,22 +24,34 @@ namespace ClarionAssistant.Services
                     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                     "ClarionAssistant");
                 Directory.CreateDirectory(dir);
-                LogPath = Path.Combine(dir, "codegraph-index.log");
-                string prev = Path.Combine(dir, "codegraph-index.prev.log");
 
-                if (File.Exists(LogPath))
+                // Per-SOLUTION file name: two IDE instances indexing different solutions must
+                // not fight over one path (the loser's rotation throws a sharing violation and
+                // it silently logs nothing — pipeline debugger finding).
+                string safeName = solutionName ?? "solution";
+                foreach (char bad in Path.GetInvalidFileNameChars())
+                    safeName = safeName.Replace(bad, '_');
+                string logPath = Path.Combine(dir, "codegraph-index-" + safeName + ".log");
+                string prev = Path.Combine(dir, "codegraph-index-" + safeName + ".prev.log");
+
+                if (File.Exists(logPath))
                 {
                     if (File.Exists(prev)) File.Delete(prev);
-                    File.Move(LogPath, prev);
+                    File.Move(logPath, prev);
                 }
 
-                _writer = new StreamWriter(LogPath, false) { AutoFlush = true };
+                _writer = new StreamWriter(logPath, false) { AutoFlush = true };
+                // LogPath is only published once the writer is live — on any failure above it
+                // stays null, so the form's Open Log says "no log was written" instead of
+                // opening a PREVIOUS run's file and presenting it as this run's.
+                LogPath = logPath;
                 _writer.WriteLine(string.Format("=== CodeGraph index run — {0} — started {1:yyyy-MM-dd HH:mm:ss} ===",
                     solutionName, DateTime.Now));
             }
             catch
             {
                 _writer = null; // logging is best-effort
+                LogPath = null;
             }
         }
 

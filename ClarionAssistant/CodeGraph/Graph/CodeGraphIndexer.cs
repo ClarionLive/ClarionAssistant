@@ -307,6 +307,7 @@ namespace ClarionCodeGraph.Graph
                     int projectId = kvp.Key;
                     if (!changedProjects.Contains(projectId)) continue;
 
+                    ThrowIfCancelled();
                     string mainFile = kvp.Value;
                     ReportProgress(string.Format("  Parsing MAP: {0}", Path.GetFileName(mainFile)));
                     var parseResult = _clarionParser.ParseMainFile(mainFile, projectId);
@@ -440,6 +441,7 @@ namespace ClarionCodeGraph.Graph
 
                             foreach (string libIncPath in libIncFiles)
                             {
+                                ThrowIfCancelled();
                                 string fullPath = Path.GetFullPath(libIncPath);
                                 if (!indexedIncPaths.Add(fullPath))
                                     continue; // already indexed (from project or duplicate lib path casing)
@@ -497,7 +499,10 @@ namespace ClarionCodeGraph.Graph
                     List<ResolvedFile> members;
                     if (!memberFiles.TryGetValue(proj.Id, out members)) continue;
 
-                    EmitProgress(IndexProgressEvent.PhaseParsing, proj.Name, null, parseFilesDone, parseFilesTotal, result.SymbolCount, 0);
+                    // Per-project symbol delta for the progress UI (the solution-wide running
+                    // total on a per-project row would be silently wrong — review finding).
+                    int projStartSymbols = result.SymbolCount;
+                    EmitProgress(IndexProgressEvent.PhaseParsing, proj.Name, null, parseFilesDone, parseFilesTotal, 0, 0);
 
                     foreach (var file in members)
                     {
@@ -524,7 +529,7 @@ namespace ClarionCodeGraph.Graph
                             parseResult.Symbols.Count > 0 ? "resolved_parsed" : "resolved_no_symbols",
                             parseResult.Symbols.Count, "pass2-member");
                         parseFilesDone++;
-                        EmitProgress(IndexProgressEvent.PhaseParsing, proj.Name, file.FileName, parseFilesDone, parseFilesTotal, result.SymbolCount, 0);
+                        EmitProgress(IndexProgressEvent.PhaseParsing, proj.Name, file.FileName, parseFilesDone, parseFilesTotal, result.SymbolCount - projStartSymbols, 0);
                     }
 
                     // The main PROGRAM file: run the WHOLE file through the member-file parser
@@ -571,7 +576,7 @@ namespace ClarionCodeGraph.Graph
                             mainTotal > 0 ? "resolved_parsed" : "resolved_no_symbols",
                             mainTotal, "main");
                         parseFilesDone++;
-                        EmitProgress(IndexProgressEvent.PhaseParsing, proj.Name, Path.GetFileName(tailMainPath), parseFilesDone, parseFilesTotal, result.SymbolCount, 0);
+                        EmitProgress(IndexProgressEvent.PhaseParsing, proj.Name, Path.GetFileName(tailMainPath), parseFilesDone, parseFilesTotal, result.SymbolCount - projStartSymbols, 0);
                     }
                 }
 
@@ -595,6 +600,7 @@ namespace ClarionCodeGraph.Graph
                     int projectId = kvp.Key;
                     if (!changedProjects.Contains(projectId)) continue;
 
+                    ThrowIfCancelled();
                     string projectDir;
                     if (!projectDirs.TryGetValue(projectId, out projectDir)) continue;
 
@@ -757,6 +763,10 @@ namespace ClarionCodeGraph.Graph
                 if (memberFiles.TryGetValue(projCount.Id, out countMembers)) scanTargetsTotal += countMembers.Count;
                 if (mainFiles != null && mainFiles.ContainsKey(projCount.Id)) scanTargetsTotal++;
             }
+            // Progress numerator counts every CONSIDERED target (including missing files the
+            // scan skips) so the bar reaches the phase boundary; fileCount below stays the
+            // scanned-files count the log lines have always reported.
+            int scanTargetsConsidered = 0;
             EmitProgress(IndexProgressEvent.PhaseResolving, null, null, 0, scanTargetsTotal, 0, 0);
 
             // Load ALL symbols into memory once — eliminates per-line DB queries
@@ -1217,6 +1227,7 @@ namespace ClarionCodeGraph.Graph
 
                 foreach (var target in scanTargets)
                 {
+                    scanTargetsConsidered++;
                     if (!File.Exists(target.Path)) continue;
                     ThrowIfCancelled();
                     fileCount++;
@@ -1225,7 +1236,7 @@ namespace ClarionCodeGraph.Graph
                         ReportProgress(string.Format("  Resolving calls: {0} files, {1} relationships...", fileCount, relCount));
                     // Per-file structured event (0d788f8b): this phase averages seconds per
                     // file on large solutions, so per-file emission is low-frequency here.
-                    EmitProgress(IndexProgressEvent.PhaseResolving, null, Path.GetFileName(target.Path), fileCount, scanTargetsTotal, 0, relCount);
+                    EmitProgress(IndexProgressEvent.PhaseResolving, null, Path.GetFileName(target.Path), scanTargetsConsidered, scanTargetsTotal, 0, relCount);
 
                     var lines = ClarionAssistant.Services.EncodingHelper.ReadAllLines(target.Path, out _);
                     bool inCode = false;
@@ -2030,6 +2041,7 @@ namespace ClarionCodeGraph.Graph
                 "SELECT id, name, parent_name FROM symbols WHERE type = 'class' AND parent_name IS NOT NULL");
             foreach (System.Data.DataRow row in classDt.Rows)
             {
+                ThrowIfCancelled();
                 long childId = Convert.ToInt64(row["id"]);
                 string parentName = row["parent_name"].ToString();
                 long parentId;
@@ -2057,6 +2069,7 @@ namespace ClarionCodeGraph.Graph
             int usesTypeCount = 0;
             foreach (System.Data.DataRow row in typedVarDt.Rows)
             {
+                ThrowIfCancelled();
                 long varId = Convert.ToInt64(row["id"]);
                 string varParams = row["params"].ToString();
                 string ownerName = row["parent_name"] != DBNull.Value ? row["parent_name"].ToString() : null;
@@ -2150,6 +2163,7 @@ namespace ClarionCodeGraph.Graph
 
             foreach (System.Data.DataRow row in includeDt.Rows)
             {
+                ThrowIfCancelled();
                 long includeSymId = Convert.ToInt64(row["id"]);
                 string includedFile = row["name"].ToString(); // e.g. "mo.Inc" or "oifunctionsmap.clw"
                 string sourceFilePath = row["file_path"].ToString(); // file that contains the INCLUDE

@@ -45,7 +45,11 @@ namespace ClarionAssistant.Dialogs
         private double _fraction;              // 0..1 weighted progress
         private string _summaryText = "";
         private bool _finished;
+        private bool _cancelRequested;
         private string _lastProjectMarkedActive;
+        private string _lastPhaseSeen;
+        private int _lastUiRefreshTick;
+        private bool _projectsFinalized;
 
         /// <summary>Raised on the UI thread when the user clicks Cancel. The host flips the
         /// cooperative flag the indexer polls; this form only changes its own label.</summary>
@@ -99,7 +103,8 @@ namespace ClarionAssistant.Dialogs
                 Dock = DockStyle.Top,
                 Height = 20,
                 Text = "Elapsed 0:00",
-                Padding = new Padding(10, 0, 10, 0)
+                Padding = new Padding(10, 0, 10, 0),
+                AutoEllipsis = true // the completion summary outgrows a 560px window
             };
 
             _projectList = new ListView
@@ -146,7 +151,7 @@ namespace ClarionAssistant.Dialogs
             // machine has real shutdown-hang history) — request cancel and let it close.
             FormClosing += (s, e) =>
             {
-                if (_finished) return;
+                if (_finished || _cancelRequested) return; // cancel already in flight — free to go
                 if (e.CloseReason != CloseReason.UserClosing)
                 {
                     RaiseCancel();
@@ -158,7 +163,8 @@ namespace ClarionAssistant.Dialogs
                 if (answer == DialogResult.Yes)
                 {
                     RaiseCancel();
-                    e.Cancel = true; // stay visible until the run acknowledges the cancel
+                    // Window stays up showing "Cancelling..." — but is closable from now on.
+                    e.Cancel = true;
                 }
                 else
                 {
@@ -194,26 +200,43 @@ namespace ClarionAssistant.Dialogs
         {
             if (_finished || ev == null) return;
 
+            string phaseText = null;
             if (ev.Phase == IndexProgressEvent.PhaseParsing)
             {
-                _phaseLabel.Text = "Parsing symbols...";
+                phaseText = "Parsing symbols...";
                 if (ev.FilesTotal > 0)
                     _fraction = ParseWeight * ev.FilesDone / ev.FilesTotal;
-                if (!string.IsNullOrEmpty(ev.ProjectName))
-                    MarkProject(ev.ProjectName, ev.SymbolCount);
             }
             else if (ev.Phase == IndexProgressEvent.PhaseResolving)
             {
-                _phaseLabel.Text = "Resolving relationships...";
-                MarkAllProjectsParsed();
+                phaseText = "Resolving relationships...";
                 if (ev.FilesTotal > 0)
                     _fraction = ParseWeight + ResolveWeight * ev.FilesDone / ev.FilesTotal;
             }
             else if (ev.Phase == IndexProgressEvent.PhaseFinishing)
             {
-                _phaseLabel.Text = "Finishing (inheritance, type usage)...";
+                phaseText = "Finishing (inheritance, type usage)...";
                 _fraction = ParseWeight + ResolveWeight;
             }
+
+            // UI writes are gated to ~6/sec (review finding: the parse pass can emit tens of
+            // events per second on solutions of many small files). Phase transitions and
+            // phase-completion events always refresh so nothing important is skipped —
+            // intermediate project-chip transitions catch up on the next refresh (<150ms).
+            bool phaseChanged = !string.Equals(_lastPhaseSeen, ev.Phase, StringComparison.Ordinal);
+            _lastPhaseSeen = ev.Phase;
+            int tick = Environment.TickCount;
+            int sinceLast = tick - _lastUiRefreshTick; // wraps negative after 24.9 days — treat as due
+            if (!phaseChanged && ev.FilesDone < ev.FilesTotal && sinceLast >= 0 && sinceLast < 150)
+                return;
+            _lastUiRefreshTick = tick;
+
+            if (phaseText != null && !_cancelRequested)
+                _phaseLabel.Text = phaseText;
+            if (ev.Phase == IndexProgressEvent.PhaseParsing && !string.IsNullOrEmpty(ev.ProjectName))
+                MarkProject(ev.ProjectName, ev.SymbolCount);
+            else if (ev.Phase != IndexProgressEvent.PhaseParsing)
+                MarkAllProjectsParsed();
 
             if (!string.IsNullOrEmpty(ev.CurrentFile))
                 _fileLabel.Text = ev.CurrentFile;
@@ -226,56 +249,61 @@ namespace ClarionAssistant.Dialogs
 
         public void RunCompleted(IndexResult result)
         {
-            _finished = true;
-            _clockTimer.Stop();
             _bar.Value = _bar.Maximum;
             MarkAllProjectsParsed();
-            _phaseLabel.Text = "Index complete";
-            _phaseLabel.ForeColor = Color.FromArgb(0, 128, 0);
-            _fileLabel.Text = "";
-
-            _summaryText = string.Format(
-                "CodeGraph index complete: {0} projects, {1} files, {2:n0} symbols, {3:n0} relationships in {4}.",
-                result.ProjectCount, result.FileCount, result.SymbolCount, result.RelationshipCount,
-                FormatSpan(TimeSpan.FromMilliseconds(result.DurationMs)));
-            _statsLabel.Text = _summaryText;
-            _copyButton.Enabled = true;
-            MorphToClose();
+            // Symbol/relationship counts describe what THIS RUN parsed, not the whole index —
+            // an up-to-date incremental parses nothing and must not read as an empty database
+            // (debugger finding: "27 projects, 2,780 files, 0 symbols" over a 130k-symbol db).
+            string summary = (result.SymbolCount == 0 && result.RelationshipCount == 0)
+                ? string.Format(
+                    "Index already up to date — no source changes to parse ({0} projects, {1} files checked in {2}).",
+                    result.ProjectCount, result.FileCount,
+                    FormatSpan(TimeSpan.FromMilliseconds(result.DurationMs)))
+                : string.Format(
+                    "CodeGraph index complete: parsed {2:n0} symbols and {3:n0} relationships this run ({0} projects, {1} files) in {4}.",
+                    result.ProjectCount, result.FileCount, result.SymbolCount, result.RelationshipCount,
+                    FormatSpan(TimeSpan.FromMilliseconds(result.DurationMs)));
+            EnterTerminalState("Index complete", Color.FromArgb(0, 128, 0), "", summary);
         }
 
         public void RunCancelled(string dbDisposition)
         {
-            _finished = true;
-            _clockTimer.Stop();
-            _phaseLabel.Text = "Cancelled — index incomplete";
-            _phaseLabel.ForeColor = Color.FromArgb(176, 32, 32);
-            _fileLabel.Text = dbDisposition;
-            _summaryText = "Index cancelled after " + FormatSpan(_elapsed.Elapsed) + ". " + dbDisposition;
-            _statsLabel.Text = _summaryText;
-            _copyButton.Enabled = true;
-            MorphToClose();
+            EnterTerminalState("Cancelled — index incomplete", Color.FromArgb(176, 32, 32),
+                dbDisposition,
+                "Index cancelled after " + FormatSpan(_elapsed.Elapsed) + ". " + dbDisposition);
         }
 
         public void RunFailed(string message)
         {
+            EnterTerminalState("Index failed", Color.FromArgb(176, 32, 32),
+                message,
+                "Index failed after " + FormatSpan(_elapsed.Elapsed) + ": " + message);
+        }
+
+        private void EnterTerminalState(string headline, Color headlineColor, string detail, string summary)
+        {
             _finished = true;
             _clockTimer.Stop();
-            _phaseLabel.Text = "Index failed";
-            _phaseLabel.ForeColor = Color.FromArgb(176, 32, 32);
-            _fileLabel.Text = message;
-            _summaryText = "Index failed after " + FormatSpan(_elapsed.Elapsed) + ": " + message;
-            _statsLabel.Text = _summaryText;
+            _phaseLabel.Text = headline;
+            _phaseLabel.ForeColor = headlineColor;
+            _fileLabel.Text = detail;
+            _summaryText = summary;
+            _statsLabel.Text = summary;
             _copyButton.Enabled = true;
             MorphToClose();
         }
 
         /// <summary>Cancel acknowledged but run still unwinding — reflect the click
-        /// immediately so it never feels ignored.</summary>
+        /// immediately, and let the window CLOSE from here on: the indexer polls at file
+        /// boundaries and some stretches run minutes between polls; holding the window
+        /// hostage until the poll lands punishes the user for cancelling (debugger finding).
+        /// The host guards its callbacks with IsDisposed, so closing early is safe.</summary>
         public void CancelPending()
         {
             if (_finished) return;
+            _cancelRequested = true;
             _phaseLabel.Text = "Cancelling...";
-            _actionButton.Enabled = false;
+            _actionButton.Text = "Close";
         }
 
         private void MarkProject(string projectName, int symbolCount)
@@ -306,6 +334,8 @@ namespace ClarionAssistant.Dialogs
 
         private void MarkAllProjectsParsed()
         {
+            if (_projectsFinalized) return; // called per resolve-phase event otherwise
+            _projectsFinalized = true;
             foreach (var item in _projectItems.Values)
             {
                 if (item.SubItems[1].Text != "Done")
@@ -347,7 +377,7 @@ namespace ClarionAssistant.Dialogs
 
         private void OnActionClick(object sender, EventArgs e)
         {
-            if (_finished) { Close(); return; }
+            if (_finished || _cancelRequested) { Close(); return; }
             RaiseCancel();
         }
 

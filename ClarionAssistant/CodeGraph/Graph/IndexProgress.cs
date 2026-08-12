@@ -24,6 +24,9 @@ namespace ClarionCodeGraph.Graph
         public string CurrentFile { get; set; }
         public int FilesDone { get; set; }
         public int FilesTotal { get; set; }
+        /// <summary>Symbols indexed for THIS event's ProjectName so far — a per-project
+        /// delta, not the solution-wide running total (a UI column fed the cumulative
+        /// figure would be silently wrong on every row). 0 when not project-scoped.</summary>
         public int SymbolCount { get; set; }
         public int RelationshipCount { get; set; }
     }

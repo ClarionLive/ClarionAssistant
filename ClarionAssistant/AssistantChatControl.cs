@@ -2012,10 +2012,14 @@ namespace ClarionAssistant
             {
                 if (File.Exists(dbPath))
                 {
-                    var seedDb = new ClarionCodeGraph.Graph.CodeGraphDatabase();
-                    seedDb.Open(dbPath);
-                    long.TryParse(seedDb.GetMetadata("index_duration_ms"), out lastRunMs);
-                    seedDb.Close();
+                    // using is load-bearing: a throw from GetMetadata would otherwise leak a
+                    // connection to the very file the run is about to clear — and, on cancel,
+                    // try to delete (review finding).
+                    using (var seedDb = new ClarionCodeGraph.Graph.CodeGraphDatabase())
+                    {
+                        seedDb.Open(dbPath);
+                        long.TryParse(seedDb.GetMetadata("index_duration_ms"), out lastRunMs);
+                    }
                 }
             }
             catch { lastRunMs = 0; }
@@ -2064,7 +2068,9 @@ namespace ClarionAssistant
                     };
                     indexer.OnProgressEvent += ev =>
                     {
-                        ((BackgroundWorker)s).ReportProgress(1, ev);
+                        // Percent is deliberately 0 on both channels — routing happens on the
+                        // UserState type below, and a fake number invites someone to read it.
+                        ((BackgroundWorker)s).ReportProgress(0, ev);
                     };
                     var result = indexer.IndexSolution(slnPath, incremental, libPaths);
                     e.Result = result;
@@ -2095,7 +2101,10 @@ namespace ClarionAssistant
                 var ev = e.UserState as ClarionCodeGraph.Graph.IndexProgressEvent;
                 if (ev != null)
                 {
-                    progressForm.OnEvent(ev);
+                    // The window is closable once a cancel is in flight — late posts from the
+                    // still-unwinding worker must not touch a disposed form.
+                    if (!progressForm.IsDisposed)
+                        progressForm.OnEvent(ev);
                     return;
                 }
                 string msg = e.UserState as string;
@@ -2105,12 +2114,13 @@ namespace ClarionAssistant
             worker.RunWorkerCompleted += (s, e) =>
             {
                 _header.SetIndexButtonsEnabled(true);
+                bool formAlive = !progressForm.IsDisposed;
 
                 if (e.Error != null)
                 {
                     runLog.WriteLine("FAILED: " + e.Error.Message);
                     runLog.Dispose();
-                    progressForm.RunFailed(e.Error.Message);
+                    if (formAlive) progressForm.RunFailed(e.Error.Message);
                     _header.SetIndexStatus("Error: " + e.Error.Message, "error");
                     UpdateIndexStatus();
                     return;
@@ -2125,7 +2135,7 @@ namespace ClarionAssistant
                             : "The PARTIAL database could NOT be deleted (file still in use) — do not trust queries; delete " + dbPath + " manually or re-run the index.");
                     runLog.WriteLine("CANCELLED. " + disposition);
                     runLog.Dispose();
-                    progressForm.RunCancelled(disposition);
+                    if (formAlive) progressForm.RunCancelled(disposition);
                     _header.SetIndexStatus("Index cancelled", "error");
                     UpdateIndexStatus();
                     return;
@@ -2133,8 +2143,15 @@ namespace ClarionAssistant
 
                 var result = e.Result as ClarionCodeGraph.Graph.IndexResult;
                 runLog.Dispose();
-                if (result != null)
-                    progressForm.RunCompleted(result);
+                if (formAlive)
+                {
+                    if (result != null)
+                        progressForm.RunCompleted(result);
+                    else
+                        // A run that neither erred nor cancelled but returned nothing must not
+                        // leave the window ticking forever in its running state.
+                        progressForm.RunFailed("Index returned no result.");
+                }
                 UpdateIndexStatus();
             };
             worker.RunWorkerAsync();
