@@ -24,9 +24,19 @@ namespace ClarionAssistant.Dialogs
         // Default WinForms Label/ListView erase their background then repaint — at several
         // updates a second that reads as constant flashing (John, first live test). Both
         // controls expose DoubleBuffered only as a protected property, hence the subclasses.
+        //
+        // Label needs SetStyle, NOT the DoubleBuffered property: Label is constructed with
+        // OptimizedDoubleBuffer already on, so `DoubleBuffered = true` hits the setter's
+        // no-change guard and never sets AllPaintingInWmPaint — the style that suppresses
+        // the WM_ERASEBKGND background clear, which IS the visible text-blink (John, second
+        // live test: "text disappearing and reappearing" once per second, i.e. per clock
+        // tick — the erase, not the paint).
         private sealed class BufferedLabel : Label
         {
-            public BufferedLabel() { DoubleBuffered = true; }
+            public BufferedLabel()
+            {
+                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+            }
         }
 
         private sealed class BufferedListView : ListView
