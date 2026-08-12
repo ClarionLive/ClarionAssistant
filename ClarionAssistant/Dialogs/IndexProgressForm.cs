@@ -141,10 +141,17 @@ namespace ClarionAssistant.Dialogs
             Controls.Add(_phaseLabel);
 
             // Closing the window while running means Cancel — a hidden run the dev believes
-            // they stopped is worse than an honest prompt.
+            // they stopped is worse than an honest prompt. But ONLY a user-initiated close
+            // may prompt: an IDE or Windows shutdown must never block on a modal (this
+            // machine has real shutdown-hang history) — request cancel and let it close.
             FormClosing += (s, e) =>
             {
                 if (_finished) return;
+                if (e.CloseReason != CloseReason.UserClosing)
+                {
+                    RaiseCancel();
+                    return;
+                }
                 var answer = MessageBox.Show(this,
                     "The index is still running. Cancel it?",
                     "CodeGraph Index", MessageBoxButtons.YesNo, MessageBoxIcon.Question);

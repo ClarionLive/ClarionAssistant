@@ -2046,6 +2046,7 @@ namespace ClarionAssistant
             var worker = new BackgroundWorker();
             worker.WorkerReportsProgress = true;
             bool wasCancelled = false;
+            bool partialDbDeleted = false;
             worker.DoWork += (s, e) =>
             {
                 var db = new ClarionCodeGraph.Graph.CodeGraphDatabase();
@@ -2081,9 +2082,12 @@ namespace ClarionAssistant
                 // a partial graph that would silently masquerade as a complete one. Delete it;
                 // the status line tells the dev to re-run. (Incremental keeps the file — old
                 // data plus a partial update — and the status line says not to trust it yet.)
+                // The delete is VERIFIED — claiming deletion that a held handle prevented
+                // would be the exact silent lie this window exists to remove.
                 if (wasCancelled && !incremental)
                 {
                     try { File.Delete(dbPath); } catch { }
+                    partialDbDeleted = !File.Exists(dbPath);
                 }
             };
             worker.ProgressChanged += (s, e) =>
@@ -2116,7 +2120,9 @@ namespace ClarionAssistant
                 {
                     string disposition = incremental
                         ? "The database keeps its previous contents plus a partial update — re-run the index before trusting queries."
-                        : "The partial database was deleted — run the index again to rebuild it.";
+                        : (partialDbDeleted
+                            ? "The partial database was deleted — run the index again to rebuild it."
+                            : "The PARTIAL database could NOT be deleted (file still in use) — do not trust queries; delete " + dbPath + " manually or re-run the index.");
                     runLog.WriteLine("CANCELLED. " + disposition);
                     runLog.Dispose();
                     progressForm.RunCancelled(disposition);
