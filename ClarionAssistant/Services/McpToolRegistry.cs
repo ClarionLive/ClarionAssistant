@@ -39,6 +39,14 @@ namespace ClarionAssistant.Services
     /// </summary>
     public class McpToolRegistry
     {
+        // MCP streaming (ticket 0d788f8b): steady-state silence budget for index_solution's
+        // event relay. A healthy run is never quiet this long (per-file events every phase,
+        // heartbeats in the finishing tail) — tripping this means wedged or killed.
+        private const int StreamWatchdogMinutes = 10;
+        // Bounded relay queue: drop-when-full keeps a stalled SSE client from growing an
+        // unbounded backlog while the UI thread keeps producing progress events.
+        private const int StreamEventQueueCapacity = 256;
+
         private readonly Dictionary<string, McpTool> _tools = new Dictionary<string, McpTool>(StringComparer.OrdinalIgnoreCase);
         private readonly EditorService _editorService;
         private readonly ClarionClassParser _parser;
@@ -2032,7 +2040,11 @@ COMMON QUERIES:
                     // Events cross from the UI thread (RunIndex's ProgressChanged) to this
                     // worker; the worker never touches UI and the UI never touches the
                     // network stream (a stalled client must not be able to wedge the IDE).
-                    var events = new BlockingCollection<ClarionCodeGraph.Graph.IndexProgressEvent>();
+                    // BOUNDED + drop-when-full: progress is lossy by design, so when the
+                    // consumer stalls behind a slow/stalled client the UI side drops frames
+                    // instead of growing an unbounded backlog (Codex security finding, run 1).
+                    var events = new BlockingCollection<ClarionCodeGraph.Graph.IndexProgressEvent>(
+                        StreamEventQueueCapacity);
                     string summary = null;
 
                     _chatControl.BeginInvoke((Action)(() =>
@@ -2040,7 +2052,9 @@ COMMON QUERIES:
                         try
                         {
                             _chatControl.RunIndex(isIncremental,
-                                ev => { try { events.Add(ev); } catch (InvalidOperationException) { } },
+                                // InvalidOperationException also covers ObjectDisposedException
+                                // (its subclass) — thrown once the consumer abandons the queue.
+                                ev => { try { events.TryAdd(ev); } catch (InvalidOperationException) { } },
                                 s =>
                                 {
                                     summary = s;
@@ -2054,23 +2068,40 @@ COMMON QUERIES:
                         }
                     }));
 
-                    // Watchdog: if the run stops reporting entirely (wedged UI thread, killed
-                    // worker) don't hold the MCP connection open forever. Normal cadence is
-                    // well under this — parse ~15-30 files/s, resolve seconds per file.
+                    // Two-stage watchdog: the START must signal quickly (same 30s contract as
+                    // the registry's RequiresUiThread marshalling — a wedged UI thread should
+                    // fail fast, not after 10 minutes); after the first signal, a healthy run
+                    // is never silent for long (per-file events in every phase, heartbeats in
+                    // the finishing tail), so a long gap means wedged/killed, not slow.
+                    bool sawFirstSignal = false;
                     while (!events.IsCompleted)
                     {
                         ClarionCodeGraph.Graph.IndexProgressEvent ev;
-                        if (events.TryTake(out ev, TimeSpan.FromMinutes(10)))
+                        TimeSpan wait = sawFirstSignal
+                            ? TimeSpan.FromMinutes(StreamWatchdogMinutes)
+                            : TimeSpan.FromSeconds(30);
+                        if (events.TryTake(out ev, wait))
                         {
+                            sawFirstSignal = true;
                             onProgress(
                                 ClarionCodeGraph.Graph.IndexProgressEvent.WeightedPercent(ev),
                                 DescribeIndexEvent(ev));
                         }
                         else if (!events.IsCompleted)
                         {
-                            return "Error: the index run reported no progress for 10 minutes. "
-                                + "It may still be running — check the IDE progress window and "
-                                + "%APPDATA%\\ClarionAssistant\\codegraph-index.log.";
+                            // Abandoning the stream: stop the producer growing the queue for
+                            // the rest of the run (its TryAdd/CompleteAdding calls turn into
+                            // swallowed InvalidOperationExceptions).
+                            try { events.CompleteAdding(); } catch (InvalidOperationException) { }
+                            if (!sawFirstSignal)
+                                return "Error: the index run did not start within 30 seconds "
+                                    + "(IDE UI thread busy or blocked). Check the IDE before retrying.";
+                            return "Error: the index run reported no progress for "
+                                + StreamWatchdogMinutes + " minutes. It may still be running — "
+                                + "check the IDE progress window and the run log at "
+                                + "%APPDATA%\\ClarionAssistant\\codegraph-index-<solution>.log "
+                                + "before retrying (a retry while the run is alive would start "
+                                + "a second concurrent index).";
                         }
                     }
 
@@ -4110,9 +4141,9 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
         /// <summary>
         /// Shared body for index_codegraph. onProgress is null on the plain (buffered)
         /// path; when the client sent a progressToken it receives (weighted %, message)
-        /// per structured indexer event. Both paths write the always-on run transcript
-        /// (%APPDATA%\ClarionAssistant\codegraph-index.log) for parity with the in-IDE
-        /// RunIndex path.
+        /// per structured indexer event. Both paths write the always-on per-solution run
+        /// transcript (%APPDATA%\ClarionAssistant\codegraph-index-&lt;solution&gt;.log)
+        /// for parity with the in-IDE RunIndex path.
         /// </summary>
         private object ExecuteIndexCodeGraph(Dictionary<string, object> args, Action<double, string> onProgress)
         {
@@ -4169,7 +4200,10 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                         "  Log: {8}",
                         Path.GetFileName(slnPath), result.ProjectCount, result.FileCount,
                         result.SymbolCount, result.RelationshipCount, result.DurationMs, dbPath,
-                        incremental ? "incremental" : "full", runLog.LogPath);
+                        incremental ? "incremental" : "full",
+                        // LogPath is null when the log could not be opened (e.g. another index
+                        // run holds the per-solution file) — say so instead of a bare "Log: ".
+                        runLog.LogPath ?? "(no log written — another index run may hold the log file)");
                 }
                 finally
                 {

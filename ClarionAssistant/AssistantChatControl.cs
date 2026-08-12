@@ -1993,6 +1993,13 @@ namespace ClarionAssistant
         /// externalCompleted is called exactly once on every terminal path (error,
         /// cancel, success, and start-refused) with a human-readable summary.
         /// </summary>
+        // True while an index BackgroundWorker is in flight. Every RunIndex execution is on
+        // the UI thread (buttons directly, MCP via BeginInvoke), so a plain bool is race-free.
+        // Guards the MCP path: the header buttons are disabled during a run, but a streaming
+        // client that timed out could otherwise retry into a second concurrent run writing
+        // the same database (Codex adversary finding, run 1).
+        private bool _indexRunInProgress;
+
         public void RunIndex(bool incremental,
             Action<ClarionCodeGraph.Graph.IndexProgressEvent> externalProgress,
             Action<string> externalCompleted)
@@ -2006,6 +2013,23 @@ namespace ClarionAssistant
                     return;
                 }
                 MessageBox.Show("Please select a solution first.", "Index", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (_indexRunInProgress)
+            {
+                if (externalCompleted != null)
+                {
+                    try
+                    {
+                        externalCompleted("Error: an index run is already in progress in this IDE — "
+                            + "wait for it to finish (watch the progress window) before starting another.");
+                    }
+                    catch { }
+                    return;
+                }
+                MessageBox.Show("An index run is already in progress.", "Index",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
@@ -2135,75 +2159,95 @@ namespace ClarionAssistant
             };
             worker.RunWorkerCompleted += (s, e) =>
             {
-                _header.SetIndexButtonsEnabled(true);
-                bool formAlive = !progressForm.IsDisposed;
-
-                // External observer (MCP streaming) — notified on every terminal path,
-                // never allowed to disturb the UI-side handling.
-                Action<string> notifyExternal = msg =>
+                // The external observer (MCP streaming) is signalled from the finally so a
+                // throw anywhere in the UI-side handling (form, header, status refresh) can
+                // never strand the MCP worker waiting on a completion that already happened.
+                // Each branch assigns its summary BEFORE touching UI for the same reason.
+                string externalSummary = null;
+                try
                 {
+                    _header.SetIndexButtonsEnabled(true);
+                    bool formAlive = !progressForm.IsDisposed;
+
+                    if (e.Error != null)
+                    {
+                        externalSummary = "Error indexing solution: " + e.Error.Message;
+                        runLog.WriteLine("FAILED: " + e.Error.Message);
+                        runLog.Dispose();
+                        if (formAlive) progressForm.RunFailed(e.Error.Message);
+                        _header.SetIndexStatus("Error: " + e.Error.Message, "error");
+                        UpdateIndexStatus();
+                        return;
+                    }
+
+                    if (wasCancelled)
+                    {
+                        string disposition = incremental
+                            ? "The database keeps its previous contents plus a partial update — re-run the index before trusting queries."
+                            : (partialDbDeleted
+                                ? "The partial database was deleted — run the index again to rebuild it."
+                                : "The PARTIAL database could NOT be deleted (file still in use) — do not trust queries; delete " + dbPath + " manually or re-run the index.");
+                        externalSummary = "Index CANCELLED (from the IDE progress window). " + disposition;
+                        runLog.WriteLine("CANCELLED. " + disposition);
+                        runLog.Dispose();
+                        if (formAlive) progressForm.RunCancelled(disposition);
+                        _header.SetIndexStatus("Index cancelled", "error");
+                        UpdateIndexStatus();
+                        return;
+                    }
+
+                    var result = e.Result as ClarionCodeGraph.Graph.IndexResult;
+                    externalSummary = result != null
+                        ? string.Format(
+                            "CodeGraph indexed successfully:\n" +
+                            "  Solution: {0}\n" +
+                            "  Projects: {1}\n" +
+                            "  Files: {2}\n" +
+                            "  Symbols: {3}\n" +
+                            "  Relationships: {4}\n" +
+                            "  Duration: {5}ms\n" +
+                            "  Database: {6}\n" +
+                            "  Mode: {7}\n" +
+                            "  Log: {8}",
+                            Path.GetFileName(slnPath), result.ProjectCount, result.FileCount,
+                            result.SymbolCount, result.RelationshipCount, result.DurationMs, dbPath,
+                            incremental ? "incremental" : "full",
+                            runLog.LogPath ?? "(no log written — another index run may hold the log file)")
+                        : "Error: index returned no result.";
+                    runLog.Dispose();
+                    if (formAlive)
+                    {
+                        if (result != null)
+                            progressForm.RunCompleted(result, incremental);
+                        else
+                            // A run that neither erred nor cancelled but returned nothing must not
+                            // leave the window ticking forever in its running state.
+                            progressForm.RunFailed("Index returned no result.");
+                    }
+                    UpdateIndexStatus();
+                }
+                finally
+                {
+                    _indexRunInProgress = false;
                     if (externalCompleted != null)
-                        try { externalCompleted(msg); } catch { }
-                };
-
-                if (e.Error != null)
-                {
-                    runLog.WriteLine("FAILED: " + e.Error.Message);
-                    runLog.Dispose();
-                    if (formAlive) progressForm.RunFailed(e.Error.Message);
-                    _header.SetIndexStatus("Error: " + e.Error.Message, "error");
-                    UpdateIndexStatus();
-                    notifyExternal("Error indexing solution: " + e.Error.Message);
-                    return;
+                        try
+                        {
+                            externalCompleted(externalSummary
+                                ?? "Index finished but the IDE could not build a summary (error in completion handling).");
+                        }
+                        catch { }
                 }
-
-                if (wasCancelled)
-                {
-                    string disposition = incremental
-                        ? "The database keeps its previous contents plus a partial update — re-run the index before trusting queries."
-                        : (partialDbDeleted
-                            ? "The partial database was deleted — run the index again to rebuild it."
-                            : "The PARTIAL database could NOT be deleted (file still in use) — do not trust queries; delete " + dbPath + " manually or re-run the index.");
-                    runLog.WriteLine("CANCELLED. " + disposition);
-                    runLog.Dispose();
-                    if (formAlive) progressForm.RunCancelled(disposition);
-                    _header.SetIndexStatus("Index cancelled", "error");
-                    UpdateIndexStatus();
-                    notifyExternal("Index CANCELLED (from the IDE progress window). " + disposition);
-                    return;
-                }
-
-                var result = e.Result as ClarionCodeGraph.Graph.IndexResult;
-                runLog.Dispose();
-                if (formAlive)
-                {
-                    if (result != null)
-                        progressForm.RunCompleted(result, incremental);
-                    else
-                        // A run that neither erred nor cancelled but returned nothing must not
-                        // leave the window ticking forever in its running state.
-                        progressForm.RunFailed("Index returned no result.");
-                }
-                UpdateIndexStatus();
-                if (result != null)
-                    notifyExternal(string.Format(
-                        "CodeGraph indexed successfully:\n" +
-                        "  Solution: {0}\n" +
-                        "  Projects: {1}\n" +
-                        "  Files: {2}\n" +
-                        "  Symbols: {3}\n" +
-                        "  Relationships: {4}\n" +
-                        "  Duration: {5}ms\n" +
-                        "  Database: {6}\n" +
-                        "  Mode: {7}\n" +
-                        "  Log: {8}",
-                        Path.GetFileName(slnPath), result.ProjectCount, result.FileCount,
-                        result.SymbolCount, result.RelationshipCount, result.DurationMs, dbPath,
-                        incremental ? "incremental" : "full", runLog.LogPath));
-                else
-                    notifyExternal("Error: index returned no result.");
             };
-            worker.RunWorkerAsync();
+            _indexRunInProgress = true;
+            try
+            {
+                worker.RunWorkerAsync();
+            }
+            catch
+            {
+                _indexRunInProgress = false;
+                throw;
+            }
         }
 
         private System.Windows.Forms.TextBox _logTextBox;

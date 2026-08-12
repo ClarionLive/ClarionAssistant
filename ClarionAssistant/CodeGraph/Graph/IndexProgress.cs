@@ -34,7 +34,9 @@ namespace ClarionCodeGraph.Graph
         /// Overall weighted percentage (0..100) for this event, using the same phase
         /// weights as the in-IDE progress window (parsing 25%, resolving 73%,
         /// finishing tail 2%) so every consumer reports the same number for the
-        /// same moment of the run.
+        /// same moment of the run. NOTE: IndexProgressForm keeps its OWN copy of these
+        /// weights (ParseWeight/ResolveWeight) — change them in lockstep or the window
+        /// and MCP will report different percentages for the same event.
         /// </summary>
         public static double WeightedPercent(IndexProgressEvent ev)
         {

@@ -2036,12 +2036,25 @@ namespace ClarionCodeGraph.Graph
 
             ReportProgress(string.Format("  Loaded {0} class/interface symbols for type resolution", classNameToId.Count));
 
+            // Heartbeat cadence for the finishing tail (pipeline debugger, run 1): these
+            // loops used to emit NOTHING after the single PhaseFinishing event above, so a
+            // large solution went dead-silent at 98% for the whole tail — long enough to trip
+            // the MCP streaming watchdog and progress-reset client timeouts on a HEALTHY run.
+            // Percent stays pinned (done==total); the message carries the activity.
+            const int FinishingHeartbeatRows = 2000;
+
             // Insert inheritance relationships for classes (fixed: uses classNameToId, not symbolNameToId)
             var classDt = _db.ExecuteQuery(
                 "SELECT id, name, parent_name FROM symbols WHERE type = 'class' AND parent_name IS NOT NULL");
+            int inheritRowsSeen = 0;
             foreach (System.Data.DataRow row in classDt.Rows)
             {
                 ThrowIfCancelled();
+                inheritRowsSeen++;
+                if (inheritRowsSeen % FinishingHeartbeatRows == 0)
+                    EmitProgress(IndexProgressEvent.PhaseFinishing, null,
+                        string.Format("inheritance edges {0}/{1}", inheritRowsSeen, classDt.Rows.Count),
+                        fileCount, fileCount, 0, relCount);
                 long childId = Convert.ToInt64(row["id"]);
                 string parentName = row["parent_name"].ToString();
                 long parentId;
@@ -2067,9 +2080,15 @@ namespace ClarionCodeGraph.Graph
             var typedVarDt = _db.ExecuteQuery(
                 "SELECT id, name, params, parent_name, file_path FROM symbols WHERE type = 'variable' AND params IS NOT NULL");
             int usesTypeCount = 0;
+            int usesTypeRowsSeen = 0;
             foreach (System.Data.DataRow row in typedVarDt.Rows)
             {
                 ThrowIfCancelled();
+                usesTypeRowsSeen++;
+                if (usesTypeRowsSeen % FinishingHeartbeatRows == 0)
+                    EmitProgress(IndexProgressEvent.PhaseFinishing, null,
+                        string.Format("uses_type scan {0}/{1}", usesTypeRowsSeen, typedVarDt.Rows.Count),
+                        fileCount, fileCount, 0, relCount);
                 long varId = Convert.ToInt64(row["id"]);
                 string varParams = row["params"].ToString();
                 string ownerName = row["parent_name"] != DBNull.Value ? row["parent_name"].ToString() : null;
@@ -2161,9 +2180,15 @@ namespace ClarionCodeGraph.Graph
             var includeDt = _db.ExecuteQuery(
                 "SELECT id, name, file_path, line_number FROM symbols WHERE type = 'include'");
 
+            int includeRowsSeen = 0;
             foreach (System.Data.DataRow row in includeDt.Rows)
             {
                 ThrowIfCancelled();
+                includeRowsSeen++;
+                if (includeRowsSeen % FinishingHeartbeatRows == 0)
+                    EmitProgress(IndexProgressEvent.PhaseFinishing, null,
+                        string.Format("includes scan {0}/{1}", includeRowsSeen, includeDt.Rows.Count),
+                        fileCount, fileCount, 0, relCount);
                 long includeSymId = Convert.ToInt64(row["id"]);
                 string includedFile = row["name"].ToString(); // e.g. "mo.Inc" or "oifunctionsmap.clw"
                 string sourceFilePath = row["file_path"].ToString(); // file that contains the INCLUDE

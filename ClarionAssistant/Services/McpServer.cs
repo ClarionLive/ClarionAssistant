@@ -756,13 +756,20 @@ namespace ClarionAssistant.Services
                 _httpSessions[sessionId] = DateTime.UtcNow;
 
                 // Streaming tools/call (ticket 0d788f8b): when the client sent a
-                // progressToken and the tool has a streaming variant, answer the POST as
-                // an SSE stream (the Streamable HTTP spec allows SSE for any POST
-                // response) carrying notifications/progress frames, then the final
-                // response. Anything else falls through to the buffered JSON path.
+                // progressToken, negotiated SSE via Accept, and the tool has a streaming
+                // variant, answer the POST as an SSE stream (per the Streamable HTTP spec)
+                // carrying notifications/progress frames, then the final response.
+                // Anything else falls through to the buffered JSON path. The cheap
+                // substring gate keeps the vast majority of requests on a single parse.
+                string acceptHeader = request.Headers["Accept"] ?? "";
+                bool clientAcceptsSse =
+                    acceptHeader.IndexOf("text/event-stream", StringComparison.OrdinalIgnoreCase) >= 0;
                 JsonRpcRequest parsed = null;
-                try { parsed = McpJsonRpc.ParseRequest(body); }
-                catch { /* ProcessJsonRpc below reports the parse error */ }
+                if (clientAcceptsSse && body.IndexOf("progressToken", StringComparison.Ordinal) >= 0)
+                {
+                    try { parsed = McpJsonRpc.ParseRequest(body); }
+                    catch { /* ProcessJsonRpc below reports the parse error */ }
+                }
                 if (parsed != null && parsed.Method == "tools/call" && _toolRegistry != null)
                 {
                     string streamToolName = McpJsonRpc.GetString(parsed.Params, "name");
@@ -776,21 +783,23 @@ namespace ClarionAssistant.Services
                         response.Headers.Add("Mcp-Session-Id", sessionId);
                         response.SendChunked = true;
 
-                        var writer = new StreamWriter(response.OutputStream, new UTF8Encoding(false));
-                        var writeLock = new object();
-                        Action<string> send = json =>
+                        using (var writer = new StreamWriter(response.OutputStream, new UTF8Encoding(false)))
                         {
-                            // JavaScriptSerializer output is single-line — one data: field
-                            // per frame is always well-formed SSE.
-                            lock (writeLock)
+                            var writeLock = new object();
+                            Action<string> send = json =>
                             {
-                                writer.Write("event: message\ndata: " + json + "\n\n");
-                                writer.Flush();
-                            }
-                        };
+                                // JavaScriptSerializer output is single-line — one data: field
+                                // per frame is always well-formed SSE.
+                                lock (writeLock)
+                                {
+                                    writer.Write("event: message\ndata: " + json + "\n\n");
+                                    writer.Flush();
+                                }
+                            };
 
-                        string streamedResponse = HandleToolCall(parsed, send);
-                        send(streamedResponse);
+                            string streamedResponse = HandleToolCall(parsed, send);
+                            send(streamedResponse);
+                        }
                         return; // finally releases the connection
                     }
                 }
@@ -907,7 +916,11 @@ namespace ClarionAssistant.Services
 
         /// <summary>
         /// Extract the MCP progress token (params._meta.progressToken) from a tools/call
-        /// request. Null when the client didn't ask for progress.
+        /// request. Null when the client didn't ask for progress. The spec allows only
+        /// string or number tokens; anything else (or an oversized string) is treated as
+        /// absent rather than echoed into every progress frame — the token is reflected
+        /// back once per notification, so it must stay a cheap scalar (Codex security
+        /// finding, run 1).
         /// </summary>
         private static object ExtractProgressToken(Dictionary<string, object> parms)
         {
@@ -918,7 +931,12 @@ namespace ClarionAssistant.Services
             if (meta == null) return null;
             object token;
             meta.TryGetValue("progressToken", out token);
-            return token;
+
+            string s = token as string;
+            if (s != null) return s.Length <= 256 ? token : null;
+            // JavaScriptSerializer materializes JSON numbers as int, long, decimal or double.
+            if (token is int || token is long || token is decimal || token is double) return token;
+            return null;
         }
 
         // Minimum interval between notifications/progress frames. The indexer emits at
@@ -958,14 +976,18 @@ namespace ClarionAssistant.Services
                     // work (see McpTool.StreamingHandler). Notification failures are
                     // swallowed after the first: a disconnected client must not abort a
                     // long index run and leave a partial database behind.
-                    long lastSentTick = 0;
+                    // Throttle math uses unchecked int subtraction so the TickCount wrap
+                    // (~24.9 days uptime) can't permanently silence the stream.
+                    int lastSentTick = 0;
+                    bool sentAny = false;
                     bool sinkBroken = false;
                     Action<double, string> onProgress = (percent, message) =>
                     {
                         if (sinkBroken) return;
-                        long now = Environment.TickCount;
-                        if (lastSentTick != 0 && now - lastSentTick < ProgressThrottleMs) return;
-                        lastSentTick = now == 0 ? 1 : now;
+                        int now = Environment.TickCount;
+                        if (sentAny && unchecked(now - lastSentTick) < ProgressThrottleMs) return;
+                        sentAny = true;
+                        lastSentTick = now;
                         try
                         {
                             sendNotification(McpJsonRpc.Serialize(new Dictionary<string, object>
