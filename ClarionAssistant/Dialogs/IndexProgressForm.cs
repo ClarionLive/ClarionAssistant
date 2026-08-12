@@ -21,21 +21,37 @@ namespace ClarionAssistant.Dialogs
     /// </summary>
     public sealed class IndexProgressForm : Form
     {
-        // Default WinForms Label/ListView erase their background then repaint — at several
-        // updates a second that reads as constant flashing (John, first live test). Both
-        // controls expose DoubleBuffered only as a protected property, hence the subclasses.
-        //
-        // Label needs SetStyle, NOT the DoubleBuffered property: Label is constructed with
-        // OptimizedDoubleBuffer already on, so `DoubleBuffered = true` hits the setter's
-        // no-change guard and never sets AllPaintingInWmPaint — the style that suppresses
-        // the WM_ERASEBKGND background clear, which IS the visible text-blink (John, second
-        // live test: "text disappearing and reappearing" once per second, i.e. per clock
-        // tick — the erase, not the paint).
-        private sealed class BufferedLabel : Label
+        // Flicker history (three live tests, John): default Label/ListView erase-then-paint
+        // read as flashing; cutting cadence and forcing double-buffer styles on Label helped
+        // but text STILL blinked where content changed — Label's own paint path (GDI
+        // TextRenderer + AutoEllipsis measurement) does work outside the buffered blit that
+        // no ControlStyles combination fully suppresses. So the three live text lines are
+        // OWNER-DRAWN: one buffered OnPaint, background filled INSIDE the buffer, text drawn
+        // transparently over it, single atomic blit — there is no erase phase to see.
+        private sealed class SmoothLabel : Control
         {
-            public BufferedLabel()
+            public SmoothLabel()
             {
-                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                         ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+                SetStyle(ControlStyles.Selectable, false);
+            }
+
+            protected override void OnTextChanged(EventArgs e)
+            {
+                base.OnTextChanged(e);
+                Invalidate(); // Control (unlike Label) does not repaint on Text change by itself
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                e.Graphics.Clear(BackColor);
+                var rect = new Rectangle(Padding.Left, Padding.Top,
+                    Width - Padding.Left - Padding.Right, Height - Padding.Top - Padding.Bottom);
+                TextRenderer.DrawText(e.Graphics, Text, Font, rect, ForeColor,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
+                    TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine |
+                    TextFormatFlags.NoPrefix);
             }
         }
 
@@ -50,9 +66,9 @@ namespace ClarionAssistant.Dialogs
         private const double ParseWeight = 0.25;
         private const double ResolveWeight = 0.73;   // finishing tail gets the last 2%
 
-        private readonly Label _phaseLabel;
-        private readonly Label _fileLabel;
-        private readonly Label _statsLabel;
+        private readonly SmoothLabel _phaseLabel;
+        private readonly SmoothLabel _fileLabel;
+        private readonly SmoothLabel _statsLabel;
         private readonly ProgressBar _bar;
         private readonly ListView _projectList;
         private readonly Button _actionButton;
@@ -100,7 +116,7 @@ namespace ClarionAssistant.Dialogs
             MinimumSize = new Size(480, 340);
             Font = new Font("Segoe UI", 9f);
 
-            _phaseLabel = new BufferedLabel
+            _phaseLabel = new SmoothLabel
             {
                 Dock = DockStyle.Top,
                 Height = 26,
@@ -108,14 +124,13 @@ namespace ClarionAssistant.Dialogs
                 Text = "Starting...",
                 Padding = new Padding(10, 6, 10, 0)
             };
-            _fileLabel = new BufferedLabel
+            _fileLabel = new SmoothLabel
             {
                 Dock = DockStyle.Top,
                 Height = 20,
                 ForeColor = SystemColors.GrayText,
                 Text = "",
-                Padding = new Padding(10, 2, 10, 0),
-                AutoEllipsis = true
+                Padding = new Padding(10, 2, 10, 0)
             };
             _bar = new ProgressBar
             {
@@ -128,13 +143,14 @@ namespace ClarionAssistant.Dialogs
             var barHost = new Panel { Dock = DockStyle.Top, Height = 26, Padding = new Padding(10, 4, 10, 4) };
             _bar.Dock = DockStyle.Fill;
             barHost.Controls.Add(_bar);
-            _statsLabel = new BufferedLabel
+            _statsLabel = new SmoothLabel
             {
                 Dock = DockStyle.Top,
                 Height = 20,
                 Text = "Elapsed 0:00",
-                Padding = new Padding(10, 0, 10, 0),
-                AutoEllipsis = true // the completion summary outgrows a 560px window
+                Padding = new Padding(10, 0, 10, 0)
+                // ellipsis for the long completion summary comes from the owner-draw's
+                // EndEllipsis flag
             };
 
             _projectList = new BufferedListView
