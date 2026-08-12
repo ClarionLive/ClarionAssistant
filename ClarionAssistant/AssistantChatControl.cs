@@ -2146,7 +2146,7 @@ namespace ClarionAssistant
                 if (formAlive)
                 {
                     if (result != null)
-                        progressForm.RunCompleted(result);
+                        progressForm.RunCompleted(result, incremental);
                     else
                         // A run that neither erred nor cancelled but returned nothing must not
                         // leave the window ticking forever in its running state.

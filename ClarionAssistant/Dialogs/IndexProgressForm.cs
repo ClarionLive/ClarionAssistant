@@ -50,6 +50,13 @@ namespace ClarionAssistant.Dialogs
         private string _lastPhaseSeen;
         private int _lastUiRefreshTick;
         private bool _projectsFinalized;
+        // Latest per-project symbol delta, stashed BEFORE the UI throttle can drop the event —
+        // a project's final event is throttleable (the always-refresh escape uses solution-wide
+        // counters), and no later event carries that project's number again. Without the stash
+        // the row freezes at whatever refresh happened to land (run-2 debugger finding: the
+        // same wrong-number defect the delta fix removed, reintroduced by the throttle).
+        private readonly Dictionary<string, int> _pendingProjectSymbols =
+            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>Raised on the UI thread when the user clicks Cancel. The host flips the
         /// cooperative flag the indexer polls; this form only changes its own label.</summary>
@@ -219,15 +226,24 @@ namespace ClarionAssistant.Dialogs
                 _fraction = ParseWeight + ResolveWeight;
             }
 
+            // Stash the per-project symbol delta BEFORE the throttle can drop this event —
+            // MarkProject and MarkAllProjectsParsed write rows from the stash, so a dropped
+            // final event can't freeze a project's number short.
+            if (ev.Phase == IndexProgressEvent.PhaseParsing && !string.IsNullOrEmpty(ev.ProjectName))
+                _pendingProjectSymbols[ev.ProjectName] = ev.SymbolCount;
+
             // UI writes are gated to ~6/sec (review finding: the parse pass can emit tens of
-            // events per second on solutions of many small files). Phase transitions and
-            // phase-completion events always refresh so nothing important is skipped —
-            // intermediate project-chip transitions catch up on the next refresh (<150ms).
+            // events per second on solutions of many small files). Phase transitions,
+            // phase-completion events, and PROJECT transitions always refresh so nothing
+            // important is skipped — intermediate updates catch up on the next refresh.
             bool phaseChanged = !string.Equals(_lastPhaseSeen, ev.Phase, StringComparison.Ordinal);
             _lastPhaseSeen = ev.Phase;
+            bool projectChanged = ev.Phase == IndexProgressEvent.PhaseParsing &&
+                !string.IsNullOrEmpty(ev.ProjectName) &&
+                !string.Equals(ev.ProjectName, _lastProjectMarkedActive, StringComparison.OrdinalIgnoreCase);
             int tick = Environment.TickCount;
             int sinceLast = tick - _lastUiRefreshTick; // wraps negative after 24.9 days — treat as due
-            if (!phaseChanged && ev.FilesDone < ev.FilesTotal && sinceLast >= 0 && sinceLast < 150)
+            if (!phaseChanged && !projectChanged && ev.FilesDone < ev.FilesTotal && sinceLast >= 0 && sinceLast < 150)
                 return;
             _lastUiRefreshTick = tick;
 
@@ -247,14 +263,19 @@ namespace ClarionAssistant.Dialogs
             UpdateStats();
         }
 
-        public void RunCompleted(IndexResult result)
+        public void RunCompleted(IndexResult result, bool incremental)
         {
             _bar.Value = _bar.Maximum;
             MarkAllProjectsParsed();
             // Symbol/relationship counts describe what THIS RUN parsed, not the whole index —
             // an up-to-date incremental parses nothing and must not read as an empty database
             // (debugger finding: "27 projects, 2,780 files, 0 symbols" over a 130k-symbol db).
-            string summary = (result.SymbolCount == 0 && result.RelationshipCount == 0)
+            // "Up to date" requires EVIDENCE of one: an incremental run that actually resolved
+            // files. A FULL index yielding 0/0 (broken .red, missing .cwprojs) just cleared the
+            // database and indexed nothing — reporting it as up to date would be the same lie
+            // inverted (run-2 debugger finding), so it falls through to the honest wording.
+            string summary = (incremental && result.FileCount > 0 &&
+                              result.SymbolCount == 0 && result.RelationshipCount == 0)
                 ? string.Format(
                     "Index already up to date — no source changes to parse ({0} projects, {1} files checked in {2}).",
                     result.ProjectCount, result.FileCount,
@@ -323,6 +344,11 @@ namespace ClarionAssistant.Dialogs
                 {
                     prev.SubItems[1].Text = "Done";
                     prev.ForeColor = SystemColors.ControlText;
+                    // Final count from the stash — the previous project's LAST event may have
+                    // been dropped by the throttle.
+                    int prevFinal;
+                    if (_pendingProjectSymbols.TryGetValue(_lastProjectMarkedActive, out prevFinal))
+                        prev.SubItems[2].Text = prevFinal.ToString("n0");
                 }
                 _lastProjectMarkedActive = projectName;
                 item.SubItems[1].Text = "Indexing...";
@@ -336,13 +362,18 @@ namespace ClarionAssistant.Dialogs
         {
             if (_projectsFinalized) return; // called per resolve-phase event otherwise
             _projectsFinalized = true;
-            foreach (var item in _projectItems.Values)
+            foreach (var entry in _projectItems)
             {
+                var item = entry.Value;
                 if (item.SubItems[1].Text != "Done")
                 {
                     item.SubItems[1].Text = "Done";
                     item.ForeColor = SystemColors.ControlText;
                 }
+                // Flush every stashed final count — throttle-dropped last events land here.
+                int finalCount;
+                if (_pendingProjectSymbols.TryGetValue(entry.Key, out finalCount))
+                    item.SubItems[2].Text = finalCount.ToString("n0");
             }
             _lastProjectMarkedActive = null;
         }
