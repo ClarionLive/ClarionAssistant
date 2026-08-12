@@ -60,6 +60,13 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 Work landed since 5.7 is documented here as it merges — see [the release-docs workflow](docs/releases/README.md), and run `Check-ReleaseDocs.ps1` before cutting a release.
 
 <!-- release-docs: covered=codegraph -->
+### Indexing finally shows its work
+
+A full index of a large solution runs for over an hour, and until now the only sign anything was happening was a spinning cursor. Starting an index now opens a **progress window**: every app in the solution listed up front and ticked off as it parses, the file being read right now, a progress bar weighted by where the time actually goes (relationship resolution dominates, so the percentage tracks the clock instead of sprinting to a quarter and crawling), elapsed time, and an estimate seeded from your previous run &mdash; "last full index took 1:07" &mdash; until live throughput takes over.
+
+Indexing can now be **cancelled** mid-run. A cancelled full index deletes the partial database rather than leaving something that would quietly pass for a complete one; a cancelled update keeps your old data and says plainly not to trust it until re-run. When the run finishes, the window becomes the report &mdash; symbols and relationships parsed, duration, and any warnings &mdash; with one button to copy the summary and another to open the **full transcript**, which is now always written to disk (`%APPDATA%\ClarionAssistant\codegraph-index.log`, one file per solution, previous run kept) so it survives even if the IDE doesn't.
+
+<!-- release-docs: covered=codegraph -->
 ### CodeGraph stops giving confidently wrong answers about who calls what
 
 The entry below this one made the index twice as big; this one makes it tell the truth. Field testing on a 27-app production solution found that "who calls X" could answer with the wrong X entirely: when the same procedure name exists in several apps &mdash; and in generated Clarion code, dozens do &mdash; every call in every app resolved to one arbitrary copy. Not missing answers. Wrong ones.
