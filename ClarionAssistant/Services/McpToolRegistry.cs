@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.SQLite;
@@ -21,6 +22,15 @@ namespace ClarionAssistant.Services
         public Dictionary<string, object> InputSchema { get; set; }
         public Func<Dictionary<string, object>, object> Handler { get; set; }
         public bool RequiresUiThread { get; set; }
+
+        /// <summary>
+        /// Optional long-running variant used when the MCP client supplied a
+        /// progressToken (ticket 0d788f8b). Second argument is a progress callback
+        /// (percent 0..100, message). ALWAYS invoked on a worker thread — even when
+        /// RequiresUiThread is true — because streaming must not hold the UI thread;
+        /// the handler marshals its own UI work. Null = tool does not stream.
+        /// </summary>
+        public Func<Dictionary<string, object>, Action<double, string>, object> StreamingHandler { get; set; }
     }
 
     /// <summary>
@@ -105,6 +115,29 @@ namespace ClarionAssistant.Services
                 throw new ArgumentException("Unknown tool: " + name);
 
             return tool.Handler(arguments ?? new Dictionary<string, object>());
+        }
+
+        /// <summary>True when the tool has a streaming variant (progressToken-aware clients).</summary>
+        public bool SupportsStreaming(string toolName)
+        {
+            McpTool tool;
+            return _tools.TryGetValue(toolName, out tool) && tool.StreamingHandler != null;
+        }
+
+        /// <summary>
+        /// Run a tool's streaming variant. Caller (McpServer) guarantees this runs on a
+        /// worker thread; onProgress relays (percent 0..100, message) to the client.
+        /// </summary>
+        public object ExecuteToolStreaming(string name, Dictionary<string, object> arguments,
+            Action<double, string> onProgress)
+        {
+            McpTool tool;
+            if (!_tools.TryGetValue(name, out tool))
+                throw new ArgumentException("Unknown tool: " + name);
+            if (tool.StreamingHandler == null)
+                throw new InvalidOperationException("Tool does not support streaming: " + name);
+
+            return tool.StreamingHandler(arguments ?? new Dictionary<string, object>(), onProgress);
         }
 
         public List<Dictionary<string, object>> GetToolDefinitions()
@@ -1643,67 +1676,18 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "index_codegraph",
-                Description = "Index a Clarion solution into a CodeGraph database. Parses all .clw/.inc files and builds a symbol/relationship graph for cross-file queries, impact analysis, and dead code detection. Run this when you first open a solution or after code changes.",
+                Description = "Index a Clarion solution into a CodeGraph database. Parses all .clw/.inc files and builds a symbol/relationship graph for cross-file queries, impact analysis, and dead code detection. Run this when you first open a solution or after code changes. Streams live progress (weighted % + current file) when the client supports progress notifications.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
                     { "sln_path?", "Path to .sln file (auto-detected from current solution if omitted)" },
                     { "incremental?", "Only re-index changed projects (default: true)" }
                 }),
                 RequiresUiThread = false,
-                Handler = args =>
-                {
-                    string slnPath = McpJsonRpc.GetString(args, "sln_path");
-                    if (string.IsNullOrEmpty(slnPath) && _chatControl != null)
-                        slnPath = _chatControl.CurrentSolutionPath;
-                    if (string.IsNullOrEmpty(slnPath))
-                        return "Error: no solution path provided and no solution is open in the IDE.";
-                    if (!File.Exists(slnPath))
-                        return "Error: solution file not found: " + slnPath;
-
-                    bool incremental = McpJsonRpc.GetString(args, "incremental") != "false";
-
-                    string dbPath = Path.Combine(
-                        Path.GetDirectoryName(slnPath),
-                        Path.GetFileNameWithoutExtension(slnPath) + ".codegraph.db");
-
-                    try
-                    {
-                        var db = new ClarionCodeGraph.Graph.CodeGraphDatabase();
-                        db.Open(dbPath);
-
-                        var indexer = new ClarionCodeGraph.Graph.CodeGraphIndexer(db);
-                        // PARITY with RunIndex/index_solution: same active .red, same library
-                        // paths. This handler used to pass neither, so the same db was more or
-                        // less complete depending on which tool indexed last (ticket d1a0aea6).
-                        if (_chatControl != null)
-                        {
-                            indexer.RedService = _chatControl.ActiveRedFileService;
-                        }
-                        var progress = new System.Text.StringBuilder();
-                        indexer.OnProgress += msg => progress.AppendLine(msg);
-
-                        var result = indexer.IndexSolution(slnPath, incremental,
-                            _chatControl != null ? _chatControl.BuildIndexLibraryPaths() : null);
-                        db.Close();
-
-                        return string.Format(
-                            "CodeGraph indexed successfully:\n" +
-                            "  Solution: {0}\n" +
-                            "  Projects: {1}\n" +
-                            "  Files: {2}\n" +
-                            "  Symbols: {3}\n" +
-                            "  Duration: {4}ms\n" +
-                            "  Database: {5}\n" +
-                            "  Mode: {6}",
-                            Path.GetFileName(slnPath), result.ProjectCount, result.FileCount,
-                            result.SymbolCount, result.DurationMs, dbPath,
-                            incremental ? "incremental" : "full");
-                    }
-                    catch (Exception ex)
-                    {
-                        return "Error indexing solution: " + ex.Message;
-                    }
-                }
+                Handler = args => ExecuteIndexCodeGraph(args, null),
+                // With a progressToken the same run streams notifications/progress —
+                // weighted % + current file — instead of being silent for the whole
+                // index (ticket 0d788f8b).
+                StreamingHandler = (args, onProgress) => ExecuteIndexCodeGraph(args, onProgress)
             });
 
             Register(new McpTool
@@ -2013,7 +1997,7 @@ COMMON QUERIES:
             Register(new McpTool
             {
                 Name = "index_solution",
-                Description = "Index or re-index the currently selected Clarion solution. Creates/updates the CodeGraph database for cross-project code intelligence.",
+                Description = "Index or re-index the currently selected Clarion solution. Creates/updates the CodeGraph database for cross-project code intelligence. With a progress-capable client this call streams live progress (weighted % + current file) and returns the completion stats — a full index of a large solution can run for many minutes; the IDE progress window shows the same run. Without progress support it just starts the run and returns immediately.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
@@ -2032,6 +2016,65 @@ COMMON QUERIES:
                     return isIncremental
                         ? "Incremental index started for: " + (_chatControl.CurrentSolutionPath ?? "(none)")
                         : "Full index started for: " + (_chatControl.CurrentSolutionPath ?? "(none)");
+                },
+                // Streaming variant (ticket 0d788f8b): runs on a worker thread, marshals the
+                // RunIndex START to the UI thread, then relays the run's structured events
+                // until completion so the MCP caller gets live progress AND the final stats
+                // (the fire-and-forget Handler above never learns when the run ends).
+                StreamingHandler = (args, onProgress) =>
+                {
+                    if (_chatControl == null)
+                        return "Error: chat control not initialized";
+
+                    string incremental = McpJsonRpc.GetString(args, "incremental", "false");
+                    bool isIncremental = incremental.Equals("true", StringComparison.OrdinalIgnoreCase);
+
+                    // Events cross from the UI thread (RunIndex's ProgressChanged) to this
+                    // worker; the worker never touches UI and the UI never touches the
+                    // network stream (a stalled client must not be able to wedge the IDE).
+                    var events = new BlockingCollection<ClarionCodeGraph.Graph.IndexProgressEvent>();
+                    string summary = null;
+
+                    _chatControl.BeginInvoke((Action)(() =>
+                    {
+                        try
+                        {
+                            _chatControl.RunIndex(isIncremental,
+                                ev => { try { events.Add(ev); } catch (InvalidOperationException) { } },
+                                s =>
+                                {
+                                    summary = s;
+                                    try { events.CompleteAdding(); } catch (InvalidOperationException) { }
+                                });
+                        }
+                        catch (Exception ex)
+                        {
+                            summary = "Error starting index: " + ex.Message;
+                            try { events.CompleteAdding(); } catch (InvalidOperationException) { }
+                        }
+                    }));
+
+                    // Watchdog: if the run stops reporting entirely (wedged UI thread, killed
+                    // worker) don't hold the MCP connection open forever. Normal cadence is
+                    // well under this — parse ~15-30 files/s, resolve seconds per file.
+                    while (!events.IsCompleted)
+                    {
+                        ClarionCodeGraph.Graph.IndexProgressEvent ev;
+                        if (events.TryTake(out ev, TimeSpan.FromMinutes(10)))
+                        {
+                            onProgress(
+                                ClarionCodeGraph.Graph.IndexProgressEvent.WeightedPercent(ev),
+                                DescribeIndexEvent(ev));
+                        }
+                        else if (!events.IsCompleted)
+                        {
+                            return "Error: the index run reported no progress for 10 minutes. "
+                                + "It may still be running — check the IDE progress window and "
+                                + "%APPDATA%\\ClarionAssistant\\codegraph-index.log.";
+                        }
+                    }
+
+                    return summary ?? "Index finished but returned no summary.";
                 }
             });
 
@@ -4063,6 +4106,102 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
         #endregion
 
         #region CodeGraph Helpers
+
+        /// <summary>
+        /// Shared body for index_codegraph. onProgress is null on the plain (buffered)
+        /// path; when the client sent a progressToken it receives (weighted %, message)
+        /// per structured indexer event. Both paths write the always-on run transcript
+        /// (%APPDATA%\ClarionAssistant\codegraph-index.log) for parity with the in-IDE
+        /// RunIndex path.
+        /// </summary>
+        private object ExecuteIndexCodeGraph(Dictionary<string, object> args, Action<double, string> onProgress)
+        {
+            string slnPath = McpJsonRpc.GetString(args, "sln_path");
+            if (string.IsNullOrEmpty(slnPath) && _chatControl != null)
+                slnPath = _chatControl.CurrentSolutionPath;
+            if (string.IsNullOrEmpty(slnPath))
+                return "Error: no solution path provided and no solution is open in the IDE.";
+            if (!File.Exists(slnPath))
+                return "Error: solution file not found: " + slnPath;
+
+            bool incremental = McpJsonRpc.GetString(args, "incremental") != "false";
+
+            string dbPath = Path.Combine(
+                Path.GetDirectoryName(slnPath),
+                Path.GetFileNameWithoutExtension(slnPath) + ".codegraph.db");
+
+            var runLog = new IndexRunLog(Path.GetFileNameWithoutExtension(slnPath));
+            try
+            {
+                var db = new ClarionCodeGraph.Graph.CodeGraphDatabase();
+                db.Open(dbPath);
+                try
+                {
+                    var indexer = new ClarionCodeGraph.Graph.CodeGraphIndexer(db);
+                    // PARITY with RunIndex/index_solution: same active .red, same library
+                    // paths. This handler used to pass neither, so the same db was more or
+                    // less complete depending on which tool indexed last (ticket d1a0aea6).
+                    if (_chatControl != null)
+                    {
+                        indexer.RedService = _chatControl.ActiveRedFileService;
+                    }
+                    indexer.OnProgress += msg => runLog.WriteLine(msg);
+                    if (onProgress != null)
+                    {
+                        indexer.OnProgressEvent += ev => onProgress(
+                            ClarionCodeGraph.Graph.IndexProgressEvent.WeightedPercent(ev),
+                            DescribeIndexEvent(ev));
+                    }
+
+                    var result = indexer.IndexSolution(slnPath, incremental,
+                        _chatControl != null ? _chatControl.BuildIndexLibraryPaths() : null);
+
+                    return string.Format(
+                        "CodeGraph indexed successfully:\n" +
+                        "  Solution: {0}\n" +
+                        "  Projects: {1}\n" +
+                        "  Files: {2}\n" +
+                        "  Symbols: {3}\n" +
+                        "  Relationships: {4}\n" +
+                        "  Duration: {5}ms\n" +
+                        "  Database: {6}\n" +
+                        "  Mode: {7}\n" +
+                        "  Log: {8}",
+                        Path.GetFileName(slnPath), result.ProjectCount, result.FileCount,
+                        result.SymbolCount, result.RelationshipCount, result.DurationMs, dbPath,
+                        incremental ? "incremental" : "full", runLog.LogPath);
+                }
+                finally
+                {
+                    db.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                runLog.WriteLine("FAILED: " + ex.Message);
+                return "Error indexing solution: " + ex.Message;
+            }
+            finally
+            {
+                runLog.Dispose();
+            }
+        }
+
+        /// <summary>One-line human description of a structured indexer event for MCP progress messages.</summary>
+        private static string DescribeIndexEvent(ClarionCodeGraph.Graph.IndexProgressEvent ev)
+        {
+            string file = string.IsNullOrEmpty(ev.CurrentFile) ? "" : ev.CurrentFile + " ";
+            string proj = string.IsNullOrEmpty(ev.ProjectName) ? "" : " [" + ev.ProjectName + "]";
+            switch (ev.Phase)
+            {
+                case ClarionCodeGraph.Graph.IndexProgressEvent.PhaseParsing:
+                    return "Parsing " + file + "(" + ev.FilesDone + "/" + ev.FilesTotal + ")" + proj;
+                case ClarionCodeGraph.Graph.IndexProgressEvent.PhaseResolving:
+                    return "Resolving relationships: " + file + "(" + ev.FilesDone + "/" + ev.FilesTotal + ")" + proj;
+                default:
+                    return "Finalizing (inheritance/uses_type/includes)";
+            }
+        }
 
         private string FindCodeGraphDb()
         {

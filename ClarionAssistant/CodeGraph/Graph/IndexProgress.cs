@@ -29,5 +29,37 @@ namespace ClarionCodeGraph.Graph
         /// figure would be silently wrong on every row). 0 when not project-scoped.</summary>
         public int SymbolCount { get; set; }
         public int RelationshipCount { get; set; }
+
+        /// <summary>
+        /// Overall weighted percentage (0..100) for this event, using the same phase
+        /// weights as the in-IDE progress window (parsing 25%, resolving 73%,
+        /// finishing tail 2%) so every consumer reports the same number for the
+        /// same moment of the run.
+        /// </summary>
+        public static double WeightedPercent(IndexProgressEvent ev)
+        {
+            const double ParseWeight = 0.25;
+            const double ResolveWeight = 0.73;
+
+            if (ev == null) return 0.0;
+            double phaseFraction = ev.FilesTotal > 0
+                ? Math.Min(1.0, (double)ev.FilesDone / ev.FilesTotal)
+                : 0.0;
+
+            double fraction;
+            switch (ev.Phase)
+            {
+                case PhaseParsing:
+                    fraction = ParseWeight * phaseFraction;
+                    break;
+                case PhaseResolving:
+                    fraction = ParseWeight + ResolveWeight * phaseFraction;
+                    break;
+                default: // finishing
+                    fraction = ParseWeight + ResolveWeight;
+                    break;
+            }
+            return Math.Min(100.0, fraction * 100.0);
+        }
     }
 }

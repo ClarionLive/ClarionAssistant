@@ -1983,8 +1983,28 @@ namespace ClarionAssistant
 
         public void RunIndex(bool incremental)
         {
+            RunIndex(incremental, null, null);
+        }
+
+        /// <summary>
+        /// RunIndex with external observers (ticket 0d788f8b: MCP progress streaming).
+        /// Both callbacks fire on the UI thread and are best-effort — an observer
+        /// exception must never disturb the run or the progress window.
+        /// externalCompleted is called exactly once on every terminal path (error,
+        /// cancel, success, and start-refused) with a human-readable summary.
+        /// </summary>
+        public void RunIndex(bool incremental,
+            Action<ClarionCodeGraph.Graph.IndexProgressEvent> externalProgress,
+            Action<string> externalCompleted)
+        {
             if (string.IsNullOrEmpty(_currentSlnPath) || !File.Exists(_currentSlnPath))
             {
+                if (externalCompleted != null)
+                {
+                    // MCP-triggered: report instead of popping a modal at the developer.
+                    try { externalCompleted("Error: no solution is selected in the IDE."); } catch { }
+                    return;
+                }
                 MessageBox.Show("Please select a solution first.", "Index", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
@@ -2105,6 +2125,8 @@ namespace ClarionAssistant
                     // still-unwinding worker must not touch a disposed form.
                     if (!progressForm.IsDisposed)
                         progressForm.OnEvent(ev);
+                    if (externalProgress != null)
+                        try { externalProgress(ev); } catch { }
                     return;
                 }
                 string msg = e.UserState as string;
@@ -2116,6 +2138,14 @@ namespace ClarionAssistant
                 _header.SetIndexButtonsEnabled(true);
                 bool formAlive = !progressForm.IsDisposed;
 
+                // External observer (MCP streaming) — notified on every terminal path,
+                // never allowed to disturb the UI-side handling.
+                Action<string> notifyExternal = msg =>
+                {
+                    if (externalCompleted != null)
+                        try { externalCompleted(msg); } catch { }
+                };
+
                 if (e.Error != null)
                 {
                     runLog.WriteLine("FAILED: " + e.Error.Message);
@@ -2123,6 +2153,7 @@ namespace ClarionAssistant
                     if (formAlive) progressForm.RunFailed(e.Error.Message);
                     _header.SetIndexStatus("Error: " + e.Error.Message, "error");
                     UpdateIndexStatus();
+                    notifyExternal("Error indexing solution: " + e.Error.Message);
                     return;
                 }
 
@@ -2138,6 +2169,7 @@ namespace ClarionAssistant
                     if (formAlive) progressForm.RunCancelled(disposition);
                     _header.SetIndexStatus("Index cancelled", "error");
                     UpdateIndexStatus();
+                    notifyExternal("Index CANCELLED (from the IDE progress window). " + disposition);
                     return;
                 }
 
@@ -2153,6 +2185,23 @@ namespace ClarionAssistant
                         progressForm.RunFailed("Index returned no result.");
                 }
                 UpdateIndexStatus();
+                if (result != null)
+                    notifyExternal(string.Format(
+                        "CodeGraph indexed successfully:\n" +
+                        "  Solution: {0}\n" +
+                        "  Projects: {1}\n" +
+                        "  Files: {2}\n" +
+                        "  Symbols: {3}\n" +
+                        "  Relationships: {4}\n" +
+                        "  Duration: {5}ms\n" +
+                        "  Database: {6}\n" +
+                        "  Mode: {7}\n" +
+                        "  Log: {8}",
+                        Path.GetFileName(slnPath), result.ProjectCount, result.FileCount,
+                        result.SymbolCount, result.RelationshipCount, result.DurationMs, dbPath,
+                        incremental ? "incremental" : "full", runLog.LogPath));
+                else
+                    notifyExternal("Error: index returned no result.");
             };
             worker.RunWorkerAsync();
         }

@@ -691,12 +691,15 @@ namespace ClarionAssistant.Services
             response.StatusCode = 202;
             response.Close();
 
-            // Process the JSON-RPC request asynchronously and send result via SSE
+            // Process the JSON-RPC request asynchronously and send result via SSE.
+            // The session stream doubles as the notification sink, so streaming tools
+            // can interleave notifications/progress frames before the response.
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 try
                 {
-                    string responseJson = ProcessJsonRpc(body);
+                    string responseJson = ProcessJsonRpc(body,
+                        json => client.SendEvent("message", json));
                     client.SendEvent("message", responseJson);
                 }
                 catch (Exception ex)
@@ -752,6 +755,46 @@ namespace ClarionAssistant.Services
                 // Update last-seen timestamp
                 _httpSessions[sessionId] = DateTime.UtcNow;
 
+                // Streaming tools/call (ticket 0d788f8b): when the client sent a
+                // progressToken and the tool has a streaming variant, answer the POST as
+                // an SSE stream (the Streamable HTTP spec allows SSE for any POST
+                // response) carrying notifications/progress frames, then the final
+                // response. Anything else falls through to the buffered JSON path.
+                JsonRpcRequest parsed = null;
+                try { parsed = McpJsonRpc.ParseRequest(body); }
+                catch { /* ProcessJsonRpc below reports the parse error */ }
+                if (parsed != null && parsed.Method == "tools/call" && _toolRegistry != null)
+                {
+                    string streamToolName = McpJsonRpc.GetString(parsed.Params, "name");
+                    if (!string.IsNullOrEmpty(streamToolName)
+                        && ExtractProgressToken(parsed.Params) != null
+                        && _toolRegistry.SupportsStreaming(streamToolName))
+                    {
+                        response.StatusCode = 200;
+                        response.ContentType = "text/event-stream";
+                        response.Headers.Add("Cache-Control", "no-cache");
+                        response.Headers.Add("Mcp-Session-Id", sessionId);
+                        response.SendChunked = true;
+
+                        var writer = new StreamWriter(response.OutputStream, new UTF8Encoding(false));
+                        var writeLock = new object();
+                        Action<string> send = json =>
+                        {
+                            // JavaScriptSerializer output is single-line — one data: field
+                            // per frame is always well-formed SSE.
+                            lock (writeLock)
+                            {
+                                writer.Write("event: message\ndata: " + json + "\n\n");
+                                writer.Flush();
+                            }
+                        };
+
+                        string streamedResponse = HandleToolCall(parsed, send);
+                        send(streamedResponse);
+                        return; // finally releases the connection
+                    }
+                }
+
                 // Process the JSON-RPC request
                 string responseJson = ProcessJsonRpc(body);
 
@@ -801,6 +844,18 @@ namespace ClarionAssistant.Services
 
         private string ProcessJsonRpc(string body)
         {
+            return ProcessJsonRpc(body, null);
+        }
+
+        /// <summary>
+        /// Process a JSON-RPC message. sendNotification, when non-null, is a transport
+        /// sink for server→client notifications emitted DURING a tools/call (progress
+        /// streaming, ticket 0d788f8b): the legacy SSE transport passes its session
+        /// stream, the Streamable HTTP transport an SSE response writer. Null = the
+        /// transport can't carry mid-call notifications; tools run buffered as before.
+        /// </summary>
+        private string ProcessJsonRpc(string body, Action<string> sendNotification)
+        {
             JsonRpcRequest request;
             try
             {
@@ -836,7 +891,7 @@ namespace ClarionAssistant.Services
                         return McpJsonRpc.SerializeResponse(request.Id, listResult);
 
                     case "tools/call":
-                        return HandleToolCall(request);
+                        return HandleToolCall(request, sendNotification);
 
                     default:
                         return McpJsonRpc.SerializeError(request.Id, -32601,
@@ -850,7 +905,33 @@ namespace ClarionAssistant.Services
             }
         }
 
+        /// <summary>
+        /// Extract the MCP progress token (params._meta.progressToken) from a tools/call
+        /// request. Null when the client didn't ask for progress.
+        /// </summary>
+        private static object ExtractProgressToken(Dictionary<string, object> parms)
+        {
+            if (parms == null) return null;
+            object metaObj;
+            if (!parms.TryGetValue("_meta", out metaObj)) return null;
+            var meta = metaObj as Dictionary<string, object>;
+            if (meta == null) return null;
+            object token;
+            meta.TryGetValue("progressToken", out token);
+            return token;
+        }
+
+        // Minimum interval between notifications/progress frames. The indexer emits at
+        // file boundaries (up to ~30/s during parsing) — relaying every one would flood
+        // the client for zero information gain.
+        private const int ProgressThrottleMs = 1000;
+
         private string HandleToolCall(JsonRpcRequest request)
+        {
+            return HandleToolCall(request, null);
+        }
+
+        private string HandleToolCall(JsonRpcRequest request, Action<string> sendNotification)
         {
             var parms = request.Params;
             string toolName = McpJsonRpc.GetString(parms, "name");
@@ -864,10 +945,51 @@ namespace ClarionAssistant.Services
                     "Missing tool name in tools/call");
             }
 
+            object progressToken = sendNotification != null ? ExtractProgressToken(parms) : null;
+            bool streaming = progressToken != null && _toolRegistry.SupportsStreaming(toolName);
+
             object result;
             try
             {
-                if (_toolRegistry.RequiresUiThread(toolName))
+                if (streaming)
+                {
+                    // Streaming path: runs on THIS worker thread regardless of
+                    // RequiresUiThread — the tool's StreamingHandler marshals its own UI
+                    // work (see McpTool.StreamingHandler). Notification failures are
+                    // swallowed after the first: a disconnected client must not abort a
+                    // long index run and leave a partial database behind.
+                    long lastSentTick = 0;
+                    bool sinkBroken = false;
+                    Action<double, string> onProgress = (percent, message) =>
+                    {
+                        if (sinkBroken) return;
+                        long now = Environment.TickCount;
+                        if (lastSentTick != 0 && now - lastSentTick < ProgressThrottleMs) return;
+                        lastSentTick = now == 0 ? 1 : now;
+                        try
+                        {
+                            sendNotification(McpJsonRpc.Serialize(new Dictionary<string, object>
+                            {
+                                { "jsonrpc", "2.0" },
+                                { "method", "notifications/progress" },
+                                { "params", new Dictionary<string, object>
+                                    {
+                                        { "progressToken", progressToken },
+                                        { "progress", Math.Round(percent, 1) },
+                                        { "total", 100 },
+                                        { "message", message }
+                                    }
+                                }
+                            }));
+                        }
+                        catch
+                        {
+                            sinkBroken = true;
+                        }
+                    };
+                    result = _toolRegistry.ExecuteToolStreaming(toolName, arguments, onProgress);
+                }
+                else if (_toolRegistry.RequiresUiThread(toolName))
                 {
                     object uiResult = null;
                     Exception uiException = null;
