@@ -21,6 +21,19 @@ namespace ClarionAssistant.Dialogs
     /// </summary>
     public sealed class IndexProgressForm : Form
     {
+        // Default WinForms Label/ListView erase their background then repaint — at several
+        // updates a second that reads as constant flashing (John, first live test). Both
+        // controls expose DoubleBuffered only as a protected property, hence the subclasses.
+        private sealed class BufferedLabel : Label
+        {
+            public BufferedLabel() { DoubleBuffered = true; }
+        }
+
+        private sealed class BufferedListView : ListView
+        {
+            public BufferedListView() { DoubleBuffered = true; }
+        }
+
         // Phase weighting for the overall bar: symbol parsing is the fast fraction of
         // wall-clock, relationship resolution dominates. A uniform files/total would sprint
         // to a high % during parsing, then crawl — worse than no bar at all.
@@ -77,7 +90,7 @@ namespace ClarionAssistant.Dialogs
             MinimumSize = new Size(480, 340);
             Font = new Font("Segoe UI", 9f);
 
-            _phaseLabel = new Label
+            _phaseLabel = new BufferedLabel
             {
                 Dock = DockStyle.Top,
                 Height = 26,
@@ -85,7 +98,7 @@ namespace ClarionAssistant.Dialogs
                 Text = "Starting...",
                 Padding = new Padding(10, 6, 10, 0)
             };
-            _fileLabel = new Label
+            _fileLabel = new BufferedLabel
             {
                 Dock = DockStyle.Top,
                 Height = 20,
@@ -105,7 +118,7 @@ namespace ClarionAssistant.Dialogs
             var barHost = new Panel { Dock = DockStyle.Top, Height = 26, Padding = new Padding(10, 4, 10, 4) };
             _bar.Dock = DockStyle.Fill;
             barHost.Controls.Add(_bar);
-            _statsLabel = new Label
+            _statsLabel = new BufferedLabel
             {
                 Dock = DockStyle.Top,
                 Height = 20,
@@ -114,7 +127,7 @@ namespace ClarionAssistant.Dialogs
                 AutoEllipsis = true // the completion summary outgrows a 560px window
             };
 
-            _projectList = new ListView
+            _projectList = new BufferedListView
             {
                 Dock = DockStyle.Fill,
                 View = View.Details,
@@ -260,7 +273,10 @@ namespace ClarionAssistant.Dialogs
             int barValue = (int)(_fraction * 1000);
             if (barValue > _bar.Maximum) barValue = _bar.Maximum;
             _bar.Value = barValue;
-            UpdateStats();
+            // Deliberately NO UpdateStats() here — the percent/ETA line redrawing at event
+            // cadence on top of the 1-second timer is what read as "flashing constantly"
+            // (John, first live test). The clock timer owns that label; the bar is native
+            // and repaints smoothly at any cadence.
         }
 
         public void RunCompleted(IndexResult result, bool incremental)
@@ -348,14 +364,22 @@ namespace ClarionAssistant.Dialogs
                     // been dropped by the throttle.
                     int prevFinal;
                     if (_pendingProjectSymbols.TryGetValue(_lastProjectMarkedActive, out prevFinal))
-                        prev.SubItems[2].Text = prevFinal.ToString("n0");
+                    {
+                        string prevText = prevFinal.ToString("n0");
+                        if (prev.SubItems[2].Text != prevText)
+                            prev.SubItems[2].Text = prevText;
+                    }
                 }
                 _lastProjectMarkedActive = projectName;
                 item.SubItems[1].Text = "Indexing...";
                 item.ForeColor = SystemColors.HotTrack;
                 item.EnsureVisible();
             }
-            item.SubItems[2].Text = symbolCount.ToString("n0");
+            // Skip-if-same: a ListView subitem assignment invalidates the row even when the
+            // text is identical — needless repaints at refresh cadence (flicker report).
+            string newCount = symbolCount.ToString("n0");
+            if (item.SubItems[2].Text != newCount)
+                item.SubItems[2].Text = newCount;
         }
 
         private void MarkAllProjectsParsed()
@@ -373,7 +397,11 @@ namespace ClarionAssistant.Dialogs
                 // Flush every stashed final count — throttle-dropped last events land here.
                 int finalCount;
                 if (_pendingProjectSymbols.TryGetValue(entry.Key, out finalCount))
-                    item.SubItems[2].Text = finalCount.ToString("n0");
+                {
+                    string finalText = finalCount.ToString("n0");
+                    if (item.SubItems[2].Text != finalText)
+                        item.SubItems[2].Text = finalText;
+                }
             }
             _lastProjectMarkedActive = null;
         }
