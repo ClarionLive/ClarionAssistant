@@ -46,7 +46,7 @@ namespace ClarionCodeGraph.Graph
         /// </summary>
         public Func<bool> CancelRequested { get; set; }
 
-        private void EmitProgress(string phase, string projectName, string currentFile, int filesDone, int filesTotal, int symbolCount, int relCount)
+        private void EmitProgress(string phase, string projectName, string currentFile, int filesDone, int filesTotal, int symbolCount, int relCount, string message = null)
         {
             var handler = OnProgressEvent;
             if (handler == null) return;
@@ -58,7 +58,8 @@ namespace ClarionCodeGraph.Graph
                 FilesDone = filesDone,
                 FilesTotal = filesTotal,
                 SymbolCount = symbolCount,
-                RelationshipCount = relCount
+                RelationshipCount = relCount,
+                Message = message
             });
         }
 
@@ -2052,9 +2053,9 @@ namespace ClarionCodeGraph.Graph
                 ThrowIfCancelled();
                 inheritRowsSeen++;
                 if (inheritRowsSeen % FinishingHeartbeatRows == 0)
-                    EmitProgress(IndexProgressEvent.PhaseFinishing, null,
-                        string.Format("inheritance edges {0}/{1}", inheritRowsSeen, classDt.Rows.Count),
-                        fileCount, fileCount, 0, relCount);
+                    EmitProgress(IndexProgressEvent.PhaseFinishing, null, null,
+                        fileCount, fileCount, 0, relCount,
+                        string.Format("Finalizing: inheritance edges {0}/{1}", inheritRowsSeen, classDt.Rows.Count));
                 long childId = Convert.ToInt64(row["id"]);
                 string parentName = row["parent_name"].ToString();
                 long parentId;
@@ -2086,9 +2087,9 @@ namespace ClarionCodeGraph.Graph
                 ThrowIfCancelled();
                 usesTypeRowsSeen++;
                 if (usesTypeRowsSeen % FinishingHeartbeatRows == 0)
-                    EmitProgress(IndexProgressEvent.PhaseFinishing, null,
-                        string.Format("uses_type scan {0}/{1}", usesTypeRowsSeen, typedVarDt.Rows.Count),
-                        fileCount, fileCount, 0, relCount);
+                    EmitProgress(IndexProgressEvent.PhaseFinishing, null, null,
+                        fileCount, fileCount, 0, relCount,
+                        string.Format("Finalizing: uses_type scan {0}/{1}", usesTypeRowsSeen, typedVarDt.Rows.Count));
                 long varId = Convert.ToInt64(row["id"]);
                 string varParams = row["params"].ToString();
                 string ownerName = row["parent_name"] != DBNull.Value ? row["parent_name"].ToString() : null;
@@ -2186,9 +2187,9 @@ namespace ClarionCodeGraph.Graph
                 ThrowIfCancelled();
                 includeRowsSeen++;
                 if (includeRowsSeen % FinishingHeartbeatRows == 0)
-                    EmitProgress(IndexProgressEvent.PhaseFinishing, null,
-                        string.Format("includes scan {0}/{1}", includeRowsSeen, includeDt.Rows.Count),
-                        fileCount, fileCount, 0, relCount);
+                    EmitProgress(IndexProgressEvent.PhaseFinishing, null, null,
+                        fileCount, fileCount, 0, relCount,
+                        string.Format("Finalizing: includes scan {0}/{1}", includeRowsSeen, includeDt.Rows.Count));
                 long includeSymId = Convert.ToInt64(row["id"]);
                 string includedFile = row["name"].ToString(); // e.g. "mo.Inc" or "oifunctionsmap.clw"
                 string sourceFilePath = row["file_path"].ToString(); // file that contains the INCLUDE

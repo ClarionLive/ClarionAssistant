@@ -92,6 +92,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="MonacoClarionSourceEditor.cs" />
+    <Compile Include="Services\IndexRunGate.cs" />
     <Compile Include="Services\IndexRunLog.cs" />
     <Compile Include="Services\DocumentOutlineBuilder.cs" />
     <Compile Include="Services\EditorFocusGuard.cs" />

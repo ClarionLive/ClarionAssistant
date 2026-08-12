@@ -22,6 +22,10 @@ namespace ClarionCodeGraph.Graph
         public string ProjectName { get; set; }
         /// <summary>File name currently being processed; null for phase-transition events.</summary>
         public string CurrentFile { get; set; }
+        /// <summary>Free-text status for events that aren't about one file (start latency,
+        /// finishing-tail heartbeats). Consumers that render CurrentFile as a file name must
+        /// not fall back to this field — it is display text, not a path.</summary>
+        public string Message { get; set; }
         public int FilesDone { get; set; }
         public int FilesTotal { get; set; }
         /// <summary>Symbols indexed for THIS event's ProjectName so far — a per-project

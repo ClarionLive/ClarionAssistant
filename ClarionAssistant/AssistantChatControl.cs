@@ -2229,6 +2229,11 @@ namespace ClarionAssistant
                 finally
                 {
                     _indexRunInProgress = false;
+                    ClarionAssistant.Services.IndexRunGate.Exit(dbPath);
+                    // Idempotent — the branches dispose on their normal paths; this catches
+                    // a UI throw that would otherwise leak the per-solution log handle for
+                    // the process lifetime (pipeline debugger, run 2).
+                    runLog.Dispose();
                     if (externalCompleted != null)
                         try
                         {
@@ -2238,6 +2243,25 @@ namespace ClarionAssistant
                         catch { }
                 }
             };
+            // Cross-entry-point gate: index_codegraph (MCP worker thread) writes the same
+            // database and can't see _indexRunInProgress. Claimed at the last no-throw
+            // point before the worker starts, so a setup exception can't leak the claim.
+            if (!ClarionAssistant.Services.IndexRunGate.TryEnter(dbPath))
+            {
+                string held = "Error: an index run is already in progress for this solution's database "
+                    + "(started via index_codegraph) — wait for it to finish before starting another.";
+                runLog.WriteLine("REFUSED: another index run holds " + dbPath);
+                runLog.Dispose();
+                _header.SetIndexButtonsEnabled(true);
+                if (!progressForm.IsDisposed)
+                    progressForm.RunFailed("An index of this solution's database is already in progress.");
+                if (externalCompleted != null)
+                    try { externalCompleted(held); } catch { }
+                else
+                    MessageBox.Show("An index of this solution's database is already in progress.",
+                        "Index", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
             _indexRunInProgress = true;
             try
             {
@@ -2246,8 +2270,28 @@ namespace ClarionAssistant
             catch
             {
                 _indexRunInProgress = false;
+                ClarionAssistant.Services.IndexRunGate.Exit(dbPath);
                 throw;
             }
+
+            // Synthetic start event for external observers (pipeline debugger, run 2): the
+            // indexer's first structured event only fires at pass 2, and everything before
+            // it (.sln parse, project resolve, pass 1, library scan) reports on the string
+            // channel only — long enough on a large solution to false-trip the MCP 30s
+            // start deadline. This tells the streaming caller "started" immediately, so
+            // that deadline measures UI-thread start latency and nothing else.
+            if (externalProgress != null)
+                try
+                {
+                    externalProgress(new ClarionCodeGraph.Graph.IndexProgressEvent
+                    {
+                        Phase = ClarionCodeGraph.Graph.IndexProgressEvent.PhaseParsing,
+                        FilesDone = 0,
+                        FilesTotal = 0,
+                        Message = "Index run started (solution parse / project resolution)"
+                    });
+                }
+                catch { }
         }
 
         private System.Windows.Forms.TextBox _logTextBox;

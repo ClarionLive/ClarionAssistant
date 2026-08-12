@@ -5,8 +5,8 @@ namespace ClarionAssistant.Services
 {
     /// <summary>
     /// Always-on, flush-per-line log of one CodeGraph index run (ticket 0d788f8b).
-    /// %APPDATA%\ClarionAssistant\codegraph-index.log, previous run kept as
-    /// codegraph-index.prev.log. Written unconditionally — not save-on-demand — so the
+    /// %APPDATA%\ClarionAssistant\codegraph-index-&lt;solution&gt;.log, previous run kept
+    /// as its .prev.log sibling. Written unconditionally — not save-on-demand — so the
     /// transcript survives an IDE crash or a closed progress window (the same durable-log
     /// pattern as shutdown.log). All methods swallow IO errors: logging must never be the
     /// reason an index run fails.

@@ -981,6 +981,7 @@ namespace ClarionAssistant.Services
                     int lastSentTick = 0;
                     bool sentAny = false;
                     bool sinkBroken = false;
+                    double lastSentPercent = 0.0;
                     Action<double, string> onProgress = (percent, message) =>
                     {
                         if (sinkBroken) return;
@@ -988,6 +989,13 @@ namespace ClarionAssistant.Services
                         if (sentAny && unchecked(now - lastSentTick) < ProgressThrottleMs) return;
                         sentAny = true;
                         lastSentTick = now;
+                        // MCP requires progress to increase with each notification. Phases
+                        // that pin their percentage (finishing-tail heartbeats sit at 98)
+                        // get a minimal synthetic increment, capped short of 100 so only a
+                        // real completion can claim it.
+                        if (percent <= lastSentPercent)
+                            percent = Math.Min(99.9, lastSentPercent + 0.1);
+                        lastSentPercent = percent;
                         try
                         {
                             sendNotification(McpJsonRpc.Serialize(new Dictionary<string, object>

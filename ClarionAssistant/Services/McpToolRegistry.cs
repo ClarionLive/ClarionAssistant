@@ -4161,6 +4161,13 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                 Path.GetDirectoryName(slnPath),
                 Path.GetFileNameWithoutExtension(slnPath) + ".codegraph.db");
 
+            // Cross-entry-point gate: RunIndex (header buttons / index_solution) may already
+            // be writing this database. Refuse BEFORE opening the run log so this call can't
+            // rotate the active run's transcript out from under it.
+            if (!IndexRunGate.TryEnter(dbPath))
+                return "Error: an index run is already in progress for this solution's database ("
+                    + dbPath + ") — wait for it to finish before starting another.";
+
             var runLog = new IndexRunLog(Path.GetFileNameWithoutExtension(slnPath));
             try
             {
@@ -4218,12 +4225,17 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             finally
             {
                 runLog.Dispose();
+                IndexRunGate.Exit(dbPath);
             }
         }
 
         /// <summary>One-line human description of a structured indexer event for MCP progress messages.</summary>
         private static string DescribeIndexEvent(ClarionCodeGraph.Graph.IndexProgressEvent ev)
         {
+            // Message-carrying events (start latency, finishing-tail heartbeats) are
+            // already display text — pass them through so the activity isn't discarded.
+            if (!string.IsNullOrEmpty(ev.Message)) return ev.Message;
+
             string file = string.IsNullOrEmpty(ev.CurrentFile) ? "" : ev.CurrentFile + " ";
             string proj = string.IsNullOrEmpty(ev.ProjectName) ? "" : " [" + ev.ProjectName + "]";
             switch (ev.Phase)
