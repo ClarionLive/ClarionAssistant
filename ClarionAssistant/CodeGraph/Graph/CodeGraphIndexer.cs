@@ -1196,16 +1196,29 @@ namespace ClarionCodeGraph.Graph
             // per-pair facts (does A inherit from B at all?), not per-occurrence.
             var insertedRels = new HashSet<string>();
 
-            // Chunked transactions around the whole relationship phase (ticket 64cdae5d).
-            // Without this, every InsertRelationship runs as its own implicit SQLite
-            // transaction — a journal write + fsync per edge, times three relationship
-            // indexes; on v61POSitive that was 1,050,504 per-edge syncs and the phase
-            // dominated a 72-minute run. Chunks commit at file boundaries / heartbeat
-            // points so cancellation still rolls back at most one chunk. On an exceptional
-            // exit the open chunk rolls back with the connection (full-index cancel deletes
-            // the db, incremental cancel is marked do-not-trust — both already tolerate a
-            // partially-persisted phase).
+            // PERF EXPERIMENT (ticket 64cdae5d): chunked transactions around the whole
+            // relationship phase. Without this, every InsertRelationship runs as its own
+            // implicit SQLite transaction — a journal write + fsync per edge, times three
+            // relationship indexes. Chunks commit at file boundaries / heartbeat points so
+            // cancellation still rolls back at most one chunk. On an exceptional exit the
+            // open chunk rolls back with the connection (full-index cancel deletes the db,
+            // incremental cancel is marked do-not-trust — both already tolerate that).
             var bulkTxn = _db.BeginTransaction();
+
+            // Inverted call-name index (ticket 64cdae5d): hash-set of every callable
+            // name so line tokens can be tested O(1); names the tokenizer can't see
+            // (chars outside the alphabet) keep the original per-line scan.
+            var procNameSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var slowProcNames = new List<string>();
+            foreach (string pn in procNames)
+            {
+                if (IsTokenizableName(pn)) procNameSet.Add(pn);
+                else slowProcNames.Add(pn);
+            }
+            // Reused per line — one tokenization of `line` (calls) and one of
+            // `trimmed` (variables) per code line, no per-line allocations.
+            var lineTokens = new List<TokenSpan>();
+            var trimmedTokens = new List<TokenSpan>();
 
             foreach (var proj in projects)
             {
@@ -1283,6 +1296,32 @@ namespace ClarionCodeGraph.Graph
                     List<VariableInfo> currentFileVars;
                     if (!variablesByFile.TryGetValue(target.Path, out currentFileVars))
                         currentFileVars = null;
+
+                    // Per-file inverted variable index (ticket 64cdae5d): name → vars in
+                    // list order, so token hits recover exactly the candidates the old
+                    // per-line sweep iterated. Exotic names stay on the slow path.
+                    Dictionary<string, List<VariableInfo>> currentFileVarsByName = null;
+                    List<VariableInfo> slowFileVars = null;
+                    if (currentFileVars != null)
+                    {
+                        currentFileVarsByName = new Dictionary<string, List<VariableInfo>>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var vi in currentFileVars)
+                        {
+                            if (!IsTokenizableName(vi.Name))
+                            {
+                                if (slowFileVars == null) slowFileVars = new List<VariableInfo>();
+                                slowFileVars.Add(vi);
+                                continue;
+                            }
+                            List<VariableInfo> sameName;
+                            if (!currentFileVarsByName.TryGetValue(vi.Name, out sameName))
+                            {
+                                sameName = new List<VariableInfo>();
+                                currentFileVarsByName[vi.Name] = sameName;
+                            }
+                            sameName.Add(vi);
+                        }
+                    }
 
                     // Pre-scan: find parent procedure and collect local MAP names.
                     // MAP-aware BEFORE the first procedure too (round 5): a MEMBER library
@@ -1873,19 +1912,49 @@ namespace ClarionCodeGraph.Graph
                             }
                         }
 
-                        // Procedure calls: attributed to the current procedure
-                        foreach (string procName in procNames)
+                        // Procedure calls: attributed to the current procedure.
+                        // Inverted (64cdae5d): tokenize the line once and hash-hit tokens
+                        // against the callable-name set, instead of substring-scanning
+                        // every callable name (6,001 on v61POSitive) through every line.
+                        TokenizeIdentifiers(line, lineTokens);
+                        for (int ti = 0; ti < lineTokens.Count; ti++)
                         {
+                            var tok = lineTokens[ti];
+                            string tokenText = line.Substring(tok.Start, tok.Length);
+                            if (!procNameSet.Contains(tokenText)) continue;
                             // Skip local MAP procedures
+                            if (localMapNames.Contains(tokenText)) continue;
+                            if (!TokenIsCallOccurrence(line, tok.Start, tok.Length)) continue;
+
+                            // The heart of b7553893 #1: previously symbolNameToId[procName]
+                            // sent EVERY same-named call solution-wide to one arbitrary
+                            // (last-inserted) target — measured: all StandardWarning calls
+                            // in 12+ apps landed on one app's copy.
+                            bool bareAmbiguous;
+                            long bareTargetId = resolveCallTarget(tokenText, target.ProjectId, target.Path, trimmed, out bareAmbiguous);
+                            if (bareTargetId < 0) continue;
+
+                            string relKey = string.Format("{0}|{1}|calls|{2}", currentFromId, bareTargetId, i + 1);
+                            if (!insertedRels.Add(relKey)) continue;
+
+                            _db.InsertRelationship(new ClarionRelationship
+                            {
+                                FromId = currentFromId,
+                                ToId = bareTargetId,
+                                Type = "calls",
+                                FilePath = target.Path,
+                                LineNumber = i + 1,
+                                Ambiguous = bareAmbiguous
+                            });
+                            relCount++;
+                        }
+                        // Slow path: callable names the tokenizer can't represent.
+                        foreach (string procName in slowProcNames)
+                        {
                             if (localMapNames.Contains(procName))
                                 continue;
-
                             if (LineContainsCall(line, procName))
                             {
-                                // The heart of b7553893 #1: previously symbolNameToId[procName]
-                                // sent EVERY same-named call solution-wide to one arbitrary
-                                // (last-inserted) target — measured: all StandardWarning calls
-                                // in 12+ apps landed on one app's copy.
                                 bool bareAmbiguous;
                                 long bareTargetId = resolveCallTarget(procName, target.ProjectId, target.Path, trimmed, out bareAmbiguous);
                                 if (bareTargetId < 0) continue;
@@ -1906,26 +1975,90 @@ namespace ClarionCodeGraph.Graph
                             }
                         }
 
-                        // Variable references: scan for variable names in this code line
-                        if (currentFileVars != null)
+                        // Variable references: scan for variable names in this code line.
+                        // Inverted (64cdae5d): tokenize once and hash-hit each token's
+                        // valid sub-spans (starts at 0 / after '.' or ':', ends at token
+                        // end / before '.' — the original boundary rules) instead of
+                        // substring-scanning every file variable through every line.
+                        if (currentFileVarsByName != null)
                         {
-                            foreach (var varInfo in currentFileVars)
+                            TokenizeIdentifiers(trimmed, trimmedTokens);
+                            for (int ti = 0; ti < trimmedTokens.Count; ti++)
                             {
-                                // Only match variables that are in scope:
-                                // - module-level vars are visible to all procedures in this file
-                                // - local vars and parameters are only visible to their owning procedure
+                                var tok = trimmedTokens[ti];
+                                for (int s = 0; s < tok.Length; s++)
+                                {
+                                    if (s > 0)
+                                    {
+                                        char sep = trimmed[tok.Start + s - 1];
+                                        if (sep != '.' && sep != ':') continue;
+                                    }
+                                    for (int e = tok.Length; e > s; e--)
+                                    {
+                                        if (e < tok.Length && trimmed[tok.Start + e] != '.') continue;
+                                        List<VariableInfo> sameName;
+                                        if (!currentFileVarsByName.TryGetValue(
+                                                trimmed.Substring(tok.Start + s, e - s), out sameName))
+                                            continue;
+                                        foreach (var varInfo in sameName)
+                                        {
+                                            // Only match variables that are in scope:
+                                            // - module-level vars are visible to all procedures in this file
+                                            // - local vars and parameters are only visible to their owning
+                                            //   procedure (routine-DATA locals to their routine — round 5)
+                                            if ((varInfo.Scope == "local" || varInfo.Scope == "parameter") && varInfo.ParentName != null)
+                                            {
+                                                bool ownedByProc = currentProcName != null &&
+                                                    string.Equals(varInfo.ParentName, currentProcName, StringComparison.OrdinalIgnoreCase);
+                                                bool ownedByRoutine = currentRoutineName != null &&
+                                                    string.Equals(varInfo.ParentName, currentRoutineName, StringComparison.OrdinalIgnoreCase);
+                                                if (!ownedByProc && !ownedByRoutine)
+                                                    continue;
+                                            }
+
+                                            // A decl_kind='external' row is this file's IMPORT of a global
+                                            // owned elsewhere — re-point the edge to the owning declaration
+                                            // (lowest-id pick on multiple owners = deterministic GUESS,
+                                            // flagged ambiguous — same contract as call resolution).
+                                            long refTargetId = varInfo.Id;
+                                            bool refAmbiguous = false;
+                                            if (string.Equals(varInfo.DeclKind, "external", StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                VariableInfo owner;
+                                                if (globalOwnerByName.TryGetValue(varInfo.Name, out owner))
+                                                {
+                                                    refTargetId = owner.Id;
+                                                    int ownerCount;
+                                                    globalOwnerCounts.TryGetValue(varInfo.Name, out ownerCount);
+                                                    refAmbiguous = ownerCount > 1;
+                                                }
+                                            }
+                                            string relKey = string.Format("{0}|{1}|references|{2}", currentFromId, refTargetId, i + 1);
+                                            if (insertedRels.Add(relKey))
+                                            {
+                                                _db.InsertRelationship(new ClarionRelationship
+                                                {
+                                                    FromId = currentFromId,
+                                                    ToId = refTargetId,
+                                                    Type = "references",
+                                                    FilePath = target.Path,
+                                                    LineNumber = i + 1,
+                                                    Ambiguous = refAmbiguous
+                                                });
+                                                relCount++;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Slow path: variable names the tokenizer can't represent.
+                        if (slowFileVars != null)
+                        {
+                            foreach (var varInfo in slowFileVars)
+                            {
                                 if ((varInfo.Scope == "local" || varInfo.Scope == "parameter") && varInfo.ParentName != null)
                                 {
-                                    // Check if this var belongs to the current procedure.
-                                    // currentProcName is tracked directly alongside currentProcId
-                                    // (overload-safe -- see the update above), not reverse-scanned
-                                    // from a name-keyed symbol lookup. Routine-DATA declarations
-                                    // carry the ROUTINE's name as parent_name (round 5), so inside
-                                    // a routine body the routine's own locals match too. Known
-                                    // limitation (documented, accepted): two same-named routines in
-                                    // the SAME file each declaring a same-named DATA local would
-                                    // both match here — template-generated routine names carry
-                                    // instance prefixes (BRW10::...), making that collision rare.
                                     bool ownedByProc = currentProcName != null &&
                                         string.Equals(varInfo.ParentName, currentProcName, StringComparison.OrdinalIgnoreCase);
                                     bool ownedByRoutine = currentRoutineName != null &&
@@ -1936,14 +2069,6 @@ namespace ClarionCodeGraph.Graph
 
                                 if (LineContainsVariable(trimmed, varInfo.Name))
                                 {
-                                    // A decl_kind='external' row is this file's IMPORT of a global
-                                    // owned elsewhere — re-point the edge to the owning declaration
-                                    // so the owner accrues its real usage. Falls back to the external
-                                    // row itself when no owner is indexed (owner app outside the
-                                    // solution) — an edge to the import beats no edge at all. When
-                                    // more than one owner claims the name (unrelated apps reusing a
-                                    // global name), the lowest-id pick is deterministic but a GUESS —
-                                    // flagged ambiguous, same contract as call resolution.
                                     long refTargetId = varInfo.Id;
                                     bool refAmbiguous = false;
                                     if (string.Equals(varInfo.DeclKind, "external", StringComparison.OrdinalIgnoreCase))
@@ -1994,17 +2119,27 @@ namespace ClarionCodeGraph.Graph
                                 if (currentProcName != null && currentProcName.Contains("."))
                                     ownerClass = currentProcName.Substring(0, currentProcName.LastIndexOf('.'));
                             }
-                            else if (currentFileVars != null)
+                            else if (currentFileVarsByName != null)
                             {
-                                foreach (var vi in currentFileVars)
+                                // Inverted (64cdae5d): name-keyed lookup replaces the linear
+                                // sweep; the per-name list preserves file order, so the
+                                // first-match-then-break semantics are unchanged. Falls back
+                                // to the slow list only when the name isn't tokenizable.
+                                List<VariableInfo> ownerCandidates;
+                                if (!currentFileVarsByName.TryGetValue(ownerTok, out ownerCandidates))
+                                    ownerCandidates = slowFileVars;
+                                if (ownerCandidates != null)
                                 {
-                                    if (!string.Equals(vi.Name, ownerTok, StringComparison.OrdinalIgnoreCase)) continue;
-                                    if (string.Equals(vi.Scope, "parameter", StringComparison.OrdinalIgnoreCase) &&
-                                        (currentProcName == null || !string.Equals(vi.ParentName, currentProcName, StringComparison.OrdinalIgnoreCase)))
-                                        continue;
-                                    string tn;
-                                    if (TryResolveVariableClassType(vi.Params, out tn)) ownerClass = tn;
-                                    break;
+                                    foreach (var vi in ownerCandidates)
+                                    {
+                                        if (!string.Equals(vi.Name, ownerTok, StringComparison.OrdinalIgnoreCase)) continue;
+                                        if (string.Equals(vi.Scope, "parameter", StringComparison.OrdinalIgnoreCase) &&
+                                            (currentProcName == null || !string.Equals(vi.ParentName, currentProcName, StringComparison.OrdinalIgnoreCase)))
+                                            continue;
+                                        string tn;
+                                        if (TryResolveVariableClassType(vi.Params, out tn)) ownerClass = tn;
+                                        break;
+                                    }
                                 }
                             }
                             if (ownerClass == null) continue;
@@ -2390,6 +2525,81 @@ namespace ClarionCodeGraph.Graph
                 return true;
             }
             return false;
+        }
+
+        // ---- Inverted-index line matching (ticket 64cdae5d) -------------------------
+        // The body scan used to test EVERY candidate name against EVERY code line
+        // (LineContainsCall/LineContainsVariable are substring scans): O(lines × names)
+        // with 6,001 callable names and per-file variable lists in the thousands — the
+        // dominant cost of the resolve phase. Instead, tokenize each line once into
+        // identifier runs and dictionary-hit the tokens. The boundary rules of the
+        // original matchers are reproduced structurally:
+        //  - token alphabet = [A-Za-z0-9_:.] — exactly the chars the matchers treat as
+        //    word-interior on either side, so a token boundary IS the matchers' word
+        //    boundary;
+        //  - single-quoted regions are skipped with the same naive quote toggle as
+        //    IsInsideQuotedString (comments are NOT skipped — the original matched
+        //    inside ! comments too, and identical output is the correctness gate);
+        //  - calls must match the full token (before-rule bans . : ? and after-rule
+        //    bans . :) plus the '?' pre-check and the same context checks;
+        //  - variables may start after '.' or ':' (dot/colon before allowed) and may
+        //    end before '.' (dot after allowed, colon after banned), so each token
+        //    offers its separator-delimited sub-spans for lookup.
+        // Candidate names containing characters OUTSIDE the token alphabet can never
+        // match a token; callers keep the original per-line scan for those (expected
+        // none in practice — Clarion labels stay inside the alphabet).
+
+        private struct TokenSpan
+        {
+            public int Start;
+            public int Length;
+        }
+
+        private static bool IsIdentTokenChar(char c)
+        {
+            return char.IsLetterOrDigit(c) || c == '_' || c == ':' || c == '.';
+        }
+
+        /// <summary>True when every char of the name can appear inside a token — i.e.
+        /// the inverted index can find it. Names failing this take the slow path.</summary>
+        private static bool IsTokenizableName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            for (int i = 0; i < name.Length; i++)
+                if (!IsIdentTokenChar(name[i])) return false;
+            return true;
+        }
+
+        /// <summary>Collect maximal identifier-run tokens outside single-quoted regions.
+        /// Reuses the caller's list to avoid per-line allocations.</summary>
+        private static void TokenizeIdentifiers(string s, List<TokenSpan> spans)
+        {
+            spans.Clear();
+            bool inString = false;
+            int i = 0;
+            while (i < s.Length)
+            {
+                char c = s[i];
+                if (c == '\'') { inString = !inString; i++; continue; }
+                if (inString || !IsIdentTokenChar(c)) { i++; continue; }
+                int start = i;
+                while (i < s.Length && s[i] != '\'' && IsIdentTokenChar(s[i])) i++;
+                spans.Add(new TokenSpan { Start = start, Length = i - start });
+            }
+        }
+
+        /// <summary>The call-context checks LineContainsCall applied at a matched
+        /// occurrence (word boundaries + quote exclusion already guaranteed by the
+        /// tokenizer; the before-rule's '?' is the one char outside the token
+        /// alphabet that still bans a call match).</summary>
+        private static bool TokenIsCallOccurrence(string line, int start, int len)
+        {
+            if (start > 0 && line[start - 1] == '?') return false;
+            int afterIdx = start + len;
+            if (IsAssignmentTarget(line, afterIdx)) return false;
+            if (IsInConcatenation(line, start, afterIdx)) return false;
+            if (IsValueContext(line, start, afterIdx)) return false;
+            return true;
         }
 
         private static bool IsInsideQuotedString(string line, int position)
