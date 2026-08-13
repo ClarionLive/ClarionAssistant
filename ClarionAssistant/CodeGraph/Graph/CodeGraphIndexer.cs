@@ -1196,6 +1196,17 @@ namespace ClarionCodeGraph.Graph
             // per-pair facts (does A inherit from B at all?), not per-occurrence.
             var insertedRels = new HashSet<string>();
 
+            // Chunked transactions around the whole relationship phase (ticket 64cdae5d).
+            // Without this, every InsertRelationship runs as its own implicit SQLite
+            // transaction — a journal write + fsync per edge, times three relationship
+            // indexes; on v61POSitive that was 1,050,504 per-edge syncs and the phase
+            // dominated a 72-minute run. Chunks commit at file boundaries / heartbeat
+            // points so cancellation still rolls back at most one chunk. On an exceptional
+            // exit the open chunk rolls back with the connection (full-index cancel deletes
+            // the db, incremental cancel is marked do-not-trust — both already tolerate a
+            // partially-persisted phase).
+            var bulkTxn = _db.BeginTransaction();
+
             foreach (var proj in projects)
             {
                 List<ResolvedFile> members;
@@ -1232,6 +1243,13 @@ namespace ClarionCodeGraph.Graph
                     if (!File.Exists(target.Path)) continue;
                     ThrowIfCancelled();
                     fileCount++;
+
+                    if (fileCount % 20 == 0)
+                    {
+                        bulkTxn.Commit();
+                        bulkTxn.Dispose();
+                        bulkTxn = _db.BeginTransaction();
+                    }
 
                     if (fileCount % 50 == 0)
                         ReportProgress(string.Format("  Resolving calls: {0} files, {1} relationships...", fileCount, relCount));
@@ -2053,9 +2071,12 @@ namespace ClarionCodeGraph.Graph
                 ThrowIfCancelled();
                 inheritRowsSeen++;
                 if (inheritRowsSeen % FinishingHeartbeatRows == 0)
+                {
+                    bulkTxn.Commit(); bulkTxn.Dispose(); bulkTxn = _db.BeginTransaction();
                     EmitProgress(IndexProgressEvent.PhaseFinishing, null, null,
                         fileCount, fileCount, 0, relCount,
                         string.Format("Finalizing: inheritance edges {0}/{1}", inheritRowsSeen, classDt.Rows.Count));
+                }
                 long childId = Convert.ToInt64(row["id"]);
                 string parentName = row["parent_name"].ToString();
                 long parentId;
@@ -2087,9 +2108,12 @@ namespace ClarionCodeGraph.Graph
                 ThrowIfCancelled();
                 usesTypeRowsSeen++;
                 if (usesTypeRowsSeen % FinishingHeartbeatRows == 0)
+                {
+                    bulkTxn.Commit(); bulkTxn.Dispose(); bulkTxn = _db.BeginTransaction();
                     EmitProgress(IndexProgressEvent.PhaseFinishing, null, null,
                         fileCount, fileCount, 0, relCount,
                         string.Format("Finalizing: uses_type scan {0}/{1}", usesTypeRowsSeen, typedVarDt.Rows.Count));
+                }
                 long varId = Convert.ToInt64(row["id"]);
                 string varParams = row["params"].ToString();
                 string ownerName = row["parent_name"] != DBNull.Value ? row["parent_name"].ToString() : null;
@@ -2187,9 +2211,12 @@ namespace ClarionCodeGraph.Graph
                 ThrowIfCancelled();
                 includeRowsSeen++;
                 if (includeRowsSeen % FinishingHeartbeatRows == 0)
+                {
+                    bulkTxn.Commit(); bulkTxn.Dispose(); bulkTxn = _db.BeginTransaction();
                     EmitProgress(IndexProgressEvent.PhaseFinishing, null, null,
                         fileCount, fileCount, 0, relCount,
                         string.Format("Finalizing: includes scan {0}/{1}", includeRowsSeen, includeDt.Rows.Count));
+                }
                 long includeSymId = Convert.ToInt64(row["id"]);
                 string includedFile = row["name"].ToString(); // e.g. "mo.Inc" or "oifunctionsmap.clw"
                 string sourceFilePath = row["file_path"].ToString(); // file that contains the INCLUDE
@@ -2226,6 +2253,9 @@ namespace ClarionCodeGraph.Graph
                     includesCount++;
                 }
             }
+
+            bulkTxn.Commit();
+            bulkTxn.Dispose();
 
             ReportProgress(string.Format("  Created {0} includes relationships", includesCount));
             ReportProgress(string.Format("  Resolved {0} relationships across {1} files", relCount, fileCount));

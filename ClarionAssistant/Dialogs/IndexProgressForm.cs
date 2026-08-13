@@ -323,9 +323,12 @@ namespace ClarionAssistant.Dialogs
                     result.ProjectCount, result.FileCount,
                     FormatSpan(TimeSpan.FromMilliseconds(result.DurationMs)))
                 : string.Format(
-                    "CodeGraph index complete: parsed {2:n0} symbols and {3:n0} relationships this run ({0} projects, {1} files) in {4}.",
+                    "CodeGraph index complete: parsed {2:n0} symbols and {3:n0} relationships this run ({5} of {0} projects parsed, {1} files scanned) in {4}.",
                     result.ProjectCount, result.FileCount, result.SymbolCount, result.RelationshipCount,
-                    FormatSpan(TimeSpan.FromMilliseconds(result.DurationMs)));
+                    FormatSpan(TimeSpan.FromMilliseconds(result.DurationMs)),
+                    // Projects that produced parse events this run — on incremental, the
+                    // changed subset; "27 projects" alone implied all 27 were re-parsed.
+                    _pendingProjectSymbols.Count);
             EnterTerminalState("Index complete", Color.FromArgb(0, 128, 0), "", summary);
         }
 
@@ -415,14 +418,26 @@ namespace ClarionAssistant.Dialogs
             foreach (var entry in _projectItems)
             {
                 var item = entry.Value;
+                // A project that never produced a parse event was not re-parsed this run
+                // (incremental skips unchanged projects). Say so — a blank cell under a
+                // "Done" chip is indistinguishable from a broken counter (John, live test:
+                // 26 of 27 rows blank on a 1-changed-project run read as a bug).
+                int finalCount;
+                bool parsed = _pendingProjectSymbols.TryGetValue(entry.Key, out finalCount);
+                if (!parsed && item.SubItems[1].Text == "Pending")
+                {
+                    item.SubItems[1].Text = "Unchanged";
+                    item.ForeColor = SystemColors.GrayText;
+                    item.SubItems[2].Text = "—"; // em dash
+                    continue;
+                }
                 if (item.SubItems[1].Text != "Done")
                 {
                     item.SubItems[1].Text = "Done";
                     item.ForeColor = SystemColors.ControlText;
                 }
                 // Flush every stashed final count — throttle-dropped last events land here.
-                int finalCount;
-                if (_pendingProjectSymbols.TryGetValue(entry.Key, out finalCount))
+                if (parsed)
                 {
                     string finalText = finalCount.ToString("n0");
                     if (item.SubItems[2].Text != finalText)
