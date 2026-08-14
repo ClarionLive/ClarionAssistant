@@ -60,6 +60,18 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 Work landed since 5.7 is documented here as it merges — see [the release-docs workflow](docs/releases/README.md), and run `Check-ReleaseDocs.ps1` before cutting a release.
 
 <!-- release-docs: covered=codegraph -->
+### Indexing is thirty times faster
+
+The hour-long index is gone. Measured on the same 27-app production solution: a full index that took **1:12** now completes in **2:42** inside the IDE (1:53 from the standalone indexer). The cost was never the disk &mdash; the relationship pass was testing every line of code against all six thousand callable names, one substring scan at a time. It now splits each line into identifiers once and looks them up in a hash table, and a full row-by-row comparison of the old and new databases (347,203 symbols, 1,023,354 relationships) confirmed the output is **identical to the edge** &mdash; just thirty-three times sooner.
+
+An **Update** with nothing changed returns in a quarter of a second; with changes it costs about the relationship pass (~2 minutes on a solution this size), since relationship resolution still rebuilds solution-wide. Two indexes can no longer collide: starting one while another is writing the same database &mdash; from the toolbar or from either MCP index tool &mdash; is refused with a clear message instead of silently corrupting the graph.
+
+<!-- release-docs: covered=mcp -->
+### The index tools stream their progress
+
+`index_solution` and `index_codegraph` were the same spinning cursor in MCP form: an hour of silence, then a wall of text &mdash; or worse, "index started" and no way to know it finished. With a progress-capable client (the in-IDE Claude tab qualifies), both tools now stream **live progress** &mdash; weighted percentage, the file being parsed &mdash; and `index_solution` waits for the run and returns the real completion stats: symbols, relationships, duration, database path, and where the transcript landed. Long calls stay alive through the progress stream itself; a three-minute index verified end-to-end without a client timeout. Clients that don't send a progress token get exactly the old behavior.
+
+<!-- release-docs: covered=codegraph -->
 ### Indexing finally shows its work
 
 A full index of a large solution runs for over an hour, and until now the only sign anything was happening was a spinning cursor. Starting an index now opens a **progress window**: every app in the solution listed up front and ticked off as it parses, the file being read right now, a progress bar weighted by where the time actually goes (relationship resolution dominates, so the percentage tracks the clock instead of sprinting to a quarter and crawling), elapsed time, and an estimate seeded from your previous run &mdash; "last full index took 1:07" &mdash; until live throughput takes over.
