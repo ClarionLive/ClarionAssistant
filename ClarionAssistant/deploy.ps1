@@ -58,10 +58,17 @@ $Versions = @{
     "10"   = @{ RegistryKeys = @("Clarion10");              Fallbacks = @("C:\Clarion10", "C:\Clarion10v8");        GlobPatterns = @("Clarion10*");            Output = "bin\Debug-C10" }
 }
 
-# Resolve the install root for a Clarion version: registry (authoritative, modern Clarion
-# versions register a "root" value under SoftVelocity\Clarion<key>) -> known fallback paths
-# (other dev machines) -> drive-root glob scan (machines where neither of the above hit).
-function Resolve-ClarionRoot {
+# Resolve ALL install roots for a Clarion version: registry (authoritative, modern Clarion
+# versions register a "root" value under SoftVelocity\Clarion<key>) + known fallback paths
+# (other dev machines) + drive-root glob scan. Returns EVERY existing install, deduped,
+# registry hit first (the build binds against the first root's DLLs).
+#
+# Returning only the FIRST hit shipped a real incident (2026-08-13): the registry resolved
+# Clarion 11 to C:\Clarion11, so the ALSO-LIVE C:\Clarion11-13372 silently kept a stale
+# addin — the developer ran the old indexer for a day while every verification pass showed
+# the new build "deployed and hash-verified" (in the four folders the script chose). A
+# machine with two installs of one version must get the addin in BOTH.
+function Resolve-ClarionRoots {
     param(
         [string[]]$RegistryKeys,
         [string[]]$Fallbacks,
@@ -73,6 +80,14 @@ function Resolve-ClarionRoot {
         return Test-Path (Join-Path $path "bin\ICSharpCode.Core.dll")
     }
 
+    $found = New-Object System.Collections.Generic.List[string]
+    $seen  = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    function Add-Root([string]$path) {
+        if (-not $path) { return }
+        $norm = $path.TrimEnd('\')
+        if ((Test-ClarionRoot $norm) -and $seen.Add($norm)) { $found.Add($norm) }
+    }
+
     $regHives = @(
         "HKLM:\SOFTWARE\WOW6432Node\SoftVelocity",
         "HKLM:\SOFTWARE\SoftVelocity",
@@ -80,30 +95,22 @@ function Resolve-ClarionRoot {
     )
     foreach ($hive in $regHives) {
         foreach ($key in $RegistryKeys) {
-            $val = (Get-ItemProperty -Path "$hive\$key" -Name root -ErrorAction SilentlyContinue).root
-            if ($val) {
-                $val = $val.TrimEnd('\')
-                if (Test-ClarionRoot $val) { return $val }
-            }
+            Add-Root (Get-ItemProperty -Path "$hive\$key" -Name root -ErrorAction SilentlyContinue).root
         }
     }
 
-    foreach ($p in $Fallbacks) {
-        if (Test-ClarionRoot $p) { return $p }
-    }
+    foreach ($p in $Fallbacks) { Add-Root $p }
 
     $drives = (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
                 Where-Object { Test-Path $_.Root }).Root
     foreach ($drive in $drives) {
         foreach ($pattern in $GlobPatterns) {
-            $hit = Get-ChildItem -Path $drive -Directory -Filter $pattern -ErrorAction SilentlyContinue |
-                    Where-Object { Test-ClarionRoot $_.FullName } |
-                    Select-Object -First 1
-            if ($hit) { return $hit.FullName }
+            Get-ChildItem -Path $drive -Directory -Filter $pattern -ErrorAction SilentlyContinue |
+                ForEach-Object { Add-Root $_.FullName }
         }
     }
 
-    return $null
+    return ,$found.ToArray()
 }
 
 function Resolve-BuildOutputDir {
@@ -134,11 +141,11 @@ if ($Version -eq "all") {
 # ClarionRoot default in Directory.Build.props errored out mid-build.
 $ResolvedRoots = @{}
 foreach ($ver in $TargetVersions) {
-    $cfg  = $Versions[$ver]
-    $root = Resolve-ClarionRoot -RegistryKeys $cfg.RegistryKeys -Fallbacks $cfg.Fallbacks -GlobPatterns $cfg.GlobPatterns
-    if ($root) {
-        $ResolvedRoots[$ver] = $root
-        Write-Host "Clarion ${ver}: $root" -ForegroundColor DarkGray
+    $cfg   = $Versions[$ver]
+    $roots = Resolve-ClarionRoots -RegistryKeys $cfg.RegistryKeys -Fallbacks $cfg.Fallbacks -GlobPatterns $cfg.GlobPatterns
+    if ($roots -and $roots.Count -gt 0) {
+        $ResolvedRoots[$ver] = $roots
+        Write-Host "Clarion ${ver}: $($roots -join ', ')" -ForegroundColor DarkGray
     } else {
         Write-Host "Clarion ${ver}: no install found (registry / known paths / drive scan) - will skip" -ForegroundColor DarkGray
     }
@@ -273,8 +280,11 @@ if (-not $NoBuild) {
             Write-Host "SKIP  build for Clarion $ver (no install found)" -ForegroundColor DarkGray
             continue
         }
-        Write-Host "Building for Clarion $ver ($($ResolvedRoots[$ver]))..." -ForegroundColor Cyan
-        & $MSBuild $ProjectFile /p:Configuration=Debug /p:ClarionVersion=$ver /p:ClarionRoot="$($ResolvedRoots[$ver])" /v:minimal
+        # Build binds against the FIRST root's DLLs (registry-preferred); additional roots
+        # of the same version receive the same build (proven pattern — the strong-name
+        # version lock is handled by the AssemblyResolve shim).
+        Write-Host "Building for Clarion $ver ($($ResolvedRoots[$ver][0]))..." -ForegroundColor Cyan
+        & $MSBuild $ProjectFile /p:Configuration=Debug /p:ClarionVersion=$ver /p:ClarionRoot="$($ResolvedRoots[$ver][0])" /v:minimal
         if ($LASTEXITCODE -ne 0) {
             Write-Host "Build FAILED for Clarion $ver — it will NOT be deployed." -ForegroundColor Red
             $FailedBuilds += $ver
@@ -327,7 +337,8 @@ foreach ($ver in $TargetVersions) {
     }
     $cfg         = $Versions[$ver]
     $BuildOutput = Resolve-BuildOutputDir -ProjectDir $ProjectDir -PreferredOutput $cfg.Output
-    $Roots       = @($ResolvedRoots[$ver])
+    # ALL live installs of this version — not just the registry pick (2026-08-13 incident).
+    $Roots       = $ResolvedRoots[$ver]
 
     # Same no-guessing principle as Resolve-BuildOutputDir: a config that was never built
     # (-NoBuild, or a fresh checkout) must be a clean skip — otherwise the item loop below
