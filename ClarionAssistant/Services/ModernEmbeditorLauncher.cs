@@ -312,10 +312,10 @@ namespace ClarionAssistant.Services
         /// one procedure's assembled source (verified live — BrowseAuthors' buffer contained only its own
         /// "BrowseAuthors PROCEDURE" col-0 declaration), so the proc's own entry is the relevant declaration.
         ///
-        /// Hardening (Eve): the regex is COLUMN-0 anchored with a BARE name — Clarion proc DEFINITIONS sit at
-        /// column 1, while MAP prototypes, local-MAP helper prototypes, and ABC dotted method labels
-        /// (ThisWindow.Init PROCEDURE — <c>\w+</c> stops at the dot) are indented and/or dotted, so they're all
-        /// excluded. We then ITERATE matches and return the first that is a KNOWN top-level proc
+        /// Hardening (Eve): the regex is COLUMN-0 anchored with an UNDOTTED name — Clarion proc DEFINITIONS sit
+        /// at column 1, while MAP prototypes, local-MAP helper prototypes, and ABC dotted method labels
+        /// (ThisWindow.Init PROCEDURE — the class excludes '.', so it stops at the dot) are indented and/or
+        /// dotted, so they're all excluded. We then ITERATE matches and return the first that is a KNOWN top-level proc
         /// (<paramref name="knownProcs"/> = App.ProcedureNames) — turning the fragile "first match" into a
         /// validated pick that rejects stray tokens / class names / local procs. If a known-proc list is
         /// supplied and NOTHING validates → returns null → caller treats as E6 (abort, no tab). With no list
@@ -330,8 +330,13 @@ namespace ClarionAssistant.Services
             if (string.IsNullOrEmpty(source)) return null;
             try
             {
+                // The ':' in the label class is load-bearing (GH #196): colon-separated labels
+                // (reg:TENDER:GiftCard) are idiomatic Clarion and dominate template-generated app suites, and
+                // without it the class stopped at the first colon, [ \t]+ never matched, and EVERY procedure in
+                // such a suite failed name resolution → null → the caller's E6 abort, so the overlay never
+                // attached. The dot stays OUT: that is what keeps ABC dotted method labels excluded (above).
                 var matches = System.Text.RegularExpressions.Regex.Matches(
-                    source, @"(?m)^([A-Za-z_][A-Za-z0-9_]*)[ \t]+PROCEDURE\b",
+                    source, @"(?m)^([A-Za-z_][A-Za-z0-9_:]*)[ \t]+PROCEDURE\b",
                     System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
                 string firstRaw = null;

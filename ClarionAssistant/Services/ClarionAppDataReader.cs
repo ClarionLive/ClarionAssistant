@@ -936,8 +936,12 @@ namespace ClarionAssistant.Services
                 if (labelU == "MAP" || restU.StartsWith("MAP")) { mapDepth++; continue; }
 
                 // Column-0 "Name PROCEDURE|FUNCTION" OUTSIDE any MAP = the local procedure's BODY (the goto target).
+                // IsRoutineLabel, not IsIdent (GH #196): a PROCEDURE label may carry colons (reg:TENDER:GiftCard)
+                // exactly as a routine label may, and IsIdent rejects ':' — so colon-named local procedures were
+                // dropped from the goto targets. Widening IsIdent itself would be wrong: it also gates DATA
+                // identifier detection, where a colon genuinely never appears.
                 bool col0 = raw.Length > 0 && !char.IsWhiteSpace(raw[0]);
-                if (col0 && (restU.StartsWith("PROCEDURE") || restU.StartsWith("FUNCTION")) && IsIdent(label)
+                if (col0 && (restU.StartsWith("PROCEDURE") || restU.StartsWith("FUNCTION")) && IsRoutineLabel(label)
                     && !string.Equals(label, procName, StringComparison.OrdinalIgnoreCase) && seen.Add(label))
                     outp.Add(new RoutineDef { Name = label, Line = i + 1 });
             }
