@@ -137,6 +137,12 @@ namespace ClarionAssistant.Services
         /// Written at most once per process. This exists because #197 has no local reproduction — the
         /// only person who can confirm the fix runs a dual-environment setup we do not have, so they need
         /// something concrete to read back rather than an impression that things "look separate now".
+        ///
+        /// The append is written here rather than through MonacoSpikeLog on purpose: this file is SHARED
+        /// SOURCE, &lt;Compile Include&gt;'d by indexer\ClarionIndexer.csproj alongside ClarionVersionService,
+        /// and that project has none of the IDE assemblies. Depending on an IDE-side logger would drag a
+        /// WinForms/SharpDevelop-coupled type into a standalone console app. Format matches
+        /// MonacoSpikeLog.Write so the line lands in the same file, readable alongside everything else.
         /// </summary>
         public static void LogOnce()
         {
@@ -148,12 +154,20 @@ namespace ClarionAssistant.Services
             try
             {
                 string cfg = Resolve();
-                MonacoSpikeLog.Write(string.Format(
+                string message = string.Format(
                     "[config-dir] resolved={0} nonDefault={1} discriminator='{2}' default={3}",
-                    string.IsNullOrEmpty(cfg) ? "(none — using built-in default)" : cfg,
+                    string.IsNullOrEmpty(cfg) ? "(none - using built-in default)" : cfg,
                     IsNonDefault(),
                     Discriminator(),
-                    DefaultConfigRoot() ?? "(unknown)"));
+                    DefaultConfigRoot() ?? "(unknown)");
+
+                string dir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "ClarionAssistant");
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                File.AppendAllText(
+                    Path.Combine(dir, "monaco-spike.log"),
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + "  " + message + Environment.NewLine);
             }
             catch { }
         }

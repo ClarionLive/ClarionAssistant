@@ -87,6 +87,7 @@
     <Compile Include="..\CodeGraph\Parsing\Models\ParseResult.cs"><Link>Parsing\Models\ParseResult.cs</Link></Compile>
     <!-- IDE-free Services the shared layer needs (see header comment) -->
     <Compile Include="..\Services\RedFileService.cs"><Link>Services\RedFileService.cs</Link></Compile>
+    <Compile Include="..\Services\ClarionConfigDirectory.cs"><Link>Services\ClarionConfigDirectory.cs</Link></Compile>
     <Compile Include="..\Services\ClarionVersionService.cs"><Link>Services\ClarionVersionService.cs</Link></Compile>
     <Compile Include="..\Services\EncodingHelper.cs"><Link>Services\EncodingHelper.cs</Link></Compile>
   </ItemGroup>
