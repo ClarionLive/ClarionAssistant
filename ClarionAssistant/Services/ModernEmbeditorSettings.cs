@@ -538,6 +538,13 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// Folder-safe tag for the active Clarion version (e.g. "Clarion12"). Prefers the running IDE's
         /// current version config; falls back to the addin's install root; then "Default".
+        ///
+        /// GitHub #197: the tag is the install root's FOLDER NAME, so two environments sharing one
+        /// install but launched with different /ConfigDir settings folders would still collide here even
+        /// after ClarionVersionService learned to read the right ClarionProperties.xml. When — and only
+        /// when — a non-default config directory is in play, a short hash of it is appended
+        /// ("Clarion11" -> "Clarion11~a3f9c1"). On a default install the string is unchanged, which is
+        /// deliberate: it means no existing user's history folder moves and no migration is owed.
         /// </summary>
         public static string VersionTag()
         {
@@ -565,7 +572,22 @@ namespace ClarionAssistant.Services
                 }
                 catch { }
             }
-            _versionTag = Sanitize(string.IsNullOrEmpty(tag) ? "Default" : tag);
+            string baseTag = Sanitize(string.IsNullOrEmpty(tag) ? "Default" : tag);
+
+            // Sanitize FIRST, then append: '~' and hex are legal filename characters, so the suffix
+            // survives, and sanitising afterwards could otherwise mangle the discriminator itself.
+            string suffix;
+            try { ClarionConfigDirectory.LogOnce(); suffix = ClarionConfigDirectory.Discriminator(); }
+            catch { suffix = ""; }
+            string full = baseTag + suffix;
+
+            // Do NOT freeze the answer until the IDE's PropertyService is up. VersionTag() is memoised and
+            // addin code can run during startup; caching a pre-initialisation answer would pin the WRONG
+            // folder for the rest of the session, and only on some machines — a worse bug than #197.
+            // The unresolved case still RETURNS a usable tag, it just stays willing to re-ask.
+            if (!ClarionConfigDirectory.IsResolvable()) return full;
+
+            _versionTag = full;
             return _versionTag;
         }
 

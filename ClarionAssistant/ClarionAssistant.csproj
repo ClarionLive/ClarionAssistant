@@ -139,6 +139,7 @@
     <Compile Include="Services\ShutdownService.cs" />
     <Compile Include="Services\WebView2ProcessReaper.cs" />
     <Compile Include="Services\KnowledgeService.cs" />
+    <Compile Include="Services\ClarionConfigDirectory.cs" />
     <Compile Include="Services\ClarionVersionService.cs" />
     <Compile Include="Services\RedFileService.cs" />
     <Compile Include="Services\LspClient.cs" />
