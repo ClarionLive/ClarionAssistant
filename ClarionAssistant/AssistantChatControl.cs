@@ -771,14 +771,21 @@ namespace ClarionAssistant
             _header.SetSolutions(paths.ToArray(), selectedIdx);
             UpdateIndexStatus();
 
-            // NO auto-index on startup (ticket 7f1c67b2). This used to index here, and it was
-            // the wrong moment on both counts: _currentSlnPath comes from CA's RESTORE of the
-            // last-used solution, not from the developer opening anything, so an unrequested
-            // run started the instant CA took focus and its window habitually appeared BEHIND
-            // the Clarion IDE. It then still held the database when opening a solution kicked
-            // off the real run, and that second run was refused with an error.
-            // Indexing now begins when a solution is actually opened (OnSolutionChanged),
-            // silently. Do not reinstate a run here.
+            // NO auto-index here (ticket 7f1c67b2). THIS METHOD HAS SEVEN CALLERS and its job
+            // is to reload the solution dropdown — it is not a "solution was opened" signal.
+            // Indexing from here fired on practically any refresh: once when CA restored the
+            // last-used solution at startup (an unrequested run whose window habitually
+            // appeared BEHIND the Clarion IDE), and again when a solution was actually opened,
+            // at which point the two collided on the same database and the second was refused.
+            //
+            // The old comment here said "Auto-index on startup", which is what it looked like
+            // from the restore path and is why it was easy to misread as startup-only. It was
+            // not: DetectFromIde() calls this too, so the "Work with active solution" card
+            // reached it as well.
+            //
+            // Indexing now happens where a solution is deliberately opened — OpenSolutionInNewTab
+            // (browse dialog, "Work with active solution") and OnSolutionChanged (header
+            // dropdown) — silently in both cases. Do not reinstate a run here.
             if (!string.IsNullOrEmpty(_currentSlnPath))
             {
                 // Eager-start the LSP on startup-restore so embeditor completion is
@@ -1347,6 +1354,23 @@ namespace ClarionAssistant
             _currentSlnPath = slnPath;
             AddToSolutionHistory(slnPath);
             LoadSolutionHistory();
+
+            // Opening a solution indexes it, silently (ticket 7f1c67b2). This is a deliberate
+            // user action — the browse dialog, or the "Work with active solution" card — so it
+            // is exactly the moment indexing SHOULD start.
+            //
+            // It lives here rather than in LoadSolutionHistory, where it used to. That method
+            // has SEVEN callers and reloads the solution dropdown, so indexing from it fired on
+            // essentially any refresh: once at startup and again on opening a solution, which is
+            // how two runs ended up colliding on the same database. LoadSolutionHistory loads a
+            // list; it should not start work.
+            //
+            // Not a double-fire with OnSolutionChanged: that handles the header dropdown, this
+            // handles opening a solution into a tab, and neither calls the other.
+            string autoDbPath = Path.Combine(
+                Path.GetDirectoryName(slnPath),
+                Path.GetFileNameWithoutExtension(slnPath) + ".codegraph.db");
+            RunIndexAutomatic(File.Exists(autoDbPath));
 
             string name = Path.GetFileNameWithoutExtension(slnPath);
             var renderer = new WebViewTerminalRenderer { Dock = DockStyle.Fill };
