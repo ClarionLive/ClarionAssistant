@@ -1,4 +1,4 @@
-# Build Clarion Assistant Installer
+﻿# Build Clarion Assistant Installer
 # Builds all components, then compiles the Inno Setup installer
 # Optionally signs the output with Sectigo USB dongle
 param(
@@ -77,6 +77,46 @@ Write-Host "Inno Setup: $innoSetup"
 Write-Host "SignTool:   $signtool"
 Write-Host ""
 
+# --- Gate: every installer script must PARSE under Windows PowerShell 5.1 ---
+#
+# configure.ps1 SHIPS with the installer and the .iss runs it via powershell.exe, which on Windows
+# is always Windows PowerShell 5.1 -- never pwsh. Anything 5.1 cannot handle therefore fails on the
+# USER'S machine, after release, where it is most expensive. GH #190 was exactly that: a PS 6+ only
+# parameter reached 5.1, threw, and the catch around it rewrote the user's ~/.claude/settings.json
+# from an empty hashtable, destroying their hooks, model, statusLine and permissions on every install.
+#
+# This script itself had a sibling of the same bug (ticket 7cf3a895): saved as UTF-8 WITHOUT a BOM,
+# 5.1 decoded it as CP1252, an em-dash inside a string literal became a U+201D -- which PowerShell
+# treats as a STRING DELIMITER -- and the parse collapsed with a bogus "Missing closing '}'" pointing
+# at innocent code. It parses fine under PS7, so nothing revealed it.
+#
+# Parse-only: this compiles the scripts, it does not run them. Cheap, and it fails the RELEASE rather
+# than the customer.
+$ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+if (-not (Test-Path $ps51)) {
+    Write-Warning "Windows PowerShell 5.1 not found at $ps51 - skipping the 5.1 parse gate."
+} else {
+    Write-Host "Checking installer scripts parse under Windows PowerShell 5.1..." -ForegroundColor Yellow
+    $badScripts = @()
+    foreach ($ps1 in (Get-ChildItem $scriptDir -Filter *.ps1 -File | Sort-Object Name)) {
+        # Run the 5.1 PARSER in a real 5.1 host. Doing this in-process would prove nothing: the
+        # whole failure mode is that PS7 parses these files happily.
+        $probe = "`$e=`$null; [void][System.Management.Automation.Language.Parser]::ParseFile('$($ps1.FullName)',[ref]`$null,[ref]`$e); if (`$e.Count) { 'line ' + `$e[0].Extent.StartLineNumber + ': ' + `$e[0].Message } else { 'OK' }"
+        $result = & $ps51 -NoProfile -Command $probe
+        if ($result -ne 'OK') {
+            $badScripts += "$($ps1.Name) -> $result"
+            Write-Host ("  FAIL  {0,-34} {1}" -f $ps1.Name, $result) -ForegroundColor Red
+        } else {
+            Write-Host ("  ok    {0}" -f $ps1.Name)
+        }
+    }
+    if ($badScripts.Count -gt 0) {
+        Write-Error ("These installer scripts do not parse under Windows PowerShell 5.1, which is the host the installer runs them with:`n  {0}`nUsual causes: a PowerShell 6+ only construct, or a non-ASCII character inside a STRING LITERAL in a file saved as UTF-8 without a BOM (5.1 reads it as CP1252 and an em-dash turns into a quote character). Fix the script, or save it as UTF-8 WITH BOM." -f ($badScripts -join "`n  "))
+        exit 1
+    }
+    Write-Host ""
+}
+
 # ── Step 1: Build ClarionAssistant ──
 if (-not $SkipBuild) {
     Write-Host "Building ClarionAssistant..." -ForegroundColor Yellow
@@ -139,10 +179,10 @@ if (Test-Path $versionProps) {
         }
         if ($stale.Count -gt 0) { Write-Warning "Shipping stale bins ($($stale -join ', ')) because -AllowStaleBins was passed." }
     } else {
-        Write-Warning "Could not parse <FullVersion> from Version.props — skipping freshness gate."
+        Write-Warning "Could not parse <FullVersion> from Version.props - skipping freshness gate."
     }
 } else {
-    Write-Warning "Version.props not found at $versionProps — skipping freshness gate."
+    Write-Warning "Version.props not found at $versionProps - skipping freshness gate."
 }
 
 # ── Step 2: Sign DLLs before packaging (if requested) ──
@@ -165,7 +205,7 @@ if ($Sign -and $signtool) {
 # ── Step 3: Ensure icon exists (create placeholder if needed) ──
 $iconPath = Join-Path $scriptDir 'clarion-assistant.ico'
 if (-not (Test-Path $iconPath)) {
-    Write-Warning "clarion-assistant.ico not found — Inno Setup will use default icon."
+    Write-Warning "clarion-assistant.ico not found - Inno Setup will use default icon."
     Write-Warning "Place your .ico file at: $iconPath"
     # Remove SetupIconFile from the .iss to avoid build error
     $issContent = Get-Content (Join-Path $scriptDir 'ClarionAssistant.iss') -Raw
