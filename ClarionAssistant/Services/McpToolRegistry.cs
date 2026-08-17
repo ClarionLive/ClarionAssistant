@@ -1073,6 +1073,10 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                     "Embeditor save path). 'edits' is a JSON array of {\"line_number\":N,\"code\":\"...\"}: line_number " +
                     "is the 1-based «E:N» slot start (from get_embeditor_source/search_embeditor_source), code is the " +
                     "COMPLETE replacement for that slot (end with a trailing newline). Edits are applied bottom-to-top. " +
+                    "If an embeditor is ALREADY open on the SAME procedure it is adopted rather than refused — the edits " +
+                    "go into that buffer and the save closes it (the IDE has no save-without-close), so re-open it if you " +
+                    "want to keep working there. An embeditor open on a DIFFERENT procedure is never touched: the call " +
+                    "aborts and asks you to close it. " +
                     "If ANY line_number is not a current embed-slot start, NOTHING is written. The procedure is opened, " +
                     "written, saved and closed automatically — do NOT wrap this in open_procedure_embed / " +
                     "save_and_close_embeditor.",

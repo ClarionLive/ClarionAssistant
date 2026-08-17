@@ -307,6 +307,63 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// Adopt an ALREADY-OPEN embeditor when it is showing <paramref name="procName"/>, mirroring its live
+        /// buffer instead of demanding the caller close it first. A large procedure is exactly where a fresh
+        /// open is unreliable, so the developer-opened editor is often the only handle that worked — refusing
+        /// it makes the round-trip unusable in the case that needs it most.
+        ///
+        /// The identity check here is deliberately STRICTER than the post-open sanity check in
+        /// <see cref="OpenAndMirror"/>. That one only asks whether the name appears anywhere in the source,
+        /// which is sound after WE typed the name into the locator (a mis-select is the unlikely branch).
+        /// Here the editor was opened by someone else, so a bare mention could just as well be a CALL to the
+        /// target from an unrelated procedure. We therefore take the column-0 declaration via
+        /// <see cref="ProcNameFromSource"/> and require an exact name match.
+        ///
+        /// Returns true (with the mirror) only on an exact match. Returns false with <paramref name="error"/>
+        /// set when something else is open — the caller should surface that rather than open anything. Returns
+        /// false with <paramref name="error"/> null when NO embeditor is open, i.e. "carry on and open one".
+        /// Never closes, cancels or writes: a non-matching editor is left exactly as the developer left it.
+        /// UI thread only.
+        /// </summary>
+        internal static bool TryAdoptOpenEmbeditor(AppTreeService appTree, string procName,
+            out string source, out List<int[]> ranges, out string error)
+        {
+            source = null; ranges = null; error = null;
+            if (appTree == null || string.IsNullOrWhiteSpace(procName)) return false;
+
+            // Nothing open → not an error, just nothing to adopt.
+            try { if (appTree.GetEmbedInfo() == null) return false; }
+            catch { return false; }
+
+            string title, ferr, mirrored;
+            List<int[]> mirroredRanges;
+            if (!EmbeditorCompletionService.TryGetActiveEmbeditorSource(
+                    out title, out mirrored, out mirroredRanges, out ferr))
+            {
+                error = "An embeditor is open but its source could not be read (" + ferr +
+                        "); close it and try again.";
+                return false;
+            }
+
+            ICollection<string> knownProcs = null;
+            try { knownProcs = appTree.GetProcedureNames(); } catch { }
+
+            string openProc = ProcNameFromSource(mirrored, knownProcs);
+            if (string.IsNullOrEmpty(openProc) ||
+                !string.Equals(openProc, procName.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                error = "An embeditor is still open on '" +
+                        (string.IsNullOrEmpty(openProc) ? "an unidentified procedure" : openProc) +
+                        "', not '" + procName + "'; close it and try again.";
+                return false;
+            }
+
+            source = mirrored;
+            ranges = mirroredRanges;
+            return true;
+        }
+
+        /// <summary>
         /// Extract the authoritative procedure name from generated embed source (cardinal rule #7 — name from
         /// source, NEVER the temp pwee FileName/caption). MIRROR SCOPE IS SINGLE-PROC: the embeditor buffer is
         /// one procedure's assembled source (verified live — BrowseAuthors' buffer contained only its own
