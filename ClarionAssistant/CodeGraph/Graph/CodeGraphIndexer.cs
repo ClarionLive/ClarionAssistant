@@ -1055,8 +1055,15 @@ namespace ClarionCodeGraph.Graph
             // ambiguous column exists for; project-aware ranking is round-6 territory).
             var globalOwnerByName = new Dictionary<string, VariableInfo>(StringComparer.OrdinalIgnoreCase);
             var globalOwnerCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            // Every owning global declaration, keyed by name and keeping ALL same-named
+            // owners (54058d98). The EXTERNAL re-point above only fires when the USING file
+            // carries its own decl_kind='external' row -- the multi-DLL shape. A single-EXE
+            // Legacy app re-declares nothing: MEMBER modules just see the PROGRAM's global
+            // data, so demoleg.sln has zero external rows and every cross-module use of a
+            // global went unedged. This map is what the reference scan falls back to.
+            var globalVarsByName = new Dictionary<string, List<VariableInfo>>(StringComparer.OrdinalIgnoreCase);
             var allVarDt = _db.ExecuteQuery(
-                "SELECT id, name, file_path, parent_name, scope, params, decl_kind FROM symbols WHERE type = 'variable'");
+                "SELECT id, name, file_path, parent_name, scope, params, decl_kind, project_id FROM symbols WHERE type = 'variable'");
 
             foreach (System.Data.DataRow row in allVarDt.Rows)
             {
@@ -1067,8 +1074,11 @@ namespace ClarionCodeGraph.Graph
                 string scope = row["scope"] != DBNull.Value ? row["scope"].ToString() : "local";
                 string varParams = row["params"] != DBNull.Value ? row["params"].ToString() : null;
                 string varDeclKind = row["decl_kind"] != DBNull.Value ? row["decl_kind"].ToString() : null;
+                // -1 = "no project", matching resolveCallTarget's callerProjectId contract: a
+                // negative id disables project narrowing rather than matching project 0.
+                int varProjectId = row["project_id"] != DBNull.Value ? Convert.ToInt32(row["project_id"]) : -1;
 
-                var varInfo = new VariableInfo { Name = name, Id = id, ParentName = parentName, Scope = scope, Params = varParams, DeclKind = varDeclKind };
+                var varInfo = new VariableInfo { Name = name, Id = id, ParentName = parentName, Scope = scope, Params = varParams, DeclKind = varDeclKind, ProjectId = varProjectId };
 
                 List<VariableInfo> fileVars;
                 if (!variablesByFile.TryGetValue(fp, out fileVars))
@@ -1089,11 +1099,71 @@ namespace ClarionCodeGraph.Graph
                     int ownerCount;
                     globalOwnerCounts.TryGetValue(name, out ownerCount);
                     globalOwnerCounts[name] = ownerCount + 1;
+
+                    // ALL owners, not just the lowest-id one (54058d98). globalOwnerByName
+                    // pre-picks a winner, which is fine for the EXTERNAL re-point -- that
+                    // path already knows which app it is in. The cross-module fallback below
+                    // has to choose by PROJECT first, so it needs the candidates intact.
+                    List<VariableInfo> sameNameGlobals;
+                    if (!globalVarsByName.TryGetValue(name, out sameNameGlobals))
+                    {
+                        sameNameGlobals = new List<VariableInfo>();
+                        globalVarsByName[name] = sameNameGlobals;
+                    }
+                    sameNameGlobals.Add(varInfo);
                 }
             }
 
             int totalVarCount = allVarDt.Rows.Count;
             ReportProgress(string.Format("  Loaded {0} variable symbols for reference tracking", totalVarCount));
+
+            // Cross-module global resolution (54058d98). Deliberately mirrors
+            // resolveCallTarget's narrowing rather than doing a flat lowest-id pick: on a
+            // multi-app solution GlobalRequest/GlobalResponse are template-generated into
+            // EVERY app, so a flat map would flag thousands of references ambiguous and
+            // attribute all of them to one arbitrary copy -- the same "confidently wrong"
+            // failure round 4 removed from call resolution. Same-file narrowing is omitted
+            // on purpose: a global declared in the scanned file is already in that file's
+            // per-file bucket and never reaches this fallback.
+            ResolveGlobalVarDelegate resolveGlobalVar = delegate(string name, int refProjectId, out bool ambiguous)
+            {
+                ambiguous = false;
+                List<VariableInfo> cands;
+                if (!globalVarsByName.TryGetValue(name, out cands) || cands.Count == 0) return null;
+                if (cands.Count == 1) return cands[0];
+
+                var pool = cands;
+                if (refProjectId >= 0)
+                {
+                    var narrowed = new List<VariableInfo>();
+                    foreach (var c in pool) if (c.ProjectId == refProjectId) narrowed.Add(c);
+                    if (narrowed.Count == 0)
+                    {
+                        HashSet<int> deps;
+                        if (depClosure.TryGetValue(refProjectId, out deps))
+                            foreach (var c in pool) if (deps.Contains(c.ProjectId)) narrowed.Add(c);
+                    }
+                    if (narrowed.Count > 0) pool = narrowed;
+                }
+
+                VariableInfo best = null;
+                foreach (var c in pool) if (best == null || c.Id < best.Id) best = c;
+                // Still more than one equal-rank owner after narrowing: the pick is
+                // deterministic but NOT certain, which is exactly what `ambiguous` records.
+                ambiguous = pool.Count > 1;
+                return best;
+            };
+
+            // Globals whose names the tokenizer cannot represent, for the slow path's copy of
+            // the fallback. Usually empty -- ':' and '.' ARE identifier chars, so ordinary
+            // Clarion labels like BGL:Visible and Customer::Used tokenize fine and take the
+            // fast path. Built once here rather than per file.
+            var slowGlobalVars = new List<VariableInfo>();
+            foreach (var kv in globalVarsByName)
+                if (!IsTokenizableName(kv.Key)) slowGlobalVars.AddRange(kv.Value);
+            // Names the slow path resolved in-file on the current line; reused and cleared
+            // per line so the fallback can tell "unresolved" from "already owned here".
+            var slowResolvedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             // Class name -> immediate parent class name (from parent_name on the class's own
             // symbol row), used below to walk the inheritance chain when a class data member
@@ -1980,7 +2050,13 @@ namespace ClarionCodeGraph.Graph
                         // valid sub-spans (starts at 0 / after '.' or ':', ends at token
                         // end / before '.' — the original boundary rules) instead of
                         // substring-scanning every file variable through every line.
-                        if (currentFileVarsByName != null)
+                        // Runs when this file has variables of its own OR when any global
+                        // exists to fall back to (54058d98). The old `!= null` guard alone
+                        // skipped the whole scan for a module that declares nothing, so its
+                        // uses of a PROGRAM-file global produced no edges no matter what the
+                        // fallback did -- a hole the demoleg fixture could not show, because
+                        // every module there happens to declare something of its own.
+                        if (currentFileVarsByName != null || globalVarsByName.Count > 0)
                         {
                             TokenizeIdentifiers(trimmed, trimmedTokens);
                             for (int ti = 0; ti < trimmedTokens.Count; ti++)
@@ -1996,10 +2072,17 @@ namespace ClarionCodeGraph.Graph
                                     for (int e = tok.Length; e > s; e--)
                                     {
                                         if (e < tok.Length && trimmed[tok.Start + e] != '.') continue;
+                                        string candName = trimmed.Substring(tok.Start + s, e - s);
                                         List<VariableInfo> sameName;
-                                        if (!currentFileVarsByName.TryGetValue(
-                                                trimmed.Substring(tok.Start + s, e - s), out sameName))
-                                            continue;
+                                        // Tracks whether THIS file supplied an in-scope owner for the
+                                        // name. Both a miss and an all-filtered result mean the name is
+                                        // unresolved here, and both must reach the global fallback below.
+                                        bool resolvedInFile = false;
+                                        // Null when the file declares no variables at all --
+                                        // legitimate now that the scan no longer requires it.
+                                        if (currentFileVarsByName != null &&
+                                            currentFileVarsByName.TryGetValue(candName, out sameName))
+                                        {
                                         foreach (var varInfo in sameName)
                                         {
                                             // Only match variables that are in scope:
@@ -2015,6 +2098,13 @@ namespace ClarionCodeGraph.Graph
                                                 if (!ownedByProc && !ownedByRoutine)
                                                     continue;
                                             }
+
+                                            // Past the scope gate: this file owns the name here, so the
+                                            // global fallback must NOT also fire. Set before the dedup
+                                            // check, not after -- an edge suppressed as a duplicate was
+                                            // still resolved in-file, and treating it as unresolved would
+                                            // hand the reference to a same-named global instead.
+                                            resolvedInFile = true;
 
                                             // A decl_kind='external' row is this file's IMPORT of a global
                                             // owned elsewhere — re-point the edge to the owning declaration
@@ -2048,11 +2138,47 @@ namespace ClarionCodeGraph.Graph
                                                 relCount++;
                                             }
                                         }
+                                        }
+
+                                        // Cross-module global fallback (54058d98). Reached on
+                                        // EITHER trigger:
+                                        //   (a) this file declares nothing by that name, or
+                                        //   (b) it does, but every candidate was filtered out as
+                                        //       belonging to a different procedure or routine.
+                                        // (b) is the shadowing case: a local X in procedure Q must
+                                        // bind to the local inside Q, while the SAME name in
+                                        // procedure P -- where no local X exists -- refers to the
+                                        // global. A miss-only fallback would silently drop P's
+                                        // references, which is the same class of bug as the one
+                                        // being fixed here, only quieter.
+                                        if (!resolvedInFile)
+                                        {
+                                            bool globalAmbiguous;
+                                            VariableInfo globalVar = resolveGlobalVar(candName, target.ProjectId, out globalAmbiguous);
+                                            if (globalVar != null)
+                                            {
+                                                string globalRelKey = string.Format("{0}|{1}|references|{2}", currentFromId, globalVar.Id, i + 1);
+                                                if (insertedRels.Add(globalRelKey))
+                                                {
+                                                    _db.InsertRelationship(new ClarionRelationship
+                                                    {
+                                                        FromId = currentFromId,
+                                                        ToId = globalVar.Id,
+                                                        Type = "references",
+                                                        FilePath = target.Path,
+                                                        LineNumber = i + 1,
+                                                        Ambiguous = globalAmbiguous
+                                                    });
+                                                    relCount++;
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                         // Slow path: variable names the tokenizer can't represent.
+                        if (slowGlobalVars.Count > 0) slowResolvedNames.Clear();
                         if (slowFileVars != null)
                         {
                             foreach (var varInfo in slowFileVars)
@@ -2069,6 +2195,10 @@ namespace ClarionCodeGraph.Graph
 
                                 if (LineContainsVariable(trimmed, varInfo.Name))
                                 {
+                                    // In-scope owner in this file — same meaning as the fast
+                                    // path's resolvedInFile, so the fallback below stands down.
+                                    if (slowGlobalVars.Count > 0) slowResolvedNames.Add(varInfo.Name);
+
                                     long refTargetId = varInfo.Id;
                                     bool refAmbiguous = false;
                                     if (string.Equals(varInfo.DeclKind, "external", StringComparison.OrdinalIgnoreCase))
@@ -2096,6 +2226,39 @@ namespace ClarionCodeGraph.Graph
                                         });
                                         relCount++;
                                     }
+                                }
+                            }
+                        }
+
+                        // Slow-path counterpart of the fast path's cross-module global
+                        // fallback (54058d98). Same two triggers, expressed differently
+                        // because the slow path tests names against the line rather than
+                        // looking them up: a name absent from slowResolvedNames was either
+                        // never declared in this file or was declared out of scope here.
+                        if (slowGlobalVars.Count > 0)
+                        {
+                            foreach (var globalVar in slowGlobalVars)
+                            {
+                                if (slowResolvedNames.Contains(globalVar.Name)) continue;
+                                if (!LineContainsVariable(trimmed, globalVar.Name)) continue;
+
+                                bool slowGlobalAmbiguous;
+                                VariableInfo owner = resolveGlobalVar(globalVar.Name, target.ProjectId, out slowGlobalAmbiguous);
+                                if (owner == null) continue;
+
+                                string slowGlobalRelKey = string.Format("{0}|{1}|references|{2}", currentFromId, owner.Id, i + 1);
+                                if (insertedRels.Add(slowGlobalRelKey))
+                                {
+                                    _db.InsertRelationship(new ClarionRelationship
+                                    {
+                                        FromId = currentFromId,
+                                        ToId = owner.Id,
+                                        Type = "references",
+                                        FilePath = target.Path,
+                                        LineNumber = i + 1,
+                                        Ambiguous = slowGlobalAmbiguous
+                                    });
+                                    relCount++;
                                 }
                             }
                         }
@@ -2741,6 +2904,10 @@ namespace ClarionCodeGraph.Graph
         // 'external' = declared here with the EXTERNAL attribute but OWNED elsewhere.
         // References matched against such a row are re-pointed to the owning declaration.
         public string DeclKind { get; set; }
+        // Owning project, or -1 when the row has no project_id. Used to rank same-named
+        // globals across apps the way resolveCallTarget ranks same-named procedures --
+        // without it a cross-file global reference could only make a flat lowest-id guess.
+        public int ProjectId { get; set; }
     }
 
     /// <summary>
@@ -2750,6 +2917,12 @@ namespace ClarionCodeGraph.Graph
     /// </summary>
     /// <summary>Scope-ordered call-target resolution — Func can't carry an out param.</summary>
     internal delegate long ResolveCallDelegate(string name, int callerProjectId, string callerFile, string codeLine, out bool ambiguous);
+
+    /// <summary>Resolve a variable name to an owning global declaration when the scanned
+    /// file has no in-scope candidate of its own. Returns null when no global owns the
+    /// name. <paramref name="ambiguous"/> is set when several equal-rank owners survive
+    /// narrowing, mirroring ResolveCallDelegate's contract.</summary>
+    internal delegate VariableInfo ResolveGlobalVarDelegate(string name, int refProjectId, out bool ambiguous);
 
     internal class RelScanTarget
     {
