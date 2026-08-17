@@ -771,17 +771,16 @@ namespace ClarionAssistant
             _header.SetSolutions(paths.ToArray(), selectedIdx);
             UpdateIndexStatus();
 
-            // Auto-index on startup if a solution is loaded
+            // NO auto-index on startup (ticket 7f1c67b2). This used to index here, and it was
+            // the wrong moment on both counts: _currentSlnPath comes from CA's RESTORE of the
+            // last-used solution, not from the developer opening anything, so an unrequested
+            // run started the instant CA took focus and its window habitually appeared BEHIND
+            // the Clarion IDE. It then still held the database when opening a solution kicked
+            // off the real run, and that second run was refused with an error.
+            // Indexing now begins when a solution is actually opened (OnSolutionChanged),
+            // silently. Do not reinstate a run here.
             if (!string.IsNullOrEmpty(_currentSlnPath))
             {
-                string dbPath = Path.Combine(
-                    Path.GetDirectoryName(_currentSlnPath),
-                    Path.GetFileNameWithoutExtension(_currentSlnPath) + ".codegraph.db");
-                if (!File.Exists(dbPath))
-                    RunIndex(false);
-                else
-                    RunIndex(true);
-
                 // Eager-start the LSP on startup-restore so embeditor completion is
                 // populated on first use (the restore sets _currentSlnPath directly, so
                 // no solution-"change" is detected and DetectFromIde never runs here).
@@ -888,14 +887,19 @@ namespace ClarionAssistant
                         SendSchemaSourcesForTab(activeTab);
                 }
 
-                // Auto-index in background if no codegraph.db exists yet
+                // Auto-index in the background when a solution is opened (ticket 7f1c67b2).
+                // RunIndexAutomatic, not RunIndex: this run is a consequence of opening a
+                // solution rather than something the developer asked for, so it gets no
+                // window and raises no dialog if it cannot start. The comment here always
+                // said "in background"; until 7f1c67b2 the code still popped the window.
+                // Reindex and Update on the header remain windowed — those ARE user actions.
                 string dbPath = Path.Combine(
                     Path.GetDirectoryName(path),
                     Path.GetFileNameWithoutExtension(path) + ".codegraph.db");
                 if (!File.Exists(dbPath))
-                    RunIndex(false); // full index
+                    RunIndexAutomatic(false); // full index
                 else
-                    RunIndex(true); // incremental update
+                    RunIndexAutomatic(true); // incremental update
             }
         }
 
@@ -1983,7 +1987,23 @@ namespace ClarionAssistant
 
         public void RunIndex(bool incremental)
         {
-            RunIndex(incremental, null, null);
+            RunIndex(incremental, true, null, null);
+        }
+
+        /// <summary>
+        /// Automatic index runs (ticket 7f1c67b2). Same work, no progress window, and no
+        /// modal complaint if it cannot start — the developer did not ask for this run, so
+        /// it must not interrupt them to report on itself.
+        ///
+        /// It is NOT silent about failing. The header status still shows the run and still
+        /// shows an error, and a run that FAILS opens the progress window so the failure is
+        /// impossible to miss. Only success and "refused, another run already owns this
+        /// database" stay quiet — a refusal means the work is already happening, which is
+        /// not something to interrupt anyone about.
+        /// </summary>
+        public void RunIndexAutomatic(bool incremental)
+        {
+            RunIndex(incremental, false, null, null);
         }
 
         /// <summary>
@@ -2004,6 +2024,14 @@ namespace ClarionAssistant
             Action<ClarionCodeGraph.Graph.IndexProgressEvent> externalProgress,
             Action<string> externalCompleted)
         {
+            RunIndex(incremental, true, externalProgress, externalCompleted);
+        }
+
+        public void RunIndex(bool incremental,
+            bool showProgressWindow,
+            Action<ClarionCodeGraph.Graph.IndexProgressEvent> externalProgress,
+            Action<string> externalCompleted)
+        {
             if (string.IsNullOrEmpty(_currentSlnPath) || !File.Exists(_currentSlnPath))
             {
                 if (externalCompleted != null)
@@ -2012,6 +2040,8 @@ namespace ClarionAssistant
                     try { externalCompleted("Error: no solution is selected in the IDE."); } catch { }
                     return;
                 }
+                // An automatic run with no solution is a no-op, not a mistake worth a dialog.
+                if (!showProgressWindow) return;
                 MessageBox.Show("Please select a solution first.", "Index", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
@@ -2028,6 +2058,9 @@ namespace ClarionAssistant
                     catch { }
                     return;
                 }
+                // Automatic run, and another is already running: the work is in hand. Saying so
+                // out loud is exactly the error 7f1c67b2 exists to remove.
+                if (!showProgressWindow) return;
                 MessageBox.Show("An index run is already in progress.", "Index",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
@@ -2072,6 +2105,10 @@ namespace ClarionAssistant
             // closed window; the progress form's Open Log button points here.
             var runLog = new ClarionAssistant.Services.IndexRunLog(Path.GetFileNameWithoutExtension(slnPath));
 
+            // Built for every run, SHOWN only when asked (ticket 7f1c67b2). Constructing it
+            // unconditionally is deliberate: it keeps one completion path instead of
+            // null-guarding a dozen call sites, and it means a silent run that FAILS can
+            // simply show the window it already has, fully populated with what went wrong.
             var progressForm = new Dialogs.IndexProgressForm(
                 Path.GetFileNameWithoutExtension(slnPath), runLog.LogPath, lastRunMs);
             try
@@ -2089,7 +2126,7 @@ namespace ClarionAssistant
             // file boundaries. Interlocked because the poll happens on the worker thread.
             int cancelFlag = 0;
             progressForm.CancelClicked += () => System.Threading.Interlocked.Exchange(ref cancelFlag, 1);
-            progressForm.Show();
+            if (showProgressWindow) progressForm.Show();
 
             var worker = new BackgroundWorker();
             worker.WorkerReportsProgress = true;
@@ -2174,7 +2211,19 @@ namespace ClarionAssistant
                         externalSummary = "Error indexing solution: " + e.Error.Message;
                         runLog.WriteLine("FAILED: " + e.Error.Message);
                         runLog.Dispose();
-                        if (formAlive) progressForm.RunFailed(e.Error.Message);
+                        if (formAlive)
+                        {
+                            progressForm.RunFailed(e.Error.Message);
+                            // An automatic run stayed hidden while it was working; a FAILED one
+                            // must not (ticket 7f1c67b2). Removing the window removed the only
+                            // place errors were shown, and a background index that quietly stops
+                            // updating is worse than the popup this change exists to suppress —
+                            // every later query would answer from a stale graph, silently.
+                            if (!showProgressWindow && !progressForm.Visible)
+                            {
+                                try { progressForm.Show(); } catch { }
+                            }
+                        }
                         _header.SetIndexStatus("Error: " + e.Error.Message, "error");
                         UpdateIndexStatus();
                         return;
@@ -2234,6 +2283,15 @@ namespace ClarionAssistant
                     // a UI throw that would otherwise leak the per-solution log handle for
                     // the process lifetime (pipeline debugger, run 2).
                     runLog.Dispose();
+                    // A window that was never shown has nobody to close it, so an automatic
+                    // run would leak one hidden form per index for the IDE's lifetime
+                    // (ticket 7f1c67b2). Deliberately checks Visible rather than the flag:
+                    // the failure branch above SHOWS the window on purpose, and that one is
+                    // the developer's to close.
+                    if (!showProgressWindow && !progressForm.IsDisposed && !progressForm.Visible)
+                    {
+                        try { progressForm.Dispose(); } catch { }
+                    }
                     if (externalCompleted != null)
                         try
                         {
@@ -2257,9 +2315,15 @@ namespace ClarionAssistant
                     progressForm.RunFailed("An index of this solution's database is already in progress.");
                 if (externalCompleted != null)
                     try { externalCompleted(held); } catch { }
-                else
+                else if (showProgressWindow)
                     MessageBox.Show("An index of this solution's database is already in progress.",
                         "Index", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                // Automatic run refused because another already holds this database: stay quiet.
+                // This is the dialog 7f1c67b2 was reported for. A refusal is not a failure — the
+                // indexing the developer needs is already underway. Dispose the window nobody
+                // ever saw, or an automatic run leaks a hidden form on every refusal.
+                if (!showProgressWindow && !progressForm.IsDisposed && !progressForm.Visible)
+                    try { progressForm.Dispose(); } catch { }
                 return;
             }
             _indexRunInProgress = true;
