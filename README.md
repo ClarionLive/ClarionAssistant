@@ -178,6 +178,32 @@ Deploying a new build closes the assistant's terminal, and until now anything it
 
 It now records outstanding work the moment it becomes blocked rather than at the end of a session, since a session that ends by being killed has no end to write at. On its next start it leads with what was pending instead of waiting to be reminded.
 
+<!-- release-docs: covered=embeditor -->
+### The CA Embeditor now attaches in colon-named procedure suites (#196)
+
+On a generated application where every procedure is named like `reg:TENDER:GiftCard`, the CA Embeditor's auto-overlay had never attached &mdash; not once. The reporter's own logs across six weeks tell it precisely: 72 attach triggers, 65 name-resolution skips, 6 successes &mdash; and all 6 successes were procedures whose labels happened to carry no colon.
+
+The procedure-name matcher simply did not allow a colon in a label. Against a real declaration it took `r`, then `eg`, then required whitespace and met `:` instead &mdash; no match on the line at all. The name came back empty, and rather than guess at it the overlay treated that as a failure and aborted. The generated module name is no fallback either, because Clarion flattens the colons on the way to disk (`reg_TENDER_GiftCard.clw`), so it does not lead back to a real procedure name.
+
+Colons are ordinary in Clarion labels, and this is the second place in this release where assuming otherwise hid a whole class of code from a feature &mdash; the indexer had the same blind spot over referential-integrity procedures. Every hardening property the matcher already had is preserved, and was checked against fixtures rather than argued: indented `MAP` prototypes are still excluded, and so are dotted ABC method labels like `ThisWindow.Init`. Old and new patterns were run side by side over seven declaration shapes; they differ on exactly one, and the new one gets all seven right.
+
+<!-- release-docs: covered=config -->
+### Two Clarion environments no longer share one application history (#197)
+
+If you run more than one Clarion environment from a single installation &mdash; using Clarion's own `/ConfigDir=` switch, which points it at a separate settings folder &mdash; Clarion Assistant merged their application histories into one. Clarion itself kept the two environments properly apart; only CA ran them together.
+
+CA never asked the IDE where its settings live. It rebuilt the path from the running executable's version stamp instead, which works right up until two environments produce the same stamp &mdash; and Clarion 11 and 11.1 both report themselves as `11.0`. Both environments therefore resolved to the same settings file, the same install root, and the same identity, so their histories landed in the same folder.
+
+CA now asks, in order of authority: the IDE's own configuration directory, then the `/ConfigDir=` switch read from the command line for the case where the question gets asked before the IDE has finished starting, and otherwise nothing at all &mdash; it never guesses a path. An environment pointed at a custom settings folder gets its own history, keyed by that folder, and the key is stable across the same path written in different cases or with quotes, so an environment cannot split its own state.
+
+**This is migration-free.** A default installation resolves to exactly the string it did before, so no existing history moves &mdash; only a settings folder outside the default location gets a distinct key. A `[config-dir]` line in the diagnostic log names what was resolved and whether it counted as non-default, so the outcome is something you can read back rather than infer.
+
+### Thanks
+
+- **@bill-atchison** &mdash; for #196, reported with the root cause and a proposed fix, both of which held up when checked against the source.
+- **@BoxSoft** &mdash; for #197, and for the dual-environment detail that explained why two Clarion versions collided on one identity.
+- **@KevinErskine** &mdash; for #190, and for the before-and-after copies of his settings file that made the damage measurable rather than inferred.
+
 ---
 
 ## What's New in v5.7
