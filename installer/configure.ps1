@@ -112,28 +112,87 @@ if (-not (Test-Path $claudeDir)) {
     New-Item -ItemType Directory -Path $claudeDir -Force | Out-Null
 }
 
+# Recursively convert whatever ConvertFrom-Json produced into plain hashtables.
+#
+# GH #190: this used to be `ConvertFrom-Json -AsHashtable`. That switch is PowerShell 6.0+, and
+# the installer runs this script with powershell.exe — which on Windows is ALWAYS Windows
+# PowerShell 5.1, never pwsh. So it threw ParameterBindingException on EVERY machine, the catch
+# below mistook its own unsupported API call for a corrupt user file, and settings.json was
+# rebuilt from an empty hashtable — destroying hooks, model, statusLine, tui, enabledPlugins and
+# the user's own permission entries. Converting by hand behaves identically on 5.1 and 7.x.
+#
+# The `,` before each array is load-bearing: PowerShell unrolls a returned array, so a
+# single-element list would come back as a scalar and an empty one as $null. Either would be
+# re-serialised with the WRONG SHAPE — a one-entry hooks array silently becoming an object is
+# exactly the sort of quiet mangling this function exists to prevent.
+function ConvertTo-HashtableDeep {
+    param($InputObject)
+
+    if ($null -eq $InputObject) { return $null }
+
+    # [ordered] rather than @{}: a plain hashtable has no defined order, so round-tripping
+    # someone's settings.json would silently shuffle every key. Not data loss, but it turns any
+    # diff of the file into noise — and diffing against a known-good copy is exactly how the
+    # reporter of GH #190 was recovering. Insertion order here is the file's own order.
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        $h = [ordered]@{}
+        foreach ($k in @($InputObject.Keys)) { $h[$k] = ConvertTo-HashtableDeep $InputObject[$k] }
+        return $h
+    }
+
+    if ($InputObject -is [System.Management.Automation.PSCustomObject]) {
+        $h = [ordered]@{}
+        foreach ($p in $InputObject.PSObject.Properties) { $h[$p.Name] = ConvertTo-HashtableDeep $p.Value }
+        return $h
+    }
+
+    if ($InputObject -is [string]) { return $InputObject }
+
+    if ($InputObject -is [System.Collections.IEnumerable]) {
+        $list = @(foreach ($item in $InputObject) { ConvertTo-HashtableDeep $item })
+        return ,$list
+    }
+
+    return $InputObject
+}
+
 # ── 1. Merge settings.json (non-destructive) ──
 $settingsPath = Join-Path $claudeDir 'settings.json'
 $settings = @{}
+$originalTopLevelKeys = @()
+$skipSettingsWrite = $false
 
 if (Test-Path $settingsPath) {
     try {
-        $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json -AsHashtable
-        Write-Host "Loaded existing settings.json"
+        $parsed = Get-Content $settingsPath -Raw | ConvertFrom-Json
+        $settings = ConvertTo-HashtableDeep $parsed
+        if ($null -eq $settings) { $settings = @{} }
+        $originalTopLevelKeys = @($settings.Keys)
+        Write-Host "Loaded existing settings.json ($($originalTopLevelKeys.Count) top-level keys)"
     } catch {
-        # Backup corrupted file
+        # The file genuinely did not parse. DO NOT rebuild it from an empty hashtable and write
+        # that back — that is precisely what destroyed users' configs in GH #190. Back it up,
+        # say so loudly, and leave the user's file exactly where it is. Not configuring is a
+        # recoverable outcome; silently replacing someone's global Claude Code settings is not.
         $backupPath = Join-Path $claudeDir "settings.json.backup.$(Get-Date -Format 'yyyyMMdd-HHmmss')"
         Copy-Item $settingsPath $backupPath -Force
-        Write-Host "Backed up corrupted settings.json"
-        $settings = @{}
+        Write-Host "WARNING: could not parse $settingsPath - $($_.Exception.Message)"
+        Write-Host "  A copy was saved as $backupPath and your settings.json was LEFT UNCHANGED."
+        Write-Host "  Clarion Assistant permissions were NOT added. Fix the JSON and re-run this script,"
+        Write-Host "  or add them from the Clarion Assistant settings screen."
+        $skipSettingsWrite = $true
     }
 }
 
 # Ensure permissions.allow exists as an array
-if (-not $settings.ContainsKey('permissions')) {
+# .Contains, not .ContainsKey: $settings may be an OrderedDictionary (see ConvertTo-HashtableDeep),
+# which implements IDictionary.Contains but has no ContainsKey. Hashtable supports both, so
+# .Contains is the form that is correct for either. Getting this wrong throws at run time while
+# still producing a plausible-looking settings.json, so it does not announce itself.
+if (-not $settings.Contains('permissions')) {
     $settings['permissions'] = @{}
 }
-if (-not $settings['permissions'].ContainsKey('allow')) {
+if (-not $settings['permissions'].Contains('allow')) {
     $settings['permissions']['allow'] = @()
 }
 
@@ -212,23 +271,51 @@ foreach ($perm in $requiredPermissions) {
 }
 
 $settings['permissions']['allow'] = @($existingPerms)
-Write-Host "Added $addedCount new permissions ($($requiredPermissions.Count) total Clarion tools)"
+# Don't claim to have added anything when the write is going to be skipped — on the
+# unparseable-file path these mutations are made against an empty hashtable and then discarded,
+# and "Added 60 new permissions" immediately above "Skipped writing settings.json" reads as
+# though they landed.
+if (-not $skipSettingsWrite) {
+    Write-Host "Added $addedCount new permissions ($($requiredPermissions.Count) total Clarion tools)"
+}
 
 # Ensure env vars
-if (-not $settings.ContainsKey('env')) {
+if (-not $settings.Contains('env')) {
     $settings['env'] = @{}
 }
-if (-not $settings['env'].ContainsKey('CLAUDE_CODE_USE_POWERSHELL_TOOL')) {
+if (-not $settings['env'].Contains('CLAUDE_CODE_USE_POWERSHELL_TOOL')) {
     $settings['env']['CLAUDE_CODE_USE_POWERSHELL_TOOL'] = '1'
 }
-if (-not $settings['env'].ContainsKey('CLAUDE_CODE_NO_FLICKER')) {
+if (-not $settings['env'].Contains('CLAUDE_CODE_NO_FLICKER')) {
     $settings['env']['CLAUDE_CODE_NO_FLICKER'] = '1'
 }
 
 # Write settings.json
-$settingsJson = $settings | ConvertTo-Json -Depth 10
-Set-Content -Path $settingsPath -Value $settingsJson -Encoding UTF8
-Write-Host "Updated settings.json"
+if ($skipSettingsWrite) {
+    Write-Host "Skipped writing settings.json (see the warning above) - your file was left untouched."
+} else {
+    # POST-MERGE GUARD (GH #190). Everything above only ever ADDS keys, so any top-level key that
+    # went in must still be here. If one is missing, something upstream lost user data and we must
+    # not commit it to disk. This check is deliberately not specific to the -AsHashtable bug that
+    # prompted it: it catches the whole class, including whatever the next refactor of this script
+    # gets wrong. A settings.json we failed to update is a nuisance; one we silently truncated is
+    # the user's entire Claude Code configuration.
+    $finalKeys = @($settings.Keys)
+    $missingKeys = @($originalTopLevelKeys | Where-Object { $finalKeys -notcontains $_ })
+
+    if ($missingKeys.Count -gt 0) {
+        $backupPath = Join-Path $claudeDir "settings.json.backup.$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+        Copy-Item $settingsPath $backupPath -Force
+        Write-Host "ERROR: refusing to write settings.json - the merge would have dropped $($missingKeys.Count) existing top-level key(s):"
+        Write-Host "  $($missingKeys -join ', ')"
+        Write-Host "  Your settings.json was LEFT UNCHANGED (a copy is at $backupPath)."
+        Write-Host "  This is a bug in the installer - please report it with the key names above."
+    } else {
+        $settingsJson = $settings | ConvertTo-Json -Depth 10
+        Set-Content -Path $settingsPath -Value $settingsJson -Encoding UTF8
+        Write-Host "Updated settings.json ($($finalKeys.Count) top-level keys preserved)"
+    }
+}
 
 # ── 3. Set DocGraph DB path via environment variable ──
 if ($DocGraphDb -and (Test-Path $DocGraphDb)) {
