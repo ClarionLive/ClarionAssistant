@@ -1128,6 +1128,17 @@ namespace ClarionCodeGraph.Graph
             ResolveGlobalVarDelegate resolveGlobalVar = delegate(string name, int refProjectId, out bool ambiguous)
             {
                 ambiguous = false;
+
+                // Language keywords and built-ins are NEVER resolved through this fallback,
+                // even when some app genuinely declares a global with that name. Measured on a
+                // 36-project solution: without this, a global named TYPE collected 39,479
+                // edges, because TYPE is a Clarion keyword (QUEUE,TYPE / GROUP,TYPE) and the
+                // fallback matched every keyword occurrence solution-wide. The per-file path
+                // deliberately keeps its existing behaviour -- being confined to the declaring
+                // file WAS its precision guard, and this fallback removes exactly that guard,
+                // so it has to replace it with something.
+                if (ClarionBuiltins.IsBuiltInOrKeyword(name)) return null;
+
                 List<VariableInfo> cands;
                 if (!globalVarsByName.TryGetValue(name, out cands) || cands.Count == 0) return null;
                 if (cands.Count == 1) return cands[0];
