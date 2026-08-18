@@ -238,6 +238,30 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// Remove a terminal from the broker's roster (ticket 9a0ce0de). The counterpart to
+        /// RegisterTerminal, which had none — registration was one-way by construction, so a
+        /// CA terminal stayed listed as available long after its process was gone.
+        ///
+        /// By NAME, not docId: the broker's endpoint is DisconnectTerminalByName, and CA names
+        /// are the CA-&lt;slug&gt; values from CaAgentIdentity.
+        ///
+        /// Callers are shutdown paths, so this is deliberately best-effort — it returns an
+        /// unsuccessful ApiResult rather than throwing when MultiTerminal is not running, which
+        /// is a perfectly ordinary state. Use a short-timeout client for it: on IDE shutdown a
+        /// default 10s timeout per tab would hold Clarion open while it waits for a service
+        /// that may not exist.
+        /// </summary>
+        public ApiResult<object> DisconnectTerminal(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return new ApiResult<object> { Success = false, Error = "name is required" };
+            return Post<object>("/api/messaging/disconnect", new Dictionary<string, object>
+            {
+                { "name", name }
+            });
+        }
+
+        /// <summary>
         /// Drain the broker-side queue for this terminal.
         /// NOTE: destructive read — calling this removes messages from the queue.
         /// Use as a safety-net poll in case deliveries fell through channel push.

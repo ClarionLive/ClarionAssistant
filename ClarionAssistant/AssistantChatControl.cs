@@ -3401,6 +3401,10 @@ namespace ClarionAssistant
             // with the MultiTerminal broker under the right identity.
             _caTabCounter++;
             string agentName = Services.CaAgentIdentity.NormalizeAgentName(tab.Name, _caTabCounter);
+            // Remember it: this is the name the broker will know this tab by, and the only way
+            // to disconnect it when the process exits (ticket 9a0ce0de). Recomputing later would
+            // give a different name, because the counter above has moved on.
+            tab.AgentName = agentName;
             string docId = Services.CaAgentIdentity.ComputeStableDocId(agentName);
             string safeAgentName = Services.CaAgentIdentity.EscapeForPowerShellSingleQuote(agentName);
             string safeDocId = Services.CaAgentIdentity.EscapeForPowerShellSingleQuote(docId);
@@ -3873,9 +3877,60 @@ namespace ClarionAssistant
                 tab.Terminal.Resize(e.Columns, e.Rows);
         }
 
+        /// <summary>
+        /// Drop a tab's assistant from the MultiTerminal roster (ticket 9a0ce0de).
+        ///
+        /// MT removes its own terminals host-side from OnTerminalExited; CA never did, and the
+        /// SessionEnd hook that would have covered for it only runs when Claude Code exits
+        /// CLEANLY — CA kills the process, so it never fires. The result was terminals listed
+        /// as available with no process behind them.
+        ///
+        /// TIMEOUT IS LOAD-BEARING, not tidiness. The default client waits 10s, and these are
+        /// shutdown paths: on IDE close that would hold Clarion open for 10s PER TAB waiting on
+        /// a MultiTerminal that may not even be running. 1.5s is long enough for a localhost
+        /// call and short enough to be invisible.
+        ///
+        /// <paramref name="background"/> false runs it inline, for Dispose — a background thread
+        /// would not survive the process exiting, so the request must complete before we return.
+        /// True runs it off the UI thread, for a single tab closing while the IDE lives on.
+        /// </summary>
+        private void DisconnectTabFromMultiTerminal(TerminalTab tab, bool background)
+        {
+            if (tab == null || string.IsNullOrEmpty(tab.AgentName)) return;
+            string agentName = tab.AgentName;
+            // Cleared first: whatever happens to the call, this tab's identity is spent, and a
+            // retry against a name the broker may have reassigned is worse than not retrying.
+            tab.AgentName = null;
+
+            Action disconnect = () =>
+            {
+                try
+                {
+                    var api = new Services.MultiTerminalApiClient(timeoutMs: 1500);
+                    api.DisconnectTerminal(agentName);
+                }
+                catch { /* MultiTerminal not running is an ordinary state, not an error */ }
+            };
+
+            if (background)
+            {
+                try { System.Threading.ThreadPool.QueueUserWorkItem(_ => disconnect()); }
+                catch { disconnect(); }
+            }
+            else
+            {
+                disconnect();
+            }
+        }
+
         private void OnTabTerminalProcessExited(TerminalTab tab)
         {
             tab.AssistantLaunched = false;
+
+            // The assistant process is gone, so its broker entry should go too (ticket
+            // 9a0ce0de). Off the UI thread: the IDE is still running, so the request will
+            // complete, and a closing tab should not wait on an HTTP round-trip.
+            DisconnectTabFromMultiTerminal(tab, background: true);
 
             if (_knowledgeService != null && tab.SessionId > 0)
             {
@@ -4232,6 +4287,24 @@ namespace ClarionAssistant
             lock (_instances) { _instances.Remove(this); }
             if (disposing)
             {
+                // Drop every still-registered tab from the MultiTerminal roster BEFORE the tab
+                // manager disposes them and their names are lost (ticket 9a0ce0de). Inline, not
+                // queued: the process is going away, and a background thread would be killed
+                // before the request left the machine.
+                //
+                // Covers an ORDERLY Clarion exit only. A kill — deploy, crash, Task Manager —
+                // never reaches Dispose, and that is the common way CA terminals die. Closing
+                // that case needs a liveness check on the broker side; see the ticket.
+                try
+                {
+                    if (_tabManager != null)
+                    {
+                        foreach (var t in _tabManager.Tabs)
+                            DisconnectTabFromMultiTerminal(t, background: false);
+                    }
+                }
+                catch { }
+
                 if (_tabManager != null) _tabManager.Dispose();
                 if (_mcpServer != null) _mcpServer.Dispose();
                 if (_knowledgeService != null) _knowledgeService.Dispose();
