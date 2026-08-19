@@ -160,6 +160,11 @@ namespace ClarionAssistant
             // === Tab manager ===
             _tabManager = new TabManager(_tabStrip, _contentArea);
             _tabManager.ActiveTabChanged += OnActiveTabChanged;
+            // TabRemoved fires from CloseTab with the tab still intact and its AgentName still set,
+            // BEFORE tab.Dispose() (ticket 9a0ce0de). That ordering is the point: CloseTab drops the
+            // tab from _tabs first, so by the time anything downstream sweeps the tab list this tab
+            // is already unreachable and its roster entry would be stranded for good.
+            _tabManager.TabRemoved += OnTabRemoved;
 
             // Add in correct order (Fill first, then Top items from bottom to top)
             Controls.Add(_contentArea);
@@ -3441,6 +3446,10 @@ namespace ClarionAssistant
             // with the MultiTerminal broker under the right identity.
             _caTabCounter++;
             string agentName = Services.CaAgentIdentity.NormalizeAgentName(tab.Name, _caTabCounter);
+            // Remember it: this is the name the broker will know this tab by, and the only way
+            // to disconnect it when the process exits (ticket 9a0ce0de). Recomputing later would
+            // give a different name, because the counter above has moved on.
+            tab.AgentName = agentName;
             string docId = Services.CaAgentIdentity.ComputeStableDocId(agentName);
             string safeAgentName = Services.CaAgentIdentity.EscapeForPowerShellSingleQuote(agentName);
             string safeDocId = Services.CaAgentIdentity.EscapeForPowerShellSingleQuote(docId);
@@ -3913,9 +3922,101 @@ namespace ClarionAssistant
                 tab.Terminal.Resize(e.Columns, e.Rows);
         }
 
+        /// <summary>
+        /// Drop a tab's assistant from the MultiTerminal roster (ticket 9a0ce0de).
+        ///
+        /// MT removes its own terminals host-side from OnTerminalExited; CA never did, and the
+        /// SessionEnd hook that would have covered for it only runs when Claude Code exits
+        /// CLEANLY — CA kills the process, so it never fires. The result was terminals listed
+        /// as available with no process behind them.
+        ///
+        /// TIMEOUT IS LOAD-BEARING, not tidiness. The default client waits 10s, and these are
+        /// shutdown paths: on IDE close that would hold Clarion open for 10s PER TAB waiting on
+        /// a MultiTerminal that may not even be running. 1.5s is long enough for a localhost
+        /// call and short enough to be invisible.
+        ///
+        /// <paramref name="background"/> false runs it inline, for Dispose — a background thread
+        /// would not survive the process exiting, so the request must complete before we return.
+        /// True runs it off the UI thread, for a single tab closing while the IDE lives on.
+        /// </summary>
+        private void DisconnectTabFromMultiTerminal(TerminalTab tab, bool background, string origin)
+        {
+            if (tab == null) { Services.ShutdownLog.Log("MT disconnect skipped (" + origin + "): tab is null"); return; }
+            if (string.IsNullOrEmpty(tab.AgentName))
+            {
+                // Ordinary for the Home tab, and for a tab already disconnected by an earlier path.
+                Services.ShutdownLog.Log("MT disconnect skipped (" + origin + "): no AgentName on tab '" + tab.Name + "'");
+                return;
+            }
+            string agentName = tab.AgentName;
+            // Cleared first: whatever happens to the call, this tab's identity is spent, and a
+            // retry against a name the broker may have reassigned is worse than not retrying.
+            tab.AgentName = null;
+
+            Action disconnect = () =>
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    var api = new Services.MultiTerminalApiClient(timeoutMs: 1500);
+                    var res = api.DisconnectTerminal(agentName);
+                    // Logged, not swallowed. The whole path used to be a bare catch{} with no
+                    // trace at all, which is exactly why two failed live tests could not be told
+                    // apart from outside the process — "never attempted" looked identical to
+                    // "attempted and failed". MultiTerminal being absent is still an ordinary
+                    // state, so a failure here is recorded, never surfaced to the developer.
+                    // Elapsed is logged too: a timeout that lands exactly on the budget is the
+                    // signature of a stall BEFORE the request goes out (proxy resolution), not of
+                    // a slow MultiTerminal — that distinction cost a whole test cycle to make.
+                    Services.ShutdownLog.Log("MT disconnect '" + agentName + "' (" + origin + ", "
+                        + (background ? "background" : "inline") + ") -> "
+                        + (res != null && res.Success ? "ok" : "FAILED: " + (res == null ? "null result" : res.Error))
+                        + " [" + sw.ElapsedMilliseconds + "ms]");
+                }
+                catch (Exception ex)
+                {
+                    Services.ShutdownLog.Log("MT disconnect '" + agentName + "' (" + origin + ") THREW after "
+                        + sw.ElapsedMilliseconds + "ms: " + ex.Message);
+                }
+            };
+
+            if (background)
+            {
+                try { System.Threading.ThreadPool.QueueUserWorkItem(_ => disconnect()); }
+                catch { disconnect(); }
+            }
+            else
+            {
+                disconnect();
+            }
+        }
+
+        /// <summary>
+        /// A tab was closed by the developer. Drop its assistant from the MultiTerminal roster
+        /// (ticket 9a0ce0de) while we still can — see the wiring comment for why this hook and
+        /// not the tab list.
+        ///
+        /// Background is safe here: only a single tab is going away, the IDE lives on, so the
+        /// request completes on its own thread and the developer never waits on it.
+        /// </summary>
+        private void OnTabRemoved(object sender, TerminalTab tab)
+        {
+            DisconnectTabFromMultiTerminal(tab, background: true, origin: "tab-removed");
+        }
+
         private void OnTabTerminalProcessExited(TerminalTab tab)
         {
             tab.AssistantLaunched = false;
+
+            // The assistant process is gone, so its broker entry should go too (ticket
+            // 9a0ce0de). Off the UI thread: the IDE is still running, so the request will
+            // complete, and a closing tab should not wait on an HTTP round-trip.
+            //
+            // Usually a no-op now: on a tab close OnTabRemoved has already disconnected this tab
+            // and nulled its AgentName. This still earns its place for the case it was written
+            // for — the assistant dying on its OWN (typed exit, or a crash) with the tab left
+            // open, which no other path sees.
+            DisconnectTabFromMultiTerminal(tab, background: true, origin: "process-exited");
 
             if (_knowledgeService != null && tab.SessionId > 0)
             {
@@ -4257,6 +4358,51 @@ namespace ClarionAssistant
         /// <summary>Dispose every live AssistantChatControl on the UI thread before native IDE teardown.
         /// Called from ShutdownService.Terminate(). Disposing the control tears down its WebView2s
         /// (_header/HUD, _homeView) and tab content. Idempotent + exception-swallowing per instance.</summary>
+        /// <summary>
+        /// Drop every registered tab from the MultiTerminal roster, inline, at the very start of
+        /// IDE shutdown (ticket 9a0ce0de).
+        ///
+        /// BACKSTOP ONLY — MEASURED, NOT ASSUMED. On the ordinary File &gt; Exit path this finds
+        /// nothing: the pad's own Dispose runs during WinForms teardown about two seconds BEFORE
+        /// ApplicationExit fires Terminate(), so by the time this is called _instances is already
+        /// empty and it logs "sweep: 0 chat pad instance(s)". That is the expected reading, not a
+        /// failure. It is kept because Terminate() has two entry points (ApplicationExit and
+        /// /Workspace/Terminate) whose relative ordering against control teardown is not ours to
+        /// guarantee, and because a sweep that costs a few milliseconds and says plainly what it
+        /// saw is worth more than an assumption about that ordering — the first version of this
+        /// ticket's fix was built on exactly such an assumption, and it was backwards.
+        ///
+        /// INLINE, not queued: the process is on its way out and a ThreadPool item would be killed
+        /// before the request left the machine. The client's own 1.5s timeout bounds each call, and
+        /// the caller wraps the whole sweep in RunBounded as a second bound.
+        ///
+        /// Counts are logged even when zero — "swept 0 tabs" is the diagnostic that distinguishes
+        /// "nothing to do" from "never ran", which is precisely the distinction the silent version
+        /// could not report.
+        /// </summary>
+        public static void DisconnectAllForShutdown()
+        {
+            List<AssistantChatControl> snapshot;
+            lock (_instances) { snapshot = new List<AssistantChatControl>(_instances); }
+            Services.ShutdownLog.Log("MT disconnect sweep: " + snapshot.Count + " chat pad instance(s)");
+
+            foreach (var inst in snapshot)
+            {
+                try
+                {
+                    var tm = inst._tabManager;
+                    if (tm == null) { Services.ShutdownLog.Log("MT disconnect sweep: instance has no tab manager"); continue; }
+
+                    var tabs = new List<TerminalTab>(tm.Tabs);
+                    Services.ShutdownLog.Log("MT disconnect sweep: " + tabs.Count + " tab(s) on this instance");
+                    foreach (var t in tabs)
+                        inst.DisconnectTabFromMultiTerminal(t, background: false, origin: "shutdown-sweep");
+                }
+                catch (Exception ex) { Services.ShutdownLog.Log("MT disconnect sweep failed: " + ex.Message); }
+            }
+            Services.ShutdownLog.Log("MT disconnect sweep done");
+        }
+
         public static void DisposeAllForShutdown()
         {
             List<AssistantChatControl> snapshot;
@@ -4272,6 +4418,26 @@ namespace ClarionAssistant
             lock (_instances) { _instances.Remove(this); }
             if (disposing)
             {
+                // THIS is the path that actually does the work on a clean File > Exit (ticket
+                // 9a0ce0de) — verified in a live IDE run, where it disconnected the last open
+                // tab roughly two seconds before ApplicationExit fired. ShutdownService's own
+                // sweep is the backstop for the reverse ordering, not the primary.
+                //
+                // Idempotent against the other paths: DisconnectTabFromMultiTerminal nulls
+                // AgentName, so whichever runs second finds nothing to do and logs the skip.
+                //
+                // Still does NOT cover a kill — deploy, crash, Task Manager — which is the common
+                // way CA terminals die and needs a liveness check on the broker side; see the ticket.
+                try
+                {
+                    if (_tabManager != null)
+                    {
+                        foreach (var t in _tabManager.Tabs)
+                            DisconnectTabFromMultiTerminal(t, background: false, origin: "pad-dispose");
+                    }
+                }
+                catch (Exception ex) { Services.ShutdownLog.Log("MT disconnect on pad dispose failed: " + ex.Message); }
+
                 if (_tabManager != null) _tabManager.Dispose();
                 if (_mcpServer != null) _mcpServer.Dispose();
                 if (_knowledgeService != null) _knowledgeService.Dispose();

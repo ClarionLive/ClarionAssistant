@@ -20,7 +20,20 @@ namespace ClarionAssistant.Services
         private readonly JavaScriptSerializer _json;
         private readonly int _timeoutMs;
 
-        public MultiTerminalApiClient(string baseUrl = "http://localhost:5050", int timeoutMs = 10000)
+        /// <param name="baseUrl">
+        /// 127.0.0.1, NEVER "localhost" (ticket 9a0ce0de). MultiTerminal binds IPv4 only
+        /// (netstat: 127.0.0.1:5050, nothing on [::1]:5050), while "localhost" resolves to ::1
+        /// FIRST on Windows. .NET Framework's HttpWebRequest then stalls on that IPv6 connect
+        /// until Timeout expires — it does not fall back the way curl and node do, which is why
+        /// every other client on this machine talks to MultiTerminal happily.
+        ///
+        /// Reproduced standalone under CLR 4.0, same machine, same endpoint:
+        ///     localhost  -> FAILED after 1572ms [create=31 reqStream=-1 resp=-1] timed out
+        ///     127.0.0.1  -> ok in 13ms          [create=0  reqStream=8   resp=11]
+        /// The signature is a timeout landing exactly on the budget with GetRequestStream never
+        /// returning. Anything hitting that pattern against a loopback service is this bug.
+        /// </param>
+        public MultiTerminalApiClient(string baseUrl = "http://127.0.0.1:5050", int timeoutMs = 10000)
         {
             _baseUrl = baseUrl.TrimEnd('/');
             _timeoutMs = timeoutMs;
@@ -238,6 +251,30 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// Remove a terminal from the broker's roster (ticket 9a0ce0de). The counterpart to
+        /// RegisterTerminal, which had none — registration was one-way by construction, so a
+        /// CA terminal stayed listed as available long after its process was gone.
+        ///
+        /// By NAME, not docId: the broker's endpoint is DisconnectTerminalByName, and CA names
+        /// are the CA-&lt;slug&gt; values from CaAgentIdentity.
+        ///
+        /// Callers are shutdown paths, so this is deliberately best-effort — it returns an
+        /// unsuccessful ApiResult rather than throwing when MultiTerminal is not running, which
+        /// is a perfectly ordinary state. Use a short-timeout client for it: on IDE shutdown a
+        /// default 10s timeout per tab would hold Clarion open while it waits for a service
+        /// that may not exist.
+        /// </summary>
+        public ApiResult<object> DisconnectTerminal(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return new ApiResult<object> { Success = false, Error = "name is required" };
+            return Post<object>("/api/messaging/disconnect", new Dictionary<string, object>
+            {
+                { "name", name }
+            });
+        }
+
+        /// <summary>
         /// Drain the broker-side queue for this terminal.
         /// NOTE: destructive read — calling this removes messages from the queue.
         /// Use as a safety-net poll in case deliveries fell through channel push.
@@ -375,6 +412,15 @@ namespace ClarionAssistant.Services
             var req = (HttpWebRequest)WebRequest.Create(url);
             req.Method = method;
             req.Timeout = _timeoutMs;
+            // Never route a loopback call through a proxy (ticket 9a0ce0de). WebRequest's default
+            // proxy performs WPAD auto-discovery on first use in a process, and that cost lands
+            // INSIDE Timeout. The long-running callers hide it behind a 10s default; the roster
+            // disconnect deliberately runs on 1.5s and cannot. Measured in a live IDE test: the
+            // first disconnect POST failed with "The operation has timed out" at exactly the
+            // 1500ms mark while MultiTerminal was up and answering other clients instantly.
+            // Guarded on IsLoopback so a remote MultiTerminal, if ever pointed at one, still
+            // honours the machine's proxy configuration.
+            if (req.RequestUri.IsLoopback) req.Proxy = null;
             req.ContentType = "application/json";
             req.Accept = "application/json";
             return req;
@@ -382,9 +428,21 @@ namespace ClarionAssistant.Services
 
         private ApiResult<T> Execute<T>(string path, string method, object body)
         {
+            // Phase timings (ticket 9a0ce0de). The roster disconnect kept failing with
+            // "The operation has timed out" landing EXACTLY on its 1.5s budget, which says the
+            // stall is before the response — but not which call owns it. Two plausible causes
+            // were fixed on reasoning alone and neither helped, so this measures instead:
+            //   reqStream still 0  -> GetRequestStream never returned: connection acquisition.
+            //   resp still 0       -> GetResponse never returned: nothing came back.
+            // Logged for EVERY call, not just the disconnect, because the other question this
+            // settles is whether CA can reach MultiTerminal at all — AgentPanelControl polls
+            // ListTerminals every 8s on this same client, so its timings appear here too.
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            long tCreate = -1, tStream = -1, tResp = -1;
             try
             {
                 var req = CreateRequest(path, method);
+                tCreate = sw.ElapsedMilliseconds;
 
                 if (body != null)
                 {
@@ -394,12 +452,18 @@ namespace ClarionAssistant.Services
                     using (var stream = req.GetRequestStream())
                         stream.Write(bytes, 0, bytes.Length);
                 }
+                tStream = sw.ElapsedMilliseconds;
 
                 using (var resp = (HttpWebResponse)req.GetResponse())
-                using (var reader = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
                 {
-                    var responseText = reader.ReadToEnd();
-                    return ParseResponse<T>(responseText);
+                    tResp = sw.ElapsedMilliseconds;
+                    using (var reader = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
+                    {
+                        var responseText = reader.ReadToEnd();
+                        ShutdownLog.Log("MT API " + method + " " + path + " ok in " + sw.ElapsedMilliseconds
+                            + "ms [create=" + tCreate + " reqStream=" + tStream + " resp=" + tResp + "]");
+                        return ParseResponse<T>(responseText);
+                    }
                 }
             }
             catch (WebException ex) when (ex.Response is HttpWebResponse errorResp)
@@ -417,6 +481,10 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
+                ShutdownLog.Log("MT API " + method + " " + path + " FAILED after " + sw.ElapsedMilliseconds
+                    + "ms [create=" + tCreate + " reqStream=" + tStream + " resp=" + tResp + "] "
+                    + ex.GetType().Name + ": " + ex.Message
+                    + (ex is WebException ? " status=" + ((WebException)ex).Status : ""));
                 return new ApiResult<T>
                 {
                     Success = false,

@@ -31,6 +31,17 @@ namespace ClarionAssistant.Terminal
         /// <summary>Solution loaded in this tab.</summary>
         public string SolutionPath { get; set; }
 
+        /// <summary>
+        /// The CA-&lt;slug&gt; identity this tab's assistant registered with the MultiTerminal
+        /// broker, captured at launch (ticket 9a0ce0de). Null until an assistant is launched.
+        ///
+        /// It has to be STORED rather than recomputed: NormalizeAgentName is fed an
+        /// incrementing tab counter, so asking for the name again later yields a DIFFERENT
+        /// one — and disconnecting the wrong name would leave the real entry stranded while
+        /// looking like it worked.
+        /// </summary>
+        public string AgentName { get; set; }
+
         /// <summary>Override working directory for this tab (e.g. solution folder).</summary>
         public string WorkingDirectory { get; set; }
 
