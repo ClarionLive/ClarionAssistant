@@ -2009,6 +2009,46 @@ namespace ClarionAssistant
             return incPaths.Count > 0 ? incPaths : null;
         }
 
+        /// <summary>
+        /// Shows the index progress window OWNED by the Clarion main window.
+        ///
+        /// Ownership, not TopMost, and the distinction is the whole point. An ownerless
+        /// Show() creates a window with no z-order relationship to the IDE, so the moment
+        /// Clarion takes the foreground back — which is immediately, since the click that
+        /// started the run returns focus to the IDE — the window drops behind it and reads
+        /// as "closed". John hit exactly that on the 7f1c67b2 failure test and had to drag
+        /// the IDE aside to find the error. A background index that fails invisibly is the
+        /// precise thing this window exists to prevent, so that is a real defect, not a nit.
+        ///
+        /// Windows never lets an owned window fall behind its owner, which is the property
+        /// wanted here. TopMost would also keep it visible but floats it over EVERY
+        /// application on the desktop for the whole run — wrong scope for a progress window
+        /// that can be up for half a minute.
+        ///
+        /// Owner resolution is deliberately ordered and null-tolerant: the workbench main
+        /// form is the window we must not sit behind, FindForm() covers a floating/undocked
+        /// pad, and Show(null) is legal WinForms that degrades to today's behaviour rather
+        /// than throwing. The SD-fork workbench probe can return null, so it is never assumed.
+        /// </summary>
+        private void ShowIndexProgress(Dialogs.IndexProgressForm form)
+        {
+            Form owner = null;
+            try { owner = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form; }
+            catch { owner = null; }
+            if (owner == null || owner.IsDisposed)
+            {
+                try { owner = FindForm(); } catch { owner = null; }
+            }
+            if (owner != null && owner.IsDisposed) owner = null;
+
+            try { form.Show(owner); }
+            catch { try { form.Show(); } catch { } }
+
+            // Show() alone puts it in front; Activate() makes sure it is the focused window
+            // when it appears for a FAILURE, which is the case nobody must be able to miss.
+            try { form.Activate(); } catch { }
+        }
+
         public void RunIndex(bool incremental)
         {
             RunIndex(incremental, true, null, null);
@@ -2150,7 +2190,7 @@ namespace ClarionAssistant
             // file boundaries. Interlocked because the poll happens on the worker thread.
             int cancelFlag = 0;
             progressForm.CancelClicked += () => System.Threading.Interlocked.Exchange(ref cancelFlag, 1);
-            if (showProgressWindow) progressForm.Show();
+            if (showProgressWindow) ShowIndexProgress(progressForm);
 
             var worker = new BackgroundWorker();
             worker.WorkerReportsProgress = true;
@@ -2245,7 +2285,7 @@ namespace ClarionAssistant
                             // every later query would answer from a stale graph, silently.
                             if (!showProgressWindow && !progressForm.Visible)
                             {
-                                try { progressForm.Show(); } catch { }
+                                ShowIndexProgress(progressForm);
                             }
                         }
                         _header.SetIndexStatus("Error: " + e.Error.Message, "error");
