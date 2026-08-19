@@ -8,7 +8,7 @@
 ; Left stale it is silent: the freshness gate passes (it compares per-config BINARY stamps), the
 ; build succeeds, and the only symptoms are an installer named for the previous version and an
 ; Add/Remove Programs entry that disagrees with every DLL it just installed.
-#define MyAppVersion "5.7"
+#define MyAppVersion "5.8"
 #define MyAppPublisher "ClarionLive"
 #define MyAppURL "https://clarionlive.com"
 

@@ -427,7 +427,7 @@
 <header class="site-header">
   <h1>Clarion.Assistant</h1>
   <div class="subtitle">AI-Powered Development for the Clarion IDE</div>
-  <div class="version-badge">User Guide &middot; v1.6 &middot; for Clarion.Assistant 5.3</div>
+  <div class="version-badge">User Guide &middot; v1.7 &middot; for Clarion.Assistant 5.8</div>
 </header>
 
 <!-- ════════════════════════════════════════════════════ -->
@@ -439,6 +439,7 @@
   <nav class="sidebar">
     <h3>What's New</h3>
     <a href="#whats-new">Release Notes</a>
+    <a href="#whats-new-58" class="sub">v5.8</a>
     <a href="#whats-new-55" class="sub">v5.5</a>
     <a href="#whats-new-54" class="sub">v5.4</a>
     <a href="#whats-new-50" class="sub">v5.1</a>
@@ -528,6 +529,59 @@
 <!-- ════════════════════════════════════════════════════ -->
 <section id="whats-new" class="doc-section">
   <h2>What's New</h2>
+
+  <h3 id="whats-new-58">v5.8 &mdash; CodeGraph Speed &amp; Accuracy, Settings-Safe Installer</h3>
+
+  <p>
+    v5.8 makes <strong>CodeGraph</strong> fast and truthful. A full index of a 27-app production
+    solution fell from <strong>1:12 to 2:42</strong>, with the output verified identical row by row.
+    More importantly, <strong>&quot;who calls X&quot; could answer with the wrong X</strong> &mdash; every
+    call in every app resolved to one arbitrary copy of a shared procedure name. Resolution is now
+    scoped the way the compiler thinks, genuinely ambiguous picks are <em>marked</em> rather than
+    asserted, and MAP prototypes are told apart from implementations.
+  </p>
+
+  <p>
+    Three whole categories of code had been invisible to the index: <strong>procedures whose labels
+    contain a colon</strong> (in generated Clarion, the entire referential-integrity layer, so
+    &quot;what breaks if I delete from this table&quot; returned nothing), <strong>routine bodies</strong>,
+    and your <strong>global data</strong>. The test solution went from 478&nbsp;thousand relationships
+    to <strong>1.1&nbsp;million</strong>. Indexing now also shows its work: a
+    <strong>progress window</strong> you can <strong>cancel</strong>, a transcript always written to
+    <code>%APPDATA%\ClarionAssistant\codegraph-index.log</code>, and live progress streamed over MCP.
+  </p>
+
+  <p>
+    On the desktop, asking the assistant to build now <strong>compiles what is on your screen</strong>
+    rather than the last saved version, saving no longer throws the caret to the top of the file, and
+    <code>.tpl</code>&nbsp;/&nbsp;<code>.tpw</code> listed in Editor Surfaces finally open in the editor.
+    Mark Sarson&#39;s <strong>Markdown editor</strong> now ships in the installer, the
+    <a href="#ca-embeditor"><strong>CA Embeditor</strong></a> attaches in colon-named procedure suites,
+    and two Clarion environments started with <code>/ConfigDir=</code> no longer share one application
+    history.
+  </p>
+
+  <div class="info-box info-box--warning">
+    <strong>Installing an earlier release overwrote your Claude Code settings.</strong> Every install
+    rebuilt <code>%USERPROFILE%\.claude\settings.json</code> from empty, losing <code>hooks</code>,
+    <code>statusLine</code>, <code>model</code>, <code>tui</code>, your plugins and your own
+    <code>permissions.allow</code> entries. It is fixed in 5.8 &mdash; and your file is recoverable:
+    look beside it for <code>settings.json.backup.</code> followed by a timestamp, which is the backup
+    the faulty code path wrote immediately before overwriting.
+  </div>
+
+  <div class="info-box info-box--warning">
+    <strong>Re-index and re-import after upgrading.</strong> Every indexing and encoding fix in this
+    release corrects what gets <em>read</em>, not what is already stored, so existing CodeGraph
+    databases and DocGraph libraries keep their old blind spots until rebuilt. Use
+    <strong>Reindex</strong> (full) &mdash; <strong>Update</strong> is not enough, because the
+    incremental path compares source timestamps and your source hasn&#39;t changed.
+  </div>
+
+  <p>
+    Full notes:
+    <a href="https://github.com/ClarionLive/ClarionAssistant/blob/master/docs/releases/v5.8.0.md">v5.8.0 release notes</a>.
+  </p>
 
   <h3 id="whats-new-55">v5.5 &mdash; Editable Diffs, Data Pad Drag-and-Drop, CodeGraph Accuracy</h3>
 
@@ -2618,7 +2672,7 @@
 <!--  FOOTER                                             -->
 <!-- ════════════════════════════════════════════════════ -->
 <footer class="site-footer">
-  <p>Clarion.Assistant User Guide &middot; v1.5 &middot; &copy; 2025&ndash;2026</p>
+  <p>Clarion.Assistant User Guide &middot; v1.7 &middot; &copy; 2025&ndash;2026</p>
 </footer>
 
 <!-- Smooth scrolling -->
