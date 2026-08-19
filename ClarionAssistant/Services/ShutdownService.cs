@@ -94,6 +94,20 @@ namespace ClarionAssistant.Services
             Debug.WriteLine("[Shutdown] begin");
             ShutdownLog.Log("watchdog armed (15000ms)");
 
+            // 0b. Drop this IDE's terminals from the MultiTerminal roster (ticket 9a0ce0de).
+            //     BACKSTOP, and expected to be a no-op on the ordinary path: measured in a live
+            //     run, the chat pad's own Dispose already did this ~2s earlier during WinForms
+            //     teardown, so this logs "sweep: 0 chat pad instance(s)". It stays because the
+            //     two Terminate() entry points (ApplicationExit and /Workspace/Terminate) give no
+            //     guarantee about ordering against control teardown, and because it is placed
+            //     first: it is the only step needing tabs and agent names intact, and everything
+            //     below — step 2's ConPty kill especially — destroys exactly that.
+            //     Bounded so an unreachable MultiTerminal cannot add to shutdown time; the client
+            //     also applies its own 1.5s per-call timeout.
+            ShutdownLog.Log("step 0b: MT disconnect ...");
+            try { RunBounded(AssistantChatControl.DisconnectAllForShutdown, 4000); ShutdownLog.Log("step 0b: MT disconnect returned"); }
+            catch (Exception ex) { Debug.WriteLine("[Shutdown] MT disconnect: " + ex.Message); ShutdownLog.Log("step 0b: MT disconnect failed: " + ex.Message); }
+
             // 1. Stop the MCP server (fast, clean).
             ShutdownLog.Log("step 1: MCP stop ...");
             try { if (_mcpServer != null) _mcpServer.Stop(); ShutdownLog.Log("step 1: MCP stop done"); }
