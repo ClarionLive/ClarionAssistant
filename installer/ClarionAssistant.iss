@@ -62,12 +62,12 @@
 ; PREBUILT release zip, so unlike the LSP there is nothing to compile: Sync-MarkdownEditor.ps1 just
 ; downloads, verifies and extracts it. Tag tracks markdown-editor-sync\markdown-snapshot.json
 ; "resolvedTag"; bump BOTH defines below when the pin bumps (Sync-MarkdownEditor.ps1 -Tag <tag>).
-#define SrcMarkdown SrcBase + "\.markdown-build\v1.2.0"
+#define SrcMarkdown SrcBase + "\.markdown-build\v1.3.0"
 ; The version the only-if-newer check compares against a user's existing install. MUST equal
 ; markdown-snapshot.json "resolvedIdentityVersion" — which is the <Identity version> from the .addin,
 ; NOT the DLL's FileVersion. Upstream freezes FileVersion at 1.0.2.0 across every release, so Inno's
 ; built-in newer-file comparison cannot tell v1.0.2 from v1.2.0 and must not be relied on here.
-#define MarkdownPinVersion "1.2.0"
+#define MarkdownPinVersion "1.3.0"
 ; The directory containing this .iss file itself (SourcePath already ends in "\").
 #define SrcInstaller Copy(SourcePath, 1, Len(SourcePath)-1)
 ; Repo root — for THIRD-PARTY-NOTICES.md, which must ship wherever the addin does.

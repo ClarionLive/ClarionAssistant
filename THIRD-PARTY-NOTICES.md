@@ -60,7 +60,7 @@ when it is newer than any copy already present.
 
 | Component | Version | Ships as | Licence |
 |---|---|---|---|
-| [Clarion Markdown Editor](https://github.com/msarson/ClarionMarkdownEditor) (Mark Sarson) | 1.2.0 | `ClarionMarkdownEditor.dll`, `ClarionMarkdownEditor.addin`, `Resources\*` | MIT |
+| [Clarion Markdown Editor](https://github.com/msarson/ClarionMarkdownEditor) (Mark Sarson) | 1.3.0 | `ClarionMarkdownEditor.dll`, `ClarionMarkdownEditor.addin`, `Resources\*` | MIT |
 
 The addin's payload bundles its own web assets, which are redistributed with it:
 

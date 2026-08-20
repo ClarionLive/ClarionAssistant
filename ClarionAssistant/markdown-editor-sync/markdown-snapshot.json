@@ -17,16 +17,16 @@
   },
   "targetPin": {
     "note": "Tag to sync toward; -Tag overrides. AUTO-UPDATED to the last successfully synced tag by Sync-MarkdownEditor.ps1 -- edit by hand only to stage a pin to a NEWER release before running the sync.",
-    "tag": "v1.2.0"
+    "tag": "v1.3.0"
   },
   "currentPin": {
     "note": "AUTO-UPDATED by Sync-MarkdownEditor.ps1 on each successful sync -- the observed state of the just-synced payload.",
-    "tag": "v1.2.0",
-    "identityVersion": "1.2.0",
-    "assetSha256": "DD9FF7A55866C06813272751985ADB00002631E8F0DA712395AF6A923DB7D4C2",
-    "publishedAt": "2026-05-17T10:14:56Z"
+    "tag": "v1.3.0",
+    "identityVersion": "1.3.0",
+    "assetSha256": "D49FA0C34E8111D3C326C448D1C3A7C04FD412C040560716EC5033AA63DAEA07",
+    "publishedAt": "2026-08-10T10:46:51Z"
   },
-  "resolvedTag": "v1.2.0",
-  "resolvedIdentityVersion": "1.2.0",
-  "lastSync": "2026-08-19"
+  "resolvedTag": "v1.3.0",
+  "resolvedIdentityVersion": "1.3.0",
+  "lastSync": "2026-08-20"
 }
