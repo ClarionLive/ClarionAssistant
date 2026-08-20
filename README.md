@@ -57,7 +57,28 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ## What's New (Unreleased)
 
-*Nothing yet.* Work landed since 5.8 is documented here as it merges — see [the release-docs workflow](docs/releases/README.md), and run `Check-ReleaseDocs.ps1` before cutting a release.
+*Nothing yet.* Work landed since 5.8.1 is documented here as it merges — see [the release-docs workflow](docs/releases/README.md), and run `Check-ReleaseDocs.ps1` before cutting a release.
+
+---
+
+## What's New in v5.8.1
+
+A patch release that fixes something 5.8 broke. Full notes: **[docs/releases/v5.8.1.md](docs/releases/v5.8.1.md)**.
+
+<!-- release-docs: covered=installer -->
+### Clarion starts again after installing the Markdown editor
+
+Installing 5.8 could leave `accessory\addins\MarkdownEditor` holding **exactly one file** &mdash; the `.addin` manifest &mdash; and none of the assemblies it names. Clarion reads that manifest at startup, fails to load the DLL beside it, and **stops with two dialogs instead of opening**. The editor's files ship as one wildcard entry, and Inno Setup evaluates such an entry's install check *once per expanded file*; the manifest sorts alphabetically first, so it was written, and every remaining file then re-ran the check, found the manifest just written reporting the version being installed, took the "you already have this" branch and was skipped. The gate destroyed its own precondition. Reinstalling did not help &mdash; that lone manifest kept reporting the current version, so the broken state was exactly the state the repair logic refused to repair. The decision is now made once per Clarion version and frozen before the first write, and a manifest with no assembly beside it is treated as damage rather than as an install, which is what **repairs already-broken machines in place**. A copy of the editor newer than the bundled one is still left alone.
+
+### Markdown editor v1.3.0
+
+The bundled editor moves to **[v1.3.0](https://github.com/msarson/ClarionMarkdownEditor/releases/tag/v1.3.0)** &mdash; auto-refresh, remembered view preferences, and resizable panes.
+
+> The Clarion Assistant addin itself is unchanged from 5.8: same binaries, same version stamp. Only the installer's logic and the Markdown editor it carries are different.
+
+### Thanks
+
+- The user who reported this on **Discord**, with both dialogs captured. The screenshots named the file and the path, which is what separated "the DLL is missing" from "the DLL cannot load" &mdash; very different bugs.
 
 ---
 
