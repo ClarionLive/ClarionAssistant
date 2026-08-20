@@ -8,7 +8,7 @@
 ; Left stale it is silent: the freshness gate passes (it compares per-config BINARY stamps), the
 ; build succeeds, and the only symptoms are an installer named for the previous version and an
 ; Add/Remove Programs entry that disagrees with every DLL it just installed.
-#define MyAppVersion "5.8"
+#define MyAppVersion "5.8.1"
 #define MyAppPublisher "ClarionLive"
 #define MyAppURL "https://clarionlive.com"
 
@@ -644,6 +644,12 @@ var
   C10Extra, C11Extra, C111Extra, C12Extra: string;
   ClarionPathPage: TInputQueryWizardPage;
   AddBtn0, AddBtn1, AddBtn2, AddBtn3: TNewButton;
+  // Markdown Editor install verdict, computed once per Clarion release and then frozen.
+  // Indexed by MarkdownIndexFor: 0=C10, 1=C11, 2=C11.1, 3=C12. Declared up here rather than
+  // beside the functions so the scope is unambiguous. See ShouldInstallMarkdown for why the
+  // freezing is load-bearing and not merely an optimisation.
+  MarkdownDecided: array[0..3] of Boolean;
+  MarkdownVerdict: array[0..3] of Boolean;
 
 function GetC10Path(Param: string): string; begin Result := C10Path; end;
 function GetC11Path(Param: string): string; begin Result := C11Path; end;
@@ -742,12 +748,19 @@ begin
   else Result := C12Path;
 end;
 
-// [Files] Check function. Param is the Clarion release discriminator ('10','11','111','12') rather
-// than a path, so the decision reads the same globals the wizard populated and does not depend on
-// constant expansion inside a Check parameter.
-function ShouldInstallMarkdown(Param: String): Boolean;
+function MarkdownIndexFor(Which: String): Integer;
+begin
+  if Which = '10' then Result := 0
+  else if Which = '11' then Result := 1
+  else if Which = '111' then Result := 2
+  else Result := 3;
+end;
+
+// The actual decision. Do NOT wire this to a [Files] Check directly -- go through
+// ShouldInstallMarkdown, which freezes the answer. See the comment there.
+function DecideInstallMarkdown(Param: String): Boolean;
 var
-  Root, AddinPath, Installed: String;
+  Root, Dir, AddinPath, Installed: String;
 begin
   Root := MarkdownRootFor(Param);
   if Root = '' then
@@ -756,11 +769,28 @@ begin
     Exit;
   end;
 
-  AddinPath := Root + '\accessory\addins\MarkdownEditor\ClarionMarkdownEditor.addin';
+  Dir := Root + '\accessory\addins\MarkdownEditor';
+  AddinPath := Dir + '\ClarionMarkdownEditor.addin';
 
   if not FileExists(AddinPath) then
   begin
     Log('Markdown[' + Param + ']: no existing install -> installing pinned {#MarkdownPinVersion}');
+    Result := True;
+    Exit;
+  end;
+
+  // A manifest with no assembly beside it is not an install, it is wreckage. The IDE parses the
+  // .addin, tries to LoadFrom the DLL next to it, and fails startup outright with "Could not load
+  // file or assembly 'ClarionMarkdownEditor.dll'". Version comparison is meaningless in that state
+  // because there is nothing to downgrade, so repair unconditionally.
+  //
+  // This branch is ALSO the recovery path for machines already broken by the 5.8 wildcard defect
+  // described in ShouldInstallMarkdown: their lone .addin reports the pinned version, so without
+  // this check the version comparison below would read them as up to date and skip the payload on
+  // every future install, leaving them broken permanently.
+  if not FileExists(Dir + '\ClarionMarkdownEditor.dll') then
+  begin
+    Log('Markdown[' + Param + ']: .addin present but ClarionMarkdownEditor.dll is MISSING (broken install) -> repairing with pinned {#MarkdownPinVersion}');
     Result := True;
     Exit;
   end;
@@ -785,6 +815,36 @@ begin
     Log('Markdown[' + Param + ']: installed ' + Installed + ' is >= pinned {#MarkdownPinVersion} -> leaving the user''s copy alone');
     Result := False;
   end;
+end;
+
+// [Files] Check function. Param is the Clarion release discriminator ('10','11','111','12') rather
+// than a path, so the decision reads the same globals the wizard populated and does not depend on
+// constant expansion inside a Check parameter.
+//
+// FREEZING THE VERDICT IS LOAD-BEARING, NOT AN OPTIMISATION (5.8.1 hotfix).
+// A [Files] entry whose Source is a wildcard evaluates its Check function ONCE PER EXPANDED FILE,
+// at install time. ClarionMarkdownEditor.addin sorts alphabetically FIRST within {#SrcMarkdown}\*,
+// so on a clean root 5.8 installed the manifest, and then every remaining file of the SAME wildcard
+// re-ran this decision, found the .addin that had just been written reporting the pinned version,
+// took the "installed >= pinned -> leave the user's copy alone" branch, and was SKIPPED. The user
+// was left with a folder holding exactly one file -- the manifest -- and a Clarion IDE that would
+// not start. Reported on Discord against 5.8 and reproduced locally: empty the folder, run the
+// installer, exactly one file lands.
+//
+// Caching the first answer fixes it because the first call necessarily happens BEFORE this run has
+// written anything, so the verdict reflects the state the user actually arrived with. Re-reading
+// the destination mid-wildcard is what made the gate destroy its own precondition.
+function ShouldInstallMarkdown(Param: String): Boolean;
+var
+  Idx: Integer;
+begin
+  Idx := MarkdownIndexFor(Param);
+  if not MarkdownDecided[Idx] then
+  begin
+    MarkdownVerdict[Idx] := DecideInstallMarkdown(Param);
+    MarkdownDecided[Idx] := True;
+  end;
+  Result := MarkdownVerdict[Idx];
 end;
 
 // Where we remember the paths a previous run actually installed to. See SavedClarionPath.
