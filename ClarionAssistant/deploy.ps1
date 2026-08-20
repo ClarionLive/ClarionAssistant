@@ -201,7 +201,14 @@ $Items = @(
 # tag checkout produced by lsp-server-sync\Sync-LspServer.ps1 -Pure, cached under .lsp-build\<tag>.
 # $env:CLARIONLSP_ROOT still overrides (dev escape hatch) if you deliberately want a custom server tree.
 function Resolve-LspBuild {
-    if ($env:CLARIONLSP_ROOT) { return $env:CLARIONLSP_ROOT }   # explicit override wins
+    if ($env:CLARIONLSP_ROOT) {
+        # Loud, because this is the one path that bypasses the tag-in-path pin check below: whatever
+        # is in that tree ships, while lsp-snapshot.json goes on asserting resolvedCommit. A consumer
+        # then has no way to tell which server they actually received.
+        Write-Host "  WARN  CLARIONLSP_ROOT is set — shipping an UNPINNED LSP from $env:CLARIONLSP_ROOT" -ForegroundColor Yellow
+        Write-Host "  WARN  lsp-snapshot.json will NOT describe what ships. Do not use this for a release build." -ForegroundColor Yellow
+        return $env:CLARIONLSP_ROOT
+    }
     $syncScript = Join-Path $ProjectDir "lsp-server-sync\Sync-LspServer.ps1"
     $manifest   = Get-Content (Join-Path $ProjectDir "lsp-server-sync\lsp-snapshot.json") -Raw | ConvertFrom-Json
     $tag        = if ($manifest.resolvedTag) { $manifest.resolvedTag } else { $manifest.targetPin.tag }
@@ -236,6 +243,82 @@ function Resolve-LspBuild {
     return $pureDir
 }
 $LspSourceDir = Resolve-LspBuild
+
+# --- Verify the LSP about to ship IS the pinned one --------------------------------------------
+# Previously nothing checked this. lsp-snapshot.json could assert resolvedCommit while a different
+# server.js was copied (CLARIONLSP_ROOT override, hand-edited tree, an out/ built from another tag),
+# and the manifest is the ONLY thing a consumer can inspect to know what they got. Assert before any
+# copy so "what shipped" and "what is pinned" cannot silently diverge.
+
+# Run git and return its stdout, or $null if it failed for ANY reason. Do NOT replace this with a
+# bare `git ... 2>$null`.
+#
+# Under Windows PowerShell 5.1, redirecting a NATIVE command's stderr wraps the output in a
+# NativeCommandError record, and $ErrorActionPreference='Stop' (set at the top of this file) makes
+# that record TERMINATING. So `$x = (git ... 2>$null); if (-not $x) { warn; return }` never reaches
+# the soft-fail branch -- the script dies on the git line. Reproduced on 5.1.19041.6456 and on
+# 5.1.26100.8972; the identical code under pwsh 7 returns empty and continues, which is why the bug
+# looks like it isn't there when tested from a pwsh prompt.
+#
+# That is the exact failure this file's LSP handling is supposed to avoid: a contributor whose pure
+# build fails, or whose CLARIONLSP_ROOT is a plain unpacked server tree with no .git, would see the
+# WARN and then have the whole deploy abort anyway -- before a single Clarion version builds.
+#
+# Relaxing $ErrorActionPreference locally makes the NativeCommandError non-terminating; 2>&1 keeps
+# git's stderr off the console; the ErrorRecord filter keeps it out of the return value; the
+# try/catch covers git being absent from PATH entirely (CommandNotFoundException terminates
+# regardless of the preference).
+function Invoke-GitQuiet([string[]]$GitArgs) {
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & git @GitArgs 2>&1
+        if ($LASTEXITCODE -ne 0) { return $null }
+        $clean = $out | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+        if (-not $clean) { return $null }
+        return (($clean -join "`n").Trim())
+    } catch {
+        return $null
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+}
+
+# Returns $true when the LSP may ship, $false when it must not. It does NOT exit: an LSP-copy
+# problem is not a reason to abandon the Clarion builds. This used to `exit 7`, which aborted all
+# four Clarion targets AND the C# addin before a single one was built -- cutting straight across
+# the "a build failure for ONE Clarion release must not block shipping to the others" rule the
+# final summary below is built around. The caller skips just the LSP copy instead, so every version
+# still deploys and keeps whatever server it already had, and the run ends non-zero so nobody reads
+# it as clean.
+function Test-LspPin($sourceDir) {
+    $manifest = Get-Content (Join-Path $ProjectDir "lsp-server-sync\lsp-snapshot.json") -Raw | ConvertFrom-Json
+    $pinned   = $manifest.resolvedCommit
+    if (-not $pinned) {
+        Write-Host "  WARN  manifest has no resolvedCommit — cannot verify the bundled LSP." -ForegroundColor Yellow
+        return $true
+    }
+    $head = Invoke-GitQuiet @('-C', $sourceDir, 'rev-parse', '--short', 'HEAD')
+    if (-not $head) {
+        Write-Host "  WARN  $sourceDir is not a git tree — cannot verify it matches pin $pinned." -ForegroundColor Yellow
+        return $true
+    }
+    # Prefix compare: `git rev-parse --short` auto-scales its length, so 7- and 8-char forms of the
+    # same commit must still count as a match.
+    if (-not ($head.StartsWith($pinned) -or $pinned.StartsWith($head))) {
+        if ($env:CLARIONLSP_ROOT) {
+            Write-Host "  WARN  bundled LSP is $head but the pin says $pinned (CLARIONLSP_ROOT override in effect)." -ForegroundColor Yellow
+            return $true
+        }
+        Write-Host "  FAIL  bundled LSP is $head but lsp-snapshot.json pins $pinned." -ForegroundColor Red
+        Write-Host "        Re-run lsp-server-sync\Sync-LspServer.ps1 -Pure, or bump the pin deliberately." -ForegroundColor Red
+        Write-Host "        The LSP copy will be SKIPPED for every version; the rest of the deploy continues." -ForegroundColor Red
+        return $false
+    }
+    Write-Host "  OK    bundled LSP matches pin: $pinned ($($manifest.resolvedTag))" -ForegroundColor Green
+    return $true
+}
+$LspPinOK = Test-LspPin $LspSourceDir
 # Pure v1.0.0 runtime deps only — NO better-sqlite3/bindings/file-uri-to-path (those backed the retired
 # CodeGraph overlay). With better-sqlite3 absent the #42 ABI check below self-skips ("module not deployed").
 # iconv-lite (+ its dep safer-buffer) is NEW at v1.0.0: UnicodeDiagnostics requires it in the EAGER
@@ -460,7 +543,7 @@ foreach ($ver in $TargetVersions) {
         # --- Deploy LSP Server ---
         $LspDestDir = Join-Path $DeployDir "lsp-server"
 
-        if (Test-Path $LspSourceDir) {
+        if ($LspPinOK -and (Test-Path $LspSourceDir)) {
             # Copy compiled server JS + common shared code
             foreach ($outDir in @("out\server", "out\common")) {
                 $LspOutSrc = "$LspSourceDir\$outDir"
@@ -548,6 +631,11 @@ foreach ($ver in $TargetVersions) {
             } elseif (Test-Path $DeployedNode) {
                 Write-Host "  SKIP  better-sqlite3 ABI check (module not deployed)" -ForegroundColor DarkGray
             }
+        } elseif (-not $LspPinOK) {
+            # Deliberate: shipping a server that does not match the pin is worse than shipping none,
+            # because lsp-snapshot.json would go on asserting a commit the consumer did not receive.
+            # The version keeps whatever lsp-server it already had; the final summary exits non-zero.
+            Write-Host "  SKIP  lsp-server (does not match the pin — see FAIL above)" -ForegroundColor Yellow
         } else {
             Write-Host "  SKIP  lsp-server (ClarionLSP not found)" -ForegroundColor DarkGray
         }
@@ -563,13 +651,19 @@ foreach ($ver in $TargetVersions) {
 
 # --- Final summary ---
 Write-Host ""
-if ($FailedBuilds.Count -gt 0) {
+if ($FailedBuilds.Count -gt 0 -or -not $LspPinOK) {
     # Never let a partial run exit 0 with a bare "All done." — that is what made a stale deployed DLL
-    # look like a successful deploy. Name the versions that did NOT ship, and fail the exit code so a
-    # caller (CI, the installer, another script) can't read this run as clean.
+    # look like a successful deploy. Name what did NOT ship, and fail the exit code so a caller (CI,
+    # the installer, another script) can't read this run as clean.
     Write-Host "Done, WITH FAILURES." -ForegroundColor Yellow
-    Write-Host "  NOT deployed (build failed): $($FailedBuilds -join ', ')" -ForegroundColor Red
-    Write-Host "  Every other requested version deployed normally." -ForegroundColor Yellow
+    if ($FailedBuilds.Count -gt 0) {
+        Write-Host "  NOT deployed (build failed): $($FailedBuilds -join ', ')" -ForegroundColor Red
+    }
+    if (-not $LspPinOK) {
+        Write-Host "  NOT deployed (pin mismatch): lsp-server — every version kept the LSP it already had." -ForegroundColor Red
+        Write-Host "  Re-run lsp-server-sync\Sync-LspServer.ps1 -Pure, or bump the pin, then re-run this script." -ForegroundColor Red
+    }
+    Write-Host "  Everything else deployed normally." -ForegroundColor Yellow
     exit 1
 }
 Write-Host "All done." -ForegroundColor Green
