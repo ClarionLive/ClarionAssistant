@@ -28,7 +28,27 @@ namespace ClarionAssistant.Services
         // Max time a UI-thread MCP tool may run before the request is abandoned
         // with a timeout error, so a busy/wedged UI thread can't hold a worker
         // (and leak the connection as CLOSE_WAIT) indefinitely.
-        private const int UiToolTimeoutSeconds = 30;
+        //
+        // 30s is the right budget for the prompt tools (read a line, list
+        // procedures) but it was never a universal one: a single native
+        // embeditor open already waits up to 45s on its own
+        // (ModernEmbeditorLauncher.WaitForEmbedOpen, called straight from the
+        // open_procedure_embed handler), and OpenAndMirror may retry it at a
+        // slower locator speed. Those tools' internal budget therefore EXCEEDS
+        // this window by design, so on a large procedure the outer wait could
+        // never let them finish — the call always came back "UI thread did not
+        // respond within 30s" even though the work was still running correctly.
+        // Such tools now declare their own McpTool.UiTimeoutSeconds; everything
+        // else takes the default, which an install can raise with the
+        // "Mcp.UiToolTimeoutSeconds" setting.
+        private const int DefaultUiToolTimeoutSeconds = 30;
+        private const string UiToolTimeoutSettingKey = "Mcp.UiToolTimeoutSeconds";
+
+        // Clamp whatever is configured: under ~5s even a trivial tool races its
+        // own marshal onto the UI thread, and an unbounded value reintroduces
+        // the wedged-UI hang this timeout exists to prevent.
+        private const int MinUiToolTimeoutSeconds = 5;
+        private const int MaxUiToolTimeoutSeconds = 600;
 
         // Per-session auth token — regenerated on every Start(). Embedded as
         // `Authorization: Bearer <token>` in the MCP config file so the spawned
@@ -944,6 +964,37 @@ namespace ClarionAssistant.Services
         // the client for zero information gain.
         private const int ProgressThrottleMs = 1000;
 
+        /// <summary>
+        /// Timeout budget for ONE UI-thread tool call, in seconds: the larger of the
+        /// per-install "Mcp.UiToolTimeoutSeconds" setting (default 30) and the tool's
+        /// own declared <see cref="McpTool.UiTimeoutSeconds"/>, clamped to
+        /// [<see cref="MinUiToolTimeoutSeconds"/>, <see cref="MaxUiToolTimeoutSeconds"/>]
+        /// so neither a typo nor a zero can disable the guard. Taking the LARGER means
+        /// raising the global setting still lifts the slow tools, while a tool that
+        /// needs more than the default never silently loses it.
+        /// The setting is read from the in-memory settings snapshot, so a hand edit of
+        /// settings.txt takes effect on the next IDE start.
+        /// </summary>
+        private int ResolveUiToolTimeoutSeconds(string toolName)
+        {
+            int seconds = DefaultUiToolTimeoutSeconds;
+
+            if (_settings != null)
+            {
+                int configured;
+                string raw = _settings.Get(UiToolTimeoutSettingKey);
+                if (raw != null && int.TryParse(raw.Trim(), out configured) && configured > 0)
+                    seconds = configured;
+            }
+
+            int declared = _toolRegistry != null ? _toolRegistry.UiTimeoutSeconds(toolName) : 0;
+            if (declared > seconds) seconds = declared;
+
+            if (seconds < MinUiToolTimeoutSeconds) seconds = MinUiToolTimeoutSeconds;
+            if (seconds > MaxUiToolTimeoutSeconds) seconds = MaxUiToolTimeoutSeconds;
+            return seconds;
+        }
+
         private string HandleToolCall(JsonRpcRequest request)
         {
             return HandleToolCall(request, null);
@@ -1023,6 +1074,7 @@ namespace ClarionAssistant.Services
                 {
                     object uiResult = null;
                     Exception uiException = null;
+                    int timeoutSeconds = ResolveUiToolTimeoutSeconds(toolName);
 
                     // Marshal onto the UI thread WITHOUT blocking the worker forever.
                     // A synchronous Control.Invoke here deadlocks (and leaks the
@@ -1039,12 +1091,16 @@ namespace ClarionAssistant.Services
                         // Give the UI thread a bounded window to run the tool. On timeout
                         // we abandon the delegate (it will complete harmlessly later) and
                         // return an error instead of holding the worker + connection open.
-                        if (!done.Wait(TimeSpan.FromSeconds(UiToolTimeoutSeconds)))
+                        if (!done.Wait(TimeSpan.FromSeconds(timeoutSeconds)))
                         {
                             RaiseToolCall(toolName, "TIMEOUT (UI thread busy)");
                             return McpJsonRpc.SerializeResponse(request.Id, McpJsonRpc.BuildToolResult(
                                 "Error executing tool '" + toolName + "': UI thread did not respond within "
-                                + UiToolTimeoutSeconds + "s (busy or blocked).", true));
+                                + timeoutSeconds + "s (busy or blocked). If the IDE was working rather than "
+                                + "wedged, raise '" + UiToolTimeoutSettingKey + "' in "
+                                + @"%APPDATA%\ClarionAssistant\settings.txt (allowed range "
+                                + MinUiToolTimeoutSeconds + "-" + MaxUiToolTimeoutSeconds + "s) and restart the IDE.",
+                                true));
                         }
                     }
 
