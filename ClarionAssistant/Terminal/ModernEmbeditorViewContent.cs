@@ -1507,6 +1507,7 @@ namespace ClarionAssistant.Terminal
 
         void IMonacoEditorHost.OnSave(MonacoEditorControl editor, string rawJson) { HandleSave(rawJson); }
         void IMonacoEditorHost.OnCancel(MonacoEditorControl editor) { HandleCancel(); }
+        void IMonacoEditorHost.OnConfirmSaveExit(MonacoEditorControl editor) { HandleConfirmSaveExit(editor); }
         void IMonacoEditorHost.OnOpenSource(MonacoEditorControl editor) { HandleOpenSource(); }
         void IMonacoEditorHost.OnClipboard(MonacoEditorControl editor, string rawJson) { HandleClipboard(rawJson); }
         void IMonacoEditorHost.OnCompletion(MonacoEditorControl editor, string rawJson) { HandleCompletion(rawJson); }
@@ -1689,6 +1690,54 @@ namespace ClarionAssistant.Terminal
         /// overlay then discard the native embed (CancelEmbeditor); tab/file mode: close the workbench tab (its
         /// Dispose does the discard). Deferred off the web-message stack — cancelling the native embed pumps
         /// DoEvents and disposing the WebView2 on that reentrant stack would deadlock the IDE.</summary>
+        /// <summary>GH #193 (BoxSoft): Ctrl+Q's confirm, as a NATIVE Windows dialog.
+        ///
+        /// Matched character-for-character to the dialog Clarion's own embeditor raises — title,
+        /// message, button set and order, default button and Question icon — because that is exactly
+        /// what was asked for: "It should use the same visible style as the regular window." What we
+        /// had was an in-page dark panel, and the mismatch is what "causes one to pause".
+        ///
+        /// The host owns the DIALOG only; the page still owns what each answer DOES (save-and-exit
+        /// versus discard-and-close differ by live-linked/snapshot/file mode, and that logic is
+        /// proven). So this posts the answer back and gets out of the way.
+        ///
+        /// Note the page has a key-swallowing shield up across this whole round trip. Ctrl+Q then
+        /// Enter is muscle memory from the native editor, and without the shield that Enter would
+        /// land in the buffer as a newline before this dialog ever appeared.</summary>
+        private void HandleConfirmSaveExit(MonacoEditorControl editor)
+        {
+            if (editor == null) return;
+            Action work = () =>
+            {
+                string result = "cancel";
+                try
+                {
+                    // Own the dialog to the form actually hosting the WebView2. In overlay mode that is
+                    // the window the native embeditor is docked into, which is exactly what the dialog
+                    // should be modal to. FindForm() can return null mid-teardown, hence the fallback.
+                    IWin32Window owner = null;
+                    try { owner = editor.FindForm(); } catch { }
+                    var r = owner != null
+                        ? MessageBox.Show(owner, "Do you want to save the current changes?",
+                            "Save Changes in Embed Editor?", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question)
+                        : MessageBox.Show("Do you want to save the current changes?",
+                            "Save Changes in Embed Editor?", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+                    result = r == DialogResult.Yes ? "yes" : (r == DialogResult.No ? "no" : "cancel");
+                }
+                catch (Exception ex)
+                {
+                    // Never strand the page behind its shield: any failure here answers "cancel", which
+                    // keeps the user editing with their changes intact. Silence would leave the editor
+                    // permanently unresponsive to keys.
+                    MonacoSpikeLog.Write("HandleConfirmSaveExit dialog error: " + ex.Message);
+                }
+                // "type", not "action": page->host messages are keyed on action, host->page on type.
+                try { editor.PostJson("{\"type\":\"confirmSaveExitResult\",\"result\":\"" + result + "\"}"); }
+                catch (Exception ex) { MonacoSpikeLog.Write("HandleConfirmSaveExit post error: " + ex.Message); }
+            };
+            if (editor.InvokeRequired) editor.BeginInvoke(work); else work();
+        }
+
         private void HandleCancel()
         {
             Action work = () =>

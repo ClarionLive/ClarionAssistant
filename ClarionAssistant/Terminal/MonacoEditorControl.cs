@@ -48,6 +48,22 @@ namespace ClarionAssistant.Terminal
         /// mode closes the workbench tab. (a5bbf005 — our toolbar's Cancel, replacing the hidden native red-X.)</summary>
         void OnCancel(MonacoEditorControl editor);
 
+        /// <summary>{action:"confirmSaveExit"} — Ctrl+Q on a dirty buffer. The host raises a NATIVE
+        /// Windows dialog and posts the answer back as {action:"confirmSaveExitResult", result:"yes"|
+        /// "no"|"cancel"}; the page keeps ownership of what those answers DO.
+        ///
+        /// GH #193 (BoxSoft): this used to be an in-page dark overlay, which the native embeditor's
+        /// stock MessageBox made look conspicuously foreign — "its strange appearance causes one to
+        /// pause, which disrupts mental flow". The dialog is deliberately the host's job because only
+        /// the host can produce real Windows chrome, theming, DPI and mnemonics.
+        ///
+        /// ON THE INTERFACE, not bolted to one host, ON PURPOSE: monaco-embeditor.html is shared by
+        /// BOTH IMonacoEditorHost implementations (MonacoClarionEditor and ModernEmbeditorViewContent),
+        /// so a handler added to only one would silently no-op in the other. Declaring it here makes
+        /// the compiler insist. The two hosts SHOULD differ in wording — only the embeditor is the
+        /// "Embed Editor" the native dialog names.</summary>
+        void OnConfirmSaveExit(MonacoEditorControl editor);
+
         /// <summary>{action:"openSource"} — clicking our header strip opens the generated source (runs the native
         /// OpenSourceButton.OpenSourceCommand). Overlay mode only; other hosts no-op. (b1e05287)</summary>
         void OnOpenSource(MonacoEditorControl editor);
@@ -332,6 +348,7 @@ namespace ClarionAssistant.Terminal
                     case "ready":             h.OnReady(this); break;
                     case "save":              h.OnSave(this, json); break;
                     case "cancel":            h.OnCancel(this); break;
+                    case "confirmSaveExit":   h.OnConfirmSaveExit(this); break;
                     case "openSource":        h.OnOpenSource(this); break;
                     case "clipboard":         h.OnClipboard(this, json); break;
                     case "completion":        h.OnCompletion(this, json); break;

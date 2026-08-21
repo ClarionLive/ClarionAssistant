@@ -1633,39 +1633,48 @@
     // a stray newline in whatever surface takes focus next.
     var _exitAfterSave = false;   // Ctrl+Q Yes on a path whose save does NOT close the surface itself
     function cmdSaveAndExit() {
-        if (document.getElementById('sxConfirm')) return;              // confirm already up
-        if (!isDirty || !saveEnabled) { doCancel(); return; }          // nothing to save (or can't) — just exit
-        var ov = document.createElement('div');
-        ov.id = 'sxConfirm';
-        ov.tabIndex = -1;
-        ov.style.cssText = 'position:fixed;inset:0;z-index:1001;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;outline:none;';
-        ov.innerHTML =
-            '<div style="background:#2d2d30;color:#eee;padding:18px 26px;border-radius:8px;font-family:Segoe UI,sans-serif;font-size:13px;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.5);">' +
-            '<div style="font-size:14px;margin-bottom:10px;">Save changes?</div>' +
-            '<div style="opacity:.8;margin-bottom:14px;">Enter = save and exit &middot; N = exit without saving &middot; Esc = keep editing</div>' +
-            '<button id="sxYes" style="margin-right:8px;padding:5px 14px;cursor:pointer;">Save and exit</button>' +
-            '<button id="sxNo" style="margin-right:8px;padding:5px 14px;cursor:pointer;">Don&#39;t save</button>' +
-            '<button id="sxStay" style="padding:5px 14px;cursor:pointer;">Cancel</button></div>';
-        document.body.appendChild(ov);
-        function close() { ov.remove(); try { activeEd().focus(); } catch (e) { } }
-        function yes() {
-            close();
+        if (document.getElementById('sxShield')) return;                // round-trip already in flight
+        if (!isDirty || !saveEnabled) { doCancel(); return; }           // nothing to save (or can't) — just exit
+
+        // THE SHIELD IS LOAD-BEARING — do not remove it as "an invisible div that does nothing".
+        //
+        // The dialog now lives host-side (GH #193), so there is an async gap between this keystroke and
+        // the MessageBox actually appearing. Ctrl+Q then Enter is muscle memory from the native
+        // embeditor — people type it as one gesture — and in that gap the Enter would land in Monaco as
+        // a NEWLINE IN THE USER'S SOURCE. It would then be saved, silently, by the very Yes they just
+        // pressed. The old in-page confirm absorbed that Enter by existing; this replaces that property
+        // rather than dropping it.
+        //
+        // Transparent and focused: it swallows every key until the host answers.
+        var shield = document.createElement('div');
+        shield.id = 'sxShield';
+        shield.tabIndex = -1;
+        shield.style.cssText = 'position:fixed;inset:0;z-index:1001;background:transparent;outline:none;';
+        shield.addEventListener('keydown', function (e) { e.preventDefault(); e.stopPropagation(); }, true);
+        shield.addEventListener('keypress', function (e) { e.preventDefault(); e.stopPropagation(); }, true);
+        shield.addEventListener('keyup', function (e) { e.preventDefault(); e.stopPropagation(); }, true);
+        document.body.appendChild(shield);
+        shield.focus();
+
+        postToHost({ action: 'confirmSaveExit' });
+    }
+
+    // Host's answer to confirmSaveExit. Same three outcomes the in-page confirm had; the host owns only
+    // how the question LOOKS, the page still owns what each answer does.
+    function onConfirmSaveExitResult(result) {
+        var shield = document.getElementById('sxShield');
+        if (shield) shield.remove();
+        // Refocus first so a "cancel" leaves the caret exactly where it was.
+        try { activeEd().focus(); } catch (e) { }
+        if (result === 'yes') {
             // Live-linked saves close the surface host-side (SaveLive save-and-exit); every other path
             // (snapshot tab, file mode) needs the page to close itself once the saveResult confirms.
             _exitAfterSave = !liveLinked;
             doSave();
+        } else if (result === 'no') {
+            doCancel();
         }
-        function no() { close(); doCancel(); }
-        document.getElementById('sxYes').onclick = yes;
-        document.getElementById('sxNo').onclick = no;
-        document.getElementById('sxStay').onclick = function () { close(); };
-        ov.addEventListener('keydown', function (e) {
-            e.preventDefault(); e.stopPropagation();
-            if (e.key === 'Enter' || e.key === 'y' || e.key === 'Y') yes();
-            else if (e.key === 'n' || e.key === 'N') no();
-            else if (e.key === 'Escape') close();
-        }, true);
-        ov.focus();
+        // 'cancel' (and any unrecognised answer) = keep editing.
     }
 
     // Surface the language-server state when completion comes back empty, so a down/starting LSP is
@@ -6921,6 +6930,8 @@
                 if (ready) applySource(msg); else pending = msg;
             } else if (msg.type === 'applyTheme') {
                 setTheme(themePrefDark);   // user preference wins over IDE theme changes
+            } else if (msg.type === 'confirmSaveExitResult') {
+                onConfirmSaveExitResult(msg.result);   // GH #193: host's native Ctrl+Q dialog answered
             } else if (msg.type === 'saveResult') {
                 if (saveSafetyTimer) { clearTimeout(saveSafetyTimer); saveSafetyTimer = null; }
                 if (msg.ok) {
