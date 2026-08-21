@@ -733,39 +733,29 @@ namespace ClarionAssistant
 
         // Monaco owns the buffer and saves straight to disk — the native editor underneath stays a clean,
         // untouched shell (never edited → never dirty → no dueling save). It's just a file on disk.
-        /// <summary>GH #193: Ctrl+Q's confirm as a native dialog (see IMonacoEditorHost.OnConfirmSaveExit).
+        /// <summary>Ctrl+Q is NOT a CA Editor gesture, so this host deliberately raises no dialog.
         ///
-        /// Deliberately NOT titled "Save Changes in Embed Editor?" like the embeditor host's copy: this
-        /// surface is the CA Editor, not the embed editor, and Mike's complaint was about a dialog that
-        /// does not match its surroundings. Borrowing the embeditor's wording here would swap one
-        /// mismatch for another, so this reuses the caption the CA Editor's own close prompt already
-        /// uses (see the ClosingEvent handler) and stays consistent within its own surface.</summary>
+        /// GH #192 (BoxSoft — who asked for Ctrl+Q in the first place): "we added support for Ctrl+Q to
+        /// close the embeditor. That should have been only when it was used as an Embeditor. When
+        /// editing normal files, Ctrl+F4 should close the window." Clarion's own binding table agrees:
+        /// Ctrl+Q is CodonId CancelEditorMenuItem, an EDITOR menu command, so a plain source tab is not
+        /// where it belongs. Closing a file tab is Ctrl+F4 (CodonId CloseFile), wired up under #192.
+        ///
+        /// An earlier revision of #193 showed a "CA Editor — unsaved changes" MessageBox here. It was
+        /// REMOVED rather than reworded, because #192 is explicit that the gesture should not exist on
+        /// this surface at all.
+        ///
+        /// The page already returns early in fileMode, so this should be unreachable. It still ANSWERS
+        /// rather than doing nothing: the page raises a key-swallowing shield before posting and only
+        /// drops it on a reply, so silence here would leave the editor permanently deaf to keystrokes.
+        /// "cancel" is the safe answer — buffer and changes left exactly as they are.</summary>
         void IMonacoEditorHost.OnConfirmSaveExit(MonacoEditorControl editor)
         {
             if (editor == null) return;
-            Action work = () =>
-            {
-                string result = "cancel";
-                try
-                {
-                    var owner = _wbWindow as IWin32Window;
-                    string msg = "Save changes to " + Path.GetFileName(_filePath) + " before closing?";
-                    var r = owner != null
-                        ? MessageBox.Show(owner, msg, "CA Editor — unsaved changes", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question)
-                        : MessageBox.Show(msg, "CA Editor — unsaved changes", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
-                    result = r == DialogResult.Yes ? "yes" : (r == DialogResult.No ? "no" : "cancel");
-                }
-                catch (Exception ex)
-                {
-                    // Answer "cancel" on any failure — the page is holding a key shield until we reply,
-                    // so staying silent would leave the editor permanently deaf to keystrokes.
-                    MonacoSpikeLog.Write("OnConfirmSaveExit dialog error: " + ex.Message);
-                }
-                // "type", not "action": page->host messages are keyed on action, host->page on type.
-                try { editor.PostJson("{\"type\":\"confirmSaveExitResult\",\"result\":\"" + result + "\"}"); }
-                catch (Exception ex) { MonacoSpikeLog.Write("OnConfirmSaveExit post error: " + ex.Message); }
-            };
-            if (editor.InvokeRequired) editor.BeginInvoke(work); else work();
+            MonacoSpikeLog.Write("OnConfirmSaveExit reached the CA Editor host — Ctrl+Q is embeditor-only (GH #192); answering cancel");
+            // "type", not "action": page->host messages are keyed on action, host->page on type.
+            try { editor.PostJson("{\"type\":\"confirmSaveExitResult\",\"result\":\"cancel\"}"); }
+            catch (Exception ex) { MonacoSpikeLog.Write("OnConfirmSaveExit post error: " + ex.Message); }
         }
 
         void IMonacoEditorHost.OnSave(MonacoEditorControl editor, string rawJson)

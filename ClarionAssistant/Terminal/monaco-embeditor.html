@@ -1042,6 +1042,23 @@
         try { window.chrome.webview.postMessage(JSON.stringify(obj)); } catch (e) { /* not in webview */ }
     }
 
+    // ----- GH #192 KEY PROBE (temporary diagnostic; remove once key routing is settled) -----
+    // Mike reports Ctrl+F4, Ctrl+O and Alt+F are ignored by the CA Editor. Before designing a fix we
+    // need to know WHERE each key dies, because the layers need different fixes. This logs the page's
+    // view; MonacoEditorControl.ProcessCmdKey logs the host's. Read monaco-spike.log and pair them:
+    //   PAGE + HOST  -> the key reaches the IDE; the problem is dispatch/routing
+    //   PAGE only    -> WebView2/Monaco consumed it; the fix is at the accelerator layer
+    //   neither      -> something upstream ate it before the page saw it
+    // Capture phase, and deliberately passive: it must not change what any key DOES, or the probe
+    // would be measuring itself. Bare modifier presses are skipped so holding Alt does not flood.
+    document.addEventListener('keydown', function (e) {
+        try {
+            if (e.key === 'Control' || e.key === 'Alt' || e.key === 'Shift' || e.key === 'Meta') return;
+            var combo = (e.ctrlKey ? 'Ctrl+' : '') + (e.altKey ? 'Alt+' : '') + (e.shiftKey ? 'Shift+' : '') + e.key;
+            postToHost({ action: 'keyProbe', combo: combo });
+        } catch (ex) { /* diagnostic only */ }
+    }, true);
+
     function setTheme(isDark) {
         document.body.classList.toggle('light', !isDark);
         if (window.monaco && monaco.editor) {
@@ -1633,6 +1650,15 @@
     // a stray newline in whatever surface takes focus next.
     var _exitAfterSave = false;   // Ctrl+Q Yes on a path whose save does NOT close the surface itself
     function cmdSaveAndExit() {
+        // EMBEDITOR ONLY (GH #192, BoxSoft): "we added support for Ctrl+Q to close the embeditor.
+        // That should have been only when it was used as an Embeditor. When editing normal files,
+        // Ctrl+F4 should close the window." He asked for Ctrl+Q originally, so he gets to scope it.
+        //
+        // The binding table agrees with him: in Clarion, Ctrl+Q is CancelEditorMenuItem — an EDITOR
+        // menu command, not a general close. A plain source tab is not an embeditor, so the gesture
+        // does not belong there. Ctrl+F4 (CodonId CloseFile) is what closes a file tab, and wiring
+        // that up is #192's job, not this function's.
+        if (fileMode) return;
         if (document.getElementById('sxShield')) return;                // round-trip already in flight
         if (!isDirty || !saveEnabled) { doCancel(); return; }           // nothing to save (or can't) — just exit
 

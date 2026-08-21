@@ -349,6 +349,8 @@ namespace ClarionAssistant.Terminal
                     case "save":              h.OnSave(this, json); break;
                     case "cancel":            h.OnCancel(this); break;
                     case "confirmSaveExit":   h.OnConfirmSaveExit(this); break;
+                    // GH #192 key probe (temporary diagnostic) — the page's half of the trace.
+                    case "keyProbe":          MonacoSpikeLog.Write("[KEYPROBE] PAGE  " + ExtractKeyProbe(json)); break;
                     case "openSource":        h.OnOpenSource(this); break;
                     case "clipboard":         h.OnClipboard(this, json); break;
                     case "completion":        h.OnCompletion(this, json); break;
@@ -562,8 +564,27 @@ namespace ClarionAssistant.Terminal
         // This control sits BELOW the workbench form in the parent chain, so returning true here consumes
         // the forwarded key before the form can dispatch. The DOM keydown already reached the page, so we
         // only swallow the host-side leak; we don't re-trigger the find here.
+        /// <summary>GH #192 key probe (temporary): pull the "combo" string out of the page's keyProbe
+        /// message without paying for a full JSON deserialise on every keystroke.</summary>
+        private static string ExtractKeyProbe(string json)
+        {
+            if (string.IsNullOrEmpty(json)) return "(empty)";
+            const string tag = "\"combo\":\"";
+            int i = json.IndexOf(tag, StringComparison.Ordinal);
+            if (i < 0) return json;
+            i += tag.Length;
+            int j = json.IndexOf('"', i);
+            return j > i ? json.Substring(i, j - i) : json;
+        }
+
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
+            // GH #192 KEY PROBE (temporary — pairs with the ACCEL line where the WebView2 is created).
+            // Logs EVERY key that reaches the host, before the swallow-list below decides anything, so
+            // the log distinguishes "never arrived" from "arrived and we ate it".
+            if (_webView != null && _webView.ContainsFocus)
+                MonacoSpikeLog.Write("[KEYPROBE] CMDKEY " + keyData);
+
             if (_webView != null && _webView.ContainsFocus)
             {
                 switch (keyData)
