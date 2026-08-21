@@ -26,6 +26,8 @@
 .PARAMETER LspRoot
     The upstream clone (a git checkout of msarson/Clarion-Extension with our overlay).
     Defaults to $env:CLARIONLSP_ROOT, else H:\DevLaptop\ClarionLSP (legacy dev path).
+    ONLY used by the legacy overlay path (-Apply). -Pure ignores it entirely and clones
+    source.repo itself, so a contributor with no such clone can still build the pinned server.
 
 .PARAMETER Tag
     Target release tag to pin to. Defaults to targetPin.tag from lsp-snapshot.json.
@@ -43,6 +45,7 @@
     under $PureRoot (default <repo>\.lsp-build\<Tag>) which deploy.ps1 sources instead of the overlay clone.
     Independent of -Apply (which is the legacy overlay-keeping path). Idempotent: skips the rebuild if a
     pure build is already present. VERIFIES the built server.js contains ZERO codegraph refs.
+    Requires NOTHING but git + npm + network: the tree is cloned from source.repo at $Tag.
 
 .PARAMETER PureRoot
     Where the pure build lives / is created. Defaults to <repo>\.lsp-build\<Tag>.
@@ -79,13 +82,102 @@ function Info($m) { Line 'INFO' $m 'Cyan' }
 function Warn($m) { Line 'WARN' $m 'Yellow' }
 function Fail($m) { Line 'FAIL' $m 'Red' }
 
+# Run git and return its stdout, or $null if it failed for ANY reason. Do NOT replace this with a
+# bare `git ... 2>$null`.
+#
+# Under Windows PowerShell 5.1, redirecting a NATIVE command's stderr wraps the output in a
+# NativeCommandError record, and the $ErrorActionPreference='Stop' set above makes that record
+# TERMINATING -- so the `Fail ...; exit 2` the caller wrote never runs; the script throws on the git
+# line instead. Because deploy.ps1 invokes this script with & under ITS own Stop, that throw
+# propagates and kills the whole deploy. Concrete trigger: a .lsp-build\<tag> left over from the old
+# `git worktree add` implementation, whose .git file points into a parent clone that has since moved.
+#
+# Relaxing $ErrorActionPreference locally makes the NativeCommandError non-terminating; 2>&1 keeps
+# git's stderr off the console; the ErrorRecord filter keeps it out of the return value; the
+# try/catch covers git being absent from PATH entirely (CommandNotFoundException terminates
+# regardless of the preference).
+function Invoke-GitQuiet([string[]]$GitArgs) {
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & git @GitArgs 2>&1
+        if ($LASTEXITCODE -ne 0) { return $null }
+        $clean = $out | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+        if (-not $clean) { return $null }
+        return (($clean -join "`n").Trim())
+    } catch {
+        return $null
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+}
+
 # Keep ALL pin fields honest on a successful sync (#77 housekeeping): the sync used to update only
 # resolvedTag/resolvedCommit/lastSync, leaving targetPin/currentPin frozen at whatever hand-written
 # audit they last held -- after the v1.0.0 re-pin the manifest still reported targetPin v0.9.8 and a
 # June currentPin, so a first read said "behind" when the bundle was current. One writer, all fields.
+# Read/write the manifest without mangling it. Windows PowerShell 5.1 defaults `Get-Content` to the
+# system ANSI codepage and `Set-Content -Encoding UTF8` to UTF8-WITH-BOM, so a read/write round-trip
+# on this UTF-8 file turned the em dash in $comment into mojibake and prepended a BOM. PS 7 defaults
+# to UTF-8 and hides the problem, which is why it survived. ConvertTo-Json in 5.1 also escapes
+# & < > ' as \uXXXX with no -EscapeHandling to turn it off, so unescape those four back.
+function Read-Manifest($path) {
+    Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+}
+
+# Lowercase hex sha256 of a file's BYTES. Get-FileHash exists on 5.1, but read the bytes explicitly:
+# the point of this hash is to identify the exact artifact that ships, so nothing about it may depend
+# on an encoding or line-ending interpretation.
+function Get-FileSha256($path) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($path)
+        return -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+    } finally { $sha.Dispose() }
+}
+# The unescape has to be backslash-aware. A blanket `-replace '\\u0026', '&'` over the SERIALIZED
+# TEXT cannot tell an escape ConvertTo-Json just emitted from characters that belong to a value.
+# Put a backslash followed by the characters u0026 into a note as ordinary prose, and
+# ConvertTo-Json escapes that backslash, so the JSON text holds TWO backslashes then u0026. The
+# blanket replace matches on the second backslash and collapses it plus the u0026 into a single
+# ampersand, leaving backslash-ampersand -- not a valid JSON escape. The manifest then no longer
+# parses, and every later run dies in Read-Manifest instead. Nothing in the file trips it today,
+# but targetPin.note and $comment are free-form prose maintained by hand, and the failure would
+# land on whoever runs the sync NEXT rather than on whoever wrote the prose.
+#
+# Parity decides it: count the backslashes immediately before uXXXX. Odd means the last one is a
+# real escape introducer, so drop it and substitute the character. Even means they all pair up into
+# literal backslashes and uXXXX is ordinary text, so leave the match alone.
+$Script:JsonUnescapeMap = @{ '0026' = '&'; '003c' = '<'; '003e' = '>'; '0027' = "'" }
+function Restore-JsonLiterals([string]$json) {
+    $evaluator = {
+        param($m)
+        $slashes = $m.Groups[1].Value
+        if ($slashes.Length % 2 -eq 0) { return $m.Value }
+        return $slashes.Substring(0, $slashes.Length - 1) + $Script:JsonUnescapeMap[$m.Groups[2].Value.ToLower()]
+    }
+    return [regex]::Replace($json, '(\\+)u(0026|003c|003e|0027)', $evaluator,
+                            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+}
+function Save-Manifest($manifest, $path) {
+    $json = Restore-JsonLiterals ($manifest | ConvertTo-Json -Depth 12)
+    # Fail CLOSED. If the text we are about to write is not valid JSON, the on-disk manifest is
+    # still good; overwriting it with something unparseable would take the whole sync down on the
+    # next run, with a stack trace pointing at Read-Manifest rather than at whatever produced it.
+    try {
+        $json | ConvertFrom-Json | Out-Null
+    } catch {
+        throw "Refusing to write $path -- the serialized manifest is not valid JSON: $($_.Exception.Message)"
+    }
+    [System.IO.File]::WriteAllText($path, $json, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 function Update-PinFields($manifest, $Tag, $repoRoot) {
-    $commit     = (git -C $repoRoot rev-parse --short HEAD)
-    $commitDate = (git -C $repoRoot show -s --format=%cs HEAD)
+    # Via Invoke-GitQuiet: on the supported non-git pure tree these two printed two bare
+    # "fatal: not a git repository" lines into an otherwise clean run and recorded null anyway.
+    # Same result, without the noise that reads like something went wrong.
+    $commit     = Invoke-GitQuiet @('-C', $repoRoot, 'rev-parse', '--short', 'HEAD')
+    $commitDate = Invoke-GitQuiet @('-C', $repoRoot, 'show', '-s', '--format=%cs', 'HEAD')
     $manifest | Add-Member -NotePropertyName 'targetPin' -NotePropertyValue ([pscustomobject]@{
         note = "Tag to sync toward; -Tag overrides. AUTO-UPDATED to the last successfully synced tag by Sync-LspServer.ps1 -- edit by hand only to stage a pin to a NEWER release before running the sync."
         tag  = $Tag
@@ -100,19 +192,185 @@ function Update-PinFields($manifest, $Tag, $repoRoot) {
 
 # --- Resolve inputs -------------------------------------------------------------------
 if (-not (Test-Path $ManifestPath)) { throw "Manifest not found: $ManifestPath" }
-$manifest = Get-Content $ManifestPath -Raw | ConvertFrom-Json
+$manifest = Read-Manifest $ManifestPath
 
-if (-not $LspRoot) { $LspRoot = if ($env:CLARIONLSP_ROOT) { $env:CLARIONLSP_ROOT } else { 'H:\DevLaptop\ClarionLSP' } }
-if (-not $Tag)     { $Tag = $manifest.targetPin.tag }
+if (-not $Tag) { $Tag = $manifest.targetPin.tag }
 
 Write-Host ""
 Write-Host "Clarion LSP server sync (GitHub #40)" -ForegroundColor White
-Write-Host "  LspRoot : $LspRoot"
 Write-Host "  Tag     : $Tag"
-Write-Host "  Mode    : $(if ($Apply) { 'APPLY' } else { 'dry run (read-only)' })"
+Write-Host "  Mode    : $(if ($Pure) { 'PURE build' } elseif ($Apply) { 'APPLY' } else { 'dry run (read-only)' })"
 Write-Host ""
 
-if (-not (Test-Path (Join-Path $LspRoot '.git'))) { Fail "Not a git clone: $LspRoot"; exit 2 }
+# --- PURE mode (#40) ---------------------------------------------------------------------
+# Build STOCK upstream at $Tag with NO CodeGraph overlay, into $PureRoot. The overlay is retired;
+# CodeGraph is C#-side now.
+#
+# SELF-CONTAINED BY CONSTRUCTION: this path clones $manifest.source.repo directly, so it needs no
+# pre-existing clone and never touches $LspRoot. It previously ran `git worktree add` against
+# $LspRoot, which made -Pure unusable on any machine without the maintainer's clone -- a pin bump
+# then aborted deploy.ps1 outright instead of rebuilding the pinned server. Runs BEFORE the
+# $LspRoot resolution below for exactly that reason.
+if ($Pure) {
+    if (-not $PureRoot) {
+        $RepoRoot = Split-Path -Parent $ScriptDir      # ...\ClarionAssistant
+        $PureRoot = Join-Path $RepoRoot (".lsp-build\" + $Tag)
+    }
+    $builtServer = Join-Path $PureRoot $manifest.source.buildOutput   # out/server/src/server.js
+    $repoUrl     = $manifest.source.repo
+    Info "PURE build target: $PureRoot (tag $Tag, NO overlay)"
+
+    # Ensure a clean tag checkout at $PureRoot, cloned from source.repo.
+    if ((Test-Path (Join-Path $PureRoot 'package.json')) -and -not (Test-Path (Join-Path $PureRoot '.git'))) {
+        Info "Using existing (non-git) pure tree as-is"
+    } else {
+        if (Test-Path (Join-Path $PureRoot '.git')) {
+            Info "Refreshing existing checkout -> $Tag"
+        } else {
+            Info "Cloning $repoUrl -> $PureRoot ..."
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $PureRoot) | Out-Null
+            git clone --quiet $repoUrl $PureRoot
+            if ($LASTEXITCODE) { Fail "clone failed ($LASTEXITCODE): $repoUrl"; exit 2 }
+        }
+
+        # Assert this is the expected upstream repo before we build anything out of it.
+        $pureOrigin = Invoke-GitQuiet @('-C', $PureRoot, 'remote', 'get-url', 'origin')
+        if ($pureOrigin -notmatch 'Clarion-Extension') {
+            Fail "origin of $PureRoot is '$pureOrigin' — expected msarson/Clarion-Extension. Aborting."
+            exit 2
+        }
+        OK "origin: $pureOrigin"
+
+        # Check the fetch. Leaving its exit status unread -- alone among the git calls in this block
+        # -- opens a hole nothing downstream can close: offline, the fetch fails, `git tag --list`
+        # still finds the STALE cached tag, the checkout "succeeds", the rebuild is skipped because
+        # out/ is already present, and that stale commit is written into the manifest as
+        # authoritative -- all while the run prints "OK PURE sync complete" and deploy.ps1's pin
+        # check agrees with it. A tag that cannot be confirmed against origin is not a pin.
+        git -C $PureRoot fetch --tags --prune --quiet origin
+        if ($LASTEXITCODE) {
+            Fail "fetch from origin failed ($LASTEXITCODE) in $PureRoot — cannot confirm '$Tag' against upstream."
+            Write-Host "         A locally cached tag may be stale, so pinning the manifest to it would be a lie." -ForegroundColor Red
+            Write-Host "         Re-run with a working network connection." -ForegroundColor Red
+            exit 2
+        }
+        if (-not (git -C $PureRoot tag --list $Tag)) {
+            Fail "Tag '$Tag' does not exist in $repoUrl. Available recent tags:"
+            git -C $PureRoot tag --sort=-creatordate | Select-Object -First 8 | ForEach-Object { Write-Host "         $_" }
+            exit 2
+        }
+        git -C $PureRoot checkout --quiet --force $Tag
+        if ($LASTEXITCODE) { Fail "checkout of '$Tag' failed in $PureRoot"; exit 2 }
+        OK "checked out $Tag"
+    }
+
+    # Assert PURE source: the overlay .ts must NOT be present in this tree.
+    foreach ($f in $manifest.codeGraphOverlay.overlayFiles) {
+        if (Test-Path (Join-Path $PureRoot $f)) {
+            Fail "PURE tree contains overlay file '$f' — not pure. Use a clean checkout."; exit 6
+        }
+    }
+    OK "no CodeGraph overlay in source (pure)"
+
+    # Which commit produced the out/ that is sitting there? out/ is gitignored and survives
+    # `git checkout --force`, so its presence says nothing about WHICH tag built it. The stamp lives
+    # inside out/ deliberately: delete out/ to force a rebuild (as the message below advertises) and
+    # the stamp goes with it, so a stale stamp can never outlive the build it describes.
+    $buildStamp = Join-Path $PureRoot 'out\.pure-build-stamp.json'
+    $stampedCommit = $null
+    if (Test-Path -LiteralPath $buildStamp) {
+        try { $stampedCommit = (Get-Content -LiteralPath $buildStamp -Raw -Encoding UTF8 | ConvertFrom-Json).commit }
+        catch { $stampedCommit = $null }   # unreadable stamp == no stamp, so we rebuild
+    }
+    $headNow = Invoke-GitQuiet @('-C', $PureRoot, 'rev-parse', 'HEAD')
+
+    # Build (idempotent: skip if a pure build is already present FOR THIS COMMIT)
+    if ($SkipBuild) {
+        Warn "Skipping build (-SkipBuild)."
+    } elseif ((Test-Path $builtServer) -and ((Get-Content $builtServer -Raw) -notmatch 'codegraph|CodeGraph') `
+              -and $headNow -and $stampedCommit -and ($stampedCommit -eq $headNow)) {
+        OK "pure build already present for $($headNow.Substring(0,8)) (skipping rebuild; delete out/ to force)"
+    } else {
+        # Rebuild when the stamp is missing or names a different commit. Without this, a re-pointed
+        # upstream tag was invisible: the refresh moved HEAD, out/ was already there so the rebuild
+        # was skipped, and the manifest was then rewritten with the NEW commit describing an OLD
+        # artifact -- a manifest that agreed with itself and was wrong.
+        if ((Test-Path $builtServer) -and $headNow -and $stampedCommit -and ($stampedCommit -ne $headNow)) {
+            Info "existing out/ was built from $($stampedCommit.Substring(0,8)) but HEAD is now $($headNow.Substring(0,8)) — rebuilding"
+        } elseif ((Test-Path $builtServer) -and -not $stampedCommit) {
+            Info "existing out/ has no build stamp — rebuilding so the manifest can describe it honestly"
+        }
+        Info "Building (npm ci && npm run compile) — can take a minute..."
+        Push-Location $PureRoot
+        try {
+            npm ci;          if ($LASTEXITCODE) { throw "npm ci failed ($LASTEXITCODE)" }
+            npm run compile; if ($LASTEXITCODE) { throw "npm run compile failed ($LASTEXITCODE)" }
+        } finally { Pop-Location }
+        OK "build complete"
+    }
+
+    # Verify PURE: built server.js must contain ZERO codegraph refs.
+    if (Test-Path $builtServer) {
+        if ((Get-Content $builtServer -Raw) -match 'codegraph|CodeGraph') {
+            Fail "Built server.js STILL contains CodeGraph refs — not pure. Aborting."; exit 6
+        }
+        OK "verified PURE: no CodeGraph refs in built server.js"
+    } elseif (-not $SkipBuild) {
+        Fail "Expected build output not found: $builtServer"; exit 6
+    }
+
+    # Hash the ARTIFACT, not just the source. A commit alone cannot describe what ships: out/ is
+    # gitignored, survives `git checkout --force`, and this script skips the rebuild when a server.js
+    # is already present -- so an overlay build, or a build from another tag, could sit under a
+    # checkout whose HEAD matches the pin perfectly. The hash is of the exact file deploy.ps1 and
+    # the installer copy, so it is the only field that says what a consumer actually received.
+    $serverHash = $null
+    if (Test-Path $builtServer) {
+        $serverHash = Get-FileSha256 $builtServer
+        OK "server.js sha256: $($serverHash.Substring(0,16))..."
+        # Stamp the build so a later run can tell WHICH commit produced this out/ (see $buildStamp).
+        $stamp = [pscustomobject]@{
+            commit = $headNow
+            tag    = $Tag
+            sha256 = $serverHash
+            builtAt = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssK')
+        }
+        [System.IO.File]::WriteAllText($buildStamp, ($stamp | ConvertTo-Json),
+                                       (New-Object System.Text.UTF8Encoding($false)))
+    }
+
+    # Record the pure pin (targetPin/currentPin included -- see Update-PinFields)
+    $resolved = Invoke-GitQuiet @('-C', $PureRoot, 'rev-parse', '--short', 'HEAD')
+    if (-not $resolved) {
+        # Supported case: the "Using existing (non-git) pure tree as-is" branch above. Say so out
+        # loud rather than writing a silent null -- deploy.ps1's pin assert then reports "manifest
+        # has no resolvedCommit" instead of implying the shipped server was verified against a pin.
+        Warn "cannot resolve HEAD of $PureRoot (not a git tree) — resolvedCommit will be empty."
+    }
+    Update-PinFields $manifest $Tag $PureRoot
+    $manifest | Add-Member -NotePropertyName 'pure'           -NotePropertyValue $true   -Force
+    $manifest | Add-Member -NotePropertyName 'resolvedCommit' -NotePropertyValue $resolved -Force
+    $manifest | Add-Member -NotePropertyName 'resolvedServerSha256' -NotePropertyValue $serverHash -Force
+    $manifest | Add-Member -NotePropertyName 'resolvedTag'    -NotePropertyValue $Tag      -Force
+    $manifest | Add-Member -NotePropertyName 'lastSync'       -NotePropertyValue (Get-Date -Format 'yyyy-MM-dd') -Force
+    Save-Manifest $manifest $ManifestPath
+    OK "manifest updated: pure=true tag=$Tag resolvedCommit=$resolved"
+    Write-Host ""
+    OK "PURE sync complete. deploy.ps1 sources the pure build from $PureRoot."
+    exit 0
+}
+
+# --- Legacy overlay path (-Apply) ---------------------------------------------------------
+# Only this path needs a pre-existing clone with our untracked overlay .ts files in it.
+if (-not $LspRoot) { $LspRoot = if ($env:CLARIONLSP_ROOT) { $env:CLARIONLSP_ROOT } else { 'H:\DevLaptop\ClarionLSP' } }
+Write-Host "  LspRoot : $LspRoot"
+Write-Host ""
+
+# NOTE: string-concatenate the path rather than Join-Path. Join-Path VALIDATES the drive qualifier
+# and THROWS "Cannot find drive" on a non-existent drive, which under deploy.ps1's
+# $ErrorActionPreference='Stop' killed the whole deploy instead of failing soft the way
+# deploy.ps1's "LSP copy will be skipped" warning intends. Test-Path alone returns $false.
+if (-not (Test-Path -LiteralPath "$LspRoot\.git")) { Fail "Not a git clone: $LspRoot"; exit 2 }
 
 Push-Location $LspRoot
 try {
@@ -136,79 +394,6 @@ try {
         exit 2
     }
     OK "target tag exists: $Tag ($(git show -s --format='%ci' $Tag 2>$null | Select-Object -First 1))"
-
-    # --- PURE mode (#40) -------------------------------------------------------------
-    # Build STOCK upstream at $Tag with NO CodeGraph overlay, into $PureRoot. The overlay is retired;
-    # CodeGraph is C#-side now. Self-contained: creates/refreshes a clean tag checkout (untracked overlay
-    # .ts files in $LspRoot do NOT propagate into a fresh worktree), builds, verifies purity, records pin.
-    if ($Pure) {
-        if (-not $PureRoot) {
-            $RepoRoot = Split-Path -Parent $ScriptDir      # ...\ClarionAssistant
-            $PureRoot = Join-Path $RepoRoot (".lsp-build\" + $Tag)
-        }
-        $builtServer = Join-Path $PureRoot $manifest.source.buildOutput   # out/server/src/server.js
-        Write-Host ""
-        Info "PURE build target: $PureRoot (tag $Tag, NO overlay)"
-
-        # Ensure a clean tag checkout at $PureRoot
-        if (Test-Path (Join-Path $PureRoot '.git')) {
-            Info "Refreshing existing checkout -> $Tag"
-            git -C $PureRoot fetch --tags --quiet origin 2>$null
-            git -C $PureRoot checkout --quiet --force $Tag
-        } elseif (Test-Path (Join-Path $PureRoot 'package.json')) {
-            Info "Using existing (non-git) pure tree as-is"
-        } else {
-            Info "Creating clean worktree at $PureRoot ..."
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $PureRoot) | Out-Null
-            git worktree add --force $PureRoot $Tag
-        }
-
-        # Assert PURE source: the overlay .ts must NOT be present in this tree.
-        foreach ($f in $manifest.codeGraphOverlay.overlayFiles) {
-            if (Test-Path (Join-Path $PureRoot $f)) {
-                Fail "PURE tree contains overlay file '$f' — not pure. Use a clean checkout."; exit 6
-            }
-        }
-        OK "no CodeGraph overlay in source (pure)"
-
-        # Build (idempotent: skip if a pure build is already present)
-        if ($SkipBuild) {
-            Warn "Skipping build (-SkipBuild)."
-        } elseif ((Test-Path $builtServer) -and ((Get-Content $builtServer -Raw) -notmatch 'codegraph|CodeGraph')) {
-            OK "pure build already present (skipping rebuild; delete out/ to force)"
-        } else {
-            Info "Building (npm ci && npm run compile) — can take a minute..."
-            Push-Location $PureRoot
-            try {
-                npm ci;          if ($LASTEXITCODE) { throw "npm ci failed ($LASTEXITCODE)" }
-                npm run compile; if ($LASTEXITCODE) { throw "npm run compile failed ($LASTEXITCODE)" }
-            } finally { Pop-Location }
-            OK "build complete"
-        }
-
-        # Verify PURE: built server.js must contain ZERO codegraph refs.
-        if (Test-Path $builtServer) {
-            if ((Get-Content $builtServer -Raw) -match 'codegraph|CodeGraph') {
-                Fail "Built server.js STILL contains CodeGraph refs — not pure. Aborting."; exit 6
-            }
-            OK "verified PURE: no CodeGraph refs in built server.js"
-        } elseif (-not $SkipBuild) {
-            Fail "Expected build output not found: $builtServer"; exit 6
-        }
-
-        # Record the pure pin (targetPin/currentPin included -- see Update-PinFields)
-        $resolved = (git -C $PureRoot rev-parse --short HEAD 2>$null)
-        Update-PinFields $manifest $Tag $PureRoot
-        $manifest | Add-Member -NotePropertyName 'pure'           -NotePropertyValue $true   -Force
-        $manifest | Add-Member -NotePropertyName 'resolvedCommit' -NotePropertyValue $resolved -Force
-        $manifest | Add-Member -NotePropertyName 'resolvedTag'    -NotePropertyValue $Tag      -Force
-        $manifest | Add-Member -NotePropertyName 'lastSync'       -NotePropertyValue (Get-Date -Format 'yyyy-MM-dd') -Force
-        ($manifest | ConvertTo-Json -Depth 12) | Set-Content -Path $ManifestPath -Encoding UTF8
-        OK "manifest updated: pure=true tag=$Tag resolvedCommit=$resolved"
-        Write-Host ""
-        OK "PURE sync complete. deploy.ps1 sources the pure build from $PureRoot."
-        exit 0
-    }
 
     # 2. Drift report — current HEAD vs target tag
     $head       = (git rev-parse --short HEAD)
@@ -305,7 +490,7 @@ try {
     $manifest.resolvedCommit = $resolved
     $manifest | Add-Member -NotePropertyName 'resolvedTag' -NotePropertyValue $Tag -Force
     $manifest.lastSync = (Get-Date -Format 'yyyy-MM-dd')
-    ($manifest | ConvertTo-Json -Depth 12) | Set-Content -Path $ManifestPath -Encoding UTF8
+    Save-Manifest $manifest $ManifestPath
     OK "manifest updated: resolvedCommit=$resolved lastSync=$($manifest.lastSync)"
 
     Write-Host ""
