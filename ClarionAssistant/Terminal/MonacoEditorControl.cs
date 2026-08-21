@@ -579,11 +579,18 @@ namespace ClarionAssistant.Terminal
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            // GH #192 KEY PROBE (temporary — pairs with the ACCEL line where the WebView2 is created).
-            // Logs EVERY key that reaches the host, before the swallow-list below decides anything, so
-            // the log distinguishes "never arrived" from "arrived and we ate it".
-            if (_webView != null && _webView.ContainsFocus)
-                MonacoSpikeLog.Write("[KEYPROBE] CMDKEY " + keyData);
+            // GH #192 KEY PROBE (temporary — pairs with the PAGE line the page posts).
+            // Logs EVERY key reaching the host, before the swallow-list below decides anything, so the
+            // log distinguishes "never arrived" from "arrived and we ate it".
+            //
+            // UNCONDITIONAL, and it must stay that way: round 1 gated this on ContainsFocus (mirroring
+            // the swallow-list below) and produced 24 PAGE lines with zero CMDKEY lines. That is
+            // ambiguous — "ProcessCmdKey was never called" and "it was called while ContainsFocus read
+            // false" are the same silence, and they need completely different fixes. Logging the focus
+            // flag as DATA rather than using it as a filter is what tells them apart.
+            MonacoSpikeLog.Write("[KEYPROBE] CMDKEY " + keyData
+                + " wv=" + (_webView != null)
+                + " focus=" + (_webView != null && _webView.ContainsFocus));
 
             if (_webView != null && _webView.ContainsFocus)
             {
