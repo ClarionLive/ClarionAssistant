@@ -1056,6 +1056,25 @@
             if (e.key === 'Control' || e.key === 'Alt' || e.key === 'Shift' || e.key === 'Meta') return;
             var combo = (e.ctrlKey ? 'Ctrl+' : '') + (e.altKey ? 'Alt+' : '') + (e.shiftKey ? 'Shift+' : '') + e.key;
             postToHost({ action: 'keyProbe', combo: combo });
+
+            // ----- GH #192 SPIKE: forward ONE key to the IDE -----
+            // Deliberately a hardcoded single key, not the table-driven version. The whole design rests
+            // on the host being able to reach the IDE's main MenuStrip and PerformClick a matched item,
+            // and that has only been verified by reflecting over the ASSEMBLY — never run in a live IDE.
+            // This is an SD fork whose object surface returns null silently rather than throwing, so one
+            // key proves or kills the mechanism cheaply, before any of the other 104 are wired to it.
+            //
+            // Ctrl+F4 chosen because it is unambiguous, visibly verifiable (the tab closes or it does
+            // not), and one of the three Mike actually reported.
+            //
+            // preventDefault + stopPropagation: we are CLAIMING this key. Without it Monaco still sees
+            // the keydown, and a key that both closes the tab and does something in the editor is worse
+            // than one that does nothing.
+            if (e.ctrlKey && !e.altKey && !e.shiftKey && e.key === 'F4') {
+                e.preventDefault();
+                e.stopPropagation();
+                postToHost({ action: 'ideKey', combo: 'Ctrl+F4' });
+            }
         } catch (ex) { /* diagnostic only */ }
     }, true);
 

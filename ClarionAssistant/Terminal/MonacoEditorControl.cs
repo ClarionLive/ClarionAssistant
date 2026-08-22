@@ -351,6 +351,8 @@ namespace ClarionAssistant.Terminal
                     case "confirmSaveExit":   h.OnConfirmSaveExit(this); break;
                     // GH #192 key probe (temporary diagnostic) — the page's half of the trace.
                     case "keyProbe":          MonacoSpikeLog.Write("[KEYPROBE] PAGE  " + ExtractKeyProbe(json)); break;
+                    // GH #192: a key the page decided belongs to the IDE, not to Monaco.
+                    case "ideKey":            HandleIdeKey(ExtractJsonString(json, "combo")); break;
                     case "openSource":        h.OnOpenSource(this); break;
                     case "clipboard":         h.OnClipboard(this, json); break;
                     case "completion":        h.OnCompletion(this, json); break;
@@ -564,17 +566,142 @@ namespace ClarionAssistant.Terminal
         // This control sits BELOW the workbench form in the parent chain, so returning true here consumes
         // the forwarded key before the form can dispatch. The DOM keydown already reached the page, so we
         // only swallow the host-side leak; we don't re-trigger the find here.
-        /// <summary>GH #192 key probe (temporary): pull the "combo" string out of the page's keyProbe
-        /// message without paying for a full JSON deserialise on every keystroke.</summary>
-        private static string ExtractKeyProbe(string json)
+        /// <summary>Pull a top-level string field out of a small page message without paying for a full
+        /// JSON deserialise on every keystroke.</summary>
+        private static string ExtractJsonString(string json, string field)
         {
-            if (string.IsNullOrEmpty(json)) return "(empty)";
-            const string tag = "\"combo\":\"";
+            if (string.IsNullOrEmpty(json)) return null;
+            string tag = "\"" + field + "\":\"";
             int i = json.IndexOf(tag, StringComparison.Ordinal);
-            if (i < 0) return json;
+            if (i < 0) return null;
             i += tag.Length;
             int j = json.IndexOf('"', i);
-            return j > i ? json.Substring(i, j - i) : json;
+            return j > i ? json.Substring(i, j - i) : null;
+        }
+
+        /// <summary>GH #192 key probe (temporary).</summary>
+        private static string ExtractKeyProbe(string json)
+        {
+            return ExtractJsonString(json, "combo") ?? (json ?? "(empty)");
+        }
+
+        /// <summary>Turn "Ctrl+Shift+F4" into a WinForms <see cref="Keys"/>. Returns Keys.None if any
+        /// token is unrecognised — callers must treat None as "could not parse", never as a real key.</summary>
+        private static Keys ParseCombo(string combo)
+        {
+            if (string.IsNullOrEmpty(combo)) return Keys.None;
+            Keys mods = Keys.None;
+            string keyName = null;
+            foreach (var raw in combo.Split('+'))
+            {
+                var p = raw.Trim();
+                if (p.Length == 0) continue;
+                if (string.Equals(p, "Ctrl", StringComparison.OrdinalIgnoreCase)) mods |= Keys.Control;
+                else if (string.Equals(p, "Alt", StringComparison.OrdinalIgnoreCase)) mods |= Keys.Alt;
+                else if (string.Equals(p, "Shift", StringComparison.OrdinalIgnoreCase)) mods |= Keys.Shift;
+                else keyName = p;
+            }
+            if (string.IsNullOrEmpty(keyName)) return Keys.None;
+            // Single letters arrive lowercase from the DOM ("o"); the Keys enum is uppercase.
+            if (keyName.Length == 1) keyName = keyName.ToUpperInvariant();
+            try { return (Keys)Enum.Parse(typeof(Keys), keyName, true) | mods; }
+            catch { return Keys.None; }
+        }
+
+        /// <summary>GH #192 SPIKE: run an IDE command for a key the page decided Monaco does not own.
+        ///
+        /// Established by measurement first (see the ticket): keys typed into the editor NEVER reach the
+        /// host's WinForms key pipeline — WebView2 handles them in its own child window — so ProcessCmdKey
+        /// cannot be the route. The page->host channel is the one that demonstrably works.
+        ///
+        /// Dispatch goes through the IDE's OWN main MenuStrip: find the item whose ShortcutKeys match and
+        /// PerformClick() it, so we invoke exactly the object the menu invokes, with its enablement and
+        /// its handlers. That also means user-customised shortcuts work for free — SharpDevelop already
+        /// applied them to these items via MenuShortcutService.
+        ///
+        /// EVERY STEP LOGS. This is an SD fork whose object surface has burned us before by returning
+        /// null SILENTLY rather than throwing, so a failure must say WHICH step failed rather than
+        /// producing the same "nothing happened" the bug already produces.</summary>
+        private void HandleIdeKey(string combo)
+        {
+            Action work = () =>
+            {
+                try
+                {
+                    Keys k = ParseCombo(combo);
+                    MonacoSpikeLog.Write("[IDEKEY] combo='" + combo + "' -> Keys=" + k);
+                    if (k == Keys.None) { MonacoSpikeLog.Write("[IDEKEY] FAIL: could not parse combo"); return; }
+
+                    // Cross-check against the IDE's own shortcut table. Not used for dispatch — logged so
+                    // the spike also proves MenuShortcutService answers correctly in a LIVE IDE, which so
+                    // far is only known from reflecting over the assembly.
+                    try
+                    {
+                        var owner = ICSharpCode.Core.MenuShortcutService.GetShortcutKey("CloseFile");
+                        MonacoSpikeLog.Write("[IDEKEY] MenuShortcutService.GetShortcutKey(\"CloseFile\") = " + owner);
+                    }
+                    catch (Exception ex) { MonacoSpikeLog.Write("[IDEKEY] MenuShortcutService threw: " + ex.Message); }
+
+                    // FindForm() is NOT enough, measured: it returns SdiWorkspaceWindow — the per-DOCUMENT
+                    // window, whose Text is the filename ("demoleg018.clw") — and the main menu is not
+                    // under it. The workbench main form owns that window rather than parenting it, so the
+                    // menu is in a different tree entirely. Search every open form instead, and log each
+                    // one so a future failure here says which forms existed rather than just "not found".
+                    MenuStrip strip = null;
+                    Form host = null;
+                    foreach (Form f in Application.OpenForms)
+                    {
+                        var candidate = FindMenuStrip(f);
+                        MonacoSpikeLog.Write("[IDEKEY]   form " + f.GetType().Name + " text='" + f.Text
+                            + "' menuStrip=" + (candidate != null));
+                        if (candidate != null && strip == null) { strip = candidate; host = f; }
+                    }
+                    if (strip == null) { MonacoSpikeLog.Write("[IDEKEY] FAIL: no MenuStrip on any open form"); return; }
+                    MonacoSpikeLog.Write("[IDEKEY] using menustrip on " + host.GetType().Name
+                        + " name=" + strip.Name + " topLevelItems=" + strip.Items.Count);
+
+                    var item = FindItemByShortcut(strip.Items, k);
+                    if (item == null) { MonacoSpikeLog.Write("[IDEKEY] FAIL: no menu item carries ShortcutKeys=" + k); return; }
+
+                    MonacoSpikeLog.Write("[IDEKEY] MATCH '" + item.Text + "' enabled=" + item.Enabled + " -> PerformClick()");
+                    item.PerformClick();
+                    MonacoSpikeLog.Write("[IDEKEY] PerformClick returned");
+                }
+                catch (Exception ex) { MonacoSpikeLog.Write("[IDEKEY] EXCEPTION: " + ex); }
+            };
+            if (InvokeRequired) BeginInvoke(work); else work();
+        }
+
+        /// <summary>First MenuStrip anywhere under <paramref name="c"/>. The workbench's main menu is not
+        /// necessarily a direct child, so this walks the whole control tree.</summary>
+        private static MenuStrip FindMenuStrip(Control c)
+        {
+            var ms = c as MenuStrip;
+            if (ms != null) return ms;
+            foreach (Control child in c.Controls)
+            {
+                var found = FindMenuStrip(child);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        /// <summary>Depth-first search for a menu item bound to <paramref name="k"/>. Recurses into
+        /// submenus, because almost nothing with a shortcut sits at the top level.</summary>
+        private static ToolStripMenuItem FindItemByShortcut(ToolStripItemCollection items, Keys k)
+        {
+            foreach (ToolStripItem it in items)
+            {
+                var mi = it as ToolStripMenuItem;
+                if (mi == null) continue;
+                if (mi.ShortcutKeys == k) return mi;
+                if (mi.HasDropDownItems)
+                {
+                    var found = FindItemByShortcut(mi.DropDownItems, k);
+                    if (found != null) return found;
+                }
+            }
+            return null;
         }
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
