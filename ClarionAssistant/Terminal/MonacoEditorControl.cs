@@ -63,6 +63,11 @@ namespace ClarionAssistant.Terminal
         /// the compiler insist. The two hosts SHOULD differ in wording — only the embeditor is the
         /// "Embed Editor" the native dialog names.</summary>
         void OnConfirmSaveExit(MonacoEditorControl editor);
+        /// <summary>Page is about to hand a close gesture to the IDE and the buffer is dirty. On the interface,
+        /// not bolted to one host, so the compiler forces BOTH to answer it — monaco-embeditor.html is shared,
+        /// and a one-host handler would silently no-op in the other (the GH #193 lesson). Only the embeditor
+        /// has anything to do here; the CA Editor already prompts via its own ClosingEvent hook. (bcba6efb)</summary>
+        void OnSyncNativeForClose(MonacoEditorControl editor);
 
         /// <summary>{action:"openSource"} — clicking our header strip opens the generated source (runs the native
         /// OpenSourceButton.OpenSourceCommand). Overlay mode only; other hosts no-op. (b1e05287)</summary>
@@ -349,6 +354,9 @@ namespace ClarionAssistant.Terminal
                     case "save":              h.OnSave(this, json); break;
                     case "cancel":            h.OnCancel(this); break;
                     case "confirmSaveExit":   h.OnConfirmSaveExit(this); break;
+                    // bcba6efb: MUST be handled synchronously here — the page posts this immediately before the
+                    // close key, and the ordering of the two is the entire mechanism.
+                    case "syncNativeForClose": h.OnSyncNativeForClose(this); break;
                     // GH #192 key probe (temporary diagnostic) — the page's half of the trace.
                     case "keyProbe":          MonacoSpikeLog.Write("[KEYPROBE] PAGE  " + ExtractKeyProbe(json)); break;
                     // GH #192: a key the page decided belongs to the IDE, not to Monaco.

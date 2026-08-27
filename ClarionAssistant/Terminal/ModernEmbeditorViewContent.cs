@@ -1516,6 +1516,7 @@ namespace ClarionAssistant.Terminal
         void IMonacoEditorHost.OnSave(MonacoEditorControl editor, string rawJson) { HandleSave(rawJson); }
         void IMonacoEditorHost.OnCancel(MonacoEditorControl editor) { HandleCancel(); }
         void IMonacoEditorHost.OnConfirmSaveExit(MonacoEditorControl editor) { HandleConfirmSaveExit(editor); }
+        void IMonacoEditorHost.OnSyncNativeForClose(MonacoEditorControl editor) { HandleSyncNativeForClose(); }
         void IMonacoEditorHost.OnOpenSource(MonacoEditorControl editor) { HandleOpenSource(); }
         void IMonacoEditorHost.OnClipboard(MonacoEditorControl editor, string rawJson) { HandleClipboard(rawJson); }
         void IMonacoEditorHost.OnCompletion(MonacoEditorControl editor, string rawJson) { HandleCompletion(rawJson); }
@@ -1752,6 +1753,70 @@ namespace ClarionAssistant.Terminal
                 catch (Exception ex) { MonacoSpikeLog.Write("HandleConfirmSaveExit post error: " + ex.Message); }
             };
             if (editor.InvokeRequired) editor.BeginInvoke(work); else work();
+        }
+
+        /// <summary>Page is about to hand a close gesture (Ctrl+F4) to the IDE. Make the NATIVE embed tell the
+        /// truth about itself first, so Clarion's own prompt fires and its Yes saves the right content.
+        ///
+        /// WHY THIS IS THE FIX AND THE ClosingEvent HOOK WAS NOT (measured, bcba6efb):
+        /// CommonGenEditor.WorkbenchWindow_ClosingEvent subscribes when the embed opens — long before our
+        /// overlay attaches — so it always runs FIRST. It sets e.Cancel = true (it does not want the WINDOW
+        /// closed) and then closes the embed itself via TryClose(), which consults the NATIVE IsDirty and
+        /// raises "Save Changes in Embed Editor?". By the time our own handler ran, that decision was already
+        /// made: we logged `ClosingEvent FIRED (cancel=True ... dirty=True)` and the embed closed anyway.
+        /// A veto on the workspace window has no authority over the embed teardown.
+        ///
+        /// So we do not fight the close. We make the native editor dirty BEFORE the key is dispatched, and
+        /// Clarion prompts natively — exact parity by construction, nothing reimplemented, which is what the
+        /// report asked for.
+        ///
+        /// ORDER IS THE WHOLE MECHANISM: the page posts this, then posts the key. Host messages are processed
+        /// in order on the UI thread, so the sync and the dirty flag are both in place before File>Close>File
+        /// ever runs. Do not make this async, and do not move it onto a timer — see SyncLive's remarks on
+        /// driving the live PWEE repeatedly.</summary>
+        private void HandleSyncNativeForClose()
+        {
+            try
+            {
+                if (!_embedOverlay || _fileMode) return;
+                if (!_mirroredDirty || _mirroredSlots == null || _originalSlotTexts == null)
+                {
+                    MonacoSpikeLog.Write("[native-dirty] nothing to sync (dirty=" + _mirroredDirty + ")");
+                    return;
+                }
+
+                bool ok;
+                string msg = ModernEmbeditorSaver.SyncLive(_procedureName, _editableRanges,
+                    _originalSlotTexts, _mirroredSlots, out ok);
+                MonacoSpikeLog.Write("[native-dirty] SyncLive ok=" + ok + " — " + msg);
+
+                // Set the flag even if the sync failed: a prompt on stale content is bad, but closing with NO
+                // prompt loses the edits outright. The user still gets asked, and the log names the failure.
+                SetNativeDirty(true, ok);
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[native-dirty] EXCEPTION: " + ex.Message); }
+        }
+
+        /// <summary>Set the native ClaGenEditor's IsDirty. This is CommonGenEditor's override (confirmed by
+        /// reflection: declared canWrite=True, alongside TryClose/SaveAndExit/ExitNotSave), and it is the flag
+        /// Clarion's own close prompt reads.
+        ///
+        /// NOT to be confused with TrySetHostDirty, which is a deliberate no-op on OUR view and must stay one:
+        /// this view has no file binding, so setting ITS IsDirty pops a bogus Save As into ...\libsrc\win and
+        /// then throws from AbstractViewContent.Save(fileName). The ClaGenEditor is a real view with real
+        /// Clarion save machinery — a different object with a different contract.</summary>
+        private void SetNativeDirty(bool dirty, bool contentSynced)
+        {
+            try
+            {
+                if (_overlayGenEditor == null) { MonacoSpikeLog.Write("[native-dirty] no genEditor"); return; }
+                var p = _overlayGenEditor.GetType().GetProperty("IsDirty");
+                if (p == null || !p.CanWrite) { MonacoSpikeLog.Write("[native-dirty] IsDirty not writable"); return; }
+                p.SetValue(_overlayGenEditor, dirty, null);
+                MonacoSpikeLog.Write("[native-dirty] native IsDirty=" + dirty + " (contentSynced=" + contentSynced
+                    + ") — Clarion's TryClose() should now prompt");
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[native-dirty] set failed: " + ex.Message); }
         }
 
         private void HandleCancel()
@@ -2895,24 +2960,20 @@ namespace ClarionAssistant.Terminal
                 // so this cannot fire today — it is here because the follow-through rule below has to be
                 // enforceable rather than merely believed. If that ever changes, this declines to veto and
                 // Ctrl+F4 keeps working, instead of the embed silently refusing to close.
-                if (_fileMode) { MonacoSpikeLog.Write("[embed-closing] skip: fileMode (page would refuse to close)"); return; }
+                if (_fileMode) { MonacoSpikeLog.Write("[embed-closing] skip: fileMode"); return; }
 
-                if (_panel == null || !_panel.IsHandleCreated || _panel.IsDisposed)
-                {
-                    MonacoSpikeLog.Write("[embed-closing] DIRTY but no page to ask — letting the close proceed "
-                        + "(edits fall through to the stash)");
-                    return;
-                }
-
-                MonacoSpikeLog.Write("[embed-closing] DIRTY close intercepted — vetoing and delegating to the page's save-exit flow");
-                e.Cancel = true;
-                // Onto a settled turn: we are on the close stack right now, which is the one place the page's
-                // flow must not start (it ends in DetachOverlay disposing the WebView2).
-                _panel.BeginInvoke((Action)(() =>
-                {
-                    try { _panel.PostJson("{\"type\":\"requestSaveExit\"}"); }
-                    catch (Exception ex) { MonacoSpikeLog.Write("[embed-closing] delegate post failed: " + ex.Message); }
-                }));
+                // OBSERVE ONLY — DO NOT SET e.Cancel HERE. It was tried and it does not work (bcba6efb):
+                // CommonGenEditor.WorkbenchWindow_ClosingEvent subscribes at embed open, long before our
+                // overlay attaches, so it always runs FIRST. It sets e.Cancel = true itself (it does not want
+                // the WINDOW closed) and then closes the embed via TryClose(). We measured our handler
+                // entering with cancel=True and dirty=True, and the embed closed regardless — a veto on the
+                // workspace window has NO authority over the embed teardown.
+                //
+                // The working fix is upstream of all this: HandleSyncNativeForClose sets the NATIVE editor's
+                // IsDirty before the key is ever dispatched, so Clarion's own TryClose() prompts. This line
+                // stays only so the log still shows the close arriving, and so the next reader sees the dead
+                // end already explored rather than re-deriving it. Remove with the #192 probe.
+                MonacoSpikeLog.Write("[embed-closing] observed dirty close (no veto — Clarion owns this decision)");
             }
             catch (Exception ex)
             {

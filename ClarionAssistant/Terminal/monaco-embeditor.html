@@ -1060,8 +1060,11 @@
     //   Ctrl+O   Open       — the last of the three keys Mike reported. Dispatch is by ShortcutKeys,
     //                        not by codon, so this works whatever the fork binds Ctrl+O to; the host
     //                        logs the matched item's text, which is what says WHICH Open it found.
+    // closesSurface: this key makes the IDE close the thing we are editing, so the native editor must be
+    // told the truth about its dirty state BEFORE the key is dispatched (bcba6efb). Ctrl+O opens a file and
+    // closes nothing, so it does not carry the flag.
     var IDE_SHORTCUTS = [
-        { ctrl: true, alt: false, shift: false, key: 'F4', combo: 'Ctrl+F4' },
+        { ctrl: true, alt: false, shift: false, key: 'F4', combo: 'Ctrl+F4', closesSurface: true },
         { ctrl: true, alt: false, shift: false, key: 'o',  combo: 'Ctrl+O'  }
     ];
 
@@ -1106,6 +1109,20 @@
                         && e.key.toLowerCase() === sc.key.toLowerCase()) {
                         e.preventDefault();
                         e.stopPropagation();
+                        // bcba6efb: Ctrl+F4 asks the IDE to close this embed, and Clarion decides whether to
+                        // prompt by reading the NATIVE editor's dirty flag — which our overlay otherwise never
+                        // sets, so it closes silently and the edits go unremarked.
+                        //
+                        // Post the sync FIRST. The host processes messages in order on the UI thread, so our
+                        // slots are written into the native embed and its IsDirty is set before File>Close>File
+                        // runs. Then Clarion raises its own dialog, and its Yes saves the right content.
+                        //
+                        // ORDER IS THE MECHANISM. Do not move this after the ideKey post, and do not make it
+                        // await anything — by the time the close is dispatched it is far too late: Clarion's own
+                        // ClosingEvent handler runs before ours and has already decided.
+                        if (sc.closesSurface && isDirty && !fileMode) {
+                            postToHost({ action: 'syncNativeForClose' });
+                        }
                         postToHost({ action: 'ideKey', combo: sc.combo });
                         break;
                     }
@@ -7030,13 +7047,11 @@
                 setTheme(themePrefDark);   // user preference wins over IDE theme changes
             } else if (msg.type === 'confirmSaveExitResult') {
                 onConfirmSaveExitResult(msg.result);   // GH #193: host's native Ctrl+Q dialog answered
-            } else if (msg.type === 'requestSaveExit') {
-                // bcba6efb: the host intercepted a close it did not initiate (Ctrl+F4, the tab's [x],
-                // File>Close) on a DIRTY buffer, vetoed it, and handed the gesture here. Deliberately the
-                // SAME entry point as Ctrl+Q — so the two gestures share one set of yes/no semantics and
-                // cannot drift. Every branch of this flow closes the surface itself, so the close the user
-                // asked for still happens; it just happens on a settled turn.
-                cmdSaveAndExit();
+                // NOTE (bcba6efb): a 'requestSaveExit' branch lived here, for a host-side veto that turned out
+                // to be powerless — Clarion's own handler runs first, vetoes the window close itself, and
+                // tears the embed down regardless. Removed rather than left inert. Ctrl+F4 is now handled by
+                // telling the NATIVE editor it is dirty before the key is dispatched (see IDE_SHORTCUTS
+                // closesSurface), so Clarion raises its own prompt.
             } else if (msg.type === 'saveResult') {
                 if (saveSafetyTimer) { clearTimeout(saveSafetyTimer); saveSafetyTimer = null; }
                 if (msg.ok) {

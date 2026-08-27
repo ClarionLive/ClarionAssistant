@@ -749,6 +749,12 @@ namespace ClarionAssistant
         /// rather than doing nothing: the page raises a key-swallowing shield before posting and only
         /// drops it on a reply, so silence here would leave the editor permanently deaf to keystrokes.
         /// "cancel" is the safe answer — buffer and changes left exactly as they are.</summary>
+        /// <summary>Nothing to do on this host. The CA Editor already prompts on close through its own
+        /// ClosingEvent hook (OnWorkbenchClosing), which works here precisely because a source tab IS the
+        /// workbench window — unlike the embeditor, which is a secondary view inside the .app's window and
+        /// whose close Clarion handles itself. Present because the interface requires it. (bcba6efb)</summary>
+        void IMonacoEditorHost.OnSyncNativeForClose(MonacoEditorControl editor) { }
+
         void IMonacoEditorHost.OnConfirmSaveExit(MonacoEditorControl editor)
         {
             if (editor == null) return;

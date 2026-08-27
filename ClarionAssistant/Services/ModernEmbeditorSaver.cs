@@ -148,6 +148,71 @@ namespace ClarionAssistant.Services
         /// Never does a whole-buffer replace (that silently no-ops on PWEE embed regions and would clobber the
         /// read-only generated lines) — always per changed slot. UI thread only.
         /// </summary>
+        /// <summary>Push the Monaco buffer's slots into the STILL-OPEN native embed WITHOUT saving or closing
+        /// it — SaveLive's write loop, stopping short of SaveAndCloseEmbeditor.
+        ///
+        /// WHY THIS EXISTS (bcba6efb). Clarion raises its own "Save Changes in Embed Editor?" prompt from
+        /// CommonGenEditor.TryClose(), which consults the NATIVE editor's IsDirty and, on Yes, runs
+        /// SaveAndExit() over the NATIVE buffer. Our edits live in the page, so making Clarion prompt without
+        /// this would produce a dialog whose Yes saves stale content — silently wrong data, which is strictly
+        /// worse than the missing prompt it replaces.
+        ///
+        /// CALL THIS ONCE PER CLOSE GESTURE, NOT ON A TIMER. Driving the live PWEE editor repeatedly is a
+        /// known instability (it is why ApplyLineEdits exists for large procedures), so a debounced background
+        /// sync would trade a missing prompt for a flaky embeditor. One burst at close is the whole point.
+        ///
+        /// Failure is NON-DESTRUCTIVE by design: unlike SaveLive, a partial write does NOT cancel the embed.
+        /// The user has not asked to discard anything yet — they are mid-close, and Clarion's own prompt has
+        /// not even been shown. Report and let the caller decide.</summary>
+        public static string SyncLive(string procName, List<int[]> ranges,
+            IList<string> originalSlotTexts, IList<string> currentSlotTexts, out bool ok)
+        {
+            ok = false;
+            if (string.IsNullOrWhiteSpace(procName)) return "Sync skipped: no procedure bound.";
+            if (ranges == null || originalSlotTexts == null || currentSlotTexts == null)
+                return "Sync skipped: missing slot data.";
+            if (currentSlotTexts.Count != ranges.Count || originalSlotTexts.Count != ranges.Count)
+                return "Sync skipped: slot count mismatch (Monaco " + currentSlotTexts.Count +
+                       ", original " + originalSlotTexts.Count + ", ranges " + ranges.Count + ").";
+
+            var appTree = new AppTreeService();
+            if (appTree.GetEmbedInfo() == null) return "Sync skipped: the live embeditor is no longer open.";
+
+            // Same structure guard as SaveLive: writing against stale ranges would corrupt the embed.
+            string ftitle, fsource, ferr;
+            List<int[]> franges;
+            if (!EmbeditorCompletionService.TryGetActiveEmbeditorSource(out ftitle, out fsource, out franges, out ferr))
+                return "Sync skipped: could not re-read the open embed buffer: " + ferr;
+            if (!RangesMatch(franges, ranges))
+                return "Sync skipped: embed structure changed since it was opened.";
+
+            var changed = new List<int>();
+            for (int i = 0; i < ranges.Count; i++)
+                if (!NLEqual(currentSlotTexts[i], originalSlotTexts[i])) changed.Add(i);
+            if (changed.Count == 0) { ok = true; return "Nothing to sync."; }
+
+            try
+            {
+                var errors = new List<string>();
+                // Bottom-to-top so earlier slots' line numbers stay valid; verbatim, no re-indent.
+                foreach (int i in changed.OrderByDescending(x => ranges[x][0]))
+                {
+                    string res = appTree.WriteEmbedContentByLine(ranges[i][0], currentSlotTexts[i] ?? "", false);
+                    if (res != null && res.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
+                        errors.Add("  • slot@line " + ranges[i][0] + ": " + res);
+                }
+                if (errors.Count > 0)
+                    return "Sync FAILED (embed left open, nothing discarded):\r\n" + string.Join("\r\n", errors);
+
+                ok = true;
+                return "Synced " + changed.Count + " slot(s) into the live embed.";
+            }
+            catch (Exception ex)
+            {
+                return "Sync error: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message);
+            }
+        }
+
         public static string SaveLive(string procName, List<int[]> ranges,
             IList<string> originalSlotTexts, IList<string> currentSlotTexts, out bool ok)
         {
