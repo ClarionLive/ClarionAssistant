@@ -1075,6 +1075,20 @@
                 e.stopPropagation();
                 postToHost({ action: 'ideKey', combo: 'Ctrl+F4' });
             }
+
+            // ----- GH #192: Alt+<letter> opens the matching IDE menu (Alt+F -> File) -----
+            // Restricted to a SINGLE LETTER on purpose. Monaco owns Alt+Left and Alt+Right (navigate
+            // back/forward), and those arrive as 'ArrowLeft'/'ArrowRight', so the /^[a-z]$/ test leaves
+            // them alone — the whole Alt+letter space is otherwise unclaimed by Monaco, so this honours
+            // the Monaco-first rule without needing a special case.
+            //
+            // A mnemonic is not a shortcut: it has no CodonId and never appears in the shortcut table,
+            // so the host handles it by opening the menu item directly rather than dispatching a command.
+            if (e.altKey && !e.ctrlKey && !e.shiftKey && /^[a-zA-Z]$/.test(e.key)) {
+                e.preventDefault();
+                e.stopPropagation();
+                postToHost({ action: 'ideMenu', mnemonic: e.key });
+            }
         } catch (ex) { /* diagnostic only */ }
     }, true);
 

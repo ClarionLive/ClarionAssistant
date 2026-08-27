@@ -353,6 +353,8 @@ namespace ClarionAssistant.Terminal
                     case "keyProbe":          MonacoSpikeLog.Write("[KEYPROBE] PAGE  " + ExtractKeyProbe(json)); break;
                     // GH #192: a key the page decided belongs to the IDE, not to Monaco.
                     case "ideKey":            HandleIdeKey(ExtractJsonString(json, "combo")); break;
+                    // GH #192: Alt+<letter> — a menu MNEMONIC, which has no codon and no shortcut entry.
+                    case "ideMenu":           HandleIdeMenu(ExtractJsonString(json, "mnemonic")); break;
                     case "openSource":        h.OnOpenSource(this); break;
                     case "clipboard":         h.OnClipboard(this, json); break;
                     case "completion":        h.OnCompletion(this, json); break;
@@ -642,23 +644,9 @@ namespace ClarionAssistant.Terminal
                     }
                     catch (Exception ex) { MonacoSpikeLog.Write("[IDEKEY] MenuShortcutService threw: " + ex.Message); }
 
-                    // FindForm() is NOT enough, measured: it returns SdiWorkspaceWindow — the per-DOCUMENT
-                    // window, whose Text is the filename ("demoleg018.clw") — and the main menu is not
-                    // under it. The workbench main form owns that window rather than parenting it, so the
-                    // menu is in a different tree entirely. Search every open form instead, and log each
-                    // one so a future failure here says which forms existed rather than just "not found".
-                    MenuStrip strip = null;
-                    Form host = null;
-                    foreach (Form f in Application.OpenForms)
-                    {
-                        var candidate = FindMenuStrip(f);
-                        MonacoSpikeLog.Write("[IDEKEY]   form " + f.GetType().Name + " text='" + f.Text
-                            + "' menuStrip=" + (candidate != null));
-                        if (candidate != null && strip == null) { strip = candidate; host = f; }
-                    }
-                    if (strip == null) { MonacoSpikeLog.Write("[IDEKEY] FAIL: no MenuStrip on any open form"); return; }
-                    MonacoSpikeLog.Write("[IDEKEY] using menustrip on " + host.GetType().Name
-                        + " name=" + strip.Name + " topLevelItems=" + strip.Items.Count);
+                    Form host;
+                    var strip = FindWorkbenchMenuStrip("[IDEKEY]", out host);
+                    if (strip == null) return;
 
                     var item = FindItemByShortcut(strip.Items, k);
                     if (item == null) { MonacoSpikeLog.Write("[IDEKEY] FAIL: no menu item carries ShortcutKeys=" + k); return; }
@@ -668,6 +656,78 @@ namespace ClarionAssistant.Terminal
                     MonacoSpikeLog.Write("[IDEKEY] PerformClick returned");
                 }
                 catch (Exception ex) { MonacoSpikeLog.Write("[IDEKEY] EXCEPTION: " + ex); }
+            };
+            if (InvokeRequired) BeginInvoke(work); else work();
+        }
+
+        /// <summary>The IDE main menu, found across ALL open forms.
+        ///
+        /// FindForm() is not enough and this was measured, not guessed: from inside the editor it returns
+        /// SdiWorkspaceWindow — the per-DOCUMENT window, whose Text is the filename — and the main menu is
+        /// not under it. DefaultWorkbench OWNS that window rather than parenting it, so the menu lives in
+        /// a different tree entirely.
+        ///
+        /// Logs every form and whether it carries a MenuStrip, so a failure here reports the inventory
+        /// instead of a bare "not found". In this fork the hit is DefaultWorkbench, 20 top-level items.</summary>
+        private static MenuStrip FindWorkbenchMenuStrip(string tag, out Form host)
+        {
+            MenuStrip strip = null;
+            host = null;
+            foreach (Form f in Application.OpenForms)
+            {
+                var candidate = FindMenuStrip(f);
+                MonacoSpikeLog.Write(tag + "   form " + f.GetType().Name + " text='" + f.Text
+                    + "' menuStrip=" + (candidate != null));
+                if (candidate != null && strip == null) { strip = candidate; host = f; }
+            }
+            if (strip == null) { MonacoSpikeLog.Write(tag + " FAIL: no MenuStrip on any open form"); return null; }
+            MonacoSpikeLog.Write(tag + " using menustrip on " + host.GetType().Name
+                + " topLevelItems=" + strip.Items.Count);
+            return strip;
+        }
+
+        /// <summary>GH #192: open a top-level IDE menu by its mnemonic letter (Alt+F -> File).
+        ///
+        /// A mnemonic is NOT a shortcut. It has no CodonId and never appears in MenuShortcutService, so
+        /// the codon route that serves Ctrl+F4 cannot serve this — it comes from the '&' in the menu
+        /// label. Once the workbench MenuStrip is reachable, though, the item is right there to open.
+        ///
+        /// Focus has to move off the WebView2 first, or the menu opens without keyboard ownership and
+        /// arrow keys keep going to Monaco — a menu you cannot drive is barely better than no menu.</summary>
+        private void HandleIdeMenu(string mnemonic)
+        {
+            Action work = () =>
+            {
+                try
+                {
+                    MonacoSpikeLog.Write("[IDEMENU] mnemonic='" + mnemonic + "'");
+                    if (string.IsNullOrEmpty(mnemonic) || mnemonic.Length != 1) { MonacoSpikeLog.Write("[IDEMENU] FAIL: bad mnemonic"); return; }
+                    char want = char.ToUpperInvariant(mnemonic[0]);
+
+                    Form host;
+                    var strip = FindWorkbenchMenuStrip("[IDEMENU]", out host);
+                    if (strip == null) return;
+
+                    ToolStripMenuItem target = null;
+                    foreach (ToolStripItem it in strip.Items)
+                    {
+                        var mi = it as ToolStripMenuItem;
+                        if (mi == null || string.IsNullOrEmpty(mi.Text)) continue;
+                        int amp = mi.Text.IndexOf('&');
+                        if (amp >= 0 && amp + 1 < mi.Text.Length && char.ToUpperInvariant(mi.Text[amp + 1]) == want)
+                        { target = mi; break; }
+                    }
+                    if (target == null) { MonacoSpikeLog.Write("[IDEMENU] FAIL: no top-level menu with mnemonic '" + want + "'"); return; }
+
+                    MonacoSpikeLog.Write("[IDEMENU] MATCH '" + target.Text + "' enabled=" + target.Enabled);
+                    host.Activate();                 // take the foreground off the editor
+                    strip.Focus();                   // give the strip keyboard ownership
+                    strip.Select();
+                    target.Select();
+                    target.ShowDropDown();
+                    MonacoSpikeLog.Write("[IDEMENU] ShowDropDown returned; dropDownVisible=" + target.DropDown.Visible);
+                }
+                catch (Exception ex) { MonacoSpikeLog.Write("[IDEMENU] EXCEPTION: " + ex); }
             };
             if (InvokeRequired) BeginInvoke(work); else work();
         }
