@@ -156,14 +156,24 @@ namespace ClarionAssistant.Services
                     // Embed closed → reset dedup. d4635694: log the transition (once, not per poll tick) —
                     // a reset while an overlay holds unsaved edits is the lost-edits smoking gun.
                     if (_lastEditor != null) FileLog("dedup reset — editor no longer found (" + source + ")");
-                    _lastEditor = null; _lastPwee = null; return;
+                    _lastEditor = null; _lastPwee = null;
+                    // 89ab4e4c: we DETECT the orphan here, so act on it. Previously this only logged, and the
+                    // overlay was left docked over a dead host until the next attach happened to clean it up.
+                    Terminal.ModernEmbeditorViewContent.DetachOrphanedOverlay("editor gone / " + source);
+                    return;
                 }
 
                 var pwee = at.GetOpenPweeDetails();
                 if (pwee == null)
                 {
                     if (_lastPwee != null) FileLog("dedup reset — pwee gone, editor alive (" + source + ")");
-                    _lastEditor = null; _lastPwee = null; return;      // editor but no PWEE loaded
+                    _lastEditor = null; _lastPwee = null;
+                    // 89ab4e4c: THE orphan case (John, 2026-08-07) — the editor survives but its embed does
+                    // not, e.g. Errors-pane navigation opening the module .clw. The overlay keeps its text and
+                    // pwee baseline so it still looks healthy, while Save reports "nothing to save" and Cancel
+                    // blanks the buffer. Tear it down instead of only logging that it happened.
+                    Terminal.ModernEmbeditorViewContent.DetachOrphanedOverlay("pwee gone / " + source);
+                    return;      // editor but no PWEE loaded
                 }
 
                 // Same embed + same proc we already handled → nothing to do.

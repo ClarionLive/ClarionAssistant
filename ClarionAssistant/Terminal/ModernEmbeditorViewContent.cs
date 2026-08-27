@@ -223,7 +223,6 @@ namespace ClarionAssistant.Terminal
         private Timer _overlayCoverSafety;     // backstop: drop the cover even if navigation-completed never arrives
         private object _overlayGenEditor;      // the ClaGenEditor view content, for the Disposed teardown backstop
         private object _overlayPwee;           // the PweeEditorDetails we attached FOR — duplicate-trigger identity (d4635694)
-        private EventHandler _overlayDisposedHandler; // our subscription to ClaGenEditor.Disposed (removed on detach)
         private bool _overlayDetached;         // idempotent guard so teardown runs exactly once
         // The native embeditor chrome (its ~24px Dock=Top toolbar strip: green-check save / red-X cancel /
         // embed-nav + header) we hide while the overlay is up, so only OUR Monaco toolbar shows. Restored on
@@ -2875,33 +2874,75 @@ namespace ClarionAssistant.Terminal
             catch { }
         }
 
-        /// <summary>Subscribe to the ClaGenEditor's Disposed so an embed close we did NOT initiate (native cancel,
-        /// Source-tab close, app-gen regen) detaches the overlay. Best-effort/reflection — the event name matches
-        /// SharpDevelop's IViewContent.Disposed.</summary>
-        private void HookOverlayTeardown(object genEditor)
+        /// <summary>Tear down an overlay whose native embed has vanished underneath it.
+        ///
+        /// REPLACES A SAFETY NET THAT WAS NEVER CONNECTED (89ab4e4c). This used to subscribe to
+        /// ClaGenEditor's "Disposed", on the assumption that the name matched SharpDevelop's
+        /// IViewContent.Disposed. It does not, in this fork: reflection over CWBinding 12.0.0.14000 says
+        /// GetEvent("Disposed") returns NULL on ClaGenEditor and on every one of its bases — IViewContent and
+        /// AbstractViewContent declare only Saving and Saved. The `if (evt == null) return;` then swallowed it,
+        /// so the hook NEVER ONCE FIRED and the code read like a backstop while providing none.
+        ///
+        /// The condition it was meant to catch is real and has bitten before: the ORPHANED overlay (John,
+        /// 2026-08-07). When the native embed closes under us — Errors-pane navigation opening the module
+        /// .clw, native cancel, app-gen regen — the overlay keeps its text and its pwee baseline, so it still
+        /// looks healthy. Save then logs liveCheck(live=False,overlay=True), takes the re-open path and reports
+        /// "nothing to save"; Cancel blanks the buffer. Downstream code grew defensive guards to compensate
+        /// (see the orphan check in the error-reveal path) precisely because nothing tore the overlay down.
+        ///
+        /// EmbedEditorMonitorService already DETECTS this — it logs "dedup reset — pwee gone, editor alive"
+        /// and "dedup reset — editor no longer found" at exactly the orphan moment. It just never told anyone.
+        /// It now calls this. Detection and action in one place beats a reflection hook onto an event that has
+        /// to exist for the whole thing to work.
+        ///
+        /// Deferred via PostDetachOverlay for the same reason the old hook was: the WebView2 must not be
+        /// disposed on a native close stack. Idempotent — our own Save/Cancel paths have usually run first,
+        /// and DetachOverlay no-ops on a second call.
+        ///
+        /// Deliberately does NOT set _teardownIntentional: this IS an interrupted session, so the edit stash
+        /// SHOULD fire. That is the data-loss guard doing its job.</summary>
+        internal static void DetachOrphanedOverlay(string reason)
         {
             try
             {
-                var evt = genEditor?.GetType().GetEvent("Disposed");
-                if (evt == null) return;
-                _overlayDisposedHandler = (s, e) => PostDetachOverlay();
-                evt.AddEventHandler(genEditor, _overlayDisposedHandler);
+                var live = _liveInstance;
+                if (live == null || !live._embedOverlay || live._overlayDetached) return;
+
+                // SECOND, INDEPENDENT CONFIRMATION before tearing anything down. The caller reached us from a
+                // single poll tick in which GetOpenPweeDetails() came back null; IsStillLive() asks the IDE a
+                // different question (GetEmbedInfo), and it is the same test Save uses to choose its path.
+                //
+                // This guard is the whole difference between fixing a bug and causing one. A transient null on
+                // one tick used to be harmless — it just reset the dedup — but now it would dispose a HEALTHY
+                // overlay out from under someone mid-edit, sending their work to the stash. Requiring two
+                // independent signals means a real orphan still gets caught while a blip does not.
+                if (live.IsStillLive())
+                {
+                    MonacoSpikeLog.Write("[orphan-detach] SKIP (" + reason + ") — embed still live on recheck;"
+                        + " treating the null as a transient");
+                    return;
+                }
+
+                MonacoSpikeLog.Write("[orphan-detach] native embed gone (" + reason + ") — tearing down the overlay"
+                    + " (dirty=" + live._mirroredDirty + ")");
+                live.PostDetachOverlay();
             }
-            catch { }
+            catch (Exception ex) { MonacoSpikeLog.Write("[orphan-detach] failed: " + ex.Message); }
         }
 
+        /// <summary>No longer hooks anything — see DetachOrphanedOverlay for why the Disposed subscription was
+        /// removed. Kept as a named call site so ShowAsEmbedOverlay still reads as "arrange teardown", and so
+        /// the next person looking for the teardown wiring lands here and is pointed at the monitor.</summary>
+        private void HookOverlayTeardown(object genEditor)
+        {
+            // Teardown for an externally-closed embed is driven by EmbedEditorMonitorService ->
+            // DetachOrphanedOverlay. Nothing to subscribe to here.
+        }
+
+        /// <summary>Nothing to unsubscribe any more — the Disposed hook it mirrored is gone. Kept as a call
+        /// site so DetachOverlay's step order stays readable.</summary>
         private void UnhookOverlayTeardown()
         {
-            try
-            {
-                if (_overlayGenEditor != null && _overlayDisposedHandler != null)
-                {
-                    var evt = _overlayGenEditor.GetType().GetEvent("Disposed");
-                    evt?.RemoveEventHandler(_overlayGenEditor, _overlayDisposedHandler);
-                }
-            }
-            catch { }
-            _overlayDisposedHandler = null;
         }
 
         // over the embed teardown - ClaGenEditor is an ISecondaryViewContent living inside the .app's
