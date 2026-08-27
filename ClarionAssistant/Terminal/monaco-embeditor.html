@@ -1051,29 +1051,65 @@
     //   neither      -> something upstream ate it before the page saw it
     // Capture phase, and deliberately passive: it must not change what any key DOES, or the probe
     // would be measuring itself. Bare modifier presses are skipped so holding Alt does not flood.
+
+    // GH #192: shortcuts this page hands to the IDE rather than to Monaco. `key` is matched
+    // case-insensitively against e.key, so 'o' covers a Caps Lock'd 'O' without claiming Ctrl+Shift+O.
+    // `combo` is what the host parses, so it must use the host's spelling ("Ctrl+", "Alt+", "Shift+").
+    //   Ctrl+F4  CloseFile  — the spike key: unambiguous and visibly verifiable (the tab closes or it
+    //                        does not). Proven live 2026-08-22.
+    //   Ctrl+O   Open       — the last of the three keys Mike reported. Dispatch is by ShortcutKeys,
+    //                        not by codon, so this works whatever the fork binds Ctrl+O to; the host
+    //                        logs the matched item's text, which is what says WHICH Open it found.
+    var IDE_SHORTCUTS = [
+        { ctrl: true, alt: false, shift: false, key: 'F4', combo: 'Ctrl+F4' },
+        { ctrl: true, alt: false, shift: false, key: 'o',  combo: 'Ctrl+O'  }
+    ];
+
     document.addEventListener('keydown', function (e) {
         try {
             if (e.key === 'Control' || e.key === 'Alt' || e.key === 'Shift' || e.key === 'Meta') return;
             var combo = (e.ctrlKey ? 'Ctrl+' : '') + (e.altKey ? 'Alt+' : '') + (e.shiftKey ? 'Shift+' : '') + e.key;
             postToHost({ action: 'keyProbe', combo: combo });
 
-            // ----- GH #192 SPIKE: forward ONE key to the IDE -----
-            // Deliberately a hardcoded single key, not the table-driven version. The whole design rests
-            // on the host being able to reach the IDE's main MenuStrip and PerformClick a matched item,
-            // and that has only been verified by reflecting over the ASSEMBLY — never run in a live IDE.
-            // This is an SD fork whose object surface returns null silently rather than throwing, so one
-            // key proves or kills the mechanism cheaply, before any of the other 104 are wired to it.
+            // ----- GH #192: forward IDE-owned SHORTCUTS to the host -----
+            // An explicit short list, NOT yet the table-driven version. The spike proved the mechanism
+            // with one key (Ctrl+F4, live 2026-08-22); this adds the second one Mike reported. Reading
+            // the IDE's whole shortcut table is a separate step and stays a separate step — a list of
+            // two is honest about what has actually been verified, where a table would silently claim
+            // ~104 keys nobody has pressed.
             //
-            // Ctrl+F4 chosen because it is unambiguous, visibly verifiable (the tab closes or it does
-            // not), and one of the three Mike actually reported.
+            // The host side is already generic: it parses the combo, finds the menu item whose
+            // ShortcutKeys match, and PerformClick()s it. So a new entry here needs no host change —
+            // which is exactly why the list, not the mechanism, is the thing to grow.
             //
-            // preventDefault + stopPropagation: we are CLAIMING this key. Without it Monaco still sees
-            // the keydown, and a key that both closes the tab and does something in the editor is worse
-            // than one that does nothing.
-            if (e.ctrlKey && !e.altKey && !e.shiftKey && e.key === 'F4') {
-                e.preventDefault();
-                e.stopPropagation();
-                postToHost({ action: 'ideKey', combo: 'Ctrl+F4' });
+            // MONACO-FIRST RULE: only keys Monaco and this page leave unclaimed may appear here.
+            // Checked at the time of writing — the page binds Ctrl+S, F1, Ctrl+Shift+P, Tab/Shift+Tab,
+            // and (in installFindKeyInterceptor) Ctrl+F, Ctrl+H, Ctrl+Shift+F, Ctrl+Shift+H, F3,
+            // Ctrl+F12. Neither Monaco nor the page binds Ctrl+O.
+            //
+            // preventDefault + stopPropagation: we are CLAIMING these keys. Without it Monaco still
+            // sees the keydown, and a key that both closes the tab and does something in the editor is
+            // worse than one that does nothing. The cost is that an unmatched key goes DEAD rather than
+            // falling through — acceptable only because these are keys Monaco does not use anyway, and
+            // the host logs a FAIL line naming the combo when no menu item carries it.
+            //
+            // capturingKey/snippetPickerOpen: while the gear panel's "press a key" rebind input is armed
+            // (or the snippet picker is open) the keyboard belongs to THAT widget, and a key forwarded
+            // to the IDE would fire a command instead of being recorded as the new binding. The Find
+            // interceptor further down already takes this guard; this block did not, so Ctrl+F4 during a
+            // rebind capture has always closed the tab. Adding Ctrl+O made that reachable by a much more
+            // ordinary key, so the guard is applied here and to the Alt+<letter> block below.
+            if (!capturingKey && !snippetPickerOpen) {
+                for (var si = 0; si < IDE_SHORTCUTS.length; si++) {
+                    var sc = IDE_SHORTCUTS[si];
+                    if (e.ctrlKey === sc.ctrl && e.altKey === sc.alt && e.shiftKey === sc.shift
+                        && e.key.toLowerCase() === sc.key.toLowerCase()) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        postToHost({ action: 'ideKey', combo: sc.combo });
+                        break;
+                    }
+                }
             }
 
             // ----- GH #192: Alt+<letter> opens the matching IDE menu (Alt+F -> File) -----
@@ -1084,7 +1120,10 @@
             //
             // A mnemonic is not a shortcut: it has no CodonId and never appears in the shortcut table,
             // so the host handles it by opening the menu item directly rather than dispatching a command.
-            if (e.altKey && !e.ctrlKey && !e.shiftKey && /^[a-zA-Z]$/.test(e.key)) {
+            //
+            // Guarded by capturingKey/snippetPickerOpen for the same reason as the shortcut list above.
+            if (!capturingKey && !snippetPickerOpen
+                && e.altKey && !e.ctrlKey && !e.shiftKey && /^[a-zA-Z]$/.test(e.key)) {
                 e.preventDefault();
                 e.stopPropagation();
                 postToHost({ action: 'ideMenu', mnemonic: e.key });

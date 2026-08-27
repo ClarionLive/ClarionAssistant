@@ -634,15 +634,30 @@ namespace ClarionAssistant.Terminal
                     MonacoSpikeLog.Write("[IDEKEY] combo='" + combo + "' -> Keys=" + k);
                     if (k == Keys.None) { MonacoSpikeLog.Write("[IDEKEY] FAIL: could not parse combo"); return; }
 
-                    // Cross-check against the IDE's own shortcut table. Not used for dispatch — logged so
-                    // the spike also proves MenuShortcutService answers correctly in a LIVE IDE, which so
-                    // far is only known from reflecting over the assembly.
-                    try
+                    // Cross-check against the IDE's own shortcut table. NOT used for dispatch — dispatch
+                    // matches on ShortcutKeys, which is why a combo with no known codon still works.
+                    //
+                    // This lookup used to be hardcoded to "CloseFile" regardless of the combo, which was
+                    // fine while Ctrl+F4 was the only forwarded key and actively misleading the moment it
+                    // was not: pressing Ctrl+O would have logged a confident line about CloseFile. Keyed
+                    // off the combo now, and silent about combos whose codon we do not know rather than
+                    // guessing one — a wrong codon in the log is worse than no codon, because the next
+                    // person debugging this will believe it.
+                    string codon = CodonForCombo(combo);
+                    if (codon != null)
                     {
-                        var owner = ICSharpCode.Core.MenuShortcutService.GetShortcutKey("CloseFile");
-                        MonacoSpikeLog.Write("[IDEKEY] MenuShortcutService.GetShortcutKey(\"CloseFile\") = " + owner);
+                        try
+                        {
+                            var owner = ICSharpCode.Core.MenuShortcutService.GetShortcutKey(codon);
+                            MonacoSpikeLog.Write("[IDEKEY] MenuShortcutService.GetShortcutKey(\"" + codon + "\") = " + owner);
+                        }
+                        catch (Exception ex) { MonacoSpikeLog.Write("[IDEKEY] MenuShortcutService threw: " + ex.Message); }
                     }
-                    catch (Exception ex) { MonacoSpikeLog.Write("[IDEKEY] MenuShortcutService threw: " + ex.Message); }
+                    else
+                    {
+                        MonacoSpikeLog.Write("[IDEKEY] no codon id known for '" + combo
+                            + "'; dispatch does not need one (matches on ShortcutKeys)");
+                    }
 
                     Form host;
                     var strip = FindWorkbenchMenuStrip("[IDEKEY]", out host);
@@ -658,6 +673,21 @@ namespace ClarionAssistant.Terminal
                 catch (Exception ex) { MonacoSpikeLog.Write("[IDEKEY] EXCEPTION: " + ex); }
             };
             if (InvokeRequired) BeginInvoke(work); else work();
+        }
+
+        /// <summary>SharpDevelop CodonId for a forwarded combo, or null if we do not know one.
+        ///
+        /// Diagnostic only — dispatch matches on ShortcutKeys and never consults this. The point of
+        /// returning null rather than a best guess is that this string goes straight into the log, and a
+        /// plausible-but-wrong codon there would send the next reader hunting the wrong command.
+        ///
+        /// Ctrl+O is deliberately absent: the Clarion fork's codon for Open has not been confirmed in a
+        /// live IDE, and the key works without it. Add it here once the [IDEKEY] MATCH line names the
+        /// item it actually resolved to.</summary>
+        private static string CodonForCombo(string combo)
+        {
+            if (string.Equals(combo, "Ctrl+F4", StringComparison.OrdinalIgnoreCase)) return "CloseFile";
+            return null;
         }
 
         /// <summary>The IDE main menu, found across ALL open forms.
