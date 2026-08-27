@@ -755,6 +755,16 @@ namespace ClarionAssistant
         /// whose close Clarion handles itself. Present because the interface requires it. (bcba6efb)</summary>
         void IMonacoEditorHost.OnSyncNativeForClose(MonacoEditorControl editor) { }
 
+        /// <summary>The CA Editor has no red-X cancel — that toolbar button is embeditor-only. Reached only if
+        /// that ever changes, so it answers "no" (keep editing) rather than silently discarding, and says so in
+        /// the log. Never leave the page shielded: it must always get a reply. (bcba6efb)</summary>
+        void IMonacoEditorHost.OnConfirmCancel(MonacoEditorControl editor)
+        {
+            MonacoSpikeLog.Write("OnConfirmCancel reached the CA Editor host — no cancel gesture here; answering no");
+            try { editor?.PostJson("{\"type\":\"confirmCancelResult\",\"result\":\"no\"}"); }
+            catch (Exception ex) { MonacoSpikeLog.Write("OnConfirmCancel post error: " + ex.Message); }
+        }
+
         void IMonacoEditorHost.OnConfirmSaveExit(MonacoEditorControl editor)
         {
             if (editor == null) return;

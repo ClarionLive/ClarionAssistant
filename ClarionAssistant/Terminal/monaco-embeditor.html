@@ -1365,7 +1365,7 @@
                 installCaretBehindEol(editor);  // Clarion "Can move caret behind EOL" (inert until settings arm it)
                 document.getElementById('saveBtn').addEventListener('click', doSave);
                 var _cancelBtn = document.getElementById('cancelBtn');
-                if (_cancelBtn) _cancelBtn.addEventListener('click', doCancel);
+                if (_cancelBtn) _cancelBtn.addEventListener('click', cmdCancel);   // confirms first (bcba6efb)
                 var _undoBtn = document.getElementById('undoBtn');
                 if (_undoBtn) _undoBtn.addEventListener('click', function () { var e = activeEd(); e.focus(); e.trigger('toolbar', 'undo', null); updateUndoRedo(); });
                 var _redoBtn = document.getElementById('redoBtn');
@@ -1726,9 +1726,52 @@
 
     // ----- Cancel / Discard (live/overlay mode) -----
     // Replaces the hidden native red-X. The host discards the native embed (nothing written back) and closes
-    // the surface. No confirm here — matches the native embeditor's cancel, which discards without prompting.
+    // the surface.
+    //
+    // The comment here used to claim the native embeditor "discards without prompting". IT DOES NOT — John
+    // supplied a screenshot of Clarion's own dialog: title "Exit from embed editor?", message "Are you sure
+    // you want to cancel?", Yes/No, Question icon. That wrong assumption is why cancelling discarded work
+    // silently. The confirm now lives in cmdCancel below; doCancel itself stays bare on purpose, because
+    // three of its callers have ALREADY asked (see cmdCancel).
     function doCancel() {
         postToHost({ action: 'cancel' });
+    }
+
+    // The red-X gesture: confirm BEFORE discarding, matching Clarion.
+    //
+    // Deliberately NOT folded into doCancel. Of doCancel's callers only this one is an unanswered user
+    // gesture — cmdSaveAndExit's clean-buffer shortcut has nothing to lose, onConfirmSaveExitResult('no') has
+    // just been answered ("Don't save" would ask twice), and the post-save close is programmatic. Putting the
+    // prompt here keeps each path asking exactly once.
+    //
+    // Clean buffer discards immediately: there is nothing to lose, and a confirm would be pure friction.
+    // ASSUMPTION worth checking against Clarion: whether the native dialog also appears on a CLEAN cancel.
+    function cmdCancel() {
+        if (!isDirty) { doCancel(); return; }
+        if (document.getElementById('sxShield')) return;   // a round-trip is already in flight
+
+        // Same shield as Ctrl+Q, same reason: the dialog is host-side, so there is an async gap in which a
+        // keystroke would land in the buffer. Cheap, and it keeps the two confirm paths behaving alike.
+        var shield = document.createElement('div');
+        shield.id = 'sxShield';
+        shield.tabIndex = -1;
+        shield.style.cssText = 'position:fixed;inset:0;z-index:1001;background:transparent;outline:none;';
+        shield.addEventListener('keydown', function (e) { e.preventDefault(); e.stopPropagation(); }, true);
+        shield.addEventListener('keypress', function (e) { e.preventDefault(); e.stopPropagation(); }, true);
+        shield.addEventListener('keyup', function (e) { e.preventDefault(); e.stopPropagation(); }, true);
+        document.body.appendChild(shield);
+        shield.focus();
+
+        postToHost({ action: 'confirmCancel' });
+    }
+
+    // Host's answer to confirmCancel. Anything but an explicit yes keeps the user editing — a misread answer
+    // must never be the one that discards their work.
+    function onConfirmCancelResult(result) {
+        var shield = document.getElementById('sxShield');
+        if (shield) shield.remove();
+        try { activeEd().focus(); } catch (e) { }
+        if (result === 'yes') doCancel();
     }
 
     // ----- Ctrl+Q: native-embeditor-style save-and-exit (GH #137) -----
@@ -7047,6 +7090,8 @@
                 setTheme(themePrefDark);   // user preference wins over IDE theme changes
             } else if (msg.type === 'confirmSaveExitResult') {
                 onConfirmSaveExitResult(msg.result);   // GH #193: host's native Ctrl+Q dialog answered
+            } else if (msg.type === 'confirmCancelResult') {
+                onConfirmCancelResult(msg.result);     // bcba6efb: host's native red-X dialog answered
                 // NOTE (bcba6efb): a 'requestSaveExit' branch lived here, for a host-side veto that turned out
                 // to be powerless — Clarion's own handler runs first, vetoes the window close itself, and
                 // tears the embed down regardless. Removed rather than left inert. Ctrl+F4 is now handled by

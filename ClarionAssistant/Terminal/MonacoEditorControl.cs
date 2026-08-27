@@ -68,6 +68,10 @@ namespace ClarionAssistant.Terminal
         /// and a one-host handler would silently no-op in the other (the GH #193 lesson). Only the embeditor
         /// has anything to do here; the CA Editor already prompts via its own ClosingEvent hook. (bcba6efb)</summary>
         void OnSyncNativeForClose(MonacoEditorControl editor);
+        /// <summary>{action:"confirmCancel"} — the red-X was clicked on a dirty buffer. Host owns the DIALOG;
+        /// the page still owns what the answer does. Replies {type:"confirmCancelResult", result:"yes"|"no"}.
+        /// On the interface so both hosts must answer it, per the GH #193 lesson. (bcba6efb)</summary>
+        void OnConfirmCancel(MonacoEditorControl editor);
 
         /// <summary>{action:"openSource"} — clicking our header strip opens the generated source (runs the native
         /// OpenSourceButton.OpenSourceCommand). Overlay mode only; other hosts no-op. (b1e05287)</summary>
@@ -357,6 +361,7 @@ namespace ClarionAssistant.Terminal
                     // bcba6efb: MUST be handled synchronously here — the page posts this immediately before the
                     // close key, and the ordering of the two is the entire mechanism.
                     case "syncNativeForClose": h.OnSyncNativeForClose(this); break;
+                    case "confirmCancel":     h.OnConfirmCancel(this); break;
                     // GH #192 key probe (temporary diagnostic) — the page's half of the trace.
                     case "keyProbe":          MonacoSpikeLog.Write("[KEYPROBE] PAGE  " + ExtractKeyProbe(json)); break;
                     // GH #192: a key the page decided belongs to the IDE, not to Monaco.

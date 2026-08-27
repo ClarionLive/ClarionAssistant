@@ -1521,6 +1521,7 @@ namespace ClarionAssistant.Terminal
         void IMonacoEditorHost.OnCancel(MonacoEditorControl editor) { HandleCancel(); }
         void IMonacoEditorHost.OnConfirmSaveExit(MonacoEditorControl editor) { HandleConfirmSaveExit(editor); }
         void IMonacoEditorHost.OnSyncNativeForClose(MonacoEditorControl editor) { HandleSyncNativeForClose(); }
+        void IMonacoEditorHost.OnConfirmCancel(MonacoEditorControl editor) { HandleConfirmCancel(editor); }
         void IMonacoEditorHost.OnOpenSource(MonacoEditorControl editor) { HandleOpenSource(); }
         void IMonacoEditorHost.OnClipboard(MonacoEditorControl editor, string rawJson) { HandleClipboard(rawJson); }
         void IMonacoEditorHost.OnCompletion(MonacoEditorControl editor, string rawJson) { HandleCompletion(rawJson); }
@@ -1849,6 +1850,43 @@ namespace ClarionAssistant.Terminal
                     + ") — Clarion's TryClose() should now prompt");
             }
             catch (Exception ex) { MonacoSpikeLog.Write("[native-dirty] set failed: " + ex.Message); }
+        }
+
+        /// <summary>Clarion's own red-X confirmation, reproduced character-for-character from the dialog John
+        /// screenshotted (2026-08-27): title "Exit from embed editor?", message "Are you sure you want to
+        /// cancel?", Yes/No, Question icon, Yes default. It is a STOCK MessageBox, which is what makes exact
+        /// parity achievable here rather than approximate — the same reason the GH #193 Ctrl+Q dialog matches.
+        ///
+        /// Unlike Ctrl+F4 we cannot delegate to Clarion: cancelling never reaches Clarion's own close path,
+        /// because our toolbar replaced the native red-X and the host tears the embed down itself. So this one
+        /// we do have to raise.
+        ///
+        /// Any failure answers "no" — the page then keeps editing. A dialog that fails must never be the thing
+        /// that discards someone's work.</summary>
+        private void HandleConfirmCancel(MonacoEditorControl editor)
+        {
+            if (editor == null) return;
+            Action work = () =>
+            {
+                string result = "no";
+                try
+                {
+                    IWin32Window owner = null;
+                    try { owner = editor.FindForm(); } catch { }
+                    var r = owner != null
+                        ? MessageBox.Show(owner, "Are you sure you want to cancel?",
+                            "Exit from embed editor?", MessageBoxButtons.YesNo, MessageBoxIcon.Question)
+                        : MessageBox.Show("Are you sure you want to cancel?",
+                            "Exit from embed editor?", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                    result = r == DialogResult.Yes ? "yes" : "no";
+                }
+                catch (Exception ex) { MonacoSpikeLog.Write("HandleConfirmCancel dialog error: " + ex.Message); }
+                MonacoSpikeLog.Write("[confirm-cancel] answered " + result);
+                // Always reply, or the page stays shielded and deaf to keys behind an invisible overlay.
+                try { editor.PostJson("{\"type\":\"confirmCancelResult\",\"result\":\"" + result + "\"}"); }
+                catch (Exception ex) { MonacoSpikeLog.Write("HandleConfirmCancel post error: " + ex.Message); }
+            };
+            if (editor.InvokeRequired) editor.BeginInvoke(work); else work();
         }
 
         private void HandleCancel()
