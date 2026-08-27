@@ -1042,16 +1042,6 @@
         try { window.chrome.webview.postMessage(JSON.stringify(obj)); } catch (e) { /* not in webview */ }
     }
 
-    // ----- GH #192 KEY PROBE (temporary diagnostic; remove once key routing is settled) -----
-    // Mike reports Ctrl+F4, Ctrl+O and Alt+F are ignored by the CA Editor. Before designing a fix we
-    // need to know WHERE each key dies, because the layers need different fixes. This logs the page's
-    // view; MonacoEditorControl.ProcessCmdKey logs the host's. Read monaco-spike.log and pair them:
-    //   PAGE + HOST  -> the key reaches the IDE; the problem is dispatch/routing
-    //   PAGE only    -> WebView2/Monaco consumed it; the fix is at the accelerator layer
-    //   neither      -> something upstream ate it before the page saw it
-    // Capture phase, and deliberately passive: it must not change what any key DOES, or the probe
-    // would be measuring itself. Bare modifier presses are skipped so holding Alt does not flood.
-
     // GH #192: shortcuts this page hands to the IDE rather than to Monaco. `key` is matched
     // case-insensitively against e.key, so 'o' covers a Caps Lock'd 'O' without claiming Ctrl+Shift+O.
     // `combo` is what the host parses, so it must use the host's spelling ("Ctrl+", "Alt+", "Shift+").
@@ -1068,11 +1058,15 @@
         { ctrl: true, alt: false, shift: false, key: 'o',  combo: 'Ctrl+O'  }
     ];
 
+    // Capture phase, so a claimed key is taken before Monaco's own handlers see it. Bare modifier
+    // presses return early — nothing here is interested in Alt being held down on its own.
+    //
+    // The diagnostic key probe that used to sit at the top of this handler is GONE (89ab4e4c). It
+    // logged EVERY keystroke to monaco-spike.log to find where each reported key died; key routing is
+    // settled, so it has no reason to keep writing a developer's typing to disk.
     document.addEventListener('keydown', function (e) {
         try {
             if (e.key === 'Control' || e.key === 'Alt' || e.key === 'Shift' || e.key === 'Meta') return;
-            var combo = (e.ctrlKey ? 'Ctrl+' : '') + (e.altKey ? 'Alt+' : '') + (e.shiftKey ? 'Shift+' : '') + e.key;
-            postToHost({ action: 'keyProbe', combo: combo });
 
             // ----- GH #192: forward IDE-owned SHORTCUTS to the host -----
             // An explicit short list, NOT yet the table-driven version. The spike proved the mechanism

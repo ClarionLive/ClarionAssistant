@@ -224,14 +224,6 @@ namespace ClarionAssistant.Terminal
         private object _overlayGenEditor;      // the ClaGenEditor view content, for the Disposed teardown backstop
         private object _overlayPwee;           // the PweeEditorDetails we attached FOR — duplicate-trigger identity (d4635694)
         private EventHandler _overlayDisposedHandler; // our subscription to ClaGenEditor.Disposed (removed on detach)
-        // The CANCELLABLE close hook. Separate from _overlayDisposedHandler above on purpose: Disposed is past
-        // tense and cannot be vetoed, so it can only stash. This one can ask first. (bcba6efb)
-        private System.ComponentModel.CancelEventHandler _embedClosingHandler;
-        private object _embedClosingWindow;    // the IWorkbenchWindow we subscribed on — needed to unsubscribe
-        private System.Reflection.EventInfo _embedClosingEvt;
-        // The hook is retried from HandleEmbedState, which fires on every buffer change. Without this, a
-        // persistent miss would write a line per keystroke and drown the log it is meant to be diagnosed from.
-        private bool _embedClosingMissLogged;
         private bool _overlayDetached;         // idempotent guard so teardown runs exactly once
         // The native embeditor chrome (its ~24px Dock=Top toolbar strip: green-check save / red-X cancel /
         // embed-nav + header) we hide while the overlay is up, so only OUR Monaco toolbar shows. Restored on
@@ -1654,14 +1646,6 @@ namespace ClarionAssistant.Terminal
                 _mirroredSlots = arr.Select(o => o == null ? "" : o.ToString()).ToList();
                 _mirroredDirty = data.TryGetValue("dirty", out dirtyObj) && dirtyObj is bool && (bool)dirtyObj;
 
-                // Late retry for the cancellable close hook (bcba6efb). ShowAsEmbedOverlay tries first, but
-                // WorkbenchWindow can still be unassigned that early — MonacoClarionSourceEditor.EnsureCloseHook
-                // hit exactly this and retries "next file-state" for the same reason. This is the embeditor's
-                // equivalent tick, and it is the ONLY thing standing between "we ask before discarding edits"
-                // and the silent close this ticket exists to fix, so it retries rather than trusting one attempt.
-                // Idempotent: HookEmbedClosing returns immediately once subscribed.
-                if (_embedOverlay) HookEmbedClosing(_overlayGenEditor);
-
                 // PAIRED RESET for the close-sync stash suppression. Receiving a buffer push means the embed is
                 // still alive and being edited, so the close we armed for did not happen — the user answered
                 // Cancel. Re-arm the stash, or an interruption after that Cancel would discard their work with
@@ -2599,7 +2583,6 @@ namespace ClarionAssistant.Terminal
             HideNativeChrome(host);
             CaptureNavIcons();
             HookOverlayTeardown(genEditor);
-            HookEmbedClosing(genEditor);
             WireNativeEmbedCaretMirror();
             Services.ErrorPadNavigationInterceptor.EnsureInstalled();   // reroute error clicks while an overlay is live (d3ab083a)
         }
@@ -2919,139 +2902,12 @@ namespace ClarionAssistant.Terminal
             }
             catch { }
             _overlayDisposedHandler = null;
-            UnhookEmbedClosing();
         }
 
-        /// <summary>Subscribe to the embed's workbench window ClosingEvent so a close we did NOT initiate —
-        /// Ctrl+F4, the tab's [x], File&gt;Close — can ASK about unsaved edits instead of swallowing the question.
-        ///
-        /// WHY THIS EXISTS SEPARATELY FROM HookOverlayTeardown: that one hooks Disposed, which is PAST TENSE.
-        /// By the time it fires the embed is already gone and an EventHandler carries no CancelEventArgs, so
-        /// there is structurally nothing to cancel — the dirty path could only stash and close silently, which
-        /// is exactly the bug (John, 2026-08-27: native Clarion asks, we did not).
-        ///
-        /// ClosingEvent is a CancelEventHandler and is the same hook MonacoClarionSourceEditor already uses for
-        /// the CA Editor, which is why that surface has always prompted and this one has not. Confirmed against
-        /// CWBinding 12.0.0.14000 by reflection rather than assumed: ClaGenEditor inherits a WorkbenchWindow
-        /// property (declared on CommonClarionEditor) typed IWorkbenchWindow, which declares
-        /// ClosingEvent : CancelEventHandler.
-        ///
-        /// Reflection, not a direct cast, to match the surrounding code's stance on this fork: its object
-        /// surface returns null silently rather than throwing, so every step logs and a miss says WHICH step
-        /// missed. A silent no-op here would reproduce the very bug it fixes.</summary>
-        private void HookEmbedClosing(object genEditor)
-        {
-            try
-            {
-                if (_embedClosingHandler != null) return;   // already subscribed — this is called again on retry
-                if (genEditor == null) { LogHookMissOnce("no genEditor"); return; }
-                var wbw = genEditor.GetType().GetProperty("WorkbenchWindow")?.GetValue(genEditor, null);
-                // Not an error on the FIRST pass: the window is often unassigned at attach time, which is why
-                // HandleEmbedState retries. Logged once so a PERMANENT null is still visible.
-                if (wbw == null) { LogHookMissOnce("WorkbenchWindow null (retrying on embed-state)"); return; }
+        // over the embed teardown - ClaGenEditor is an ISecondaryViewContent living inside the .app's
+        // window. The working route is upstream: HandleSyncNativeForClose sets the NATIVE editor's
+        // IsDirty before the key is dispatched, so Clarion's own TryClose() raises its own prompt.
 
-                var evt = wbw.GetType().GetEvent("ClosingEvent");
-                if (evt == null)
-                    foreach (var itf in wbw.GetType().GetInterfaces()) { evt = itf.GetEvent("ClosingEvent"); if (evt != null) break; }
-                if (evt == null)
-                {
-                    LogHookMissOnce("ClosingEvent NOT FOUND on " + wbw.GetType().FullName
-                        + " — dirty closes fall back to the silent stash");
-                    return;
-                }
-
-                _embedClosingHandler = new System.ComponentModel.CancelEventHandler(OnEmbedWorkbenchClosing);
-                evt.AddEventHandler(wbw, _embedClosingHandler);
-                _embedClosingWindow = wbw;
-                _embedClosingEvt = evt;
-                MonacoSpikeLog.Write("[embed-closing] hooked ClosingEvent on " + wbw.GetType().FullName);
-            }
-            catch (Exception ex) { LogHookMissOnce("hook error: " + ex.Message); }
-        }
-
-        /// <summary>One line per overlay session for a hook miss, not one per keystroke. HandleEmbedState
-        /// retries the hook on every buffer change, so an unguarded log here would bury the very evidence
-        /// someone would come to this log to find.</summary>
-        private void LogHookMissOnce(string why)
-        {
-            if (_embedClosingMissLogged) return;
-            _embedClosingMissLogged = true;
-            MonacoSpikeLog.Write("[embed-closing] NOT hooked: " + why);
-        }
-
-        private void UnhookEmbedClosing()
-        {
-            try
-            {
-                if (_embedClosingWindow != null && _embedClosingEvt != null && _embedClosingHandler != null)
-                    _embedClosingEvt.RemoveEventHandler(_embedClosingWindow, _embedClosingHandler);
-            }
-            catch { }
-            _embedClosingHandler = null;
-            _embedClosingWindow = null;
-            _embedClosingEvt = null;
-            _embedClosingMissLogged = false;   // next overlay session gets to report its own miss
-        }
-
-        /// <summary>Unsaved edits + a close we did not initiate → veto the close and hand the gesture to the
-        /// page's own Ctrl+Q flow, so Ctrl+F4 and Ctrl+Q become the SAME code after this first step.
-        ///
-        /// WHY VETO-AND-DELEGATE RATHER THAN SAVE INLINE. The save path calls DetachOverlay, which disposes the
-        /// WebView2. This file warns repeatedly that disposing it on the native embed-close stack risks the
-        /// native&lt;-&gt;WebView2 focus deadlock — PostDetachOverlay exists purely to get off that stack. Saving
-        /// synchronously inside ClosingEvent would do exactly the forbidden thing. Cancelling instead costs
-        /// nothing: every branch of the page's flow closes the surface itself, so the close still happens, just
-        /// on a settled turn and through paths GH #193 already proved.
-        ///
-        /// It also keeps ONE set of yes/no semantics. The page owns what each answer does (save-and-exit vs
-        /// discard differs by live-linked/snapshot/file mode); duplicating that here is how the two paths drift.
-        ///
-        /// NEVER VETO A CLOSE WE CANNOT FOLLOW THROUGH ON. If the page is not there to delegate to, let the
-        /// close proceed — the stash in DetachOverlay still protects the edits. A veto with no follow-through
-        /// would make Ctrl+F4 look broken, which is worse than the bug being fixed.</summary>
-        private void OnEmbedWorkbenchClosing(object sender, System.ComponentModel.CancelEventArgs e)
-        {
-            try
-            {
-                // DIAGNOSTIC (bcba6efb): the first cut logged ONLY on intercept, so when the prompt failed to
-                // appear the log could not say whether this ran at all — and "never fired" and "fired, guard
-                // bailed" want completely different fixes. Log entry and the reason for every early return.
-                MonacoSpikeLog.Write("[embed-closing] ClosingEvent FIRED (cancel=" + e.Cancel
-                    + " overlay=" + _embedOverlay + " intentional=" + _teardownIntentional
-                    + " dirty=" + _mirroredDirty + " fileMode=" + _fileMode + ")");
-
-                if (e.Cancel) { MonacoSpikeLog.Write("[embed-closing] skip: already vetoed"); return; }
-                if (!_embedOverlay) { MonacoSpikeLog.Write("[embed-closing] skip: not overlay mode"); return; }
-                if (_teardownIntentional) { MonacoSpikeLog.Write("[embed-closing] skip: our own save/cancel"); return; }
-                if (!_mirroredDirty) { MonacoSpikeLog.Write("[embed-closing] skip: buffer clean"); return; }
-
-                // The page's cmdSaveAndExit REFUSES in fileMode and returns without closing anything. An
-                // overlay is never constructed in file mode (_fileMode is set only by the file-editing ctor),
-                // so this cannot fire today — it is here because the follow-through rule below has to be
-                // enforceable rather than merely believed. If that ever changes, this declines to veto and
-                // Ctrl+F4 keeps working, instead of the embed silently refusing to close.
-                if (_fileMode) { MonacoSpikeLog.Write("[embed-closing] skip: fileMode"); return; }
-
-                // OBSERVE ONLY — DO NOT SET e.Cancel HERE. It was tried and it does not work (bcba6efb):
-                // CommonGenEditor.WorkbenchWindow_ClosingEvent subscribes at embed open, long before our
-                // overlay attaches, so it always runs FIRST. It sets e.Cancel = true itself (it does not want
-                // the WINDOW closed) and then closes the embed via TryClose(). We measured our handler
-                // entering with cancel=True and dirty=True, and the embed closed regardless — a veto on the
-                // workspace window has NO authority over the embed teardown.
-                //
-                // The working fix is upstream of all this: HandleSyncNativeForClose sets the NATIVE editor's
-                // IsDirty before the key is ever dispatched, so Clarion's own TryClose() prompts. This line
-                // stays only so the log still shows the close arriving, and so the next reader sees the dead
-                // end already explored rather than re-deriving it. Remove with the #192 probe.
-                MonacoSpikeLog.Write("[embed-closing] observed dirty close (no veto — Clarion owns this decision)");
-            }
-            catch (Exception ex)
-            {
-                // Never let a fault here block the close — that would strand the user in an embed they asked to
-                // shut. Falling through leaves e.Cancel as it was, and the stash still holds the edits.
-                MonacoSpikeLog.Write("[embed-closing] EXCEPTION (close allowed to proceed): " + ex);
-            }
-        }
 
         /// <summary>Defer overlay teardown onto a clean, non-reentrant turn (never the native embed-close stack —
         /// disposing a WebView2 there risks the native&lt;-&gt;WebView2 focus deadlock).</summary>
@@ -3124,32 +2980,8 @@ namespace ClarionAssistant.Terminal
             if (_overlayDetached) return;
             _overlayDetached = true;
 
-            // DIAGNOSTIC (bcba6efb): WHO tore this down? Ctrl+F4 makes the embed vanish without any close
-            // event firing, so the teardown is reached by some path we have not identified — and the caller
-            // is the whole question. Frames only, no args, and only the CA/SharpDevelop ones: enough to name
-            // the route without dumping an unreadable wall. Remove with the rest of the #192 probe.
-            try
-            {
-                var frames = new System.Diagnostics.StackTrace(false).GetFrames();
-                var interesting = new List<string>();
-                if (frames != null)
-                    foreach (var fr in frames)
-                    {
-                        var m = fr.GetMethod();
-                        var t = m?.DeclaringType;
-                        if (t == null) continue;
-                        var n = t.FullName ?? "";
-                        if (n.IndexOf("ClarionAssistant", StringComparison.Ordinal) >= 0
-                            || n.IndexOf("ICSharpCode", StringComparison.Ordinal) >= 0
-                            || n.IndexOf("CWBinding", StringComparison.Ordinal) >= 0
-                            || n.IndexOf("SoftVelocity", StringComparison.Ordinal) >= 0)
-                            interesting.Add(t.Name + "." + m.Name);
-                        if (interesting.Count >= 12) break;
-                    }
-                MonacoSpikeLog.Write("[detach-who] intentional=" + _teardownIntentional + " dirty=" + _mirroredDirty
-                    + " via: " + (interesting.Count > 0 ? string.Join(" <- ", interesting) : "(no recognised frames)"));
-            }
-            catch (Exception ex) { MonacoSpikeLog.Write("[detach-who] trace failed: " + ex.Message); }
+            // The [detach-who] stack walk that used to sit here is REMOVED (89ab4e4c). It answered its
+            // question — the teardown route — and then cost a frame walk on every single teardown.
             // DIAGNOSTIC (e1162adf): the save-timing marks proved the ~65s stall lives HERE, not in the save
             // (SaveLive itself takes ~700ms). These bisect DetachOverlay's steps so the next reproduction
             // names the culprit outright instead of narrowing it again.

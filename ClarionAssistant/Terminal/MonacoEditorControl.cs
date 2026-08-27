@@ -363,7 +363,6 @@ namespace ClarionAssistant.Terminal
                     case "syncNativeForClose": h.OnSyncNativeForClose(this); break;
                     case "confirmCancel":     h.OnConfirmCancel(this); break;
                     // GH #192 key probe (temporary diagnostic) — the page's half of the trace.
-                    case "keyProbe":          MonacoSpikeLog.Write("[KEYPROBE] PAGE  " + ExtractKeyProbe(json)); break;
                     // GH #192: a key the page decided belongs to the IDE, not to Monaco.
                     case "ideKey":            HandleIdeKey(ExtractJsonString(json, "combo")); break;
                     // GH #192: Alt+<letter> — a menu MNEMONIC, which has no codon and no shortcut entry.
@@ -592,12 +591,6 @@ namespace ClarionAssistant.Terminal
             i += tag.Length;
             int j = json.IndexOf('"', i);
             return j > i ? json.Substring(i, j - i) : null;
-        }
-
-        /// <summary>GH #192 key probe (temporary).</summary>
-        private static string ExtractKeyProbe(string json)
-        {
-            return ExtractJsonString(json, "combo") ?? (json ?? "(empty)");
         }
 
         /// <summary>Turn "Ctrl+Shift+F4" into a WinForms <see cref="Keys"/>. Returns Keys.None if any
@@ -832,19 +825,13 @@ namespace ClarionAssistant.Terminal
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            // GH #192 KEY PROBE (temporary — pairs with the PAGE line the page posts).
-            // Logs EVERY key reaching the host, before the swallow-list below decides anything, so the
-            // log distinguishes "never arrived" from "arrived and we ate it".
+            // The GH #192 key probe that logged EVERY key reaching the host is REMOVED (89ab4e4c).
             //
-            // UNCONDITIONAL, and it must stay that way: round 1 gated this on ContainsFocus (mirroring
-            // the swallow-list below) and produced 24 PAGE lines with zero CMDKEY lines. That is
-            // ambiguous — "ProcessCmdKey was never called" and "it was called while ContainsFocus read
-            // false" are the same silence, and they need completely different fixes. Logging the focus
+            // If key routing is ever in question again, bring it back UNCONDITIONAL — the first attempt
+            // gated it on ContainsFocus, exactly like the swallow-list below, and produced 24 PAGE lines
+            // with zero CMDKEY lines. "ProcessCmdKey was never called" and "it was called while
+            // ContainsFocus read false" are the same silence and need different fixes; logging the focus
             // flag as DATA rather than using it as a filter is what tells them apart.
-            MonacoSpikeLog.Write("[KEYPROBE] CMDKEY " + keyData
-                + " wv=" + (_webView != null)
-                + " focus=" + (_webView != null && _webView.ContainsFocus));
-
             if (_webView != null && _webView.ContainsFocus)
             {
                 switch (keyData)
