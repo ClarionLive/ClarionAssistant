@@ -1303,6 +1303,10 @@ namespace ClarionAssistant.Terminal
         private List<string> _mirroredSlots;     // last embedState push from the page (live edited slot texts)
         private bool _mirroredDirty;             // page's dirty flag at that push
         private bool _teardownIntentional;       // set by our own Save/Cancel paths — suppresses the stash
+        // True between a close-gesture sync and the close actually happening. Distinguishes "we set
+        // _teardownIntentional for a close that is pending" from our own Save/Cancel, which never come back.
+        // Cleared on the next buffer push, which only arrives if the user answered Cancel. (bcba6efb)
+        private bool _closeSyncArmed;
         private sealed class EmbedEditStash
         {
             public string Proc;
@@ -1656,6 +1660,18 @@ namespace ClarionAssistant.Terminal
                 // and the silent close this ticket exists to fix, so it retries rather than trusting one attempt.
                 // Idempotent: HookEmbedClosing returns immediately once subscribed.
                 if (_embedOverlay) HookEmbedClosing(_overlayGenEditor);
+
+                // PAIRED RESET for the close-sync stash suppression. Receiving a buffer push means the embed is
+                // still alive and being edited, so the close we armed for did not happen — the user answered
+                // Cancel. Re-arm the stash, or an interruption after that Cancel would discard their work with
+                // the guard switched off. Only the Cancel path can reach here; Yes and No both tear the overlay
+                // down and no further pushes arrive.
+                if (_closeSyncArmed)
+                {
+                    _closeSyncArmed = false;
+                    _teardownIntentional = false;
+                    MonacoSpikeLog.Write("[native-dirty] close cancelled (still editing) — stash guard re-armed");
+                }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] embedState: " + ex.Message); }
         }
@@ -1793,6 +1809,22 @@ namespace ClarionAssistant.Terminal
                 // Set the flag even if the sync failed: a prompt on stale content is bad, but closing with NO
                 // prompt loses the edits outright. The user still gets asked, and the log names the failure.
                 SetNativeDirty(true, ok);
+
+                if (ok)
+                {
+                    // SUPPRESS THE STASH. From here the edits live in the NATIVE buffer and Clarion owns what
+                    // happens to them — Yes persists them, No discards them deliberately. The stash exists for
+                    // teardowns that interrupt unsaved work, and this is not one.
+                    //
+                    // Without this the user SEES the bug as its own opposite (measured 11:57): the save
+                    // succeeded, DetachOverlay stashed 120 slots anyway because _teardownIntentional was false
+                    // (Clarion closed us, not our own save path), and the re-open then refused the stash
+                    // because the generated source had changed — which it had, BECAUSE THE SAVE WORKED. The
+                    // toast then announces that unsaved edits could not be restored, about edits that were
+                    // saved. Alarming, and exactly backwards.
+                    _teardownIntentional = true;
+                    _closeSyncArmed = true;   // paired reset below, for the Cancel case
+                }
             }
             catch (Exception ex) { MonacoSpikeLog.Write("[native-dirty] EXCEPTION: " + ex.Message); }
         }
