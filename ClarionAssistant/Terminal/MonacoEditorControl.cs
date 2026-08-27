@@ -666,7 +666,15 @@ namespace ClarionAssistant.Terminal
                     var item = FindItemByShortcut(strip.Items, k);
                     if (item == null) { MonacoSpikeLog.Write("[IDEKEY] FAIL: no menu item carries ShortcutKeys=" + k); return; }
 
-                    MonacoSpikeLog.Write("[IDEKEY] MATCH '" + item.Text + "' enabled=" + item.Enabled + " -> PerformClick()");
+                    // DIAGNOSTIC (bcba6efb): item.Text alone is ambiguous and it misled a diagnosis. Both the
+                    // top-level File menu and a nested "File..." under File>Open are captioned '&File', and the
+                    // difference matters completely: PerformClick on a CONTAINER just drops its menu open, it
+                    // does not run a command. Log the full path and whether it owns a dropdown, so the next
+                    // reader gets an answer instead of two equally plausible readings.
+                    MonacoSpikeLog.Write("[IDEKEY] MATCH path='" + MenuPath(item) + "' enabled=" + item.Enabled
+                        + " isContainer=" + item.HasDropDownItems
+                        + (item.HasDropDownItems ? " (PerformClick will OPEN THIS MENU, not run a command)" : "")
+                        + " -> PerformClick()");
                     item.PerformClick();
                     MonacoSpikeLog.Write("[IDEKEY] PerformClick returned");
                 }
@@ -774,6 +782,21 @@ namespace ClarionAssistant.Terminal
                 if (found != null) return found;
             }
             return null;
+        }
+
+        /// <summary>"File &gt; Open &gt; &amp;File..." for a menu item, walking OwnerItem up to the strip. A bare
+        /// caption cannot distinguish a top-level menu from a same-named leaf buried under it, and that
+        /// ambiguity is exactly what made an [IDEKEY] MATCH line unreadable. (bcba6efb)</summary>
+        private static string MenuPath(ToolStripItem item)
+        {
+            try
+            {
+                var parts = new List<string>();
+                var cur = item;
+                while (cur != null) { parts.Insert(0, cur.Text); cur = cur.OwnerItem; }
+                return string.Join(" > ", parts);
+            }
+            catch { return item?.Text ?? "(null)"; }
         }
 
         /// <summary>Depth-first search for a menu item bound to <paramref name="k"/>. Recurses into

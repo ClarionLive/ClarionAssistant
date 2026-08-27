@@ -2878,17 +2878,24 @@ namespace ClarionAssistant.Terminal
         {
             try
             {
-                if (e.Cancel) return;                    // someone already vetoed — don't ask twice
-                if (!_embedOverlay) return;              // tab mode has its own path
-                if (_teardownIntentional) return;        // our own Save/Cancel is already closing this
-                if (!_mirroredDirty) return;             // clean buffer — nothing to ask about
+                // DIAGNOSTIC (bcba6efb): the first cut logged ONLY on intercept, so when the prompt failed to
+                // appear the log could not say whether this ran at all — and "never fired" and "fired, guard
+                // bailed" want completely different fixes. Log entry and the reason for every early return.
+                MonacoSpikeLog.Write("[embed-closing] ClosingEvent FIRED (cancel=" + e.Cancel
+                    + " overlay=" + _embedOverlay + " intentional=" + _teardownIntentional
+                    + " dirty=" + _mirroredDirty + " fileMode=" + _fileMode + ")");
+
+                if (e.Cancel) { MonacoSpikeLog.Write("[embed-closing] skip: already vetoed"); return; }
+                if (!_embedOverlay) { MonacoSpikeLog.Write("[embed-closing] skip: not overlay mode"); return; }
+                if (_teardownIntentional) { MonacoSpikeLog.Write("[embed-closing] skip: our own save/cancel"); return; }
+                if (!_mirroredDirty) { MonacoSpikeLog.Write("[embed-closing] skip: buffer clean"); return; }
 
                 // The page's cmdSaveAndExit REFUSES in fileMode and returns without closing anything. An
                 // overlay is never constructed in file mode (_fileMode is set only by the file-editing ctor),
                 // so this cannot fire today — it is here because the follow-through rule below has to be
                 // enforceable rather than merely believed. If that ever changes, this declines to veto and
                 // Ctrl+F4 keeps working, instead of the embed silently refusing to close.
-                if (_fileMode) return;
+                if (_fileMode) { MonacoSpikeLog.Write("[embed-closing] skip: fileMode (page would refuse to close)"); return; }
 
                 if (_panel == null || !_panel.IsHandleCreated || _panel.IsDisposed)
                 {
@@ -2985,6 +2992,33 @@ namespace ClarionAssistant.Terminal
         {
             if (_overlayDetached) return;
             _overlayDetached = true;
+
+            // DIAGNOSTIC (bcba6efb): WHO tore this down? Ctrl+F4 makes the embed vanish without any close
+            // event firing, so the teardown is reached by some path we have not identified — and the caller
+            // is the whole question. Frames only, no args, and only the CA/SharpDevelop ones: enough to name
+            // the route without dumping an unreadable wall. Remove with the rest of the #192 probe.
+            try
+            {
+                var frames = new System.Diagnostics.StackTrace(false).GetFrames();
+                var interesting = new List<string>();
+                if (frames != null)
+                    foreach (var fr in frames)
+                    {
+                        var m = fr.GetMethod();
+                        var t = m?.DeclaringType;
+                        if (t == null) continue;
+                        var n = t.FullName ?? "";
+                        if (n.IndexOf("ClarionAssistant", StringComparison.Ordinal) >= 0
+                            || n.IndexOf("ICSharpCode", StringComparison.Ordinal) >= 0
+                            || n.IndexOf("CWBinding", StringComparison.Ordinal) >= 0
+                            || n.IndexOf("SoftVelocity", StringComparison.Ordinal) >= 0)
+                            interesting.Add(t.Name + "." + m.Name);
+                        if (interesting.Count >= 12) break;
+                    }
+                MonacoSpikeLog.Write("[detach-who] intentional=" + _teardownIntentional + " dirty=" + _mirroredDirty
+                    + " via: " + (interesting.Count > 0 ? string.Join(" <- ", interesting) : "(no recognised frames)"));
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[detach-who] trace failed: " + ex.Message); }
             // DIAGNOSTIC (e1162adf): the save-timing marks proved the ~65s stall lives HERE, not in the save
             // (SaveLive itself takes ~700ms). These bisect DetachOverlay's steps so the next reproduction
             // names the culprit outright instead of narrowing it again.
