@@ -6991,6 +6991,13 @@
                 setTheme(themePrefDark);   // user preference wins over IDE theme changes
             } else if (msg.type === 'confirmSaveExitResult') {
                 onConfirmSaveExitResult(msg.result);   // GH #193: host's native Ctrl+Q dialog answered
+            } else if (msg.type === 'requestSaveExit') {
+                // bcba6efb: the host intercepted a close it did not initiate (Ctrl+F4, the tab's [x],
+                // File>Close) on a DIRTY buffer, vetoed it, and handed the gesture here. Deliberately the
+                // SAME entry point as Ctrl+Q — so the two gestures share one set of yes/no semantics and
+                // cannot drift. Every branch of this flow closes the surface itself, so the close the user
+                // asked for still happens; it just happens on a settled turn.
+                cmdSaveAndExit();
             } else if (msg.type === 'saveResult') {
                 if (saveSafetyTimer) { clearTimeout(saveSafetyTimer); saveSafetyTimer = null; }
                 if (msg.ok) {
