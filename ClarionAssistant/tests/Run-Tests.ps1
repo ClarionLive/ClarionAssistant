@@ -1,9 +1,10 @@
 # Run-Tests.ps1 — single entry point for ClarionAssistant's standalone test harnesses.
 #
-#   .\tests\Run-Tests.ps1              # everything runnable on this machine
-#   .\tests\Run-Tests.ps1 -Probe       # also run the read-only live VS Code probe (diagnostic)
-#   .\tests\Run-Tests.ps1 -CSharpOnly  # skip the node tests
-#   .\tests\Run-Tests.ps1 -NodeOnly    # skip the C# harnesses
+#   .\tests\Run-Tests.ps1                 # everything runnable on this machine
+#   .\tests\Run-Tests.ps1 -Probe          # also run the read-only live VS Code probe (diagnostic)
+#   .\tests\Run-Tests.ps1 -CSharpOnly     # only the C# harnesses
+#   .\tests\Run-Tests.ps1 -NodeOnly       # only the node harnesses
+#   .\tests\Run-Tests.ps1 -InstallerOnly  # only the installer script harnesses
 #
 # There are two families here and they are deliberately different things:
 #
@@ -15,6 +16,13 @@
 #   Terminal\test\*.test.js  node harnesses over the WebView2 pages. Mostly zero-dependency; the one
 #                          exception (vscode-import-ui.test.js) needs jsdom and says so.
 #
+#   ..\installer\tests\*.ps1  PowerShell harnesses over the INSTALLER scripts. These live outside
+#                          this folder because they belong next to what they test, and they run the
+#                          real script under the real powershell.exe 5.1 the installer uses. Two
+#                          releases have shipped a configure.ps1 that destroyed users' settings.json
+#                          (GH #190, GH #200), both from 5.1-only defaults that look correct in a
+#                          7.x terminal. Nothing else in the repo exercises that script.
+#
 # NEITHER family is wired into the MSBuild build. That is intentional — these harnesses exist to be
 # run by a developer who just changed something, and a test that only runs in CI would not have caught
 # the bugs these were written for. Run this before you deploy.
@@ -25,11 +33,13 @@
 param(
     [switch]$Probe,        # also run the live VS Code probe (reads the developer's own settings.json)
     [switch]$CSharpOnly,
-    [switch]$NodeOnly
+    [switch]$NodeOnly,
+    [switch]$InstallerOnly
 )
 
 $ErrorActionPreference = "Stop"
 $RepoDir = Split-Path -Parent $PSScriptRoot          # ...\ClarionAssistant
+$RootDir = Split-Path -Parent $RepoDir              # repository root (holds installer\)
 $TestDir = $PSScriptRoot
 $OutDir  = Join-Path $env:TEMP ("ca-tests-" + [System.Guid]::NewGuid().ToString("N").Substring(0, 8))
 
@@ -39,7 +49,7 @@ $ran = 0
 function Section($t) { Write-Host ""; Write-Host "=== $t ===" -ForegroundColor Cyan }
 
 # --------------------------------------------------------------------------- C# harnesses
-if (-not $NodeOnly) {
+if (-not $NodeOnly -and -not $InstallerOnly) {
 
     # Resolve csc. The .NET Framework compiler is enough — these harnesses target the same
     # net48 surface the addin does (System.Web.Extensions for JavaScriptSerializer).
@@ -99,7 +109,7 @@ if (-not $NodeOnly) {
 }
 
 # --------------------------------------------------------------------------- node harnesses
-if (-not $CSharpOnly) {
+if (-not $CSharpOnly -and -not $InstallerOnly) {
 
     $node = (Get-Command node -ErrorAction SilentlyContinue).Source
     if (-not $node) {
@@ -124,6 +134,36 @@ if (-not $CSharpOnly) {
             }
             elseif ($code -ne 0) { $failures += $t.Name }
         }
+    }
+}
+
+# --------------------------------------------------------------------------- installer harnesses
+if (-not $CSharpOnly -and -not $NodeOnly) {
+
+    $installerTests = Get-ChildItem (Join-Path $RootDir "installer\tests") -Filter *.ps1 -ErrorAction SilentlyContinue |
+                      Sort-Object Name
+    if (-not $installerTests) {
+        Write-Host ""
+        Write-Host "no installer harnesses found under installer\tests — expected at least one." -ForegroundColor Red
+        $failures += "installer harnesses (none found)"
+    }
+    foreach ($t in $installerTests) {
+        Section $t.Name
+        # Run each in its own powershell so a harness cannot leak $ErrorActionPreference, cwd, or a
+        # sandboxed $env:USERPROFILE into the next one. These harnesses reassign USERPROFILE/APPDATA
+        # while the script under test runs; a leak would point a later test at the real profile.
+        & (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy Bypass -File $t.FullName
+        $code = $LASTEXITCODE
+        $ran++
+        # Exit 2 is the shared "could not run" signal (see the node family above). For these it also
+        # covers "the defect cannot reproduce on this machine" — e.g. the system ANSI codepage is
+        # UTF-8, so an encoding assertion could not fail and therefore proves nothing. That must not
+        # read as green.
+        if ($code -eq 2) {
+            Write-Host "  SKIPPED — could not run (see message above)" -ForegroundColor Yellow
+            $failures += $t.Name + " (could not run)"
+        }
+        elseif ($code -ne 0) { $failures += $t.Name }
     }
 }
 
