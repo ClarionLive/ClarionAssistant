@@ -16,6 +16,7 @@ places drifts, and the version numbers in this project already have to agree acr
 
 ## Recent releases
 
+- [v5.9.0](docs/releases/v5.9.0.md) — *draft, not yet released*
 - [v5.8.1](docs/releases/v5.8.1.md)
 - [v5.8.0](docs/releases/v5.8.0.md)
 - [v5.7.0](docs/releases/v5.7.0.md)

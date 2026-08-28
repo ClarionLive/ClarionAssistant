@@ -162,5 +162,7 @@
     "",
     "Scoped to one release cycle — clear this map when a version is cut."
   ],
-  "acknowledgedCommits": {}
+  "acknowledgedCommits": {
+    "cb16c62": "Documented by the 'CA Embeditor: Ctrl+F4 on unsaved work now asks' entry, which IS this commit's change. Acknowledged rather than aliased because the subject carries no conventional-commit prefix (it is written as a bug report title), so it has no scope for the tool to match and cannot carry a coverage marker either. This is case (b) above. A SHA names one immutable commit and cannot mask anything future, which is why it is the safer fix here than inventing a scope."
+  }
 }
