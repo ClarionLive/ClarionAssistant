@@ -3,12 +3,25 @@
 ; Supports Clarion 10, 11, 12 — user picks which version(s) to install
 
 #define MyAppName "Clarion Assistant"
-; NOTE: this is a MANUAL step at every release cut — Bump-Version.ps1 writes Version.props and
-; regenerates AssemblyVersion.cs / ClarionAssistant.addin, but it does not reach into this file.
-; Left stale it is silent: the freshness gate passes (it compares per-config BINARY stamps), the
-; build succeeds, and the only symptoms are an installer named for the previous version and an
-; Add/Remove Programs entry that disagrees with every DLL it just installed.
-#define MyAppVersion "5.8.1"
+
+; MyAppVersion is NOT defined here. It is supplied on the ISCC command line by
+; installer\build-installer.ps1, which reads <FullVersion> from ClarionAssistant\Version.props and
+; passes /DMyAppVersion=<value>.
+;
+; It used to be a hardcoded #define, and the comment that sat here admitted it was "a MANUAL step
+; at every release cut" that was "silent" when left stale - which is exactly what happened: the
+; file said 5.8.1 while Version.props said 5.8.1165. Nothing caught it, because the freshness gate
+; compares per-config BINARY stamps and never looks at this file. The symptoms were an installer
+; named for the wrong version and an Add/Remove Programs entry disagreeing with every DLL it had
+; just installed.
+;
+; Erroring out is deliberate. A default would restore the silent-drift failure in a new costume:
+; the build would succeed and ship the wrong number. Compiling this script by hand (rather than
+; through build-installer.ps1) is now an explicit choice you have to make:
+;     ISCC.exe /DMyAppVersion=5.8.2 ClarionAssistant.iss
+#ifndef MyAppVersion
+  #error MyAppVersion not supplied. Build via installer\build-installer.ps1, which passes it from Version.props.
+#endif
 #define MyAppPublisher "ClarionLive"
 #define MyAppURL "https://clarionlive.com"
 

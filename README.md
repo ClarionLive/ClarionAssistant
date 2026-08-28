@@ -283,9 +283,26 @@ The installer bundles **COM for Clarion**, a complete toolkit for creating .NET 
 | **Claude Code CLI** | [Download from Anthropic](https://claude.ai/download) |
 | **WebView2 Runtime** | Pre-installed on Windows 11; [download for Windows 10](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) |
 
+### What leaves your machine
+
+Clarion Assistant is a front end for the **Claude Code CLI**, and that CLI talks to Anthropic's API
+over the internet. When you use the assistant, what you type and the file contents it reads on your
+behalf &mdash; source, embed code, dictionary and schema details, build output &mdash; are sent to
+Anthropic to produce a reply. The IDE tools described in this README are how the assistant reads
+that context, so anything you point it at is potentially part of a request.
+
+That is the product working as intended rather than a hidden behaviour, but it is your code, so it
+should be stated plainly: **do not use it on material you are not permitted to send to a third-party
+API.** Anthropic's terms and privacy policy govern what happens to it &mdash; see
+[Anthropic Privacy](https://www.anthropic.com/legal/privacy). Your Claude Code account and its
+settings, not this addin, control that relationship.
+
+A few other features reach the network only when you explicitly invoke them: ingesting
+documentation from a URL, GitHub operations, and the marketplace browser.
+
 ### Install
 
-1. **[Download the latest installer](https://github.com/ClarionLive/ClarionAssistant/releases/tag/v5.3.0)** (code-signed)
+1. **[Download the latest installer](https://github.com/ClarionLive/ClarionAssistant/releases/latest)** (code-signed)
 2. Close the Clarion IDE
 3. Run the installer &mdash; select which Clarion versions to install for
 4. Restart the Clarion IDE

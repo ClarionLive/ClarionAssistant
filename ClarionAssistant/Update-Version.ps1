@@ -1,7 +1,8 @@
 ﻿# Update-Version.ps1
 # Pre-build hook called by ClarionAssistant.csproj.
 # 1. Reads Version.props
-# 2. Increments VersionBuild by 1 (unless -NoIncrement is passed)
+# 2. Increments VersionBuild by 1 (unless -NoIncrement is passed). FullVersion is NOT touched --
+#    it is the released Major.Minor.Patch and must keep matching the git tag.
 # 3. Writes Version.props back
 # 4. Regenerates Properties\AssemblyVersion.cs and ClarionAssistant.addin from templates
 #
@@ -28,20 +29,24 @@ if (-not (Test-Path $AddinTemplate))  { throw "Addin template not found: $AddinT
 $pg = $xml.Project.PropertyGroup
 $major = [int]$pg.VersionMajor
 $minor = [int]$pg.VersionMinor
+$patch = [int]$pg.VersionPatch
 $build = [int]$pg.VersionBuild
 
 # --- Increment build (unless suppressed) ---
+# Only VersionBuild moves here. FullVersion (Major.Minor.Patch) is the RELEASED version and is
+# bumped by hand via Bump-Version.ps1 -- it has to stay equal to the git tag and to the manifest's
+# <Identity version>, so a compile must never change it. See the comment in Version.props.
 if (-not $NoIncrement) {
     $build = $build + 1
     $pg.VersionBuild = "$build"
     # Recompute derived properties so they stay in sync inside Version.props
-    $pg.FullVersion         = "$major.$minor.$build"
-    $pg.AssemblyFullVersion = "$major.$minor.$build.0"
+    $pg.FullVersion         = "$major.$minor.$patch"
+    $pg.AssemblyFullVersion = "$major.$minor.$patch.$build"
     $xml.Save($VersionProps)
 }
 
-$fullVersion    = "$major.$minor.$build"
-$assemblyVersion = "$major.$minor.$build.0"
+$fullVersion     = "$major.$minor.$patch"
+$assemblyVersion = "$major.$minor.$patch.$build"
 
 Write-Host "ClarionAssistant version: $fullVersion" -ForegroundColor Cyan
 

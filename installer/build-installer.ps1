@@ -152,10 +152,22 @@ if (-not $SkipBuild) {
 # .iss packages are built OUT-OF-BAND by deploy.ps1, NOT by this script's build step. With
 # -SkipBuild it's easy to silently ship a STALE config (e.g. C11 left at 5.1.612 while C12 is
 # 5.2.691 — happened for the 5.2 release). Assert every present config bin matches Version.props
-# FullVersion before we sign or package anything. Override with -AllowStaleBins.
+# AssemblyFullVersion before we sign or package anything. Override with -AllowStaleBins.
 $versionProps = "$repoRoot\ClarionAssistant\Version.props"
 if (Test-Path $versionProps) {
-    $expected = if ((Get-Content $versionProps -Raw) -match '<FullVersion>\s*(.+?)\s*</FullVersion>') { $Matches[1] } else { $null }
+    $propsRaw = Get-Content $versionProps -Raw
+    # FullVersion (5.8.2) is the RELEASED version -- it goes to ISCC as MyAppVersion below.
+    $release  = if ($propsRaw -match '<FullVersion>\s*(.+?)\s*</FullVersion>') { $Matches[1] } else { $null }
+    # AssemblyFullVersion (5.8.2.1165) is what the gate compares against, and the distinction is
+    # load-bearing. The gate used to take the first three parts of each DLL's FileVersion and
+    # compare them to FullVersion. That only worked because FullVersion USED to carry the
+    # auto-incrementing build counter, so any stale bin differed. Now FullVersion is fixed for the
+    # whole life of a patch version, so a bin from an earlier build of the SAME patch would compare
+    # EQUAL and ship -- the gate would keep running, keep printing OK, and stop catching the one
+    # thing it exists to catch (C11 left at 5.1.612 while C12 was 5.2.691, the 5.2 release).
+    # Comparing the full 4-part FileVersion against AssemblyFullVersion restores the discrimination,
+    # because the build counter still moves on every compile.
+    $expected = if ($propsRaw -match '<AssemblyFullVersion>\s*(.+?)\s*</AssemblyFullVersion>') { $Matches[1] } else { $null }
     if ($expected) {
         Write-Host "`nChecking per-config addin freshness (expected $expected)..." -ForegroundColor Yellow
         $stale = @(); $found = 0
@@ -163,11 +175,10 @@ if (Test-Path $versionProps) {
             $dll = "$repoRoot\ClarionAssistant\bin\Debug-$cfg\ClarionAssistant.dll"
             if (-not (Test-Path $dll)) { Write-Host "  --   ${cfg}: no bin (won't ship this config)" -ForegroundColor DarkGray; continue }
             $found++
-            # FileVersion is 4-part (5.2.691.0); compare the first three against FullVersion.
+            # FileVersion is 4-part (5.8.2.1165); compare it WHOLE against AssemblyFullVersion.
             $fv = (Get-Item $dll).VersionInfo.FileVersion
-            $fv3 = ($fv -split '\.')[0..2] -join '.'
-            if ($fv3 -eq $expected) { Write-Host "  OK   ${cfg}: $fv" -ForegroundColor Green }
-            else { Write-Host "  FAIL ${cfg}: $fv (expected $expected)" -ForegroundColor Red; $stale += "${cfg}=$fv3" }
+            if ($fv -eq $expected) { Write-Host "  OK   ${cfg}: $fv" -ForegroundColor Green }
+            else { Write-Host "  FAIL ${cfg}: $fv (expected $expected)" -ForegroundColor Red; $stale += "${cfg}=$fv" }
         }
         if ($found -eq 0) {
             Write-Error "No bin\Debug-C* addin builds found. Run deploy.ps1 (per Clarion version) to populate them before building the installer."
@@ -179,7 +190,7 @@ if (Test-Path $versionProps) {
         }
         if ($stale.Count -gt 0) { Write-Warning "Shipping stale bins ($($stale -join ', ')) because -AllowStaleBins was passed." }
     } else {
-        Write-Warning "Could not parse <FullVersion> from Version.props - skipping freshness gate."
+        Write-Warning "Could not parse <AssemblyFullVersion> from Version.props - skipping freshness gate."
     }
 } else {
     Write-Warning "Version.props not found at $versionProps - skipping freshness gate."
@@ -248,7 +259,15 @@ if (-not (Test-Path $outputDir)) {
 
 # Output is TEED, not just streamed: it has to stay on screen (this compile takes a
 # minute and its progress is worth watching) while also being inspectable below.
-& $innoSetup $issFile 2>&1 | Tee-Object -Variable isccOutput | Out-Host
+# Pass the released version through to the .iss, which no longer hardcodes it and #errors without
+# it. /D applies to ClarionAssistant.iss.tmp (the rewritten missing-icon path) just as it does to
+# the original, so nothing special is needed for that branch.
+if (-not $release) {
+    Write-Error "Could not parse <FullVersion> from $versionProps. build-installer.ps1 must supply MyAppVersion to ISCC - the .iss refuses to compile without it."
+    exit 1
+}
+Write-Host "Compiling installer as version $release" -ForegroundColor Yellow
+& $innoSetup "/DMyAppVersion=$release" $issFile 2>&1 | Tee-Object -Variable isccOutput | Out-Host
 $isccExit = $LASTEXITCODE
 
 if ($isccExit -ne 0) {

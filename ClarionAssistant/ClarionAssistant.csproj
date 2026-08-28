@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <!-- Single source of truth for version (Major.Minor.Build) -->
   <Import Project="$(MSBuildThisFileDirectory)Version.props" />
@@ -349,6 +349,84 @@
           Condition="!Exists('$(MSBuildThisFileDirectory)Properties\AssemblyVersion.cs') Or !Exists('$(MSBuildThisFileDirectory)ClarionAssistant.addin')">
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)Update-Version.ps1&quot; -NoIncrement"
           WorkingDirectory="$(MSBuildThisFileDirectory)" />
+  </Target>
+
+  <!--
+    CheckAddinVersion: fail the build when the version the manifest DECLARES has drifted from
+    Version.props. Modelled on msarson's CheckAddinVersion (FlattenCode.csproj, on the
+    fix/addin-identity-version branch - PUBLISHING.md links to master, where it does not exist yet),
+    with two deliberate differences.
+
+    WHY IT MATTERS: AddinFinder inside the Clarion IDE compares the <Identity version> in the
+    INSTALLED manifest against the latest GitHub release tag, via CompareDotted - which walks to the
+    longer string and reads a missing component as 0. Anything non-zero is "Update available", and
+    reinstalling cannot clear it, because the manifest just reasserts the same number. So the
+    manifest, Version.props and the git tag have to agree exactly.
+
+    DIFFERENCE 1 - NOT gated on Configuration == Release. We ship Debug builds; copying the
+    reference verbatim would produce a check that looks present and never once runs.
+
+    DIFFERENCE 2 - it deliberately RUNS when BuildingInsideVisualStudio is true, which is the one
+    case that can actually drift. That flag suppresses PrebuildVersion, i.e. both the build-counter
+    increment AND the regeneration of ClarionAssistant.addin / AssemblyVersion.cs from Version.props.
+    Those two files are gitignored, and EnsureVersionFiles only regenerates them when MISSING - a
+    stale-but-present file is never corrected. The pinned four-config release build passes that flag
+    to every config, so a bump with no regeneration ships the OLD version silently. That is not
+    hypothetical: the 5.3 release stamped 5.3.754 into all four installs while Version.props said
+    5.3.773, and nothing caught it. The fix is to run Update-Version.ps1 -NoIncrement first;
+    this target is what tells you that you forgot.
+
+    The .iss is NOT checked here and does not need to be: it no longer holds a copy of the version
+    at all. build-installer.ps1 passes it as /DMyAppVersion from Version.props and the .iss #errors
+    without it. Do not "helpfully" re-add a hardcoded #define MyAppVersion thinking this target has
+    it covered - it does not, and that define is exactly what drifted to 5.8.1 while Version.props
+    said 5.8.1165.
+
+    A check, not a rewriter - same reasoning as the reference: a build step that silently corrected
+    the file would hide the mistake instead of making someone fix it.
+  -->
+  <Target Name="CheckAddinVersion" AfterTargets="Build"
+          Condition="'$(Configuration)' != '' and '$(DesignTimeBuild)' != 'true'">
+    <PropertyGroup>
+      <AddinManifest>$(MSBuildThisFileDirectory)ClarionAssistant.addin</AddinManifest>
+      <AssemblyVersionFile>$(MSBuildThisFileDirectory)Properties\AssemblyVersion.cs</AssemblyVersionFile>
+    </PropertyGroup>
+
+    <Error Condition="!Exists('$(AddinManifest)')"
+           Text="ClarionAssistant.addin was not generated. Run Update-Version.ps1 -NoIncrement." />
+    <Error Condition="!Exists('$(AssemblyVersionFile)')"
+           Text="Properties\AssemblyVersion.cs was not generated. Run Update-Version.ps1 -NoIncrement." />
+
+    <PropertyGroup>
+      <AddinManifestText>$([System.IO.File]::ReadAllText('$(AddinManifest)'))</AddinManifestText>
+      <AssemblyVersionText>$([System.IO.File]::ReadAllText('$(AssemblyVersionFile)'))</AssemblyVersionText>
+    </PropertyGroup>
+
+    <Error Condition="!$(AddinManifestText.Contains('version=&quot;$(FullVersion)&quot;'))"
+           Text="ClarionAssistant.addin does not declare version=&quot;$(FullVersion)&quot;. Version.props and the generated manifest have drifted - run Update-Version.ps1 -NoIncrement and rebuild. Shipping this would make AddinFinder offer an update that installing can never clear." />
+
+    <!-- The DLL stamp too: this is what build-installer.ps1's freshness gate compares, so a stale
+         AssemblyVersion.cs under a pinned build produces bins the gate then rejects at package
+         time - much later, and much less obviously.
+
+         PINNED BUILDS ONLY, and that condition is load-bearing rather than cautious. On an
+         UNPINNED build PrebuildVersion runs Update-Version.ps1, which increments the counter and
+         rewrites BOTH Version.props and AssemblyVersion.cs - but MSBuild evaluated
+         $(AssemblyFullVersion) when the project was loaded, i.e. BEFORE the increment. Comparing a
+         freshly-written file against that stale property fails every ordinary dev build. (Observed:
+         "does not stamp 5.8.2.1165" while the file correctly said 5.8.2.1166.)
+
+         Under the pin Update-Version.ps1 does not run at all, so nothing moves underneath us and
+         the property is accurate - which is also the only case where the file can be stale, since
+         the pin is exactly what suppresses its regeneration. So the check is worth nothing where
+         it cannot run, and worth having where it can.
+
+         $(FullVersion) needs no such guard: the increment never touches it. That is the whole
+         point of the Major.Minor.Patch / build split. -->
+    <Error Condition="'$(BuildingInsideVisualStudio)' == 'true' and !$(AssemblyVersionText.Contains('AssemblyFileVersion(&quot;$(AssemblyFullVersion)&quot;)'))"
+           Text="Properties\AssemblyVersion.cs does not stamp $(AssemblyFullVersion). This is a pinned build (BuildingInsideVisualStudio=true), which suppresses regeneration - run Update-Version.ps1 -NoIncrement first, then rebuild." />
+
+    <Message Importance="high" Text="Version check: manifest declares $(FullVersion) - ok" />
   </Target>
 
   <Target Name="ValidateClarionReferences" BeforeTargets="ResolveReferences">
