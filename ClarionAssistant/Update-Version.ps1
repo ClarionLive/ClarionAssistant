@@ -73,7 +73,16 @@ if ($existing -ne $asmContent) {
 
 # --- Generate ClarionAssistant.addin from template ---
 $tpl = Get-Content -LiteralPath $AddinTemplate -Raw
-$out = $tpl -replace '@VERSION@', $fullVersion
+# Two tokens, deliberately different values:
+#   @VERSION@          -> FullVersion (5.9.0). The <Identity version> attribute, which is the ONLY
+#                         thing AddinFinder compares against the release tag. It must stay bare.
+#   @ASSEMBLYVERSION@  -> AssemblyFullVersion (5.9.0.1165). Used for the docked pad's TITLE only,
+#                         so support can still read the build number off the screen. Nothing parses
+#                         that title. Replaced first; '@VERSION@' cannot match inside
+#                         '@ASSEMBLYVERSION@' (the preceding character is 'Y', not '@'), but doing
+#                         the longer token first makes that independent of the shorter one's spelling.
+$out = $tpl -replace '@ASSEMBLYVERSION@', $assemblyVersion
+$out = $out -replace '@VERSION@', $fullVersion
 $existingAddin = if (Test-Path $AddinOut) { Get-Content -LiteralPath $AddinOut -Raw } else { '' }
 if ($existingAddin -ne $out) {
     Set-Content -LiteralPath $AddinOut -Value $out -NoNewline -Encoding UTF8
