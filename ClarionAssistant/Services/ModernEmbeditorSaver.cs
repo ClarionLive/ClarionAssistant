@@ -293,9 +293,22 @@ namespace ClarionAssistant.Services
         /// path: OpenAndMirror -&gt; WriteEmbedContentByLine -&gt; SaveAndCloseEmbeditor -&gt; WaitForEmbedClosed).
         ///
         /// Each edit is (1-based «E:N» slot-start line, COMPLETE replacement code for that slot). Every line is
-        /// validated against the freshly-opened embed structure; if ANY line is not a current embed-slot start,
-        /// NOTHING is written (the embeditor is cancelled). Writes run bottom-to-top so earlier slots' line
-        /// numbers stay valid, verbatim (no re-indent — the caller supplies fully-indented code). UI thread only.
+        /// validated against the mirrored embed structure; if ANY line is not a current embed-slot start,
+        /// NOTHING is written. Writes run bottom-to-top so earlier slots' line numbers stay valid, verbatim
+        /// (no re-indent — the caller supplies fully-indented code). UI thread only.
+        ///
+        /// ADOPTION: when an embeditor is already open on this SAME procedure we write into it rather than
+        /// refuse (see <see cref="ModernEmbeditorLauncher.TryAdoptOpenEmbeditor"/>) — on a large procedure the
+        /// fresh open is the step that fails, so that editor is often the only working handle. Two consequences,
+        /// both deliberate:
+        /// <list type="bullet">
+        /// <item>the save still closes the tab, because <c>SaveAndCloseEmbeditor</c> is the only persist path the
+        /// IDE exposes;</item>
+        /// <item>an ADOPTED editor is never cancelled on a failure. Cancel would silently discard whatever the
+        /// developer had unsaved in that buffer, and since nothing is persisted on any failure path anyway, the
+        /// atomicity guarantee holds without it. We leave the buffer on screen and say so instead.</item>
+        /// </list>
+        /// An embeditor open on a DIFFERENT procedure is refused and left untouched.
         /// </summary>
         public static string ApplyLineEdits(string procName, IList<KeyValuePair<int, string>> edits, out bool ok)
         {
@@ -306,16 +319,49 @@ namespace ClarionAssistant.Services
                 return "Error: no edits supplied.";
 
             var appTree = new AppTreeService();
-            // Reliably re-open the correct procedure and mirror its current source + ranges; leaves the
-            // embeditor open for us to write into (same entry point the interactive save uses).
+
+            // Prefer an embeditor ALREADY open on this procedure over a fresh open. On a large procedure
+            // the fresh open is the fragile step, so the developer-opened editor is frequently the only
+            // handle that worked — refusing it (the old behaviour) made this tool unusable exactly where
+            // it is most needed, and closing their editor to satisfy the precondition throws away that
+            // handle. An editor open on a DIFFERENT procedure is still refused, and left untouched.
             string fsource, openErr;
             List<int[]> franges;
-            if (!ModernEmbeditorLauncher.OpenAndMirror(appTree, procName, out fsource, out franges, out openErr))
-                return "Apply aborted: " + openErr;
+            bool adopted = ModernEmbeditorLauncher.TryAdoptOpenEmbeditor(
+                appTree, procName, out fsource, out franges, out openErr);
+
+            if (!adopted)
+            {
+                // A non-null error means something else is open — say that, don't try to open over it.
+                if (!string.IsNullOrEmpty(openErr))
+                    return "Apply aborted: " + openErr;
+
+                // Nothing open: reliably open the correct procedure and mirror its current source +
+                // ranges; leaves the embeditor open for us to write into (same entry point the
+                // interactive save uses).
+                if (!ModernEmbeditorLauncher.OpenAndMirror(appTree, procName, out fsource, out franges, out openErr))
+                    return "Apply aborted: " + openErr;
+            }
+
+            // An editor WE opened is ours to cancel on failure; one we adopted is the developer's, and
+            // cancelling it would throw away their unsaved buffer. Nothing is persisted on any failure
+            // path either way, so skipping the cancel costs no atomicity.
+            Action cancelIfOurs = () =>
+            {
+                if (!adopted) { try { appTree.CancelEmbeditor(); } catch { } }
+            };
+            // Two adoption notes, because the two failure stages leave the buffer in different states.
+            string adoptedCleanNote = adopted
+                ? " Your open embeditor on '" + procName + "' is untouched and still open."
+                : "";
+            string adoptedDirtyNote = adopted
+                ? " NOTE: your open embeditor on '" + procName + "' now holds partially-written slots in its " +
+                  "BUFFER — nothing was saved, so undo or cancel it in the IDE rather than saving it."
+                : "";
 
             try
             {
-                // Valid write targets = the slot-START lines of the freshly-opened structure.
+                // Valid write targets = the slot-START lines of the mirrored structure.
                 var slotStarts = new HashSet<int>();
                 if (franges != null)
                     foreach (var r in franges)
@@ -326,9 +372,10 @@ namespace ClarionAssistant.Services
                 {
                     if (e.Key <= 0 || !slotStarts.Contains(e.Key))
                     {
-                        try { appTree.CancelEmbeditor(); } catch { }
+                        cancelIfOurs();
                         return "Apply aborted: line " + e.Key + " is not a current embed-slot start in '" +
-                               procName + "'. Re-read with get_embeditor_source and retry. Nothing was written.";
+                               procName + "'. Re-read with get_embeditor_source and retry. Nothing was written." +
+                               adoptedCleanNote;
                     }
                 }
 
@@ -343,8 +390,8 @@ namespace ClarionAssistant.Services
 
                 if (errors.Count > 0)
                 {
-                    try { appTree.CancelEmbeditor(); } catch { } // discard — persist nothing on partial failure
-                    return "Apply FAILED — nothing persisted:\r\n" + string.Join("\r\n", errors);
+                    cancelIfOurs(); // discard — persist nothing on partial failure
+                    return "Apply FAILED — nothing persisted:\r\n" + string.Join("\r\n", errors) + adoptedDirtyNote;
                 }
 
                 string saveRes = appTree.SaveAndCloseEmbeditor();
@@ -356,12 +403,16 @@ namespace ClarionAssistant.Services
                            "close it in the IDE before applying again.";
 
                 ok = true;
-                return "Applied " + edits.Count + " embed edit(s) to '" + procName + "'.";
+                return "Applied " + edits.Count + " embed edit(s) to '" + procName + "'." + (adopted
+                    ? " Adopted the embeditor you already had open on it; the save closed that tab (the IDE has " +
+                      "no save-without-close) — re-open it if you were still working there."
+                    : "");
             }
             catch (Exception ex)
             {
-                try { appTree.CancelEmbeditor(); } catch { }
-                return "Apply error: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message);
+                cancelIfOurs();
+                return "Apply error: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message) +
+                       adoptedDirtyNote;
             }
         }
 

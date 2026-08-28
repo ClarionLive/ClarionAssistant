@@ -24,6 +24,16 @@ namespace ClarionAssistant.Services
         public bool RequiresUiThread { get; set; }
 
         /// <summary>
+        /// Minimum seconds this tool needs on the UI thread before McpServer may abandon
+        /// the call as timed out. 0 (default) = take the server's configured budget.
+        /// Only set it where the handler's OWN internal waits already exceed that budget —
+        /// the embeditor round-trips, whose single native open waits up to 45s (see
+        /// <see cref="ModernEmbeditorLauncher"/>) — so the timeout stays a wedged-UI guard
+        /// everywhere else instead of becoming a blanket grace period.
+        /// </summary>
+        public int UiTimeoutSeconds { get; set; }
+
+        /// <summary>
         /// Optional long-running variant used when the MCP client supplied a
         /// progressToken (ticket 0d788f8b). Second argument is a progress callback
         /// (percent 0..100, message). ALWAYS invoked on a worker thread — even when
@@ -46,6 +56,15 @@ namespace ClarionAssistant.Services
         // Bounded relay queue: drop-when-full keeps a stalled SSE client from growing an
         // unbounded backlog while the UI thread keeps producing progress events.
         private const int StreamEventQueueCapacity = 256;
+
+        // UI-thread budget for the embeditor round-trips (McpTool.UiTimeoutSeconds). One
+        // native open alone waits up to 45s (ModernEmbeditorLauncher.WaitForEmbedOpen) and
+        // OpenAndMirror may retry it at a slower locator speed, on top of the mirror read,
+        // the slot writes and the save+close handshake — so these tools' own internal budget
+        // already exceeds the 30s server default and the old outer window could never let a
+        // large procedure (a ~3k-line generated UpdateNalog) finish. 180s covers that with
+        // headroom while still bounding a genuinely wedged UI.
+        private const int EmbedRoundTripTimeoutSeconds = 180;
 
         private readonly Dictionary<string, McpTool> _tools = new Dictionary<string, McpTool>(StringComparer.OrdinalIgnoreCase);
         private readonly EditorService _editorService;
@@ -114,6 +133,16 @@ namespace ClarionAssistant.Services
         {
             McpTool tool;
             return _tools.TryGetValue(toolName, out tool) && tool.RequiresUiThread;
+        }
+
+        /// <summary>
+        /// The tool's declared minimum UI-thread budget in seconds, or 0 when it takes the
+        /// server default. See <see cref="McpTool.UiTimeoutSeconds"/>.
+        /// </summary>
+        public int UiTimeoutSeconds(string toolName)
+        {
+            McpTool tool;
+            return _tools.TryGetValue(toolName, out tool) ? tool.UiTimeoutSeconds : 0;
         }
 
         public object ExecuteTool(string name, Dictionary<string, object> arguments)
@@ -640,6 +669,8 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                     new Dictionary<string, string> { { "procedure_name", "Name of the procedure to open" } },
                     new[] { "procedure_name" }),
                 RequiresUiThread = true,
+                // Handler itself waits up to 45s for the open — see EmbedRoundTripTimeoutSeconds.
+                UiTimeoutSeconds = EmbedRoundTripTimeoutSeconds,
                 Handler = args =>
                 {
                     string name = McpJsonRpc.GetString(args, "procedure_name");
@@ -716,6 +747,9 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                 Description = "Save changes and close the currently open embeditor. Use this when done editing embed code.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
+                // The native save regenerates the module; on a large procedure that outruns
+                // the 30s default — see EmbedRoundTripTimeoutSeconds.
+                UiTimeoutSeconds = EmbedRoundTripTimeoutSeconds,
                 Handler = args => _appTree.SaveAndCloseEmbeditor()
             });
 
@@ -1039,6 +1073,10 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                     "Embeditor save path). 'edits' is a JSON array of {\"line_number\":N,\"code\":\"...\"}: line_number " +
                     "is the 1-based «E:N» slot start (from get_embeditor_source/search_embeditor_source), code is the " +
                     "COMPLETE replacement for that slot (end with a trailing newline). Edits are applied bottom-to-top. " +
+                    "If an embeditor is ALREADY open on the SAME procedure it is adopted rather than refused — the edits " +
+                    "go into that buffer and the save closes it (the IDE has no save-without-close), so re-open it if you " +
+                    "want to keep working there. An embeditor open on a DIFFERENT procedure is never touched: the call " +
+                    "aborts and asks you to close it. " +
                     "If ANY line_number is not a current embed-slot start, NOTHING is written. The procedure is opened, " +
                     "written, saved and closed automatically — do NOT wrap this in open_procedure_embed / " +
                     "save_and_close_embeditor.",
@@ -1049,6 +1087,9 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                                "line_number = 1-based «E:N» slot start; code = complete replacement for that slot." }
                 }, new[] { "procedure_name", "edits" }),
                 RequiresUiThread = true,
+                // Whole open->write->save->close round-trip on one UI-thread call — see
+                // EmbedRoundTripTimeoutSeconds.
+                UiTimeoutSeconds = EmbedRoundTripTimeoutSeconds,
                 Handler = args =>
                 {
                     string proc = McpJsonRpc.GetString(args, "procedure_name");
@@ -1164,6 +1205,9 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                               "Run once with an .app open.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
+                // The cold ABC load is the slowest open of the session — see
+                // EmbedRoundTripTimeoutSeconds.
+                UiTimeoutSeconds = EmbedRoundTripTimeoutSeconds,
                 Handler = args => ModernEmbeditorLauncher.WarmupAbc()
             });
 
