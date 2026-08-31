@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -316,8 +316,26 @@ namespace ClarionAssistant.Dialogs
 
             string modelRegistryJson = _settings.GetModelRegistryJson();
 
+            // About shows the FULL four-part version, e.g. "5.9.0.1165".
+            //
+            // This used to be Major + "." + Minor, which rendered "5.8" and read as a deliberately
+            // tidy marketing version rather than a truncation - plausible for exactly as long as the
+            // third component was a meaningless build counter. Now that Major.Minor.Patch IS the
+            // released version, dropping it loses the digit that separates 5.9.0 from 5.9.1, which
+            // is the number a user reads back in a bug report.
+            //
+            // MIND THE FIELD NAMES: the assembly is stamped 5.9.0.1165, so System.Version.Build is
+            // our PATCH and System.Version.Revision is our build counter. The .NET vocabulary is
+            // offset by one from ours - do not "correct" this to ver.Build meaning the build number.
+            //
+            // Deliberately read from the ASSEMBLY, never from the .addin manifest's
+            // <Identity version>. AddinFinder compares Identity against the release tag and will only
+            // move a recorded version forward, so that string must stay exactly the bare release
+            // version; routing a display string through it is how CA Debugger shipped v1.1.0 with a
+            // manifest declaring 1.0.0 and left every install permanently offered an update that
+            // reinstalling could not clear.
             var ver = Assembly.GetExecutingAssembly().GetName().Version;
-            string displayVersion = ver.Major + "." + ver.Minor;
+            string displayVersion = ver.ToString();
 
             string json = "{\"type\":\"setSettings\",\"settings\":{"
                 + "\"version\":\"" + displayVersion + "\""
