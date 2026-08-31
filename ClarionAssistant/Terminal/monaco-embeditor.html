@@ -4863,13 +4863,41 @@
         return String(v);
     }
 
-    // GH #126: with "Follow Clarion's editor options" ticked the IDE's indentation wins at apply time, so
-    // an imported tabSize/insertSpaces is stored but has no visible effect. Say so on the row rather than
-    // letting the developer import it and conclude the feature is broken.
+    // GH #126: with "Follow Clarion's editor options" ticked the IDE's value wins at apply time, so an
+    // imported setting is stored but has no visible effect. Say so on the row rather than letting the
+    // developer import it and conclude the feature is broken.
+    //
+    // FOUR fields are follow-owned, not two. This listed only tabSize/insertSpaces because #126 was
+    // about indentation; the font pair was brought under follow-mode later in syncFollowIdeUi and this
+    // function was never extended to match. The two then disagreed, and the preview promised a font
+    // change it could not deliver — reported by John, who imported fontSize 13 -> 17, saw the box still
+    // reading 13, and had to untick follow-mode to find the 17 had been stored correctly all along.
+    // Precisely the outcome the caveat exists to prevent.
+    //
+    // The font pair is CONDITIONAL, and mirroring that condition matters as much as the caveat itself:
+    // the host omits ideFontSize/ideFontFamily when the IDE's font descriptor did not parse, and the
+    // stored pref then genuinely does win. An unconditional warning would be wrong in exactly the case
+    // where the import DOES take effect. Keep this in step with syncFollowIdeUi — the two predicates
+    // are the same fact stated twice, which is how they drifted apart in the first place.
     function vscCaveat(key) {
-        if (key !== 'tabSize' && key !== 'insertSpaces') return '';
         var f = document.getElementById('setFollowIdeIndent');
         if (!f || !f.checked) return '';
+
+        // typeof guard, not a bare reference: _ideOpts is declared far above this block, and the
+        // page-import test harness evaluates only a SLICE of this file (the VS Code import section)
+        // in a scope that does not contain the declaration. A bare `_ideOpts` throws ReferenceError
+        // there the moment a font row is built, which takes the whole preview down with it — no
+        // rows, no Import button, and failures that look nothing like their cause. Production is
+        // unaffected either way; this simply refuses to depend on a binding it cannot see.
+        var ide = (typeof _ideOpts !== 'undefined') ? _ideOpts : null;
+
+        var owned =
+            (key === 'tabSize' || key === 'insertSpaces') ? true :
+            (key === 'fontSize')   ? (!!ide && typeof ide.fontSize === 'number') :
+            (key === 'fontFamily') ? (!!ide && typeof ide.fontFamily === 'string' && ide.fontFamily !== '') :
+            false;
+
+        if (!owned) return '';
         return 'stored, but “Follow Clarion’s editor options” is on — the IDE’s value wins';
     }
 
