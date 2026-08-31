@@ -57,7 +57,42 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ## What's New (Unreleased)
 
-*Nothing yet.* Work landed since 5.8.1 is documented here as it merges — see [the release-docs workflow](docs/releases/README.md), and run `Check-ReleaseDocs.ps1` before cutting a release.
+> **DRAFT for 5.9.0.** Written by Charlie for John to edit. Coverage is complete against the 22 commits since v5.8.1; the voice is not final.
+
+**Why 5.9.0 and not 5.8.2.** Clarion Assistant is joining the **Clarion Addin Registry**, so it can be found and updated from **AddinFinder** inside the IDE. That required our version number to become a single value that the addin manifest, the installer and the git tag all agree on &mdash; and it could not be 5.8.2. See the versioning entry below.
+
+### CA Embeditor: the keys that used to do nothing now reach the IDE ([#192](https://github.com/ClarionLive/ClarionAssistant/issues/192))
+
+Inside a CA Embeditor the editor swallowed most of Clarion's own shortcuts. **Ctrl+F4** (close), **Ctrl+O** (open) and **Alt+&lt;letter&gt;** now reach the IDE, the last of these by matching the letter against the real menu mnemonics rather than a hardcoded list &mdash; so it keeps working if the menus change. Keys are routed through the workbench menu itself, which means the IDE does what it would normally do rather than us reimplementing it.
+
+### CA Embeditor: Ctrl+F4 on unsaved work now asks, because Clarion asks
+
+Closing a dirty embeditor with Ctrl+F4 discarded the edits **silently**. The CA Editor prompted and the embeditor did not, which made it look arbitrary. The prompt was never broken: Clarion raises *"Save Changes in Embed Editor?"* by consulting the **native** editor's dirty flag, and our overlay never set it, so Clarion saw a clean embed and closed. We now flush the Monaco edits into the native embed and set that flag *before* the close is dispatched, so **Clarion raises its own dialog** &mdash; exact parity by construction, nothing imitated. Answering **Yes** saves the edits you can see rather than the stale native buffer underneath, which would have been a quieter and worse bug than the missing prompt. The toolbar's **red X** asks too, matched word for word to Clarion's dialog, and answering **Cancel** leaves you editing with your work still protected.
+
+### CA Embeditor: an orphaned overlay is now torn down for real
+
+When the native embed closed underneath the overlay &mdash; Errors-pane navigation opening the module source, a native cancel, an app-gen regeneration &mdash; the overlay kept its text and still looked healthy, while Save reported *"nothing to save"* and Cancel blanked the buffer. A teardown hook existed for exactly this and had **never once fired**: it subscribed to a `Disposed` event that does not exist on that class in this Clarion fork, and the null check meant to guard the subscription swallowed the failure, so the safety net read as present in the source while being connected to nothing.
+
+### Ctrl+Q now shows Clarion's own confirmation, not ours ([#193](https://github.com/ClarionLive/ClarionAssistant/issues/193))
+
+The Ctrl+Q confirmation was a web-styled dialog that looked nothing like the rest of the IDE. It is now the **native Windows dialog**, and it is scoped to the embeditor rather than firing globally.
+
+<!-- release-docs: covered=installer -->
+### Installing no longer corrupts non-ASCII characters in your Claude Code settings ([#200](https://github.com/ClarionLive/ClarionAssistant/issues/200))
+
+A follow-on to [#190](https://github.com/ClarionLive/ClarionAssistant/issues/190), and the same root cause: the installer's configuration step runs under **Windows PowerShell 5.1**, where two defaults are not what they appear. Reading `settings.json` without naming an encoding decoded it as the machine's **ANSI codepage**, so every non-ASCII character was mangled on the way *in* and written back mangled &mdash; a typographic apostrophe became `â€™`. Writing it back with `-Encoding UTF8` added a **byte-order mark** to a file that belongs to Claude Code, because that same token means *with* BOM on 5.1 and *without* on PowerShell 7. And a **successful** merge kept no backup at all: a copy was only ever written when the installer *refused* to write, which is why the 5.8 notes pointed people at a backup file the normal path never produced. All three are fixed, a backup is now written before the file is overwritten, and an already-BOM'd file from 5.8 is read correctly and cleaned. **Characters already mangled on disk cannot be recovered** &mdash; the original bytes are gone. The installer's configuration script is now covered by a regression test that runs it under a real 5.1 host and checks the result byte by byte.
+
+### Version numbers now mean one thing ([#200](https://github.com/ClarionLive/ClarionAssistant/issues/200) groundwork for AddinFinder)
+
+The released version is now **Major.Minor.Patch** &mdash; one number, shared by `Version.props`, the addin manifest and the git tag. Previously the third component was a build counter that incremented on **every compile**, so the manifest said `5.8.1165` while the release was tagged `v5.8.1` and the installer carried a third, hand-maintained `5.8.1`. AddinFinder compares the manifest against the release tag, so any disagreement shows as *"Update available"* permanently, and reinstalling cannot clear it.
+
+**This is why the jump is to 5.9.0 rather than 5.8.2.** AddinFinder only ever lets a recorded version move *forward*, and it compares component by component &mdash; so against a manifest already reporting `5.8.1165`, the number `5.8.2` compares as **lower** (2 against 1165) and would have left every existing user stuck on that message forever, while looking perfectly correct on any fresh install. The build counter has not gone away: it still increments and still appears in the DLL's file properties and in the docked pad's title (`5.9.0.1165`), where it is useful for support.
+
+### Thanks
+
+- **[@BoxSoft](https://github.com/BoxSoft)** &mdash; [#192](https://github.com/ClarionLive/ClarionAssistant/issues/192) and [#193](https://github.com/ClarionLive/ClarionAssistant/issues/193). Both reports named the specific keys and the specific visual mismatch, which is what made them fixable rather than a general complaint about feel.
+- **[@KevinErskine](https://github.com/KevinErskine)** &mdash; [#200](https://github.com/ClarionLive/ClarionAssistant/issues/200), and for the second time a gold-vs-live pair of his settings file. One character differed, and having both copies turned "something changed" into a measurable byte sequence. He also answered the follow-up question that ruled out a fourth defect.
+- **[Mark Sarson](https://github.com/msarson)** &mdash; for the Clarion Addin Registry and AddinFinder, whose source settled how our version numbers have to behave.
 
 ---
 
@@ -283,9 +318,26 @@ The installer bundles **COM for Clarion**, a complete toolkit for creating .NET 
 | **Claude Code CLI** | [Download from Anthropic](https://claude.ai/download) |
 | **WebView2 Runtime** | Pre-installed on Windows 11; [download for Windows 10](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) |
 
+### What leaves your machine
+
+Clarion Assistant is a front end for the **Claude Code CLI**, and that CLI talks to Anthropic's API
+over the internet. When you use the assistant, what you type and the file contents it reads on your
+behalf &mdash; source, embed code, dictionary and schema details, build output &mdash; are sent to
+Anthropic to produce a reply. The IDE tools described in this README are how the assistant reads
+that context, so anything you point it at is potentially part of a request.
+
+That is the product working as intended rather than a hidden behaviour, but it is your code, so it
+should be stated plainly: **do not use it on material you are not permitted to send to a third-party
+API.** Anthropic's terms and privacy policy govern what happens to it &mdash; see
+[Anthropic Privacy](https://www.anthropic.com/legal/privacy). Your Claude Code account and its
+settings, not this addin, control that relationship.
+
+A few other features reach the network only when you explicitly invoke them: ingesting
+documentation from a URL, GitHub operations, and the marketplace browser.
+
 ### Install
 
-1. **[Download the latest installer](https://github.com/ClarionLive/ClarionAssistant/releases/tag/v5.3.0)** (code-signed)
+1. **[Download the latest installer](https://github.com/ClarionLive/ClarionAssistant/releases/latest)** (code-signed)
 2. Close the Clarion IDE
 3. Run the installer &mdash; select which Clarion versions to install for
 4. Restart the Clarion IDE

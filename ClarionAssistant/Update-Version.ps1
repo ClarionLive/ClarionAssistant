@@ -1,7 +1,8 @@
 ﻿# Update-Version.ps1
 # Pre-build hook called by ClarionAssistant.csproj.
 # 1. Reads Version.props
-# 2. Increments VersionBuild by 1 (unless -NoIncrement is passed)
+# 2. Increments VersionBuild by 1 (unless -NoIncrement is passed). FullVersion is NOT touched --
+#    it is the released Major.Minor.Patch and must keep matching the git tag.
 # 3. Writes Version.props back
 # 4. Regenerates Properties\AssemblyVersion.cs and ClarionAssistant.addin from templates
 #
@@ -28,20 +29,24 @@ if (-not (Test-Path $AddinTemplate))  { throw "Addin template not found: $AddinT
 $pg = $xml.Project.PropertyGroup
 $major = [int]$pg.VersionMajor
 $minor = [int]$pg.VersionMinor
+$patch = [int]$pg.VersionPatch
 $build = [int]$pg.VersionBuild
 
 # --- Increment build (unless suppressed) ---
+# Only VersionBuild moves here. FullVersion (Major.Minor.Patch) is the RELEASED version and is
+# bumped by hand via Bump-Version.ps1 -- it has to stay equal to the git tag and to the manifest's
+# <Identity version>, so a compile must never change it. See the comment in Version.props.
 if (-not $NoIncrement) {
     $build = $build + 1
     $pg.VersionBuild = "$build"
     # Recompute derived properties so they stay in sync inside Version.props
-    $pg.FullVersion         = "$major.$minor.$build"
-    $pg.AssemblyFullVersion = "$major.$minor.$build.0"
+    $pg.FullVersion         = "$major.$minor.$patch"
+    $pg.AssemblyFullVersion = "$major.$minor.$patch.$build"
     $xml.Save($VersionProps)
 }
 
-$fullVersion    = "$major.$minor.$build"
-$assemblyVersion = "$major.$minor.$build.0"
+$fullVersion     = "$major.$minor.$patch"
+$assemblyVersion = "$major.$minor.$patch.$build"
 
 Write-Host "ClarionAssistant version: $fullVersion" -ForegroundColor Cyan
 
@@ -68,7 +73,16 @@ if ($existing -ne $asmContent) {
 
 # --- Generate ClarionAssistant.addin from template ---
 $tpl = Get-Content -LiteralPath $AddinTemplate -Raw
-$out = $tpl -replace '@VERSION@', $fullVersion
+# Two tokens, deliberately different values:
+#   @VERSION@          -> FullVersion (5.9.0). The <Identity version> attribute, which is the ONLY
+#                         thing AddinFinder compares against the release tag. It must stay bare.
+#   @ASSEMBLYVERSION@  -> AssemblyFullVersion (5.9.0.1165). Used for the docked pad's TITLE only,
+#                         so support can still read the build number off the screen. Nothing parses
+#                         that title. Replaced first; '@VERSION@' cannot match inside
+#                         '@ASSEMBLYVERSION@' (the preceding character is 'Y', not '@'), but doing
+#                         the longer token first makes that independent of the shorter one's spelling.
+$out = $tpl -replace '@ASSEMBLYVERSION@', $assemblyVersion
+$out = $out -replace '@VERSION@', $fullVersion
 $existingAddin = if (Test-Path $AddinOut) { Get-Content -LiteralPath $AddinOut -Raw } else { '' }
 if ($existingAddin -ne $out) {
     Set-Content -LiteralPath $AddinOut -Value $out -NoNewline -Encoding UTF8

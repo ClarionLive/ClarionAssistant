@@ -2,16 +2,61 @@
   <!--
     Single source of truth for ClarionAssistant version.
 
-    VersionBuild auto-increments on every MSBuild compile (see PrebuildVersion target in csproj).
-    To bump VersionMajor or VersionMinor (or set VersionBuild manually), run:
-        .\Bump-Version.ps1 -Major 4 -Minor 7
-        .\Bump-Version.ps1 -Build 12345
+    FullVersion (Major.Minor.Patch) is THE RELEASED VERSION. Three things must agree on it
+    exactly, or AddinFinder inside the Clarion IDE shows "Update available" forever:
+
+        1. this FullVersion
+        2. <Identity version> in ClarionAssistant.addin  (stamped from FullVersion by Update-Version.ps1)
+        3. the git release tag, minus the leading 'v'    (v5.8.2 -> 5.8.2)
+
+    Why it has to be exact: AddinFinder compares the manifest on disk against the latest GitHub
+    release tag with InstalledAddinStore.CompareDotted, which walks to the longer of the two
+    strings and reads a MISSING component as 0. So 5.9.0 == 5.9.0.0, but 5.8.1165 != 5.9.0 and no
+    amount of reinstalling clears it - the manifest just keeps reasserting the same number.
+    installer\ClarionAssistant.iss no longer holds a fourth copy; build-installer.ps1 passes this
+    value to ISCC as /DMyAppVersion and the .iss refuses to compile without it.
+
+    ** A NEW VERSION MUST BE NUMERICALLY GREATER THAN EVERY VERSION ALREADY SHIPPED, COMPONENT BY
+    COMPONENT - NOT MERELY DIFFERENT. ** This is the trap that nearly shipped as 5.8.2.
+
+    AddinFinder's InstalledAddinStore.Reconcile only lets the manifest move a recorded version
+    FORWARD:
+
+        if (onDisk.Length > 0 &&
+            (entry.Version.Length == 0 || CompareDotted(onDisk, entry.Version) > 0))
+        { entry.Version = onDisk; }
+
+    Mark added that because FlattenCode shipped 1.0.1 through 1.0.3 all declaring version="1.0",
+    and trusting the manifest overwrote the real version with a lower one.
+
+    We auto-incremented the third component for years, so existing users carry a store entry
+    adopted at 5.8.1137 / 5.8.1165. Ship 5.8.2 and CompareDotted("5.8.2","5.8.1137") compares 2
+    against 1137 -> -1, NOT > 0. The store refuses the update, keeps 5.8.1137, and AddinFinder
+    reports "Update available" forever - the exact bug this scheme exists to fix, arriving through
+    a different door. Fresh installs are unaffected (Adopt takes the manifest value directly), so
+    it would have looked fine in testing and broken only for existing users.
+
+    5.9.0 clears it: 9 > 8 at the second component. Verified against the real algorithm.
+    Before choosing any future number, check it against the LAST AUTO-INCREMENTED build we shipped
+    (5.8.1165), not just against the last tag.
+
+    FullVersion does NOT auto-increment. Bump it by hand at a release cut:
+        .\Bump-Version.ps1 -Patch 1          # 5.9.0 -> 5.9.1
+        .\Bump-Version.ps1 -Minor 10 -Patch 0 # 5.9.0 -> 5.10.0
+    Major/Minor/Patch changes are release cuts and run the release-docs gate.
+
+    VersionBuild still auto-increments on every MSBuild compile (PrebuildVersion target in the
+    csproj) and appears ONLY in AssemblyFullVersion - i.e. in the DLL's file properties and crash
+    logs, where it is useful for support, and nowhere that has to match a git tag. AddinFinder
+    never reads the assembly.
+        .\Bump-Version.ps1 -Build 12345      # set the counter by hand (not a release cut)
   -->
   <PropertyGroup>
     <VersionMajor>5</VersionMajor>
-    <VersionMinor>8</VersionMinor>
+    <VersionMinor>9</VersionMinor>
+    <VersionPatch>0</VersionPatch>
     <VersionBuild>1165</VersionBuild>
-    <FullVersion>5.8.1165</FullVersion>
-    <AssemblyFullVersion>5.8.1165.0</AssemblyFullVersion>
+    <FullVersion>5.9.0</FullVersion>
+    <AssemblyFullVersion>5.9.0.1165</AssemblyFullVersion>
   </PropertyGroup>
 </Project>
