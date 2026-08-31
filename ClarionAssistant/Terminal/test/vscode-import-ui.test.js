@@ -71,7 +71,11 @@ function check(name, cond, detail) {
 function section(t) { console.log('\n' + t); }
 
 // ---------- build the page ----------
-function makeEnv() {
+// opts.ideOpts models the page's _ideOpts: what the IDE reports for the fields follow-mode owns.
+// null means the IDE's font descriptor did not parse, so the stored pref wins even with follow on —
+// which is a real state, and the one where the font rows must NOT carry a caveat.
+function makeEnv(opts) {
+    opts = opts || {};
     const dom = new JSDOM(
         '<!doctype html><html><body><div id="settingsPanel">' + gearMarkup + '</div><div id="toast"></div></body></html>',
         { runScripts: 'outside-only', pretendToBeVisual: true });
@@ -96,6 +100,22 @@ function makeEnv() {
         window: w,
         setTimeout: w.setTimeout.bind(w),
         Promise: Promise,
+        // PAGE STATE THE SLICE REFERENCES BUT DOES NOT DECLARE. Both live far above the extracted
+        // region (_ideOpts ~4419, _storedPrefs ~4427; the slice starts at the "Import from VS Code"
+        // banner ~4800), and the slice is evaluated as a `new Function` body whose only bindings are
+        // the keys of this object. Omitting them did not fail loudly — it threw ReferenceError at
+        // CALL time, on the first vscWriteControl, AFTER that control's value had already been
+        // written. The result read exactly like a product bug: one setting applied, the rest not,
+        // onSettingChanged never reached, no toast, preview left open. Eight assertions failed that
+        // way from at least v5.8.1 until 2026-08-31, and it stayed invisible because jsdom is a
+        // dev-only dependency, so the harness reported "could not run" wherever it was absent.
+        //
+        // Seed _storedPrefs with the importable keys rather than {} — vscWriteControl only updates a
+        // key it already hasOwnProperty, so an empty object silently skips the stored-pref branch and
+        // leaves it untested. That branch is load-bearing: without it an imported font is written to a
+        // control that storedPref() then overrides on commit, and the value vanishes.
+        _storedPrefs: { tabSize: 2, insertSpaces: true, fontSize: 13, fontFamily: '', wordWrap: false },
+        _ideOpts: (opts.ideOpts !== undefined) ? opts.ideOpts : null,
         onSettingChanged: function () { spy.settingChanged++; },
         showToast: function (m, ok) { spy.toasts.push({ m, ok }); },
         requestFromHost: function (action, payload, timeoutMs) {
@@ -363,8 +383,17 @@ section('Follow-IDE caveat (GH #126)');
         const prev = c.parentNode.previousElementSibling;
         return prev && /^(Tab size|Insert spaces)/.test(prev.querySelector('.vl').textContent);
     }));
-    check('caveat is NOT attached to unrelated rows', Array.from(caveats).every(c =>
-        !/Font size/.test(c.parentNode.previousElementSibling.querySelector('.vl').textContent)));
+    // This env has ideOpts null — the IDE reported no usable font — so the font rows are NOT
+    // follow-owned here and must carry no caveat. Asserted against Font size specifically because
+    // that is the row the import offers above.
+    //
+    // NOTE: this assertion previously read "not attached to unrelated rows" and was believed to hold
+    // universally. It does not. fontSize/fontFamily ARE follow-owned when the IDE reports a font, and
+    // the block below covers that case. The old wording passed only because the harness left
+    // _ideOpts undefined, so it accidentally asserted the absence of a caveat that was in fact
+    // missing in the product too — the bug this test would otherwise have caught.
+    check('caveat is NOT on the font rows when the IDE reports no font', Array.from(caveats).every(c =>
+        !/Font size|Font family/.test(c.parentNode.previousElementSibling.querySelector('.vl').textContent)));
     check('follow-IDE rows are still importable (stored prefs) — 3 settings + 2 caveat rows',
         e.result().querySelectorAll('.vsc-rows tr').length === 5 &&
         e.result().querySelectorAll('.vsc-rows tr .vl').length === 3);
@@ -377,6 +406,39 @@ section('Follow-IDE caveat (GH #126)');
     e2.api.vscRequest(false);
     await e2.reply({ found: true, path: 'p', error: '', values: { tabSize: 4 }, skipped: [], cancelled: false });
     check('follow-IDE off → no caveat', e2.result().querySelectorAll('.vcaveat').length === 0);
+
+    // The font pair is follow-owned too, CONDITIONALLY — only when the IDE actually reports a font.
+    // Reported by John: he imported fontSize 13 -> 17, the preview offered it with no caveat, the box
+    // still read 13 afterwards, and unticking follow-mode revealed the 17 had been stored correctly
+    // all along. vscCaveat listed only tabSize/insertSpaces because #126 was about indentation; the
+    // font fields joined follow-mode later in syncFollowIdeUi and the two predicates drifted apart.
+    const e3 = makeEnv({ ideOpts: { fontSize: 13, fontFamily: 'Consolas' } });
+    e3.seedPanel();
+    e3.$('setFollowIdeIndent').checked = true;
+    e3.api.vscRequest(false);
+    await e3.reply({ found: true, path: 'p', error: '',
+                     values: { fontSize: 17, fontFamily: 'Courier New', wordWrap: true },
+                     skipped: [], cancelled: false });
+    const c3 = Array.from(e3.result().querySelectorAll('.vcaveat'));
+    const annotated = c3.map(c => c.parentNode.previousElementSibling.querySelector('.vl').textContent);
+    check('IDE reports a font → caveat on Font size',
+        annotated.some(t => /^Font size/.test(t)), JSON.stringify(annotated));
+    check('IDE reports a font → caveat on Font family',
+        annotated.some(t => /^Font family/.test(t)), JSON.stringify(annotated));
+    check('caveat still NOT on a row follow-mode does not own (Word wrap)',
+        !annotated.some(t => /^Word wrap/.test(t)), JSON.stringify(annotated));
+
+    // The other half of "conditionally": the host omits ideFontSize when the IDE's font descriptor
+    // did not parse, and the stored pref then genuinely does win — so warning there would be wrong in
+    // exactly the case where the import DOES take effect.
+    const e4 = makeEnv({ ideOpts: { fontFamily: 'Consolas' } });   // fontSize absent on purpose
+    e4.seedPanel();
+    e4.$('setFollowIdeIndent').checked = true;
+    e4.api.vscRequest(false);
+    await e4.reply({ found: true, path: 'p', error: '', values: { fontSize: 17 }, skipped: [], cancelled: false });
+    check('IDE reports no fontSize → no caveat on Font size',
+        e4.result().querySelectorAll('.vcaveat').length === 0,
+        'got ' + e4.result().querySelectorAll('.vcaveat').length);
 }
 
 section('Escaping (settings.json content is attacker-influenceable)');

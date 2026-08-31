@@ -118,7 +118,35 @@ if (-not $CSharpOnly -and -not $InstallerOnly) {
         $failures += "node harnesses (no node.exe)"
     }
     else {
-        $jsTests = Get-ChildItem (Join-Path $RepoDir "Terminal\test") -Filter *.test.js -ErrorAction SilentlyContinue |
+        # Install the dev-only test dependencies if they are not there yet.
+        #
+        # Terminal\test\package.json has declared jsdom for a long time and is committed — what was
+        # missing was anyone ever installing it. So on a fresh clone, or in any git worktree, the one
+        # harness that needs it exited 2 and this script reported "dependency missing", which reads as
+        # a problem with your machine rather than with the code. vscode-import-ui.test.js was failing
+        # 8 assertions from at least v5.8.1 until 2026-08-31 and nobody saw it, because it only ever
+        # turned red on a checkout that happened to have node_modules populated.
+        #
+        # npm install, not npm ci: there is no package-lock.json in that folder. If npm is absent or
+        # offline this fails and the harness still exits 2 below, which is the correct outcome — it
+        # genuinely could not run.
+        $testDir = Join-Path $RepoDir "Terminal\test"
+        if ((Test-Path (Join-Path $testDir "package.json")) -and
+            -not (Test-Path (Join-Path $testDir "node_modules\jsdom"))) {
+            $npm = (Get-Command npm -ErrorAction SilentlyContinue)
+            if ($npm) {
+                Write-Host ""
+                Write-Host "Installing dev-only test dependencies (Terminal\test)..." -ForegroundColor Cyan
+                Push-Location $testDir
+                try { & npm install --no-audit --no-fund --silent 2>&1 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray } }
+                finally { Pop-Location }
+            }
+            else {
+                Write-Host "npm not found — cannot install the node test dependencies." -ForegroundColor Yellow
+            }
+        }
+
+        $jsTests = Get-ChildItem $testDir -Filter *.test.js -ErrorAction SilentlyContinue |
                    Sort-Object Name
         foreach ($t in $jsTests) {
             Section $t.Name
