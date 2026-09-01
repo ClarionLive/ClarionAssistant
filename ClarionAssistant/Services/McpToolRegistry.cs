@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
@@ -1460,7 +1460,6 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "append_to_file",
-IdeOnly = true,
                 Description = "Append text to the end of an existing file",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -1479,8 +1478,23 @@ IdeOnly = true,
                     // Normalize appended Clarion source to CRLF (issue #34). The
                     // existing file's encoding is left untouched on append.
                     text = ClarionSourceText.NormalizeIfClarion(path, text);
-                    var result = _editorService.AppendTextToFile(path, text);
-                    return result.Success ? "Text appended to " + path : "Error: " + result.ErrorMessage;
+
+                    // Appends DIRECTLY rather than through IEditorService. That indirection made
+                    // this tool look IDE-coupled and it was withheld from the standalone server
+                    // for a whole release cycle — but EditorService.AppendTextToFile is a bare
+                    // File.AppendAllText that never consults the editor, the open buffer, or
+                    // anything else in the IDE. It was filed on the editor service, not dependent
+                    // on it. Same bytes, same behaviour in the addin, minus a coupling that was
+                    // never real. (EditorService keeps the method; ClassHelperControl uses it.)
+                    try
+                    {
+                        File.AppendAllText(path, "\r\n" + text);
+                        return "Text appended to " + path;
+                    }
+                    catch (Exception ex)
+                    {
+                        return "Error: " + ex.Message;
+                    }
                 }
             });
 
@@ -3552,7 +3566,6 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "search_content",
-IdeOnly = true,
                 Description = "Search for text content within files using Everything. Requires Everything content indexing to be enabled.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
@@ -3933,7 +3946,6 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "get_ca_project_info",
-IdeOnly = true,
                 Description = "Get ClarionAssistant project info for a folder, including linked GitHub account and repository name. Use this to auto-populate marketplace submissions and GitHub operations instead of asking the user.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {

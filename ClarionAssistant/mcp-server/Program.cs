@@ -137,6 +137,45 @@ namespace ClarionAssistant.McpServer
                 null, new ClarionAssistant.Services.ClarionClassParser());
 
             var ui = new StandaloneUiDispatcher();
+
+            // Services the ADDIN injects and this host previously did not. Without them
+            // add_knowledge / query_knowledge / save_session_summary and the four instance
+            // coordination tools registered and then answered "<x> not initialized" on every
+            // call — seven tools that could only fail, which is the exact thing McpTool.IdeOnly
+            // exists to prevent. The gate missed them because it scanned for IDE-service fields
+            // (_editorService, _appTree, _ideProbe, _diffService) and these are neither IDE
+            // services nor gated: they are plain SQLite-backed services that simply had no
+            // constructor call outside the addin. Found by CC testing the live server, not by
+            // the gate.
+            //
+            // Both use the SAME %APPDATA%\ClarionAssistant databases as the addin, deliberately.
+            // Knowledge is meant to be one memory across every host — a standalone session that
+            // learned something the IDE session cannot recall would be worse than no memory at
+            // all. And instance coordination only means anything if both hosts register in the
+            // same place: a developer in the IDE and a colleague in Sublime on one solution is
+            // precisely the conflict this is for.
+            //
+            // Constructed defensively: each opens a database, and a locked or corrupt file must
+            // degrade to "that tool reports it is unavailable" rather than take down a server
+            // whose other 50-odd tools are fine.
+            try
+            {
+                registry.SetKnowledgeService(new ClarionAssistant.Services.KnowledgeService());
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(ServerName + ": knowledge service unavailable - " + ex.Message);
+            }
+
+            try
+            {
+                registry.SetInstanceCoordination(new ClarionAssistant.Services.InstanceCoordinationService());
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(ServerName + ": instance coordination unavailable - " + ex.Message);
+            }
+
             if (workspace != null)
             {
                 // MUST happen before serving. The registry reads _workspace inside the handlers,

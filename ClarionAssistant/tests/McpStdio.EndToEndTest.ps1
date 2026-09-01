@@ -129,7 +129,7 @@ if ($parsed.Count -ge 1) {
 
 if ($parsed.Count -ge 2) {
     $toolCount = @($parsed[1].result.tools).Count
-    Assert-That ($toolCount -eq 57) "expected 57 tools advertised standalone, got $toolCount"
+    Assert-That ($toolCount -eq 60) "expected 60 tools advertised standalone, got $toolCount"
 
     # The gate must hold on the WIRE, not just in the registry: no IDE-only tool may be listed.
     $names = @($parsed[1].result.tools | ForEach-Object { $_.name })
