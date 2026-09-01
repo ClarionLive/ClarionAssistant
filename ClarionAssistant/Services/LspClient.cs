@@ -135,6 +135,48 @@ namespace ClarionAssistant.Services
                     }
                 };
 
+                // A BOM ON THE CHILD'S STDIN IS WHY THE HANDSHAKE COULD NEVER COMPLETE.
+                //
+                // .NET builds the StreamWriter for a redirected stdin from Console.InputEncoding,
+                // and sets AutoFlush = true as it constructs it — which flushes the encoding's
+                // preamble onto the pipe. Where that encoding is UTF-8 WITH BOM (it is, in a
+                // console host), three bytes land ahead of our first header, so the server reads
+                // "EF BB BF Content-Length: ..." and answers "Header must provide a Content-Length
+                // property". The error points at the header, which is byte-perfect; the fault is
+                // the three bytes in front of it. Writing to BaseStream does not help — the
+                // damage is done when the writer is created, not when we use it.
+                //
+                // ProcessStartInfo.StandardInputEncoding would be the clean fix, but it is .NET
+                // Core only; on .NET Framework, Console.InputEncoding is the only lever.
+                //
+                // Guarded three ways: only touched when the current encoding actually HAS a
+                // preamble, so a host that is already fine is left alone; wrapped because the
+                // setter throws when there is no console attached, which is exactly the addin's
+                // situation — and a host with no console has no console preamble to inject, so
+                // there is nothing to fix there anyway.
+                //
+                // Masked in the IDE all this time because SharedLspBridge routes LSP through the
+                // ClarionLsp addin when it is present, leaving this path a rarely-exercised
+                // fallback. It surfaced the moment a standalone host had no shared addin to fall
+                // back FROM (ticket d051fbd1).
+                try
+                {
+                    var consoleIn = Console.InputEncoding;
+                    if (consoleIn != null && consoleIn.GetPreamble().Length > 0)
+                    {
+                        System.Diagnostics.Debug.WriteLine("[LSP] Console.InputEncoding "
+                            + consoleIn.WebName + " has a "
+                            + consoleIn.GetPreamble().Length + "-byte preamble; clearing it so the "
+                            + "child's stdin writer cannot inject a BOM ahead of the first header.");
+                        Console.InputEncoding = new UTF8Encoding(false);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // No console attached (the addin). Nothing to inject, nothing to fix.
+                    System.Diagnostics.Debug.WriteLine("[LSP] Console.InputEncoding not adjustable: " + ex.Message);
+                }
+
                 // Capture stderr for diagnostics — ring buffer + Debug output
                 _process.ErrorDataReceived += (s, e) =>
                 {
@@ -1112,6 +1154,8 @@ namespace ClarionAssistant.Services
             WriteMessage(_serializer.Serialize(notification));
         }
 
+        private bool _loggedFirstWrite;
+
         private void WriteMessage(string json)
         {
             lock (_writeLock)
@@ -1121,6 +1165,23 @@ namespace ClarionAssistant.Services
                     byte[] content = Encoding.UTF8.GetBytes(json);
                     string header = "Content-Length: " + content.Length + "\r\n\r\n";
                     byte[] headerBytes = Encoding.ASCII.GetBytes(header);
+
+                    // Log the FIRST bytes actually written, as hex. A server rejecting our header
+                    // ("Header must provide a Content-Length property") looks identical whether we
+                    // sent the wrong header, sent it in the wrong encoding, or had something
+                    // prepended to the stream ahead of it — and only the bytes tell those apart.
+                    if (!_loggedFirstWrite)
+                    {
+                        _loggedFirstWrite = true;
+                        var hex = new StringBuilder();
+                        for (int i = 0; i < Math.Min(headerBytes.Length, 24); i++)
+                            hex.Append(headerBytes[i].ToString("X2")).Append(' ');
+                        System.Diagnostics.Debug.WriteLine("[LSP] first header bytes: " + hex
+                            + " | as text: " + header.Replace("\r", "\\r").Replace("\n", "\\n"));
+                        System.Diagnostics.Debug.WriteLine("[LSP] stdin encoding: "
+                            + _process.StandardInput.Encoding.WebName
+                            + ", preamble length: " + _process.StandardInput.Encoding.GetPreamble().Length);
+                    }
 
                     _process.StandardInput.BaseStream.Write(headerBytes, 0, headerBytes.Length);
                     _process.StandardInput.BaseStream.Write(content, 0, content.Length);

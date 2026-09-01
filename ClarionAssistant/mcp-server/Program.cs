@@ -44,6 +44,24 @@ namespace ClarionAssistant.McpServer
                     case "--help":
                     case "-h":
                     case "/?": help = true; break;
+                    case "--debug":
+                        // Route System.Diagnostics.Debug output to stderr.
+                        //
+                        // Whole subsystems here report themselves ONLY through Debug.WriteLine —
+                        // LspClient's entire start sequence does, including every reason it can
+                        // fail. Inside the IDE that lands in the Debug Output window; a standalone
+                        // process has no such window, so those failures were unobservable and
+                        // "LSP not running" was the only thing a user could ever learn.
+                        //
+                        // NOTE the ceiling: Debug.WriteLine is [Conditional("DEBUG")], so this
+                        // flag shows nothing in a Release build. Any diagnostic that must survive
+                        // shipping has to move off Debug.* — worth knowing before relying on this
+                        // in the field.
+                        System.Diagnostics.Debug.Listeners.Add(
+                            new System.Diagnostics.TextWriterTraceListener(Console.Error));
+                        System.Diagnostics.Debug.AutoFlush = true;
+                        break;
+
                     case "--lockprobe":
                         // TEST ONLY. Claims the cross-process index lock for a database path and
                         // holds it until stdin closes, so a harness can drive TWO processes
