@@ -1820,8 +1820,21 @@ IdeOnly = true,
                 Name = "query_codegraph",
                 Description = @"Run a read-only SQL query against the Clarion CodeGraph database. The database indexes an entire Clarion solution with these tables:
 
+SYMBOL IDs ARE NOT STABLE ACROSS A RE-INDEX. Do not cache an id, or any from_id/to_id, across an
+index_solution or index_codegraph call. A re-index deletes every row and re-inserts; the id column
+is AUTOINCREMENT, so ids never restart - a measured re-index of an unchanged solution produced
+byte-identical rows whose ids had all shifted by exactly +16631. Resolve by NAME and file_path if
+anything may re-index between your queries. (This is the safer of the two possible behaviours and
+is deliberate: a stale id now matches NOTHING, which you can detect, instead of silently matching
+whatever unrelated symbol inherited that number.)
+
 TABLES:
 - projects (id, name, guid, cwproj_path, output_type, sln_path)
+  - CONTAINS A SYNTHETIC ROW: '__Libraries__' (output_type 'Library', empty cwproj_path) owns the
+    headers pulled in through the .red redirection paths. index_solution reports the real project
+    count and excludes it, so 'SELECT COUNT(*) FROM projects' will exceed that number by one, and
+    any per-project aggregate silently includes it. Filter it out unless you mean to count library
+    symbols as a project's own.
 - symbols (id, name, type, file_path, line_number, project_id, params, return_type, parent_name, member_of, scope, source_preview, decl_kind)
   - type values: 'procedure', 'function', 'class', 'interface', 'routine', 'variable', 'include', 'module', 'program'
   - scope values: 'global' (PROGRAM-file data + MAP declarations), 'module', 'local', 'class', 'parameter'
