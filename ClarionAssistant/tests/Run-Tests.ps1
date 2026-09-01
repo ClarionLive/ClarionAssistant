@@ -127,9 +127,19 @@ if (-not $CSharpOnly -and -not $InstallerOnly) {
         # 8 assertions from at least v5.8.1 until 2026-08-31 and nobody saw it, because it only ever
         # turned red on a checkout that happened to have node_modules populated.
         #
-        # npm install, not npm ci: there is no package-lock.json in that folder. If npm is absent or
-        # offline this fails and the harness still exits 2 below, which is the correct outcome — it
-        # genuinely could not run.
+        # npm install, not npm ci: there is no package-lock.json in that folder.
+        #
+        # --loglevel=error, NOT --silent. Measured with an unreachable registry: --silent gives
+        # exit=1 with ZERO bytes on both streams, because loglevel=silent suppresses `npm error`
+        # too. That would print nothing at all and leave the run reporting only "SKIPPED —
+        # dependency missing" — which is precisely the reads-as-a-machine-problem failure this
+        # whole change exists to remove, reintroduced one layer down.
+        #
+        # The catch is load-bearing and must stay with the loglevel change. $ErrorActionPreference
+        # is "Stop" at the top of this script, and under Windows PowerShell a native command's
+        # stderr redirected with 2>&1 into a pipeline becomes a terminating RemoteException. With
+        # no catch, one `npm WARN` would abort the ENTIRE suite — including the installer harnesses
+        # that guard configure.ps1. --silent was hiding that; naming the exit code arms it.
         $testDir = Join-Path $RepoDir "Terminal\test"
         if ((Test-Path (Join-Path $testDir "package.json")) -and
             -not (Test-Path (Join-Path $testDir "node_modules\jsdom"))) {
@@ -138,7 +148,14 @@ if (-not $CSharpOnly -and -not $InstallerOnly) {
                 Write-Host ""
                 Write-Host "Installing dev-only test dependencies (Terminal\test)..." -ForegroundColor Cyan
                 Push-Location $testDir
-                try { & npm install --no-audit --no-fund --silent 2>&1 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray } }
+                try {
+                    & npm install --no-audit --no-fund --loglevel=error 2>&1 |
+                        ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Host "npm install failed (exit $LASTEXITCODE) — the jsdom harnesses will report 'could not run'." -ForegroundColor Yellow
+                    }
+                }
+                catch { Write-Host "npm install failed: $_" -ForegroundColor Yellow }
                 finally { Pop-Location }
             }
             else {

@@ -57,7 +57,7 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ## What's New (Unreleased)
 
-> **DRAFT for 5.9.0.** Written by Charlie for John to edit. Coverage is complete against the 30 commits since v5.8.1; the voice is not final.
+> **DRAFT for 5.9.0.** Written by Charlie for John to edit. Coverage is complete against every commit since v5.8.1; the voice is not final.
 
 **Why 5.9.0 and not 5.8.2.** Clarion Assistant is joining the **Clarion Addin Registry**, so it can be found and updated from **AddinFinder** inside the IDE. That required our version number to become a single value that the addin manifest, the installer and the git tag all agree on &mdash; and it could not be 5.8.2. See the versioning entry below.
 
