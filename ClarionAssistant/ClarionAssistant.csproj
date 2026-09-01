@@ -98,9 +98,14 @@
          EditorService / AssistantChatControl. NOTE this csproj hand-lists every source file
          with no wildcard, so a new .cs is invisible to the build until it is added here. -->
     <Compile Include="Services\InsertResult.cs" />
+    <Compile Include="Services\DiffFileContext.cs" />
     <Compile Include="Services\IEditorService.cs" />
     <Compile Include="Services\IWorkspaceContext.cs" />
     <Compile Include="Services\IUiDispatcher.cs" />
+    <Compile Include="Services\IAppTreeService.cs" />
+    <Compile Include="Services\IDiffService.cs" />
+    <Compile Include="Services\IIdeProbeService.cs" />
+    <Compile Include="Services\IdeProbeService.cs" />
     <Compile Include="Services\IndexRunGate.cs" />
     <Compile Include="Services\IndexRunLog.cs" />
     <Compile Include="Services\DocumentOutlineBuilder.cs" />

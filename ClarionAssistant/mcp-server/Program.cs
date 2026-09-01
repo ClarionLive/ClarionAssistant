@@ -63,7 +63,26 @@ namespace ClarionAssistant.McpServer
             Check(failures, "KnowledgeService", () => typeof(ClarionAssistant.Services.KnowledgeService));
             Check(failures, "SchemaGraphService", () => typeof(ClarionAssistant.Services.SchemaGraphService));
 
-            // The point of the whole exercise: this process must NOT have dragged the IDE in.
+            // THE ACTUAL POINT: construct the real McpToolRegistry - all 4,500 lines of it, the
+            // SAME file the addin compiles - in a process with no IDE. Passing null for
+            // IEditorService is correct rather than lazy: the tools that need it are IDE-only, and
+            // with AppTreeFactory / IdeProbeFactory left unset they are not registered at all. A
+            // stub returning plausible nulls would be worse, because the server would advertise
+            // "get the active document" and silently answer nothing.
+            try
+            {
+                var registry = new ClarionAssistant.Services.McpToolRegistry(
+                    null, new ClarionAssistant.Services.ClarionClassParser());
+                int count = registry.GetToolCount();
+                Console.WriteLine("  ok  McpToolRegistry constructed, " + count + " tools registered");
+                if (count == 0) failures.Add("McpToolRegistry registered 0 tools");
+            }
+            catch (Exception ex)
+            {
+                failures.Add("McpToolRegistry: " + ex.GetType().Name + " - " + ex.Message);
+            }
+
+            // The process must NOT have dragged the IDE in.
             // A transitive reference would be invisible at compile time and fatal at run time on
             // a machine with no Clarion IDE, which is exactly the machine this is built for.
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())

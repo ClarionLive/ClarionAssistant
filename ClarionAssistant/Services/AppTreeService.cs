@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -13,7 +13,10 @@ namespace ClarionAssistant.Services
     /// Service to interact with the Clarion Application tree and embeditor.
     /// Uses reflection to access the Clarion-specific IDE objects.
     /// </summary>
-    public class AppTreeService
+    // Implements IAppTreeService (ticket d051fbd1) so the SHARED McpToolRegistry.cs can name
+    // this surface without importing the IDE. The interface is a compile seam only - every
+    // member here is permanently IDE-only and nothing else will ever implement it.
+    public class AppTreeService : IAppTreeService
     {
         private const BindingFlags AllInstance = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
         private const BindingFlags PubStatic = BindingFlags.Public | BindingFlags.Static;
@@ -177,6 +180,33 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// Get info about the currently open application.
         /// </summary>
+        // ---------------------------------------------------------------------------------
+        // IAppTreeService: forwards to ModernEmbeditorLauncher (ticket d051fbd1).
+        //
+        // The registry used to call these statically. ModernEmbeditorLauncher is IDE-coupled, so
+        // naming it from the SHARED McpToolRegistry.cs would have kept that file un-compilable
+        // outside the addin. Forwarding here costs nothing and moves the dependency to a class
+        // that is IDE-only anyway.
+        // ---------------------------------------------------------------------------------
+
+        /// <summary>Block until the embeditor has opened, or timeoutMs elapses.</summary>
+        public bool WaitForEmbedOpen(int timeoutMs)
+        {
+            return ModernEmbeditorLauncher.WaitForEmbedOpen(this, timeoutMs);
+        }
+
+        /// <summary>Apply several embed-slot edits in one transient round-trip.</summary>
+        public string ApplyEmbedLineEdits(string procName, System.Collections.Generic.IList<System.Collections.Generic.KeyValuePair<int, string>> edits, out bool ok)
+        {
+            return ModernEmbeditorSaver.ApplyLineEdits(procName, edits, out ok);
+        }
+
+        /// <summary>Force the IDE's lazy ABC class load now.</summary>
+        public string WarmupAbc()
+        {
+            return ModernEmbeditorLauncher.WarmupAbc();
+        }
+
         public Dictionary<string, object> GetAppInfo()
         {
             var app = GetAppObject();
@@ -2531,7 +2561,7 @@ namespace ClarionAssistant.Services
         /// Find an embed section by name in the embeditor and navigate to it.
         /// Searches the editor text for the section header comment and positions the cursor there.
         /// </summary>
-        public string FindEmbed(string searchName, EditorService editorService)
+        public string FindEmbed(string searchName, IEditorService editorService)
         {
             var editor = GetClaGenEditor();
             if (editor == null) return "Error: No embeditor is currently open.";

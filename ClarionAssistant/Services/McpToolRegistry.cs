@@ -48,10 +48,17 @@ namespace ClarionAssistant.Services
         private const int StreamEventQueueCapacity = 256;
 
         private readonly Dictionary<string, McpTool> _tools = new Dictionary<string, McpTool>(StringComparer.OrdinalIgnoreCase);
-        private readonly EditorService _editorService;
+        // Interfaces, not concrete types (ticket d051fbd1). This file has no IDE imports of
+        // its own; depending on the seam is what lets it compile in the standalone MCP server.
+        private readonly IEditorService _editorService;
         private readonly ClarionClassParser _parser;
-        private readonly AppTreeService _appTree;
-        private AssistantChatControl _chatControl;
+        private readonly IAppTreeService _appTree;
+        private readonly IIdeProbeService _ideProbe;
+        // Was AssistantChatControl. Split in two because the control served two unrelated
+        // roles: it answered "which solution am I on" AND it was the UI thread to marshal to.
+        // Null in a standalone host, where the tools needing them are not registered.
+        private IWorkspaceContext _workspace;
+        private IUiDispatcher _ui;
         private LspClient _lspClient;
 
         /// <summary>
@@ -60,28 +67,57 @@ namespace ClarionAssistant.Services
         /// for the header diagnostics pill. May be null if LSP hasn't started yet.
         /// </summary>
         public LspClient LspClientInstance { get { return _lspClient; } }
-        private DiffService _diffService;
+        private IDiffService _diffService;
         private DocGraphService _docGraph;
         private ClarionTraceService _traceService;
         private KnowledgeService _knowledgeService;
         private InstanceCoordinationService _instanceCoord;
 
-        public McpToolRegistry(EditorService editorService, ClarionClassParser parser)
+        /// <summary>
+        /// Set by the addin at startup so this file never names the IDE-coupled AppTreeService.
+        /// Left null by a standalone host, where the app-tree and embeditor tools are not
+        /// registered at all - a factory returning a stub would be worse, because the server
+        /// would then advertise embeditor tools it cannot possibly perform.
+        /// </summary>
+        public static Func<IAppTreeService> AppTreeFactory;
+
+        /// <summary>
+        /// Same pattern as AppTreeFactory: supplied by the addin, left null by a standalone
+        /// host. Backs the IDE introspection and native-probe tools, which have nothing to
+        /// reflect over in a process with no IDE in it.
+        /// </summary>
+        public static Func<IIdeProbeService> IdeProbeFactory;
+
+        /// <summary>
+        /// Host-supplied diagnostic sink. The addin points this at MonacoSpikeLog.Write so the
+        /// line still lands in monaco-spike.log, which is a channel that gets read; a standalone
+        /// host can point it at stderr or leave it null. Routed through a hook rather than swapped
+        /// for Debug.WriteLine, because that would have silently moved an existing diagnostic to a
+        /// place nobody looks (MonacoSpikeLog lives in MonacoClarionSourceEditor.cs, which is
+        /// IDE-coupled and cannot be linked into the standalone build).
+        /// </summary>
+        public static Action<string> DiagnosticLog;
+
+        public McpToolRegistry(IEditorService editorService, ClarionClassParser parser)
         {
             _editorService = editorService;
             _parser = parser;
-            _appTree = new AppTreeService();
+            _appTree = AppTreeFactory != null ? AppTreeFactory() : null;
+            _ideProbe = IdeProbeFactory != null ? IdeProbeFactory() : null;
             _docGraph = new DocGraphService();
             _traceService = new ClarionTraceService();
             RegisterAllTools();
         }
 
         /// <summary>
-        /// Set reference to chat control for solution context and indexing.
+        /// Supply the workspace ("which solution am I on") and the UI thread to marshal to.
+        /// Was SetChatControl(AssistantChatControl); the control implements both interfaces, so
+        /// the addin passes itself twice and nothing about its behaviour changes.
         /// </summary>
-        public void SetChatControl(AssistantChatControl control)
+        public void SetWorkspace(IWorkspaceContext workspace, IUiDispatcher ui)
         {
-            _chatControl = control;
+            _workspace = workspace;
+            _ui = ui;
             // Wire the CodeGraph LSP fallback (#40) to resolve the same .codegraph.db that
             // query_codegraph uses (selected solution → active-document walk-up). Lets
             // SharedLspBridge answer cross-project definition/references/workspace-symbol in C#
@@ -92,7 +128,7 @@ namespace ClarionAssistant.Services
             SharedLspBridge.SchemaGraphDbPathProvider = () => FindSchemaGraphDb();
         }
 
-        public void SetDiffService(DiffService diffService)
+        public void SetDiffService(IDiffService diffService)
         {
             _diffService = diffService;
         }
@@ -108,7 +144,7 @@ namespace ClarionAssistant.Services
         }
 
         public int GetToolCount() { return _tools.Count; }
-        public AppTreeService GetAppTreeService() { return _appTree; }
+        public IAppTreeService GetAppTreeService() { return _appTree; }
 
         public bool RequiresUiThread(string toolName)
         {
@@ -199,7 +235,7 @@ namespace ClarionAssistant.Services
                 RequiresUiThread = true,
                 Handler = args =>
                 {
-                    var sel = ClarionAssistant.Terminal.ModernEmbeditorViewContent.GetFocusedSelection();
+                    var sel = _ideProbe.GetFocusedEmbeditorSelection();
                     if (sel == null)
                         return "(no CA Embeditor open or focused)";
                     bool has = sel.ContainsKey("hasSelection") && sel["hasSelection"] is bool && (bool)sel["hasSelection"];
@@ -560,27 +596,27 @@ Use this tool to discover IDE APIs and understand what's available for automatio
 
                     switch (command.ToLower())
                     {
-                        case "active_view": return IdeReflectionService.InspectActiveView();
-                        case "editor_text": return IdeReflectionService.ReadActiveEditorText();
-                        case "all_windows": return IdeReflectionService.ListAllWindows();
-                        case "all_pads": return IdeReflectionService.ListAllPads();
-                        case "app_details": return IdeReflectionService.InspectApplicationDetails();
-                        case "embed_details": return IdeReflectionService.InspectEmbedDetails();
-                        case "types": return IdeReflectionService.DiscoverAutomationTypes();
-                        case "assemblies": return IdeReflectionService.ListLoadedAssemblies();
+                        case "active_view": return _ideProbe.InspectActiveView();
+                        case "editor_text": return _ideProbe.ReadActiveEditorText();
+                        case "all_windows": return _ideProbe.ListAllWindows();
+                        case "all_pads": return _ideProbe.ListAllPads();
+                        case "app_details": return _ideProbe.InspectApplicationDetails();
+                        case "embed_details": return _ideProbe.InspectEmbedDetails();
+                        case "types": return _ideProbe.DiscoverAutomationTypes();
+                        case "assemblies": return _ideProbe.ListLoadedAssemblies();
                         // --- TRANSIENT diagnostic (ticket 4b82f1de, right-click hook spike, phase 1 / 1.5) ---
-                        case "probe_native_chain":     return NativeProbeService.DumpNativeChain();
-                        case "probe_clalist_read":     return NativeProbeService.ProbeClaListRead();
-                        case "probe_enum_lists":       return NativeProbeService.EnumClaLists();
-                        case "probe_popup_arm":        return NativeProbeService.PopupArm();
-                        case "probe_popup_arm_inject": return NativeProbeService.PopupArmInject();
-                        case "probe_popup_report":     return NativeProbeService.PopupReport();
+                        case "probe_native_chain":     return _ideProbe.DumpNativeChain();
+                        case "probe_clalist_read":     return _ideProbe.ProbeClaListRead();
+                        case "probe_enum_lists":       return _ideProbe.EnumClaLists();
+                        case "probe_popup_arm":        return _ideProbe.PopupArm();
+                        case "probe_popup_arm_inject": return _ideProbe.PopupArmInject();
+                        case "probe_popup_report":     return _ideProbe.PopupReport();
                         default:
                             // probe_mark[:label] — Tier-0 trace separator between right-clicks (ticket 4b82f1de).
                             if (command.StartsWith("probe_mark"))
-                                return NativeProbeService.PopupMark(command.Length > 11 && command[10] == ':' ? command.Substring(11) : "");
+                                return _ideProbe.PopupMark(command.Length > 11 && command[10] == ':' ? command.Substring(11) : "");
                             if (command.StartsWith("path:"))
-                                return IdeReflectionService.InspectPath(command.Substring(5));
+                                return _ideProbe.InspectPath(command.Substring(5));
                             return "Unknown command: " + command + ". Use: active_view, editor_text, all_windows, all_pads, app_details, embed_details, path:<dotpath>, types, assemblies";
                     }
                 }
@@ -666,7 +702,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                                 // OpenProcedureEmbed no longer sleeps after BM_CLICK (the embed open is async);
                                 // wait for the embed to actually open before returning, else the tool reports
                                 // success before the editor is ready.
-                                ModernEmbeditorLauncher.WaitForEmbedOpen(_appTree, 45000);
+                                _appTree.WaitForEmbedOpen(45000);
                                 return warning + "\n\n" + result;
                             }
                         }
@@ -676,7 +712,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                     string openResult = _appTree.OpenProcedureEmbed(name);
                     // OpenProcedureEmbed no longer sleeps after BM_CLICK (async open); wait for the embed to
                     // actually open before returning so this tool doesn't report success prematurely.
-                    ModernEmbeditorLauncher.WaitForEmbedOpen(_appTree, 45000);
+                    _appTree.WaitForEmbedOpen(45000);
                     return openResult;
                 }
             });
@@ -739,22 +775,16 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                 {
                     try
                     {
-                        var workbench = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
-                        if (workbench == null)
-                            return new Dictionary<string, object> { { "error", "No workbench" } };
+                        // Was an inline walk of WorkbenchSingleton.Workbench -> ActiveWorkbenchWindow
+                        // -> ViewContent -> reflected "HeaderTitle" (ticket d051fbd1). Behind
+                        // IIdeProbeService now, so this file names no IDE type. The three distinct
+                        // "no workbench / no active window / no view content" errors collapse into
+                        // one: they were never separately actionable, and the probe returns null for
+                        // all three. HeaderTitle looks like "ProcName - Embeditor - (module001.clw)".
+                        if (_ideProbe == null)
+                            return new Dictionary<string, object> { { "error", "IDE introspection unavailable in this host" } };
 
-                        var activeWindow = workbench.ActiveWorkbenchWindow;
-                        if (activeWindow == null)
-                            return new Dictionary<string, object> { { "error", "No active window" } };
-
-                        var viewContent = activeWindow.ViewContent;
-                        if (viewContent == null)
-                            return new Dictionary<string, object> { { "error", "No view content" } };
-
-                        // Get HeaderTitle: "ProcName - Embeditor - (module001.clw)"
-                        var headerProp = viewContent.GetType().GetProperty("HeaderTitle",
-                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-                        string headerTitle = headerProp?.GetValue(viewContent, null) as string;
+                        string headerTitle = _ideProbe.GetActiveViewHeaderTitle();
                         if (string.IsNullOrEmpty(headerTitle))
                             return new Dictionary<string, object> { { "error", "Not in an embeditor window" } };
 
@@ -767,7 +797,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                         string clwFileName = match.Groups[1].Value;
 
                         // Get app directory from ViewContent.FileName
-                        string appFilePath = viewContent.FileName;
+                        string appFilePath = _ideProbe.GetActiveViewFileName();
                         if (string.IsNullOrEmpty(appFilePath))
                             return new Dictionary<string, object> { { "error", "Could not determine app file path" } };
 
@@ -1077,7 +1107,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                     catch (Exception ex) { return "Error parsing edits JSON: " + ex.Message; }
 
                     bool ok;
-                    return ModernEmbeditorSaver.ApplyLineEdits(proc, parsed, out ok);
+                    return _appTree.ApplyEmbedLineEdits(proc, parsed, out ok);
                 }
             });
 
@@ -1164,7 +1194,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                               "Run once with an .app open.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
-                Handler = args => ModernEmbeditorLauncher.WarmupAbc()
+                Handler = args => _appTree.WarmupAbc()
             });
 
             // === File System Tools ===
@@ -1423,7 +1453,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    string slnPath = _chatControl?.CurrentSolutionPath;
+                    string slnPath = _workspace?.CurrentSolutionPath;
                     if (string.IsNullOrEmpty(slnPath) || !File.Exists(slnPath))
                         return "Error: No solution loaded.";
 
@@ -1434,7 +1464,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
 
                     // Build RED search paths for external file resolution
                     var redSearchPaths = new List<string>();
-                    var redFile = _chatControl.RedFile;
+                    var redFile = _workspace.RedFile;
                     if (redFile != null)
                     {
                         var clwPaths = redFile.GetSearchPaths(".clw");
@@ -1769,9 +1799,9 @@ COMMON QUERIES:
                 {
                     var results = new List<string>();
                     // Search from the current solution directory (if one is open)
-                    if (_chatControl != null)
+                    if (_workspace != null)
                     {
-                        string slnPath = _chatControl.CurrentSolutionPath;
+                        string slnPath = _workspace.CurrentSolutionPath;
                         if (!string.IsNullOrEmpty(slnPath))
                         {
                             string slnDir = Path.GetDirectoryName(slnPath);
@@ -1804,12 +1834,12 @@ COMMON QUERIES:
                 RequiresUiThread = true,
                 Handler = args =>
                 {
-                    if (_chatControl == null)
+                    if (_workspace == null)
                         return "Error: chat control not initialized";
 
                     // Check the live IDE state first — the cached path may be stale
-                    string ideSlnPath = EditorService.GetOpenSolutionPath();
-                    string slnPath = !string.IsNullOrEmpty(ideSlnPath) ? ideSlnPath : _chatControl.CurrentSolutionPath;
+                    string ideSlnPath = _workspace.GetHostOpenSolutionPath();
+                    string slnPath = !string.IsNullOrEmpty(ideSlnPath) ? ideSlnPath : _workspace.CurrentSolutionPath;
 
                     // If nothing is open in the IDE and we only have a cached path, report no solution
                     if (string.IsNullOrEmpty(ideSlnPath) && !string.IsNullOrEmpty(slnPath))
@@ -1824,9 +1854,9 @@ COMMON QUERIES:
                         };
                     }
 
-                    string dbPath = _chatControl.CurrentDbPath;
+                    string dbPath = _workspace.CurrentDbPath;
                     bool hasDb = !string.IsNullOrEmpty(dbPath) && File.Exists(dbPath);
-                    var vConfig = _chatControl.CurrentVersionConfig;
+                    var vConfig = _workspace.CurrentVersionConfig;
 
                     var result = new Dictionary<string, object>
                     {
@@ -1847,7 +1877,7 @@ COMMON QUERIES:
                             result["macros"] = vConfig.Macros;
                     }
 
-                    var red = _chatControl.RedFile;
+                    var red = _workspace.RedFile;
                     if (red != null && red.RedFilePath != null)
                     {
                         result["activeRedFile"] = red.RedFilePath;
@@ -1875,7 +1905,7 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    if (_chatControl == null)
+                    if (_workspace == null)
                         return "Error: chat control not initialized";
 
                     string fileName = McpJsonRpc.GetString(args, "filename", "");
@@ -1911,7 +1941,7 @@ COMMON QUERIES:
                     }
 
                     // Fallback: local RedFileService (Common section only).
-                    var red = _chatControl.RedFile;
+                    var red = _workspace.RedFile;
                     if (red == null || red.RedFilePath == null)
                         return "Error: no .red file loaded and LSP unavailable. Select a version and solution first.";
 
@@ -1957,7 +1987,7 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    if (_chatControl == null)
+                    if (_workspace == null)
                         return "Error: chat control not initialized";
 
                     string ext = McpJsonRpc.GetString(args, "extension", "");
@@ -1986,7 +2016,7 @@ COMMON QUERIES:
                     }
 
                     // Fallback: local RedFileService (single section, default Common).
-                    var red = _chatControl.RedFile;
+                    var red = _workspace.RedFile;
                     if (red == null || red.RedFilePath == null)
                         return "Error: no .red file loaded and LSP unavailable. Select a version and solution first.";
 
@@ -2014,16 +2044,16 @@ COMMON QUERIES:
                 RequiresUiThread = true,
                 Handler = args =>
                 {
-                    if (_chatControl == null)
+                    if (_workspace == null)
                         return "Error: chat control not initialized";
 
                     string incremental = McpJsonRpc.GetString(args, "incremental", "false");
                     bool isIncremental = incremental.Equals("true", StringComparison.OrdinalIgnoreCase);
 
-                    _chatControl.RunIndex(isIncremental);
+                    _workspace.RunIndex(isIncremental);
                     return isIncremental
-                        ? "Incremental index started for: " + (_chatControl.CurrentSolutionPath ?? "(none)")
-                        : "Full index started for: " + (_chatControl.CurrentSolutionPath ?? "(none)");
+                        ? "Incremental index started for: " + (_workspace.CurrentSolutionPath ?? "(none)")
+                        : "Full index started for: " + (_workspace.CurrentSolutionPath ?? "(none)");
                 },
                 // Streaming variant (ticket 0d788f8b): runs on a worker thread, marshals the
                 // RunIndex START to the UI thread, then relays the run's structured events
@@ -2031,7 +2061,7 @@ COMMON QUERIES:
                 // (the fire-and-forget Handler above never learns when the run ends).
                 StreamingHandler = (args, onProgress) =>
                 {
-                    if (_chatControl == null)
+                    if (_workspace == null)
                         return "Error: chat control not initialized";
 
                     string incremental = McpJsonRpc.GetString(args, "incremental", "false");
@@ -2047,11 +2077,11 @@ COMMON QUERIES:
                         StreamEventQueueCapacity);
                     string summary = null;
 
-                    _chatControl.BeginInvoke((Action)(() =>
+                    _ui.BeginInvokeOnUi((Action)(() =>
                     {
                         try
                         {
-                            _chatControl.RunIndex(isIncremental,
+                            _workspace.RunIndex(isIncremental,
                                 // InvalidOperationException also covers ObjectDisposedException
                                 // (its subclass) — thrown once the consumer abandons the queue.
                                 ev => { try { events.TryAdd(ev); } catch (InvalidOperationException) { } },
@@ -2124,9 +2154,9 @@ COMMON QUERIES:
                 Handler = args =>
                 {
                     string wsPath = McpJsonRpc.GetString(args, "workspace_path");
-                    if (string.IsNullOrEmpty(wsPath) && _chatControl != null)
+                    if (string.IsNullOrEmpty(wsPath) && _workspace != null)
                     {
-                        string slnPath = _chatControl.CurrentSolutionPath;
+                        string slnPath = _workspace.CurrentSolutionPath;
                         if (!string.IsNullOrEmpty(slnPath))
                             wsPath = Path.GetDirectoryName(slnPath);
                     }
@@ -2850,12 +2880,12 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     int timeout = McpJsonRpc.GetInt(args, "timeout", 120);
 
                     if (string.IsNullOrEmpty(slnPath))
-                        slnPath = EditorService.GetOpenSolutionPath();
+                        slnPath = _workspace.GetHostOpenSolutionPath();
 
                     if (string.IsNullOrEmpty(slnPath) || !File.Exists(slnPath))
                         return "Error: No solution path provided and no solution is currently loaded in the IDE.";
 
-                    string clarionRoot = EditorService.GetClarionInstallPath();
+                    string clarionRoot = _workspace.GetClarionInstallPath();
                     if (string.IsNullOrEmpty(clarionRoot))
                         return "Error: Could not detect Clarion installation path.";
 
@@ -2896,7 +2926,7 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     if (string.IsNullOrEmpty(appPath) || !File.Exists(appPath))
                         return "Error: No app path provided and no .app file is currently open in the IDE.";
 
-                    string clarionRoot = EditorService.GetClarionInstallPath();
+                    string clarionRoot = _workspace.GetClarionInstallPath();
                     if (string.IsNullOrEmpty(clarionRoot))
                         return "Error: Could not detect Clarion installation path.";
 
@@ -2940,7 +2970,7 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     if (string.IsNullOrEmpty(appPath) || !File.Exists(appPath))
                         return "Error: No app path provided and no .app file is currently open in the IDE.";
 
-                    string clarionRoot = EditorService.GetClarionInstallPath();
+                    string clarionRoot = _workspace.GetClarionInstallPath();
                     if (string.IsNullOrEmpty(clarionRoot))
                         return "Error: Could not detect Clarion installation path.";
 
@@ -3510,11 +3540,11 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
         private string FindSchemaGraphDb()
         {
             // 1. Check Schema Sources registry for the current solution
-            if (_chatControl != null)
+            if (_workspace != null)
             {
                 // Try both the .sln path and the working directory — source may be linked with either
                 var pathsToTry = new List<string>();
-                string slnPath = _chatControl.CurrentSolutionPath;
+                string slnPath = _workspace.CurrentSolutionPath;
                 if (!string.IsNullOrEmpty(slnPath)) pathsToTry.Add(slnPath);
                 // Also try the solution directory (in case source was linked with folder path)
                 if (!string.IsNullOrEmpty(slnPath))
@@ -3563,9 +3593,9 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             catch { }
 
             // 3. Try solution directory
-            if (_chatControl != null)
+            if (_workspace != null)
             {
-                string slnPath = _chatControl.CurrentSolutionPath;
+                string slnPath = _workspace.CurrentSolutionPath;
                 if (!string.IsNullOrEmpty(slnPath))
                 {
                     string slnDir = Path.GetDirectoryName(slnPath);
@@ -4105,33 +4135,16 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
         /// Find an open DDDataDictionary object by iterating open ViewContents.
         /// Returns the DCT property of the first DataDictionaryViewContent found.
         /// </summary>
+        /// <summary>
+        /// The dictionary open in the IDE, or null. The reflection walk that used to live here
+        /// (WorkbenchSingleton -> ViewContentCollection -> DataDictionaryViewContent -> private
+        /// "DCT") moved to IIdeProbeService (ticket d051fbd1) so this file names no IDE type.
+        /// Returns null in a host without an IDE, which every caller already handles - it is the
+        /// same answer they got when no dictionary was open.
+        /// </summary>
         private object FindOpenDictionary()
         {
-            try
-            {
-                var workbench = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
-                if (workbench == null) return null;
-
-                var vcProp = workbench.GetType().GetProperty("ViewContentCollection",
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-                if (vcProp == null) return null;
-
-                var viewContents = vcProp.GetValue(workbench, null) as System.Collections.IEnumerable;
-                if (viewContents == null) return null;
-
-                foreach (var vc in viewContents)
-                {
-                    if (vc.GetType().Name == "DataDictionaryViewContent")
-                    {
-                        var dctProp = vc.GetType().GetProperty("DCT",
-                            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                        if (dctProp != null)
-                            return dctProp.GetValue(vc, null);
-                    }
-                }
-            }
-            catch { }
-            return null;
+            return _ideProbe != null ? _ideProbe.FindOpenDictionary() : null;
         }
 
         #endregion
@@ -4148,8 +4161,8 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
         private object ExecuteIndexCodeGraph(Dictionary<string, object> args, Action<double, string> onProgress)
         {
             string slnPath = McpJsonRpc.GetString(args, "sln_path");
-            if (string.IsNullOrEmpty(slnPath) && _chatControl != null)
-                slnPath = _chatControl.CurrentSolutionPath;
+            if (string.IsNullOrEmpty(slnPath) && _workspace != null)
+                slnPath = _workspace.CurrentSolutionPath;
             if (string.IsNullOrEmpty(slnPath))
                 return "Error: no solution path provided and no solution is open in the IDE.";
             if (!File.Exists(slnPath))
@@ -4179,9 +4192,9 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     // PARITY with RunIndex/index_solution: same active .red, same library
                     // paths. This handler used to pass neither, so the same db was more or
                     // less complete depending on which tool indexed last (ticket d1a0aea6).
-                    if (_chatControl != null)
+                    if (_workspace != null)
                     {
-                        indexer.RedService = _chatControl.ActiveRedFileService;
+                        indexer.RedService = _workspace.ActiveRedFileService;
                     }
                     indexer.OnProgress += msg => runLog.WriteLine(msg);
                     if (onProgress != null)
@@ -4192,7 +4205,7 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     }
 
                     var result = indexer.IndexSolution(slnPath, incremental,
-                        _chatControl != null ? _chatControl.BuildIndexLibraryPaths() : null);
+                        _workspace != null ? _workspace.BuildIndexLibraryPaths() : null);
 
                     return string.Format(
                         "CodeGraph indexed successfully:\n" +
@@ -4252,9 +4265,9 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
         private string FindCodeGraphDb()
         {
             // First: check the solution selected in the solution bar
-            if (_chatControl != null)
+            if (_workspace != null)
             {
-                string dbPath = _chatControl.CurrentDbPath;
+                string dbPath = _workspace.CurrentDbPath;
                 if (!string.IsNullOrEmpty(dbPath) && File.Exists(dbPath))
                     return dbPath;
             }
@@ -4367,8 +4380,8 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             // failure here must never block the build the user actually asked for.
             if (toolName != null && ClarionSourceBuildTools.Contains(toolName))
             {
-                try { MonacoClarionEditor.SaveAllDirtyBeforeBuild(); }
-                catch (Exception ex) { MonacoSpikeLog.Write("[save-before-build] " + toolName + " pre-flush failed: " + ex.Message); }
+                try { if (_ideProbe != null) _ideProbe.SaveAllDirtyEditors(); }
+                catch (Exception ex) { if (DiagnosticLog != null) DiagnosticLog("[save-before-build] " + toolName + " pre-flush failed: " + ex.Message); }
             }
 
             try

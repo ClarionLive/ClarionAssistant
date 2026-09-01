@@ -2966,10 +2966,26 @@ namespace ClarionAssistant
         private void StartMcpServer()
         {
             _mcpServer = new McpServer(this, _settings);
+
+            // The registry no longer names AppTreeService (ticket d051fbd1) - it is IDE-coupled, and
+            // the registry is shared with the standalone MCP server. The addin supplies it here; a
+            // standalone host leaves the factory null and does not register the app-tree tools.
+            // Must be set BEFORE the constructor runs, which is where the registry reads it.
+            McpToolRegistry.AppTreeFactory = () => new AppTreeService();
+            McpToolRegistry.IdeProbeFactory = () => new Services.IdeProbeService();
+            McpToolRegistry.DiagnosticLog = msg => MonacoSpikeLog.Write(msg);
+
+            // LspService no longer calls EditorService.GetOpenSolutionPath() directly (that static
+            // was the one thing keeping an otherwise IDE-free file out of the standalone build).
+            // The addin supplies the same answer it always gave.
+            Services.LspService.SolutionPathProvider = () => Services.EditorService.GetOpenSolutionPath();
+
             _toolRegistry = new McpToolRegistry(_editorService, _parser);
 
-            // Give the tool registry a reference back so it can access solution context and run indexing
-            _toolRegistry.SetChatControl(this);
+            // Workspace context and UI dispatcher. This control implements both, so it passes itself
+            // twice - the split matters on the other side of the seam, where a standalone host
+            // resolves the workspace from CLI args and has no UI thread at all.
+            _toolRegistry.SetWorkspace(this, this);
 
             // Set up diff viewer service
             _diffService = new DiffService();

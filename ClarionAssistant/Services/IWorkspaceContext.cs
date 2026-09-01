@@ -64,6 +64,15 @@ namespace ClarionAssistant.Services
         void RunIndex(bool incremental);
 
         /// <summary>
+        /// Streaming variant: reports progress events and a completion summary as indexing runs.
+        /// The registry uses this one for the long-running index_codegraph tool; the plain
+        /// RunIndex(bool) is the fire-and-forget form.
+        /// </summary>
+        void RunIndex(bool incremental,
+                      System.Action<ClarionCodeGraph.Graph.IndexProgressEvent> onProgress,
+                      System.Action<string> onCompleted);
+
+        /// <summary>
         /// The solution the HOST believes is open, which may differ from CurrentSolutionPath.
         /// Was the static EditorService.GetOpenSolutionPath(). In the addin it asks the IDE;
         /// standalone it returns null and callers fall back to CurrentSolutionPath — which is

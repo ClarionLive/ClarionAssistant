@@ -33,7 +33,11 @@
     <OutputType>Exe</OutputType>
     <RootNamespace>ClarionAssistant.McpServer</RootNamespace>
     <AssemblyName>clarion-mcp-server</AssemblyName>
-    <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
+    <!-- v4.8, NOT the indexer's v4.7.2. This project references ClarionLsp.Contracts.dll, which
+         is built against 4.8, and MSBuild refuses a reference targeting a HIGHER framework than
+         the consumer (MSB3274). The addin is v4.8 for the same reason, so matching it keeps the
+         two hosts of the shared registry on one framework rather than two. -->
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <RuntimeIdentifiers>win-x86</RuntimeIdentifiers>
   </PropertyGroup>
@@ -77,6 +81,14 @@
       <HintPath>$(SqliteVendored)\System.Data.SQLite.dll</HintPath>
       <Private>True</Private>
     </Reference>
+    <!-- SharedLspBridge prefers the ClarionLsp addin's language client when it is installed and
+         falls back to our bundled LspClient otherwise. Contracts only - an interface assembly,
+         not the IDE - so referencing it here does not compromise the no-IDE guarantee. Same
+         HintPath as the addin uses; do not let the two drift. -->
+    <Reference Include="ClarionLsp.Contracts">
+      <HintPath>..\lib\ClarionLsp\ClarionLsp.Contracts.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
     <!-- DocGraphService extracts text from PDFs (UglyToad.PdfPig, DocGraphService.cs:920, :926).
@@ -95,6 +107,10 @@
     <Compile Include="..\CodeGraph\Graph\CodeGraphIndexer.cs"><Link>Graph\CodeGraphIndexer.cs</Link></Compile>
     <Compile Include="..\CodeGraph\Graph\IndexProgress.cs"><Link>Graph\IndexProgress.cs</Link></Compile>
     <Compile Include="..\CodeGraph\Graph\CodeGraphQuery.cs"><Link>Graph\CodeGraphQuery.cs</Link></Compile>
+    <!-- Declares CodeGraphProvider and CodeGraphSymbol, which SharedLspBridge uses to answer
+         definition / references / workspace-symbol from the CodeGraph when the LSP returns
+         nothing. Not linked by the indexer, which does not host that bridge. -->
+    <Compile Include="..\CodeGraph\Graph\CodeGraphProvider.cs"><Link>Graph\CodeGraphProvider.cs</Link></Compile>
     <!-- Parsing layer — SHARED, linked from ..\CodeGraph\ -->
     <Compile Include="..\CodeGraph\Parsing\ClarionParser.cs"><Link>Parsing\ClarionParser.cs</Link></Compile>
     <Compile Include="..\CodeGraph\Parsing\ClarionBuiltins.cs"><Link>Parsing\ClarionBuiltins.cs</Link></Compile>
@@ -121,6 +137,32 @@
          itself IDE-free: it spawns the node language server in stdio mode and speaks JSON-RPC over
          pipes, which is why that server already works outside the IDE. -->
     <Compile Include="..\Services\LspClient.cs"><Link>Services\LspClient.cs</Link></Compile>
+    <!-- The seam (ticket d051fbd1). These let the ONE shared McpToolRegistry.cs compile here
+         without importing the IDE. Nothing in this project implements IEditorService,
+         IAppTreeService or IDiffService - the tools needing them are not registered. -->
+    <Compile Include="..\Services\InsertResult.cs"><Link>Services\InsertResult.cs</Link></Compile>
+    <Compile Include="..\Services\DiffFileContext.cs"><Link>Services\DiffFileContext.cs</Link></Compile>
+    <Compile Include="..\Services\IEditorService.cs"><Link>Services\IEditorService.cs</Link></Compile>
+    <Compile Include="..\Services\IWorkspaceContext.cs"><Link>Services\IWorkspaceContext.cs</Link></Compile>
+    <Compile Include="..\Services\IUiDispatcher.cs"><Link>Services\IUiDispatcher.cs</Link></Compile>
+    <Compile Include="..\Services\IAppTreeService.cs"><Link>Services\IAppTreeService.cs</Link></Compile>
+    <Compile Include="..\Services\IDiffService.cs"><Link>Services\IDiffService.cs</Link></Compile>
+    <!-- The INTERFACE only. Services\IdeProbeService.cs, which implements it, is deliberately
+         NOT linked: it names IdeReflectionService, NativeProbeService and
+         ModernEmbeditorViewContent, all IDE-coupled. -->
+    <Compile Include="..\Services\IIdeProbeService.cs"><Link>Services\IIdeProbeService.cs</Link></Compile>
+    <!-- The tool registry itself, and what it needs beyond the services above. -->
+    <Compile Include="..\Services\McpJsonRpc.cs"><Link>Services\McpJsonRpc.cs</Link></Compile>
+    <Compile Include="..\Services\SettingsService.cs"><Link>Services\SettingsService.cs</Link></Compile>
+    <Compile Include="..\Services\ClarionGraphService.cs"><Link>Services\ClarionGraphService.cs</Link></Compile>
+    <Compile Include="..\Services\LibraryIndexer.cs"><Link>Services\LibraryIndexer.cs</Link></Compile>
+    <Compile Include="..\Services\ClarionSourceText.cs"><Link>Services\ClarionSourceText.cs</Link></Compile>
+    <Compile Include="..\Services\IndexRunGate.cs"><Link>Services\IndexRunGate.cs</Link></Compile>
+    <Compile Include="..\Services\IndexRunLog.cs"><Link>Services\IndexRunLog.cs</Link></Compile>
+    <Compile Include="..\Services\InstanceCoordinationService.cs"><Link>Services\InstanceCoordinationService.cs</Link></Compile>
+    <Compile Include="..\Services\LspService.cs"><Link>Services\LspService.cs</Link></Compile>
+    <Compile Include="..\Services\SharedLspBridge.cs"><Link>Services\SharedLspBridge.cs</Link></Compile>
+    <Compile Include="..\Services\McpToolRegistry.cs"><Link>Services\McpToolRegistry.cs</Link></Compile>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- x86 SQLite.Interop.dll next to the exe, same as the indexer. -->
