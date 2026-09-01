@@ -101,7 +101,7 @@ This structure mirrors the Clarion installation's `accessory` folder, enabling d
 
 Before running this skill:
 - COM project must be created and built
-- DLL and manifest must exist in `bin/Release/net48/` or `bin/x86/Release/net48/`
+- DLL and manifest must exist in `bin/Release/net472/` or `bin/x86/Release/net472/`
 - Source files must exist (IInterface.cs, ImplementationControl.cs, AssemblyInfo.cs)
 
 ## ??�? MANIFEST VALIDATION AND FIX GUIDE
@@ -222,12 +222,12 @@ mkdir -p "ProjectName/Clarion/accessory/resources"
 
 1. **Copy DLLs to `accessory/bin/`:**
    ```bash
-   cp bin/Release/net48/*.dll "ProjectName/Clarion/accessory/bin/"
+   cp bin/Release/net472/*.dll "ProjectName/Clarion/accessory/bin/"
    ```
 
 2. **Copy manifest to `accessory/resources/`:**
    ```bash
-   cp bin/Release/net48/*.manifest "ProjectName/Clarion/accessory/resources/"
+   cp bin/Release/net472/*.manifest "ProjectName/Clarion/accessory/resources/"
    ```
 
 **Verify files are present:**
@@ -399,7 +399,7 @@ echo.
 {MethodsList}
 echo.
 echo If COM creation fails, check:
-echo   - .NET Framework 4.8+ is installed
+echo   - .NET Framework 4.7.2+ is installed
 echo   - Manifest file is correctly named (no .dll in the name)
 echo   - Both DLL and manifest are in the same folder as your executable
 echo   - The DLL is NOT registered (registration-free COM requirement)
@@ -426,10 +426,22 @@ Generate `readme_ProjectName.html` in `ProjectName/Clarion/accessory/resources/`
 
 �?��? **CRITICAL: DO NOT GENERATE CLARION CODE EXAMPLES**
 
-**NEVER include Clarion code examples in the documentation.**
-- The user has Clarion templates that generate correct code
-- Writing Clarion code examples will likely be incorrect
+**NEVER hand-write per-control Clarion code examples in the documentation.**
+- Improvised, per-control Clarion code will likely have incorrect syntax
+- The UltimateCOM template generates the instantiation and event-handling code
 - Focus on COM interface documentation only
+
+**EXCEPTION - the shared "Calling from Clarion" section.** GenerateReadmeHTML.ps1 emits a fixed,
+reviewed calling-convention block into every generated readme: OLE string-expression syntax,
+parameter-passing rules, and the base64 requirement for JSON payloads. It is verified against the
+SoftVelocity Help topics "Parameter Passing to OLE/OCX Methods" and "Calling OLE Object Methods",
+and is identical for every control. Do NOT strip it out, and do NOT add improvised examples of
+your own alongside it.
+
+Why the exception exists: the UltimateCOM template and class cover the INBOUND half only -
+instantiation, placement, and events (Parm1..Parm6 arrive as StringTheory objects). There is no
+outbound helper, so every method call and data payload is hand-written by the developer. That is
+the gap the shared block fills.
 
 Generate comprehensive HTML documentation with sections:
 
@@ -524,14 +536,14 @@ Namespace.ClassName
 
 **To generate `[DllsToCopy]` section:**
 
-1. Scan the build output folder (`bin/Release/net48/` or `bin/x86/Release/net48/`) for all `.dll` files
+1. Scan the build output folder (`bin/Release/net472/` or `bin/x86/Release/net472/`) for all `.dll` files
 2. List each DLL file name (with extension) on a separate line
 3. Always include the main COM DLL first
 4. Include all dependency DLLs (NuGet packages, native DLLs, etc.)
 
 **Example scanning command:**
 ```powershell
-Get-ChildItem -Path "bin/Release/net48/" -Filter "*.dll" | ForEach-Object { $_.Name }
+Get-ChildItem -Path "bin/Release/net472/" -Filter "*.dll" | ForEach-Object { $_.Name }
 ```
 
 **Example output for header:**
@@ -725,7 +737,7 @@ To accessory\resources:
 
 **If DLL/manifest not in output folder:**
 - Suggest running clarioncom-build first
-- Check both `bin/Release/net48/` and `bin/x86/Release/net48/`
+- Check both `bin/Release/net472/` and `bin/x86/Release/net472/`
 
 ## Integration with Other Skills
 

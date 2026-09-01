@@ -163,6 +163,11 @@ Verify new control files exist in PROJECT ROOT:
 
 **WHY:** The user will create their own Clarion application to test the control. Creating Clarion files is outside your scope and not needed.
 
+**NOT the same thing:** the generated readme's fixed "Calling from Clarion" section is
+documentation, not a Clarion source file. It is emitted by GenerateReadmeHTML.ps1, is identical
+for every control, and is in scope. This rule bans creating .clw/.app files - it does not ban
+documenting how to call the control.
+
 **Your scope:**
 - ✅ Create the COM control (C# .NET)
 - ✅ Build the DLL
@@ -263,7 +268,7 @@ public class YourControl : UserControl, IYourControl
 ### 5. Project Configuration (.csproj)
 ```xml
 <PropertyGroup>
-    <TargetFramework>net48</TargetFramework>
+    <TargetFramework>net472</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <PlatformTarget>x86</PlatformTarget>
     <OutputType>Library</OutputType>
@@ -662,7 +667,7 @@ When creating or reviewing a COM control:
    - [ ] .env file exists for version management (if building)
 
 5. **Check Project File**
-   - [ ] TargetFramework: net48
+   - [ ] TargetFramework: net472
    - [ ] PlatformTarget: x86
    - [ ] NO EnableComInterop (using RegFree COM)
    - [ ] NO RegisterForComInterop (using RegFree COM)
