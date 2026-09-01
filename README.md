@@ -57,7 +57,7 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ## What's New (Unreleased)
 
-> **DRAFT for 5.9.0.** Written by Charlie for John to edit. Coverage is complete against the 22 commits since v5.8.1; the voice is not final.
+> **DRAFT for 5.9.0.** Written by Charlie for John to edit. Coverage is complete against the 30 commits since v5.8.1; the voice is not final.
 
 **Why 5.9.0 and not 5.8.2.** Clarion Assistant is joining the **Clarion Addin Registry**, so it can be found and updated from **AddinFinder** inside the IDE. That required our version number to become a single value that the addin manifest, the installer and the git tag all agree on &mdash; and it could not be 5.8.2. See the versioning entry below.
 
@@ -87,6 +87,14 @@ A follow-on to [#190](https://github.com/ClarionLive/ClarionAssistant/issues/190
 The released version is now **Major.Minor.Patch** &mdash; one number, shared by `Version.props`, the addin manifest and the git tag. Previously the third component was a build counter that incremented on **every compile**, so the manifest said `5.8.1165` while the release was tagged `v5.8.1` and the installer carried a third, hand-maintained `5.8.1`. AddinFinder compares the manifest against the release tag, so any disagreement shows as *"Update available"* permanently, and reinstalling cannot clear it.
 
 **This is why the jump is to 5.9.0 rather than 5.8.2.** AddinFinder only ever lets a recorded version move *forward*, and it compares component by component &mdash; so against a manifest already reporting `5.8.1165`, the number `5.8.2` compares as **lower** (2 against 1165) and would have left every existing user stuck on that message forever, while looking perfectly correct on any fresh install. The build counter has not gone away: it still increments and still appears in the DLL's file properties and in the docked pad's title (`5.9.0.1165`), where it is useful for support.
+
+### The About box now shows the full version number
+
+The About box reported `5.9` where every other surface reports `5.9.0.1165`. It built the string from the assembly version's **Major and Minor only**, dropping the patch and the build counter &mdash; the two components that actually distinguish one install from another. It now shows all four, which matters mostly for support: the build counter is how you tell a deployed build apart from the one before it, and reading it off the About box is the quickest way to get it.
+
+### The VS Code import preview no longer promises a font it cannot deliver
+
+Importing settings from VS Code previews what will change. Where **Follow Clarion's editor options** is ticked some of those values are owned by the IDE rather than the pad, and the preview already warned about that on the indentation rows &mdash; but not on **Font size** and **Font family**, which are follow-mode-owned too. So the preview offered a font change, the import stored it correctly, and the editor carried on showing the IDE's font, leaving the setting looking silently ignored; unticking follow-mode reveals the imported value was there the whole time. The warning now appears on the font rows as well, and only when the IDE is actually reporting a font, so it never warns about a setting that would in fact have applied.
 
 ### Thanks
 
