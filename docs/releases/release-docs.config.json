@@ -91,9 +91,25 @@
     "Scopes that are never user-facing and so never need a release-note entry.",
     "Commit TYPES chore/docs/test/ci/build/style/refactor are already excluded by type;",
     "this list is for cases where the TYPE is feat/fix but the area genuinely ships nothing",
-    "a user would notice. Keep it short — every entry here is a hole in the gate."
+    "a user would notice. Keep it short - every entry here is a hole in the gate.",
+    "",
+    "'tests' - test code is not shipped, so a change scoped to it cannot be user-visible.",
+    "This is the SAME rationale that already excludes the `test:` TYPE, and that is the real",
+    "point: a commit like `fix(tests): ...` SHOULD have been written `test: ...`, which the",
+    "gate would have skipped on type alone and needed no entry here. Prefer `test:` for",
+    "test-only work. This entry exists because 8b1b446 was already typed `fix(tests)` and",
+    "pushed before anyone noticed, and history is not worth rewriting for it.",
+    "",
+    "Note this is a genuinely narrow hole, not a convenient one: it excuses only commits",
+    "whose SCOPE is 'tests'. A product fix discovered BY a test carries the product's own",
+    "scope and is still caught. An acknowledgedCommits SHA would have been safer in",
+    "principle but does not work here - the script applies acknowledgedCommits only to",
+    "commits with NO scope (Check-ReleaseDocs.ps1 ~line 421), so a scoped commit can never",
+    "be acknowledged that way."
   ],
-  "ignoreScopes": [],
+  "ignoreScopes": [
+    "tests"
+  ],
   "$comment_authors": [
     "GitHub login -> the display name used in the 'Thanks' section.",
     "NOT derivable from the GitHub API: login 'asantarelli' has profile name 'SDigitales'",
@@ -163,7 +179,6 @@
     "Scoped to one release cycle — clear this map when a version is cut."
   ],
   "acknowledgedCommits": {
-    "cb16c62": "Documented by the 'CA Embeditor: Ctrl+F4 on unsaved work now asks' entry, which IS this commit's change. Acknowledged rather than aliased because the subject carries no conventional-commit prefix (it is written as a bug report title), so it has no scope for the tool to match and cannot carry a coverage marker either. This is case (b) above. A SHA names one immutable commit and cannot mask anything future, which is why it is the safer fix here than inventing a scope.",
-    "8b1b446": "Internal only - hardens tests\\Run-Tests.ps1 so a failed jsdom auto-install reports itself instead of printing nothing (npm --silent suppresses 'npm error' too). Changes no shipped behaviour and no user-visible surface; it only affects developers running the suite. Acknowledged by SHA rather than adding 'tests' to ignoreScopes, per this file's own guidance: a SHA cannot mask anything future, whereas an ignoreScopes entry would silently excuse every fix(tests) commit forever."
+    "cb16c62": "Documented by the 'CA Embeditor: Ctrl+F4 on unsaved work now asks' entry, which IS this commit's change. Acknowledged rather than aliased because the subject carries no conventional-commit prefix (it is written as a bug report title), so it has no scope for the tool to match and cannot carry a coverage marker either. This is case (b) above. A SHA names one immutable commit and cannot mask anything future, which is why it is the safer fix here than inventing a scope."
   }
 }
