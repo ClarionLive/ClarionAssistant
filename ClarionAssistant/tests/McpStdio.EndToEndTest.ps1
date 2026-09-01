@@ -129,11 +129,13 @@ if ($parsed.Count -ge 1) {
 
 if ($parsed.Count -ge 2) {
     $toolCount = @($parsed[1].result.tools).Count
-    Assert-That ($toolCount -eq 60) "expected 60 tools advertised standalone, got $toolCount"
+    Assert-That ($toolCount -eq 59) "expected 59 tools advertised standalone, got $toolCount"
 
     # The gate must hold on the WIRE, not just in the registry: no IDE-only tool may be listed.
     $names = @($parsed[1].result.tools | ForEach-Object { $_.name })
-    foreach ($banned in @('get_active_file', 'insert_text', 'open_procedure', 'export_dctx')) {
+    # execute_command is here because it escaped the gate: its dependency is a reflection scan
+    # over loaded assemblies, not a field reference, so no field-based check could see it.
+    foreach ($banned in @('get_active_file', 'insert_text', 'open_procedure', 'export_dctx', 'execute_command')) {
         Assert-That (-not ($names -contains $banned)) `
             "IDE-only tool '$banned' was advertised by a server with no IDE"
     }

@@ -879,6 +879,15 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "execute_command",
+                // IDE-only, and it escaped the gate the same way the knowledge service did: the
+                // gate recognises references to four IDE-service FIELDS, and this tool's
+                // dependency is a reflection scan over AppDomain.CurrentDomain.GetAssemblies()
+                // looking for a SharpDevelop command class. No field to see, so no flag raised.
+                // In a host with no addin assemblies loaded it can only ever answer "Class not
+                // found", which is the definition of a tool that belongs behind this flag.
+                // Caught by CC reading the tool's own description against its host, not by any
+                // scan of mine.
+                IdeOnly = true,
                 Description = "Execute a registered SharpDevelop/Clarion IDE addin command by class name. " +
                     "Instantiates the command and calls Run(). Use to invoke toolbar buttons, menu commands, " +
                     "or any AbstractMenuCommand/AbstractCommand class loaded by an addin. " +
@@ -2113,7 +2122,7 @@ COMMON QUERIES:
             Register(new McpTool
             {
                 Name = "index_solution",
-                Description = "Index or re-index the currently selected Clarion solution. Creates/updates the CodeGraph database for cross-project code intelligence. With a progress-capable client this call streams live progress (weighted % + current file) and returns the completion stats — a full index of a large solution can run for many minutes; the IDE progress window shows the same run. Without progress support it just starts the run and returns immediately.",
+                Description = "Index or re-index the currently selected Clarion solution. Creates/updates the CodeGraph database for cross-project code intelligence. With a progress-capable client this call streams live progress (weighted % + current file) and returns the completion stats — a full index of a large solution can run for many minutes, and in the IDE the progress window shows the same run. Without progress support the call returns as soon as the run is under way — in the IDE that is immediately, while a standalone host runs it to completion first so a following query cannot read a half-built database.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
