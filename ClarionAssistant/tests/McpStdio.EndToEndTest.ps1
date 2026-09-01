@@ -247,6 +247,87 @@ Assert-That ($rn.Stderr -match 'does not exist') `
     "the server did not report the bad --solution path on stderr, where a client can see it"
 Report-Block $blockStart2 "an absent solution reports an error rather than a started run"
 
+# ------------------------------------------------------------- 2c. cross-process index lock
+# The addin and this server are separate processes that can hold the same .codegraph.db. A full
+# index begins with DELETE FROM ... and then inserts for minutes, so two overlapping runs leave a
+# graph whose relationships point at symbols that no longer exist. SQLite prevents file
+# corruption; it cannot prevent that, and neither would any other engine.
+#
+# Driven as TWO REAL PROCESSES via --lockprobe. A single-process test would pass whether or not
+# the file lock works, because the in-process dictionary would refuse the second claim on its own.
+$blockStart = $failures.Count
+
+$lockDb = Join-Path ([System.IO.Path]::GetTempPath()) 'clarion-mcp-locktest.codegraph.db'
+$lockFile = "$lockDb.lock"
+Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
+
+# Start a holder and wait until it confirms it has the lock.
+function Start-LockHolder([string]$db) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = "--lockprobe `"$db`""
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $line = $p.StandardOutput.ReadLine()     # blocks until ACQUIRED/BLOCKED
+    return [pscustomobject]@{ Process = $p; FirstLine = $line }
+}
+
+# Ask a second process for the same lock and return what it said.
+function Get-LockAttempt([string]$db) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = "--lockprobe `"$db`""
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $line = $p.StandardOutput.ReadLine()
+    $p.StandardInput.Close()                 # release if it acquired
+    $p.WaitForExit(30000) | Out-Null
+    return $line
+}
+
+$holder = Start-LockHolder $lockDb
+Assert-That ($holder.FirstLine -like 'ACQUIRED*') `
+    "the first process could not take the lock: '$($holder.FirstLine)'"
+
+# --- a second PROCESS must be refused, and must say who has it ---
+$second = Get-LockAttempt $lockDb
+Assert-That ($second -like 'BLOCKED*') `
+    "a second process was allowed to index the same database concurrently: '$second'"
+Assert-That ($second -match "process $($holder.Process.Id)") `
+    "the refusal did not name the holding process $($holder.Process.Id): '$second'"
+Assert-That ($second -match [regex]::Escape($env:COMPUTERNAME)) `
+    "the refusal did not name the holding machine: '$second'"
+
+# --- released cleanly: the next claim succeeds ---
+$holder.Process.StandardInput.Close()
+$holder.Process.WaitForExit(30000) | Out-Null
+$afterRelease = Get-LockAttempt $lockDb
+Assert-That ($afterRelease -like 'ACQUIRED*') `
+    "the lock was not released when its holder exited normally: '$afterRelease'"
+
+# --- KILLED, not released: this is the case a PID-or-timeout scheme gets wrong ---
+# A hard kill (deploy, crash, Task Manager) is how CA processes usually die. The lock is an open
+# OS handle, so the kill releases it and there is no stale state to detect or time out.
+$victim = Start-LockHolder $lockDb
+Assert-That ($victim.FirstLine -like 'ACQUIRED*') "could not set up the kill case: '$($victim.FirstLine)'"
+$victim.Process.Kill()
+$victim.Process.WaitForExit(30000) | Out-Null
+
+$afterKill = Get-LockAttempt $lockDb
+Assert-That ($afterKill -like 'ACQUIRED*') `
+    "a KILLED holder left a stale lock that blocks all future indexing: '$afterKill'"
+
+# The lock file itself is left behind on purpose - deleting it races a waiting claimant, and an
+# unheld lock file means nothing. Its presence must NOT be what blocks anyone.
+Assert-That (Test-Path $lockFile) "the lock file vanished; the next claimant has nothing to read"
+
+Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
+Report-Block $blockStart "cross-process lock: second process refused, kill leaves no stale lock"
+
 # ---------------------------------------------------------------- 3. stdout-hijack control
 $blockStart = $failures.Count
 # THE POINT OF THIS BLOCK. The hijack is a guard that passes by finding nothing, so on its own it

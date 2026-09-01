@@ -4264,9 +4264,11 @@ IdeOnly = true,
             // Cross-entry-point gate: RunIndex (header buttons / index_solution) may already
             // be writing this database. Refuse BEFORE opening the run log so this call can't
             // rotate the active run's transcript out from under it.
-            if (!IndexRunGate.TryEnter(dbPath))
+            string indexHolder;
+            if (!IndexRunGate.TryEnter(dbPath, out indexHolder))
                 return "Error: an index run is already in progress for this solution's database ("
-                    + dbPath + ") — wait for it to finish before starting another.";
+                    + dbPath + ") — held by " + indexHolder
+                    + ". Wait for it to finish before starting another.";
 
             var runLog = new IndexRunLog(Path.GetFileNameWithoutExtension(slnPath));
             try

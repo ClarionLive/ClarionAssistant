@@ -273,24 +273,20 @@ namespace ClarionAssistant.McpServer
 
             string dbPath = CurrentDbPath;
 
-            // Same gate the addin's two entry points share, for the same reason: index_solution and
-            // index_codegraph can both reach here, and two runs writing one database is corruption.
-            //
-            // IT IS IN-PROCESS ONLY, and this host makes that matter in a way it did not before:
-            // the addin and this server are SEPARATE PROCESSES and can now hold the same
-            // .codegraph.db. A full index clears the database up front, so a concurrent pair can
-            // destroy each other's work. Not fixed here — a cross-process lock is its own change
-            // with its own failure modes (stale locks after a kill) — but it is a real hazard, it
-            // is recorded on the ticket, and it is the reason this comment is not just "claim the
-            // gate".
+            // The same gate the addin's entry points use. It now guards ACROSS PROCESSES as well
+            // as within one, which this host is the reason for: the addin and this server can hold
+            // the same .codegraph.db, and a full index clears it up front, so an overlapping pair
+            // would destroy each other's work.
             //
             // Claimed HERE, on the calling thread, before any thread is started. Claiming it
             // inside the worker would let a second call slip past while the first was still
             // starting up — the gate would be doing nothing precisely when two runs are most
             // likely, which is back-to-back requests.
-            if (!IndexRunGate.TryEnter(dbPath))
+            string indexHolder;
+            if (!IndexRunGate.TryEnter(dbPath, out indexHolder))
             {
-                complete("Error: an index run is already in progress for this database.");
+                complete("Error: an index run is already in progress for this database, held by "
+                         + indexHolder + ".");
                 return;
             }
 

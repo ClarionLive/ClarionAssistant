@@ -2377,11 +2377,17 @@ namespace ClarionAssistant
             // Cross-entry-point gate: index_codegraph (MCP worker thread) writes the same
             // database and can't see _indexRunInProgress. Claimed at the last no-throw
             // point before the worker starts, so a setup exception can't leak the claim.
-            if (!ClarionAssistant.Services.IndexRunGate.TryEnter(dbPath))
+            //
+            // It now guards across PROCESSES too, so the holder is no longer necessarily
+            // index_codegraph in this IDE — the standalone MCP server can be indexing the same
+            // database (ticket d051fbd1). The message names whoever actually holds it rather than
+            // asserting a cause, which would send the developer looking in the wrong place.
+            string indexHolder;
+            if (!ClarionAssistant.Services.IndexRunGate.TryEnter(dbPath, out indexHolder))
             {
                 string held = "Error: an index run is already in progress for this solution's database "
-                    + "(started via index_codegraph) — wait for it to finish before starting another.";
-                runLog.WriteLine("REFUSED: another index run holds " + dbPath);
+                    + "— held by " + indexHolder + ". Wait for it to finish before starting another.";
+                runLog.WriteLine("REFUSED: " + indexHolder + " holds " + dbPath);
                 runLog.Dispose();
                 _header.SetIndexButtonsEnabled(true);
                 if (!progressForm.IsDisposed)

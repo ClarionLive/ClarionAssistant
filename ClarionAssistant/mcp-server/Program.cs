@@ -12,10 +12,10 @@ namespace ClarionAssistant.McpServer
     /// McpTool.IdeOnly — an MCP client reads the tool list as a contract, so a tool that can only
     /// throw is worse than an absent one.
     ///
-    /// Of the 57, ELEVEN currently need an IWorkspaceContext that this host does not yet supply
-    /// (the CodeGraph and solution tools: index_solution, query_codegraph, build_solution and
-    /// friends). They register and answer an error until that lands. The remaining 46 — docs,
-    /// knowledge, LSP, schema, file and search tools — are fully functional now.
+    /// All 57 function. The eleven that need to know which solution they are on — the CodeGraph
+    /// and solution family, index_solution and query_codegraph among them — get it from
+    /// StandaloneWorkspace, resolved from --solution or the working directory. The other 46
+    /// (docs, knowledge, LSP, schema, file, search) never needed one.
     /// </summary>
     internal static class Program
     {
@@ -25,7 +25,7 @@ namespace ClarionAssistant.McpServer
         private static int Main(string[] args)
         {
             bool selfTest = false, negativeControl = false, stdioSelfTest = false;
-            bool stdio = false, stdioNoise = false, help = false;
+            bool stdioNoise = false, help = false;
             string solution = null;
             bool unknownArg = false;
 
@@ -37,11 +37,21 @@ namespace ClarionAssistant.McpServer
                     case "--selftest": selfTest = true; break;
                     case "--selftest-negative": selfTest = true; negativeControl = true; break;
                     case "--selftest-stdio": stdioSelfTest = true; break;
-                    case "--stdio": stdio = true; break;
-                    case "--stdio-noise": stdio = true; stdioNoise = true; break;
+                    // Accepted and intentionally inert: serving stdio is the DEFAULT, so this
+                    // flag exists only so an MCP client config can state it explicitly.
+                    case "--stdio": break;
+                    case "--stdio-noise": stdioNoise = true; break;
                     case "--help":
                     case "-h":
                     case "/?": help = true; break;
+                    case "--lockprobe":
+                        // TEST ONLY. Claims the cross-process index lock for a database path and
+                        // holds it until stdin closes, so a harness can drive TWO processes
+                        // deterministically instead of racing a real index run. See RunLockProbe.
+                        if (i + 1 < args.Length) return RunLockProbe(args[++i]);
+                        Console.Error.WriteLine(ServerName + ": --lockprobe needs a database path.");
+                        return 64;
+
                     case "--solution":
                         // Consumes the next argument. Checked rather than assumed: a trailing
                         // "--solution" with nothing after it would otherwise silently resolve to
@@ -165,6 +175,57 @@ namespace ClarionAssistant.McpServer
                 return b.Dispatcher;
             }
         }
+
+        #region cross-process lock probe
+
+        /// <summary>
+        /// TEST ONLY (--lockprobe &lt;dbPath&gt;). Claim the cross-process index lock, report the
+        /// outcome on stdout, and — if acquired — hold it until stdin closes.
+        ///
+        /// This exists because the property worth testing cannot be tested inside one process.
+        /// The lock stops two SEPARATE PROCESSES from indexing one .codegraph.db, and the
+        /// in-process dictionary would mask that: a single-process test passes whether or not the
+        /// file lock works at all. Driving a real index from two servers would test it, but the
+        /// run takes seconds and the overlap would be a race — a test that fails intermittently
+        /// teaches people to re-run it.
+        ///
+        /// Holding until stdin closes also makes the KILL case testable, which is the one that
+        /// matters most: the harness kills this process and requires the next claim to succeed,
+        /// proving a hard kill leaves no stale lock behind.
+        ///
+        /// Output is one line, deliberately parseable:
+        ///     ACQUIRED pid=&lt;n&gt;
+        ///     BLOCKED &lt;holder description&gt;
+        /// </summary>
+        private static int RunLockProbe(string dbPath)
+        {
+            string holder;
+            if (!ClarionAssistant.Services.IndexRunGate.TryEnter(dbPath, out holder))
+            {
+                Console.WriteLine("BLOCKED " + (holder ?? "(no holder reported)"));
+                return 0;
+            }
+
+            try
+            {
+                int pid;
+                try { pid = System.Diagnostics.Process.GetCurrentProcess().Id; }
+                catch { pid = -1; }
+                Console.WriteLine("ACQUIRED pid=" + pid);
+                Console.Out.Flush();
+
+                // Block until the harness closes stdin (or kills us).
+                Console.In.ReadLine();
+                return 0;
+            }
+            finally
+            {
+                // Skipped entirely on a kill — which is the point of the kill test.
+                ClarionAssistant.Services.IndexRunGate.Exit(dbPath);
+            }
+        }
+
+        #endregion
 
         #region stdio self-test
 
