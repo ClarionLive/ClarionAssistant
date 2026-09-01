@@ -1,4 +1,4 @@
-﻿; Clarion Assistant v5.3 Installer
+; Clarion Assistant v5.3 Installer
 ; Inno Setup 6 Script
 ; Supports Clarion 10, 11, 12 — user picks which version(s) to install
 
@@ -46,6 +46,7 @@
 #define SrcC12 SrcBase + "\bin\Debug-C12"
 ; Indexer is VENDORED into the repo (GitHub #30) — source from ClarionAssistant\indexer, not the old external H:\DevLaptop\ClarionLSP tree.
 #define SrcClarionIndexer SrcBase + "\indexer\bin\Debug"
+#define SrcMcpServer SrcBase + "\mcp-server\bin\Debug"
 ; ClarionCOMBrowser (COM for Clarion IDE addin) lives in a separate repo. Override: CLARIONCOMBROWSER_DIR
 #define SrcComForClarion GetEnv("CLARIONCOMBROWSER_DIR") != "" ? GetEnv("CLARIONCOMBROWSER_DIR") : "H:\DevLaptop\ClarionIdeCOMPane\ClarionCOMBrowser\bin\Debug"
 ; Plugin marketplace is no longer bundled by the installer — configure.ps1
@@ -256,6 +257,13 @@ Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC10Path}\accessory\addins\Clarion
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
+; clarion-mcp-server.exe - the editor-agnostic MCP tools as a standalone stdio server,
+; for Clarion developers working in Sublime/VS Code rather than the IDE. MUST land in
+; this folder rather than a subfolder: it resolves lsp-server\ relative to its own
+; directory, so from here it finds the bundled language server AND node.exe that the
+; blocks below already install.
+Source: "{#SrcMcpServer}\clarion-mcp-server.exe"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
+Source: "{#SrcMcpServer}\clarion-mcp-server.pdb"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
 ; Third-party license notices — ships wherever the addin does; the obligation travels with the binaries.
 Source: "{#SrcRepoRoot}\THIRD-PARTY-NOTICES.md"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion10 and docs; Flags: ignoreversion
@@ -312,6 +320,13 @@ Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC11Path}\accessory\addins\Clarion
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
+; clarion-mcp-server.exe - the editor-agnostic MCP tools as a standalone stdio server,
+; for Clarion developers working in Sublime/VS Code rather than the IDE. MUST land in
+; this folder rather than a subfolder: it resolves lsp-server\ relative to its own
+; directory, so from here it finds the bundled language server AND node.exe that the
+; blocks below already install.
+Source: "{#SrcMcpServer}\clarion-mcp-server.exe"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
+Source: "{#SrcMcpServer}\clarion-mcp-server.pdb"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 ; Third-party license notices — ships wherever the addin does; the obligation travels with the binaries.
 Source: "{#SrcRepoRoot}\THIRD-PARTY-NOTICES.md"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion11 and docs; Flags: ignoreversion
@@ -372,6 +387,13 @@ Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC111Path}\accessory\addins\Clario
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
+; clarion-mcp-server.exe - the editor-agnostic MCP tools as a standalone stdio server,
+; for Clarion developers working in Sublime/VS Code rather than the IDE. MUST land in
+; this folder rather than a subfolder: it resolves lsp-server\ relative to its own
+; directory, so from here it finds the bundled language server AND node.exe that the
+; blocks below already install.
+Source: "{#SrcMcpServer}\clarion-mcp-server.exe"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
+Source: "{#SrcMcpServer}\clarion-mcp-server.pdb"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 ; Third-party license notices — ships wherever the addin does; the obligation travels with the binaries.
 Source: "{#SrcRepoRoot}\THIRD-PARTY-NOTICES.md"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion111 and docs; Flags: ignoreversion
@@ -429,6 +451,13 @@ Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC12Path}\accessory\addins\Clarion
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
+; clarion-mcp-server.exe - the editor-agnostic MCP tools as a standalone stdio server,
+; for Clarion developers working in Sublime/VS Code rather than the IDE. MUST land in
+; this folder rather than a subfolder: it resolves lsp-server\ relative to its own
+; directory, so from here it finds the bundled language server AND node.exe that the
+; blocks below already install.
+Source: "{#SrcMcpServer}\clarion-mcp-server.exe"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
+Source: "{#SrcMcpServer}\clarion-mcp-server.pdb"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 ; Third-party license notices — ships wherever the addin does; the obligation travels with the binaries.
 Source: "{#SrcRepoRoot}\THIRD-PARTY-NOTICES.md"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion12 and docs; Flags: ignoreversion
@@ -1512,10 +1541,44 @@ begin
   end;
 end;
 
+// Stop any running standalone MCP servers before touching the addin folder.
+//
+// WHY THIS IS NOT OPTIONAL. clarion-mcp-server.exe is spawned on demand by whatever MCP client a
+// developer is using - Claude Code in a terminal, in Sublime, in VS Code - and it runs FROM the
+// addin folder. A running executable is locked by Windows, so it blocks not merely the file copy
+// but the DelTree below, which would then half-remove the addin directory.
+//
+// AND CLOSING CLARION DOES NOT HELP, which is what makes this different from the DLL lock the
+// installer already lives with. The holder is a Claude session in some unrelated terminal, in
+// some unrelated folder; the user has no reason to connect it to a Clarion Assistant upgrade,
+// and no obvious way to find it. Measured, not assumed: with a server running from the addin
+// folder, overwriting its exe fails outright.
+//
+// Killing them is cheap and safe. They hold no state - every tool call is served from disk or a
+// database - and the client respawns one on its next request. The cost is that an in-flight tool
+// call fails once; the alternative is a failed or half-applied upgrade.
+//
+// /F because there is no graceful stop available: the server exits when its stdin closes, and
+// that pipe belongs to the client, not to us. taskkill reports 128 when nothing matched, which is
+// the normal case and not an error - so the result is logged, never surfaced.
+procedure StopMcpServers;
+var
+  ResultCode: Integer;
+begin
+  Log('Stopping any running clarion-mcp-server.exe before install...');
+  if Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM clarion-mcp-server.exe',
+          '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Log('  taskkill returned ' + IntToStr(ResultCode) + ' (128 = none were running)')
+  else
+    Log('  taskkill could not be launched; a running server may block the install');
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
   NeedsRestart := False;
+
+  StopMcpServers;
 
   Log('PrepareToInstall: C10Path=' + C10Path);
   Log('PrepareToInstall: C11Path=' + C11Path);
