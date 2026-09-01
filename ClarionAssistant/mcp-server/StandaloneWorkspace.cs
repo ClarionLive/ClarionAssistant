@@ -128,7 +128,36 @@ namespace ClarionAssistant.McpServer
                         try
                         {
                             var info = ClarionVersionService.Detect();
-                            if (info != null) _versionConfig = info.GetCurrentConfig();
+                            if (info != null)
+                            {
+                                // PREFER THE CLARION THIS SERVER IS INSTALLED UNDER, over the one
+                                // the machine calls "current".
+                                //
+                                // The installer places a copy in EVERY selected Clarion's addin
+                                // folder, so there can be four of these, and Detect() answers the
+                                // same machine-global question for all of them. A copy under
+                                // C:\Clarion12 was reporting a Clarion 10 root and a POSitive .red
+                                // - which then drives redirection, library paths and the root used
+                                // for builds, all against the wrong Clarion. Spotted by CC, who
+                                // noticed the version profile did not match the addin serving it
+                                // and asked rather than assuming it was an app association.
+                                //
+                                // Its own location is the better signal and cannot drift: the exe
+                                // sits at <ClarionRoot>\accessory\addins\ClarionAssistant\.
+                                string ownRoot = DeriveClarionRootFromLocation();
+                                if (ownRoot != null && info.Versions != null)
+                                {
+                                    _versionConfig = info.Versions.Find(v =>
+                                        v != null && !string.IsNullOrEmpty(v.RootPath) &&
+                                        string.Equals(v.RootPath.TrimEnd('\\'), ownRoot.TrimEnd('\\'),
+                                                      StringComparison.OrdinalIgnoreCase));
+                                }
+
+                                // Not installed under a Clarion tree (a dev build, or a copy the
+                                // user put elsewhere), or that root has no configured version:
+                                // fall back to the machine's current, which is all there is to go on.
+                                if (_versionConfig == null) _versionConfig = info.GetCurrentConfig();
+                            }
                         }
                         catch { _versionConfig = null; }
                     }
@@ -149,6 +178,41 @@ namespace ClarionAssistant.McpServer
         {
             var cfg = CurrentVersionConfig;
             return cfg != null ? cfg.RootPath : null;
+        }
+
+        /// <summary>
+        /// The Clarion root this executable is installed under, or null when it is not inside one.
+        ///
+        /// The installer places the server at &lt;ClarionRoot&gt;\accessory\addins\ClarionAssistant\,
+        /// so the root is three levels up. VERIFIED rather than assumed: the folder names must
+        /// actually be accessory\addins\ClarionAssistant, and the result must contain a bin
+        /// directory. A path-arithmetic guess with no check would happily return "H:\DevLaptop"
+        /// for a development build and then hand every redirection lookup a fabricated root -
+        /// worse than admitting it does not know, because it would look like an answer.
+        /// </summary>
+        private static string DeriveClarionRootFromLocation()
+        {
+            try
+            {
+                string dir = Path.GetDirectoryName(
+                    System.Reflection.Assembly.GetExecutingAssembly().Location);
+                if (string.IsNullOrEmpty(dir)) return null;
+
+                var expected = new[] { "ClarionAssistant", "addins", "accessory" };
+                string cursor = dir;
+                foreach (var name in expected)
+                {
+                    if (cursor == null) return null;
+                    if (!string.Equals(Path.GetFileName(cursor.TrimEnd('\\')), name,
+                                       StringComparison.OrdinalIgnoreCase))
+                        return null;
+                    cursor = Path.GetDirectoryName(cursor.TrimEnd('\\'));
+                }
+
+                if (string.IsNullOrEmpty(cursor)) return null;
+                return Directory.Exists(Path.Combine(cursor, "bin")) ? cursor : null;
+            }
+            catch { return null; }
         }
 
         public RedFileService RedFile

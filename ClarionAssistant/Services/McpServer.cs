@@ -467,6 +467,12 @@ namespace ClarionAssistant.Services
             // Merge user-supplied MCP servers from
             // %APPDATA%\ClarionAssistant\mcp-extra.json. Claude format only —
             // Copilot's schema differs and needs separate handling.
+            // ORDERING INVARIANT: this runs LAST, after every addin-supplied server has been
+            // added above. A key is reserved purely by already being present, so moving this call
+            // earlier - or adding a new addin server below it - would let the user's sidecar
+            // override a real one, silently, with the pane still apparently working while talking
+            // to whatever executable that entry named. McpSidecarMerge carries the reasoning and
+            // is covered by a test that fails if the order changes.
             ExtraMcpServerNames = new List<string>();
             if (format == McpConfigFormat.Claude)
             {
@@ -475,30 +481,10 @@ namespace ClarionAssistant.Services
                     string sidecar = GetMcpExtraConfigPath();
                     if (File.Exists(sidecar))
                     {
-                        string raw = File.ReadAllText(sidecar);
-                        var parsed = McpJsonRpc.Deserialize(raw);
-                        object entriesObj;
-                        if (parsed != null && parsed.TryGetValue("mcpServers", out entriesObj))
-                        {
-                            var entries = entriesObj as Dictionary<string, object>;
-                            if (entries != null)
-                            {
-                                foreach (var kv in entries)
-                                {
-                                    if (string.IsNullOrEmpty(kv.Key)) continue;
-                                    if (servers.ContainsKey(kv.Key))
-                                    {
-                                        System.Diagnostics.Debug.WriteLine(
-                                            "[McpServer] mcp-extra.json: skipping reserved key '" + kv.Key + "'");
-                                        continue;
-                                    }
-                                    servers[kv.Key] = kv.Value;
-                                    ExtraMcpServerNames.Add(kv.Key);
-                                    System.Diagnostics.Debug.WriteLine(
-                                        "[McpServer] mcp-extra.json: merged server '" + kv.Key + "'");
-                                }
-                            }
-                        }
+                        ExtraMcpServerNames = McpSidecarMerge.Merge(
+                            servers,
+                            File.ReadAllText(sidecar),
+                            msg => System.Diagnostics.Debug.WriteLine("[McpServer] mcp-extra.json: " + msg));
                     }
                 }
                 catch (Exception ex)

@@ -528,7 +528,8 @@ namespace ClarionAssistant.McpServer
                     ideNames.Add((string)t["name"]);
 
                 var overlap = ideNames.FindAll(n => agnosticNames.Contains(n));
-                Console.WriteLine("  ok  split: addin " + ideNames.Count + " + standalone "
+                int beforeSplit = failures.Count;
+                Console.WriteLine("  .. split: addin " + ideNames.Count + " + standalone "
                                   + agnosticNames.Count + " = " + (ideNames.Count + agnosticNames.Count)
                                   + ", overlap " + overlap.Count);
 
@@ -537,10 +538,51 @@ namespace ClarionAssistant.McpServer
                 if (ideNames.Count + agnosticNames.Count != withIdeCount)
                     failures.Add("split loses tools: " + ideNames.Count + " + " + agnosticNames.Count
                                  + " != " + withIdeCount + " (the full set)");
+                if (failures.Count == beforeSplit)
+                    Console.WriteLine("  ok  split is a partition: disjoint and complete");
             }
             catch (Exception ex)
             {
                 failures.Add("split check: " + ex.GetType().Name + " - " + ex.Message);
+            }
+
+            // THE SIDECAR MUST NOT BE ABLE TO OVERRIDE AN ADDIN SERVER, and clarion-tools is the
+            // case that matters: a user's mcp-extra.json entry of that name would silently point
+            // the IDE pane at a different executable and a different solution, while the pane went
+            // on looking perfectly healthy. Found by CC testing the live IDE - clarion-tools was
+            // protected only because the addin's injection happens to run before the merge.
+            // Tested here because the rule is now a pure function; in McpServer it needed a
+            // WinForms Control and could not be reached from any test at all.
+            try
+            {
+                var servers = new Dictionary<string, object>
+                {
+                    { "clarion-assistant", "addin-supplied" },
+                    { "clarion-tools", "addin-supplied" },
+                };
+                const string sidecar =
+                    "{\"mcpServers\":{" +
+                    "\"clarion-tools\":\"sidecar-override\"," +   // reserved: must be rejected
+                    "\"everything\":\"user-server\"}}";           // not reserved: must merge
+
+                int before = failures.Count;
+                var merged = ClarionAssistant.Services.McpSidecarMerge.Merge(servers, sidecar);
+
+                if (!"addin-supplied".Equals(servers["clarion-tools"]))
+                    failures.Add("sidecar OVERRODE the addin's clarion-tools - an IDE pane would silently use the user's executable and solution");
+                if (merged.Contains("clarion-tools"))
+                    failures.Add("a rejected key was reported as merged - it would be granted mcp__clarion-tools__* on the strength of a discarded entry");
+                if (!merged.Contains("everything"))
+                    failures.Add("a NON-reserved sidecar server was dropped - the merge is refusing everything, not just reserved keys");
+                if (!"user-server".Equals(servers["everything"]))
+                    failures.Add("a non-reserved sidecar server did not reach the server list");
+
+                if (failures.Count == before)
+                    Console.WriteLine("  ok  sidecar merge: reserved key rejected, user server merged");
+            }
+            catch (Exception ex)
+            {
+                failures.Add("sidecar merge check: " + ex.GetType().Name + " - " + ex.Message);
             }
 
             // The process must NOT have dragged the IDE in.
