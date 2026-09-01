@@ -96,6 +96,12 @@ The About box reported `5.9` where every other surface reports `5.9.0.1165`. It 
 
 Importing settings from VS Code previews what will change. Where **Follow Clarion's editor options** is ticked some of those values are owned by the IDE rather than the pad, and the preview already warned about that on the indentation rows &mdash; but not on **Font size** and **Font family**, which are follow-mode-owned too. So the preview offered a font change, the import stored it correctly, and the editor carried on showing the IDE's font, leaving the setting looking silently ignored; unticking follow-mode reveals the imported value was there the whole time. The warning now appears on the font rows as well, and only when the IDE is actually reporting a font, so it never warns about a setting that would in fact have applied.
 
+### Bundled skills: the marketplace ones said .NET 4.8, the templates build 4.7.2
+
+The ClarionCOM skills that ship with Clarion Assistant told you your project targets **net48**. Both shipped templates target **net472** &mdash; `ClarionCOMTemplate.csproj` and `WebView2Template.csproj` alike. That is not a label being out by a decimal point: the deployment skill sent you to copy build output from `bin/Release/net48/`, **a path MSBuild never writes**, and the control checklist would fail a correctly configured project. Corrected throughout the four affected skills.
+
+The blanket rule against generating Clarion code was also too broad, and is narrowed from *"never generate Clarion code examples"* to *"never hand-write per-control examples"*. The reason it needed narrowing: the Clarion templates cover the **inbound** half only &mdash; `UltimateCOM.tpl` and the `UltimateCOM` class handle instantiation, placement and events &mdash; while every outbound method call and data payload is hand-written by the developer with no guidance anywhere in the product. A fixed, reviewed calling-convention block now fills exactly that gap, checked against the SoftVelocity Help topics *"Parameter Passing to OLE/OCX Methods"* and *"Calling OLE Object Methods"*. The original concern, that improvised per-control Clarion would likely be wrong, is preserved and still enforced.
+
 ### Thanks
 
 - **[@BoxSoft](https://github.com/BoxSoft)** &mdash; [#192](https://github.com/ClarionLive/ClarionAssistant/issues/192) and [#193](https://github.com/ClarionLive/ClarionAssistant/issues/193). Both reports named the specific keys and the specific visual mismatch, which is what made them fixable rather than a general complaint about feel.

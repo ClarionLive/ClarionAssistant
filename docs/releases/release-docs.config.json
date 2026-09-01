@@ -163,6 +163,7 @@
     "Scoped to one release cycle — clear this map when a version is cut."
   ],
   "acknowledgedCommits": {
-    "cb16c62": "Documented by the 'CA Embeditor: Ctrl+F4 on unsaved work now asks' entry, which IS this commit's change. Acknowledged rather than aliased because the subject carries no conventional-commit prefix (it is written as a bug report title), so it has no scope for the tool to match and cannot carry a coverage marker either. This is case (b) above. A SHA names one immutable commit and cannot mask anything future, which is why it is the safer fix here than inventing a scope."
+    "cb16c62": "Documented by the 'CA Embeditor: Ctrl+F4 on unsaved work now asks' entry, which IS this commit's change. Acknowledged rather than aliased because the subject carries no conventional-commit prefix (it is written as a bug report title), so it has no scope for the tool to match and cannot carry a coverage marker either. This is case (b) above. A SHA names one immutable commit and cannot mask anything future, which is why it is the safer fix here than inventing a scope.",
+    "8b1b446": "Internal only - hardens tests\\Run-Tests.ps1 so a failed jsdom auto-install reports itself instead of printing nothing (npm --silent suppresses 'npm error' too). Changes no shipped behaviour and no user-visible surface; it only affects developers running the suite. Acknowledged by SHA rather than adding 'tests' to ignoreScopes, per this file's own guidance: a SHA cannot mask anything future, whereas an ignoreScopes entry would silently excuse every fix(tests) commit forever."
   }
 }
