@@ -85,6 +85,12 @@ if (Test-Path $skillsDir) {
         $skillCount++
         $text = Get-Content $md.FullName -Raw
 
+        # The SKILL.md ITSELF must be tracked. The reference checks below would happily pass for a
+        # skill that exists only on the author's disk - which is exactly how a new skill gets
+        # written, verified, and then never shipped.
+        Assert-That (Test-Tracked $md.FullName) `
+            "$($skill.Name): $($md.Name) is NOT TRACKED by git - the skill would not ship at all"
+
         # Frontmatter: a skill without it does not error, it simply never loads.
         Assert-That ($text -match '(?s)^\s*---\s*\r?\n.*?\r?\n---') "$($skill.Name): SKILL.md has no closed --- frontmatter block"
         Assert-That ($text -match '(?m)^name:\s*\S')                "$($skill.Name): frontmatter has no name"
