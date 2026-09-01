@@ -95,7 +95,62 @@ namespace ClarionAssistant.McpServer
             // mystery the user has no way to diagnose from the client side.
             Console.Error.WriteLine(ServerName + ": " + workspace.ResolutionNote);
 
-            return StdioTransport.Run(BuildDispatcher(workspace), stdioNoise);
+            var bundle = BuildDispatcher(workspace);
+            StartLspInBackground(bundle, workspace);
+
+            return StdioTransport.Run(bundle, stdioNoise);
+        }
+
+        /// <summary>
+        /// Start the language server at launch when a solution is known.
+        ///
+        /// WHY THIS IS NEEDED AT ALL: in the addin the LSP "auto-starts when a solution is
+        /// selected", because selecting one is an event. A standalone server is handed its
+        /// solution on the command line and that event never happens, so every lsp_* tool was a
+        /// guaranteed miss on first use — "LSP client has never been started" — for a user who
+        /// had done nothing wrong. Found by CC testing the live server.
+        ///
+        /// IT CALLS THE lsp_start TOOL rather than reimplementing its sequence. That path already
+        /// handles the shared-ClarionLsp case, resolves server.js across three install layouts,
+        /// and produces a precise diagnostic when it cannot. A second start site would drift from
+        /// it, and drift in the half nobody looks at.
+        ///
+        /// ON A BACKGROUND THREAD, so serving is not delayed. Spawning node and handshaking costs
+        /// far more than this server's ~170ms startup, and most sessions never call an lsp_* tool
+        /// at all — making every client wait for a feature most will not use is the wrong trade.
+        /// The race is benign: an lsp_* call landing before the server is up gets the same
+        /// "not running" error it would have got anyway, and succeeds on retry.
+        /// </summary>
+        private static void StartLspInBackground(McpDispatcherBundle bundle, StandaloneWorkspace workspace)
+        {
+            if (bundle == null || workspace == null) return;
+            if (string.IsNullOrEmpty(workspace.CurrentSolutionPath)) return;   // nothing to serve
+
+            var t = new System.Threading.Thread(() =>
+            {
+                try
+                {
+                    // The tool reports its own outcome as text; relay it to stderr, which is the
+                    // only channel available (stdout is the protocol stream).
+                    object result = bundle.Registry.ExecuteTool(
+                        "lsp_start", new Dictionary<string, object>());
+                    string text = result as string;
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        // Collapse to one line: stderr here is a log, and the failure diagnostic
+                        // is deliberately multi-line.
+                        Console.Error.WriteLine(ServerName + ": lsp_start: "
+                            + text.Replace("\r", " ").Replace("\n", " "));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine(ServerName + ": lsp autostart failed - " + ex.Message);
+                }
+            });
+            t.IsBackground = true;
+            t.Name = "clarion-mcp-lsp-autostart";
+            t.Start();
         }
 
         private static void PrintUsage(TextWriter w)
@@ -183,6 +238,13 @@ namespace ClarionAssistant.McpServer
                 // reported "no solution" while later ones succeed — the same request giving two
                 // answers depending on timing.
                 registry.SetWorkspace(workspace, ui);
+
+                // LspService.EnsureRunning() reads the solution through this hook and RETURNS
+                // SILENTLY when it is unset — so without this line every lsp_* tool fails with a
+                // generic "not running" and no clue why. The addin sets the same hook from
+                // AssistantChatControl.StartMcpServer.
+                ClarionAssistant.Services.LspService.SolutionPathProvider =
+                    () => workspace.CurrentSolutionPath;
             }
 
             var dispatcher = new ClarionAssistant.Services.McpDispatcher(

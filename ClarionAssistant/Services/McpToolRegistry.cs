@@ -2281,12 +2281,24 @@ COMMON QUERIES:
                     // Provide diagnostic info on failure
                     string wsUri = "file:///" + wsPath.Replace("\\", "/");
                     string lspRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(serverJs), "..", "..", ".."));
-                    string nodeExe = Path.Combine(lspRoot, "node.exe");
+
+                    // Ask the resolver what node it would ACTUALLY use, rather than re-deriving
+                    // one candidate here. This line used to compute only the bundled path and
+                    // print "(exists: False)" for it — on a machine with Node installed, which
+                    // the resolver finds two fallbacks later. The diagnostic therefore blamed a
+                    // missing node.exe for every LSP failure, whatever the real cause; it cost me
+                    // several probes chasing a node problem that did not exist.
+                    string nodeExe = LspClient.ResolveNodeExeForDiagnostics(serverJs)
+                                     ?? "(no node.exe found: looked next to the LSP distribution, "
+                                        + "Program Files\\nodejs, Program Files (x86)\\nodejs, "
+                                        + "and %USERPROFILE%\\.claude\\local)";
                     string diag = "Error: LSP server failed to start.\n"
                         + "  source: " + resolveSource + "\n"
                         + "  server.js: " + serverJs + " (exists: " + File.Exists(serverJs) + ")\n"
-                        + "  node.exe: " + nodeExe + " (exists: " + File.Exists(nodeExe) + ")\n"
+                        + "  node.exe: " + nodeExe + "\n"
                         + "  workspace: " + wsUri + "\n"
+                        + "  server.js and node above are BOTH resolved — if they look right, the\n"
+                        + "  failure is in the client handshake, not in locating them.\n"
                         + "  Check the IDE Debug Output for [LSP] messages for more detail.";
                     return diag;
                 }

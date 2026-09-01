@@ -231,6 +231,19 @@ namespace ClarionAssistant.Services
         /// (5) "node" on the system PATH (last resort — Process.Start will fail with a
         ///     clear error if no node is installed at all).
         /// </summary>
+        /// <summary>
+        /// Exposed so a caller building a FAILURE DIAGNOSTIC can report the node this class would
+        /// ACTUALLY use. The lsp_start diagnostic used to derive a single candidate of its own -
+        /// the bundled path - and report it as missing. On a machine with Node installed, which
+        /// this resolver finds two fallbacks later, that reads as "node is not installed" and is
+        /// wrong for every LSP failure whatever the real cause. It cost me several probes chasing
+        /// a node problem that did not exist.
+        /// </summary>
+        internal static string ResolveNodeExeForDiagnostics(string serverJsPath)
+        {
+            return ResolveNodeExe(serverJsPath);
+        }
+
         private static string ResolveNodeExe(string serverJsPath)
         {
             try
