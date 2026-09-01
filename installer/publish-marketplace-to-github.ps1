@@ -12,8 +12,15 @@
 # expects.
 #
 # Usage:
-#   pwsh installer\publish-marketplace-to-github.ps1            # publish
-#   pwsh installer\publish-marketplace-to-github.ps1 -WhatIf    # dry run (no push)
+#   pwsh installer\publish-marketplace-to-github.ps1                   # publish
+#   pwsh installer\publish-marketplace-to-github.ps1 -WhatIf           # dry run (no push)
+#   pwsh installer\publish-marketplace-to-github.ps1 -AllowDeletions   # permit removals
+#
+# DELETIONS ARE REFUSED BY DEFAULT. The mirror step prunes anything absent from
+# marketplace/, which is only safe while marketplace/ genuinely IS the source of
+# truth -- and once it was not (ticket 69b2f1fb). A run that would remove files
+# now stops and prints them instead. -AllowDeletions is how you say "yes, I have
+# read that list and I am retiring those skills on purpose".
 #
 # Requires: git on PATH, and push rights to the repo (the ClarionLive gh/git
 # account -- peterparker57 is NOT a member with create/push rights to the org).
@@ -28,7 +35,21 @@ param(
     # Working clone location. Defaults to a temp sibling that is reused across runs.
     [string]$WorkDir = (Join-Path $env:TEMP 'clarionassistant-marketplace-publish'),
     # Commit message for the publish.
-    [string]$Message = "Publish marketplace from ClarionAssistant repo"
+    [string]$Message = "Publish marketplace from ClarionAssistant repo",
+    # Allow the publish to DELETE files from the GitHub marketplace.
+    #
+    # Off by default, and that default is the whole point. The mirror below uses
+    # robocopy /MIR, which prunes anything absent from $Source. That is correct ONLY
+    # while marketplace/ really is the source of truth. It was not: the skill
+    # 'clarion-appgen' (9 files, ~41KB, six of them existing in NO source-controlled
+    # project anywhere) was published from a laptop-local tree and never landed in
+    # this repo. The next routine publish would have deleted it -- silently, as nine
+    # more lines in a `git status --short` that already scrolls.
+    #
+    # So deletions now stop the run and are printed on their own. Pass this switch
+    # only when you have LOOKED at that list and every entry is a skill you actually
+    # meant to retire. See ticket 69b2f1fb.
+    [switch]$AllowDeletions
 )
 
 $ErrorActionPreference = 'Stop'
@@ -95,6 +116,10 @@ if ($needFreshClone) {
 
 # 2. Mirror marketplace/ -> working clone, but NEVER touch the clone's .git.
 #    /MIR prunes files that no longer exist in Source (e.g. a deleted skill).
+#    /MIR is KEPT deliberately: it is what makes a real deletion visible at all.
+#    The pruning happens here, in a throwaway clone, and step 3a then refuses to
+#    COMMIT it unless -AllowDeletions was passed. Dropping /MIR instead would make
+#    deletions impossible to publish AND invisible to review -- the quieter bug.
 # robocopy uses exit codes 0-7 for SUCCESS (1 = files copied, the normal case) and
 # 8+ for failure. Scope EAP to 'Continue' so pwsh 7.3+ (where non-zero native exits
 # honor $ErrorActionPreference) does not throw on the benign exit-1 before our
@@ -119,6 +144,56 @@ if (-not $pending) {
 
 Write-Host "Changes to publish:" -ForegroundColor Yellow
 & git -C $WorkDir status --short
+
+# A bare 'M' hides magnitude, and magnitude is the whole signal when the published
+# side has been edited directly. Four clarioncom skills were found in exactly that
+# state (69b2f1fb): publishing them would have silently removed 48 lines that exist
+# only on GitHub -- including a reviewed EXCEPTION clause -- while the status line
+# said nothing more alarming than 'M'. The diffstat makes an overwrite look like an
+# overwrite. Deletions get a hard gate below; modifications get visibility, because
+# modifying is the normal reason to publish and must not require a flag.
+$modified = @($pending | Where-Object { $_ -match '^M[ ACDMRTU]\s' })
+if ($modified.Count -gt 0) {
+    Write-Host ""
+    Write-Host "Content changes (lines the published copy will GAIN/LOSE):" -ForegroundColor Yellow
+    & git -C $WorkDir diff --cached --stat
+    Write-Host "Review any large removal -- it may be content edited directly on GitHub" -ForegroundColor DarkGray
+    Write-Host "and never brought back into this repo." -ForegroundColor DarkGray
+}
+
+# 3a. DELETION GATE. Everything is staged by the `add -A` above, so a pruned file
+#     shows as 'D ' in the FIRST (index) column. Match on that column only -- a
+#     rename shows as 'R ' and its old path is not a deletion we need to block.
+$deleted = @(
+    $pending | Where-Object { $_ -match '^D[ ACDMRTU]\s' } | ForEach-Object { ($_ -replace '^..\s+', '').Trim('"') }
+)
+
+if ($deleted.Count -gt 0 -and -not $AllowDeletions) {
+    Write-Host ""
+    Write-Host "REFUSING TO PUBLISH: this run would DELETE $($deleted.Count) file(s) from $Repo" -ForegroundColor Red
+    $deleted | ForEach-Object { Write-Host "    - $_" -ForegroundColor Red }
+    Write-Host ""
+    Write-Host "robocopy /MIR prunes anything missing from the source folder:" -ForegroundColor Yellow
+    Write-Host "    $Source" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "If those files SHOULD still be published, they are missing from this repo --" -ForegroundColor Yellow
+    Write-Host "add them to marketplace/ and re-run. That is the usual cause: a skill authored" -ForegroundColor Yellow
+    Write-Host "directly into the marketplace and never committed here (see ticket 69b2f1fb)." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "If you really are retiring them, re-run with -AllowDeletions." -ForegroundColor Yellow
+
+    # Leave the clone exactly as we found it. Without this the pruned files sit
+    # deleted-and-staged in $WorkDir, so a later run reusing this dir starts from a
+    # tree that is already missing them -- and the next `git status` would show
+    # nothing to block, quietly converting a refusal into a successful deletion.
+    & git -C $WorkDir reset --quiet --hard HEAD
+    & git -C $WorkDir clean --quiet -fd
+    throw "Publish aborted: $($deleted.Count) deletion(s) not confirmed. Re-run with -AllowDeletions to proceed."
+}
+
+if ($deleted.Count -gt 0) {
+    Write-Host "-AllowDeletions given: $($deleted.Count) file(s) will be REMOVED from $Repo." -ForegroundColor Yellow
+}
 
 if ($PSCmdlet.ShouldProcess($Repo, "Commit and push marketplace changes")) {
     & git -C $WorkDir commit --quiet -m $Message
