@@ -102,6 +102,8 @@
   <ItemGroup>
     <!-- Entry point (owned by this project) -->
     <Compile Include="Program.cs" />
+    <Compile Include="StdioTransport.cs" />
+    <Compile Include="StandaloneUiDispatcher.cs" />
     <!-- Graph layer — SHARED, linked from ..\CodeGraph\ -->
     <Compile Include="..\CodeGraph\Graph\CodeGraphDatabase.cs"><Link>Graph\CodeGraphDatabase.cs</Link></Compile>
     <Compile Include="..\CodeGraph\Graph\CodeGraphIndexer.cs"><Link>Graph\CodeGraphIndexer.cs</Link></Compile>
@@ -153,6 +155,7 @@
     <Compile Include="..\Services\IIdeProbeService.cs"><Link>Services\IIdeProbeService.cs</Link></Compile>
     <!-- The tool registry itself, and what it needs beyond the services above. -->
     <Compile Include="..\Services\McpJsonRpc.cs"><Link>Services\McpJsonRpc.cs</Link></Compile>
+    <Compile Include="..\Services\McpDispatcher.cs"><Link>Services\McpDispatcher.cs</Link></Compile>
     <Compile Include="..\Services\SettingsService.cs"><Link>Services\SettingsService.cs</Link></Compile>
     <Compile Include="..\Services\ClarionGraphService.cs"><Link>Services\ClarionGraphService.cs</Link></Compile>
     <Compile Include="..\Services\LibraryIndexer.cs"><Link>Services\LibraryIndexer.cs</Link></Compile>

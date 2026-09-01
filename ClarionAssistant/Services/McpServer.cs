@@ -25,10 +25,8 @@ namespace ClarionAssistant.Services
         private McpToolRegistry _toolRegistry;
         private int _port;
 
-        // Max time a UI-thread MCP tool may run before the request is abandoned
-        // with a timeout error, so a busy/wedged UI thread can't hold a worker
-        // (and leak the connection as CLOSE_WAIT) indefinitely.
-        private const int UiToolTimeoutSeconds = 30;
+        // (The UI-thread tool timeout moved to McpDispatcher with the dispatch it guards. Left
+        // here it would have read as the live knob and silently done nothing when tuned.)
 
         // Per-session auth token — regenerated on every Start(). Embedded as
         // `Authorization: Bearer <token>` in the MCP config file so the spawned
@@ -770,12 +768,9 @@ namespace ClarionAssistant.Services
                     try { parsed = McpJsonRpc.ParseRequest(body); }
                     catch { /* ProcessJsonRpc below reports the parse error */ }
                 }
-                if (parsed != null && parsed.Method == "tools/call" && _toolRegistry != null)
+                if (parsed != null && _toolRegistry != null)
                 {
-                    string streamToolName = McpJsonRpc.GetString(parsed.Params, "name");
-                    if (!string.IsNullOrEmpty(streamToolName)
-                        && ExtractProgressToken(parsed.Params) != null
-                        && _toolRegistry.SupportsStreaming(streamToolName))
+                    if (Dispatcher.WouldStream(parsed))
                     {
                         response.StatusCode = 200;
                         response.ContentType = "text/event-stream";
@@ -797,7 +792,11 @@ namespace ClarionAssistant.Services
                                 }
                             };
 
-                            string streamedResponse = HandleToolCall(parsed, send);
+                            // Re-parses the body (WouldStream already parsed it once), which
+                            // costs one extra parse on the streaming path only — dwarfed by the
+                            // index run that follows, and worth it to keep a single dispatch
+                            // entry point rather than a public HandleToolCall back door.
+                            string streamedResponse = ProcessJsonRpc(body, send);
                             send(streamedResponse);
                         }
                         return; // finally releases the connection
@@ -851,229 +850,82 @@ namespace ClarionAssistant.Services
 
         #region JSON-RPC Dispatch
 
+        // The dispatch itself now lives in McpDispatcher, which knows nothing about HTTP
+        // (ticket d051fbd1) — the stdio server shares it rather than growing a second copy of
+        // initialize/tools/list/tools/call. Everything HTTP-shaped stays here: SSE, bearer auth,
+        // Host/Origin validation, port scanning, session tracking.
+        //
+        // Built lazily because SetToolRegistry() can land after the constructor.
+        private McpDispatcher _dispatcher;
+        private readonly object _dispatcherLock = new object();
+
+        private McpDispatcher Dispatcher
+        {
+            get
+            {
+                var d = _dispatcher;
+                if (d != null) return d;
+                lock (_dispatcherLock)
+                {
+                    if (_dispatcher == null)
+                    {
+                        _dispatcher = new McpDispatcher(
+                            _toolRegistry,
+                            new ControlUiDispatcher(_uiControl),
+                            RaiseToolCall,
+                            "clarion-assistant",
+                            "1.0.0");
+                    }
+                    return _dispatcher;
+                }
+            }
+        }
+
         private string ProcessJsonRpc(string body)
         {
             return ProcessJsonRpc(body, null);
         }
 
-        /// <summary>
-        /// Process a JSON-RPC message. sendNotification, when non-null, is a transport
-        /// sink for server→client notifications emitted DURING a tools/call (progress
-        /// streaming, ticket 0d788f8b): the legacy SSE transport passes its session
-        /// stream, the Streamable HTTP transport an SSE response writer. Null = the
-        /// transport can't carry mid-call notifications; tools run buffered as before.
-        /// </summary>
         private string ProcessJsonRpc(string body, Action<string> sendNotification)
         {
-            JsonRpcRequest request;
-            try
-            {
-                request = McpJsonRpc.ParseRequest(body);
-            }
-            catch (Exception ex)
-            {
-                return McpJsonRpc.SerializeError(null, -32700, "Parse error: " + ex.Message);
-            }
-
-            if (string.IsNullOrEmpty(request.Method))
-            {
-                return McpJsonRpc.SerializeError(request.Id, -32600, "Invalid request: missing method");
-            }
-
-            try
-            {
-                switch (request.Method)
-                {
-                    case "initialize":
-                        var initResult = McpJsonRpc.BuildInitializeResult("clarion-assistant", "1.0.0");
-                        return McpJsonRpc.SerializeResponse(request.Id, initResult);
-
-                    case "notifications/initialized":
-                        return McpJsonRpc.SerializeResponse(request.Id, new Dictionary<string, object>());
-
-                    case "ping":
-                        return McpJsonRpc.SerializeResponse(request.Id, new Dictionary<string, object>());
-
-                    case "tools/list":
-                        var tools = _toolRegistry.GetToolDefinitions();
-                        var listResult = new Dictionary<string, object> { { "tools", tools } };
-                        return McpJsonRpc.SerializeResponse(request.Id, listResult);
-
-                    case "tools/call":
-                        return HandleToolCall(request, sendNotification);
-
-                    default:
-                        return McpJsonRpc.SerializeError(request.Id, -32601,
-                            "Method not found: " + request.Method);
-                }
-            }
-            catch (Exception ex)
-            {
-                return McpJsonRpc.SerializeError(request.Id, -32603,
-                    "Internal error: " + ex.Message);
-            }
+            return Dispatcher.ProcessJsonRpc(body, sendNotification);
         }
 
         /// <summary>
-        /// Extract the MCP progress token (params._meta.progressToken) from a tools/call
-        /// request. Null when the client didn't ask for progress. The spec allows only
-        /// string or number tokens; anything else (or an oversized string) is treated as
-        /// absent rather than echoed into every progress frame — the token is reflected
-        /// back once per notification, so it must stay a cheap scalar (Codex security
-        /// finding, run 1).
+        /// Adapts the addin's WinForms control to IUiDispatcher, matching the semantics
+        /// AssistantChatControl already implements for the same interface.
+        ///
+        /// HasUiThread IS UNCONDITIONALLY TRUE, and that is deliberate. It answers the
+        /// ARCHITECTURAL question "does this host have a UI thread at all" — not the liveness
+        /// question "is the handle up right now". Folding liveness into it looks like a safety
+        /// improvement and is the opposite: the dispatcher reads HasUiThread to decide whether to
+        /// marshal, so a false here would send a genuinely thread-affine IDE tool to run inline on
+        /// a worker thread during startup or shutdown. A clean error beats touching IDE objects
+        /// from the wrong thread. Liveness belongs in BeginInvokeOnUi, below, where the fallback
+        /// is inline execution of work that would otherwise simply be dropped.
         /// </summary>
-        private static object ExtractProgressToken(Dictionary<string, object> parms)
+        private sealed class ControlUiDispatcher : IUiDispatcher
         {
-            if (parms == null) return null;
-            object metaObj;
-            if (!parms.TryGetValue("_meta", out metaObj)) return null;
-            var meta = metaObj as Dictionary<string, object>;
-            if (meta == null) return null;
-            object token;
-            meta.TryGetValue("progressToken", out token);
+            private readonly Control _control;
 
-            string s = token as string;
-            if (s != null) return s.Length <= 256 ? token : null;
-            // JavaScriptSerializer materializes JSON numbers as int, long, decimal or double.
-            if (token is int || token is long || token is decimal || token is double) return token;
-            return null;
-        }
+            public ControlUiDispatcher(Control control) { _control = control; }
 
-        // Minimum interval between notifications/progress frames. The indexer emits at
-        // file boundaries (up to ~30/s during parsing) — relaying every one would flood
-        // the client for zero information gain.
-        private const int ProgressThrottleMs = 1000;
+            public bool HasUiThread { get { return true; } }
 
-        private string HandleToolCall(JsonRpcRequest request)
-        {
-            return HandleToolCall(request, null);
-        }
-
-        private string HandleToolCall(JsonRpcRequest request, Action<string> sendNotification)
-        {
-            var parms = request.Params;
-            string toolName = McpJsonRpc.GetString(parms, "name");
-            var arguments = parms.ContainsKey("arguments")
-                ? parms["arguments"] as Dictionary<string, object>
-                : new Dictionary<string, object>();
-
-            if (string.IsNullOrEmpty(toolName))
+            public void BeginInvokeOnUi(Action action)
             {
-                return McpJsonRpc.SerializeError(request.Id, -32602,
-                    "Missing tool name in tools/call");
-            }
-
-            object progressToken = sendNotification != null ? ExtractProgressToken(parms) : null;
-            bool streaming = progressToken != null && _toolRegistry.SupportsStreaming(toolName);
-
-            object result;
-            try
-            {
-                if (streaming)
+                if (action == null) return;
+                if (_control != null && _control.IsHandleCreated && !_control.IsDisposed)
                 {
-                    // Streaming path: runs on THIS worker thread regardless of
-                    // RequiresUiThread — the tool's StreamingHandler marshals its own UI
-                    // work (see McpTool.StreamingHandler). Notification failures are
-                    // swallowed after the first: a disconnected client must not abort a
-                    // long index run and leave a partial database behind.
-                    // Throttle math uses unchecked int subtraction so the TickCount wrap
-                    // (~24.9 days uptime) can't permanently silence the stream.
-                    int lastSentTick = 0;
-                    bool sentAny = false;
-                    bool sinkBroken = false;
-                    double lastSentPercent = 0.0;
-                    Action<double, string> onProgress = (percent, message) =>
-                    {
-                        if (sinkBroken) return;
-                        int now = Environment.TickCount;
-                        if (sentAny && unchecked(now - lastSentTick) < ProgressThrottleMs) return;
-                        sentAny = true;
-                        lastSentTick = now;
-                        // MCP requires progress to increase with each notification. Phases
-                        // that pin their percentage (finishing-tail heartbeats sit at 98)
-                        // get a minimal synthetic increment, capped short of 100 so only a
-                        // real completion can claim it.
-                        if (percent <= lastSentPercent)
-                            percent = Math.Min(99.9, lastSentPercent + 0.1);
-                        lastSentPercent = percent;
-                        try
-                        {
-                            sendNotification(McpJsonRpc.Serialize(new Dictionary<string, object>
-                            {
-                                { "jsonrpc", "2.0" },
-                                { "method", "notifications/progress" },
-                                { "params", new Dictionary<string, object>
-                                    {
-                                        { "progressToken", progressToken },
-                                        { "progress", Math.Round(percent, 1) },
-                                        { "total", 100 },
-                                        { "message", message }
-                                    }
-                                }
-                            }));
-                        }
-                        catch
-                        {
-                            sinkBroken = true;
-                        }
-                    };
-                    result = _toolRegistry.ExecuteToolStreaming(toolName, arguments, onProgress);
+                    try { _control.BeginInvoke(action); return; }
+                    catch (System.ComponentModel.InvalidAsynchronousStateException) { }
+                    catch (ObjectDisposedException) { }
                 }
-                else if (_toolRegistry.RequiresUiThread(toolName))
-                {
-                    object uiResult = null;
-                    Exception uiException = null;
-
-                    // Marshal onto the UI thread WITHOUT blocking the worker forever.
-                    // A synchronous Control.Invoke here deadlocks (and leaks the
-                    // connection as CLOSE_WAIT) whenever the UI thread is busy/wedged.
-                    using (var done = new ManualResetEventSlim(false))
-                    {
-                        _uiControl.BeginInvoke((Action)(() =>
-                        {
-                            try { uiResult = _toolRegistry.ExecuteTool(toolName, arguments); }
-                            catch (Exception ex) { uiException = ex; }
-                            finally { try { done.Set(); } catch { } }
-                        }));
-
-                        // Give the UI thread a bounded window to run the tool. On timeout
-                        // we abandon the delegate (it will complete harmlessly later) and
-                        // return an error instead of holding the worker + connection open.
-                        if (!done.Wait(TimeSpan.FromSeconds(UiToolTimeoutSeconds)))
-                        {
-                            RaiseToolCall(toolName, "TIMEOUT (UI thread busy)");
-                            return McpJsonRpc.SerializeResponse(request.Id, McpJsonRpc.BuildToolResult(
-                                "Error executing tool '" + toolName + "': UI thread did not respond within "
-                                + UiToolTimeoutSeconds + "s (busy or blocked).", true));
-                        }
-                    }
-
-                    if (uiException != null) throw uiException;
-                    result = uiResult;
-                }
-                else
-                {
-                    result = _toolRegistry.ExecuteTool(toolName, arguments);
-                }
+                // No handle (or it died under us): running inline is better than dropping the
+                // work. Safe for the dispatcher's timeout path — the action completes before
+                // BeginInvokeOnUi returns, so its wait handle is already set.
+                action();
             }
-            catch (Exception ex)
-            {
-                RaiseToolCall(toolName, "ERROR: " + ex.Message);
-                var errorResult = McpJsonRpc.BuildToolResult(
-                    "Error executing tool '" + toolName + "': " + ex.Message, true);
-                return McpJsonRpc.SerializeResponse(request.Id, errorResult);
-            }
-
-            string resultText = result is string
-                ? (string)result
-                : McpJsonRpc.Serialize(result);
-
-            RaiseToolCall(toolName, resultText.Length > 100
-                ? resultText.Substring(0, 100) + "..."
-                : resultText);
-
-            var toolResult = McpJsonRpc.BuildToolResult(resultText);
-            return McpJsonRpc.SerializeResponse(request.Id, toolResult);
         }
 
         #endregion

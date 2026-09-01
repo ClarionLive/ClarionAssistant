@@ -143,6 +143,7 @@
     <Compile Include="Options\CAFindOptionPanel.cs" />
     <Compile Include="Services\McpServer.cs" />
     <Compile Include="Services\McpJsonRpc.cs" />
+    <Compile Include="Services\McpDispatcher.cs" />
     <Compile Include="Services\McpToolRegistry.cs" />
     <Compile Include="Services\NativeProbeService.cs" />
     <Compile Include="Services\FileSchemaVariableInserter.cs" />

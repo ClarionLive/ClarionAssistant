@@ -9,11 +9,15 @@ namespace ClarionAssistant.Services
     /// Control type into a file that otherwise imports nothing but System.*. One member is
     /// enough to remove that.
     ///
-    /// WHY IT IS NOT SIMPLY DELETED FOR THE STANDALONE BUILD. Tools flagged RequiresUiThread
-    /// are not registered outside the addin, so it would be tempting to drop the concept.
-    /// But the dispatcher is also used by streaming handlers that marshal their own UI work,
-    /// and "there is no UI thread" is a real, valid state that code should be able to ask
-    /// about rather than crash into.
+    /// WHY IT IS NOT SIMPLY DELETED FOR THE STANDALONE BUILD. I first wrote here that tools
+    /// flagged RequiresUiThread are never registered outside the addin, so the concept could be
+    /// dropped. THAT WAS WRONG, and measuring it is what corrected it: THREE such tools survive
+    /// the IdeOnly gate and do register standalone — execute_command, get_solution_info and
+    /// index_solution. They are flagged because in the addin they read _workspace, which there
+    /// IS the WinForms chat control; standalone that same interface is a plain object with no
+    /// thread affinity. So "there is no UI thread" is not a corner case to tolerate, it is the
+    /// normal state for three tools that this ticket exists to deliver — index_solution being
+    /// the one that builds the CodeGraph a non-IDE client would query.
     ///
     /// IMPLEMENTATIONS
     ///   addin       — marshals to the chat control, as today.
