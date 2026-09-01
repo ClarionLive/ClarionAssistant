@@ -24,6 +24,19 @@ namespace ClarionAssistant.Services
         public bool RequiresUiThread { get; set; }
 
         /// <summary>
+        /// This tool's handler drives the IDE itself, so it is registered ONLY in a host that has
+        /// one. Set on 58 of the 115 tools (ticket d051fbd1).
+        ///
+        /// DELIBERATELY SEPARATE FROM RequiresUiThread, which is NOT a safe proxy - measured, and
+        /// it disagrees in BOTH directions. Five tools are UI-thread-bound yet touch no IDE
+        /// service (execute_command, export_dctx, import_dctx, get_solution_info, index_solution);
+        /// seven touch one while not being UI-bound (append_to_file, get_diff_result,
+        /// get_diff_content, build_app, generate_source, search_content, get_ca_project_info).
+        /// Gating on RequiresUiThread would have dropped working tools AND shipped crashing ones.
+        /// </summary>
+        public bool IdeOnly { get; set; }
+
+        /// <summary>
         /// Optional long-running variant used when the MCP client supplied a
         /// progressToken (ticket 0d788f8b). Second argument is a progress callback
         /// (percent 0..100, message). ALWAYS invoked on a worker thread — even when
@@ -200,6 +213,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "get_active_file",
+IdeOnly = true,
                 Description = "Get the path and full content of the file currently open in the Clarion IDE editor",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -218,6 +232,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "get_selected_text",
+IdeOnly = true,
                 Description = "Get the currently selected text in the Clarion IDE editor. Returns null if nothing selected.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -230,6 +245,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "embeditor_get_selection",
+IdeOnly = true,
                 Description = "Get the text currently highlighted in the CA Embeditor (the Modern Monaco/WebView2 editor), with its 1-based line/column range. This is SEPARATE from get_selected_text, which reads only the NATIVE Clarion editor. Use this to see what the developer has selected in the CA Embeditor. The result includes a 'truncated' flag — when true, the selection was clipped (very large) and 'text' is only the first ~10K chars.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -253,6 +269,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "get_word_under_cursor",
+IdeOnly = true,
                 Description = "Get the word at the current cursor position in the editor. Useful for identifying what symbol the developer is looking at.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -265,6 +282,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "get_cursor_position",
+IdeOnly = true,
                 Description = "Get the current cursor position (line and column, 1-based) and total line count in the active editor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -288,6 +306,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "go_to_line",
+IdeOnly = true,
                 Description = "Navigate to a specific line number in the currently open file in the Clarion IDE editor. Scrolls the view to show the line.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "line", "Line number to go to (1-based)" } },
@@ -305,6 +324,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "insert_text_at_cursor",
+IdeOnly = true,
                 Description = "Insert text at the current cursor position in the Clarion IDE editor",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "text", "The text to insert" } },
@@ -323,6 +343,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "replace_text",
+IdeOnly = true,
                 Description = "Find and replace text in the active editor. Replaces ALL occurrences of old_text with new_text.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -346,6 +367,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "replace_range",
+IdeOnly = true,
                 Description = "Replace text between two positions (line/column, 1-based) in the active editor. Use to replace a specific region of code.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -373,6 +395,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "select_range",
+IdeOnly = true,
                 Description = "Select a range of text in the active editor (line/column, 1-based). The selected text will be highlighted.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -398,6 +421,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "delete_range",
+IdeOnly = true,
                 Description = "Delete text between two positions (line/column, 1-based) in the active editor.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -423,6 +447,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "undo",
+IdeOnly = true,
                 Description = "Undo the last edit in the active editor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -432,6 +457,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "redo",
+IdeOnly = true,
                 Description = "Redo the last undone edit in the active editor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -441,6 +467,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "save_file",
+IdeOnly = true,
                 Description = "Save the currently active file in the Clarion IDE editor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -450,6 +477,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "close_file",
+IdeOnly = true,
                 Description = "Close the currently active editor tab.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -459,6 +487,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "get_open_files",
+IdeOnly = true,
                 Description = "List all files currently open in the Clarion IDE editor tabs.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -472,6 +501,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "get_line_text",
+IdeOnly = true,
                 Description = "Get the text of a specific line (1-based) from the active editor buffer. Reflects unsaved changes.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "line", "Line number (1-based)" } },
@@ -488,6 +518,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "get_lines_range",
+IdeOnly = true,
                 Description = "Get text of multiple lines (1-based) from the active editor buffer in one call. Returns lines prefixed with line numbers. Much faster than calling get_line_text repeatedly.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -509,6 +540,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "find_in_file",
+IdeOnly = true,
                 Description = "Search for text in the active editor buffer (includes unsaved changes). Returns matching line numbers and columns.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -539,6 +571,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "is_modified",
+IdeOnly = true,
                 Description = "Check if the active file has unsaved changes.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -548,6 +581,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "toggle_comment",
+IdeOnly = true,
                 Description = "Toggle Clarion line comments (!) on the specified line range (1-based). If all lines are commented, uncomments them; otherwise comments them.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -571,6 +605,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "inspect_ide",
+IdeOnly = true,
                 Description = @"Inspect the Clarion IDE state using reflection. Available commands:
 - 'active_view' - Full inspection of the active workbench window (type, properties, methods, control tree, text editor, secondary views, application object)
 - 'editor_text' - Read the full text content of the active editor (text editor or embeditor, includes unsaved changes)
@@ -630,6 +665,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "get_app_info",
+IdeOnly = true,
                 Description = "Get info about the currently open Clarion application (.app) - name, filename, target type, language.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -643,6 +679,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "list_procedures",
+IdeOnly = true,
                 Description = "List all procedure names in the currently open Clarion application.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -657,6 +694,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "get_procedure_details",
+IdeOnly = true,
                 Description = "Get detailed info about all procedures in the open app - name, prototype, module, parent, template.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -671,6 +709,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "open_procedure_embed",
+IdeOnly = true,
                 Description = "Open the embeditor for a specific procedure in the currently open Clarion app. The app must be loaded first. Automatically checks for conflicts with other IDE instances.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "procedure_name", "Name of the procedure to open" } },
@@ -720,6 +759,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "select_procedure",
+IdeOnly = true,
                 Description = "Select a procedure in the ClaList without opening the embeditor. For testing procedure selection.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "procedure_name", "Name of the procedure to select" } },
@@ -736,6 +776,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "get_embed_info",
+IdeOnly = true,
                 Description = "Get info about the currently active embeditor - app name, file, embed position.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -749,6 +790,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "save_and_close_embeditor",
+IdeOnly = true,
                 Description = "Save changes and close the currently open embeditor. Use this when done editing embed code.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -758,6 +800,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "cancel_embeditor",
+IdeOnly = true,
                 Description = "Discard changes and close the currently open embeditor. Use this to abandon edits without saving.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -767,6 +810,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "open_embeditor_source",
+IdeOnly = true,
                 Description = "Open the module .clw source file for the procedure currently displayed in the embeditor. " +
                     "Parses the module filename from the embeditor header and opens it in the text editor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
@@ -895,6 +939,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "next_embed",
+IdeOnly = true,
                 Description = "Navigate to the next embed point in the embeditor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -904,6 +949,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "prev_embed",
+IdeOnly = true,
                 Description = "Navigate to the previous embed point in the embeditor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -913,6 +959,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "next_filled_embed",
+IdeOnly = true,
                 Description = "Navigate to the next filled embed point (one that contains user code) in the embeditor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -922,6 +969,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "prev_filled_embed",
+IdeOnly = true,
                 Description = "Navigate to the previous filled embed point (one that contains user code) in the embeditor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -931,6 +979,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "list_embeds",
+IdeOnly = true,
                 Description = "List all embed sections in the active embeditor with their names and filled status. Use this to see what embed points are available before navigating.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -954,6 +1003,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "find_embed",
+IdeOnly = true,
                 Description = "Find an embed section by name and navigate the cursor there. Use a partial name like 'Local Proc' or 'Init' — matches case-insensitively.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -973,6 +1023,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "get_embeditor_source",
+IdeOnly = true,
                 Description = "Returns the full annotated PWEE embeditor source. " +
                     "Editable embed slots are marked «E:N/» (empty) or «E:N»...«/E:N» (filled). " +
                     "N is the 1-based line number — use it directly as line_number in write_embed_content. " +
@@ -990,6 +1041,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "search_embeditor_source",
+IdeOnly = true,
                 Description = "Search the annotated PWEE embeditor source for lines matching a regex pattern. " +
                     "Returns only the matching lines and surrounding context — much faster than get_embeditor_source " +
                     "for finding a specific embed point. Use SPECIFIC patterns (e.g. 'AddCard', 'OPEN.Window') — " +
@@ -1014,6 +1066,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "get_embed_content",
+IdeOnly = true,
                 Description = "Read the current Clarion code inside a specific embed point identified by its " +
                     "1-based line number from get_embeditor_source or search_embeditor_source «E:N» tokens. " +
                     "Use this before write_embed_content when you need to see existing code before rewriting it. " +
@@ -1034,6 +1087,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "write_embed_content",
+IdeOnly = true,
                 Description = "Write Clarion code into an embed point identified by its 1-based line number " +
                     "from get_embeditor_source or search_embeditor_source «E:N» tokens. " +
                     "Pass the complete replacement code — existing content is overwritten. " +
@@ -1062,6 +1116,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "apply_embed_edits",
+IdeOnly = true,
                 Description = "Apply one or more embed-slot edits to a procedure in a SINGLE transient " +
                     "open->write->save->close round-trip — NO interactive embeditor session stays open. " +
                     "Prefer this over open_procedure_embed + write_embed_content for LARGE procedures where the " +
@@ -1116,6 +1171,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "export_txa",
+IdeOnly = true,
                 Description = "Export the ENTIRE current Clarion app to a TXA (Text Application) file. This always exports all procedures. To work with individual procedure code, use open_procedure_embed instead.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -1137,6 +1193,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "import_txa",
+IdeOnly = true,
                 Description = "Import a TXA (Text Application) file into the currently open Clarion app. Use clash_mode to control what happens when procedure names conflict.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -1160,6 +1217,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "dump_object_api",
+IdeOnly = true,
                 Description = "DIAGNOSTIC (pure managed reflection, no IDE mutation): navigate the IDE object graph from the " +
                               "App object by a dot-path and dump the target's type, properties (with simple values), fields, and " +
                               "methods. Used to discover the in-memory dictionary object model. Examples: path=\"\" (App itself), " +
@@ -1176,6 +1234,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "dump_appmain_api",
+IdeOnly = true,
                 Description = "DIAGNOSTIC (read-only reflection): dump the native ApplicationMainWindowControl's managed methods " +
                               "plus the enum values behind GlobalRequest/GlobalResponse. Used to hunt for a clean managed way to " +
                               "switch the app's in-window tab to 'Global Embeds' (which triggers the ABC class read).",
@@ -1187,6 +1246,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "warmup_abc",
+IdeOnly = true,
                 Description = "Force the IDE's lazy ABC class load NOW so the user's first Modern Embeditor open doesn't pay it " +
                               "concurrently with the WebView2 open (the conflict that freezes Clarion). Opens the first procedure's " +
                               "native embeditor (its source generation loads ABC), then cancels + waits for it to fully tear down " +
@@ -1202,6 +1262,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "open_file",
+IdeOnly = true,
                 Description = "Open a file in the Clarion IDE editor and optionally navigate to a specific line number. " +
                               "If 'line' is omitted entirely, the file opens at whatever position the IDE last remembered for it " +
                               "(its own memento/reopen behavior) instead of being forced to line 1.",
@@ -1241,6 +1302,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "export_dctx",
+IdeOnly = true,
                 Description = "Export the currently open Clarion data dictionary to a .dctx text file. The dictionary must be open in the IDE (use open_dictionary first). The .dctx format is a human-readable text representation of the dictionary.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -1285,6 +1347,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "import_dctx",
+IdeOnly = true,
                 Description = "Import a .dctx text file into the currently open Clarion data dictionary. The dictionary must be open in the IDE (use open_dictionary first). WARNING: This modifies the dictionary — changes must be saved manually.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -1397,6 +1460,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "append_to_file",
+IdeOnly = true,
                 Description = "Append text to the end of an existing file",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -2516,6 +2580,7 @@ COMMON QUERIES:
             Register(new McpTool
             {
                 Name = "show_diff",
+IdeOnly = true,
                 Description = "Open a unified diff viewer in the IDE editor panel. Shows color-coded additions/removals with a changes sidebar and inline code review notes. " +
                     "The developer can add severity-tagged notes (BLOCKER/SUGGESTION/NITPICK/QUESTION) on any line. " +
                     "You can provide text directly via original_text/modified_text, OR provide file paths via original_file/modified_file to load from disk (avoids encoding issues with large files), " +
@@ -2611,6 +2676,7 @@ COMMON QUERIES:
             Register(new McpTool
             {
                 Name = "get_diff_result",
+IdeOnly = true,
                 Description = "Check the result of the diff viewer. Returns: 'pending' if the developer hasn't acted yet, " +
                     "'approved' with the modified text if they clicked Approve, " +
                     "'notes' with an array of review notes [{line, lineContent, severity, comment}] if they submitted feedback, " +
@@ -2631,6 +2697,7 @@ COMMON QUERIES:
             Register(new McpTool
             {
                 Name = "get_diff_content",
+IdeOnly = true,
                 Description = "Return the unified diff for the diff currently/most recently shown via show_diff, " +
                     "computed server-side (git diff --no-index, LCS fallback) from the exact text passed to show_diff — " +
                     "not read back from the Monaco/WebView2 buffer. Response size scales with the size of the changes, " +
@@ -2903,6 +2970,7 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             Register(new McpTool
             {
                 Name = "build_app",
+IdeOnly = true,
                 Description = "Build a single Clarion .app file using ClarionCL.exe. Ideal for multi-DLL solutions where you only need to rebuild one target. Defaults to the currently active app in the IDE.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -2943,6 +3011,7 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             Register(new McpTool
             {
                 Name = "generate_source",
+IdeOnly = true,
                 Description = "Generate Clarion source code (.clw/.inc files) from an .app file using ClarionCL.exe without a full build. Runs template code generation to produce the source files. Defaults to the currently active app.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -3473,6 +3542,7 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             Register(new McpTool
             {
                 Name = "search_content",
+IdeOnly = true,
                 Description = "Search for text content within files using Everything. Requires Everything content indexing to be enabled.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
@@ -3576,6 +3646,12 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             // 2. Check near the currently open file or solution (legacy .dctx path)
             try
             {
+                // Explicit null check, not a swallowed NullReferenceException. This fallback
+                // only exists to walk up from the OPEN DOCUMENT, which a host with no editor
+                // does not have; the _workspace path above is the one that answers there.
+                // It worked by accident before - the catch below ate the NRE - and an
+                // accident is not a contract (ticket d051fbd1).
+                if (_editorService == null) return null;
                 string activePath = _editorService.GetActiveDocumentPath();
                 if (!string.IsNullOrEmpty(activePath))
                 {
@@ -3847,6 +3923,7 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             Register(new McpTool
             {
                 Name = "get_ca_project_info",
+IdeOnly = true,
                 Description = "Get ClarionAssistant project info for a folder, including linked GitHub account and repository name. Use this to auto-populate marketplace submissions and GitHub operations instead of asking the user.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
@@ -4275,6 +4352,12 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             // Fallback: find .codegraph.db near the currently open file
             try
             {
+                // Explicit null check, not a swallowed NullReferenceException. This fallback
+                // only exists to walk up from the OPEN DOCUMENT, which a host with no editor
+                // does not have; the _workspace path above is the one that answers there.
+                // It worked by accident before - the catch below ate the NRE - and an
+                // accident is not a contract (ticket d051fbd1).
+                if (_editorService == null) return null;
                 string activePath = _editorService.GetActiveDocumentPath();
                 if (!string.IsNullOrEmpty(activePath))
                 {
@@ -4564,8 +4647,21 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
 
         #endregion
 
+        /// <summary>
+        /// True when this host can actually drive the Clarion IDE. False in the standalone MCP
+        /// server, where AppTreeFactory / IdeProbeFactory are left unset and no IEditorService is
+        /// injected.
+        /// </summary>
+        private bool HasIde { get { return _editorService != null || _appTree != null || _ideProbe != null; } }
+
         private void Register(McpTool tool)
         {
+            // Do not advertise what this host cannot do. An MCP client reads the tool list as a
+            // contract: registering get_active_file in a process with no editor means a caller asks
+            // for the open document and gets a NullReferenceException, which is strictly worse than
+            // the tool being absent - absent is a fact the client can plan around.
+            if (tool != null && tool.IdeOnly && !HasIde) return;
+
             _tools[tool.Name] = tool;
         }
 
