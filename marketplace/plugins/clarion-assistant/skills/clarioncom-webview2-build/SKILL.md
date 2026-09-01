@@ -105,7 +105,7 @@ If script not found or NOT_CONFIGURED, skip this step - version management is op
 
 ### Step 3: Expected Output
 
-The build should produce in `bin\Release\net48\`:
+The build should produce in `bin\Release\net472\`:
 
 **Main files:**
 - ProjectName.dll
@@ -195,7 +195,7 @@ If the control uses DevExtreme, ensure the following files are in your project's
 
 ### WebView2Loader.dll not copied
 **Cause:** Missing NuGet package or wrong target framework
-**Solution:** Ensure Microsoft.Web.WebView2 package is referenced and target is net48
+**Solution:** Ensure Microsoft.Web.WebView2 package is referenced and target is net472
 
 ### wwwroot not deployed
 **Cause:** Missing MSBuild target or Content include

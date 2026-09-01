@@ -42,7 +42,7 @@ Run all 8 checks below. Read references/validation-checklist.md (in this skill's
    - **2a. Color naming**: methods/properties handling colors MUST include "color" in their name (e.g., `SetBackgroundColor`) for the Clarion IDE color selector.
 3. **Event interface** — `[ComVisible(true)]`, unique GUID, `InterfaceIsIDispatch` (NOT dual — event sinks are late-bound only), and sequential `[DispId(n)]` starting at 1.
 4. **Implementation class** — `[ComVisible(true)]`, unique GUID, `[ProgId("Namespace.ClassName")]`, `[ClassInterface(ClassInterfaceType.None)]`, `[ComSourceInterfaces(typeof(IYourControlEvents))]`.
-5. **.csproj** — net48, `PlatformTarget` x86 (Clarion is 32-bit), `ComVisible` true, `GenerateAssemblyInfo` false; NO `EnableComInterop` or `RegisterForComInterop`.
+5. **.csproj** — net472, `PlatformTarget` x86 (Clarion is 32-bit), `ComVisible` true, `GenerateAssemblyInfo` false; NO `EnableComInterop` or `RegisterForComInterop`.
 6. **GUID uniqueness** — 4 distinct GUIDs (assembly typelib, methods interface, event interface, class); never copied from other projects. Generate with `[guid]::NewGuid().ToString().ToUpper()`.
 7. **Manifest file** — `ControlName.manifest` must exist and use `<clrClass>` (NOT `<comClass>` — that is for native COM and fails for .NET), with GUIDs matching source. Full manifest template: references/validation-checklist.md section 7.
 8. **Constructor pattern (CRITICAL)** — constructor does field/style setup ONLY; NO `Controls.Add()`, no child-control creation, no data operations. Those belong in `OnHandleCreated` (guarded by `!DesignMode`). Violation means Clarion cannot create the OCX at all. Correct/broken code patterns: references/validation-checklist.md section 8.

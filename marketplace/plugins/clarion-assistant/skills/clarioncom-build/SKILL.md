@@ -71,11 +71,11 @@ Ask the user (AskUserQuestion): "Is this a public release?" If YES: ask bump typ
 - Omit `-p:Platform` — the .csproj's PlatformTarget (must be x86) is used.
 - Build the .csproj, not the .sln, if you have issues.
 
-Required .csproj settings (net48, x86, Library, no EnableComInterop/RegisterForComInterop): references/regfree-com-config.md.
+Required .csproj settings (net472, x86, Library, no EnableComInterop/RegisterForComInterop): references/regfree-com-config.md.
 
 ### Step 3-4: Verify Build Output
 
-Success = DLL created. Check `bin\Release\net48\` for:
+Success = DLL created. Check `bin\Release\net472\` for:
 - `YourProject.dll` (required), `YourProject.manifest` (required), `YourProject.pdb` (optional)
 - Do NOT create .tlb files — not needed for RegFree COM.
 - An "Access denied" registry error is NOT a failure — ignore it if the DLL exists.

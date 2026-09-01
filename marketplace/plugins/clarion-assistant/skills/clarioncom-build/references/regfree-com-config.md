@@ -29,10 +29,10 @@ powershell -Command "Get-ChildItem -Path 'C:\Program Files\Microsoft Visual Stud
 "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" ColorPickerCOM\ColorPickerCOM.csproj -restore -p:Configuration=Release
 
 # 3. Verify DLL was created (ignore registration error)
-ls ColorPickerCOM\bin\Release\net48\ColorPickerCOM.dll
+ls ColorPickerCOM\bin\Release\net472\ColorPickerCOM.dll
 
 # 4. Create/verify manifest exists (NOTE: without .dll in filename!)
-ls ColorPickerCOM\bin\Release\net48\ColorPickerCOM.manifest
+ls ColorPickerCOM\bin\Release\net472\ColorPickerCOM.manifest
 
 # 5. Done! Deploy these two files to your Clarion app directory
 ```
@@ -43,7 +43,7 @@ Ensure your .csproj has these settings:
 
 ```xml
 <PropertyGroup>
-  <TargetFramework>net48</TargetFramework>
+  <TargetFramework>net472</TargetFramework>
   <PlatformTarget>x86</PlatformTarget>
   <UseWindowsForms>true</UseWindowsForms>
   <OutputType>Library</OutputType>
@@ -52,7 +52,7 @@ Ensure your .csproj has these settings:
 ```
 
 **Key settings explained:**
-- `TargetFramework`: net48 (NOT netcoreapp or net5.0+)
+- `TargetFramework`: net472 or net48 (NOT netcoreapp or net5.0+)
 - `PlatformTarget`: x86 (required for Clarion compatibility)
 - `UseWindowsForms`: true (if using Windows Forms controls)
 - `OutputType`: Library (creates .dll)
@@ -98,7 +98,7 @@ Add this target anywhere inside the `<Project>` tag (typically at the end, befor
 ### What This Does
 
 - **Runs automatically** after each build
-- **Copies** `YourProject.manifest` from the project root to the output folder (e.g., `bin\Release\net48\`)
+- **Copies** `YourProject.manifest` from the project root to the output folder (e.g., `bin\Release\net472\`)
 - **Only copies** if the source file exists
 - **Skips** if the file hasn't changed (improves build performance)
 
@@ -115,7 +115,7 @@ CalendarPickerCOM/
 ├── CalendarPickerControl.cs
 └── bin/
     └── Release/
-        └── net48/
+        └── net472/
             ├── CalendarPickerCOM.dll
             └── CalendarPickerCOM.manifest  ← Auto-copied here
 ```
@@ -152,7 +152,7 @@ Write-Host "✓ Found MSBuild at: $msbuild" -ForegroundColor Green
 # Build project
 $projectName = "ColorPickerCOM"
 $projectPath = "$projectName\$projectName.csproj"
-$outputDir = "$projectName\bin\Release\net48"
+$outputDir = "$projectName\bin\Release\net472"
 
 Write-Host "`nBuilding $projectPath..." -ForegroundColor Cyan
 & $msbuild $projectPath -p:Configuration=Release -v:minimal

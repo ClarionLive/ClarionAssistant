@@ -81,7 +81,7 @@ This lists all installed Visual Studio versions to help locate MSBuild manually.
 
 **Problem:** Looking in the wrong output directory
 
-**Solution:** Check `bin\Release\net48\` (or your target framework)
+**Solution:** Check `bin\Release\net472\` (or your target framework)
 
 ### "Access denied" registry error
 

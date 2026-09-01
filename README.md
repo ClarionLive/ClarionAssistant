@@ -76,6 +76,22 @@ The other **58 are withheld on purpose**, because they drive the IDE itself: ope
 
 **Both can be running at once.** If your IDE and a standalone server both index the same solution, they no longer collide: a full re-index wipes the database before rebuilding it, so two overlapping runs used to be able to destroy each other's work and leave a graph pointing at code that had been deleted from it. Whichever starts second is now turned away, and told which process holds the database. A run whose process is killed &mdash; a deploy, a crash, Task Manager &mdash; releases immediately and leaves nothing stale behind.
 
+<!-- release-docs: covered=lsp -->
+### The bundled language server now actually starts
+
+If you run Clarion Assistant **without** Mark Sarson's ClarionLsp addin, the bundled language server has never worked &mdash; every `lsp_` tool failed with the server unreachable. The cause was three bytes: .NET builds the pipe to a child process from the console's encoding and flushes that encoding's byte-order mark as it does so, and those three bytes arrived ahead of our first message. The server rejected the message and blamed its header, which was perfectly correct, so the real culprit sat one step upstream of everything the error pointed at. It has been masked all this time because ClarionLive users generally *do* have ClarionLsp installed, and Clarion Assistant hands LSP work to it when it is there.
+
+Go-to-definition, find-references, hover, document symbols and diagnostics now work with nothing installed but Clarion itself.
+
+<!-- release-docs: covered=skills -->
+### The Clarion skills are a fifth of the size, and lose nothing
+
+The nine largest skills have been rewritten: **313,000 characters down to 61,000**. Because skills load into every session, that is roughly **78,000 tokens of context reduced to about 15,000** &mdash; a cost you were paying in every terminal, whether or not you touched a COM control that day.
+
+Nothing was deleted. The detail moved into 52 `references/` files that a skill reads *only when it actually needs them*, so invoking one now costs around 1,500&ndash;2,000 tokens plus whatever it genuinely reads. The practical effect is that Clarion Assistant's skills can sit at user scope &mdash; available in any terminal, anywhere on your machine &mdash; without that convenience costing you context on unrelated work.
+
+While rewriting them we also corrected the target framework. A find-and-replace had at some point turned every "net472 or net48" into "net48 or net48", which quietly made `net48` look like the only supported answer across seven files; the real COM controls target **net472**, and the skills now say so.
+
 ### CA Embeditor: the keys that used to do nothing now reach the IDE ([#192](https://github.com/ClarionLive/ClarionAssistant/issues/192))
 
 Inside a CA Embeditor the editor swallowed most of Clarion's own shortcuts. **Ctrl+F4** (close), **Ctrl+O** (open) and **Alt+&lt;letter&gt;** now reach the IDE, the last of these by matching the letter against the real menu mnemonics rather than a hardcoded list &mdash; so it keeps working if the menus change. Keys are routed through the workbench menu itself, which means the IDE does what it would normally do rather than us reimplementing it.

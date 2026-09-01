@@ -119,7 +119,7 @@ public class YourControl : UserControl, IYourControlMethods
 **REQUIRED Settings for RegFree COM:**
 ```xml
 <PropertyGroup>
-    <TargetFramework>net48</TargetFramework>      <!-- or net48 -->
+    <TargetFramework>net472</TargetFramework>      <!-- or net48 -->
     <PlatformTarget>x86</PlatformTarget>          <!-- MUST be x86 for Clarion -->
     <ComVisible>true</ComVisible>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>

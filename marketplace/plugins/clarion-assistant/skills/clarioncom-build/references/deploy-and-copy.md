@@ -12,12 +12,12 @@ mkdir -p "PROJECT_PATH/Clarion/accessory/resources"
 
 **Copy DLLs to accessory/bin:**
 ```bash
-cp "PROJECT_PATH/bin/Release/net48/"*.dll "PROJECT_PATH/Clarion/accessory/bin/"
+cp "PROJECT_PATH/bin/Release/net472/"*.dll "PROJECT_PATH/Clarion/accessory/bin/"
 ```
 
 **Copy manifest to accessory/resources:**
 ```bash
-cp "PROJECT_PATH/bin/Release/net48/"*.manifest "PROJECT_PATH/Clarion/accessory/resources/"
+cp "PROJECT_PATH/bin/Release/net472/"*.manifest "PROJECT_PATH/Clarion/accessory/resources/"
 ```
 
 **Verify files are in place:**
