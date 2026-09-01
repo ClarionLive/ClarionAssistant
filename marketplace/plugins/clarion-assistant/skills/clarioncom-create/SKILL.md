@@ -273,7 +273,7 @@ When the user selects a third-party library:
 ## Project Structure Requirements
 
 ### Framework and Project Type
-- **Framework:** .NET Framework 4.8 (NOT .NET Core/.NET 5+)
+- **Framework:** .NET Framework 4.7.2 or 4.8 (NOT .NET Core/.NET 5+)
 - **Project Type:** Class Library (NOT Windows Forms Application)
 - **Platform:** x86 (required for Clarion compatibility)
 - **References:** Add `System.Windows.Forms` and `System.Drawing` for UI components
@@ -436,7 +436,7 @@ using System.Runtime.InteropServices;
 
 ```xml
 <PropertyGroup>
-  <TargetFramework>net48</TargetFramework>
+  <TargetFramework>net472</TargetFramework>
   <PlatformTarget>x86</PlatformTarget>
   <UseWindowsForms>true</UseWindowsForms>
   <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
@@ -980,16 +980,23 @@ After building, create `YourProject.manifest` (NOT `YourProject.dll.manifest`) w
 
 �?��? **CRITICAL: NEVER Generate Clarion Code Examples**
 
-**DO NOT include Clarion code examples in documentation or README files:**
+**DO NOT hand-write per-control Clarion code examples in documentation or README files:**
 - �?� Do not write Clarion code snippets
 - �?� Do not create Clarion variable declarations
 - �?� Do not show method calls in Clarion syntax
 - �?� Do not provide Clarion integration examples
 
 **Why:**
-- The user has Clarion templates that generate correct code
-- AI-generated Clarion code will likely have incorrect syntax
+- Improvised, per-control Clarion code will likely have incorrect syntax
 - Clarion has specific syntax requirements that are easy to get wrong
+- The UltimateCOM template generates the instantiation and event-handling code
+
+**EXCEPTION:** GenerateReadmeHTML.ps1 emits a fixed, reviewed "Calling from Clarion" block into
+every generated readme (OLE string-expression syntax, parameter-passing rules, base64 for JSON
+payloads). It is verified against the SoftVelocity Help and is identical for every control. Do NOT
+strip it out and do NOT add improvised examples alongside it. The template covers instantiation
+and events only - outbound method calls are hand-written by the developer, which is why the
+shared block exists.
 
 **What to include instead:**
 - ✅ List of available properties and methods
@@ -1623,7 +1630,7 @@ To avoid manually copying the manifest file after each build, add this MSBuild t
 
 **What this does:**
 - Runs automatically after each build
-- Copies `YourProject.manifest` from the project root to `bin\Release\net48\`
+- Copies `YourProject.manifest` from the project root to `bin\Release\net472\`
 - Only copies if the file exists and has changed
 
 **File placement:**
