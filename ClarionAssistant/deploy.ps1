@@ -1,4 +1,4 @@
-﻿# ClarionAssistant Deploy Script
+# ClarionAssistant Deploy Script
 # Builds and deploys the addin for Clarion 10, 11, 11.1, 12, or all.
 # Usage: .\deploy.ps1 [-Version 10|11|11.1|12|all] [-NoBuild] [-Kill]
 
@@ -42,6 +42,11 @@ $MSBuild     = Resolve-MSBuild
 # no longer built from the external H:\DevLaptop\ClarionLSP\indexer tree. Override with
 # $env:CLARIONINDEXER_DIR only if you keep the indexer somewhere else.
 $IndexerDir    = if ($env:CLARIONINDEXER_DIR) { $env:CLARIONINDEXER_DIR } else { Join-Path $ProjectDir "indexer" }
+# Standalone MCP server (ticket d051fbd1) - the editor-agnostic half of the tools as its own
+# stdio process. Deployed INTO the addin folder rather than beside it, because the server
+# resolves lsp-server\ relative to its own directory; from anywhere else it loses the bundled
+# language server and node.exe.
+$McpServerDir  = Join-Path $ProjectDir "mcp-server"
 $IndexerFile   = "$IndexerDir\ClarionIndexer.csproj"
 $IndexerOutput = "$IndexerDir\bin\Debug"
 
@@ -311,6 +316,20 @@ if (-not $NoBuild) {
         Write-Host ""
         Write-Host "Skipping indexer build (project not found: $IndexerFile)" -ForegroundColor Yellow
     }
+
+    # Platform=x86 is REQUIRED here, unlike the indexer: this project references the vendored
+    # 32-bit System.Data.SQLite and its x86 native interop.
+    $McpServerFile = Join-Path $McpServerDir "ClarionMcpServer.csproj"
+    if (Test-Path $McpServerFile) {
+        Write-Host ""
+        Write-Host "Building standalone MCP server..." -ForegroundColor Cyan
+        & $MSBuild $McpServerFile /p:Configuration=Debug /p:Platform=x86 /v:minimal
+        if ($LASTEXITCODE -ne 0) { Write-Host "MCP server build failed." -ForegroundColor Red; exit 1 }
+        Write-Host "MCP server build succeeded." -ForegroundColor Green
+    } else {
+        Write-Host ""
+        Write-Host "Skipping MCP server build (project not found: $McpServerFile)" -ForegroundColor Yellow
+    }
 }
 
 # --- Kill Clarion IDE if requested ---
@@ -391,6 +410,29 @@ foreach ($ver in $TargetVersions) {
             catch {
                 Write-Host "  FAIL  $item - $($_.Exception.Message)" -ForegroundColor Red
                 $failed++
+            }
+        }
+
+        # --- Deploy the standalone MCP server ---
+        # Only the exe and pdb: every DLL it needs is already in this folder from the addin's own
+        # deployment, at the same versions, so copying them again would be pure duplication.
+        #
+        # ITS PRESENCE IS A SWITCH, not just a file. The addin checks for it at startup and, when
+        # it is there, stops serving the 59 editor-agnostic tools itself and declares clarion-tools
+        # in mcp-config.json instead. Miss this step and the addin silently falls back to serving
+        # all 115 - which looks exactly like the split not working.
+        $McpServerOutput = Join-Path $McpServerDir "bin\Debug"
+        foreach ($item in @("clarion-mcp-server.exe", "clarion-mcp-server.pdb")) {
+            $src = Join-Path $McpServerOutput $item
+            if (-not (Test-Path $src)) {
+                Write-Host "  SKIP  $item (not found in mcp-server output)" -ForegroundColor DarkGray
+                continue
+            }
+            try {
+                Copy-Item $src (Join-Path $DeployDir $item) -Force -ErrorAction Stop
+                Write-Host "  OK    $item" -ForegroundColor Green
+            } catch {
+                Write-Host "  FAIL  $item - $($_.Exception.Message)" -ForegroundColor Red
             }
         }
 
