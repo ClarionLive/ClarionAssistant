@@ -315,6 +315,31 @@ namespace ClarionAssistant.Services
                 "mcp-extra.json");
         }
 
+        /// <summary>
+        /// Full path to the installed standalone MCP server, or null when it is not there.
+        ///
+        /// It sits NEXT TO THE ADDIN DLL, which is not incidental: the server resolves the bundled
+        /// language server relative to its own directory, so from that folder it finds
+        /// lsp-server\server.js and lsp-server\node.exe. Anywhere else and every lsp_ tool quietly
+        /// falls back to whatever else is on the machine.
+        ///
+        /// Returning null is a supported state, not a failure: the addin then serves the full 115
+        /// itself, so a partial deploy or an older install degrades to exactly today's behaviour
+        /// rather than to a pane missing half its tools.
+        /// </summary>
+        public static string GetStandaloneServerPath()
+        {
+            try
+            {
+                string dir = Path.GetDirectoryName(
+                    System.Reflection.Assembly.GetExecutingAssembly().Location);
+                if (string.IsNullOrEmpty(dir)) return null;
+                string exe = Path.Combine(dir, "clarion-mcp-server.exe");
+                return File.Exists(exe) ? exe : null;
+            }
+            catch { return null; }
+        }
+
         public string GenerateMcpConfig(McpConfigFormat format = McpConfigFormat.Claude)
         {
             // Both Claude and Copilot MCP client configs accept a `headers` map
@@ -367,6 +392,45 @@ namespace ClarionAssistant.Services
                     { "args", new string[] { MultiTerminalMcpPath } }
                 };
                 servers["multiterminal"] = mt;
+            }
+
+            // The editor-agnostic half, served by clarion-mcp-server.exe as its own stdio process
+            // (ticket d051fbd1). Together with the entry above this partitions all 115 tools:
+            // clarion-assistant keeps the 56 that drive the IDE, clarion-tools serves the other 59.
+            //
+            // --strict-mcp-config means the plugin's own clarion-tools entry never reaches this
+            // pane, so declaring it here is not a duplicate - it is the ONLY way those tools arrive
+            // inside the IDE, and the reason the addin can safely stop serving them itself.
+            //
+            // THE LIVE SOLUTION IS INJECTED HERE, which is the whole reason this cannot be a static
+            // config. Regenerated at every tab launch, so it always names the solution the
+            // developer currently has open. The plugin's copy passes no --solution at all and
+            // discovers one from the working directory, which is right for a terminal opened in a
+            // project folder and useless for an IDE pane whose working directory means nothing.
+            //
+            // Omitted entirely when the exe is absent, which is what lets the addin fall back to
+            // serving all 115 itself rather than advertising a server that cannot start.
+            if (format == McpConfigFormat.Claude)
+            {
+                string standaloneExe = GetStandaloneServerPath();
+                if (standaloneExe != null)
+                {
+                    var toolArgs = new List<string> { "--stdio" };
+                    string liveSln = null;
+                    try { liveSln = EditorService.GetOpenSolutionPath(); } catch { liveSln = null; }
+                    if (!string.IsNullOrEmpty(liveSln) && File.Exists(liveSln))
+                    {
+                        toolArgs.Add("--solution");
+                        toolArgs.Add(liveSln);
+                    }
+
+                    servers["clarion-tools"] = new Dictionary<string, object>
+                    {
+                        { "type", "stdio" },
+                        { "command", standaloneExe },
+                        { "args", toolArgs.ToArray() }
+                    };
+                }
             }
 
             // Add the multiterminal-channel MCP server so the embedded Claude receives

@@ -506,6 +506,43 @@ namespace ClarionAssistant.McpServer
 
             Console.WriteLine("  ok  gate withholds " + (withIdeCount - noIdeCount) + " IDE-only tools from a host with no IDE");
 
+            // THE SPLIT IS A PARTITION, and a count alone would not show it. Once the addin serves
+            // only its IDE tools and this server serves the rest, the two sets must be DISJOINT
+            // (no tool offered twice under different prefixes, where the copies could disagree
+            // about which solution they are looking at) and COMPLETE (no tool lost between them).
+            // Both halves are checked here because this is the one process that can construct
+            // either registry.
+            try
+            {
+                var ideOnly = new ClarionAssistant.Services.McpToolRegistry(
+                    new GateProbeEditorService(), new ClarionAssistant.Services.ClarionClassParser(),
+                    ideToolsOnly: true);
+
+                var agnosticNames = new List<string>();
+                foreach (var t in new ClarionAssistant.Services.McpToolRegistry(
+                             null, new ClarionAssistant.Services.ClarionClassParser()).GetToolDefinitions())
+                    agnosticNames.Add((string)t["name"]);
+
+                var ideNames = new List<string>();
+                foreach (var t in ideOnly.GetToolDefinitions())
+                    ideNames.Add((string)t["name"]);
+
+                var overlap = ideNames.FindAll(n => agnosticNames.Contains(n));
+                Console.WriteLine("  ok  split: addin " + ideNames.Count + " + standalone "
+                                  + agnosticNames.Count + " = " + (ideNames.Count + agnosticNames.Count)
+                                  + ", overlap " + overlap.Count);
+
+                if (overlap.Count != 0)
+                    failures.Add("split is not disjoint: " + overlap.Count + " tool(s) served by BOTH, e.g. " + overlap[0]);
+                if (ideNames.Count + agnosticNames.Count != withIdeCount)
+                    failures.Add("split loses tools: " + ideNames.Count + " + " + agnosticNames.Count
+                                 + " != " + withIdeCount + " (the full set)");
+            }
+            catch (Exception ex)
+            {
+                failures.Add("split check: " + ex.GetType().Name + " - " + ex.Message);
+            }
+
             // The process must NOT have dragged the IDE in.
             // A transitive reference would be invisible at compile time and fatal at run time on
             // a machine with no Clarion IDE, which is exactly the machine this is built for.

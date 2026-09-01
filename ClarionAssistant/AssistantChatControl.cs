@@ -2986,7 +2986,22 @@ namespace ClarionAssistant
             // The addin supplies the same answer it always gave.
             Services.LspService.SolutionPathProvider = () => Services.EditorService.GetOpenSolutionPath();
 
-            _toolRegistry = new McpToolRegistry(_editorService, _parser);
+            // Serve only the IDE-driving tools WHEN the standalone server is installed to serve the
+            // rest (ticket d051fbd1). The two then partition the 115 rather than both offering the
+            // editor-agnostic 59 under different prefixes.
+            //
+            // CONDITIONAL ON THE EXE BEING PRESENT, and that is the important part. An upgrade that
+            // has not yet placed clarion-mcp-server.exe - a partial deploy, a dev tree built
+            // without it, a user who declined a component - would otherwise leave this pane with
+            // 56 tools and nothing to say where the other 59 went. Falling back to serving
+            // everything means nobody can end up worse off than before the split.
+            string mcpServerExe = Services.McpServer.GetStandaloneServerPath();
+            bool agnosticServedExternally = !string.IsNullOrEmpty(mcpServerExe);
+            MonacoSpikeLog.Write(agnosticServedExternally
+                ? "[MCP] standalone server found at " + mcpServerExe + " - this pane serves IDE tools only"
+                : "[MCP] no standalone server installed - this pane serves the full tool set");
+
+            _toolRegistry = new McpToolRegistry(_editorService, _parser, agnosticServedExternally);
 
             // Workspace context and UI dispatcher. This control implements both, so it passes itself
             // twice - the split matters on the other side of the seam, where a standalone host
@@ -3404,6 +3419,13 @@ namespace ClarionAssistant
             }
 
             string allowedTools = "mcp__clarion-assistant__*,Read,Edit,Write,Bash,Glob,Grep";
+            // The editor-agnostic tools moved to their own server (ticket d051fbd1) and so carry a
+            // different prefix. Without this line every query_docs, read_file and lsp_ call would
+            // start prompting for permission the day the split shipped - the same tools the
+            // developer has been using unprompted for months, suddenly asking. Granted on the same
+            // terms as before, because they are the same tools; only their host changed.
+            if (Services.McpServer.GetStandaloneServerPath() != null)
+                allowedTools += ",mcp__clarion-tools__*";
             if (_mcpServer != null && _mcpServer.IncludeMultiTerminal)
                 allowedTools += ",mcp__multiterminal__*";
             // Allow the multiterminal-channel plugin's tools when it's loaded

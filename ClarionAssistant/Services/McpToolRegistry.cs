@@ -111,8 +111,29 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static Action<string> DiagnosticLog;
 
+        /// <summary>
+        /// True when the editor-agnostic tools are served by a SEPARATE process and this registry
+        /// must not also offer them (ticket d051fbd1). Set by the addin once clarion-mcp-server.exe
+        /// is installed beside it; the two then partition the tool set instead of duplicating it.
+        /// Read during registration, hence a constructor argument rather than a property.
+        /// </summary>
+        private readonly bool _ideToolsOnly;
+
         public McpToolRegistry(IEditorService editorService, ClarionClassParser parser)
+            : this(editorService, parser, false) { }
+
+        /// <param name="ideToolsOnly">
+        /// Register ONLY the tools that drive the IDE, because something else is serving the rest.
+        ///
+        /// DEFAULTS FALSE, and every existing call site keeps today's behaviour. The addin opts in
+        /// only when it can see clarion-mcp-server.exe next to itself: without that check an
+        /// upgrade that had not yet placed the exe would leave a developer with 56 tools and no
+        /// indication where the other 59 went. Nobody should ever end up with fewer tools than
+        /// they had before.
+        /// </param>
+        public McpToolRegistry(IEditorService editorService, ClarionClassParser parser, bool ideToolsOnly)
         {
+            _ideToolsOnly = ideToolsOnly;
             _editorService = editorService;
             _parser = parser;
             _appTree = AppTreeFactory != null ? AppTreeFactory() : null;
@@ -4719,6 +4740,13 @@ IdeOnly = true,
             // for the open document and gets a NullReferenceException, which is strictly worse than
             // the tool being absent - absent is a fact the client can plan around.
             if (tool != null && tool.IdeOnly && !HasIde) return;
+
+            // The mirror image: something else is serving the editor-agnostic tools, so offering
+            // them here too would advertise the SAME 59 tools under two prefixes. That is not
+            // merely wasteful - it doubles the tool list a model must choose from, and the two
+            // copies can disagree, because one reads the IDE's live solution and the other reads
+            // whatever solution its own process was pointed at. One owner per tool.
+            if (tool != null && _ideToolsOnly && !tool.IdeOnly) return;
 
             _tools[tool.Name] = tool;
         }
