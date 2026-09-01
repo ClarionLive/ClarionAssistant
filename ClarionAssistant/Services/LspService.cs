@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -22,6 +22,15 @@ namespace ClarionAssistant.Services
     /// </summary>
     public static class LspService
     {
+        /// <summary>
+        /// Supplies the active solution path. Set by the host at startup: the addin points it
+        /// at EditorService.GetOpenSolutionPath(); a standalone host points it at whatever it
+        /// was told on the command line. Null means "no solution", and StartIfNeeded already
+        /// treats that as "cannot start" - so an unset hook degrades to not starting the LSP
+        /// rather than throwing.
+        /// </summary>
+        public static System.Func<string> SolutionPathProvider;
+
         private static readonly object _lock = new object();
         private static int _lspStarting; // 0 = idle, 1 = a background start is in flight
         private static LspClient _client;
@@ -57,7 +66,12 @@ namespace ClarionAssistant.Services
                     // Re-check inside the lock — another thread may have started it.
                     if (_client != null && _client.IsRunning) return;
 
-                    string slnPath = EditorService.GetOpenSolutionPath();
+                    // Was EditorService.GetOpenSolutionPath() - a static call into an
+                    // IDE-coupled class, and the one thing stopping this otherwise IDE-free
+                    // file compiling in the standalone MCP server (ticket d051fbd1). Routed
+                    // through a host-supplied hook, the same pattern SharedLspBridge already
+                    // uses for CodeGraphDbPathProvider / SchemaGraphDbPathProvider.
+                    string slnPath = SolutionPathProvider != null ? SolutionPathProvider() : null;
                     if (string.IsNullOrEmpty(slnPath)) return; // can't start without a solution
 
                     string wsPath = Path.GetDirectoryName(slnPath);

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -12,7 +12,11 @@ using ClarionAssistant.Terminal;
 
 namespace ClarionAssistant
 {
-    public class AssistantChatControl : UserControl
+    // Implements IWorkspaceContext / IUiDispatcher (ticket d051fbd1) so McpToolRegistry can
+    // depend on interfaces rather than on this control. Every member was already public here;
+    // the interfaces name what was already exposed, so this adds no behaviour and changes none.
+    // The explicit implementations live at the end of the class, near the properties they use.
+    public class AssistantChatControl : UserControl, Services.IWorkspaceContext, Services.IUiDispatcher
     {
         // Live-instance registry so ShutdownService can dispose this control's WebView2s ON THE UI THREAD
         // BEFORE native IDE teardown. Disposing the control chains to _header (HeaderWebView = HUD) and
@@ -2373,11 +2377,17 @@ namespace ClarionAssistant
             // Cross-entry-point gate: index_codegraph (MCP worker thread) writes the same
             // database and can't see _indexRunInProgress. Claimed at the last no-throw
             // point before the worker starts, so a setup exception can't leak the claim.
-            if (!ClarionAssistant.Services.IndexRunGate.TryEnter(dbPath))
+            //
+            // It now guards across PROCESSES too, so the holder is no longer necessarily
+            // index_codegraph in this IDE — the standalone MCP server can be indexing the same
+            // database (ticket d051fbd1). The message names whoever actually holds it rather than
+            // asserting a cause, which would send the developer looking in the wrong place.
+            string indexHolder;
+            if (!ClarionAssistant.Services.IndexRunGate.TryEnter(dbPath, out indexHolder))
             {
                 string held = "Error: an index run is already in progress for this solution's database "
-                    + "(started via index_codegraph) — wait for it to finish before starting another.";
-                runLog.WriteLine("REFUSED: another index run holds " + dbPath);
+                    + "— held by " + indexHolder + ". Wait for it to finish before starting another.";
+                runLog.WriteLine("REFUSED: " + indexHolder + " holds " + dbPath);
                 runLog.Dispose();
                 _header.SetIndexButtonsEnabled(true);
                 if (!progressForm.IsDisposed)
@@ -2962,10 +2972,26 @@ namespace ClarionAssistant
         private void StartMcpServer()
         {
             _mcpServer = new McpServer(this, _settings);
+
+            // The registry no longer names AppTreeService (ticket d051fbd1) - it is IDE-coupled, and
+            // the registry is shared with the standalone MCP server. The addin supplies it here; a
+            // standalone host leaves the factory null and does not register the app-tree tools.
+            // Must be set BEFORE the constructor runs, which is where the registry reads it.
+            McpToolRegistry.AppTreeFactory = () => new AppTreeService();
+            McpToolRegistry.IdeProbeFactory = () => new Services.IdeProbeService();
+            McpToolRegistry.DiagnosticLog = msg => MonacoSpikeLog.Write(msg);
+
+            // LspService no longer calls EditorService.GetOpenSolutionPath() directly (that static
+            // was the one thing keeping an otherwise IDE-free file out of the standalone build).
+            // The addin supplies the same answer it always gave.
+            Services.LspService.SolutionPathProvider = () => Services.EditorService.GetOpenSolutionPath();
+
             _toolRegistry = new McpToolRegistry(_editorService, _parser);
 
-            // Give the tool registry a reference back so it can access solution context and run indexing
-            _toolRegistry.SetChatControl(this);
+            // Workspace context and UI dispatcher. This control implements both, so it passes itself
+            // twice - the split matters on the other side of the seam, where a standalone host
+            // resolves the workspace from CLI args and has no UI thread at all.
+            _toolRegistry.SetWorkspace(this, this);
 
             // Set up diff viewer service
             _diffService = new DiffService();
@@ -4450,6 +4476,58 @@ namespace ClarionAssistant
                 if (_header != null) _header.Dispose();
             }
             base.Dispose(disposing);
+        }
+
+        // ---------------------------------------------------------------------------------
+        // IWorkspaceContext / IUiDispatcher  (ticket d051fbd1)
+        //
+        // The seam that lets McpToolRegistry compile outside the addin. Everything below is a
+        // thin forward to members this class already had; nothing new is computed here, and
+        // the addin behaves exactly as before. The value is on the OTHER side of the
+        // interface, where a standalone host supplies these from CLI args / cwd / config
+        // instead of from a running IDE.
+        // ---------------------------------------------------------------------------------
+
+        /// <summary>
+        /// IWorkspaceContext: the solution the HOST believes is open. Forwards to the static
+        /// EditorService.GetOpenSolutionPath() the build tools used to call directly. Kept
+        /// distinct from CurrentSolutionPath because those tools deliberately preferred the
+        /// IDE's answer and fell back to ours - collapsing the two would change which
+        /// solution they build.
+        /// </summary>
+        string Services.IWorkspaceContext.GetHostOpenSolutionPath()
+        {
+            try { return Services.EditorService.GetOpenSolutionPath(); }
+            catch { return null; }
+        }
+
+        /// <summary>IWorkspaceContext: root of the Clarion installation.</summary>
+        string Services.IWorkspaceContext.GetClarionInstallPath()
+        {
+            try { return Services.EditorService.GetClarionInstallPath(); }
+            catch { return null; }
+        }
+
+        /// <summary>IUiDispatcher: inside the IDE there is always a real UI thread.</summary>
+        bool Services.IUiDispatcher.HasUiThread { get { return true; } }
+
+        /// <summary>
+        /// IUiDispatcher: marshal to the control, as the registry did directly before.
+        /// IsHandleCreated is checked because BeginInvoke throws if the handle is not up yet -
+        /// reachable during startup and shutdown, and a throw here would surface as a tool
+        /// failing for reasons that have nothing to do with the tool.
+        /// </summary>
+        void Services.IUiDispatcher.BeginInvokeOnUi(Action action)
+        {
+            if (action == null) return;
+            if (IsHandleCreated && !IsDisposed)
+            {
+                try { BeginInvoke(action); return; }
+                catch (System.ComponentModel.InvalidAsynchronousStateException) { }
+                catch (ObjectDisposedException) { }
+            }
+            // No handle (or it died under us): running inline is better than dropping the work.
+            action();
         }
     }
 

@@ -182,6 +182,30 @@ if (-not $CSharpOnly -and -not $InstallerOnly) {
     }
 }
 
+# --------------------------------------------------------------------- ClarionAssistant harnesses
+if (-not $CSharpOnly -and -not $NodeOnly) {
+
+    # Auto-discovered, like the installer family below, so a new harness is picked up by being
+    # written rather than by also remembering to edit this file. Run-Tests.ps1 EXCLUDES ITSELF —
+    # it lives in this directory and would otherwise recurse.
+    $caTests = Get-ChildItem $PSScriptRoot -Filter *.ps1 -ErrorAction SilentlyContinue |
+               Where-Object { $_.Name -ne 'Run-Tests.ps1' } |
+               Sort-Object Name
+    foreach ($t in $caTests) {
+        Section $t.Name
+        & (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy Bypass -File $t.FullName
+        $code = $LASTEXITCODE
+        $ran++
+        # Exit 2 is the shared "could not run" signal. A harness that skips because its subject
+        # was never built has proven nothing, and must not read as green.
+        if ($code -eq 2) {
+            Write-Host "  SKIPPED — could not run (see message above)" -ForegroundColor Yellow
+            $failures += $t.Name + " (could not run)"
+        }
+        elseif ($code -ne 0) { $failures += $t.Name }
+    }
+}
+
 # --------------------------------------------------------------------------- installer harnesses
 if (-not $CSharpOnly -and -not $NodeOnly) {
 

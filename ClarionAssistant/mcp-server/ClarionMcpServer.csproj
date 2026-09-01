@@ -1,0 +1,177 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    clarion-mcp-server — standalone MCP server exposing the editor-agnostic half of
+    Clarion Assistant's tool set over stdio, with NO Clarion IDE running (ticket d051fbd1).
+
+    WHY THIS EXISTS. The ~115 MCP tools live in McpToolRegistry.cs inside the addin, and the
+    HTTP/SSE server that publishes them is started from AssistantChatControl. So today the
+    tools exist only while the Clarion IDE is open. That blocks the users this was built for:
+    Clarion developers who hand-code and deliberately do not run the IDE. It also means half
+    the surface can only be exercised by launching a 32-bit IDE, which is how several defects
+    stayed hidden (see the ticket).
+
+    SINGLE SHARED SOURCE, same discipline as indexer\ClarionIndexer.csproj — every file below
+    is <Compile Include>'d from its ONE home. Do NOT vendor copies here. That project's header
+    records what happens when this slips: three of six shared files had silently diverged by
+    2026-08-10, and the drift is invisible until something breaks late.
+
+    ANYTHING IDE-COUPLED MUST STAY OUT. Verified 2026-09-01, the services below import only
+    System.* (plus SQLite / SqlClient). The IDE-coupled services — EditorService, AppTreeService,
+    NativeProbeService, IdeReflectionService — are deliberately absent and must not be added.
+    If a file added here starts pulling ICSharpCode.*, System.Windows.Forms or CWBinding, the
+    right fix is a seam, not a reference.
+
+    STATUS: SPIKE. This currently proves the agnostic service layer compiles outside the addin.
+    It does not yet host the tool registry — that needs the IEditorService / IWorkspaceContext /
+    IUiDispatcher seam described in the ticket plan.
+  -->
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">x86</Platform>
+    <ProjectGuid>{C3D4E5F6-A7B8-9012-CDEF-234567890123}</ProjectGuid>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ClarionAssistant.McpServer</RootNamespace>
+    <AssemblyName>clarion-mcp-server</AssemblyName>
+    <!-- v4.8, NOT the indexer's v4.7.2. This project references ClarionLsp.Contracts.dll, which
+         is built against 4.8, and MSBuild refuses a reference targeting a HIGHER framework than
+         the consumer (MSB3274). The addin is v4.8 for the same reason, so matching it keeps the
+         two hosts of the shared registry on one framework rather than two. -->
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <RuntimeIdentifiers>win-x86</RuntimeIdentifiers>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x86' ">
+    <PlatformTarget>x86</PlatformTarget>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x86' ">
+    <PlatformTarget>x86</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <!-- SQLite (FTS5): the vendored DLLs the addin already ships, same as the indexer. The
+       NuGet package it replaces is not restorable on a clean checkout. -->
+  <PropertyGroup>
+    <SqliteVendored>$(MSBuildProjectDirectory)\..\lib\sqlite-fts5</SqliteVendored>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Xml" />
+    <!-- SchemaGraphService ingests from SQL Server as well as SQLite. -->
+    <Reference Include="System.Data.SqlClient" />
+    <!-- The registry serialises tool results with JavaScriptSerializer. -->
+    <Reference Include="System.Web.Extensions" />
+    <!-- SchemaGraphService encrypts stored connection strings with DPAPI
+         (ProtectedData / DataProtectionScope, SchemaGraphService.cs:2442, :2447). -->
+    <Reference Include="System.Security" />
+    <Reference Include="System.Data.SQLite">
+      <HintPath>$(SqliteVendored)\System.Data.SQLite.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <!-- SharedLspBridge prefers the ClarionLsp addin's language client when it is installed and
+         falls back to our bundled LspClient otherwise. Contracts only - an interface assembly,
+         not the IDE - so referencing it here does not compromise the no-IDE guarantee. Same
+         HintPath as the addin uses; do not let the two drift. -->
+    <Reference Include="ClarionLsp.Contracts">
+      <HintPath>..\lib\ClarionLsp\ClarionLsp.Contracts.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- DocGraphService extracts text from PDFs (UglyToad.PdfPig, DocGraphService.cs:920, :926).
+         Same package and version the addin uses - do not let these drift. Apache-2.0; its
+         attribution obligation is tracked separately on ticket c93e3f55. -->
+    <PackageReference Include="PdfPig">
+      <Version>0.1.10</Version>
+      <GeneratePathProperty>true</GeneratePathProperty>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Entry point (owned by this project) -->
+    <Compile Include="Program.cs" />
+    <Compile Include="StdioTransport.cs" />
+    <Compile Include="StandaloneUiDispatcher.cs" />
+    <Compile Include="StandaloneWorkspace.cs" />
+    <!-- Graph layer — SHARED, linked from ..\CodeGraph\ -->
+    <Compile Include="..\CodeGraph\Graph\CodeGraphDatabase.cs"><Link>Graph\CodeGraphDatabase.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Graph\CodeGraphIndexer.cs"><Link>Graph\CodeGraphIndexer.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Graph\IndexProgress.cs"><Link>Graph\IndexProgress.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Graph\CodeGraphQuery.cs"><Link>Graph\CodeGraphQuery.cs</Link></Compile>
+    <!-- Declares CodeGraphProvider and CodeGraphSymbol, which SharedLspBridge uses to answer
+         definition / references / workspace-symbol from the CodeGraph when the LSP returns
+         nothing. Not linked by the indexer, which does not host that bridge. -->
+    <Compile Include="..\CodeGraph\Graph\CodeGraphProvider.cs"><Link>Graph\CodeGraphProvider.cs</Link></Compile>
+    <!-- Parsing layer — SHARED, linked from ..\CodeGraph\ -->
+    <Compile Include="..\CodeGraph\Parsing\ClarionParser.cs"><Link>Parsing\ClarionParser.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Parsing\ClarionBuiltins.cs"><Link>Parsing\ClarionBuiltins.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Parsing\SolutionParser.cs"><Link>Parsing\SolutionParser.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Parsing\ProjectParser.cs"><Link>Parsing\ProjectParser.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Parsing\SourceResolver.cs"><Link>Parsing\SourceResolver.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Parsing\Models\ClarionSymbol.cs"><Link>Parsing\Models\ClarionSymbol.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Parsing\Models\ClarionRelationship.cs"><Link>Parsing\Models\ClarionRelationship.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Parsing\Models\SolutionProject.cs"><Link>Parsing\Models\SolutionProject.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Parsing\Models\ParseResult.cs"><Link>Parsing\Models\ParseResult.cs</Link></Compile>
+    <!-- IDE-free Services the shared layer needs (same four the indexer links) -->
+    <Compile Include="..\Services\RedFileService.cs"><Link>Services\RedFileService.cs</Link></Compile>
+    <Compile Include="..\Services\ClarionConfigDirectory.cs"><Link>Services\ClarionConfigDirectory.cs</Link></Compile>
+    <Compile Include="..\Services\ClarionVersionService.cs"><Link>Services\ClarionVersionService.cs</Link></Compile>
+    <Compile Include="..\Services\EncodingHelper.cs"><Link>Services\EncodingHelper.cs</Link></Compile>
+    <!-- The agnostic tool-backing services. Each verified to import only System.*. -->
+    <Compile Include="..\Services\ClarionClassParser.cs"><Link>Services\ClarionClassParser.cs</Link></Compile>
+    <Compile Include="..\Services\ClarionTraceService.cs"><Link>Services\ClarionTraceService.cs</Link></Compile>
+    <Compile Include="..\Services\DocGraphService.cs"><Link>Services\DocGraphService.cs</Link></Compile>
+    <Compile Include="..\Services\EverythingService.cs"><Link>Services\EverythingService.cs</Link></Compile>
+    <Compile Include="..\Services\KnowledgeService.cs"><Link>Services\KnowledgeService.cs</Link></Compile>
+    <Compile Include="..\Services\SchemaGraphService.cs"><Link>Services\SchemaGraphService.cs</Link></Compile>
+    <!-- SchemaGraphService calls into LspClient (SchemaGraphService.cs:2079, :2227). LspClient is
+         itself IDE-free: it spawns the node language server in stdio mode and speaks JSON-RPC over
+         pipes, which is why that server already works outside the IDE. -->
+    <Compile Include="..\Services\LspClient.cs"><Link>Services\LspClient.cs</Link></Compile>
+    <!-- The seam (ticket d051fbd1). These let the ONE shared McpToolRegistry.cs compile here
+         without importing the IDE. Nothing in this project implements IEditorService,
+         IAppTreeService or IDiffService - the tools needing them are not registered. -->
+    <Compile Include="..\Services\InsertResult.cs"><Link>Services\InsertResult.cs</Link></Compile>
+    <Compile Include="..\Services\DiffFileContext.cs"><Link>Services\DiffFileContext.cs</Link></Compile>
+    <Compile Include="..\Services\IEditorService.cs"><Link>Services\IEditorService.cs</Link></Compile>
+    <Compile Include="..\Services\IWorkspaceContext.cs"><Link>Services\IWorkspaceContext.cs</Link></Compile>
+    <Compile Include="..\Services\IUiDispatcher.cs"><Link>Services\IUiDispatcher.cs</Link></Compile>
+    <Compile Include="..\Services\IAppTreeService.cs"><Link>Services\IAppTreeService.cs</Link></Compile>
+    <Compile Include="..\Services\IDiffService.cs"><Link>Services\IDiffService.cs</Link></Compile>
+    <!-- The INTERFACE only. Services\IdeProbeService.cs, which implements it, is deliberately
+         NOT linked: it names IdeReflectionService, NativeProbeService and
+         ModernEmbeditorViewContent, all IDE-coupled. -->
+    <Compile Include="..\Services\IIdeProbeService.cs"><Link>Services\IIdeProbeService.cs</Link></Compile>
+    <!-- The tool registry itself, and what it needs beyond the services above. -->
+    <Compile Include="..\Services\McpJsonRpc.cs"><Link>Services\McpJsonRpc.cs</Link></Compile>
+    <Compile Include="..\Services\McpDispatcher.cs"><Link>Services\McpDispatcher.cs</Link></Compile>
+    <Compile Include="..\Services\SettingsService.cs"><Link>Services\SettingsService.cs</Link></Compile>
+    <Compile Include="..\Services\ClarionGraphService.cs"><Link>Services\ClarionGraphService.cs</Link></Compile>
+    <Compile Include="..\Services\LibraryIndexer.cs"><Link>Services\LibraryIndexer.cs</Link></Compile>
+    <Compile Include="..\Services\ClarionSourceText.cs"><Link>Services\ClarionSourceText.cs</Link></Compile>
+    <Compile Include="..\Services\IndexRunGate.cs"><Link>Services\IndexRunGate.cs</Link></Compile>
+    <Compile Include="..\Services\IndexRunLog.cs"><Link>Services\IndexRunLog.cs</Link></Compile>
+    <Compile Include="..\Services\InstanceCoordinationService.cs"><Link>Services\InstanceCoordinationService.cs</Link></Compile>
+    <Compile Include="..\Services\LspService.cs"><Link>Services\LspService.cs</Link></Compile>
+    <Compile Include="..\Services\SharedLspBridge.cs"><Link>Services\SharedLspBridge.cs</Link></Compile>
+    <Compile Include="..\Services\McpToolRegistry.cs"><Link>Services\McpToolRegistry.cs</Link></Compile>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <!-- x86 SQLite.Interop.dll next to the exe, same as the indexer. -->
+  <Target Name="CopySQLiteInterop" AfterTargets="Build">
+    <MakeDir Directories="$(OutputPath)x86" />
+    <Copy SourceFiles="$(SqliteVendored)\SQLite.Interop.dll" DestinationFolder="$(OutputPath)x86" SkipUnchangedFiles="true" />
+  </Target>
+</Project>
