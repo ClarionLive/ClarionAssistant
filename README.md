@@ -61,6 +61,21 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 **Why 5.9.0 and not 5.8.2.** Clarion Assistant is joining the **Clarion Addin Registry**, so it can be found and updated from **AddinFinder** inside the IDE. That required our version number to become a single value that the addin manifest, the installer and the git tag all agree on &mdash; and it could not be 5.8.2. See the versioning entry below.
 
+<!-- release-docs: covered=mcp,mcp-server,codegraph -->
+### Clarion Assistant's tools now run without the Clarion IDE
+
+There is a new **`clarion-mcp-server`**: the editor-agnostic half of Clarion Assistant, as a standalone program that speaks **MCP over stdio**. Point any MCP client at it &mdash; Claude Code in **Sublime Text**, in **VS Code**, or in a plain terminal &mdash; and you get Clarion intelligence in an editor that is not the IDE. This is for Clarion developers who hand-code and would rather not work in the Clarion IDE at all.
+
+```
+clarion-mcp-server --stdio --solution C:\Path\To\Your.sln
+```
+
+It serves **57 of the 115 tools**: the documentation search across SoftVelocity and every third-party vendor you have installed, the knowledge base, the LSP tools, the dictionary and SQL schema tools, CodeGraph indexing and queries, file and Everything search, and Clarion class analysis. Indexing works fully &mdash; it reads your `.red` redirection file the way the compiler does, so a solution with one hand-written source file still indexes the ABC library behind it.
+
+The other **58 are withheld on purpose**, because they drive the IDE itself: opening files in the editor, the app tree, the embeditor, the designer. An MCP client reads the tool list as a promise about what it can do, so a tool that could only ever fail is worse than one that is honestly absent. The addin is unchanged and still offers all 115.
+
+**Both can be running at once.** If your IDE and a standalone server both index the same solution, they no longer collide: a full re-index wipes the database before rebuilding it, so two overlapping runs used to be able to destroy each other's work and leave a graph pointing at code that had been deleted from it. Whichever starts second is now turned away, and told which process holds the database. A run whose process is killed &mdash; a deploy, a crash, Task Manager &mdash; releases immediately and leaves nothing stale behind.
+
 ### CA Embeditor: the keys that used to do nothing now reach the IDE ([#192](https://github.com/ClarionLive/ClarionAssistant/issues/192))
 
 Inside a CA Embeditor the editor swallowed most of Clarion's own shortcuts. **Ctrl+F4** (close), **Ctrl+O** (open) and **Alt+&lt;letter&gt;** now reach the IDE, the last of these by matching the letter against the real menu mnemonics rather than a hardcoded list &mdash; so it keeps working if the menus change. Keys are routed through the workbench menu itself, which means the IDE does what it would normally do rather than us reimplementing it.
