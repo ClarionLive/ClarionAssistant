@@ -2114,10 +2114,20 @@ COMMON QUERIES:
                     string incremental = McpJsonRpc.GetString(args, "incremental", "false");
                     bool isIncremental = incremental.Equals("true", StringComparison.OrdinalIgnoreCase);
 
+                    // Checked BEFORE claiming a run started. This branch used to fall through to
+                    // RunIndex and then report "Full index started for: (none)" — a success
+                    // message with the failure printed inside it. In the IDE a modal at least
+                    // appeared; in a standalone host (ticket d051fbd1) there is no modal, so the
+                    // caller was told a run had begun when nothing had. RunIndex makes the same
+                    // check against the same value, so this cannot disagree with it.
+                    string slnForIndex = _workspace.CurrentSolutionPath;
+                    if (string.IsNullOrEmpty(slnForIndex) || !File.Exists(slnForIndex))
+                        return "Error: no solution is selected, so there is nothing to index.";
+
                     _workspace.RunIndex(isIncremental);
                     return isIncremental
-                        ? "Incremental index started for: " + (_workspace.CurrentSolutionPath ?? "(none)")
-                        : "Full index started for: " + (_workspace.CurrentSolutionPath ?? "(none)");
+                        ? "Incremental index started for: " + slnForIndex
+                        : "Full index started for: " + slnForIndex;
                 },
                 // Streaming variant (ticket 0d788f8b): runs on a worker thread, marshals the
                 // RunIndex START to the UI thread, then relays the run's structured events

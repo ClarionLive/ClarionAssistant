@@ -74,9 +74,22 @@ namespace ClarionAssistant.Services
 
         /// <summary>
         /// The solution the HOST believes is open, which may differ from CurrentSolutionPath.
-        /// Was the static EditorService.GetOpenSolutionPath(). In the addin it asks the IDE;
-        /// standalone it returns null and callers fall back to CurrentSolutionPath — which is
-        /// exactly the precedence the build tools already used.
+        /// Was the static EditorService.GetOpenSolutionPath(). In the addin it asks the IDE.
+        ///
+        /// A NULL HERE MEANS "the host had a solution and no longer does" — staleness — NOT
+        /// "this host cannot answer". I originally wrote that a standalone host should return
+        /// null and that callers would fall back to CurrentSolutionPath. BOTH HALVES WERE WRONG,
+        /// found by reading the two callers rather than trusting the note:
+        ///
+        ///   build_solution     uses this as its ONLY fallback and never consults
+        ///                      CurrentSolutionPath, so null fails the build outright.
+        ///   get_solution_info  reads "null here, but a path cached there" as a stale selection
+        ///                      and returns an early stub without the version, .red or database
+        ///                      fields.
+        ///
+        /// So a host with no separate IDE state should return its own current solution, because
+        /// for it the two genuinely are the same value. Answer null only when this host really
+        /// can have a solution open and currently does not.
         /// </summary>
         string GetHostOpenSolutionPath();
 

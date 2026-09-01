@@ -26,10 +26,13 @@ namespace ClarionAssistant.McpServer
         {
             bool selfTest = false, negativeControl = false, stdioSelfTest = false;
             bool stdio = false, stdioNoise = false, help = false;
+            string solution = null;
+            bool unknownArg = false;
 
-            foreach (var a in args)
+            for (int i = 0; i < args.Length; i++)
             {
-                switch ((a ?? "").ToLowerInvariant())
+                string a = args[i] ?? "";
+                switch (a.ToLowerInvariant())
                 {
                     case "--selftest": selfTest = true; break;
                     case "--selftest-negative": selfTest = true; negativeControl = true; break;
@@ -39,6 +42,24 @@ namespace ClarionAssistant.McpServer
                     case "--help":
                     case "-h":
                     case "/?": help = true; break;
+                    case "--solution":
+                        // Consumes the next argument. Checked rather than assumed: a trailing
+                        // "--solution" with nothing after it would otherwise silently resolve to
+                        // "no solution", and the user would be left wondering why the flag they
+                        // passed did nothing.
+                        if (i + 1 < args.Length) { solution = args[++i]; }
+                        else
+                        {
+                            Console.Error.WriteLine(ServerName + ": --solution needs a path.");
+                            return 64;
+                        }
+                        break;
+                    default:
+                        if (a.StartsWith("--solution=", StringComparison.OrdinalIgnoreCase))
+                            solution = a.Substring("--solution=".Length);
+                        else
+                            unknownArg = true;
+                        break;
                 }
             }
 
@@ -46,16 +67,25 @@ namespace ClarionAssistant.McpServer
             if (selfTest) return RunSelfTest(negativeControl);
             if (stdioSelfTest) return RunStdioSelfTest();
 
+            if (unknownArg)
+            {
+                Console.Error.WriteLine(ServerName + ": unrecognised arguments.");
+                PrintUsage(Console.Error);
+                return 64; // EX_USAGE
+            }
+
             // DEFAULT IS TO SERVE. An MCP client launches this with no arguments and immediately
             // starts talking JSON-RPC on the pipe; printing usage and exiting 64 (the old spike
             // behaviour) would look to every client like a server that crashes on startup.
             // --stdio stays accepted so a config file can be explicit.
-            if (stdio || args.Length == 0)
-                return StdioTransport.Run(BuildDispatcher(), stdioNoise);
+            var workspace = StandaloneWorkspace.Resolve(solution, Environment.CurrentDirectory);
 
-            Console.Error.WriteLine(ServerName + ": unrecognised arguments.");
-            PrintUsage(Console.Error);
-            return 64; // EX_USAGE
+            // stderr is the ONLY place a stdio server can explain itself — stdout is the protocol
+            // stream. Without this line, "index_solution says no solution is selected" is a
+            // mystery the user has no way to diagnose from the client side.
+            Console.Error.WriteLine(ServerName + ": " + workspace.ResolutionNote);
+
+            return StdioTransport.Run(BuildDispatcher(workspace), stdioNoise);
         }
 
         private static void PrintUsage(TextWriter w)
@@ -64,6 +94,9 @@ namespace ClarionAssistant.McpServer
             w.WriteLine();
             w.WriteLine("  (no args)            serve MCP over stdio — what an MCP client does");
             w.WriteLine("  --stdio              same, stated explicitly");
+            w.WriteLine("  --solution <path>    the .sln the CodeGraph/solution tools work on.");
+            w.WriteLine("                       Without it, a single .sln in the working directory");
+            w.WriteLine("                       is used; several means none, rather than a guess.");
             w.WriteLine("  --selftest           service layer loads, registry gates correctly");
             w.WriteLine("  --selftest-negative  prove the no-IDE-assembly guard can actually fail");
             w.WriteLine("  --selftest-stdio     drive the real read/dispatch/write loop in-process");
@@ -79,12 +112,33 @@ namespace ClarionAssistant.McpServer
         /// </summary>
         private static McpDispatcherBundle BuildDispatcher()
         {
+            return BuildDispatcher(null);
+        }
+
+        /// <param name="workspace">
+        /// Supplies "which solution am I on" to the eleven tools that need it. Null leaves them
+        /// registered but answering their own no-solution error, which is what the self-tests use
+        /// — they assert the tool SET, and building a workspace would make the count depend on
+        /// whatever solution happens to sit in the working directory.
+        /// </param>
+        private static McpDispatcherBundle BuildDispatcher(StandaloneWorkspace workspace)
+        {
             var registry = new ClarionAssistant.Services.McpToolRegistry(
                 null, new ClarionAssistant.Services.ClarionClassParser());
 
+            var ui = new StandaloneUiDispatcher();
+            if (workspace != null)
+            {
+                // MUST happen before serving. The registry reads _workspace inside the handlers,
+                // not at registration, so a late call would leave already-answered calls having
+                // reported "no solution" while later ones succeed — the same request giving two
+                // answers depending on timing.
+                registry.SetWorkspace(workspace, ui);
+            }
+
             var dispatcher = new ClarionAssistant.Services.McpDispatcher(
                 registry,
-                new StandaloneUiDispatcher(),
+                ui,
                 null,               // no activity sink: stdout is the protocol stream
                 ServerName,
                 ServerVersion);
