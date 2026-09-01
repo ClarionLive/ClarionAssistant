@@ -5,27 +5,24 @@ description: Validate and remediate existing C# COM controls for Clarion RegFree
 version: 1.0.0
 ---
 
+# Clarion COM Validator
+
+Validates existing COM controls against RegFree COM requirements for Clarion and provides remediation steps for non-compliant controls.
+
 ## Path Resolution - CRITICAL
 
-Use the helper script to get CLARIONCOM_HOME (avoids shell escaping issues):
+Get CLARIONCOM_HOME via the helper script (avoids shell escaping issues):
 
 ```bash
 powershell -ExecutionPolicy Bypass -Command "& ([Environment]::GetFolderPath('ApplicationData') + '\ClarionCOM\scripts\clarioncom-env.ps1') home"
 ```
 
-**If NOT_INSTALLED**: Stop and tell user:
-> ClarionCOM is not installed. Please run Install-ClarionCOM.ps1 from the ClarionCOM distribution folder.
+**If NOT_INSTALLED**: Stop and tell user: "ClarionCOM is not installed. Please run Install-ClarionCOM.ps1 from the ClarionCOM distribution folder."
 
-**Use resolved paths:**
-- Templates: `$CLARIONCOM_HOME\Templates\`
-- Scripts: `$CLARIONCOM_HOME\scripts\`
-
-# Clarion COM Validator Skill
-
-## Purpose
-This skill validates existing COM controls against RegFree COM requirements for Clarion and provides remediation steps for non-compliant controls.
+**Use resolved paths:** Templates: `$CLARIONCOM_HOME\Templates\` — Scripts: `$CLARIONCOM_HOME\scripts\`
 
 ## When to Use
+
 - Reviewing an existing COM control for Clarion compatibility
 - Migrating from registry-based COM to RegFree COM
 - Debugging COM activation or event issues
@@ -34,474 +31,33 @@ This skill validates existing COM controls against RegFree COM requirements for 
 
 ## Execution Strategy
 
-**IMPORTANT:** Use parallel execution for independent validation checks:
-- Check AssemblyInfo.cs, interface files, and implementation files in parallel
-- Validate all GUIDs simultaneously
-- Check project configuration while analyzing source files
+**IMPORTANT:** Use parallel execution for independent validation checks: check AssemblyInfo.cs, interface files, and implementation files in parallel; validate all GUIDs simultaneously; check project configuration while analyzing source files.
 
-## Complete Validation Checklist
+## Validation Workflow
 
-### 1. Assembly Configuration (AssemblyInfo.cs)
+Run all 8 checks below. Read references/validation-checklist.md (in this skill's directory) for the full per-check detail: required attribute code blocks, common issues, and rationale for each rule.
 
-**REQUIRED Attributes:**
-```csharp
-[assembly: ComVisible(true)]                    // MUST be true, not false
-[assembly: Guid("UNIQUE-TYPELIB-GUID-HERE")]    // REQUIRED for RegFree COM
-```
+1. **Assembly (AssemblyInfo.cs)** — `[assembly: ComVisible(true)]` and an assembly-level `[assembly: Guid(...)]` are REQUIRED.
+2. **Main methods interface** — `[ComVisible(true)]`, unique GUID, and `InterfaceType(ComInterfaceType.InterfaceIsDual)` (NOT InterfaceIsIDispatch — dual supports early + late binding).
+   - **2a. Color naming**: methods/properties handling colors MUST include "color" in their name (e.g., `SetBackgroundColor`) for the Clarion IDE color selector.
+3. **Event interface** — `[ComVisible(true)]`, unique GUID, `InterfaceIsIDispatch` (NOT dual — event sinks are late-bound only), and sequential `[DispId(n)]` starting at 1.
+4. **Implementation class** — `[ComVisible(true)]`, unique GUID, `[ProgId("Namespace.ClassName")]`, `[ClassInterface(ClassInterfaceType.None)]`, `[ComSourceInterfaces(typeof(IYourControlEvents))]`.
+5. **.csproj** — net48, `PlatformTarget` x86 (Clarion is 32-bit), `ComVisible` true, `GenerateAssemblyInfo` false; NO `EnableComInterop` or `RegisterForComInterop`.
+6. **GUID uniqueness** — 4 distinct GUIDs (assembly typelib, methods interface, event interface, class); never copied from other projects. Generate with `[guid]::NewGuid().ToString().ToUpper()`.
+7. **Manifest file** — `ControlName.manifest` must exist and use `<clrClass>` (NOT `<comClass>` — that is for native COM and fails for .NET), with GUIDs matching source. Full manifest template: references/validation-checklist.md section 7.
+8. **Constructor pattern (CRITICAL)** — constructor does field/style setup ONLY; NO `Controls.Add()`, no child-control creation, no data operations. Those belong in `OnHandleCreated` (guarded by `!DesignMode`). Violation means Clarion cannot create the OCX at all. Correct/broken code patterns: references/validation-checklist.md section 8.
 
-**Common Issues:**
-- Missing assembly-level GUID (causes manifest type library registration failure)
-- ComVisible(false) at assembly level (breaks entire COM exposure)
+## Report Results
 
-**Fix:** Add the missing GUID attribute with a newly generated GUID.
+Present findings using the standard report structure (per-check PASS/FAIL checklists, summary counts, remediation steps). Read references/validation-output-template.md (in this skill's directory) for the exact template — it also includes check 3a (About() method with [DispId] plus a valid .env version file).
 
----
+## Remediation
 
-### 2. Main Interface (Methods Interface)
+For fixes and for migrating registry-based controls to RegFree COM (remove regasm/EnableComInterop/RegisterForComInterop, create manifests, add a CopyManifest MSBuild target, update CLAUDE.md), read references/remediation-patterns.md (in this skill's directory) for the full fix catalog, including the before/after constructor-pattern fix.
 
-**REQUIRED Attributes:**
-```csharp
-[ComVisible(true)]
-[Guid("UNIQUE-INTERFACE-GUID")]
-[InterfaceType(ComInterfaceType.InterfaceIsDual)]  // MUST be InterfaceIsDual
-public interface IYourControlMethods
-{
-    // Methods here
-}
-```
+## Deployment Check
 
-**Common Issues:**
-- Using `InterfaceIsIDispatch` instead of `InterfaceIsDual`
-  - Impact: Prevents early binding, reduces performance
-  - Fix: Change to `InterfaceIsDual`
-
-**Why InterfaceIsDual for Methods:**
-- Supports both early binding (vtable) and late binding (IDispatch)
-- Required for optimal Clarion integration
-- Provides type safety and IntelliSense support
-
----
-
-### 2a. Color Parameter Naming (IDE Integration)
-
-**REQUIRED for Clarion IDE color selector support:**
-
-Check that all color-related methods and properties include "color" in their name:
-
-```csharp
-// CORRECT
-void SetBackgroundColor(string hexColor);
-string TextColor { get; set; }
-
-// WRONG - Needs remediation
-void SetBackground(string hex);
-string Foreground { get; set; }
-```
-
-**Validation checklist:**
-- [ ] Methods accepting hex color strings include "color" in name
-- [ ] Properties storing color values include "color" in name
-
-**Remediation:** Rename method/property to include "color" (e.g., `SetBackground` → `SetBackgroundColor`)
-
----
-
-### 3. Event Interface
-
-**REQUIRED Attributes:**
-```csharp
-[ComVisible(true)]
-[Guid("UNIQUE-EVENT-GUID")]
-[InterfaceType(ComInterfaceType.InterfaceIsIDispatch)]  // MUST be InterfaceIsIDispatch
-public interface IYourControlEvents
-{
-    [DispId(1)]
-    void EventName(string param);
-
-    [DispId(2)]
-    void AnotherEvent();
-    // Sequential DispIds starting from 1
-}
-```
-
-**Common Issues:**
-- Using `InterfaceIsDual` for events (causes event registration failure)
-- Missing `[DispId(n)]` attributes on event methods
-- Non-sequential DispIds
-
-**Why InterfaceIsIDispatch for Events:**
-- COM event sinks use late binding exclusively
-- Dual interface causes marshaling problems for events
-- Clarion requires IDispatch for event handling
-
----
-
-### 4. Implementation Class
-
-**REQUIRED Attributes:**
-```csharp
-[ComVisible(true)]
-[Guid("UNIQUE-CLASS-GUID")]
-[ProgId("Namespace.ClassName")]
-[ClassInterface(ClassInterfaceType.None)]
-[ComSourceInterfaces(typeof(IYourControlEvents))]
-public class YourControl : UserControl, IYourControlMethods
-```
-
-**Common Issues:**
-- Missing `ClassInterface(ClassInterfaceType.None)` (creates auto-generated interface)
-- Missing `ComSourceInterfaces` (events not exposed)
-- Incorrect ProgId format
-
----
-
-### 5. Project Configuration (.csproj)
-
-**REQUIRED Settings for RegFree COM:**
-```xml
-<PropertyGroup>
-    <TargetFramework>net48</TargetFramework>      <!-- or net48 -->
-    <PlatformTarget>x86</PlatformTarget>          <!-- MUST be x86 for Clarion -->
-    <ComVisible>true</ComVisible>
-    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
-
-    <!-- RegFree COM - NO registry registration -->
-    <!-- Do NOT include EnableComInterop or RegisterForComInterop -->
-</PropertyGroup>
-```
-
-**Common Issues:**
-- `PlatformTarget` not x86 (Clarion is 32-bit)
-- `EnableComInterop` or `RegisterForComInterop` present (conflicts with RegFree)
-
----
-
-### 6. GUID Uniqueness
-
-**Requirements:**
-- Each project needs 4 unique GUIDs:
-  1. Assembly TypeLib GUID (AssemblyInfo.cs)
-  2. Main Interface GUID (IYourControl.cs)
-  3. Event Interface GUID (IYourControlEvents.cs)
-  4. Implementation Class GUID (YourControl.cs)
-
-**Validation:**
-- All 4 GUIDs must be different from each other
-- GUIDs must not be copied from other projects
-- Use `[guid]::NewGuid().ToString().ToUpper()` to generate
-
----
-
-### 7. Manifest File
-
-**REQUIRED for RegFree COM:**
-
-Each COM control needs a manifest file (`ControlName.manifest`):
-
-```xml
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-    <assemblyIdentity
-        type="win32"
-        name="AssemblyName"
-        version="1.0.0.0"
-        processorArchitecture="x86" />
-
-    <clrClass
-        clsid="{CLASS-GUID-HERE}"
-        progid="Namespace.ClassName"
-        threadingModel="Both"
-        name="Namespace.ClassName"
-        runtimeVersion="v4.0.30319">
-    </clrClass>
-
-    <file name="AssemblyName.dll">
-        <typelib
-            tlbid="{TYPELIB-GUID-HERE}"
-            version="1.0"
-            helpdir="" />
-    </file>
-</assembly>
-```
-
-**CRITICAL:** Must use `<clrClass>`, NOT `<comClass>`:
-- `<clrClass>` = .NET COM components (correct)
-- `<comClass>` = Native COM components (WRONG for .NET)
-
----
-
-### 8. Constructor Pattern (CRITICAL for OCX Creation)
-
-**REQUIRED Pattern:**
-```csharp
-public class YourControl : UserControl, IYourControlMethods
-{
-    private ElementHost _elementHost;
-    private YourWpfControl _wpfControl;
-
-    public YourControl()
-    {
-        // CONSTRUCTOR: Field initialization ONLY
-        // DO NOT create child controls here
-        // DO NOT call Controls.Add() here
-
-        this.SetStyle(ControlStyles.OptimizedDoubleBuffer |
-                      ControlStyles.UserPaint |
-                      ControlStyles.AllPaintingInWmPaint, true);
-        this.UpdateStyles();
-
-        this.Dock = DockStyle.Fill;
-        this.BackColor = System.Drawing.Color.White;
-    }
-
-    protected override void OnHandleCreated(EventArgs e)
-    {
-        base.OnHandleCreated(e);
-
-        if (!DesignMode)
-        {
-            // SAFE: Windows handle now exists
-            _elementHost = new ElementHost { Dock = DockStyle.Fill };
-            _wpfControl = new YourWpfControl();
-            _elementHost.Child = _wpfControl;
-
-            this.Controls.Add(_elementHost); // Safe here!
-
-            // Wire up events, load data, etc.
-        }
-    }
-}
-```
-
-**Common Issues (CRITICAL - Prevents OCX Creation):**
-```csharp
-// WRONG - This breaks COM/ActiveX control contract!
-public YourControl()
-{
-    _elementHost = new ElementHost { ... };      // ❌ NO!
-    _wpfControl = new YourWpfControl();          // ❌ NO!
-    this.Controls.Add(_elementHost);             // ❌ CRITICAL VIOLATION!
-    _repo.LoadAll();                             // ❌ NO data operations!
-}
-```
-
-**Why This Matters:**
-- COM containers (like Clarion) instantiate the control before the Windows handle exists
-- `Controls.Add()` in constructor fails because there's no handle to add to
-- This breaks the COM/ActiveX control contract
-- **Result:** Clarion cannot recognize it as a valid OCX object
-
-**Impact:** Control will NOT be recognized as an OCX by Clarion. The COM object creation will fail completely.
-
----
-
-## Migration from Registry-Based to RegFree COM
-
-### Step 1: Remove Registry Registration
-
-**Remove from build scripts:**
-- `regasm.exe /tlb /codebase` commands
-- Any `RegisterForComInterop` settings
-
-**Remove from .csproj:**
-```xml
-<!-- REMOVE these if present -->
-<EnableComInterop>true</EnableComInterop>
-<RegisterForComInterop>true</RegisterForComInterop>
-```
-
-### Step 2: Create Manifest Files
-
-For each COM control:
-1. Create `ControlName.manifest` in project root
-2. Use the `<clrClass>` template above
-3. Substitute GUIDs from source code:
-   - `clsid` = Class GUID from implementation
-   - `tlbid` = Assembly GUID from AssemblyInfo.cs
-   - `progid` = ProgId from class attribute
-   - `name` = Full class name (Namespace.ClassName)
-
-### Step 3: Update Build Process
-
-Add MSBuild target to copy manifest to output:
-```xml
-<Target Name="CopyManifest" AfterTargets="Build">
-    <Copy SourceFiles="$(ProjectDir)ControlName.manifest"
-          DestinationFolder="$(OutDir)" />
-</Target>
-```
-
-### Step 4: Update CLAUDE.md
-
-Remove all references to COM registration, regasm, or Administrator requirements.
-
----
-
-## Validation Report Format
-
-When validating a COM control, provide:
-
-```
-## COM Control Validation Report
-
-### Control: [ControlName]
-
-#### 1. Assembly Configuration
-- [ ] ComVisible(true) at assembly level
-- [ ] Assembly GUID present
-Status: [PASS/FAIL]
-
-#### 2. Main Interface ([InterfaceName])
-- [ ] ComVisible(true)
-- [ ] InterfaceType is InterfaceIsDual
-- [ ] Unique GUID
-Status: [PASS/FAIL]
-
-#### 3. Event Interface ([EventInterfaceName])
-- [ ] ComVisible(true)
-- [ ] InterfaceType is InterfaceIsIDispatch
-- [ ] All events have DispId
-- [ ] Sequential DispIds
-Status: [PASS/FAIL]
-
-#### 3a. About Method (Version Display)
-- [ ] About() method defined in interface with [DispId]
-- [ ] About() method implemented in class with [ComVisible(true)]
-- [ ] .env file exists with valid MAJOR_VERSION, MINOR_VERSION, BUILD_NUMBER (for projects being built)
-Status: [PASS/FAIL]
-
-#### 4. Implementation Class ([ClassName])
-- [ ] ComVisible(true)
-- [ ] ClassInterface(None)
-- [ ] ComSourceInterfaces present
-- [ ] ProgId format correct
-Status: [PASS/FAIL]
-
-#### 5. Project Configuration
-- [ ] PlatformTarget x86
-- [ ] No EnableComInterop
-- [ ] No RegisterForComInterop
-Status: [PASS/FAIL]
-
-#### 6. Manifest File
-- [ ] Manifest exists
-- [ ] Uses clrClass (not comClass)
-- [ ] GUIDs match source code
-Status: [PASS/FAIL]
-
-#### 7. Constructor Pattern (CRITICAL)
-- [ ] No Controls.Add() in constructor
-- [ ] No child control creation in constructor
-- [ ] Uses OnHandleCreated for control initialization
-- [ ] No data operations in constructor
-Status: [PASS/FAIL]
-
-### Summary
-Total Issues: [N]
-Critical: [N]
-Warnings: [N]
-
-### Remediation Steps
-1. [First fix needed]
-2. [Second fix needed]
-...
-```
-
----
-
-## Common Remediation Patterns
-
-### Fix: Missing Assembly GUID
-```csharp
-// Add to AssemblyInfo.cs
-[assembly: Guid("GENERATE-NEW-GUID-HERE")]
-```
-
-### Fix: Wrong Interface Type
-```csharp
-// Change from:
-[InterfaceType(ComInterfaceType.InterfaceIsIDispatch)]
-
-// To:
-[InterfaceType(ComInterfaceType.InterfaceIsDual)]
-```
-
-### Fix: Missing Manifest
-Create manifest file with correct `<clrClass>` element and all required GUIDs.
-
-### Fix: Registry-Based Build
-1. Remove regasm.exe calls from batch files
-2. Remove EnableComInterop/RegisterForComInterop from .csproj
-3. Add manifest copy target to .csproj
-
-### Fix: Constructor Pattern Violation (CRITICAL)
-
-Move child control creation from constructor to `OnHandleCreated`:
-
-**Before (BROKEN - prevents OCX creation):**
-```csharp
-public YourControl()
-{
-    // Basic setup is OK
-    this.Dock = DockStyle.Fill;
-
-    // WRONG - These break COM contract!
-    _elementHost = new ElementHost { Dock = DockStyle.Fill };
-    _wpfControl = new YourWpfControl();
-    _elementHost.Child = _wpfControl;
-    this.Controls.Add(_elementHost);
-    _repo.LoadAll();
-    WireUpEvents();
-}
-```
-
-**After (FIXED - Clarion can create OCX):**
-```csharp
-public YourControl()
-{
-    // Constructor: ONLY basic setup
-    this.SetStyle(ControlStyles.OptimizedDoubleBuffer |
-                  ControlStyles.UserPaint |
-                  ControlStyles.AllPaintingInWmPaint, true);
-    this.UpdateStyles();
-    this.Dock = DockStyle.Fill;
-    this.BackColor = System.Drawing.Color.White;
-}
-
-protected override void OnHandleCreated(EventArgs e)
-{
-    base.OnHandleCreated(e);
-
-    if (!DesignMode)
-    {
-        // NOW safe - handle exists
-        _elementHost = new ElementHost { Dock = DockStyle.Fill };
-        _wpfControl = new YourWpfControl();
-        _elementHost.Child = _wpfControl;
-        this.Controls.Add(_elementHost);
-        _repo.LoadAll();
-        WireUpEvents();
-    }
-}
-```
-
----
-
-## Integration with Other Skills
-
-This skill works with:
-- **clarioncom-control** - Reference for correct patterns
-- **clarioncom-build** - Build after remediation
-- **clarioncom-deploy** - Generate deployment artifacts after validation
-
-Typical workflow:
-1. User asks to validate/fix existing COM control
-2. **This skill validates and identifies issues**
-3. Apply fixes to source code
-4. clarioncom-build builds the fixed control
-5. clarioncom-deploy generates deployment files
-
----
+After remediation, verify the Clarion folder contents and file naming (DLL/manifest/header use assembly name; .details/.events/.methods use ProgID). Read references/deployment-and-metadata.md (in this skill's directory) for the required file list, naming examples, and the tagged .details/.events/.methods file formats.
 
 ## Quick Reference: Interface Types
 
@@ -511,92 +67,19 @@ Typical workflow:
 | `InterfaceIsIDispatch` | Events interface | Required for COM event sinks |
 | `ClassInterfaceType.None` | Implementation class | Prevents auto-generated interface |
 
----
+## Integration with Other Skills
 
-## Deployment Requirements
+- **clarioncom-control** - Reference for correct patterns
+- **clarioncom-build** - Build after remediation
+- **clarioncom-deploy** - Generate deployment artifacts after validation
 
-After validation and remediation, the Clarion folder should contain:
-- `AssemblyName.dll` - The COM control DLL
-- `AssemblyName.manifest` - RegFree COM registration
-- `AssemblyName.header` - Assembly header info (includes ClarionPath, DLL name, ProgIDs)
-- `ProgID.details` - Control metadata
-- `ProgID.methods` - Method definitions
-- `ProgID.events` - Event definitions
-- `readme_AssemblyName.html` - Usage documentation
+Typical workflow: user asks to validate/fix → **this skill validates and identifies issues** → apply fixes to source → clarioncom-build builds → clarioncom-deploy generates deployment files.
 
-**File Naming Convention:**
-- DLL, manifest, header use **assembly name**
-- Metadata files (.details, .events, .methods) use **ProgID**
+## References
 
-**Example for `InventoryGridControl.dll` with ProgID `InventoryGridControl.InventoryGridControl`:**
-- `InventoryGridControl.dll`
-- `InventoryGridControl.manifest`
-- `InventoryGridControl.header`
-- `InventoryGridControl.InventoryGridControl.details`
-- `InventoryGridControl.InventoryGridControl.events`
-- `InventoryGridControl.InventoryGridControl.methods`
-- `readme_InventoryGridControl.html`
+All in this skill's `references/` directory:
 
----
-
-## Metadata File Format (Tagged Structure)
-
-These files use a specific tagged format for Clarion template compatibility.
-
-### .details File Format
-```
-[FriendlyName]
-ControlName
-[ProgID]
-AssemblyName.ClassName
-[FilenameNoExtenstion]
-AssemblyName
-[Description]
-Human-readable description of the control
-[ObjectName]
-shortname
-```
-
-### .events File Format
-```
-[Event]
-EventName
-[EventDescription]
-Description of when this event fires
-[Parameter1]
-paramName
-[Parameter1Type]
-STRING
-[Parameter1Description]
-Description of the parameter
-[Parameter2]
-secondParam
-[Parameter2Type]
-LONG
-[Parameter2Description]
-Description of second parameter
-```
-
-Repeat the `[Event]` block for each event. Parameter types: `STRING`, `LONG`, `BYTE`, `SHORT`
-
-### .methods File Format
-```
-[Properties]
-[Methods]
-[Method]
-MethodName
-[MethodDescription]
-Description of what the method does
-[ReturnType]
-STRING
-[Parameter]
-paramName
-[ParameterType]
-STRING
-[ParameterDescription]
-Description of the parameter
-```
-
-- Start with `[Properties]` then `[Methods]`
-- Use `[ReturnType]` only for methods that return values
-- Repeat `[Parameter]`/`[ParameterType]`/`[ParameterDescription]` for each parameter
+- **validation-checklist.md** — Read when running the checks: full detail for all 8 checks (required attributes, common issues, manifest template, constructor pattern).
+- **validation-output-template.md** — Read when writing up results: the standard validation report template.
+- **remediation-patterns.md** — Read when fixing issues: common fix snippets and the registry-to-RegFree migration procedure.
+- **deployment-and-metadata.md** — Read when verifying deployment: required Clarion folder files, naming conventions, and .details/.events/.methods tagged formats.
