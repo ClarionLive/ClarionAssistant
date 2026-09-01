@@ -9,20 +9,19 @@ using ICSharpCode.TextEditor;
 
 namespace ClarionAssistant.Services
 {
-    public class InsertResult
-    {
-        public bool Success { get; set; }
-        public string ErrorMessage { get; set; }
-
-        public static InsertResult Succeeded() => new InsertResult { Success = true };
-        public static InsertResult Failed(string message) => new InsertResult { Success = false, ErrorMessage = message };
-    }
+    // InsertResult moved to Services\InsertResult.cs (ticket d051fbd1) so the standalone
+    // MCP server can use it without dragging this file's ICSharpCode imports along.
 
     /// <summary>
     /// Service to interact with the active text editor in the Clarion IDE.
     /// Uses reflection for version compatibility.
+    ///
+    /// Implements IEditorService so McpToolRegistry can depend on the interface rather than
+    /// this class. That is what lets the registry compile outside the addin — see
+    /// Services\IEditorService.cs. This class is and must remain IDE-coupled; the interface
+    /// is the seam, not a promise of portability.
     /// </summary>
-    public class EditorService
+    public class EditorService : IEditorService
     {
         /// <summary>
         /// Normalize line endings to CRLF. The Clarion IDE (and its window designer)

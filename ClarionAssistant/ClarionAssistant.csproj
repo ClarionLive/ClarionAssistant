@@ -92,6 +92,15 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="MonacoClarionSourceEditor.cs" />
+    <!-- Seam for the standalone MCP server (ticket d051fbd1). These four are SHARED with
+         mcp-server\ClarionMcpServer.csproj, which Compile-Include's them from here. They must
+         stay IDE-free: the whole point is that the registry can depend on them instead of on
+         EditorService / AssistantChatControl. NOTE this csproj hand-lists every source file
+         with no wildcard, so a new .cs is invisible to the build until it is added here. -->
+    <Compile Include="Services\InsertResult.cs" />
+    <Compile Include="Services\IEditorService.cs" />
+    <Compile Include="Services\IWorkspaceContext.cs" />
+    <Compile Include="Services\IUiDispatcher.cs" />
     <Compile Include="Services\IndexRunGate.cs" />
     <Compile Include="Services\IndexRunLog.cs" />
     <Compile Include="Services\DocumentOutlineBuilder.cs" />
