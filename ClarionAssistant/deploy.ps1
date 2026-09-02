@@ -73,6 +73,15 @@ $Versions = @{
 # addin — the developer ran the old indexer for a day while every verification pass showed
 # the new build "deployed and hash-verified" (in the four folders the script chose). A
 # machine with two installs of one version must get the addin in BOTH.
+#
+# The drive-root glob scan is the slow part — it walks every mounted filesystem drive
+# (including network shares) for every glob pattern. It only exists to catch an install at
+# a path NOT already covered by the registry or the known Fallbacks list — and the
+# 2026-08-13 incident itself was already covered by Fallbacks (C:\Clarion11-13372 is right
+# there in $Versions). So once registry+fallbacks have found at least one root, the scan is
+# redundant for the common case (an installed, registered Clarion) and was regressing every
+# `-Version all` deploy into an unconditional full-machine scan per version before any
+# output appeared. Only fall through to the scan when nothing was found yet.
 function Resolve-ClarionRoots {
     param(
         [string[]]$RegistryKeys,
@@ -106,12 +115,14 @@ function Resolve-ClarionRoots {
 
     foreach ($p in $Fallbacks) { Add-Root $p }
 
-    $drives = (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
-                Where-Object { Test-Path $_.Root }).Root
-    foreach ($drive in $drives) {
-        foreach ($pattern in $GlobPatterns) {
-            Get-ChildItem -Path $drive -Directory -Filter $pattern -ErrorAction SilentlyContinue |
-                ForEach-Object { Add-Root $_.FullName }
+    if ($found.Count -eq 0) {
+        $drives = (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
+                    Where-Object { Test-Path $_.Root }).Root
+        foreach ($drive in $drives) {
+            foreach ($pattern in $GlobPatterns) {
+                Get-ChildItem -Path $drive -Directory -Filter $pattern -ErrorAction SilentlyContinue |
+                    ForEach-Object { Add-Root $_.FullName }
+            }
         }
     }
 
