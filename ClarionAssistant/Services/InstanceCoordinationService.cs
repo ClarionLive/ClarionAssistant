@@ -187,7 +187,9 @@ namespace ClarionAssistant.Services
             {
                 using (var conn = OpenConnection())
                 {
-                    // Remove entries for processes that are no longer running
+                    // PASS 1 — timestamp-stale rows (no heartbeat in StaleSeconds). Existence alone is enough
+                    // here: a heartbeat that stopped this long ago means the owner either exited or is hung
+                    // badly enough that its own 10s timer no longer fires.
                     var stalePids = new List<int>();
                     using (var cmd = new SQLiteCommand(
                         "SELECT pid FROM instances WHERE heartbeat_at < datetime('now', '-' || @sec || ' seconds')", conn))
@@ -199,26 +201,54 @@ namespace ClarionAssistant.Services
                     }
 
                     foreach (int pid in stalePids)
-                    {
-                        // Double-check the process is actually dead
-                        bool alive = false;
-                        try { alive = Process.GetProcessById(pid) != null; }
-                        catch { /* process doesn't exist */ }
+                        if (!IsAliveAndResponding(pid)) DeleteInstance(conn, pid);
 
-                        if (!alive)
-                        {
-                            using (var cmd = new SQLiteCommand("DELETE FROM instances WHERE pid = @pid", conn))
-                            {
-                                cmd.Parameters.AddWithValue("@pid", pid);
-                                cmd.ExecuteNonQuery();
-                            }
-                        }
+                    // PASS 2 — GH #179 (2026-08-29 report): a Clarion.exe left hung inside a native modal can
+                    // keep pumping just enough of its own message loop for its WinForms heartbeat Timer to
+                    // keep firing, so its row NEVER goes stale by timestamp alone — it squats as a permanently
+                    // "live" peer, and every subsequent CheckProcedureConflict/GetPeers call from ANY instance
+                    // collides with a zombie that will never release anything, until the process is killed
+                    // (the user needed a full reboot). Sweep the fresh rows too: Process.Responding is cheap
+                    // for a genuinely responsive window and bounded even for a hung one (SendMessageTimeout).
+                    var freshPids = new List<int>();
+                    using (var cmd = new SQLiteCommand(
+                        "SELECT pid FROM instances WHERE pid != @pid AND heartbeat_at >= datetime('now', '-' || @sec || ' seconds')", conn))
+                    {
+                        cmd.Parameters.AddWithValue("@pid", _pid);
+                        cmd.Parameters.AddWithValue("@sec", StaleSeconds);
+                        using (var reader = cmd.ExecuteReader())
+                            while (reader.Read())
+                                freshPids.Add(reader.GetInt32(0));
                     }
+
+                    foreach (int pid in freshPids)
+                        if (!IsAliveAndResponding(pid)) DeleteInstance(conn, pid);
                 }
             }
             catch (Exception ex)
             {
                 Debug.WriteLine("[InstanceCoord] Cleanup error: " + ex.Message);
+            }
+        }
+
+        /// <summary>True only when a process with this PID exists AND its UI is answering — existence alone
+        /// (the old check) is also true for a hung-but-not-exited zombie.</summary>
+        private static bool IsAliveAndResponding(int pid)
+        {
+            try
+            {
+                using (var p = Process.GetProcessById(pid))
+                    return p.Responding;
+            }
+            catch { return false; }
+        }
+
+        private static void DeleteInstance(SQLiteConnection conn, int pid)
+        {
+            using (var cmd = new SQLiteCommand("DELETE FROM instances WHERE pid = @pid", conn))
+            {
+                cmd.Parameters.AddWithValue("@pid", pid);
+                cmd.ExecuteNonQuery();
             }
         }
 
