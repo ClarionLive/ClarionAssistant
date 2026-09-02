@@ -8,7 +8,11 @@
   },
   "mcpServers": {
     "clarion-tools": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/launcher/clarion-tools.cmd",
+      "command": "cmd",
+      "args": [
+        "/c",
+        "${CLAUDE_PLUGIN_ROOT}/launcher/clarion-tools.cmd"
+      ],
       "description": "Clarion code intelligence without the IDE: documentation search across SoftVelocity and installed third-party vendors, CodeGraph indexing and queries, LSP, dictionary and SQL schema tools, knowledge base, file and Everything search. Requires Clarion Assistant to be installed; the launcher locates the server inside your Clarion tree."
     }
   }
