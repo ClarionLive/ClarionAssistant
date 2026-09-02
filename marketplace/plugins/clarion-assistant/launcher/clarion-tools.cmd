@@ -21,31 +21,35 @@ REM ----------------------------------------------------------------------------
 set "EXE="
 set "REL=accessory\addins\ClarionAssistant\clarion-mcp-server.exe"
 
-REM 1. Paths the installer recorded, NEWEST FIRST - someone with both C11 and C12 wants C12.
-REM    Only configs the INSTALLER touched appear here; a developer who deployed by script will
-REM    have no entry, which is what the probe below covers.
+REM 1. An explicit override, checked FIRST.
+REM    A Clarion solution does NOT record which Clarion product version it targets - the .sln
+REM    carries only a build-system version and the .cwproj resolves $(ClarionBinPath) from the
+REM    environment. The association is "whichever IDE you opened it in", which a standalone server
+REM    does not have. So every automatic choice below is a HEURISTIC, and anyone with more than one
+REM    Clarion installed needs a way to say which they mean. It is checked first precisely because
+REM    an explicit statement should beat a guess - the opposite of where it used to sit.
+if defined CLARION_MCP_SERVER (
+  if exist "%CLARION_MCP_SERVER%" set "EXE=%CLARION_MCP_SERVER%"
+)
+
+REM 2. Otherwise take the NEWEST Clarion that has the server, considering the installer's recorded
+REM    paths and the conventional roots TOGETHER, newest first.
+REM
+REM    The order used to be "all recorded paths, then all conventional roots", which let an
+REM    INCOMPLETE registry outrank a newer real install: the registry is written only by the
+REM    installer, so a developer who deployed by script has no entry for that version. On a machine
+REM    with C12 deployed by script and C11 by the installer, the C11 entry won and every redirection
+REM    lookup resolved against the wrong Clarion tree - for a C12 solution. Checking each VERSION
+REM    across both sources fixes that: a recorded path still wins for the SAME version, but never
+REM    over a newer one that is plainly installed.
 for %%V in (Clarion12 Clarion11.1 Clarion11 Clarion10) do (
   if not defined EXE (
     for /f "tokens=2,*" %%A in ('reg query "HKCU\Software\ClarionAssistant\InstallPaths" /v "%%V" 2^>nul ^| findstr /i "REG_SZ"') do (
       if exist "%%B\!REL!" set "EXE=%%B\!REL!"
     )
   )
-)
-
-REM 2. Conventional install roots, same order. Covers a script-deployed addin and a first run
-REM    before the installer has ever written its registry record.
-for %%R in ("C:\Clarion12" "C:\Clarion11.1" "C:\Clarion11" "C:\Clarion10") do (
   if not defined EXE (
-    if exist "%%~R\!REL!" set "EXE=%%~R\!REL!"
-  )
-)
-
-REM 3. An explicit override, for a Clarion installed somewhere unusual. Deliberately checked LAST
-REM    so it cannot silently shadow a real install during normal use - if you set it, you meant it,
-REM    and you will have set it precisely because the steps above found nothing.
-if not defined EXE (
-  if defined CLARION_MCP_SERVER (
-    if exist "%CLARION_MCP_SERVER%" set "EXE=%CLARION_MCP_SERVER%"
+    if exist "C:\%%V\!REL!" set "EXE=C:\%%V\!REL!"
   )
 )
 
