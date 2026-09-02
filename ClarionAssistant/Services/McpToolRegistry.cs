@@ -3262,7 +3262,7 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "add_knowledge",
-                Description = "Save a reusable insight to the Clarion Assistant's knowledge base. Categories: decision, pattern, gotcha, anti_pattern, debug_insight, preference. Knowledge persists across sessions and is auto-injected at startup ranked by usage.",
+                Description = "Save a reusable insight to the Clarion Assistant's knowledge base. Categories: decision, pattern, gotcha, anti_pattern, debug_insight, preference. Knowledge persists across sessions and is auto-injected at startup ranked by usage. Returns the new entry's id; if this entry corrects an earlier one, pass that id to supersede_knowledge so the wrong one stops being injected.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
@@ -3291,7 +3291,9 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "query_knowledge",
-                Description = "Search the Clarion Assistant's knowledge base for decisions, patterns, gotchas, and insights. Uses full-text search. Returns matching entries ranked by relevance.",
+                Description = "Search the Clarion Assistant's knowledge base for decisions, patterns, gotchas, and insights. " +
+                              "Uses full-text search. Returns matching entries ranked by relevance, each prefixed with its " +
+                              "id — pass that id to supersede_knowledge or remove_knowledge when an entry turns out to be wrong.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
@@ -3317,12 +3319,100 @@ IdeOnly = true,
                     {
                         string preview = e.Content != null && e.Content.Length > 300
                             ? e.Content.Substring(0, 300) + "..." : e.Content ?? "";
-                        sb.AppendLine(string.Format("- [{0}] {1}", e.Category, e.Title));
+                        // The id leads the line because it is the only handle the retract/supersede
+                        // tools accept — without it a caller can read that an entry is wrong and
+                        // still have no way to name it.
+                        sb.AppendLine(string.Format("- #{0} [{1}] {2}", e.Id, e.Category, e.Title));
                         sb.AppendLine("  " + preview);
                         if (e.Tags != null) sb.AppendLine("  Tags: " + e.Tags);
                         sb.AppendLine();
                     }
                     return sb.ToString().TrimEnd();
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "supersede_knowledge",
+                Description = "Retire a knowledge entry that turned out to be WRONG so it stops surfacing in " +
+                              "query_knowledge and in the startup injection. Get the id from query_knowledge. " +
+                              "Pass superseded_by with the id of the entry that replaces it (add_knowledge returns " +
+                              "the new id) to record the correction, or omit it for a plain retraction. The row is " +
+                              "kept, not deleted, so the record of what was once believed survives — prefer this " +
+                              "over remove_knowledge. Without it a wrong entry can only be contradicted by a newer " +
+                              "one and both keep being injected, leaving the reader to work out which is current.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "id", "Id of the entry to retire, as shown by query_knowledge (required)" },
+                        { "superseded_by", "Id of the entry that replaces it (optional; omit for a plain retraction)" }
+                    },
+                    new[] { "id" }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    if (_knowledgeService == null) return "Knowledge service not initialized.";
+                    int id = McpJsonRpc.GetInt(args, "id", 0);
+                    if (id <= 0) return "Error: id is required and must be > 0.";
+
+                    var entry = _knowledgeService.GetEntry(id);
+                    if (entry == null) return string.Format("No knowledge entry with id {0}.", id);
+
+                    int by = McpJsonRpc.GetInt(args, "superseded_by", KnowledgeService.RetractedNoReplacement);
+                    if (by == id)
+                        return "Error: an entry cannot supersede itself. Omit superseded_by to retract it outright.";
+                    if (by != KnowledgeService.RetractedNoReplacement)
+                    {
+                        // Validate the replacement exists: pointing at a missing id would hide the old
+                        // entry behind a reference that leads nowhere, which is worse than leaving it.
+                        var replacement = _knowledgeService.GetEntry(by);
+                        if (replacement == null)
+                            return string.Format(
+                                "No knowledge entry with id {0} to supersede #{1} with. Add the corrected entry " +
+                                "first, then pass its id.", by, id);
+                    }
+
+                    if (!_knowledgeService.SupersedeEntry(id, by))
+                        return string.Format("Could not retire entry #{0}.", id);
+
+                    return by == KnowledgeService.RetractedNoReplacement
+                        ? string.Format("Retired #{0} [{1}] {2} — it will no longer be returned or injected.",
+                            id, entry.Category, entry.Title)
+                        : string.Format("Retired #{0} [{1}] {2}, superseded by #{3}.",
+                            id, entry.Category, entry.Title, by);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "remove_knowledge",
+                Description = "PERMANENTLY delete a knowledge entry and its search-index row. Get the id from " +
+                              "query_knowledge. Use this only for entries that should leave no trace (a duplicate, " +
+                              "something saved by mistake, anything that shouldn't have been recorded); to retire an " +
+                              "entry that was simply wrong, use supersede_knowledge instead so the correction stays " +
+                              "on the record. Cannot be undone.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "id", "Id of the entry to delete, as shown by query_knowledge (required)" }
+                    },
+                    new[] { "id" }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    if (_knowledgeService == null) return "Knowledge service not initialized.";
+                    int id = McpJsonRpc.GetInt(args, "id", 0);
+                    if (id <= 0) return "Error: id is required and must be > 0.";
+
+                    // Read it first so the response can name what was destroyed — a deletion the caller
+                    // can't see the title of is a deletion they can't tell was the wrong one.
+                    var entry = _knowledgeService.GetEntry(id);
+                    if (entry == null) return string.Format("No knowledge entry with id {0}.", id);
+
+                    if (!_knowledgeService.DeleteEntry(id))
+                        return string.Format("Could not delete entry #{0}.", id);
+
+                    return string.Format("Deleted #{0} [{1}] {2}.", id, entry.Category, entry.Title);
                 }
             });
 
