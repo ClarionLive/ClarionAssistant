@@ -116,8 +116,13 @@ function Resolve-ClarionRoots {
     foreach ($p in $Fallbacks) { Add-Root $p }
 
     if ($found.Count -eq 0) {
-        $drives = (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
-                    Where-Object { Test-Path $_.Root }).Root
+        # Fixed local drives only. A Clarion install that's neither registered (registry) nor
+        # at a known path (Fallbacks) and lives ONLY on a network share isn't a realistic case —
+        # COM registration and templates need a local, registered install to actually work — and
+        # network shares are what makes this scan slow (SMB round-trips per drive per pattern).
+        $drives = [System.IO.DriveInfo]::GetDrives() |
+                    Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady } |
+                    ForEach-Object { $_.RootDirectory.FullName }
         foreach ($drive in $drives) {
             foreach ($pattern in $GlobPatterns) {
                 Get-ChildItem -Path $drive -Directory -Filter $pattern -ErrorAction SilentlyContinue |
