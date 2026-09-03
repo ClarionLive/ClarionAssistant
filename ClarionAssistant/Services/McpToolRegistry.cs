@@ -4178,10 +4178,31 @@ IdeOnly = true,
                     string dbPath = SchemaGraphService.GetDbPathForDictionary(dict);
                     if (File.Exists(dbPath))
                     {
+                        // RIGHT DICTIONARY, WRONG VINTAGE. The db is built from a .dctx EXPORT; the
+                        // app binds the .dct. On CC's machine the export was three months older than
+                        // the .dct and 9 tables adrift, and this label named the correct dictionary
+                        // with full confidence. The vintage that matters is the .dctx's write time
+                        // (the db's own time is merely when it was ingested - a db built today from
+                        // an April export would look fresh). Compare the .dct against the .dctx
+                        // beside it when there is one, else against the db. A stat, not a query.
+                        string vintage = "";
+                        try
+                        {
+                            DateTime dctTime = File.GetLastWriteTime(dict);
+                            string dctx = Path.ChangeExtension(dict, ".dctx");
+                            bool haveDctx = File.Exists(dctx);
+                            DateTime sourceTime = haveDctx ? File.GetLastWriteTime(dctx) : File.GetLastWriteTime(dbPath);
+                            if (dctTime > sourceTime.AddMinutes(1))
+                                vintage = " - WARNING: " + Path.GetFileName(dict) + " changed " + dctTime.ToString("yyyy-MM-dd")
+                                        + " but " + (haveDctx ? "the .dctx it was ingested from is " : "this db was built ")
+                                        + sourceTime.ToString("yyyy-MM-dd")
+                                        + "; export a fresh .dctx and re-run ingest_schema, or the answer may be out of date";
+                        }
+                        catch { }
                         tier = "last inspected app's dictionary " + Path.GetFileName(dict)
                              + " (app " + Path.GetFileName(known.App ?? "?")
                              + (known.Detail != null ? ", " + known.Detail : "")
-                             + " - call get_app_info to confirm it is still the open app)";
+                             + " - call get_app_info to confirm it is still the open app)" + vintage;
                         return dbPath;
                     }
                     noDbNote = "; NOTE the last inspected app's dictionary " + Path.GetFileName(dict)
