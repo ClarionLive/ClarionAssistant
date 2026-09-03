@@ -727,8 +727,12 @@ IdeOnly = true,
 
                     string filter = McpJsonRpc.GetString(args, "table", "").Trim();
                     string detailArg = McpJsonRpc.GetString(args, "detail", "").Trim();
-                    bool detailExplicit = detailArg.Length > 0;
                     bool full = string.Equals(detailArg, "full", StringComparison.OrdinalIgnoreCase);
+                    // Only a RECOGNISED value counts as explicit; "ful" must not silently mean summary.
+                    bool detailExplicit = full || string.Equals(detailArg, "summary", StringComparison.OrdinalIgnoreCase);
+                    string detailHint = detailArg.Length > 0 && !detailExplicit
+                        ? "detail='" + detailArg + "' is not recognised (accepted: summary, full) - the default was used"
+                        : null;
 
                     var tables = _appTree.ReadLiveDictionaryTables() ?? new List<ClarionAppDataReader.TableDef>();
                     var result = new Dictionary<string, object>
@@ -773,6 +777,7 @@ IdeOnly = true,
                             result["hint"] = "Listing only (name contains '" + filter + "'). Re-query with table=<exact name> for its fields, keys and relations.";
                     }
                     result["detail"] = full ? "full" : "summary";
+                    if (detailHint != null) result["detailHint"] = detailHint;
 
                     var rows = new List<Dictionary<string, object>>();
                     foreach (var t in selected) rows.Add(ShapeLiveTable(t, full));
@@ -3783,8 +3788,17 @@ IdeOnly = true,
             {
                 return "SchemaGraph db: " + Path + "  [chosen by: " + Tier + "]\n" + result;
             }
+            /// <summary>The not-found reply. Service is null; Tier then carries the miss note (which
+            /// .dctx to ingest), if FindSchemaGraphDb had one.</summary>
+            public string NotFoundMessage()
+            {
+                return "Error: SchemaGraph database not found"
+                     + (string.IsNullOrEmpty(Tier) ? "" : " - " + Tier)
+                     + ". Run ingest_schema first or provide db_path.";
+            }
         }
 
+        // Never null: when no database is found, Service is null and Tier carries the reason.
         private SchemaDb GetSchemaGraph(Dictionary<string, object> args)
         {
             string tier;
@@ -3794,7 +3808,7 @@ IdeOnly = true,
             else
                 dbPath = FindSchemaGraphDb(out tier);
             if (string.IsNullOrEmpty(dbPath))
-                return null;
+                return new SchemaDb { Service = null, Path = null, Tier = tier };
             return new SchemaDb { Service = new SchemaGraphService(dbPath), Path = dbPath, Tier = tier };
         }
 
@@ -3816,22 +3830,35 @@ IdeOnly = true,
         /// and stamped "open app's dictionary" - close app A, open B, and B's schema questions were
         /// answered from A with a confident provenance line. The exact class of lie this ticket exists to remove.
         /// </summary>
-        public static string LastKnownDictionaryPath { get; private set; }
-        public static string LastKnownDictionaryApp { get; private set; }
+        // ONE immutable snapshot behind ONE reference. Path and app were two statics assigned one
+        // after the other; an off-thread reader between the two writes paired A's dictionary with
+        // B's app name in the label - a binding that never existed, and "call get_app_info to
+        // confirm" would then confirm B (pipeline run 2, adversary + debugger). A reference write
+        // is atomic; readers take the snapshot once.
+        private sealed class KnownDictionary
+        {
+            public readonly string Path;
+            public readonly string App;
+            public KnownDictionary(string path, string app) { Path = path; App = app; }
+        }
+        private static KnownDictionary _knownDictionary;
+
+        public static string LastKnownDictionaryPath { get { var k = _knownDictionary; return k == null ? null : k.Path; } }
+        public static string LastKnownDictionaryApp  { get { var k = _knownDictionary; return k == null ? null : k.App; } }
 
         private static void RememberDictionaryPath(Dictionary<string, object> appInfo)
         {
             object p, a;
             string path = appInfo != null && appInfo.TryGetValue("dictionaryPath", out p) ? p as string : null;
             string app = appInfo != null && appInfo.TryGetValue("fileName", out a) ? a as string : null;
-            LastKnownDictionaryPath = string.IsNullOrEmpty(path) ? null : path;   // dictionary-less app clears it
-            LastKnownDictionaryApp = string.IsNullOrEmpty(app) ? null : app;
+            // A dictionary-less app clears the snapshot rather than preserving its predecessor's.
+            _knownDictionary = string.IsNullOrEmpty(path) ? null
+                : new KnownDictionary(path, string.IsNullOrEmpty(app) ? null : app);
         }
 
         private static void ForgetDictionaryPath()
         {
-            LastKnownDictionaryPath = null;
-            LastKnownDictionaryApp = null;
+            _knownDictionary = null;
         }
 
         // "The open app" has no answer when two or more apps are open and the focused tab is not an
@@ -3972,14 +3999,15 @@ IdeOnly = true,
             string noDbNote = null;
             try
             {
-                string dict = LastKnownDictionaryPath;
+                var known = _knownDictionary;          // one read: path and app from the same snapshot
+                string dict = known == null ? null : known.Path;
                 if (!string.IsNullOrEmpty(dict))
                 {
                     string dbPath = SchemaGraphService.GetDbPathForDictionary(dict);
                     if (File.Exists(dbPath))
                     {
                         tier = "last inspected app's dictionary " + Path.GetFileName(dict)
-                             + " (app " + Path.GetFileName(LastKnownDictionaryApp ?? "?")
+                             + " (app " + Path.GetFileName(known.App ?? "?")
                              + " - call get_app_info to confirm it is still the open app)";
                         return dbPath;
                     }
@@ -4077,6 +4105,9 @@ IdeOnly = true,
                 }
             }
 
+            // Every tier missed. The one thing the caller can act on is WHICH .dctx to ingest - carry
+            // the note out on the tier so the not-found message can name it (pipeline run 2, debugger).
+            tier = noDbNote == null ? null : noDbNote.TrimStart(';', ' ');
             return null;
         }
 
@@ -4161,9 +4192,9 @@ IdeOnly = true,
                         return "Error: sql parameter is required";
 
                     var db = GetSchemaGraph(args);
-                    var service = db?.Service;
+                    var service = db.Service;
                     if (service == null)
-                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+                        return db.NotFoundMessage();
 
                     return db.Stamp(service.ExecuteQuery(sql));
                 }
@@ -4187,9 +4218,9 @@ IdeOnly = true,
                         return "Error: pattern is required";
 
                     var db = GetSchemaGraph(args);
-                    var service = db?.Service;
+                    var service = db.Service;
                     if (service == null)
-                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+                        return db.NotFoundMessage();
 
                     int limit = McpJsonRpc.GetInt(args, "limit", 50);
                     return db.Stamp(service.SearchTables(pattern, limit));
@@ -4213,9 +4244,9 @@ IdeOnly = true,
                         return "Error: name is required";
 
                     var db = GetSchemaGraph(args);
-                    var service = db?.Service;
+                    var service = db.Service;
                     if (service == null)
-                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+                        return db.NotFoundMessage();
 
                     return db.Stamp(service.GetTable(name));
                 }
@@ -4239,9 +4270,9 @@ IdeOnly = true,
                         return "Error: pattern is required";
 
                     var db = GetSchemaGraph(args);
-                    var service = db?.Service;
+                    var service = db.Service;
                     if (service == null)
-                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+                        return db.NotFoundMessage();
 
                     int limit = McpJsonRpc.GetInt(args, "limit", 100);
                     return db.Stamp(service.SearchColumns(pattern, limit));
@@ -4265,9 +4296,9 @@ IdeOnly = true,
                         return "Error: table is required";
 
                     var db = GetSchemaGraph(args);
-                    var service = db?.Service;
+                    var service = db.Service;
                     if (service == null)
-                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+                        return db.NotFoundMessage();
 
                     return db.Stamp(service.GetRelationships(table));
                 }
@@ -4290,9 +4321,9 @@ IdeOnly = true,
                         return "Error: names is required";
 
                     var db = GetSchemaGraph(args);
-                    var service = db?.Service;
+                    var service = db.Service;
                     if (service == null)
-                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+                        return db.NotFoundMessage();
 
                     return db.Stamp(service.ValidateNames(names));
                 }
@@ -4310,9 +4341,9 @@ IdeOnly = true,
                 Handler = args =>
                 {
                     var db = GetSchemaGraph(args);
-                    var service = db?.Service;
+                    var service = db.Service;
                     if (service == null)
-                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+                        return db.NotFoundMessage();
 
                     return db.Stamp(service.GetStats());
                 }
