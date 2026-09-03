@@ -162,6 +162,9 @@
     <Compile Include="..\Services\IWorkspaceContext.cs"><Link>Services\IWorkspaceContext.cs</Link></Compile>
     <Compile Include="..\Services\IUiDispatcher.cs"><Link>Services\IUiDispatcher.cs</Link></Compile>
     <Compile Include="..\Services\IAppTreeService.cs"><Link>Services\IAppTreeService.cs</Link></Compile>
+    <!-- The dictionary DTOs IAppTreeService.ReadLiveDictionaryTables names (GitHub #210). The MODEL
+         half of ClarionAppDataReader only - the reader itself names AppTreeService and stays out. -->
+    <Compile Include="..\Services\ClarionAppDataReader.Model.cs"><Link>Services\ClarionAppDataReader.Model.cs</Link></Compile>
     <Compile Include="..\Services\IDiffService.cs"><Link>Services\IDiffService.cs</Link></Compile>
     <!-- The INTERFACE only. Services\IdeProbeService.cs, which implements it, is deliberately
          NOT linked: it names IdeReflectionService, NativeProbeService and

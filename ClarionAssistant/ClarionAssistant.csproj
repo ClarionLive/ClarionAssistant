@@ -191,6 +191,7 @@
     <Compile Include="Terminal\VsCodeImportBridge.cs" />
     <Compile Include="Services\ModernEmbeditorState.cs" />
     <Compile Include="Services\ClarionAppDataReader.cs" />
+    <Compile Include="Services\ClarionAppDataReader.Model.cs" />
     <Compile Include="Services\StructureDesignerService.cs" />
     <Compile Include="Services\FieldDropService.cs" />
     <Compile Include="Services\DefaultStructuresReader.cs" />

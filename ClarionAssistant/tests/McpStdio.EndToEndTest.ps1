@@ -143,7 +143,7 @@ if ($parsed.Count -ge 2) {
     foreach ($wanted in @('query_docs', 'lsp_find_symbol', 'query_knowledge', 'read_file')) {
         Assert-That ($names -contains $wanted) "expected tool '$wanted' to be advertised"
     }
-    Report-Block $blockStart "57 tools advertised; IDE-only withheld, agnostic present"
+    Report-Block $blockStart "$toolCount tools advertised; IDE-only withheld, agnostic present"
 }
 
 # The notification must NOT have been answered — 3 frames for 4 inputs proves it.

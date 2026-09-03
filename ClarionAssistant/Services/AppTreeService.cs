@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -212,14 +213,48 @@ namespace ClarionAssistant.Services
             var app = GetAppObject();
             if (app == null) return null;
 
+            // dictionaryPath/dictionaryName: GitHub #210. Kevin's "compare ITEM and ITEMSERVICE" went to a
+            // stale .dctx from another project because nothing could tell the assistant WHICH dictionary the
+            // open app uses. It is one property away from the object this method already holds.
+            string dictPath = GetAppDictionaryPath();
             return new Dictionary<string, object>
             {
                 { "name", GetProp(app, "Name")?.ToString() ?? "" },
                 { "fileName", GetProp(app, "FileName")?.ToString() ?? "" },
                 { "isLoaded", GetProp(app, "IsLoaded") },
                 { "targetType", GetProp(app, "TargetType")?.ToString() ?? "" },
-                { "language", GetProp(app, "Language")?.ToString() ?? "" }
+                { "language", GetProp(app, "Language")?.ToString() ?? "" },
+                { "dictionaryPath", dictPath },
+                { "dictionaryName", string.IsNullOrEmpty(dictPath) ? null : Path.GetFileNameWithoutExtension(dictPath) }
             };
+        }
+
+        /// <summary>
+        /// Path of the dictionary the open app is bound to, or null. The dictionary object under the app view is
+        /// SoftVelocity.DataDictionary.DDDataDictionary (Generator.dll: ApplicationMainWindowControl_ViewContent
+        /// .FileSchema -> FileSchema.DataDictionary), and its <c>FileName</c> is the .dct path - established by
+        /// reflection-only load of the Clarion 12 assemblies, not guessed. FileSchema also carries a second
+        /// <c>SchemaDataDictionary</c>; we read <c>DataDictionary</c> because that is the one
+        /// <see cref="ReadLiveDictionaryTables"/> walks, so the path and the tables always describe the same dictionary.
+        /// UI thread. The registry caches the result (McpToolRegistry.LastKnownDictionaryPath) for its
+        /// off-thread schema-db lookup; this method itself keeps no state.
+        /// </summary>
+        public string GetAppDictionaryPath()
+        {
+            try
+            {
+                var fs = GetAppFileSchema();
+                if (fs == null) return null;
+                var dict = GetProp(fs, "DataDictionary");
+                if (dict == null) return null;
+                string path = (GetProp(dict, "FileName") ?? "").ToString();
+                return string.IsNullOrEmpty(path) ? null : path;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[AppTree] GetAppDictionaryPath: " + ex.Message);
+                return null;
+            }
         }
 
         /// <summary>

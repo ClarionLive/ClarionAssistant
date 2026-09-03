@@ -70,11 +70,18 @@ There is a new **`clarion-mcp-server`**: the editor-agnostic half of Clarion Ass
 clarion-mcp-server --stdio --solution C:\Path\To\Your.sln
 ```
 
-It serves **57 of the 115 tools**: the documentation search across SoftVelocity and every third-party vendor you have installed, the knowledge base, the LSP tools, the dictionary and SQL schema tools, CodeGraph indexing and queries, file and Everything search, and Clarion class analysis. Indexing works fully &mdash; it reads your `.red` redirection file the way the compiler does, so a solution with one hand-written source file still indexes the ABC library behind it.
+It serves **59 of the 116 tools**: the documentation search across SoftVelocity and every third-party vendor you have installed, the knowledge base, the LSP tools, the dictionary and SQL schema tools, CodeGraph indexing and queries, file and Everything search, and Clarion class analysis. Indexing works fully &mdash; it reads your `.red` redirection file the way the compiler does, so a solution with one hand-written source file still indexes the ABC library behind it.
 
-The other **58 are withheld on purpose**, because they drive the IDE itself: opening files in the editor, the app tree, the embeditor, the designer. An MCP client reads the tool list as a promise about what it can do, so a tool that could only ever fail is worse than one that is honestly absent. The addin is unchanged and still offers all 115.
+The other **57 are withheld on purpose**, because they drive the IDE itself: opening files in the editor, the app tree, the embeditor, the designer. An MCP client reads the tool list as a promise about what it can do, so a tool that could only ever fail is worse than one that is honestly absent. The addin is unchanged and still offers all 116.
 
 **Both can be running at once.** If your IDE and a standalone server both index the same solution, they no longer collide: a full re-index wipes the database before rebuilding it, so two overlapping runs used to be able to destroy each other's work and leave a graph pointing at code that had been deleted from it. Whichever starts second is now turned away, and told which process holds the database. A run whose process is killed &mdash; a deploy, a crash, Task Manager &mdash; releases immediately and leaves nothing stale behind.
+
+<!-- release-docs: covered=mcp,schemagraph -->
+### The assistant now knows which dictionary your app uses ([#210](https://github.com/ClarionLive/ClarionAssistant/issues/210))
+
+Ask *"compare the table definition for ITEM and ITEMSERVICE"* and the assistant used to go looking &mdash; through old SQL scripts, then through whatever `.dctx` it could find on disk, which for the reporter was a stale one from a different project. It had no better option: **nothing told it which dictionary the open app is bound to**, and the schema tools picked their database by scanning the solution folder and taking the first `.schemagraph.db` the filesystem listed. Unordered, silent, and wrong often enough.
+
+Two things change. **`get_app_info` now returns the dictionary path** straight from the app's Global Properties, and a new **`get_app_dictionary`** reads that dictionary *live* from the IDE &mdash; tables, prefixes, drivers, and per table its fields, keys and relationships &mdash; with no export and no ingest, so it can never be stale. The comparison above is now one call. The SchemaGraph tools look at the open app's own dictionary database first, and **every schema answer now says which database it came from and why it was chosen**, so a wrong pick is visible instead of confidently wrong.
 
 <!-- release-docs: covered=lsp -->
 ### The bundled language server now actually starts
@@ -441,10 +448,11 @@ Clarion Assistant exposes **108 MCP tools** that Claude uses to interact with th
 | `show_diff` | Show a side-by-side diff in the Monaco viewer |
 | `get_diff_result` | Get approval/notes from the diff viewer |
 
-### Application Tree & Embeditor (21 tools)
+### Application Tree & Embeditor (22 tools)
 | Tool | Description |
 |---|---|
-| `get_app_info` | Get info about the currently open app |
+| `get_app_info` | Get info about the currently open app, including the dictionary it is bound to |
+| `get_app_dictionary` | Read the open app's dictionary live — tables, prefixes, fields, keys, relationships — with no export or ingest |
 | `list_procedures` | List all procedures in the open app |
 | `get_procedure_details` | Get detailed procedure info (prototype, module, template) |
 | `select_procedure` | Select a procedure in the app tree |

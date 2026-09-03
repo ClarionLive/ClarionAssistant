@@ -32,7 +32,7 @@ registered. The user needs to know, because the difference in what you can do is
 | Where is this symbol defined / who calls it, across the whole solution | `query_codegraph` (SQL) |
 | Same question, but the file was edited this session | `lsp_definition` / `lsp_references` / `lsp_hover` |
 | How do I use this third-party template or class | `query_docs` |
-| What tables/columns/keys does the dictionary define | `query_schema`, `get_table`, `search_tables` |
+| What tables/columns/keys does the dictionary define | `query_schema`, `get_table`, `search_tables` — every result names the `.schemagraph.db` it read and how it was chosen; if that is not THIS project's dictionary, `ingest_schema` the right `.dctx` first |
 | Did my edit compile | `lsp_diagnostics` |
 | Something I learned that should outlive this session | `add_knowledge` / `query_knowledge` |
 

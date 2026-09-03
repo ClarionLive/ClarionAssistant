@@ -34,7 +34,8 @@ You have MCP tools that directly control the IDE the developer is using. ALWAYS 
 
 ### Application Tree (Clarion .app files)
 - **To open a .app file, use `open_file` with the .app path** — it loads the app into the IDE app tree (same underlying call). There is no separate `open_app` tool; it was removed deliberately, and closing apps stays manual. An app must be loaded before listing procedures.
-- `get_app_info` -Get info about the currently open app (name, file, target type).
+- `get_app_info` -Get info about the currently open app (name, file, target type, and `dictionaryPath`/`dictionaryName` — the dictionary the app is bound to, from its Global Properties). This is THE answer to "which dictionary does this project use"; never guess it from .dct/.dctx files found on disk.
+- `get_app_dictionary` -Read the open app's dictionary LIVE from the IDE: tables (name, prefix, driver, file) and per table its fields, keys and relationships. Always current — no .dctx export, no ingest. USE THIS FIRST for any question about the current project's tables or columns ("what fields does ITEM have", "compare ITEM and ITEMSERVICE", "which table has prefix CUS"). `table=` (name or prefix) returns full detail for one table; `detail='full'` returns everything (large on big dictionaries).
 - `list_procedures` -List all procedure names in the open app.
 - `get_procedure_details` -Get detailed procedure info (name, prototype, module, parent, template).
 - `open_procedure_embed` -Open the embeditor for a specific procedure.
@@ -131,6 +132,7 @@ Use `query_codegraph` when the developer asks:
 IMPORTANT: Use `query_codegraph` for cross-file and cross-project questions. Use `analyze_class` for detailed single-file CLASS parsing. After finding a symbol with query_codegraph, use `open_file` with the file_path and line_number to navigate the developer there.
 
 ### SchemaGraph - Database Schema Intelligence
+SchemaGraph is the INGESTED copy of a schema (a .dctx or a SQL database), queryable with SQL. For the CURRENT project's dictionary, `get_app_dictionary` is live and needs no ingest — reach for SchemaGraph when you need SQL over the schema, a SQL Server schema, or a dictionary that is not the open app's. Every schema read prefixes its result with `SchemaGraph db: <path> [chosen by: <tier>]` — read that line: a db "chosen by: first .schemagraph.db found scanning the solution tree" may be ANOTHER project's dictionary. If it is not the open app's (`get_app_info` → `dictionaryPath`), say so and ingest the right one rather than answering from it.
 - `ingest_schema` -Ingest a Clarion dictionary (.dctx) into a SchemaGraph database (.schemagraph.db alongside the dictionary).
 - `ingest_sql_database` -Ingest schema from a SQL Server database (tables, columns, keys, relationships, procs, functions, views). Merges with existing .dctx data by default.
 - `query_schema` -Read-only SQL against a SchemaGraph database. Tables: tables, columns, keys, key_columns, relationships, relationship_mappings, procedures, procedure_params, views, view_references, schema_fts, schema_metadata.

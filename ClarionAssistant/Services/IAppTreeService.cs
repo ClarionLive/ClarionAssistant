@@ -26,6 +26,22 @@ namespace ClarionAssistant.Services
     {
         // --- app tree ---
         Dictionary<string, object> GetAppInfo();
+        /// <summary>
+        /// Full path of the dictionary the OPEN APP is bound to (its Global Properties "Dictionary
+        /// File"), read off the live App.FileSchema.DataDictionary.FileName. Null when no app is
+        /// open or the app has no dictionary. This is a different thing from the dictionary open in
+        /// the IDE's dictionary EDITOR (which export_dctx resolves) - GitHub #210 was the assistant
+        /// having no way to ask for this one, so it guessed from files on disk and guessed wrong.
+        /// UI thread (live IDE object access).
+        /// </summary>
+        string GetAppDictionaryPath();
+        /// <summary>
+        /// The open app's dictionary read LIVE off App.FileSchema.DataDictionary.Tables - name, prefix,
+        /// driver, fields, keys, relations - always current, no .dctx export, no .schemagraph.db.
+        /// Existed on AppTreeService since the Modern Data pad; surfaced here for get_app_dictionary
+        /// (GitHub #210). Empty list when no app or no dictionary. UI thread.
+        /// </summary>
+        List<ClarionAppDataReader.TableDef> ReadLiveDictionaryTables();
         List<string> GetProcedureNames();
         List<Dictionary<string, object>> GetProcedureDetails();
         string SelectProcedure(string procedureName);
