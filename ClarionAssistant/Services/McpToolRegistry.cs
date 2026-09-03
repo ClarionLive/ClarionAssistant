@@ -713,7 +713,7 @@ IdeOnly = true,
                 Description = "Read the open app's OWN dictionary live from the IDE (the Global Properties 'Dictionary File') - tables with prefix, driver and file, and per table its fields, keys and relationships. Always current; needs no .dctx export and no ingest. USE THIS FIRST for any question about the current project's tables or columns ('what fields does ITEM have', 'compare ITEM and ITEMSERVICE', 'which table has prefix CUS'); use the SchemaGraph tools (search_tables, get_table, query_schema) when you need SQL over an ingested schema or a dictionary that is not the open app's. Default is a one-row-per-table summary; pass table= (name or prefix) for full detail of one table, or detail='full' for everything (large on big dictionaries).",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
-                    { "table?", "Table name or PRE() prefix, case-insensitive (e.g. 'Customer' or 'CUS'). The response's 'match' says how it resolved: 'exact' (full detail for that table), 'contains' (tables whose name contains the text, listed as summary rows - re-query with the exact name), or 'none' (with a hint)." },
+                    { "table?", "Table name or PRE() prefix, case-insensitive (e.g. 'Customer' or 'CUS'). The response's 'match' says how it resolved: 'exact' or 'prefix' (full detail for that table), 'contains' (tables whose name contains the text, listed as summary rows - re-query with the exact name), or 'none' (with a hint)." },
                     { "detail?", "'summary' (default) - one row per table: name, prefix, driver, file, description, field/key/relation counts. 'full' - every table with its fields, keys and relations. An explicit value is always honoured, including summary with table=." }
                 }),
                 RequiresUiThread = true,
@@ -734,7 +734,9 @@ IdeOnly = true,
                         ? "detail='" + detailArg + "' is not recognised (accepted: summary, full) - the default was used"
                         : null;
 
+                    var clock = System.Diagnostics.Stopwatch.StartNew();
                     var tables = _appTree.ReadLiveDictionaryTables() ?? new List<ClarionAppDataReader.TableDef>();
+                    long readMs = clock.ElapsedMilliseconds;
                     var result = new Dictionary<string, object>
                     {
                         { "app", info.ContainsKey("fileName") ? info["fileName"] : null },
@@ -753,10 +755,13 @@ IdeOnly = true,
                         // Exact name or exact prefix wins; otherwise a contains-match on the name so
                         // "item" still surfaces ITEM and ITEMSERVICE side by side for the comparison
                         // question that raised this ticket.
-                        selected = tables.FindAll(t =>
-                            string.Equals(t.Name, filter, StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(t.Prefix, filter, StringComparison.OrdinalIgnoreCase));
+                        selected = tables.FindAll(t => string.Equals(t.Name, filter, StringComparison.OrdinalIgnoreCase));
                         string match = "exact";
+                        if (selected.Count == 0)
+                        {
+                            selected = tables.FindAll(t => string.Equals(t.Prefix, filter, StringComparison.OrdinalIgnoreCase));
+                            if (selected.Count > 0) match = "prefix";
+                        }
                         if (selected.Count == 0)
                         {
                             selected = tables.FindAll(t =>
@@ -768,7 +773,7 @@ IdeOnly = true,
                         // description promises: "item" matches ITEM and ITEMSERVICE, "a" matches dozens,
                         // and full detail for every one of them is unbounded on a 217-table dictionary
                         // (pipeline run 1). Summary rows plus a hint to re-query the one that was meant.
-                        if (!detailExplicit) full = match == "exact";
+                        if (!detailExplicit) full = match == "exact" || match == "prefix";
                         result["filter"] = filter;
                         result["match"] = match;
                         if (match == "none")
@@ -782,6 +787,9 @@ IdeOnly = true,
                     var rows = new List<Dictionary<string, object>>();
                     foreach (var t in selected) rows.Add(ShapeLiveTable(t, full));
                     result["tables"] = rows;
+                    // Server-side cost, so a tester's turn latency does not hide it (reviewer: cache the
+                    // live read if it exceeds ~200 ms on a big dictionary).
+                    result["elapsedMs"] = new Dictionary<string, object> { { "readDictionary", readMs }, { "total", clock.ElapsedMilliseconds } };
                     return result;
                 }
             });
@@ -3839,26 +3847,124 @@ IdeOnly = true,
         {
             public readonly string Path;
             public readonly string App;
-            public KnownDictionary(string path, string app) { Path = path; App = app; }
+            public readonly string Detail;   // extra provenance for the label, e.g. "inspected 10:50 by IDE pid 100800"
+            public KnownDictionary(string path, string app, string detail) { Path = path; App = app; Detail = detail; }
         }
         private static KnownDictionary _knownDictionary;
 
         public static string LastKnownDictionaryPath { get { var k = _knownDictionary; return k == null ? null : k.Path; } }
         public static string LastKnownDictionaryApp  { get { var k = _knownDictionary; return k == null ? null : k.App; } }
 
-        private static void RememberDictionaryPath(Dictionary<string, object> appInfo)
+        private void RememberDictionaryPath(Dictionary<string, object> appInfo)
         {
             object p, a;
             string path = appInfo != null && appInfo.TryGetValue("dictionaryPath", out p) ? p as string : null;
             string app = appInfo != null && appInfo.TryGetValue("fileName", out a) ? a as string : null;
             // A dictionary-less app clears the snapshot rather than preserving its predecessor's.
             _knownDictionary = string.IsNullOrEmpty(path) ? null
-                : new KnownDictionary(path, string.IsNullOrEmpty(app) ? null : app);
+                : new KnownDictionary(path, string.IsNullOrEmpty(app) ? null : app, null);
+            OpenAppRecord.Write(_workspace == null ? null : _workspace.CurrentSolutionPath, path, app);
         }
 
-        private static void ForgetDictionaryPath()
+        private void ForgetDictionaryPath()
         {
             _knownDictionary = null;
+            OpenAppRecord.Write(_workspace == null ? null : _workspace.CurrentSolutionPath, null, null);
+        }
+
+        /// <summary>
+        /// THE CACHE CROSSES A PROCESS BOUNDARY. After the d051fbd1 split, get_app_info and
+        /// get_app_dictionary run IN the IDE (clarion-assistant) while every schema tool runs in
+        /// the standalone clarion-tools PROCESS - so a static set in the addin is never seen by
+        /// the process that needs it. Found live by CA-demoleg-CC (5.9.0.1190): a valid
+        /// invoice.schemagraph.db beside the open app's .dct was found by nothing; all ten
+        /// pipeline gates had reasoned in-process. The addin therefore also writes a tiny record
+        /// keyed on the SOLUTION PATH - the one thing both processes know (the IDE injects
+        /// --solution per pane) - and the standalone's tier 0 reads it. The record names the
+        /// writing IDE's pid so a reader can drop it once that IDE is gone, and the inspection
+        /// time so the label can say how old "last inspected" is.
+        /// </summary>
+        private static class OpenAppRecord
+        {
+            private static string PathFor(string solution)
+            {
+                // Canonicalise BEFORE hashing, on both sides. The writer (addin) and the reader
+                // (standalone) receive the solution path through different routes, and
+                // Path.GetFullPath expands 8.3 names ("JOHNHI~1") to their long form - the
+                // cross-process test hashed the short form on one side and the long on the other,
+                // and the record was never found. Same key derivation, same file, or no handover.
+                string key = "no-solution";
+                if (!string.IsNullOrEmpty(solution))
+                {
+                    try { key = Path.GetFullPath(solution); } catch { key = solution; }
+                    key = key.Replace('/', '\\').TrimEnd('\\').ToLowerInvariant();
+                }
+                string hash;
+                using (var sha = System.Security.Cryptography.SHA1.Create())
+                    hash = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(key))).Replace("-", "").Substring(0, 16).ToLowerInvariant();
+                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                          "ClarionAssistant", "open-app");
+                return Path.Combine(dir, hash + ".json");
+            }
+
+            public static void Write(string solution, string dictionaryPath, string appFile)
+            {
+                try
+                {
+                    string file = PathFor(solution);
+                    Directory.CreateDirectory(Path.GetDirectoryName(file));
+                    if (string.IsNullOrEmpty(dictionaryPath))
+                    {
+                        if (File.Exists(file)) File.Delete(file);   // no app / dictionary-less app: nothing to hand over
+                        return;
+                    }
+                    var rec = new Dictionary<string, object>
+                    {
+                        { "solution", solution },
+                        { "dictionaryPath", dictionaryPath },
+                        { "app", appFile },
+                        { "pid", System.Diagnostics.Process.GetCurrentProcess().Id },
+                        { "inspectedAt", DateTime.Now.ToString("o") }
+                    };
+                    string tmp = file + ".tmp";
+                    File.WriteAllText(tmp, new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(rec), new UTF8Encoding(false));
+                    File.Copy(tmp, file, true);
+                    File.Delete(tmp);
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[McpToolRegistry] OpenAppRecord.Write: " + ex.Message); }
+            }
+
+            public static KnownDictionary Read(string solution)
+            {
+                try
+                {
+                    string file = PathFor(solution);
+                    if (!File.Exists(file)) return null;
+                    var rec = new System.Web.Script.Serialization.JavaScriptSerializer()
+                        .Deserialize<Dictionary<string, object>>(File.ReadAllText(file));
+                    object v;
+                    string dict = rec.TryGetValue("dictionaryPath", out v) ? v as string : null;
+                    if (string.IsNullOrEmpty(dict)) return null;
+                    string app = rec.TryGetValue("app", out v) ? v as string : null;
+                    int pid = rec.TryGetValue("pid", out v) ? Convert.ToInt32(v) : 0;
+                    string when = rec.TryGetValue("inspectedAt", out v) ? v as string : null;
+
+                    // The IDE that wrote it must still be running - otherwise this is a record of a
+                    // session that is over, and "last inspected" would describe a closed IDE.
+                    if (pid > 0)
+                    {
+                        try { System.Diagnostics.Process.GetProcessById(pid); }
+                        catch { return null; }
+                    }
+                    string detail = "inspected ";
+                    DateTime t;
+                    detail += (when != null && DateTime.TryParse(when, null, System.Globalization.DateTimeStyles.RoundtripKind, out t))
+                        ? t.ToString("HH:mm") : "earlier";
+                    if (pid > 0) detail += " by IDE pid " + pid;
+                    return new KnownDictionary(dict, app, detail);
+                }
+                catch { return null; }
+            }
         }
 
         // "The open app" has no answer when two or more apps are open and the focused tab is not an
@@ -3999,7 +4105,11 @@ IdeOnly = true,
             string noDbNote = null;
             try
             {
-                var known = _knownDictionary;          // one read: path and app from the same snapshot
+                // One read: path and app from the same snapshot. In-process first (the addin's own
+                // registry); otherwise the record the IDE wrote for this solution (the standalone
+                // clarion-tools process, where every schema tool actually runs - see OpenAppRecord).
+                var known = _knownDictionary
+                         ?? OpenAppRecord.Read(_workspace == null ? null : _workspace.CurrentSolutionPath);
                 string dict = known == null ? null : known.Path;
                 if (!string.IsNullOrEmpty(dict))
                 {
@@ -4008,6 +4118,7 @@ IdeOnly = true,
                     {
                         tier = "last inspected app's dictionary " + Path.GetFileName(dict)
                              + " (app " + Path.GetFileName(known.App ?? "?")
+                             + (known.Detail != null ? ", " + known.Detail : "")
                              + " - call get_app_info to confirm it is still the open app)";
                         return dbPath;
                     }
@@ -4059,11 +4170,12 @@ IdeOnly = true,
             {
                 // Explicit null check, not a swallowed NullReferenceException. This fallback
                 // only exists to walk up from the OPEN DOCUMENT, which a host with no editor
-                // does not have; the _workspace path above is the one that answers there.
-                // It worked by accident before - the catch below ate the NRE - and an
-                // accident is not a contract (ticket d051fbd1).
-                if (_editorService == null) return null;
-                string activePath = _editorService.GetActiveDocumentPath();
+                // does not have (ticket d051fbd1). It used to RETURN here - which also skipped
+                // tier 3 and the miss note for every editor-less host, i.e. the standalone
+                // process where all the schema tools now live. CA-demoleg-CC planted a valid
+                // .schemagraph.db in the solution folder and nothing found it. Skip the walk,
+                // do not leave (GitHub #210).
+                string activePath = _editorService == null ? null : _editorService.GetActiveDocumentPath();
                 if (!string.IsNullOrEmpty(activePath))
                 {
                     string dir = Path.GetDirectoryName(activePath);
