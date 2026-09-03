@@ -710,11 +710,11 @@ IdeOnly = true,
             {
                 Name = "get_app_dictionary",
                 IdeOnly = true,
-                Description = "Read the open app's OWN dictionary live from the IDE (the Global Properties 'Dictionary File') - tables with prefix, driver and file, and per table its fields, keys and relationships. Always current; needs no .dctx export and no ingest. USE THIS FIRST for any question about the current project's tables or columns ('what fields does ITEM have', 'compare ITEM and ITEMSERVICE', 'which table has prefix CUS'); use the SchemaGraph tools (search_tables, get_table, query_schema) when you need SQL over an ingested schema or a dictionary that is not the open app's. Default is a one-row-per-table summary; pass table= (name or prefix) for full detail of one table, or detail='full' for everything (large on big dictionaries).",
+                Description = "Read the open app's OWN dictionary live from the IDE (the Global Properties 'Dictionary File') - tables with prefix, driver and file, and per table its fields, keys and relationships. Always current; needs no .dctx export and no ingest. USE THIS FIRST for any question about the current project's tables or columns ('what fields does ITEM have', 'compare ITEM and ITEMSERVICE', 'which table has prefix CUS'); use the SchemaGraph tools (search_tables, get_table, query_schema) when you need SQL over an ingested schema or a dictionary that is not the open app's. Default is a one-row-per-table summary, or a names-only index on dictionaries over 200 tables; pass table= (name or prefix) for full detail of one table, or detail='full' for everything (large on big dictionaries).",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
                     { "table?", "Table name or PRE() prefix, case-insensitive (e.g. 'Customer' or 'CUS'). The response's 'match' says how it resolved: 'exact' or 'prefix' (full detail for that table), 'contains' (tables whose name contains the text, listed as summary rows - re-query with the exact name), or 'none' (with a hint)." },
-                    { "detail?", "'summary' (default) - one row per table: name, prefix, driver, file, description, field/key/relation counts. 'full' - every table with its fields, keys and relations. An explicit value is always honoured, including summary with table=." }
+                    { "detail?", "'names' - name/prefix/driver per table (the DEFAULT on dictionaries over 200 tables, so the first call stays readable). 'summary' - adds file, description and field/key/relation counts (the default on smaller dictionaries). 'full' - every table with its fields, keys and relations (large). An explicit value is always honoured, including summary with table=." }
                 }),
                 RequiresUiThread = true,
                 Handler = args =>
@@ -728,10 +728,11 @@ IdeOnly = true,
                     string filter = McpJsonRpc.GetString(args, "table", "").Trim();
                     string detailArg = McpJsonRpc.GetString(args, "detail", "").Trim();
                     bool full = string.Equals(detailArg, "full", StringComparison.OrdinalIgnoreCase);
+                    bool names = string.Equals(detailArg, "names", StringComparison.OrdinalIgnoreCase);
                     // Only a RECOGNISED value counts as explicit; "ful" must not silently mean summary.
-                    bool detailExplicit = full || string.Equals(detailArg, "summary", StringComparison.OrdinalIgnoreCase);
+                    bool detailExplicit = full || names || string.Equals(detailArg, "summary", StringComparison.OrdinalIgnoreCase);
                     string detailHint = detailArg.Length > 0 && !detailExplicit
-                        ? "detail='" + detailArg + "' is not recognised (accepted: summary, full) - the default was used"
+                        ? "detail='" + detailArg + "' is not recognised (accepted: names, summary, full) - the default was used"
                         : null;
 
                     var clock = System.Diagnostics.Stopwatch.StartNew();
@@ -781,11 +782,23 @@ IdeOnly = true,
                         else if (match == "contains" && !full)
                             result["hint"] = "Listing only (name contains '" + filter + "'). Re-query with table=<exact name> for its fields, keys and relations.";
                     }
-                    result["detail"] = full ? "full" : "summary";
+                    // ADAPTIVE DEFAULT. The no-argument call - the one the description tells the
+                    // model to make FIRST - returned 84 KB on one line for a 547-table dictionary and
+                    // the harness rejected it outright, so the model got nothing for its 992 ms
+                    // (CA-POSitiveAnywhere-CC, round 4). Kevin's 217 tables squeaked through at ~33 KB.
+                    // Above the threshold, and with no filter and no explicit detail, answer with a
+                    // names-only index (~40 chars per table) and say how to get more.
+                    const int BigDictionaryTables = 200;
+                    if (!detailExplicit && filter.Length == 0 && tables.Count > BigDictionaryTables)
+                    {
+                        names = true;
+                        result["hint"] = tables.Count + " tables - showing name/prefix/driver only. Pass table=<name or prefix> for one table's fields, keys and relations, or detail='summary' for per-table counts (large).";
+                    }
+                    result["detail"] = names ? "names" : full ? "full" : "summary";
                     if (detailHint != null) result["detailHint"] = detailHint;
 
                     var rows = new List<Dictionary<string, object>>();
-                    foreach (var t in selected) rows.Add(ShapeLiveTable(t, full));
+                    foreach (var t in selected) rows.Add(names ? ShapeLiveTableName(t) : ShapeLiveTable(t, full));
                     result["tables"] = rows;
                     // Server-side cost, so a tester's turn latency does not hide it (reviewer: cache the
                     // live read if it exceeds ~200 ms on a big dictionary).
@@ -4047,6 +4060,17 @@ IdeOnly = true,
         // KNOW THAT A SIBLING EXISTS: the Modern Data pad shapes the same DTOs differently in
         // ModernEmbeditorViewContent.ColToDict / KeysToDicts / RelationsToDicts / BuildTableAttributes.
         // That file is addin-only; this one compiles into both builds, which is why the shaper is not shared.
+
+        // The names-only index: what a big dictionary answers by default (see the handler).
+        private static Dictionary<string, object> ShapeLiveTableName(ClarionAppDataReader.TableDef t)
+        {
+            return new Dictionary<string, object>
+            {
+                { "name", t.Name },
+                { "prefix", t.Prefix },
+                { "driver", t.Driver }
+            };
+        }
 
         private static Dictionary<string, object> ShapeLiveTable(ClarionAppDataReader.TableDef t, bool full)
         {
