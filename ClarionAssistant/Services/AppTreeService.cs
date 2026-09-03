@@ -243,18 +243,56 @@ namespace ClarionAssistant.Services
         {
             try
             {
-                var fs = GetAppFileSchema();
-                if (fs == null) return null;
-                var dict = GetProp(fs, "DataDictionary");
-                if (dict == null) return null;
-                string path = (GetProp(dict, "FileName") ?? "").ToString();
-                return string.IsNullOrEmpty(path) ? null : path;
+                var app = GetAppObject();
+                if (app == null) return null;
+                var dict = GetLiveDataDictionary(app);
+                string path = dict == null ? null : (GetProp(dict, "FileName") ?? "").ToString();
+                if (!string.IsNullOrEmpty(path)) return path;
+
+                // Last resort: the bare name the app records (Application.DictionaryFileName =
+                // "invoice.dct"), anchored to the app's own folder when that file exists there.
+                string bare = (GetProp(app, "DictionaryFileName") ?? "").ToString();
+                if (string.IsNullOrEmpty(bare)) return null;
+                if (Path.IsPathRooted(bare)) return bare;
+                string appFile = (GetProp(app, "FileName") ?? "").ToString();
+                string appDir = string.IsNullOrEmpty(appFile) ? null : Path.GetDirectoryName(appFile);
+                if (!string.IsNullOrEmpty(appDir))
+                {
+                    string candidate = Path.Combine(appDir, bare);
+                    if (File.Exists(candidate)) return candidate;
+                }
+                return bare;
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine("[AppTree] GetAppDictionaryPath: " + ex.Message);
                 return null;
             }
+        }
+
+        /// <summary>
+        /// The live DDDataDictionary of the open app. App.Win32App.DataDictionary FIRST - it is the
+        /// app-level dictionary, loaded with the app (Win32App.DictionaryLoaded) - and only then
+        /// FileSchema.DataDictionary. App.FileSchema is NOT an app-level object: it is a per-procedure
+        /// EMBEDITOR SESSION object, null until the first open_procedure_embed of the IDE session and
+        /// left in place afterwards. Reading it alone made get_app_info return dictionaryPath null and
+        /// get_app_dictionary tableCount 0 on a freshly loaded app - Kevin's exact first-use path -
+        /// while both "worked" the moment any embeditor had been opened (CA-demoleg-CC, 5.9.0.1192,
+        /// by dump_object_api on the live object). A reflection-only load proves what a TYPE exposes,
+        /// never what an INSTANCE holds at rest.
+        /// </summary>
+        private object GetLiveDataDictionary(object app)
+        {
+            if (app == null) return null;
+            try
+            {
+                var w32 = GetProp(app, "Win32App");
+                var dd = w32 == null ? null : GetProp(w32, "DataDictionary");
+                if (dd != null) return dd;
+                var fs = GetProp(app, "FileSchema") ?? GetAppFileSchema();
+                return fs == null ? null : GetProp(fs, "DataDictionary");
+            }
+            catch { return null; }
         }
 
         /// <summary>
@@ -2185,7 +2223,10 @@ namespace ClarionAssistant.Services
             {
                 var app = GetAppObject();
                 if (app == null) return outp;
-                var dict = GetProp(GetProp(app, "FileSchema"), "DataDictionary");
+                // Win32App.DataDictionary first, FileSchema.DataDictionary as fallback - see
+                // GetLiveDataDictionary for why the old FileSchema-only read was empty until an
+                // embeditor had been opened.
+                var dict = GetLiveDataDictionary(app);
                 if (dict == null) return outp;
                 if (!(GetProp(dict, "Tables") is System.Collections.IEnumerable tables)) return outp;
 
