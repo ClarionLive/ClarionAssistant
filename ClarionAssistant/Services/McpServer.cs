@@ -416,6 +416,15 @@ namespace ClarionAssistant.Services
                 if (standaloneExe != null)
                 {
                     var toolArgs = new List<string> { "--stdio" };
+                    // WHO LAUNCHED ME. The open-app record the addin writes for the standalone
+                    // (McpToolRegistry.OpenAppRecord, GitHub #210) was first keyed on the solution
+                    // path - and the two processes disagree about that the moment the developer
+                    // loads a different solution in the IDE: this pane's --solution is fixed at
+                    // launch while the addin follows the IDE. CA-demoleg-CC: POSitiveAnywhere open,
+                    // get_app_info said positive.dct, schema_stats still named invoice.dct. The IDE
+                    // process id cannot drift, so the record is keyed on it and handed over here.
+                    toolArgs.Add("--ide-pid");
+                    toolArgs.Add(System.Diagnostics.Process.GetCurrentProcess().Id.ToString());
                     string liveSln = null;
                     try { liveSln = EditorService.GetOpenSolutionPath(); } catch { liveSln = null; }
                     if (!string.IsNullOrEmpty(liveSln) && File.Exists(liveSln))

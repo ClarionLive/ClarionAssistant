@@ -70,6 +70,24 @@ namespace ClarionAssistant.McpServer
                         Console.Error.WriteLine(ServerName + ": --lockprobe needs a database path.");
                         return 64;
 
+                    case "--ide-pid":
+                        // The Clarion IDE process that launched this server (passed by the addin's
+                        // McpServer.GenerateMcpConfig). Keys the open-app record the addin hands
+                        // over for the schema tools' tier 0 - see McpToolRegistry.OpenAppRecord.
+                        {
+                            int pid;
+                            if (i + 1 < args.Length && int.TryParse(args[i + 1], out pid) && pid > 0)
+                            {
+                                ClarionAssistant.Services.McpToolRegistry.IdeProcessId = pid;
+                                i++;
+                            }
+                            else
+                            {
+                                Console.Error.WriteLine(ServerName + ": --ide-pid needs a process id.");
+                                return 64;
+                            }
+                        }
+                        break;
                     case "--solution":
                         // Consumes the next argument. Checked rather than assumed: a trailing
                         // "--solution" with nothing after it would otherwise silently resolve to
@@ -178,6 +196,8 @@ namespace ClarionAssistant.McpServer
             w.WriteLine("  (no args)            serve MCP over stdio — what an MCP client does");
             w.WriteLine("  --stdio              same, stated explicitly");
             w.WriteLine("  --solution <path>    the .sln the CodeGraph/solution tools work on.");
+            w.WriteLine("  --ide-pid <pid>      the Clarion IDE that launched this server (set by the addin;");
+            w.WriteLine("                       lets the schema tools see the dictionary of the app it has open).");
             w.WriteLine("                       Without it, a single .sln in the working directory");
             w.WriteLine("                       is used; several means none, rather than a guess.");
             w.WriteLine("  --selftest           service layer loads, registry gates correctly");

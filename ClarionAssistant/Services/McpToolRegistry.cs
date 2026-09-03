@@ -3884,8 +3884,29 @@ IdeOnly = true,
         /// writing IDE's pid so a reader can drop it once that IDE is gone, and the inspection
         /// time so the label can say how old "last inspected" is.
         /// </summary>
+        /// <summary>
+        /// The Clarion IDE process that launched THIS standalone server (--ide-pid, passed by the
+        /// addin's McpServer.GenerateMcpConfig). Null in the addin itself and in a terminal-launched
+        /// server. With it set, the open-app record is read by IDE pid - a key that cannot drift.
+        /// </summary>
+        public static int? IdeProcessId;
+
         private static class OpenAppRecord
         {
+            private static string Dir()
+            {
+                return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                    "ClarionAssistant", "open-app");
+            }
+
+            // The IDE-pid-keyed file: the primary handover. The solution-keyed file below was the
+            // first cut, and the two processes disagreed about "the solution" as soon as the
+            // developer loaded a different one in the IDE (this pane's --solution is fixed at
+            // launch, the addin's workspace follows the IDE) - the addin wrote positive.dct into
+            // one slot while the standalone read invoice.dct from another (CA-demoleg-CC, build of
+            // 11:26). A process id is the same number on both sides for as long as it matters.
+            private static string PathForPid(int pid) { return Path.Combine(Dir(), "ide-" + pid + ".json"); }
+
             private static string PathFor(string solution)
             {
                 // Canonicalise BEFORE hashing, on both sides. The writer (addin) and the reader
@@ -3902,16 +3923,22 @@ IdeOnly = true,
                 string hash;
                 using (var sha = System.Security.Cryptography.SHA1.Create())
                     hash = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(key))).Replace("-", "").Substring(0, 16).ToLowerInvariant();
-                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                                          "ClarionAssistant", "open-app");
-                return Path.Combine(dir, hash + ".json");
+                return Path.Combine(Dir(), hash + ".json");
             }
 
+            /// <summary>Writer side (the addin): the IDE-pid file always, the solution file too so a
+            /// terminal-launched server on the same solution can still benefit.</summary>
             public static void Write(string solution, string dictionaryPath, string appFile)
+            {
+                int ownPid = System.Diagnostics.Process.GetCurrentProcess().Id;
+                WriteOne(PathForPid(ownPid), solution, dictionaryPath, appFile, ownPid);
+                WriteOne(PathFor(solution), solution, dictionaryPath, appFile, ownPid);
+            }
+
+            private static void WriteOne(string file, string solution, string dictionaryPath, string appFile, int pid)
             {
                 try
                 {
-                    string file = PathFor(solution);
                     Directory.CreateDirectory(Path.GetDirectoryName(file));
                     if (string.IsNullOrEmpty(dictionaryPath))
                     {
@@ -3923,7 +3950,7 @@ IdeOnly = true,
                         { "solution", solution },
                         { "dictionaryPath", dictionaryPath },
                         { "app", appFile },
-                        { "pid", System.Diagnostics.Process.GetCurrentProcess().Id },
+                        { "pid", pid },
                         { "inspectedAt", DateTime.Now.ToString("o") }
                     };
                     string tmp = file + ".tmp";
@@ -3934,11 +3961,22 @@ IdeOnly = true,
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[McpToolRegistry] OpenAppRecord.Write: " + ex.Message); }
             }
 
+            /// <summary>Reader side (the standalone): the launching IDE's pid file when --ide-pid was
+            /// given, else the solution file.</summary>
             public static KnownDictionary Read(string solution)
+            {
+                if (IdeProcessId.HasValue)
+                {
+                    var byPid = ReadOne(PathForPid(IdeProcessId.Value));
+                    if (byPid != null) return byPid;
+                }
+                return ReadOne(PathFor(solution));
+            }
+
+            private static KnownDictionary ReadOne(string file)
             {
                 try
                 {
-                    string file = PathFor(solution);
                     if (!File.Exists(file)) return null;
                     var rec = new System.Web.Script.Serialization.JavaScriptSerializer()
                         .Deserialize<Dictionary<string, object>>(File.ReadAllText(file));
