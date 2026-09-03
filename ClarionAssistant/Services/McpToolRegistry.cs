@@ -3939,13 +3939,29 @@ IdeOnly = true,
                 return Path.Combine(Dir(), hash + ".json");
             }
 
+            // The solution-keyed file this process last wrote. The addin's solution key DRIFTS (its
+            // workspace follows the IDE), so a later write or a close-all lands under a different
+            // key and the earlier file is orphaned - CA-POSitiveAnywhere-CC watched a 13:09 record
+            // for POSitiveAnywhere.sln outlive a demoleg inspection AND a close-all, then get served
+            // as current by a standalone whose pid file had (correctly) been deleted. Track it and
+            // remove it whenever the key moves or the app goes away.
+            private static string _lastSolutionFile;
+
             /// <summary>Writer side (the addin): the IDE-pid file always, the solution file too so a
             /// terminal-launched server on the same solution can still benefit.</summary>
             public static void Write(string solution, string dictionaryPath, string appFile)
             {
                 int ownPid = System.Diagnostics.Process.GetCurrentProcess().Id;
                 WriteOne(PathForPid(ownPid), solution, dictionaryPath, appFile, ownPid);
-                WriteOne(PathFor(solution), solution, dictionaryPath, appFile, ownPid);
+
+                string solFile = PathFor(solution);
+                string previous = _lastSolutionFile;
+                if (previous != null && !string.Equals(previous, solFile, StringComparison.OrdinalIgnoreCase))
+                {
+                    try { if (File.Exists(previous)) File.Delete(previous); } catch { }
+                }
+                WriteOne(solFile, solution, dictionaryPath, appFile, ownPid);
+                _lastSolutionFile = string.IsNullOrEmpty(dictionaryPath) ? null : solFile;
             }
 
             private static void WriteOne(string file, string solution, string dictionaryPath, string appFile, int pid)
@@ -3975,14 +3991,15 @@ IdeOnly = true,
             }
 
             /// <summary>Reader side (the standalone): the launching IDE's pid file when --ide-pid was
-            /// given, else the solution file.</summary>
+            /// given - and ONLY that file; its absence means "that IDE has nothing to hand over"
+            /// (no app, or a dictionary-less one), never "try the solution file instead". The
+            /// solution file is for a server launched with no IDE at all. Falling through from a
+            /// deleted pid file to a solution file is how a closed app's dictionary came back
+            /// from the dead with a fresh-looking timestamp (round 4, test 4c).</summary>
             public static KnownDictionary Read(string solution)
             {
                 if (IdeProcessId.HasValue)
-                {
-                    var byPid = ReadOne(PathForPid(IdeProcessId.Value));
-                    if (byPid != null) return byPid;
-                }
+                    return ReadOne(PathForPid(IdeProcessId.Value));
                 return ReadOne(PathFor(solution));
             }
 
@@ -4167,11 +4184,14 @@ IdeOnly = true,
             string noDbNote = null;
             try
             {
-                // One read: path and app from the same snapshot. In-process first (the addin's own
-                // registry); otherwise the record the IDE wrote for this solution (the standalone
-                // clarion-tools process, where every schema tool actually runs - see OpenAppRecord).
+                // One read: path and app from the same snapshot. In the IDE host (the addin, where
+                // _appTree exists) the in-process snapshot is THE authority - it is what the UI-thread
+                // tools just set or cleared - and the on-disk record is never consulted: it exists
+                // for OTHER processes, and reading our own copy back would only ever be staler
+                // (round 4, 4c). A host with no IDE reads the record the IDE wrote for it.
                 var known = _knownDictionary
-                         ?? OpenAppRecord.Read(_workspace == null ? null : _workspace.CurrentSolutionPath);
+                         ?? (_appTree != null ? null
+                             : OpenAppRecord.Read(_workspace == null ? null : _workspace.CurrentSolutionPath));
                 string dict = known == null ? null : known.Path;
                 if (!string.IsNullOrEmpty(dict))
                 {
