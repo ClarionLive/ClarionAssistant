@@ -694,8 +694,9 @@ IdeOnly = true,
                 Handler = args =>
                 {
                     var info = _appTree.GetAppInfo();
-                    if (info == null) return "No .app file is currently open";
-                    RememberDictionaryPath(info);
+                    if (info == null) { ForgetDictionaryPath(); return "No .app file is currently open"; }
+                    bool ambiguous = AnnotateAppAmbiguity(info);
+                    if (!ambiguous) RememberDictionaryPath(info);
                     return info;
                 }
             });
@@ -712,27 +713,34 @@ IdeOnly = true,
                 Description = "Read the open app's OWN dictionary live from the IDE (the Global Properties 'Dictionary File') - tables with prefix, driver and file, and per table its fields, keys and relationships. Always current; needs no .dctx export and no ingest. USE THIS FIRST for any question about the current project's tables or columns ('what fields does ITEM have', 'compare ITEM and ITEMSERVICE', 'which table has prefix CUS'); use the SchemaGraph tools (search_tables, get_table, query_schema) when you need SQL over an ingested schema or a dictionary that is not the open app's. Default is a one-row-per-table summary; pass table= (name or prefix) for full detail of one table, or detail='full' for everything (large on big dictionaries).",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
-                    { "table?", "Table name or PRE() prefix, case-insensitive (e.g. 'Customer' or 'CUS'). Returns full detail for the match; if nothing matches exactly, tables whose name contains the text are listed." },
-                    { "detail?", "'summary' (default) - one row per table: name, prefix, driver, file, description, field/key/relation counts. 'full' - every table with its fields, keys and relations." }
+                    { "table?", "Table name or PRE() prefix, case-insensitive (e.g. 'Customer' or 'CUS'). The response's 'match' says how it resolved: 'exact' (full detail for that table), 'contains' (tables whose name contains the text, listed as summary rows - re-query with the exact name), or 'none' (with a hint)." },
+                    { "detail?", "'summary' (default) - one row per table: name, prefix, driver, file, description, field/key/relation counts. 'full' - every table with its fields, keys and relations. An explicit value is always honoured, including summary with table=." }
                 }),
                 RequiresUiThread = true,
                 Handler = args =>
                 {
                     var info = _appTree.GetAppInfo();
-                    if (info == null) return "No .app file is currently open";
+                    if (info == null) { ForgetDictionaryPath(); return "No .app file is currently open"; }
+                    string ambiguity = AppAmbiguityError();
+                    if (ambiguity != null) return ambiguity;      // fail closed: never the first app the IDE happened to list
                     RememberDictionaryPath(info);
 
                     string filter = McpJsonRpc.GetString(args, "table", "").Trim();
-                    bool full = string.Equals(McpJsonRpc.GetString(args, "detail", "summary"), "full", StringComparison.OrdinalIgnoreCase)
-                                || filter.Length > 0;
+                    string detailArg = McpJsonRpc.GetString(args, "detail", "").Trim();
+                    bool detailExplicit = detailArg.Length > 0;
+                    bool full = string.Equals(detailArg, "full", StringComparison.OrdinalIgnoreCase);
 
                     var tables = _appTree.ReadLiveDictionaryTables() ?? new List<ClarionAppDataReader.TableDef>();
                     var result = new Dictionary<string, object>
                     {
+                        { "app", info.ContainsKey("fileName") ? info["fileName"] : null },
                         { "dictionaryPath", info.ContainsKey("dictionaryPath") ? info["dictionaryPath"] : null },
                         { "dictionaryName", info.ContainsKey("dictionaryName") ? info["dictionaryName"] : null },
                         { "tableCount", tables.Count },
-                        { "detail", full ? "full" : "summary" }
+                        // Field names are the dictionary LABELS (unprefixed); relation mappings are
+                        // written the way code writes them (PREFIX:Field). Said once so a caller
+                        // matching the two does not conclude they are different columns.
+                        { "fieldNames", "unprefixed labels - in code a field is <prefix>:<name>; relation mappings use that prefixed form" }
                     };
 
                     var selected = tables;
@@ -751,11 +759,20 @@ IdeOnly = true,
                                 t.Name != null && t.Name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0);
                             match = selected.Count > 0 ? "contains" : "none";
                         }
+                        // An exact hit is the one-table question ("what fields does ITEM have") - full
+                        // detail unless the caller said summary. A contains hit is a LISTING, as the
+                        // description promises: "item" matches ITEM and ITEMSERVICE, "a" matches dozens,
+                        // and full detail for every one of them is unbounded on a 217-table dictionary
+                        // (pipeline run 1). Summary rows plus a hint to re-query the one that was meant.
+                        if (!detailExplicit) full = match == "exact";
                         result["filter"] = filter;
                         result["match"] = match;
-                        if (selected.Count == 0)
+                        if (match == "none")
                             result["hint"] = "No table named or prefixed '" + filter + "'. Call without table= for the full list.";
+                        else if (match == "contains" && !full)
+                            result["hint"] = "Listing only (name contains '" + filter + "'). Re-query with table=<exact name> for its fields, keys and relations.";
                     }
+                    result["detail"] = full ? "full" : "summary";
 
                     var rows = new List<Dictionary<string, object>>();
                     foreach (var t in selected) rows.Add(ShapeLiveTable(t, full));
@@ -3742,29 +3759,43 @@ IdeOnly = true,
 
         // ── SchemaGraph Tools ─────────────────────────────────────────
 
-        private SchemaGraphService GetSchemaGraph(Dictionary<string, object> args)
+        /// <summary>
+        /// A resolved schema database: the service plus WHERE it came from. GitHub #210: the
+        /// assistant answered from a stale dictionary of another project and nothing in the response
+        /// said so - tiers 2/3 of FindSchemaGraphDb are "first file the filesystem lists", and a
+        /// silent lottery is indistinguishable from a right answer. Every schema read stamps the
+        /// path and the tier on its output.
+        ///
+        /// Path and tier travel with the CALL, never through instance fields. FindSchemaGraphDb is
+        /// also invoked by SharedLspBridge.SchemaGraphDbPathProvider on every completion keystroke,
+        /// off-thread, and McpServer runs each request on a ThreadPool thread with no lock - the
+        /// first cut kept these in instance fields read after the SQLite call returned, and typing
+        /// in the embeditor during a search_tables re-stamped a tier-3 lottery result as "open
+        /// app's dictionary" (pipeline run 1: debugger, code-reviewer and verifier all traced it).
+        /// A provenance line that can lie is worse than none.
+        /// </summary>
+        private sealed class SchemaDb
         {
-            string dbPath = McpJsonRpc.GetString(args, "db_path");
-            if (!string.IsNullOrEmpty(dbPath))
-                _lastSchemaDbTier = "db_path argument";
-            else
-                dbPath = FindSchemaGraphDb();
-            if (string.IsNullOrEmpty(dbPath))
-                return null;
-            _lastSchemaDbPath = dbPath;
-            return new SchemaGraphService(dbPath);
+            public SchemaGraphService Service;
+            public string Path;
+            public string Tier;
+            public string Stamp(string result)
+            {
+                return "SchemaGraph db: " + Path + "  [chosen by: " + Tier + "]\n" + result;
+            }
         }
 
-        // Which .schemagraph.db the last schema read used, and WHY it was chosen. GitHub #210: the
-        // assistant answered from a stale dictionary of another project and nothing in the response
-        // said so - tier 2/3 below are "first file the filesystem lists", and a silent lottery is
-        // indistinguishable from a right answer. Every schema read now stamps this on its output.
-        private string _lastSchemaDbPath;
-        private string _lastSchemaDbTier;
-
-        private string StampSchemaSource(string result)
+        private SchemaDb GetSchemaGraph(Dictionary<string, object> args)
         {
-            return "SchemaGraph db: " + _lastSchemaDbPath + "  [chosen by: " + _lastSchemaDbTier + "]\n" + result;
+            string tier;
+            string dbPath = McpJsonRpc.GetString(args, "db_path");
+            if (!string.IsNullOrEmpty(dbPath))
+                tier = "db_path argument";
+            else
+                dbPath = FindSchemaGraphDb(out tier);
+            if (string.IsNullOrEmpty(dbPath))
+                return null;
+            return new SchemaDb { Service = new SchemaGraphService(dbPath), Path = dbPath, Tier = tier };
         }
 
         /// <summary>
@@ -3776,22 +3807,75 @@ IdeOnly = true,
         /// sync-over-async). So the live object is never touched off-thread: UI-thread tools refresh
         /// this, off-thread code reads it. Lives here rather than on AppTreeService because this file
         /// is compiled into the standalone server too, and that build has no AppTreeService.
-        /// Null until an app has been inspected this session; may name an app since closed, so
-        /// consumers treat it as a hint and check the file exists.
+        ///
+        /// Bound to the .app it was read from (LastKnownDictionaryApp), CLEARED when a UI-thread
+        /// tool finds no app or a dictionary-less app, and never written while the open app is
+        /// ambiguous. Off-thread readers still cannot know whether that app is STILL open, so tier 0
+        /// labels its pick "last inspected app's dictionary" and names the app - it does not claim
+        /// "open app". Pipeline run 1: the first cut wrote only on a non-empty path, never cleared,
+        /// and stamped "open app's dictionary" - close app A, open B, and B's schema questions were
+        /// answered from A with a confident provenance line. The exact class of lie this ticket exists to remove.
         /// </summary>
         public static string LastKnownDictionaryPath { get; private set; }
+        public static string LastKnownDictionaryApp { get; private set; }
 
         private static void RememberDictionaryPath(Dictionary<string, object> appInfo)
         {
-            object p;
-            if (appInfo != null && appInfo.TryGetValue("dictionaryPath", out p) && p is string s && s.Length > 0)
-                LastKnownDictionaryPath = s;
+            object p, a;
+            string path = appInfo != null && appInfo.TryGetValue("dictionaryPath", out p) ? p as string : null;
+            string app = appInfo != null && appInfo.TryGetValue("fileName", out a) ? a as string : null;
+            LastKnownDictionaryPath = string.IsNullOrEmpty(path) ? null : path;   // dictionary-less app clears it
+            LastKnownDictionaryApp = string.IsNullOrEmpty(app) ? null : app;
+        }
+
+        private static void ForgetDictionaryPath()
+        {
+            LastKnownDictionaryPath = null;
+            LastKnownDictionaryApp = null;
+        }
+
+        // "The open app" has no answer when two or more apps are open and the focused tab is not an
+        // app view: FindAppViewContent then returns the FIRST app-bearing item of whichever workbench
+        // collection it tries, and AppTreeService already fails closed on exactly this for tree
+        // selections (CountOpenAppViews, see GetAppTreeSelectedProcedureName). get_app_dictionary
+        // fails closed the same way; get_app_info (pre-existing, callers expect an answer) annotates
+        // instead, and neither seeds the dictionary cache from a guess. (Pipeline run 1, adversary +
+        // debugger.)
+        private string AppAmbiguityError()
+        {
+            try
+            {
+                if (_appTree.CountOpenAppViews() <= 1 || _appTree.IsActiveWindowAppView()) return null;
+                var names = _appTree.GetOpenAppFileNames();
+                return "Error: " + names.Count + " apps are open and none of them has focus, so \"the open app\" is ambiguous: "
+                     + string.Join(" | ", names) + ". Click the tab of the app you mean and call again.";
+            }
+            catch { return null; }
+        }
+
+        private bool AnnotateAppAmbiguity(Dictionary<string, object> info)
+        {
+            try
+            {
+                int n = _appTree.CountOpenAppViews();
+                info["openAppCount"] = n;
+                if (n <= 1 || _appTree.IsActiveWindowAppView()) return false;
+                info["ambiguous"] = true;
+                info["openApps"] = _appTree.GetOpenAppFileNames();
+                info["warning"] = "More than one app is open and none has focus; this answer is whichever app the IDE listed first. "
+                                + "Click the tab of the app you mean and call again before relying on it.";
+                return true;
+            }
+            catch { return false; }
         }
 
         // --- get_app_dictionary response shaping (GitHub #210) ---
         // The live TableDef DTOs carry the Modern Data pad's full column-detail-panel payload (validity
         // summaries, flag chips, row pictures...). Shaping to plain dictionaries keeps a 217-table
         // dictionary readable in a tool response and pins the JSON field names independently of the DTOs.
+        // KNOW THAT A SIBLING EXISTS: the Modern Data pad shapes the same DTOs differently in
+        // ModernEmbeditorViewContent.ColToDict / KeysToDicts / RelationsToDicts / BuildTableAttributes.
+        // That file is addin-only; this one compiles into both builds, which is why the shaper is not shared.
 
         private static Dictionary<string, object> ShapeLiveTable(ClarionAppDataReader.TableDef t, bool full)
         {
@@ -3871,13 +3955,21 @@ IdeOnly = true,
             return row;
         }
 
-        private string FindSchemaGraphDb()
+        // Path-only form for SharedLspBridge.SchemaGraphDbPathProvider, which has no use for the tier.
+        private string FindSchemaGraphDb() { string t; return FindSchemaGraphDb(out t); }
+
+        private string FindSchemaGraphDb(out string tier)
         {
-            // 0. The OPEN APP's own dictionary (GitHub #210). Read from the cache a UI-thread tool
-            //    filled, never from the live object - this runs on worker threads too (see
+            tier = null;
+            // 0. The dictionary of the app a UI-thread tool LAST INSPECTED (GitHub #210). Read from
+            //    the cache, never from the live object - this runs on worker threads too (see
             //    LastKnownDictionaryPath). ingest_schema writes <dict>.schemagraph.db beside the
             //    .dctx, and a .dctx exported from Global Properties sits beside its .dct under the
-            //    same base name, so the app's .dct path resolves to the same file.
+            //    same base name, so the app's .dct path resolves to the same file. The label names
+            //    the app and says "last inspected": from here nobody can tell whether that app is
+            //    still the open one, so it does not claim to be. A .dctx exported elsewhere is NOT
+            //    found by this tier - it falls through, and the later tiers' labels say so.
+            string noDbNote = null;
             try
             {
                 string dict = LastKnownDictionaryPath;
@@ -3886,9 +3978,13 @@ IdeOnly = true,
                     string dbPath = SchemaGraphService.GetDbPathForDictionary(dict);
                     if (File.Exists(dbPath))
                     {
-                        _lastSchemaDbTier = "open app's dictionary " + Path.GetFileName(dict);
+                        tier = "last inspected app's dictionary " + Path.GetFileName(dict)
+                             + " (app " + Path.GetFileName(LastKnownDictionaryApp ?? "?")
+                             + " - call get_app_info to confirm it is still the open app)";
                         return dbPath;
                     }
+                    noDbNote = "; NOTE the last inspected app's dictionary " + Path.GetFileName(dict)
+                             + " has no .schemagraph.db beside it - ingest_schema its .dctx to bind it, or this may be the wrong dictionary";
                 }
             }
             catch { }
@@ -3921,7 +4017,7 @@ IdeOnly = true,
                             string dbPath = SchemaGraphService.GetDbPathForSource(id, type, connInfo);
                             if (File.Exists(dbPath))
                             {
-                                _lastSchemaDbTier = "Schema Source '" + (src.ContainsKey("name") ? src["name"] : id) + "' linked to the solution";
+                                tier = "Schema Source '" + (src.ContainsKey("name") ? src["name"] : id) + "' linked to the solution" + (noDbNote ?? "");
                                 return dbPath;
                             }
                         }
@@ -3948,8 +4044,8 @@ IdeOnly = true,
                         var dbFiles = Directory.GetFiles(dir, "*.schemagraph.db");
                         if (dbFiles.Length > 0)
                         {
-                            _lastSchemaDbTier = "first .schemagraph.db found walking up from the active document"
-                                + (dbFiles.Length > 1 ? " (" + dbFiles.Length + " candidates in " + dir + ", unordered)" : "");
+                            tier = "first .schemagraph.db found walking up from the active document"
+                                + (dbFiles.Length > 1 ? " (" + dbFiles.Length + " candidates in " + dir + ", unordered)" : "") + (noDbNote ?? "");
                             return dbFiles[0];
                         }
                         var parent = Directory.GetParent(dir);
@@ -3972,8 +4068,8 @@ IdeOnly = true,
                         var dbFiles = Directory.GetFiles(slnDir, "*.schemagraph.db", SearchOption.AllDirectories);
                         if (dbFiles.Length > 0)
                         {
-                            _lastSchemaDbTier = "first .schemagraph.db found scanning the solution tree"
-                                + (dbFiles.Length > 1 ? " (" + dbFiles.Length + " candidates, unordered - may be the wrong dictionary; call get_app_info for the app's own)" : "");
+                            tier = "first .schemagraph.db found scanning the solution tree"
+                                + (dbFiles.Length > 1 ? " (" + dbFiles.Length + " candidates, unordered - may be the wrong dictionary; call get_app_info for the app's own)" : "") + (noDbNote ?? "");
                             return dbFiles[0];
                         }
                     }
@@ -4064,11 +4160,12 @@ IdeOnly = true,
                     if (string.IsNullOrEmpty(sql))
                         return "Error: sql parameter is required";
 
-                    var service = GetSchemaGraph(args);
+                    var db = GetSchemaGraph(args);
+                    var service = db?.Service;
                     if (service == null)
                         return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
 
-                    return StampSchemaSource(service.ExecuteQuery(sql));
+                    return db.Stamp(service.ExecuteQuery(sql));
                 }
             });
 
@@ -4089,12 +4186,13 @@ IdeOnly = true,
                     if (string.IsNullOrEmpty(pattern))
                         return "Error: pattern is required";
 
-                    var service = GetSchemaGraph(args);
+                    var db = GetSchemaGraph(args);
+                    var service = db?.Service;
                     if (service == null)
                         return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
 
                     int limit = McpJsonRpc.GetInt(args, "limit", 50);
-                    return StampSchemaSource(service.SearchTables(pattern, limit));
+                    return db.Stamp(service.SearchTables(pattern, limit));
                 }
             });
 
@@ -4114,11 +4212,12 @@ IdeOnly = true,
                     if (string.IsNullOrEmpty(name))
                         return "Error: name is required";
 
-                    var service = GetSchemaGraph(args);
+                    var db = GetSchemaGraph(args);
+                    var service = db?.Service;
                     if (service == null)
                         return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
 
-                    return StampSchemaSource(service.GetTable(name));
+                    return db.Stamp(service.GetTable(name));
                 }
             });
 
@@ -4139,12 +4238,13 @@ IdeOnly = true,
                     if (string.IsNullOrEmpty(pattern))
                         return "Error: pattern is required";
 
-                    var service = GetSchemaGraph(args);
+                    var db = GetSchemaGraph(args);
+                    var service = db?.Service;
                     if (service == null)
                         return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
 
                     int limit = McpJsonRpc.GetInt(args, "limit", 100);
-                    return StampSchemaSource(service.SearchColumns(pattern, limit));
+                    return db.Stamp(service.SearchColumns(pattern, limit));
                 }
             });
 
@@ -4164,11 +4264,12 @@ IdeOnly = true,
                     if (string.IsNullOrEmpty(table))
                         return "Error: table is required";
 
-                    var service = GetSchemaGraph(args);
+                    var db = GetSchemaGraph(args);
+                    var service = db?.Service;
                     if (service == null)
                         return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
 
-                    return StampSchemaSource(service.GetRelationships(table));
+                    return db.Stamp(service.GetRelationships(table));
                 }
             });
 
@@ -4188,11 +4289,12 @@ IdeOnly = true,
                     if (string.IsNullOrEmpty(names))
                         return "Error: names is required";
 
-                    var service = GetSchemaGraph(args);
+                    var db = GetSchemaGraph(args);
+                    var service = db?.Service;
                     if (service == null)
                         return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
 
-                    return StampSchemaSource(service.ValidateNames(names));
+                    return db.Stamp(service.ValidateNames(names));
                 }
             });
 
@@ -4207,11 +4309,12 @@ IdeOnly = true,
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    var service = GetSchemaGraph(args);
+                    var db = GetSchemaGraph(args);
+                    var service = db?.Service;
                     if (service == null)
                         return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
 
-                    return StampSchemaSource(service.GetStats());
+                    return db.Stamp(service.GetStats());
                 }
             });
 

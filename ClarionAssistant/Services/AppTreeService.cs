@@ -349,13 +349,18 @@ namespace ClarionAssistant.Services
         /// can't tell which app a tree selection belongs to, so the selection path fails closed. Counts distinct
         /// App objects across the same workbench collections FindAppViewContent searches. Pure managed reflection.
         /// </summary>
-        public int CountOpenAppViews()
+        public int CountOpenAppViews() { return DistinctOpenApps().Count; }
+
+        // The union walk CountOpenAppViews has always done, exposed so GetOpenAppFileNames can name
+        // the same set the count was taken over (one walk, one answer - a second, subtly different
+        // walk is how a guard reads "1" while the message lists 2).
+        private HashSet<object> DistinctOpenApps()
         {
             var apps = new HashSet<object>();
             try
             {
                 var workbench = WorkbenchSingleton.Workbench;
-                if (workbench == null) return 0;
+                if (workbench == null) return apps;
 
                 Func<object, object> appFrom = obj =>
                 {
@@ -387,7 +392,39 @@ namespace ClarionAssistant.Services
                 }
             }
             catch { }
-            return apps.Count;
+            return apps;
+        }
+
+        /// <summary>
+        /// True when the ACTIVE workbench window is itself an app view - i.e. "the open app" is the
+        /// one with focus and FindAppViewContent's fast path resolves it unambiguously, however many
+        /// other apps are open. False when focus is on an editor, an embeditor, a pad, or nothing.
+        /// </summary>
+        public bool IsActiveWindowAppView()
+        {
+            try
+            {
+                var workbench = WorkbenchSingleton.Workbench;
+                var win = workbench == null ? null : GetProp(workbench, "ActiveWorkbenchWindow");
+                if (win == null) return false;
+                if (GetProp(win, "App") != null) return true;
+                var vc = GetProp(win, "ViewContent") ?? GetProp(win, "ActiveViewContent");
+                return vc != null && GetProp(vc, "App") != null;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>.app file names of every distinct open app view (same walk as CountOpenAppViews), for
+        /// the ambiguity message a tool returns instead of guessing.</summary>
+        public List<string> GetOpenAppFileNames()
+        {
+            var names = new List<string>();
+            foreach (var app in DistinctOpenApps())
+            {
+                string f = (GetProp(app, "FileName") ?? GetProp(app, "Name") ?? "").ToString();
+                if (f.Length > 0) names.Add(f);
+            }
+            return names;
         }
 
         /// <summary>

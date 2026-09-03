@@ -42,6 +42,15 @@ namespace ClarionAssistant.Services
         /// (GitHub #210). Empty list when no app or no dictionary. UI thread.
         /// </summary>
         List<ClarionAppDataReader.TableDef> ReadLiveDictionaryTables();
+        /// <summary>
+        /// The multi-app ambiguity guard, for tools that answer "the open app": distinct open app
+        /// views, whether the focused window is itself one of them, and their .app file names for
+        /// the error message. With 2+ apps and focus elsewhere, FindAppViewContent's answer is
+        /// "whichever the IDE listed first" - fail closed instead (GitHub #210, pipeline run 1).
+        /// </summary>
+        int CountOpenAppViews();
+        bool IsActiveWindowAppView();
+        List<string> GetOpenAppFileNames();
         List<string> GetProcedureNames();
         List<Dictionary<string, object>> GetProcedureDetails();
         string SelectProcedure(string procedureName);
