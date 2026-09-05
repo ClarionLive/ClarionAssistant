@@ -27,6 +27,7 @@ namespace ClarionAssistant.McpServer
             bool selfTest = false, negativeControl = false, stdioSelfTest = false;
             bool stdioNoise = false, help = false;
             string solution = null;
+            string clarionVersion = null;
             bool unknownArg = false;
 
             for (int i = 0; i < args.Length; i++)
@@ -113,9 +114,25 @@ namespace ClarionAssistant.McpServer
                             return 64;
                         }
                         break;
+                    case "--clarion-version":
+                        // Which Clarion, for one launch. The DURABLE answer is
+                        // clarion-assistant.json next to the .sln (see SolutionClarionVersion) —
+                        // this flag is for trying another version without editing a committed
+                        // file. Same "consumes the next argument, checked not assumed" reasoning
+                        // as --solution: a trailing flag with nothing after it must not read as
+                        // "no preference", because the user clearly had one.
+                        if (i + 1 < args.Length) { clarionVersion = args[++i]; }
+                        else
+                        {
+                            Console.Error.WriteLine(ServerName + ": --clarion-version needs a version name.");
+                            return 64;
+                        }
+                        break;
                     default:
                         if (a.StartsWith("--solution=", StringComparison.OrdinalIgnoreCase))
                             solution = a.Substring("--solution=".Length);
+                        else if (a.StartsWith("--clarion-version=", StringComparison.OrdinalIgnoreCase))
+                            clarionVersion = a.Substring("--clarion-version=".Length);
                         else
                             unknownArg = true;
                         break;
@@ -137,12 +154,22 @@ namespace ClarionAssistant.McpServer
             // starts talking JSON-RPC on the pipe; printing usage and exiting 64 (the old spike
             // behaviour) would look to every client like a server that crashes on startup.
             // --stdio stays accepted so a config file can be explicit.
-            var workspace = StandaloneWorkspace.Resolve(solution, Environment.CurrentDirectory);
+            var workspace = StandaloneWorkspace.Resolve(solution, Environment.CurrentDirectory, clarionVersion);
 
             // stderr is the ONLY place a stdio server can explain itself — stdout is the protocol
             // stream. Without this line, "index_solution says no solution is selected" is a
             // mystery the user has no way to diagnose from the client side.
             Console.Error.WriteLine(ServerName + ": " + workspace.ResolutionNote);
+
+            // WHICH CLARION, AND WHO DECIDED. Resolved EAGERLY here, though everything else about
+            // the workspace is lazy, and the exception is deliberate: the version silently sets
+            // the redirection file, the library search paths and the build root, so the user needs
+            // to read it BEFORE it has shaped an answer, not after. On a machine with one Clarion
+            // this is a line of reassurance; on one with four it is the difference between a
+            // checked decision and an invisible guess. Costs one ClarionProperties.xml parse.
+            workspace.ResolveVersionNow();
+            if (!string.IsNullOrEmpty(workspace.VersionNote))
+                Console.Error.WriteLine(ServerName + ": " + workspace.VersionNote);
 
             var bundle = BuildDispatcher(workspace);
             RegisterAsVisibleInstance(bundle, workspace);
@@ -275,6 +302,16 @@ namespace ClarionAssistant.McpServer
             w.WriteLine("                       lets the schema tools see the dictionary of the app it has open).");
             w.WriteLine("                       Without it, a single .sln in the working directory");
             w.WriteLine("                       is used; several means none, rather than a guess.");
+            w.WriteLine("  --clarion-version <name>");
+            w.WriteLine("                       which Clarion to use, by the name Clarion itself records");
+            w.WriteLine("                       (e.g. Clarion12). For ONE launch. The durable answer is a");
+            w.WriteLine("                       committed " + SolutionClarionVersion.FileName + " next to the .sln:");
+            w.WriteLine("                           {\"clarionVersion\": \"Clarion12\"}");
+            w.WriteLine("                       Without either, the version is GUESSED from this server's");
+            w.WriteLine("                       install location or the machine's current, and the guess is");
+            w.WriteLine("                       reported on stderr at startup. It decides the redirection");
+            w.WriteLine("                       file, library search paths and build root - so with several");
+            w.WriteLine("                       Clarions installed, commit the file.");
             w.WriteLine("  --debug              write the LSP subsystem's diagnostics to stderr (stdout stays");
             w.WriteLine("                       pure JSON-RPC). Works in the SHIPPED build — this is the trace");
             w.WriteLine("                       to capture when the language server misbehaves.");
@@ -370,6 +407,13 @@ namespace ClarionAssistant.McpServer
                 // AssistantChatControl.StartMcpServer.
                 ClarionAssistant.Services.LspService.SolutionPathProvider =
                     () => workspace.CurrentSolutionPath;
+
+                // And WHICH CLARION, for the same reason. Without this the LSP resolved its own
+                // version independently, so --clarion-version and the solution's committed
+                // clarion-assistant.json shaped the tools' answers but not the language server's
+                // redirection file or library paths — the two silently disagreeing (d051fbd1 item 5).
+                ClarionAssistant.Services.LspService.VersionConfigProvider =
+                    () => workspace.CurrentVersionConfig;
             }
 
             var dispatcher = new ClarionAssistant.Services.McpDispatcher(

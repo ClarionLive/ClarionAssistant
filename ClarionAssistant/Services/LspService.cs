@@ -31,6 +31,17 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static System.Func<string> SolutionPathProvider;
 
+        /// <summary>
+        /// Supplies the Clarion version this host has settled on, or null to let this service
+        /// resolve one itself. Same host-hook pattern as <see cref="SolutionPathProvider"/>.
+        ///
+        /// Set by the standalone server, which has tiers the IDE does not — an explicit
+        /// --clarion-version and the solution's committed clarion-assistant.json — and whose
+        /// answer must reach the language server's redirection and library paths. Left unset by
+        /// the addin, where the IDE's own version selection is already authoritative.
+        /// </summary>
+        public static System.Func<ClarionVersionConfig> VersionConfigProvider;
+
         private static readonly object _lock = new object();
         private static int _lspStarting; // 0 = idle, 1 = a background start is in flight
         private static LspClient _client;
@@ -109,7 +120,21 @@ namespace ClarionAssistant.Services
                     ClarionVersionConfig versionConfig = null;
                     try
                     {
-                        var versionInfo = ClarionVersionService.Detect();
+                        // ASK THE HOST FIRST, if it has an opinion. Without this hook the LSP ran
+                        // its OWN ClarionVersionService.Detect() and reached its own conclusion, so
+                        // a standalone server told which Clarion to use — by --clarion-version or by
+                        // the solution's committed clarion-assistant.json — still handed the language
+                        // server a DIFFERENT one's redirection file and library paths. Measured on a
+                        // machine with 27 configured versions, where the two disagreed by two major
+                        // releases (d051fbd1 item 5). The addin leaves this unset and keeps resolving
+                        // for itself, which is right: there the IDE's own selection is authoritative.
+                        if (VersionConfigProvider != null)
+                        {
+                            versionConfig = VersionConfigProvider();
+                            LspTrace.Write("[LspService] version from host: "
+                                + (versionConfig != null ? versionConfig.Name : "none - cross-file features will degrade"));
+                        }
+                        var versionInfo = versionConfig != null ? null : ClarionVersionService.Detect();
                         if (versionInfo != null)
                         {
                             versionConfig = versionInfo.GetCurrentConfig();
