@@ -3465,7 +3465,10 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "list_instances",
-                Description = "List all running Clarion IDE instances with their open apps, active files, and what they're working on. Use this to see the full picture across a multi-app solution.",
+                // "Clarion Assistant instances", not "Clarion IDE instances": since d051fbd1 a
+                // standalone clarion-mcp-server registers here too, and a developer told these
+                // are all IDEs will go looking for a window that does not exist.
+                Description = "List all running Clarion Assistant instances - Clarion IDEs and standalone MCP servers - with the solution they are on, their open apps, active files, and what they're working on. Use this to see the full picture across a multi-app solution.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 Handler = args =>
                 {
@@ -3474,12 +3477,19 @@ IdeOnly = true,
                     if (instances.Count == 0) return "No instances registered.";
 
                     var sb = new System.Text.StringBuilder();
-                    sb.AppendLine("Running Clarion IDE instances:");
+                    sb.AppendLine("Running Clarion Assistant instances:");
                     sb.AppendLine();
                     foreach (var inst in instances)
                     {
                         string label = inst.IsSelf ? " (this instance)" : "";
                         sb.AppendLine(string.Format("PID {0}{1}", inst.Pid, label));
+                        // The solution was recorded from the start and read back into InstanceInfo,
+                        // but no caller ever showed it — so "who else is on this solution?", the
+                        // question the whole feature exists to answer, came back without the
+                        // solution in it. Printed first because it is what decides whether a peer
+                        // is relevant to you at all (d051fbd1 item 1).
+                        if (!string.IsNullOrEmpty(inst.SolutionPath))
+                            sb.AppendLine("  Solution: " + inst.SolutionPath);
                         if (!string.IsNullOrEmpty(inst.AppFile))
                             sb.AppendLine("  App: " + Path.GetFileName(inst.AppFile));
                         if (!string.IsNullOrEmpty(inst.ActiveFile))

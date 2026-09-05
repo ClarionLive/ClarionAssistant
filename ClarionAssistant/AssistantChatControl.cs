@@ -3025,6 +3025,11 @@ namespace ClarionAssistant
             {
                 _instanceCoord = new Services.InstanceCoordinationService();
                 _toolRegistry.SetInstanceCoordination(_instanceCoord);
+                // Say WHAT this instance is. Since d051fbd1 a headless clarion-mcp-server
+                // registers in the same table and labels itself, so leaving the IDE side blank
+                // would make "no label" mean either "an IDE" or "a build too old to say" — and a
+                // reader cannot tell those apart. Set before Start(), which writes the row.
+                _instanceCoord.WorkingOn = "Clarion IDE";
                 _instanceCoord.Start();
             }
             catch { /* non-fatal: coordination tools won't be available */ }

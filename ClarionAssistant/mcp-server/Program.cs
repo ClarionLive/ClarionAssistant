@@ -145,9 +145,71 @@ namespace ClarionAssistant.McpServer
             Console.Error.WriteLine(ServerName + ": " + workspace.ResolutionNote);
 
             var bundle = BuildDispatcher(workspace);
+            RegisterAsVisibleInstance(bundle, workspace);
             StartLspInBackground(bundle, workspace);
 
-            return StdioTransport.Run(bundle, stdioNoise);
+            try
+            {
+                return StdioTransport.Run(bundle, stdioNoise);
+            }
+            finally
+            {
+                // Run() returns when stdin reaches EOF — the normal end of an MCP session — so
+                // this is the deregistration path that matters. A hard kill skips it and leaves a
+                // row behind; that is covered, because Start() calls CleanupStale(), which reaps
+                // any row whose pid is no longer a live process. Both halves are needed: without
+                // the finally every clean exit would rely on the next server's cleanup, and a
+                // developer closing their client would linger as a phantom peer for 30 seconds.
+                StopBeingAVisibleInstance(bundle);
+            }
+        }
+
+        /// <summary>
+        /// Register this process in the shared instance table and start its heartbeat.
+        ///
+        /// The service was already constructed and handed to the registry, so the coordination
+        /// TOOLS worked — this process could list peers and send them messages. What it could not
+        /// do is be seen: Start(), the method that writes the row and heartbeats, was never called
+        /// from anywhere. So a standalone server read the conversation and spoke into it while
+        /// remaining invisible to every other instance, which is the one failure mode a
+        /// coordination feature cannot have. Ticket d051fbd1, checklist item 1.
+        ///
+        /// SolutionPath is what makes the row useful — peers are matched on the solution, and an
+        /// instance registered against null answers "who else is on this solution?" with silence.
+        /// WorkingOn names the host because a bare pid is not enough to act on: seeing that the
+        /// other party is a headless server rather than a second IDE changes what you do about it.
+        ///
+        /// Never throws. Coordination is an awareness feature; a locked or corrupt instances.db
+        /// must cost this server its visibility, not its fifty-odd working tools.
+        /// </summary>
+        private static void RegisterAsVisibleInstance(
+            McpDispatcherBundle bundle, StandaloneWorkspace workspace)
+        {
+            if (bundle == null || bundle.InstanceCoordination == null) return;
+
+            try
+            {
+                var coord = bundle.InstanceCoordination;
+                coord.SolutionPath = workspace != null ? workspace.CurrentSolutionPath : null;
+                coord.WorkingOn = ServerName + " " + ServerVersion + " (standalone, no IDE)";
+                coord.Start();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    ServerName + ": could not register as a visible instance - " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Deregister and stop the heartbeat. Never throws — this runs on the way out, where an
+        /// exception would replace a clean exit code with a crash over a bookkeeping row.
+        /// </summary>
+        private static void StopBeingAVisibleInstance(McpDispatcherBundle bundle)
+        {
+            if (bundle == null || bundle.InstanceCoordination == null) return;
+            try { bundle.InstanceCoordination.Stop(); }
+            catch { }
         }
 
         /// <summary>
@@ -276,9 +338,16 @@ namespace ClarionAssistant.McpServer
                 Console.Error.WriteLine(ServerName + ": knowledge service unavailable - " + ex.Message);
             }
 
+            // CONSTRUCTED HERE, STARTED IN THE SERVE PATH. Start() writes a row into the SHARED
+            // %APPDATA%\ClarionAssistant\instances.db that every other host reads, so it must not
+            // run for --selftest / --selftest-stdio, which call this method too: a self-test that
+            // announced a phantom peer to the developer's real IDE would be a test with a side
+            // effect on production state. The instance is carried out on the bundle instead.
+            ClarionAssistant.Services.InstanceCoordinationService instanceCoord = null;
             try
             {
-                registry.SetInstanceCoordination(new ClarionAssistant.Services.InstanceCoordinationService());
+                instanceCoord = new ClarionAssistant.Services.InstanceCoordinationService();
+                registry.SetInstanceCoordination(instanceCoord);
             }
             catch (Exception ex)
             {
@@ -293,9 +362,11 @@ namespace ClarionAssistant.McpServer
                 // answers depending on timing.
                 registry.SetWorkspace(workspace, ui);
 
-                // LspService.EnsureRunning() reads the solution through this hook and RETURNS
-                // SILENTLY when it is unset — so without this line every lsp_* tool fails with a
-                // generic "not running" and no clue why. The addin sets the same hook from
+                // LspService.EnsureRunning() reads the solution through this hook and returns
+                // without starting when it is unset — so without this line every lsp_* tool fails
+                // with a generic "not running". That return used to be SILENT as well; it now
+                // traces (item 0), so the "and no clue why" half of this warning is fixed and the
+                // line is still required. The addin sets the same hook from
                 // AssistantChatControl.StartMcpServer.
                 ClarionAssistant.Services.LspService.SolutionPathProvider =
                     () => workspace.CurrentSolutionPath;
@@ -308,7 +379,7 @@ namespace ClarionAssistant.McpServer
                 ServerName,
                 ServerVersion);
 
-            return new McpDispatcherBundle(registry, dispatcher);
+            return new McpDispatcherBundle(registry, dispatcher, instanceCoord);
         }
 
         /// <summary>Registry + dispatcher, so callers that need the tool count don't rebuild.</summary>
@@ -317,12 +388,20 @@ namespace ClarionAssistant.McpServer
             public readonly ClarionAssistant.Services.McpToolRegistry Registry;
             public readonly ClarionAssistant.Services.McpDispatcher Dispatcher;
 
+            /// <summary>
+            /// Carried out of BuildDispatcher so the SERVE path — and only the serve path — can
+            /// Start() it. May be null if constructing it failed. See RegisterAsVisibleInstance.
+            /// </summary>
+            public readonly ClarionAssistant.Services.InstanceCoordinationService InstanceCoordination;
+
             public McpDispatcherBundle(
                 ClarionAssistant.Services.McpToolRegistry registry,
-                ClarionAssistant.Services.McpDispatcher dispatcher)
+                ClarionAssistant.Services.McpDispatcher dispatcher,
+                ClarionAssistant.Services.InstanceCoordinationService instanceCoordination)
             {
                 Registry = registry;
                 Dispatcher = dispatcher;
+                InstanceCoordination = instanceCoordination;
             }
 
             public static implicit operator ClarionAssistant.Services.McpDispatcher(McpDispatcherBundle b)
