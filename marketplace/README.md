@@ -9,12 +9,24 @@ marketplace/
   .claude-plugin/marketplace.json          ← marketplace manifest
   plugins/clarion-assistant/
     .claude-plugin/plugin.json             ← plugin manifest
-    CLAUDE.md                              ← plugin instructions
     skills/<name>/SKILL.md                 ← one folder per skill
     hooks/                                 ← plugin hooks
-    agents/                                ← plugin agents
+    launcher/                              ← clarion-tools MCP server launcher
     docs/                                  ← plugin docs
 ```
+
+**There is deliberately no `CLAUDE.md` here.** One used to sit at the plugin
+root and Claude Code never read it — a plugin root is not a place CLAUDE.md is
+loaded from. Verified against an ACTIVE plugin whose 19 KB root `CLAUDE.md` was
+absent from the session context; meanwhile the file's own contents had drifted
+(it named `mcp__clarion-ide__*` tools that no longer exist under that name, and
+called `.app` a dictionary). Everything in it was already covered properly by
+the skills, so it was removed rather than folded (ticket d051fbd1).
+
+Put instructions in a **skill** — that is the mechanism a plugin actually has.
+The IDE's own prompt is a separate thing entirely and reaches its session by a
+different route: `AssistantChatControl.DeployClaudeMd` copies
+`Terminal\clarion-assistant-prompt.md` to `<workDir>\.claude\CLAUDE.md`.
 
 ## How it is distributed
 

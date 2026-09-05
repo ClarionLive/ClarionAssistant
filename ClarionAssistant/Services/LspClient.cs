@@ -541,7 +541,7 @@ namespace ClarionAssistant.Services
         /// textDocument/rename - asks the server for a workspace edit that would
         /// rename the symbol at the given position. Returns the raw LSP WorkspaceEdit
         /// result — the caller is responsible for applying the edits (and MUST seek
-        /// developer approval first per CLAUDE.md rule #9).
+        /// developer approval first per CLAUDE.md rule #10 — #9 is the embeditor workflow).
         /// </summary>
         public Dictionary<string, object> Rename(string filePath, int line, int character, string newName)
         {

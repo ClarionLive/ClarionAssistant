@@ -271,11 +271,24 @@ const SQL_RULES = [
   },
 ];
 
-// Clarion source write protection is handled by the bundled CLAUDE.md
-// (rule #9) and Claude Code's native permission allowlist, NOT by this
-// hook. The hook previously returned 'ask' on every mcp__clarion-assistant
-// write tool call, which overrode the user's "don't ask again" allowlist
-// entry and caused repeated prompts (issue #13).
+// Clarion source write protection is NOT handled by this hook. The hook
+// previously returned 'ask' on every mcp__clarion-assistant write tool call,
+// which overrode the user's "don't ask again" allowlist entry and caused
+// repeated prompts (issue #13).
+//
+// This comment used to name "the bundled CLAUDE.md (rule #9)" as the control
+// instead. Both halves were wrong, and the correction is worth keeping because
+// it changes what a reader should rely on (ticket d051fbd1, item 2):
+//   - The plugin root CLAUDE.md is gone. Claude Code does not load a CLAUDE.md
+//     from a plugin root — verified against an ACTIVE plugin whose 19 KB root
+//     CLAUDE.md was absent from the session context — so it never protected
+//     anything for a plugin user.
+//   - The rule number was off by one anyway: the write-approval guardrail is
+//     rule #10 of the IDE's .claude\CLAUDE.md, not #9 (#9 is the embeditor
+//     workflow). That file is loaded only in the Clarion IDE's own session.
+//
+// So for a plugin user outside the IDE, the ONLY thing standing between an
+// agent and a .clw write is Claude Code's native permission allowlist.
 
 // ── Hook Logic ──────────────────────────────────────────────────────
 

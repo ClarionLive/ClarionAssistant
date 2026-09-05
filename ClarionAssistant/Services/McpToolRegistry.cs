@@ -2660,7 +2660,7 @@ COMMON QUERIES:
                 Name = "lsp_rename",
                 Description = "Propose a rename of the symbol at the given file/line/character position. " +
                     "IMPORTANT: This tool returns a list of edits that WOULD be applied — it does NOT apply them. " +
-                    "You MUST present the edit list to the developer for approval (per CLAUDE.md rule #9) before " +
+                    "You MUST present the edit list to the developer for approval before " +
                     "applying any of the edits via write_embed_content, replace_range, or write_file.\n" +
                     "Returns: { edits: [{file, line, character, endLine, endCharacter, newText}, ...], count: N }. " +
                     "If the server doesn't support rename for this symbol (keyword, built-in, or unsupported scope) " +

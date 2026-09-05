@@ -94,6 +94,6 @@ If any files returned `pending: true`:
 2. **ALWAYS check `get_solution_info` first.** Don't run diagnostics without an open solution.
 3. **Treat `pending: true` as "unknown", not "clean".** Always report pending files separately.
 4. **Show short paths in the report** for readability, but use absolute paths with `open_file` for navigation.
-5. **Don't auto-fix anything.** This skill reports only. If the developer wants fixes, they'll ask — then follow rule #9 from CLAUDE.md (show code, get approval, then apply).
+5. **Don't auto-fix anything.** This skill reports only. If the developer wants fixes, they'll ask — then show the code, get approval, and only then apply. Inside the Clarion IDE this is rule #10 of the IDE's own `.claude/CLAUDE.md`; outside it, no CLAUDE.md states it, so the rule is stated here rather than cited.
 6. **If `get_project_source_files` returns empty**, the solution may not have source generated yet. Tell the developer:
    > No source files found. You may need to generate source first (Build > Generate All Source).
