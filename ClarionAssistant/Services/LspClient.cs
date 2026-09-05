@@ -118,7 +118,7 @@ namespace ClarionAssistant.Services
                 // 3. System PATH
                 string nodeExe = ResolveNodeExe(serverJsPath);
 
-                System.Diagnostics.Debug.WriteLine("[LSP] Starting: " + nodeExe + " \"" + serverJsPath + "\" --stdio");
+                LspTrace.Write("[LSP] Starting: " + nodeExe + " \"" + serverJsPath + "\" --stdio");
 
                 _process = new Process
                 {
@@ -164,7 +164,7 @@ namespace ClarionAssistant.Services
                     var consoleIn = Console.InputEncoding;
                     if (consoleIn != null && consoleIn.GetPreamble().Length > 0)
                     {
-                        System.Diagnostics.Debug.WriteLine("[LSP] Console.InputEncoding "
+                        LspTrace.Write("[LSP] Console.InputEncoding "
                             + consoleIn.WebName + " has a "
                             + consoleIn.GetPreamble().Length + "-byte preamble; clearing it so the "
                             + "child's stdin writer cannot inject a BOM ahead of the first header.");
@@ -174,14 +174,14 @@ namespace ClarionAssistant.Services
                 catch (Exception ex)
                 {
                     // No console attached (the addin). Nothing to inject, nothing to fix.
-                    System.Diagnostics.Debug.WriteLine("[LSP] Console.InputEncoding not adjustable: " + ex.Message);
+                    LspTrace.Write("[LSP] Console.InputEncoding not adjustable: " + ex.Message);
                 }
 
                 // Capture stderr for diagnostics — ring buffer + Debug output
                 _process.ErrorDataReceived += (s, e) =>
                 {
                     if (string.IsNullOrEmpty(e.Data)) return;
-                    System.Diagnostics.Debug.WriteLine("[LSP stderr] " + e.Data);
+                    LspTrace.Write("[LSP stderr] " + e.Data);
                     lock (_debugLock)
                     {
                         _stderrBuffer.Enqueue(e.Data);
@@ -194,7 +194,7 @@ namespace ClarionAssistant.Services
                 _process.BeginErrorReadLine();
                 _running = true;
 
-                System.Diagnostics.Debug.WriteLine("[LSP] Process started, PID=" + _process.Id);
+                LspTrace.Write("[LSP] Process started, PID=" + _process.Id);
 
                 // Start reader thread
                 _readerThread = new Thread(ReadLoop) { IsBackground = true, Name = "LSP-Reader" };
@@ -217,19 +217,19 @@ namespace ClarionAssistant.Services
                     }
                 };
 
-                System.Diagnostics.Debug.WriteLine("[LSP] Sending initialize request...");
+                LspTrace.Write("[LSP] Sending initialize request...");
                 var initResult = SendRequest("initialize", initParams, 15000);
                 if (initResult == null)
                 {
-                    System.Diagnostics.Debug.WriteLine("[LSP] Initialize timed out or returned null");
+                    LspTrace.Write("[LSP] Initialize timed out or returned null");
                     // Check if process crashed
                     if (_process.HasExited)
-                        System.Diagnostics.Debug.WriteLine("[LSP] Process exited with code: " + _process.ExitCode);
+                        LspTrace.Write("[LSP] Process exited with code: " + _process.ExitCode);
                     Stop();
                     return false;
                 }
 
-                System.Diagnostics.Debug.WriteLine("[LSP] Initialize succeeded");
+                LspTrace.Write("[LSP] Initialize succeeded");
 
                 // Send initialized notification
                 SendNotification("initialized", new Dictionary<string, object>());
@@ -237,7 +237,7 @@ namespace ClarionAssistant.Services
                 // Send clarion/updatePaths if provided — required for cross-file LSP features
                 if (_pendingUpdatePaths != null)
                 {
-                    System.Diagnostics.Debug.WriteLine("[LSP] Sending clarion/updatePaths...");
+                    LspTrace.Write("[LSP] Sending clarion/updatePaths...");
                     SendNotification("clarion/updatePaths", _pendingUpdatePaths);
                     _pendingUpdatePaths = null;
                 }
@@ -245,14 +245,14 @@ namespace ClarionAssistant.Services
                 // Give the server a moment to finish initialization
                 Thread.Sleep(1000);
 
-                System.Diagnostics.Debug.WriteLine("[LSP] Ready");
+                LspTrace.Write("[LSP] Ready");
                 Active = this;
                 return true;
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[LSP] Start failed: " + ex.GetType().Name + ": " + ex.Message);
-                System.Diagnostics.Debug.WriteLine("[LSP] Stack: " + ex.StackTrace);
+                LspTrace.Write("[LSP] Start failed: " + ex.GetType().Name + ": " + ex.Message);
+                LspTrace.Write("[LSP] Stack: " + ex.StackTrace);
                 Stop();
                 return false;
             }
@@ -293,12 +293,12 @@ namespace ClarionAssistant.Services
                 string lspDir = Path.GetDirectoryName(serverJsPath);
                 string lspRoot = Path.GetFullPath(Path.Combine(lspDir, "..", "..", ".."));
                 string bundled = Path.Combine(lspRoot, "node.exe");
-                System.Diagnostics.Debug.WriteLine("[LSP] Looking for bundled node.exe at: " + bundled);
+                LspTrace.Write("[LSP] Looking for bundled node.exe at: " + bundled);
                 if (File.Exists(bundled)) return bundled;
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[LSP] Bundled node.exe lookup failed: " + ex.Message);
+                LspTrace.Write("[LSP] Bundled node.exe lookup failed: " + ex.Message);
             }
 
             try
@@ -314,17 +314,17 @@ namespace ClarionAssistant.Services
                 {
                     if (File.Exists(candidate))
                     {
-                        System.Diagnostics.Debug.WriteLine("[LSP] Using node.exe at: " + candidate);
+                        LspTrace.Write("[LSP] Using node.exe at: " + candidate);
                         return candidate;
                     }
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[LSP] node.exe fallback search failed: " + ex.Message);
+                LspTrace.Write("[LSP] node.exe fallback search failed: " + ex.Message);
             }
 
-            System.Diagnostics.Debug.WriteLine("[LSP] No bundled node.exe found, falling back to PATH");
+            LspTrace.Write("[LSP] No bundled node.exe found, falling back to PATH");
             return "node";
         }
 
@@ -379,14 +379,14 @@ namespace ClarionAssistant.Services
                     try
                     {
                         if (!p.HasExited)
-                            System.Diagnostics.Debug.WriteLine("[Shutdown] LSP kill UNCONFIRMED — node pid " + pid + " may survive");
+                            LspTrace.Write("[Shutdown] LSP kill UNCONFIRMED — node pid " + pid + " may survive");
                     }
                     catch { }
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[Shutdown] LSP KillForShutdown: " + ex.Message);
+                LspTrace.Write("[Shutdown] LSP KillForShutdown: " + ex.Message);
             }
 
             // Deliberately skip the diagnostics ManualResetEvent cleanup that Stop() does — the process is
@@ -411,7 +411,7 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[LSP] Stop failed: " + ex.Message);
+                LspTrace.Write("[LSP] Stop failed: " + ex.Message);
             }
 
             _process = null;
@@ -768,7 +768,7 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[LSP] GetDiagnostics trigger failed: " + ex.Message);
+                LspTrace.Write("[LSP] GetDiagnostics trigger failed: " + ex.Message);
                 return result;
             }
 
@@ -1176,9 +1176,9 @@ namespace ClarionAssistant.Services
                         var hex = new StringBuilder();
                         for (int i = 0; i < Math.Min(headerBytes.Length, 24); i++)
                             hex.Append(headerBytes[i].ToString("X2")).Append(' ');
-                        System.Diagnostics.Debug.WriteLine("[LSP] first header bytes: " + hex
+                        LspTrace.Write("[LSP] first header bytes: " + hex
                             + " | as text: " + header.Replace("\r", "\\r").Replace("\n", "\\n"));
-                        System.Diagnostics.Debug.WriteLine("[LSP] stdin encoding: "
+                        LspTrace.Write("[LSP] stdin encoding: "
                             + _process.StandardInput.Encoding.WebName
                             + ", preamble length: " + _process.StandardInput.Encoding.GetPreamble().Length);
                     }
@@ -1189,7 +1189,7 @@ namespace ClarionAssistant.Services
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine("[LSP] WriteMessage failed: " + ex.Message);
+                    LspTrace.Write("[LSP] WriteMessage failed: " + ex.Message);
                 }
             }
         }
@@ -1231,13 +1231,13 @@ namespace ClarionAssistant.Services
                     }
                     catch (Exception ex)
                     {
-                        System.Diagnostics.Debug.WriteLine("[LSP] ReadLoop message parse failed: " + ex.Message);
+                        LspTrace.Write("[LSP] ReadLoop message parse failed: " + ex.Message);
                     }
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[LSP] ReadLoop terminated: " + ex.Message);
+                LspTrace.Write("[LSP] ReadLoop terminated: " + ex.Message);
             }
         }
 
@@ -1268,7 +1268,7 @@ namespace ClarionAssistant.Services
                     HandlePublishDiagnostics(msg["params"] as Dictionary<string, object>);
                     break;
                 default:
-                    System.Diagnostics.Debug.WriteLine("[LSP] Ignored notification: " + method);
+                    LspTrace.Write("[LSP] Ignored notification: " + method);
                     break;
             }
         }
@@ -1334,7 +1334,7 @@ namespace ClarionAssistant.Services
                 set.Ready.Set();
             }
 
-            System.Diagnostics.Debug.WriteLine(string.Format(
+            LspTrace.Write(string.Format(
                 "[LSP] publishDiagnostics: {0} entries for {1}", entries.Count, canonical));
         }
 
@@ -1358,7 +1358,7 @@ namespace ClarionAssistant.Services
                 var victim = _diagnostics[oldestKey];
                 _diagnostics.Remove(oldestKey);
                 try { victim.Ready.Dispose(); } catch { }
-                System.Diagnostics.Debug.WriteLine("[LSP] Evicted oldest diagnostics cache entry: " + oldestKey);
+                LspTrace.Write("[LSP] Evicted oldest diagnostics cache entry: " + oldestKey);
             }
         }
 

@@ -54,7 +54,7 @@ namespace ClarionAssistant.Services
                 // self-heal LspStarter), so gating here covers them all.
                 if (SharedLspBridge.IsSharedActive)
                 {
-                    Debug.WriteLine("[LspService] Shared ClarionLsp addin active — not starting the bundled LSP server.");
+                    LspTrace.Write("[LspService] Shared ClarionLsp addin active — not starting the bundled LSP server.");
                     return;
                 }
 
@@ -72,13 +72,37 @@ namespace ClarionAssistant.Services
                     // through a host-supplied hook, the same pattern SharedLspBridge already
                     // uses for CodeGraphDbPathProvider / SchemaGraphDbPathProvider.
                     string slnPath = SolutionPathProvider != null ? SolutionPathProvider() : null;
-                    if (string.IsNullOrEmpty(slnPath)) return; // can't start without a solution
+                    if (string.IsNullOrEmpty(slnPath))
+                    {
+                        // Traced, not silent. This is the standalone server's MOST LIKELY exit —
+                        // launched without --solution, or in a directory holding no single .sln —
+                        // and it used to return without a word. The caller then reported "LSP
+                        // server failed to start" alongside a resolved server.js and node.exe and
+                        // the line "the failure is in the client handshake", which is exactly
+                        // wrong: no handshake was ever attempted. Measured against the real .exe
+                        // (d051fbd1 item 0) — that misdiagnosis was the ENTIRE observable output.
+                        LspTrace.Write("[LspService] no solution - nothing to start. "
+                            + (SolutionPathProvider == null
+                                ? "The host installed no SolutionPathProvider."
+                                : "SolutionPathProvider returned nothing; pass --solution <path.sln> "
+                                  + "or run where exactly one .sln is discoverable."));
+                        return;
+                    }
 
                     string wsPath = Path.GetDirectoryName(slnPath);
 
-                    string ignoredSource;
-                    string serverJs = ResolveServerPath(out ignoredSource);
-                    if (serverJs == null) return;
+                    // resolveSource carries the resolver's OWN account of where it looked, and is
+                    // worth more on the failure branch than on the success one — so it is traced
+                    // either way rather than discarded (it used to be named "ignoredSource").
+                    string resolveSource;
+                    string serverJs = ResolveServerPath(out resolveSource);
+                    if (serverJs == null)
+                    {
+                        LspTrace.Write("[LspService] no server.js - nothing to start. "
+                            + (string.IsNullOrEmpty(resolveSource) ? "(resolver gave no detail)" : resolveSource));
+                        return;
+                    }
+                    LspTrace.Write("[LspService] server.js: " + serverJs + "  (source: " + resolveSource + ")");
 
                     // Resolve version config + redirection file ourselves (pane-independent).
                     // Either may be null — the LSP still starts; only cross-file features degrade.
@@ -105,7 +129,7 @@ namespace ClarionAssistant.Services
                     }
                     catch (Exception ex)
                     {
-                        Debug.WriteLine("[LspService] version/redfile resolution failed: " + ex.Message);
+                        LspTrace.Write("[LspService] version/redfile resolution failed: " + ex.Message);
                     }
 
                     if (_client != null) _client.Dispose();
@@ -166,7 +190,7 @@ namespace ClarionAssistant.Services
                     }
                     catch (Exception ex)
                     {
-                        Debug.WriteLine("[LspService] Failed to build LSP updatePaths: " + ex.Message);
+                        LspTrace.Write("[LspService] Failed to build LSP updatePaths: " + ex.Message);
                     }
 
                     string wsUri = "file:///" + wsPath.Replace("\\", "/");
@@ -176,7 +200,7 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[LspService] EnsureRunning failed: " + ex.Message);
+                LspTrace.Write("[LspService] EnsureRunning failed: " + ex.Message);
             }
         }
 
@@ -199,7 +223,7 @@ namespace ClarionAssistant.Services
                 try { EnsureRunning(); }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine("[LspService] background EnsureRunning failed: " + ex.Message);
+                    LspTrace.Write("[LspService] background EnsureRunning failed: " + ex.Message);
                 }
                 finally { Interlocked.Exchange(ref _lspStarting, 0); }
             });
@@ -372,7 +396,7 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[LspService] Failed to read .obsolete at " + extensionsRoot + ": " + ex.Message);
+                LspTrace.Write("[LspService] Failed to read .obsolete at " + extensionsRoot + ": " + ex.Message);
             }
             return set;
         }

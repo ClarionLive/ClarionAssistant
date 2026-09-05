@@ -181,6 +181,10 @@
     <Compile Include="..\Services\IndexRunGate.cs"><Link>Services\IndexRunGate.cs</Link></Compile>
     <Compile Include="..\Services\IndexRunLog.cs"><Link>Services\IndexRunLog.cs</Link></Compile>
     <Compile Include="..\Services\InstanceCoordinationService.cs"><Link>Services\InstanceCoordinationService.cs</Link></Compile>
+    <!-- The LSP subsystem's diagnostic sink. Linked BEFORE the three files that call it so the
+         reason it exists reads in order: they used to call Debug.WriteLine, which a Release build
+         deletes, so the debug flag printed nothing in the build we actually ship (d051fbd1). -->
+    <Compile Include="..\Services\LspTrace.cs"><Link>Services\LspTrace.cs</Link></Compile>
     <Compile Include="..\Services\LspService.cs"><Link>Services\LspService.cs</Link></Compile>
     <Compile Include="..\Services\SharedLspBridge.cs"><Link>Services\SharedLspBridge.cs</Link></Compile>
     <Compile Include="..\Services\McpToolRegistry.cs"><Link>Services\McpToolRegistry.cs</Link></Compile>

@@ -105,7 +105,7 @@ namespace ClarionAssistant.Services
                 _probedClient = c;
                 _probedOk = ok;
                 if (!ok)
-                    Debug.WriteLine("[SharedLspBridge] The installed ClarionLsp addin's client lacks the "
+                    LspTrace.Write("[SharedLspBridge] The installed ClarionLsp addin's client lacks the "
                         + "v1.1.0 methods (GetCompletionAsync/GetDiagnosticsAsync/NotifyBufferChangedAsync) — "
                         + "treating shared LSP as unavailable and using the bundled LspClient. "
                         + "Install ClarionLsp >= 1.1.0 for the shared single-process path.");
@@ -192,7 +192,7 @@ namespace ClarionAssistant.Services
                 try { m = c.GetType().GetMethod("GetSignatureHelpAsync"); } catch { }
                 if (m == null)
                 {
-                    Debug.WriteLine("[SharedLspBridge] shared client lacks GetSignatureHelpAsync — install ClarionLsp >= 1.4.0 for parameter hints.");
+                    LspTrace.Write("[SharedLspBridge] shared client lacks GetSignatureHelpAsync — install ClarionLsp >= 1.4.0 for parameter hints.");
                     return null;
                 }
                 return SharedSignatureHelpViaReflection(c, m, filePath, line, character, bufferText);
@@ -200,7 +200,7 @@ namespace ClarionAssistant.Services
             var lsp = LspClient.Active;
             if (lsp == null) return null;
             try { return ParseLspSignatureHelp(lsp.GetSignatureHelp(filePath, line, character, bufferText)); }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] signatureHelp (bundled) failed: " + ex.Message); return null; }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] signatureHelp (bundled) failed: " + ex.Message); return null; }
         }
 
         // Invoke the v1.4.0 GetSignatureHelpAsync(string, int, int, string, int) purely reflectively and
@@ -250,7 +250,7 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[SharedLspBridge] signatureHelp (shared) failed: " + ex.Message);
+                LspTrace.Write("[SharedLspBridge] signatureHelp (shared) failed: " + ex.Message);
                 return null;
             }
         }
@@ -391,7 +391,7 @@ namespace ClarionAssistant.Services
                 try { m = c.GetType().GetMethod("GetImplementationAsync"); } catch { }
                 if (m == null)
                 {
-                    Debug.WriteLine("[SharedLspBridge] shared client lacks GetImplementationAsync — update the ClarionLsp addin for go-to-implementation.");
+                    LspTrace.Write("[SharedLspBridge] shared client lacks GetImplementationAsync — update the ClarionLsp addin for go-to-implementation.");
                     return null;
                 }
                 if (!string.IsNullOrEmpty(bufferText)) EnsureBufferSynced(filePath, bufferText);
@@ -400,7 +400,7 @@ namespace ClarionAssistant.Services
             var lsp = LspClient.Active;
             if (lsp == null) return null;
             try { return lsp.GetImplementation(filePath, line, character, bufferText); }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] implementation (bundled) failed: " + ex.Message); return null; }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] implementation (bundled) failed: " + ex.Message); return null; }
         }
 
         // Invoke GetImplementationAsync(string, int, int) reflectively and flatten the LocationResult[]
@@ -450,7 +450,7 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[SharedLspBridge] implementation (shared) failed: " + ex.Message);
+                LspTrace.Write("[SharedLspBridge] implementation (shared) failed: " + ex.Message);
                 return null;
             }
         }
@@ -521,13 +521,13 @@ namespace ClarionAssistant.Services
             // Member-access stays LSP-only — the server resolves type-scoped members, CodeGraph can't.
             // Defensive: never throws (completion must not break), never overrides a real LSP item.
             try { MergeBarePrefixCompletions(primary, filePath, line, character, bufferText); }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] bare-prefix completion merge failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] bare-prefix completion merge failed: " + ex.Message); }
 
             // Qualified group/queue FIELD completion (task a47a6cac Phase 2 refinement): PRE: prefix
             // ("Cus:" → fields of GROUP,PRE(Cus)) and dotted access ("Group." → its fields). Separate from
             // the bare path (which returns early in a qualified context). Never overrides a real LSP item.
             try { MergeQualifiedFieldCompletions(primary, filePath, line, character, bufferText); }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] qualified field completion merge failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] qualified field completion merge failed: " + ex.Message); }
 
             // Dictionary table FIELD/KEY completion ("Cus:" → columns + keys of the dictionary table whose
             // PRE is "Cus", from the ingested .schemagraph.db). Same "<ident>:partial" qualifier context as
@@ -537,7 +537,7 @@ namespace ClarionAssistant.Services
             // added; both are shown, distinguished by Detail ("... field, dictionary" vs "... (field)").
             // Never throws, never overrides.
             try { MergeDictionaryFieldCompletions(primary, filePath, line, character, bufferText); }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] dictionary field completion merge failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] dictionary field completion merge failed: " + ex.Message); }
 
             // Class member-access (ticket 6e8f2439, item 5b): "oInstance." → that instance's ABC/library
             // methods from ClarionGraph (+ project CodeGraph), resolved by the instance's declared class
@@ -546,7 +546,7 @@ namespace ClarionAssistant.Services
             // scoping pass below). Additive + deduped + never blanks the LSP's members.
             HashSet<string> memberScope = null;
             try { memberScope = MergeMemberAccessCompletions(primary, filePath, line, character, bufferText); }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] member-access completion merge failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] member-access completion merge failed: " + ex.Message); }
 
             // Member/field-access scoping (mirror of the colon-qualifier fix). When '.' doesn't resolve to a
             // class server-side, Mark's LSP falls back to a global keyword/builtin dump (ABS, ACCEPT, END,
@@ -573,7 +573,7 @@ namespace ClarionAssistant.Services
                     if (scoped.Count > 0) primary = scoped;
                 }
             }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] member-access scoping failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] member-access scoping failed: " + ex.Message); }
 
             // Colon-qualifier scoping. When the cursor sits right after an "IDENT:" qualifier (PROP:/EVENT:/
             // PROPLIST:/group-PRE like Cus:...), the Monaco replace-range breaks on the ':' and is EMPTY, so
@@ -603,7 +603,7 @@ namespace ClarionAssistant.Services
                     }
                 }
             }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] colon-qualifier completion failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] colon-qualifier completion failed: " + ex.Message); }
 
             return primary;
         }
@@ -784,14 +784,14 @@ namespace ClarionAssistant.Services
                 }
                 if (dropped == 0) return result;
 
-                Debug.WriteLine("[SharedLspBridge] suppressed " + dropped
+                LspTrace.Write("[SharedLspBridge] suppressed " + dropped
                     + " 'not declared in this file' diagnostic(s) CodeGraph resolves non-locally in '" + filePath + "'.");
                 return new LspClient.DiagnosticWaitResult { Entries = kept, Pending = result.Pending };
             }
             catch (Exception ex)
             {
                 // A filter must never cost the caller its diagnostics.
-                Debug.WriteLine("[SharedLspBridge] DropUndeclaredWeCanResolve: " + ex.Message);
+                LspTrace.Write("[SharedLspBridge] DropUndeclaredWeCanResolve: " + ex.Message);
                 return result;
             }
         }
@@ -868,7 +868,7 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[SharedLspBridge] ResolveNamesFromProgramGlobals('" + modulePath + "'): " + ex.Message);
+                LspTrace.Write("[SharedLspBridge] ResolveNamesFromProgramGlobals('" + modulePath + "'): " + ex.Message);
             }
         }
 
@@ -888,7 +888,7 @@ namespace ClarionAssistant.Services
                         if (IsDeclaredNonLocally(p, name)) names[name] = true;
                 }
             }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] ResolveNonLocalNames('" + db + "'): " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] ResolveNonLocalNames('" + db + "'): " + ex.Message); }
         }
 
         /// <summary>True when this DB has a declaration of <paramref name="name"/> that another file could
@@ -1087,7 +1087,7 @@ namespace ClarionAssistant.Services
                     }
                 }
             }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] completion (shared) failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] completion (shared) failed: " + ex.Message); }
             return items;
         }
 
@@ -1096,7 +1096,7 @@ namespace ClarionAssistant.Services
             if (string.IsNullOrEmpty(filePath) || bufferText == null) return;
             lock (_sharedBufLock) { _sharedBuffers[filePath] = bufferText; }
             try { Block(() => c.NotifyBufferChangedAsync(filePath, bufferText), "notifyBufferChanged"); }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] NotifyBufferChanged failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] NotifyBufferChanged failed: " + ex.Message); }
         }
 
         /// <summary>Shared diagnostics. <paramref name="liveBuffer"/> true → use the last synced embeditor
@@ -1119,7 +1119,7 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[SharedLspBridge] GetDiagnostics (shared) failed: " + ex.Message);
+                LspTrace.Write("[SharedLspBridge] GetDiagnostics (shared) failed: " + ex.Message);
             }
             return result;
         }
@@ -1144,7 +1144,7 @@ namespace ClarionAssistant.Services
 
         private static Dictionary<string, object> SharedError(string op, Exception ex)
         {
-            Debug.WriteLine("[SharedLspBridge] " + op + " (shared) failed: " + ex.Message);
+            LspTrace.Write("[SharedLspBridge] " + op + " (shared) failed: " + ex.Message);
             return new Dictionary<string, object>
             {
                 { "error", new Dictionary<string, object> { { "message", "shared LSP " + op + " failed: " + ex.Message } } }
@@ -1265,7 +1265,7 @@ namespace ClarionAssistant.Services
                 default:
                     // Mark's server defaults null/unknown to "Error" on its side, so this is belt-and-
                     // suspenders — but log so a future non-spec severity string is visible, not silent.
-                    Debug.WriteLine("[SharedLspBridge] unmapped diagnostic severity '" + severity + "' -> Error(1)");
+                    LspTrace.Write("[SharedLspBridge] unmapped diagnostic severity '" + severity + "' -> Error(1)");
                     return 1;
             }
         }
@@ -1305,7 +1305,7 @@ namespace ClarionAssistant.Services
                 case "operator": return 24;
                 case "typeparameter": return 25;
                 default:
-                    Debug.WriteLine("[SharedLspBridge] unmapped completion kind '" + kind + "' -> 0 (Monaco default icon)");
+                    LspTrace.Write("[SharedLspBridge] unmapped completion kind '" + kind + "' -> 0 (Monaco default icon)");
                     return 0;
             }
         }
@@ -1351,7 +1351,7 @@ namespace ClarionAssistant.Services
                 case "operator": return 25;
                 case "typeparameter": return 26;
                 default:
-                    Debug.WriteLine("[SharedLspBridge] unmapped symbol kind '" + kind + "' -> 0");
+                    LspTrace.Write("[SharedLspBridge] unmapped symbol kind '" + kind + "' -> 0");
                     return 0;
             }
         }
@@ -2175,7 +2175,7 @@ namespace ClarionAssistant.Services
                     if (tables != null) primary.AddRange(tables);
                 }
             }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] dictionary table-name completion merge failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] dictionary table-name completion merge failed: " + ex.Message); }
         }
 
         /// <summary>

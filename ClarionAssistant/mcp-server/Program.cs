@@ -45,18 +45,31 @@ namespace ClarionAssistant.McpServer
                     case "-h":
                     case "/?": help = true; break;
                     case "--debug":
-                        // Route System.Diagnostics.Debug output to stderr.
+                        // Route this process's diagnostics to stderr — NOT stdout, which is the
+                        // JSON-RPC channel and must carry nothing else.
                         //
-                        // Whole subsystems here report themselves ONLY through Debug.WriteLine —
+                        // Whole subsystems here report themselves only through these lines —
                         // LspClient's entire start sequence does, including every reason it can
                         // fail. Inside the IDE that lands in the Debug Output window; a standalone
                         // process has no such window, so those failures were unobservable and
                         // "LSP not running" was the only thing a user could ever learn.
                         //
-                        // NOTE the ceiling: Debug.WriteLine is [Conditional("DEBUG")], so this
-                        // flag shows nothing in a Release build. Any diagnostic that must survive
-                        // shipping has to move off Debug.* — worth knowing before relying on this
-                        // in the field.
+                        // TWO CHANNELS, because the diagnostics are not all the same kind.
+                        //
+                        //   1. LspTrace — the 61 LSP diagnostics (LspClient, SharedLspBridge,
+                        //      LspService). These used to be Debug.WriteLine, which is
+                        //      [Conditional("DEBUG")] and therefore DELETED from the Release
+                        //      build we actually ship: this flag printed nothing in the field,
+                        //      which is precisely why the LSP fileCount bug had no window into
+                        //      it. LspTrace.Write is an ordinary method, so it survives Release.
+                        //
+                        //   2. The Debug listener — everything still on Debug.* elsewhere in the
+                        //      shared services. Kept because it costs one line and still pays off
+                        //      in a Debug build, but do NOT rely on it in a shipped build: it has
+                        //      the same [Conditional] ceiling as before. Anything that must be
+                        //      observable in the field belongs on LspTrace or a disk log.
+                        ClarionAssistant.Services.LspTrace.SetSink(
+                            line => { try { Console.Error.WriteLine(line); } catch { } });
                         System.Diagnostics.Debug.Listeners.Add(
                             new System.Diagnostics.TextWriterTraceListener(Console.Error));
                         System.Diagnostics.Debug.AutoFlush = true;
@@ -200,6 +213,9 @@ namespace ClarionAssistant.McpServer
             w.WriteLine("                       lets the schema tools see the dictionary of the app it has open).");
             w.WriteLine("                       Without it, a single .sln in the working directory");
             w.WriteLine("                       is used; several means none, rather than a guess.");
+            w.WriteLine("  --debug              write the LSP subsystem's diagnostics to stderr (stdout stays");
+            w.WriteLine("                       pure JSON-RPC). Works in the SHIPPED build — this is the trace");
+            w.WriteLine("                       to capture when the language server misbehaves.");
             w.WriteLine("  --selftest           service layer loads, registry gates correctly");
             w.WriteLine("  --selftest-negative  prove the no-IDE-assembly guard can actually fail");
             w.WriteLine("  --selftest-stdio     drive the real read/dispatch/write loop in-process");
