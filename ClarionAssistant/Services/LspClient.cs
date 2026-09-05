@@ -1268,10 +1268,59 @@ namespace ClarionAssistant.Services
                     HandlePublishDiagnostics(msg["params"] as Dictionary<string, object>);
                     break;
                 default:
-                    LspTrace.Write("[LSP] Ignored notification: " + method);
+                    // THE METHOD NAME ALONE IS NOT A DIAGNOSTIC. This line used to say only
+                    // "Ignored notification: clarion/graphStatus" — telling us the language
+                    // server was reporting something, and nothing whatsoever about what. The
+                    // payload it was discarding carried the build status and file count, so a
+                    // graph reporting status:'built' with fileCount:0 stayed an inference we
+                    // could never confirm, while the number sat in a string we already had.
+                    //
+                    // The params are added only when a sink is listening. This is the hot call
+                    // site LspTrace.Enabled was put there for: serialising every ignored
+                    // notification in a shipped build with nobody reading it is pure cost. The
+                    // unguarded branch keeps the bare line, so the addin's Debug Output window
+                    // behaves exactly as before.
+                    LspTrace.Write(LspTrace.Enabled
+                        ? "[LSP] Ignored notification: " + method + "  params=" + PreviewNotificationParams(msg)
+                        : "[LSP] Ignored notification: " + method);
                     break;
             }
         }
+
+        /// <summary>
+        /// A bounded, single-line JSON preview of a notification's params, for the trace.
+        ///
+        /// Capped rather than complete: some servers push large payloads, and stderr on a stdio
+        /// host is a log a human reads, not a transport. The cap reports the true length so a
+        /// truncated preview cannot be mistaken for a small payload. Never throws — a diagnostic
+        /// that can take down the read loop it is observing is worse than no diagnostic.
+        /// </summary>
+        private string PreviewNotificationParams(Dictionary<string, object> msg)
+        {
+            try
+            {
+                object parms;
+                if (msg == null || !msg.TryGetValue("params", out parms) || parms == null)
+                    return "(none)";
+
+                string json;
+                // JavaScriptSerializer is not thread-safe and _serializer is shared with the
+                // telemetry block above, which already guards it with this lock.
+                lock (_debugLock) { json = _serializer.Serialize(parms); }
+
+                if (json.Length > MaxNotificationPreviewChars)
+                    json = json.Substring(0, MaxNotificationPreviewChars)
+                         + "...(truncated, " + json.Length + " chars total)";
+                return json;
+            }
+            catch (Exception ex)
+            {
+                return "(preview failed: " + ex.Message + ")";
+            }
+        }
+
+        /// <summary>How much of an ignored notification's params reaches the trace.</summary>
+        private const int MaxNotificationPreviewChars = 600;
 
         private void HandlePublishDiagnostics(Dictionary<string, object> parms)
         {
