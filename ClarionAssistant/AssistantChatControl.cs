@@ -3410,7 +3410,10 @@ namespace ClarionAssistant
             if (!string.IsNullOrEmpty(systemPromptExtra))
             {
                 string promptFile = Path.Combine(tempDir, "system-prompt-extra-" + tabSuffix + ".md");
-                File.WriteAllText(promptFile, systemPromptExtra, System.Text.Encoding.UTF8);
+                // NO BOM - handed to node via --append-system-prompt-file. A BOM survives node's
+                // UTF-8 read (unlike .NET's), so it would prepend an invisible U+FEFF to the very
+                // first character of the system prompt (9b9dbc7d).
+                File.WriteAllText(promptFile, systemPromptExtra, Services.EncodingHelper.Utf8NoBom);
                 extraFlags += $" --append-system-prompt-file '{promptFile.Replace("'", "''")}'";
                 tempFiles.Add(promptFile);
             }
@@ -3419,7 +3422,8 @@ namespace ClarionAssistant
             if (!string.IsNullOrEmpty(initialPrompt))
             {
                 initialPromptFile = Path.Combine(tempDir, "initial-prompt-" + tabSuffix + ".txt");
-                File.WriteAllText(initialPromptFile, initialPrompt, System.Text.Encoding.UTF8);
+                // NO BOM - same node reader, same reason as the system-prompt file above (9b9dbc7d).
+                File.WriteAllText(initialPromptFile, initialPrompt, Services.EncodingHelper.Utf8NoBom);
                 tempFiles.Add(initialPromptFile);
             }
 
@@ -4165,7 +4169,13 @@ namespace ClarionAssistant
                 string safeScript = scriptPath.Replace("\\", "/");
                 string safeNode = nodeExe.Replace("\\", "/");
                 string json = "{\"statusLine\":{\"type\":\"command\",\"command\":\"\\\"" + safeNode + "\\\" \\\"" + safeScript + "\\\"\"}}";
-                File.WriteAllText(settingsPath, json, System.Text.Encoding.UTF8);
+                // NO BOM. Claude Code reads this with node's fs.readFileSync + JSON.parse, which
+                // does NOT strip a byte-order mark - it fails with "Invalid JSON: expected value at
+                // line 1 column 1" and IGNORES THE WHOLE FILE. Since the file's only content is the
+                // statusLine command, that meant the Clarion Assistant status line silently never
+                // worked for anyone. We could not see it because File.ReadAllText strips BOMs, so
+                // every round-trip on our side looked fine (ticket 9b9dbc7d).
+                File.WriteAllText(settingsPath, json, Services.EncodingHelper.Utf8NoBom);
             }
             catch { }
         }

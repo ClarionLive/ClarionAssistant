@@ -23,6 +23,32 @@ namespace ClarionAssistant.Services
     public static class EncodingHelper
     {
         /// <summary>
+        /// UTF-8 that writes NO byte-order mark. Use this for every file we write that something
+        /// other than .NET will read.
+        ///
+        /// WHY THIS EXISTS AS A NAMED CONSTANT. <c>System.Text.Encoding.UTF8</c> EMITS a BOM, and
+        /// the two spellings look interchangeable at a call site, so the wrong one gets picked by
+        /// default. It is invisible in .NET — <c>File.ReadAllText</c> detects and strips a BOM, so
+        /// our own write/read round-trips never notice — and that is exactly what let it ship:
+        /// nothing in this codebase could see the bug it was causing in someone else's parser.
+        ///
+        /// WHO STRIPS A BOM AND WHO DOES NOT, measured 2026-09-06 rather than assumed:
+        ///     File.ReadAllText / ReadAllLines .... strips it. Our own state files are unaffected.
+        ///     TextDecoder / fetch().text() ....... strips it. The WebView reads (source.txt,
+        ///                                          diff.txt) are unaffected.
+        ///     node fs.readFileSync + JSON.parse .. DOES NOT. "Unexpected token '﻿'".
+        ///     the Clarion compiler ............... does not; a BOM in a .clw is a known breaker.
+        /// The last two are the ones that bite, and the first two are why nobody noticed for so
+        /// long. Ticket 9b9dbc7d: we wrote .claude\settings.local.json with a BOM, Claude Code
+        /// silently ignored the file, and the Clarion Assistant status line therefore never worked
+        /// for anyone. Copilot printing the parse error is what finally surfaced it.
+        ///
+        /// So the rule is about the READER, not the file type: if a non-.NET parser will open it,
+        /// write it with this.
+        /// </summary>
+        public static readonly UTF8Encoding Utf8NoBom = new UTF8Encoding(false);
+
+        /// <summary>
         /// Read a file and report the encoding it was decoded with, opening and decoding it ONCE.
         /// Observationally identical to <c>File.ReadAllText(path, DetectFileEncoding(path))</c> —
         /// same text, same reported encoding, same exceptions, same FileShare — but without the

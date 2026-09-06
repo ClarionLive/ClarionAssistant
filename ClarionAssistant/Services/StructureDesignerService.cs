@@ -99,7 +99,11 @@ namespace ClarionAssistant
                 string clwPath = Path.Combine(dir, safe + ".clw");
                 string normalized = structureText.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
                 if (!normalized.EndsWith("\r\n")) normalized += "\r\n";
-                File.WriteAllText(clwPath, normalized, Encoding.UTF8);
+                // NO BOM. This is CLARION SOURCE, and a BOM at the head of a .clw is a known
+                // breaker - it is the first thing the compiler and the IDE's own reader see. The
+                // rest of this codebase already writes .clw through Utf8NoBom (ClarionSourceText);
+                // this scratch-file path was the one that did not (9b9dbc7d).
+                File.WriteAllText(clwPath, normalized, Services.EncodingHelper.Utf8NoBom);
                 L("Scratch .clw: " + clwPath + " (" + normalized.Length + " chars)");
 
                 // 2) Open through the IDE pipeline — attaches the designer secondary.
