@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <ProjectGuid>{3F2A9C41-7B60-4E28-9D14-5C8AE6B21D07}</ProjectGuid>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">Win32</Platform>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ctrl</RootNamespace>
+    <AssemblyName>ctrl</AssemblyName>
+    <OutputName>ctrl</OutputName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="ctrl.clw"/>
+    <Compile Include="second.clw"/>
+  </ItemGroup>
+  <Import Project="$(ClarionBinPath)\SoftVelocity.Build.Clarion.targets"/>
+</Project>

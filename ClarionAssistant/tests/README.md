@@ -5,19 +5,24 @@
 .\tests\Run-Tests.ps1 -Probe     # + the read-only live VS Code probe (diagnostic)
 ```
 
-One entry point, two families. Neither is wired into MSBuild — see *Why nothing runs at build time* below.
+One entry point, three families. None is wired into MSBuild — see *Why nothing runs at build time* below.
 
-## The two families
+## The families
 
-| | `tests\*.cs` | `Terminal\test\*.test.js` |
-|---|---|---|
-| Under test | C# service code with **no IDE coupling** | the Monaco WebView2 pages |
-| How | standalone `csc` compile of the real source | node, mostly zero-dependency |
-| Runs where | anywhere, no Clarion needed | anywhere, no Clarion needed |
+| | `tests\*.cs` | `Terminal\test\*.test.js` | `tests\*.ps1` |
+|---|---|---|---|
+| Under test | C# service code with **no IDE coupling** | the Monaco WebView2 pages | the standalone MCP server, as a real process |
+| How | standalone `csc` compile of the real source | node, mostly zero-dependency | build the real `.exe`, drive it over stdio |
+| Runs where | anywhere, no Clarion needed | anywhere, no Clarion needed | anywhere; some need node + the Clarion LSP |
 
-Both compile or read the **real production source** rather than a copy of it. That is the property
+All three read or build the **real production source** rather than a copy of it. That is the property
 worth protecting: these harnesses are only as valuable as their inability to drift from the thing
 they describe.
+
+The `.ps1` family exists for behaviour that only appears once the code owns a real process and talks
+to something it does not control — a console-encoded stdio stream, or a language server that answers
+in its own time. Neither survives being stubbed, because a stub author decides the very thing under
+test.
 
 ## What's here
 
@@ -30,11 +35,19 @@ they describe.
 | `..\Terminal\test\vscode-import-ui.test.js` | the gear panel's VS Code import UI, driven from markup and JS **extracted from the page at run time** |
 | `..\Terminal\test\clarion-folding.test.js` | the shared Clarion folding provider (GH #158, #133) |
 | `..\Terminal\test\clarion-formatter.test.js` | the Smart Formatter |
+| `McpStdio.EndToEndTest.ps1` | the standalone MCP server's stdio transport as a real process — the stdout hijack, UTF-8-no-BOM on the real handle, and clean exit on stdin EOF, none of which `--selftest-stdio` can see |
+| `LspDiagnostics.SemanticPassTest.ps1` | `lsp_diagnostics` reporting a file **clean** on the first query while the server had sent only its synchronous pass (b7505691). Fixture: `fixtures\lsp-semantic-pass\` |
 
 ## Dependencies
 
 The C# harnesses need only `csc.exe` from the .NET Framework, which is present on any machine that
 can build this addin.
+
+The `.ps1` harnesses need MSBuild (they build the server under test every run, so a source edit
+cannot be masked by a stale `.exe`). `LspDiagnostics.SemanticPassTest.ps1` additionally needs `node`
+on PATH and msarson's Clarion extension installed, because the race it guards only exists between
+two notifications from that real server. Without them it exits **2** — *could not run* — rather than
+passing: a machine that never started a language server has proven nothing about diagnostics.
 
 The node harnesses are zero-dependency **except** `vscode-import-ui.test.js`, which needs `jsdom` —
 the page code it exercises manipulates a real DOM, and shimming that would mean writing an HTML
