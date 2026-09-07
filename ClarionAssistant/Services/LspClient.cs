@@ -772,7 +772,10 @@ namespace ClarionAssistant.Services
                 return result;
             }
 
-            return WaitForDiagnostics(filePath, timeoutMs, forceRefresh: true);
+            // waitForSemanticPass: this is the one-shot tool answer (lsp_diagnostics). It gets no
+            // second frame in which to correct itself, so it must not settle for the server's
+            // partial first publish — see ticket b7505691 and the overload's remarks.
+            return WaitForDiagnostics(filePath, timeoutMs, forceRefresh: true, waitForSemanticPass: true);
         }
 
         /// <summary>
@@ -858,6 +861,22 @@ namespace ClarionAssistant.Services
         /// </summary>
         public DiagnosticWaitResult WaitForDiagnostics(string filePath, int timeoutMs, bool forceRefresh)
         {
+            return WaitForDiagnostics(filePath, timeoutMs, forceRefresh, waitForSemanticPass: false);
+        }
+
+        /// <summary>
+        /// As above, but <paramref name="waitForSemanticPass"/> additionally refuses to accept the
+        /// server's PARTIAL first publish as the answer. See ticket b7505691.
+        ///
+        /// WHY THIS IS OPT-IN RATHER THAN THE ONLY BEHAVIOUR. The live embeditor drives the plain
+        /// overload on a 600ms debounce to paint squiggles: there, showing the sync pass's findings
+        /// immediately and refining them a beat later is the RIGHT trade — the user is watching the
+        /// glyphs settle, and ModernEmbeditorDiagnostics already re-queries. A one-shot tool answer
+        /// has no second frame to correct itself in, so it must wait. Same wait, two honest answers.
+        /// </summary>
+        public DiagnosticWaitResult WaitForDiagnostics(string filePath, int timeoutMs, bool forceRefresh,
+                                                       bool waitForSemanticPass)
+        {
             var result = new DiagnosticWaitResult { Entries = new List<DiagnosticEntry>(), Pending = true };
             if (string.IsNullOrEmpty(filePath)) return result;
 
@@ -880,7 +899,7 @@ namespace ClarionAssistant.Services
                     // changed must not satisfy the wait.
                     try { set.Ready.Reset(); } catch { }
                 }
-                else if (set.WasPublished)
+                else if (set.WasPublished && !waitForSemanticPass)
                 {
                     // Non-force path with an already-cached publish — return immediately.
                     result.Entries = new List<DiagnosticEntry>(set.Entries);
@@ -889,30 +908,116 @@ namespace ClarionAssistant.Services
                 }
             }
 
-            // Wait outside the lock so publish handlers aren't blocked.
-            bool signaled;
-            try
+            if (!waitForSemanticPass)
             {
-                signaled = set.Ready.Wait(timeoutMs);
-            }
-            catch (ObjectDisposedException)
-            {
-                // Set was evicted between registration and wait — report as pending so the caller can retry.
+                // Wait outside the lock so publish handlers aren't blocked.
+                try
+                {
+                    set.Ready.Wait(timeoutMs);
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Set was evicted between registration and wait — report as pending so the caller can retry.
+                    return result;
+                }
+
+                // Always check the cache — even on timeout. The publish may have arrived
+                // before our forceRefresh Reset() cleared the event (race between the
+                // initial didOpen publish and the re-trigger). Returning pending:true when
+                // the cache has 44 valid entries is the bug this fixes.
+                lock (_diagnosticsLock)
+                {
+                    if (_diagnostics.TryGetValue(key, out set) && set.WasPublished)
+                    {
+                        result.Entries = new List<DiagnosticEntry>(set.Entries);
+                        result.Pending = false;
+                    }
+                }
+
                 return result;
             }
 
-            // Always check the cache — even on timeout. The publish may have arrived
-            // before our forceRefresh Reset() cleared the event (race between the
-            // initial didOpen publish and the re-trigger). Returning pending:true when
-            // the cache has 44 valid entries is the bug this fixes.
+            // ── Semantic-pass wait ────────────────────────────────────────────────────────────
+            // Loop over publishes until one of three things is true, whichever comes first:
+            //
+            //   1. SemanticPassPublished — a publish landed after clarion/symbolsRefreshed. This
+            //      is the server's own boundary marker, so it is the exact answer and we take it.
+            //   2. The stream went QUIET for SettleMs with at least one publish already banked.
+            //      This is the safety net for a server that does NOT send symbolsRefreshed — an
+            //      older build, or the shared ClarionLsp client. Without it, gating purely on a
+            //      notification we cannot guarantee would turn every fast clean file into a full
+            //      timeout and a pending:true, trading a wrong answer for a slow useless one.
+            //   3. The caller's budget runs out.
+            //
+            // On (3) with only the partial publish seen, the result is Pending=TRUE even though
+            // entries were cached. That is the whole point of the ticket: "still analysing" is a
+            // true statement the caller is documented to handle, and "0 problems" is not.
+            const int SettleMs = 400;
+
+            var startedTicks = DateTime.UtcNow.Ticks;
+            long budgetTicks = (long)timeoutMs * TimeSpan.TicksPerMillisecond;
+            int lastPublishSeqSeen = -1;
+            bool sawSemantic = false;
+            bool streamSettled = false;
+
+            while (true)
+            {
+                long elapsed = DateTime.UtcNow.Ticks - startedTicks;
+                int remainingMs = (int)((budgetTicks - elapsed) / TimeSpan.TicksPerMillisecond);
+                if (remainingMs <= 0) break;
+
+                try
+                {
+                    set.Ready.Wait(remainingMs < SettleMs ? remainingMs : SettleMs);
+                }
+                catch (ObjectDisposedException)
+                {
+                    return result; // evicted mid-wait — pending, caller may retry
+                }
+
+                int publishSeq;
+                lock (_diagnosticsLock)
+                {
+                    if (!_diagnostics.TryGetValue(key, out set)) return result;
+
+                    publishSeq = set.PublishSeq;
+                    sawSemantic = set.SemanticPassPublished;
+
+                    if (set.WasPublished)
+                        result.Entries = new List<DiagnosticEntry>(set.Entries);
+
+                    // Re-arm so the next iteration's Wait detects the NEXT publish rather than
+                    // returning instantly on this one's still-set event.
+                    try { set.Ready.Reset(); } catch { }
+                }
+
+                if (sawSemantic) break;
+
+                // No new publish across a whole settle window, and something is already banked:
+                // treat the stream as finished (case 2 above).
+                if (publishSeq > 0 && publishSeq == lastPublishSeqSeen) { streamSettled = true; break; }
+
+                lastPublishSeqSeen = publishSeq;
+            }
+
+            // Exactly one of three exits got us here, and each has its own honest answer:
+            //   sawSemantic    -> the semantic pass reported. Complete.
+            //   streamSettled  -> the server stopped publishing. Complete as far as it is concerned.
+            //   neither        -> the budget expired mid-analysis. NOT complete, and saying "clean"
+            //                     here is the defect this method exists to prevent.
             lock (_diagnosticsLock)
             {
                 if (_diagnostics.TryGetValue(key, out set) && set.WasPublished)
                 {
                     result.Entries = new List<DiagnosticEntry>(set.Entries);
-                    result.Pending = false;
+                    sawSemantic = sawSemantic || set.SemanticPassPublished;
                 }
             }
+            result.Pending = !(sawSemantic || streamSettled);
+
+            if (result.Pending)
+                LspTrace.Write("[LSP] WaitForDiagnostics: " + timeoutMs + "ms budget expired for "
+                    + key + " with only the partial (pre-semantic) publish — reporting pending, NOT clean.");
 
             return result;
         }
@@ -1267,6 +1372,16 @@ namespace ClarionAssistant.Services
                 case "textDocument/publishDiagnostics":
                     HandlePublishDiagnostics(msg["params"] as Dictionary<string, object>);
                     break;
+                case "clarion/symbolsRefreshed":
+                    // Handled, not ignored (ticket b7505691). This notification is the server
+                    // telling us it has finished refreshing symbols for a URI, and it lands
+                    // BETWEEN the two publishes of a two-phase analysis. We used to discard it
+                    // and print "Ignored notification: clarion/symbolsRefreshed" — while the
+                    // partial first publish it separates from the real one was being returned to
+                    // callers as an authoritative "clean file". The signal we needed was already
+                    // arriving; nothing was listening.
+                    HandleSymbolsRefreshed(msg["params"] as Dictionary<string, object>);
+                    break;
                 default:
                     // THE METHOD NAME ALONE IS NOT A DIAGNOSTIC. This line used to say only
                     // "Ignored notification: clarion/graphStatus" — telling us the language
@@ -1378,6 +1493,7 @@ namespace ClarionAssistant.Services
 
                 set.Entries = entries;
                 set.WasPublished = true;
+                set.PublishSeq++;
                 set.LastUpdateTicks = DateTime.UtcNow.Ticks;
                 // Signal any waiter that new diagnostics have arrived.
                 set.Ready.Set();
@@ -1385,6 +1501,43 @@ namespace ClarionAssistant.Services
 
             LspTrace.Write(string.Format(
                 "[LSP] publishDiagnostics: {0} entries for {1}", entries.Count, canonical));
+        }
+
+        /// <summary>
+        /// Records that the server finished refreshing symbols for a URI. Carries no diagnostics
+        /// of its own — it exists here purely as the boundary marker between the synchronous and
+        /// the async semantic publish, so WaitForDiagnostics can tell a partial first result from
+        /// a complete one. See DiagnosticSet.SemanticPassPublished.
+        /// </summary>
+        private void HandleSymbolsRefreshed(Dictionary<string, object> parms)
+        {
+            if (parms == null) return;
+
+            string uri = parms.ContainsKey("uri") ? parms["uri"] as string : null;
+            if (string.IsNullOrEmpty(uri)) return;
+
+            string canonical = CanonicalizeUri(uri);
+
+            lock (_diagnosticsLock)
+            {
+                DiagnosticSet set;
+                if (!_diagnostics.TryGetValue(canonical, out set))
+                {
+                    // A refresh can arrive before we have ever cached a publish for this URI —
+                    // create the entry so the counter is not lost, or the very first document's
+                    // semantic boundary would go unrecorded.
+                    set = new DiagnosticSet();
+                    _diagnostics[canonical] = set;
+                    EvictOldestIfFull_NoLock();
+                }
+
+                set.SymbolsRefreshedSeq++;
+                set.PublishSeqAtLastSymbols = set.PublishSeq;
+                set.LastUpdateTicks = DateTime.UtcNow.Ticks;
+            }
+
+            LspTrace.Write("[LSP] symbolsRefreshed for " + canonical
+                + " — awaiting the semantic-pass publish.");
         }
 
         private void EvictOldestIfFull_NoLock()
@@ -1545,6 +1698,36 @@ namespace ClarionAssistant.Services
             // True once a publishDiagnostics has ever arrived for this URI — distinguishes
             // an authoritative "clean file" (Entries=[]) from "we haven't heard anything yet".
             public bool WasPublished;
+
+            // ── Two-phase publish tracking (ticket b7505691) ──────────────────────────────────
+            // The server analyses a document in TWO passes and publishes after EACH: a
+            // synchronous pass, then an async semantic pass. Measured on the shipping server
+            // (vscode-stable v1.0.2), the sequence for one didOpen is:
+            //     publishDiagnostics: 0 entries
+            //     clarion/symbolsRefreshed
+            //     publishDiagnostics: 3 entries
+            // The undeclared-variable diagnostic lives in the async pass only — upstream declares
+            // it `static async validateUndeclaredVariables` under the comment "Async pass:
+            // undeclared-variable diagnostic with full canonical-scope-chain resolution". So the
+            // FIRST publish for a freshly-opened document is a partial result that can be empty
+            // for a file that is not clean, and a waiter satisfied by it reports a false "clean".
+            //
+            // These are counters, not timestamps, because the two publishes can land inside one
+            // DateTime tick and "did a publish arrive after the refresh" must not depend on clock
+            // resolution. All three are read and written under _diagnosticsLock.
+            public int PublishSeq;              // ++ on every publishDiagnostics for this URI
+            public int SymbolsRefreshedSeq;     // ++ on every clarion/symbolsRefreshed for this URI
+            public int PublishSeqAtLastSymbols; // PublishSeq as it stood when that refresh arrived
+
+            /// <summary>
+            /// True when a publish has arrived AFTER the most recent clarion/symbolsRefreshed —
+            /// i.e. the async semantic pass has reported. False both before any refresh and in
+            /// the window between a refresh and the publish that follows it.
+            /// </summary>
+            public bool SemanticPassPublished
+            {
+                get { return SymbolsRefreshedSeq > 0 && PublishSeq > PublishSeqAtLastSymbols; }
+            }
         }
 
         /// <summary>
