@@ -3427,6 +3427,12 @@ namespace ClarionAssistant
                 tempFiles.Add(initialPromptFile);
             }
 
+            // Resolved once, up here, because THREE things downstream must agree on it: the second
+            // --plugin-dir, the channels flag's plugin name, and the channel tools' allowlist prefix.
+            // Deriving all three from one value is what stops them drifting apart - a mismatch
+            // between any two of them fails silently rather than loudly (ticket 7913ead6).
+            string mtPluginDir = Services.McpServer.GetMultiTerminalPluginPath();
+
             string allowedTools = "mcp__clarion-assistant__*,Read,Edit,Write,Bash,Glob,Grep";
             // The editor-agnostic tools moved to their own server (ticket d051fbd1) and so carry a
             // different prefix. Without this line every query_docs, read_file and lsp_ call would
@@ -3437,10 +3443,21 @@ namespace ClarionAssistant
                 allowedTools += ",mcp__clarion-tools__*";
             if (_mcpServer != null && _mcpServer.IncludeMultiTerminal)
                 allowedTools += ",mcp__multiterminal__*";
-            // Allow the multiterminal-channel plugin's tools when it's loaded
-            // via mcp-config — prefix is different than when loaded as a plugin.
-            if (_mcpServer != null && _mcpServer.IncludeMultiTerminalChannel)
-                allowedTools += ",mcp__multiterminal-channel__*";
+            // The channel's own tools (send / reply). THE PREFIX CHANGED WITH THE MOVE TO THE PLUGIN
+            // FORM (ticket 7913ead6): a plugin-provided MCP server is namespaced
+            // mcp__plugin_<pluginName>_<serverName>__<tool>, not mcp__<serverName>__<tool>. The old
+            // "mcp__multiterminal-channel__*" spelling now matches nothing, so leaving it would mean
+            // every send/reply prompted for permission - the tab would receive channel pushes and
+            // then be unable to answer them.
+            //
+            // NOT A GUESS AT THE SPELLING: taken from a live session on this machine with the same
+            // plugin loaded, where the tools appear as
+            //     mcp__plugin_multiterminal_multiterminal-channel__send
+            //     mcp__plugin_multiterminal_multiterminal-channel__reply
+            // Still worth re-reading off a real tab after deploy - if the prefix differs, the symptom
+            // is a permission prompt on reply, not a dead channel.
+            if (mtPluginDir != null)
+                allowedTools += ",mcp__plugin_multiterminal_multiterminal-channel__*";
             // Auto-approve user-supplied MCP servers merged in from mcp-extra.json
             if (_mcpServer != null && _mcpServer.ExtraMcpServerNames != null)
             {
@@ -3458,6 +3475,22 @@ namespace ClarionAssistant
                 string safePluginDir = pluginDir.Replace("'", "''");
                 pluginArg = $" --plugin-dir '{safePluginDir}'";
             }
+
+            // A SECOND --plugin-dir, for MultiTerminal, because the channel server ships INSIDE that
+            // plugin (server\multiterminal-channel.mjs). Without it the channels flag below names a
+            // plugin this session never loaded, and the channel fails for a different reason than
+            // the one ticket 7913ead6 fixed.
+            //
+            // --plugin-dir IS REPEATABLE BUT NOT VARIADIC. From `claude --help` on 2.1.265:
+            //     --plugin-dir <path>  ... (repeatable: --plugin-dir A --plugin-dir B.zip)
+            //                          (default: [])
+            // "(default: [])" is the accumulate-not-overwrite guarantee. Note the contrast with its
+            // immediate neighbours --mcp-config, --add-dir, --allowed-tools, --betas,
+            // --disallowed-tools, --file and --tools, which all take <x...> and DO take several
+            // values after one flag. So this must stay as two separate flags: writing
+            // "--plugin-dir A B" would pattern-match the neighbour and be wrong.
+            if (mtPluginDir != null)
+                pluginArg += $" --plugin-dir '{mtPluginDir.Replace("'", "''")}'";
 
             string colorfgbg = _isDarkTheme ? "$env:COLORFGBG='15;0'" : "$env:COLORFGBG='0;15'";
 
@@ -3514,12 +3547,37 @@ namespace ClarionAssistant
             System.Diagnostics.Debug.WriteLine(
                 "[LaunchClaude] Channel identity: name=" + agentName + ", docId=" + docId);
 
-            // Authorize the multiterminal-channel MCP server for inbound channel notifications.
-            // Without this flag, mcp.notification('notifications/claude/channel') is silently ignored.
-            // Using --dangerously-load-development-channels skips the interactive approval prompt,
-            // which is appropriate for a controlled embedded environment where we control which servers load.
-            string channelFlag = (_mcpServer != null && _mcpServer.IncludeMultiTerminalChannel)
-                ? " --dangerously-load-development-channels server:multiterminal-channel"
+            // Authorize the MultiTerminal channel for inbound notifications. Without this flag,
+            // mcp.notification('notifications/claude/channel') is silently ignored.
+            //
+            // PLUGIN FORM, NOT server: FORM (ticket 7913ead6). Claude Code 2.1.265 resolves a
+            // "server:<name>" entry against five PERSISTED config scopes only - enterprise, managed,
+            // user, project, local - and a server supplied via --mcp-config is in none of them, so
+            // the old spelling could never resolve and printed
+            //     server:multiterminal-channel - no MCP server configured with that name
+            // The plugin branch of that same validator reads the loaded-plugin list instead and
+            // never consults the MCP scopes, which is why --strict-mcp-config stays safe here and we
+            // keep the isolation it was added for.
+            //
+            // "@inline" IS A SENTINEL - DO NOT "CORRECT" IT TO THE MARKETPLACE NAME. Claude Code
+            // assigns @inline to any plugin loaded via --plugin-dir; it names no marketplace and
+            // resolves to nothing on disk. Changing it to @multiterminal-marketplace to match the
+            // installed registry is the obvious-looking tidy-up and it SILENTLY KILLS CHANNELS:
+            // registration matches on the marketplace BEFORE the dev-channels check runs, so the
+            // flag cannot rescue a mismatch, and no test pins the string. Established by Alice on
+            // the MultiTerminal side (ticket c9285d2a).
+            //
+            // The name before the '@' is the plugin DIRECTORY BASENAME, derived from the path above
+            // so the two cannot drift apart.
+            //
+            // EXPECT A FALSE-POSITIVE WARNING AND DO NOT READ IT AS FAILURE: the launch prints
+            //     plugin:multiterminal@inline - plugin not installed
+            // because that validator branch checks the INSTALLED plugin registry, where a
+            // --plugin-dir plugin legitimately never appears - it is session-loaded, not installed.
+            // Every MultiTerminal terminal prints this today and their channels work.
+            string channelFlag = (mtPluginDir != null)
+                ? " --dangerously-load-development-channels plugin:"
+                    + Path.GetFileName(mtPluginDir.TrimEnd(Path.DirectorySeparatorChar)) + "@inline"
                 : "";
             // Auto-update Claude Code before launching if enabled in settings
             string updatePrefix = "";
