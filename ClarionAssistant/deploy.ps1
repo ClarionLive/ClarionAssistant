@@ -1,12 +1,13 @@
 # ClarionAssistant Deploy Script
 # Builds and deploys the addin for Clarion 10, 11, 11.1, 12, or all.
-# Usage: .\deploy.ps1 [-Version 10|11|11.1|12|all] [-NoBuild] [-Kill]
+# Usage: .\deploy.ps1 [-Version 10|11|11.1|12|all] [-NoBuild] [-Kill] [-SkipBomGuard]
 
 param(
     [ValidateSet("10","11","11.1","12","all")]
     [string]$Version = "all",  # Which Clarion version(s) to build/deploy
     [switch]$NoBuild,          # Skip build, just copy
-    [switch]$Kill              # Kill Clarion IDE before deploying
+    [switch]$Kill,             # Kill Clarion IDE before deploying
+    [switch]$SkipBomGuard      # Ship without the BOM check (loud, deliberate; see the gate below)
 )
 
 $ErrorActionPreference = "Stop"
@@ -265,6 +266,62 @@ $SqliteFts5Dir = Join-Path $ProjectDir "lib\sqlite-fts5"
 # Versions whose build failed this run — excluded from the deploy loop below and reported at the end,
 # so "built but NOT deployed" is never silently indistinguishable from "deployed".
 $FailedBuilds = @()
+
+# --- BOM guard (ticket 9b9dbc7d) ---
+# Runs BEFORE the build, so a failure costs seconds instead of four MSBuild passes, and runs even
+# under -NoBuild, because shipping pre-built binaries from source that can emit a BOM is still
+# shipping the bug.
+#
+# WHY A DEPLOY GATE AND NOT A HABIT. 14 call sites now depend on writing through
+# EncodingHelper.Utf8NoBom rather than System.Text.Encoding.UTF8. The wrong spelling is SHORTER and
+# reads like a clarification, and its damage is invisible from inside .NET - File.ReadAllText strips
+# the BOM on the way back in, so our own round-trips keep working while node's JSON.parse and the
+# Clarion compiler choke. That combination shipped 9b9dbc7d and the status line never worked for
+# anyone, for the entire life of the feature. Nothing else in this repo would catch a regression.
+#
+# -SelfTest RUNS FIRST, and that ordering is the point. It asserts the scanner still discriminates
+# against ~43 known shapes. A scanner that has gone blind reports PASS forever, which is precisely
+# the failure mode this guard exists to prevent - so "the guard passed" is only evidence once the
+# guard has been shown it can still fail. Costs about a second.
+#
+# The deeper check - that the FIXTURE SET would notice a broken scanner - is
+# Check-BomFreeWrites.Mutations.ps1. It is deliberately NOT wired in here: it only needs re-running
+# when the scanner or its fixtures change, not on every deploy.
+if (-not $SkipBomGuard) {
+    $BomGuard = Join-Path $ProjectDir "Check-BomFreeWrites.ps1"
+    if (-not (Test-Path $BomGuard)) {
+        Write-Host ""
+        Write-Host "BOM guard NOT FOUND: $BomGuard" -ForegroundColor Red
+        Write-Host "  Refusing to deploy. A guard that has been deleted or renamed is not a guard that passed." -ForegroundColor Yellow
+        exit 1
+    }
+
+    Write-Host ""
+    Write-Host "Checking BOM-free writes..." -ForegroundColor Cyan
+
+    # Out-Host, not bare invocation: an uncaptured & writes objects into this script's own output
+    # stream, and this repo has shipped a release where that turned a caller's variable into an
+    # array. $LASTEXITCODE still carries the child's exit code (verified).
+    & $BomGuard -SelfTest | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "BOM guard SELF-TEST failed - the scanner itself is broken, so its verdict means nothing." -ForegroundColor Red
+        Write-Host "  Fix Check-BomFreeWrites.ps1 before deploying. Override with -SkipBomGuard only if you" -ForegroundColor Yellow
+        Write-Host "  have decided, deliberately, to ship without this check." -ForegroundColor Yellow
+        exit 1
+    }
+
+    & $BomGuard | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "BOM guard FAILED - a file we write can be given a byte-order mark. NOT deploying." -ForegroundColor Red
+        Write-Host "  This will not show up in any .NET test. See the guard output above and ticket 9b9dbc7d." -ForegroundColor Yellow
+        exit 1
+    }
+}
+else {
+    Write-Host ""
+    Write-Host "!! BOM GUARD SKIPPED (-SkipBomGuard) - deploying WITHOUT the BOM check !!" -ForegroundColor Red
+    Write-Host "   A BOM in a file read by node or the Clarion compiler fails SILENTLY. See 9b9dbc7d." -ForegroundColor Yellow
+}
 
 # --- Build ---
 if (-not $NoBuild) {
