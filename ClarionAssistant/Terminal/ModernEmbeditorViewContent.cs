@@ -4003,7 +4003,7 @@ namespace ClarionAssistant.Terminal
             {
                 // Transfer source via the virtual host (temp file) to avoid huge postMessage payloads.
                 string sourceFile = Path.Combine(_panel.TempDir, "source.txt");
-                File.WriteAllText(sourceFile, _sourceText ?? "", Encoding.UTF8);
+                File.WriteAllText(sourceFile, _sourceText ?? "", Services.EncodingHelper.Utf8NoBom);
 
                 string settingsJson;
                 try { settingsJson = new JavaScriptSerializer().Serialize(ModernEmbeditorSettings.Load().ToDict()); }

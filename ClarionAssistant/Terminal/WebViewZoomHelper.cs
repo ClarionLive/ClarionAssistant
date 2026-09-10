@@ -66,7 +66,7 @@ namespace ClarionAssistant.Terminal
                 var sb = new StringBuilder();
                 foreach (var kvp in _cache)
                     sb.AppendLine(kvp.Key + "=" + kvp.Value.ToString("F4", System.Globalization.CultureInfo.InvariantCulture));
-                File.WriteAllText(ZoomFilePath, sb.ToString(), Encoding.UTF8);
+                File.WriteAllText(ZoomFilePath, sb.ToString(), Services.EncodingHelper.Utf8NoBom);
             }
             catch { }
         }

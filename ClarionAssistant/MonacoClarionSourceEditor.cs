@@ -588,7 +588,7 @@ namespace ClarionAssistant
                 catch (Exception rex) { MonacoSpikeLog.Write("overlay read document error: " + rex.Message); }
 
                 // Large-buffer transfer via the virtual host (same mechanism the embeditor uses).
-                File.WriteAllText(Path.Combine(_editor.TempDir, "source.txt"), text, Encoding.UTF8);
+                File.WriteAllText(Path.Combine(_editor.TempDir, "source.txt"), text, Services.EncodingHelper.Utf8NoBom);
 
                 string settingsJson;
                 try { settingsJson = new JavaScriptSerializer().Serialize(ModernEmbeditorSettings.Load().ToDict()); }
@@ -1331,7 +1331,7 @@ namespace ClarionAssistant
                 _overlayDirty = false;
                 RefreshDiskWatchBaseline();   // we just resynced with disk — any pending watcher event is now stale
 
-                File.WriteAllText(Path.Combine(_editor.TempDir, "source.txt"), text, Encoding.UTF8);
+                File.WriteAllText(Path.Combine(_editor.TempDir, "source.txt"), text, Services.EncodingHelper.Utf8NoBom);
 
                 string settingsJson;
                 try { settingsJson = new JavaScriptSerializer().Serialize(ModernEmbeditorSettings.Load().ToDict()); }

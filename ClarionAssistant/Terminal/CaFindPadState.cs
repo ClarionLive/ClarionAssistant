@@ -45,7 +45,7 @@ namespace ClarionAssistant.Terminal
             {
                 if (string.IsNullOrWhiteSpace(json)) return;
                 if (Encoding.UTF8.GetByteCount(json) > MaxBytes) return;
-                File.WriteAllText(FilePath, json, Encoding.UTF8);
+                File.WriteAllText(FilePath, json, Services.EncodingHelper.Utf8NoBom);
             }
             catch { }
         }

@@ -591,12 +591,12 @@ namespace ClarionAssistant
 
         private static void Log(string s)
         {
-            try { File.AppendAllText(LogPath(), "[" + DateTime.Now.ToString("HH:mm:ss.fff") + "] " + s + Environment.NewLine, Encoding.UTF8); } catch { }
+            try { File.AppendAllText(LogPath(), "[" + DateTime.Now.ToString("HH:mm:ss.fff") + "] " + s + Environment.NewLine, Services.EncodingHelper.Utf8NoBom); } catch { }
         }
 
         private static void Flush(StringBuilder log)
         {
-            try { File.AppendAllText(LogPath(), log.ToString() + Environment.NewLine, Encoding.UTF8); } catch { }
+            try { File.AppendAllText(LogPath(), log.ToString() + Environment.NewLine, Services.EncodingHelper.Utf8NoBom); } catch { }
             log.Length = 0;
         }
     }

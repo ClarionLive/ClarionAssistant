@@ -431,7 +431,7 @@ namespace ClarionAssistant
                 }
                 sb.AppendLine();
                 sb.AppendLine("]");
-                File.WriteAllText(GetProjectsJsonPath(), sb.ToString(), Encoding.UTF8);
+                File.WriteAllText(GetProjectsJsonPath(), sb.ToString(), Services.EncodingHelper.Utf8NoBom);
             }
             catch { }
         }

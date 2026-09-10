@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Web.Script.Serialization;
 
 namespace ClarionAssistant.Services
@@ -468,7 +467,7 @@ namespace ClarionAssistant.Services
                             { "collapsed", (m.View != null ? m.View.Collapsed : null) ?? new List<string>() }
                         } }
                 });
-                File.WriteAllText(path, payload, Encoding.UTF8);
+                File.WriteAllText(path, payload, EncodingHelper.Utf8NoBom);
             }
             catch (Exception ex) { Debug("Save", ex); }
         }
