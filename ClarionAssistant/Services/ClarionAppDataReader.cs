@@ -368,6 +368,22 @@ namespace ClarionAssistant.Services
             return m.Success ? m.Groups[1].Value.ToUpperInvariant() : null;
         }
 
+        // An anonymous (label-less) structure opener, for the label-column fallback in
+        // FindStructureAtLine. WINDOW/REPORT/QUEUE/CLASS/VIEW/FILE/APPLICATION/INTERFACE are
+        // deliberately absent: each always declares a NAMED instance, so the keyword can only ever be
+        // the SECOND token on its line — one sitting in the label column IS the label
+        // ("report STRING(4096)"), never an opener.
+        //
+        // The rest ARE legitimately written bare, but always either carrying attributes or standing
+        // alone ("HEADER,AT(…)", "MODULE('x')", "MAP"). A declaration is always "Label<ws>TYPE", so
+        // requiring '(' ',' '!' or end-of-line right after the keyword separates the two without
+        // regressing the bare forms. Matched against the WHOLE LINE: the label token on its own cannot
+        // tell "OPTION,USE(?o)" from "option LONG(0)". Same shape as ModernEmbeditorDiagnostics'
+        // ToolbarOpen/NestedBandOpen.
+        private static readonly Regex AnonOpenerRx = new Regex(
+            @"^[ \t]*(MENUBAR|TOOLBAR|SHEET|TAB|MENU|OPTION|GROUP|RECORD|JOIN|MAP|MODULE|ITEMIZE|HEADER|FOOTER|FORM|BREAK|DETAIL)\b(?=\s*(\(|,|!|$))",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
         private static bool IsStructKw(string labelU)
         {
             switch (labelU)
@@ -543,12 +559,23 @@ namespace ClarionAssistant.Services
 
                 // Structure opener, band-aware (so a REPORT's HEADER/DETAIL/FOOTER/FORM nest correctly):
                 //   named   — "Detail DETAIL,USE(…)" / "Report REPORT,…": keyword leads the rest-of-line.
-                //   anon    — "HEADER,AT(…)" / "REPORT" / "QUEUE,PRE(x)": keyword leads the label token
-                //             itself (bands glue the keyword to its comma, so it's one whitespace token).
+                //   anon    — "HEADER,AT(…)" / "QUEUE,PRE(x)" / "MAP": keyword leads the line itself.
                 // Check rest first so a band's own label ("Detail") isn't mistaken for the keyword.
-                string kw = StructOrBandKw(rest);
+                //
+                // The named form demands a real label — a plain identifier in column 0, which is where
+                // Clarion requires every label to start. "rest" is only "whatever followed the first
+                // whitespace run", so without that test a keyword sitting inside a control's string
+                // attribute opens a phantom structure; a wrapped
+                //     BUTTON('&Report'),AT(…),TIP('Write report ' & |
+                // splits to rest = "report ' & |" and reads as a REPORT opener.
+                bool atCol0 = line.Length > 0 && line[0] != ' ' && line[0] != '\t';
+                string kw = (atCol0 && IsIdent(label)) ? StructOrBandKw(rest) : null;
                 bool anon = false;
-                if (kw == null) { kw = StructOrBandKw(label); if (kw != null) anon = true; }
+                if (kw == null)
+                {
+                    var am = AnonOpenerRx.Match(line);
+                    if (am.Success) { kw = am.Groups[1].Value.ToUpperInvariant(); anon = true; }
+                }
 
                 // Open BEFORE the target-line capture so a caret ON the opener line counts as inside.
                 if (kw != null && !isEnd)
