@@ -667,6 +667,13 @@ if (-not $NoBuild) {
     if (Test-Path $McpServerFile) {
         Write-Host ""
         Write-Host "Building standalone MCP server..." -ForegroundColor Cyan
+        # RESTORE FIRST. The restore above covers $ProjectFile only, and this project carries its
+        # own PackageReference (PdfPig, for the shared DocGraphService.cs it compiles in). With no
+        # obj\project.assets.json of its own the compile fails with CS0103 "UglyToad does not exist"
+        # - which is every FRESH CHECKOUT's first deploy, the same blind spot as 0cd0b20c. Cheap to
+        # repeat: restore is a no-op once the assets file is there.
+        & $MSBuild $McpServerFile /t:Restore /p:Configuration=Debug /p:Platform=x86 /v:minimal
+        if ($LASTEXITCODE -ne 0) { Write-Host "MCP server restore failed." -ForegroundColor Red; exit 1 }
         & $MSBuild $McpServerFile /p:Configuration=Debug /p:Platform=x86 /v:minimal
         if ($LASTEXITCODE -ne 0) { Write-Host "MCP server build failed." -ForegroundColor Red; exit 1 }
         Write-Host "MCP server build succeeded." -ForegroundColor Green
