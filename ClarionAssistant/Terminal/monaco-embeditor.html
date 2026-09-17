@@ -1360,6 +1360,7 @@
                 installKeyBindings();          // capture-phase dispatcher for all rebindable Clarion editor keys
                 installGlyphBookmarkClick();   // far-left margin click toggles a bookmark (#16)
                 addFormatAction(editor);       // right-click → Format Selection (Ctrl+I dispatched via keybindings)
+                addRunToCursorAction(editor);  // right-click → Run to Cursor (CA Debugger, only while paused; 2484592b)
                 installAutoCase(editor);        // as-you-type keyword casing (of → OF on word boundary)
                 installFormatOnEnter(editor);   // format the completed line on Enter (Clarion-style)
                 installCaretBehindEol(editor);  // Clarion "Can move caret behind EOL" (inert until settings arm it)
@@ -2300,6 +2301,56 @@
         } catch (e) { }
     }
 
+    // ----- Debugger "Run to Cursor" (task 2484592b; CA Editor source overlay) -----
+    // Right-click → "Run to Cursor" asks the CA Debugger to run to the caret line. The C# host owns everything
+    // debugger-side (reflection into ClarionDebugger.DebugSessionController) and pushes the session state as
+    // {type:'debuggerState', available, paused}. A host that never sends it (the CA Embeditor) leaves both keys
+    // false, so the item never appears there.
+    //
+    // WHY HIDDEN, NOT GREYED: in Monaco 0.52.2 the public addAction() uses `precondition` as the context-menu
+    // item's `when` (visibility) — the command itself carries no precondition, so the standalone API cannot
+    // render a disabled item, and the internal MenuRegistry is not addressable from the min bundle. Showing it
+    // only while paused is the closest honest equivalent: it never appears as a live item that silently no-ops.
+    //
+    // The caret: Monaco's context-menu controller already moves the caret to a right-click in the text (unless
+    // the click is inside a selection), and run() sends that exact position, so the host updates its mirrored
+    // cursor BEFORE the debugger pulls it via TryGetActiveCursor — no race with the selectionChanged mirror.
+    var debuggerState = { available: false, paused: false };
+    function addRunToCursorAction(ed) {
+        if (!ed || ed.__runToCursorKeys) return;
+        try {
+            ed.__runToCursorKeys = {
+                available: ed.createContextKey('caDebuggerAvailable', debuggerState.available),
+                paused: ed.createContextKey('caDebuggerPaused', debuggerState.paused)
+            };
+            ed.addAction({
+                id: 'ca-debugger-run-to-cursor',
+                label: 'Run to Cursor',
+                contextMenuGroupId: 'navigation',
+                contextMenuOrder: 0.5,
+                precondition: 'caDebuggerAvailable && caDebuggerPaused',
+                run: function (e) { requestRunToCursor(e || ed); }
+            });
+        } catch (e) { }
+    }
+    function requestRunToCursor(ed) {
+        try {
+            if (!debuggerState.available || !debuggerState.paused) return;
+            var p = ed && ed.getPosition();
+            if (!p) return;
+            postToHost({ action: 'runToCursor', line: p.lineNumber, column: p.column });
+        } catch (e) { }
+    }
+    function setDebuggerState(msg) {
+        debuggerState.available = !!msg.available;
+        debuggerState.paused = !!msg.available && !!msg.paused;
+        [editor, editor2].forEach(function (ed) {
+            var k = ed && ed.__runToCursorKeys;
+            if (!k) return;
+            try { k.available.set(debuggerState.available); k.paused.set(debuggerState.paused); } catch (e) { }
+        });
+    }
+
     // ----- As-you-type keyword casing -----
     // Typing a word-boundary char right after a keyword auto-cases it (e.g. "of " -> "OF "). Uses ONLY
     // the always-safe keyword set (statement/control/operator words that can never be a variable name),
@@ -3059,6 +3110,7 @@
         editor2.onDidFocusEditorText(function () { activeEditor = editor2; });
         installCommandPalette(editor2); // F1 / Ctrl+Shift+P in the split pane too
         addFormatAction(editor2);       // right-click → Format Selection in the split pane too
+        addRunToCursorAction(editor2);  // ...and Run to Cursor (keys seeded from the current debuggerState)
         installAutoCase(editor2);       // as-you-type keyword casing in the split pane too
         installFormatOnEnter(editor2);  // format the completed line on Enter in the split pane too
         installCaretBehindEol(editor2); // caret-behind-EOL in the split pane too (shared model, one padded line)
@@ -7196,6 +7248,8 @@
                 onDesignerClosed(msg);
             } else if (msg.type === 'setBreakpoints') {
                 setBreakpointLines(msg.lines);
+            } else if (msg.type === 'debuggerState') {
+                setDebuggerState(msg);
             } else if (msg.type === 'setExecutionLine') {
                 setExecutionLine(msg.line, !!msg.reassert);
             } else if (msg.type === 'revealLine') {
