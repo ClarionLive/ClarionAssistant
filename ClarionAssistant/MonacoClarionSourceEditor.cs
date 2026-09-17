@@ -1680,18 +1680,27 @@ namespace ClarionAssistant
                 {
                     try
                     {
-                        _lastCursorLine = line;
-                        _lastCursorCol = col >= 1 ? col : 1;
-
                         // The right-click normally activates the tab already; make sure, since the debugger
                         // resolves the cursor from the ACTIVE window, not from us.
-                        object myWin = null;
-                        try { myWin = GetType().GetProperty("WorkbenchWindow")?.GetValue(this, null); } catch { }
-                        object aw = ReflectProp(ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench, "ActiveWorkbenchWindow");
-                        if (myWin != null && !ReferenceEquals(myWin, aw))
+                        object myWin = _wbWindow;
+                        if (myWin == null) { try { myWin = GetType().GetProperty("WorkbenchWindow")?.GetValue(this, null); } catch { } }
+                        var wb = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
+                        if (myWin != null && !ReferenceEquals(myWin, ReflectProp(wb, "ActiveWorkbenchWindow")))
                         {
                             try { myWin.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(myWin, null); } catch { }
                         }
+
+                        // Verify, don't assume: if activation lagged or was refused, the debugger would pull the
+                        // OTHER tab's cursor and silently run to the wrong place. Refuse instead (pipeline run 1).
+                        if (myWin == null || !ReferenceEquals(myWin, ReflectProp(wb, "ActiveWorkbenchWindow")))
+                        {
+                            MonacoSpikeLog.Write("runToCursor: NOT sent - this tab is not the active window after SelectWindow (" + Path.GetFileName(_filePath) + ", line " + line + ")");
+                            return;
+                        }
+
+                        // Only now, with this tab confirmed active, is our mirrored cursor the one the debugger reads.
+                        _lastCursorLine = line;
+                        _lastCursorCol = col >= 1 ? col : 1;
 
                         bool sent = Services.ClarionDebuggerBridge.RunToCursor();
                         MonacoSpikeLog.Write("runToCursor: line " + line + " (" + Path.GetFileName(_filePath) + ") -> " + (sent ? "sent to CA Debugger" : "not sent (debugger unavailable or not paused)"));

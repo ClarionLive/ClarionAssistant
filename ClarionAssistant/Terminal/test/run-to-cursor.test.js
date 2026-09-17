@@ -165,6 +165,19 @@ check('OnUnknownAction routes runToCursor', /action == "runToCursor"\)\s*\{\s*Ru
     check('mirrored cursor updated BEFORE the debugger pulls it', iCursor >= 0 && iCall > iCursor);
     check('marshals onto the UI thread when needed', /InvokeRequired\) form\.BeginInvoke\(run\)/.test(body));
     check('activates this tab if it is not the active window', /SelectWindow/.test(body));
+
+    // Not-active path (pipeline run 1): if SelectWindow did not make this tab active, the debugger would pull
+    // ANOTHER tab's cursor. The host must re-read the active window AFTER SelectWindow and bail out — before
+    // touching the mirrored cursor and before calling the bridge.
+    const iSelect = body.indexOf('GetMethod("SelectWindow"');
+    const guard = /if \(myWin == null \|\| !ReferenceEquals\(myWin, ReflectProp\(wb, "ActiveWorkbenchWindow"\)\)\)\s*\{[^}]*return;\s*\}/.exec(body);
+    const iGuard = guard ? guard.index : -1;
+    check('re-checks the active window AFTER SelectWindow', iSelect >= 0 && iGuard > iSelect);
+    check('not active (or window unknown): returns without running', !!guard);
+    check('not active: logs why', !!guard && /MonacoSpikeLog\.Write\("runToCursor: NOT sent/.test(guard[0]));
+    check('mirrored cursor is set only AFTER the active check', iGuard >= 0 && iCursor > iGuard);
+    check('bridge is called only AFTER the active check', iGuard >= 0 && iCall > iGuard);
+    check('reuses the hooked _wbWindow before reflection (like OnFocusEditor)', /object myWin = _wbWindow;\s*if \(myWin == null\)/.test(body));
 }
 check('OnReady starts the state poll / sends the current state', /EnsureDebuggerStatePoll\(\);/.test(slice(editorCs, 'void IMonacoEditorHost.OnReady(', 'public bool TryInsertReferenceAtPoint', 'OnReady')));
 check('bridge binds ClarionDebugger.DebugSessionController', /"ClarionDebugger\.DebugSessionController"/.test(bridgeCs));
