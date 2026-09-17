@@ -310,6 +310,12 @@
     /* Breakpoint glyph (gutter click; overlay/file mode only) — solid red dot, VS-style. */
     .breakpoint-glyph { background: #e51400; border-radius: 50%;
         width: 11px !important; height: 11px !important; margin-left: 3px; margin-top: 4px; box-shadow: 0 0 0 1px rgba(255,255,255,0.5); cursor: pointer; }
+    /* Debugger execution line (CA-Debugger #26): reversed line NUMBER only — white bold on green — never a
+       full-line background (that reads as a selection). Fixed colours, so it is the same in light and dark
+       (#1e7e34 vs white = 5.1:1). !important + the extra class out-rank Monaco's active-line-number colour, so
+       the marker stays readable when the caret sits on the execution line. */
+    .monaco-editor .margin-view-overlays .line-numbers.exec-line-number {
+        background: #1e7e34 !important; color: #ffffff !important; font-weight: 700 !important; border-radius: 2px; }
 
     /* Status-bar height: SINGLE SOURCE OF TRUTH. The editors/Find panel reserve it as their resting bottom. */
     :root { --status-bar-h: 22px; }
@@ -1542,6 +1548,7 @@
                 guarding = false;
                 restoreEmbedState(msg);     // bookmarks + cursor (once per tab); else reveal line 1
                 if (msg.breakpoints) setBreakpointLines(msg.breakpoints);   // debugger red dots, painted after the content is in (cold-open safe)
+                paintExecutionLine();       // debugger execution-line marker (#26) over the fresh content
                 // Re-apply unsaved edits stashed by the host from an externally torn-down overlay
                 // (d19c036d) — deferred here because the restoreSlots message can arrive before this
                 // async source fetch has populated the model/embedRanges.
@@ -2837,6 +2844,36 @@
         var lc = model.getLineCount(), decos = [];
         (lines || []).forEach(function (ln) { if (ln >= 1 && ln <= lc) decos.push(breakpointDecoOption(ln)); });
         breakpointDecos = model.deltaDecorations(breakpointDecos, decos);   // model-level → both panes
+    }
+
+    // ----- Debugger execution line (CA-Debugger #26; overlay/file mode) -----
+    // The host owns the truth (MonacoSourceNavigator's one global marker) and sends 'setExecutionLine'
+    // {line, reassert?}; setSource carries it as executionLine so a cold open / reload paints it once the
+    // content is in. execLineWanted is recorded when a message ARRIVES (not when setSource is applied), so a
+    // marker change that lands while the async source fetch is still running is not overwritten by the older
+    // value setSource carried.
+    var execLineWanted = 0;
+    var execLineDecos = [];
+    function paintExecutionLine() {
+        if (!editor) return;
+        var model = editor.getModel();
+        if (!model) return;
+        var ln = execLineWanted, decos = [];
+        if (ln >= 1 && ln <= model.getLineCount()) {
+            decos.push({ range: new monaco.Range(ln, 1, ln, 1),
+                options: { lineNumberClassName: 'exec-line-number', stickiness: 1,
+                    overviewRuler: { color: '#1e7e34', position: monaco.editor.OverviewRulerLane.Left } } });
+        }
+        execLineDecos = model.deltaDecorations(execLineDecos, decos);   // model-level → both split panes
+    }
+    function setExecutionLine(line, reassert) {
+        line = line > 0 ? (line | 0) : 0;
+        // Tab re-activation: a marker that still exists stays where Monaco's tracking moved it (edits above).
+        if (reassert && line === execLineWanted && line >= 1 && execLineDecos.length && editor) {
+            try { if (editor.getModel().getDecorationRange(execLineDecos[0])) return; } catch (e) { }
+        }
+        execLineWanted = line;
+        paintExecutionLine();
     }
     function requestToggleBreakpoint(ln) {
         if (!ln || ln < 1) return;
@@ -7107,6 +7144,7 @@
                 try { msg = JSON.parse(msg); } catch (ex) { return; }
             }
             if (msg.type === 'setSource') {
+                if (msg.executionLine != null) execLineWanted = msg.executionLine > 0 ? (msg.executionLine | 0) : 0;   // #26: record on arrival
                 if (ready) applySource(msg); else pending = msg;
             } else if (msg.type === 'applyTheme') {
                 setTheme(themePrefDark);   // user preference wins over IDE theme changes
@@ -7158,6 +7196,8 @@
                 onDesignerClosed(msg);
             } else if (msg.type === 'setBreakpoints') {
                 setBreakpointLines(msg.lines);
+            } else if (msg.type === 'setExecutionLine') {
+                setExecutionLine(msg.line, !!msg.reassert);
             } else if (msg.type === 'revealLine') {
                 revealLineFromHost(msg);
             } else if (msg.type === 'focusEditor') {

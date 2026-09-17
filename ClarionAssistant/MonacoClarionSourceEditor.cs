@@ -457,6 +457,29 @@ namespace ClarionAssistant
             catch (Exception ex) { MonacoSpikeLog.Write("JumpTo mirror error: " + ex.Message); }
         }
 
+        /// <summary>True when the Monaco overlay is attached, i.e. Monaco (not the native editor) is the visible
+        /// surface for this file.</summary>
+        internal bool HasOverlay { get { return _editor != null; } }
+
+        /// <summary>
+        /// Paint (line &gt;= 1) or remove (line &lt;= 0) the debugger's execution-line marker in this editor
+        /// (CA-Debugger #26, via MonacoSourceNavigator.SetExecutionLine). A no-op until the page is ready:
+        /// OnReady / OnReload carry the navigator's current marker inside setSource, so a marker set while the
+        /// page loads is still painted once the content is in. <paramref name="reassert"/> = tab re-activation:
+        /// the page keeps a still-present marker where Monaco's decoration tracking has moved it, rather than
+        /// snapping it back to the original line after edits above it.
+        /// </summary>
+        internal void ApplyExecutionLine(int line, bool reassert = false)
+        {
+            try
+            {
+                if (_editor == null || !_pageReady) return;
+                _editor.PostJson("{\"type\":\"setExecutionLine\",\"line\":" + Math.Max(0, line)
+                    + (reassert ? ",\"reassert\":true" : "") + "}");
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("ApplyExecutionLine error: " + ex.Message); }
+        }
+
         /// <summary>Pull and apply a navigation that the navigator parked for this file (on capture / ready).</summary>
         internal void ApplyPendingNavigation()
         {
@@ -672,6 +695,7 @@ namespace ClarionAssistant
                     + "\"folds\":" + foldsJson + ","
                     + "\"snippets\":" + Services.SnippetStore.ToJson(Services.SnippetStore.Load()) + ","
                     + "\"breakpoints\":[" + bpCsv + "],"
+                    + "\"executionLine\":" + MonacoSourceNavigator.GetExecutionLineFor(_filePath) + ","   // debugger marker (#26), painted after the content is in
                     + "\"sourceUrl\":\"https://clarion-embeditor-data/source.txt\"}";
                 _editor.PostJson(json);
                 MonacoSpikeLog.Write("overlay setSource sent (fileMode editable, " + text.Length + " chars, file=" + (_filePath ?? "?") + (navLine >= 1 ? (", nav->line " + navLine) : "") + ", bps=[" + bpCsv + "])");
@@ -1381,6 +1405,7 @@ namespace ClarionAssistant
                     + "\"folds\":[],"
                     + "\"snippets\":" + Services.SnippetStore.ToJson(Services.SnippetStore.Load()) + ","
                     + "\"breakpoints\":[" + bpCsv + "],"
+                    + "\"executionLine\":" + MonacoSourceNavigator.GetExecutionLineFor(_filePath) + ","   // debugger marker (#26) survives a reload
                     + "\"sourceUrl\":\"https://clarion-embeditor-data/source.txt\"}";
                 _editor.PostJson(json);
                 MonacoSpikeLog.Write("overlay reload: re-read from disk and resent (" + _filePath + ", " + text.Length + " chars)");
@@ -2228,6 +2253,10 @@ namespace ClarionAssistant
             try
             {
                 ClarionAssistant.Services.CaFindBroker.NotifyActivity(this);
+                // Debugger execution-line marker (#26): re-assert on activation, BEFORE the focus stand-downs
+                // below return early. The page keeps a still-present marker as-is (reassert), so this only
+                // repairs a marker that went missing while the tab was in the background.
+                try { ApplyExecutionLine(MonacoSourceNavigator.GetExecutionLineFor(_filePath), true); } catch { }
                 // A just-opened CA Find pad is actively fighting for focus right now (its own
                 // FocusAttempt schedule, CaFindPad.cs) — this hook fires repeatedly while that
                 // pad's panel is being docked/laid out for the first time, and stealing focus back
