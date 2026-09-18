@@ -2315,6 +2315,12 @@
     // The caret: Monaco's context-menu controller already moves the caret to a right-click in the text (unless
     // the click is inside a selection), and run() sends that exact position, so the host updates its mirrored
     // cursor BEFORE the debugger pulls it via TryGetActiveCursor — no race with the selectionChanged mirror.
+    //
+    // RIGHT-CLICK INSIDE A MULTI-LINE SELECTION runs to the CARET (the selection's active end), not to the
+    // line under the pointer, because that is the one case where Monaco leaves the caret alone. Reviewed and
+    // KEPT (PM decision, ticket f022fb4e): "Run to Cursor" means the cursor, VS and VS Code behave the same
+    // way, and moving the caret ourselves would destroy the user's selection as a side effect of a menu
+    // click. So: ed.getPosition() on purpose — do not "fix" this to the clicked line.
     var debuggerState = { available: false, paused: false };
     function addRunToCursorAction(ed) {
         if (!ed || ed.__runToCursorKeys) return;
@@ -2905,6 +2911,10 @@
     // value setSource carried.
     var execLineWanted = 0;
     var execLineDecos = [];
+    // The one place a host-supplied marker line is normalised: anything not a positive number means "no
+    // marker" (0). Both entry points must agree — 'setExecutionLine' and the executionLine that setSource
+    // carries — or a cold open and a live set would disagree about what, say, null or "3" means.
+    function normExecLine(line) { return line > 0 ? (line | 0) : 0; }
     function paintExecutionLine() {
         if (!editor) return;
         var model = editor.getModel();
@@ -2918,7 +2928,7 @@
         execLineDecos = model.deltaDecorations(execLineDecos, decos);   // model-level → both split panes
     }
     function setExecutionLine(line, reassert) {
-        line = line > 0 ? (line | 0) : 0;
+        line = normExecLine(line);
         // Tab re-activation: a marker that still exists stays where Monaco's tracking moved it (edits above).
         if (reassert && line === execLineWanted && line >= 1 && execLineDecos.length && editor) {
             try { if (editor.getModel().getDecorationRange(execLineDecos[0])) return; } catch (e) { }
@@ -7196,7 +7206,7 @@
                 try { msg = JSON.parse(msg); } catch (ex) { return; }
             }
             if (msg.type === 'setSource') {
-                if (msg.executionLine != null) execLineWanted = msg.executionLine > 0 ? (msg.executionLine | 0) : 0;   // #26: record on arrival
+                if (msg.executionLine != null) execLineWanted = normExecLine(msg.executionLine);   // #26: record on arrival
                 if (ready) applySource(msg); else pending = msg;
             } else if (msg.type === 'applyTheme') {
                 setTheme(themePrefDark);   // user preference wins over IDE theme changes

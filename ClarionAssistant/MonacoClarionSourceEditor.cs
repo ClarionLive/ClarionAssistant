@@ -468,16 +468,38 @@ namespace ClarionAssistant
         /// page loads is still painted once the content is in. <paramref name="reassert"/> = tab re-activation:
         /// the page keeps a still-present marker where Monaco's decoration tracking has moved it, rather than
         /// snapping it back to the original line after edits above it.
+        ///
+        /// A clear (line &lt;= 0) for a page that has no marker is skipped entirely: tab activation re-asserts
+        /// unconditionally, so without this every single tab switch posted a "clear" to a page that has never
+        /// seen the debugger — noise on the hot path for the overwhelmingly common no-debug-session case.
         /// </summary>
         internal void ApplyExecutionLine(int line, bool reassert = false)
         {
             try
             {
                 if (_editor == null || !_pageReady) return;
-                _editor.PostJson("{\"type\":\"setExecutionLine\",\"line\":" + Math.Max(0, line)
+                line = Math.Max(0, line);
+                if (!_execLineGate.WorthSending(line)) return;   // nothing painted, nothing to clear
+                _editor.PostJson("{\"type\":\"setExecutionLine\",\"line\":" + line
                     + (reassert ? ",\"reassert\":true" : "") + "}");
+                _execLineGate.PageNowShows(line);
             }
             catch (Exception ex) { MonacoSpikeLog.Write("ApplyExecutionLine error: " + ex.Message); }
+        }
+
+        // What this page is believed to be showing — see Services/ExecutionLineGate.
+        private readonly Services.ExecutionLineGate _execLineGate = new Services.ExecutionLineGate();
+
+        /// <summary>The marker value for a setSource payload (OnReady / OnReload), recording that the page's
+        /// marker state is now in sync with it. Both senders must go through here, or the activation guard in
+        /// <see cref="ApplyExecutionLine"/> would keep believing in a marker a reload just wiped.</summary>
+        private int SeedExecutionLineForPage()
+        {
+            int line = 0;
+            try { line = MonacoSourceNavigator.GetExecutionLineFor(_filePath); }
+            catch (Exception ex) { MonacoSpikeLog.Write("SeedExecutionLineForPage error: " + ex.Message); }
+            _execLineGate.PageNowShows(line);
+            return line;
         }
 
         /// <summary>Pull and apply a navigation that the navigator parked for this file (on capture / ready).</summary>
@@ -695,7 +717,7 @@ namespace ClarionAssistant
                     + "\"folds\":" + foldsJson + ","
                     + "\"snippets\":" + Services.SnippetStore.ToJson(Services.SnippetStore.Load()) + ","
                     + "\"breakpoints\":[" + bpCsv + "],"
-                    + "\"executionLine\":" + MonacoSourceNavigator.GetExecutionLineFor(_filePath) + ","   // debugger marker (#26), painted after the content is in
+                    + "\"executionLine\":" + SeedExecutionLineForPage() + ","   // debugger marker (#26), painted after the content is in
                     + "\"sourceUrl\":\"https://clarion-embeditor-data/source.txt\"}";
                 _editor.PostJson(json);
                 MonacoSpikeLog.Write("overlay setSource sent (fileMode editable, " + text.Length + " chars, file=" + (_filePath ?? "?") + (navLine >= 1 ? (", nav->line " + navLine) : "") + ", bps=[" + bpCsv + "])");
@@ -1406,7 +1428,7 @@ namespace ClarionAssistant
                     + "\"folds\":[],"
                     + "\"snippets\":" + Services.SnippetStore.ToJson(Services.SnippetStore.Load()) + ","
                     + "\"breakpoints\":[" + bpCsv + "],"
-                    + "\"executionLine\":" + MonacoSourceNavigator.GetExecutionLineFor(_filePath) + ","   // debugger marker (#26) survives a reload
+                    + "\"executionLine\":" + SeedExecutionLineForPage() + ","   // debugger marker (#26) survives a reload
                     + "\"sourceUrl\":\"https://clarion-embeditor-data/source.txt\"}";
                 _editor.PostJson(json);
                 MonacoSpikeLog.Write("overlay reload: re-read from disk and resent (" + _filePath + ", " + text.Length + " chars)");
@@ -1662,10 +1684,31 @@ namespace ClarionAssistant
         //
         // Menu gating: one static UI-thread poll of DebugSessionController.State (it has no StateChanged event)
         // pushes {type:"debuggerState"} to every ready page, only when the state changes.
+        //
+        // WHY THE TIMER IS A STATIC MEMBER OF THIS CLASS, and not of ClarionDebuggerBridge: the bridge is a
+        // passive reflection shim — no state, no threading, callable from either host — and a timer living
+        // there would have to own a list of pages to push to, which is precisely what this class already is
+        // (_instances). One timer for all tabs, not one per tab: the state is global to the IDE, so per-tab
+        // timers would poll the same static property N times a tick. It is a WinForms Timer on purpose (it
+        // ticks on the IDE UI thread, where both the reflection call and PostJson must happen), and the last
+        // tab closing stops and disposes it — see PollDebuggerState.
 
         private static Timer _debugStatePoll;
         private static bool _debugAvailable, _debugPaused;
         private const int DebugStatePollMs = 400;
+
+        /// <summary>Lines in the captured native document, or 0 if there isn't one. Only a fallback: it is what
+        /// Monaco was SEEDED from, and Monaco owns the buffer from then on (the page's own mirror is the live
+        /// truth — see Services/DocumentLineGuard).</summary>
+        private int NativeLineCount()
+        {
+            try
+            {
+                if (_hostEditor != null && _hostEditor.Document != null) return _hostEditor.Document.TotalNumberOfLines;
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("NativeLineCount error: " + ex.Message); }
+            return 0;
+        }
 
         private void RunToCursorFromPage(string rawJson)
         {
@@ -1675,6 +1718,19 @@ namespace ClarionAssistant
                 int line = (data != null && data.ContainsKey("line")) ? Convert.ToInt32(data["line"]) : 0;
                 int col = (data != null && data.ContainsKey("column")) ? Convert.ToInt32(data["column"]) : 1;
                 if (line < 1 || string.IsNullOrEmpty(_filePath)) return;
+                // Both ends of the range, not just the bottom one: a malformed message must not be able to
+                // write a line that does not exist into the mirrored cursor, which the debugger reads AND
+                // which is persisted as this file's saved cursor position (SaveCursor, on close).
+                string live = _overlayLiveText;
+                int nativeLines = NativeLineCount();
+                if (!Services.DocumentLineGuard.Contains(line, live, nativeLines))
+                {
+                    MonacoSpikeLog.Write("runToCursor: NOT sent - line " + line + " is past the end of "
+                        + Path.GetFileName(_filePath) + " ("
+                        + (live != null ? Services.DocumentLineGuard.CountLines(live) + " lines, mirrored from the page"
+                                        : nativeLines + " lines, from the native document") + ")");
+                    return;
+                }
 
                 Action run = () =>
                 {
@@ -2372,7 +2428,9 @@ namespace ClarionAssistant
                 ClarionAssistant.Services.CaFindBroker.NotifyActivity(this);
                 // Debugger execution-line marker (#26): re-assert on activation, BEFORE the focus stand-downs
                 // below return early. The page keeps a still-present marker as-is (reassert), so this only
-                // repairs a marker that went missing while the tab was in the background.
+                // repairs a marker that went missing while the tab was in the background. With no marker for
+                // this file, ApplyExecutionLine posts nothing at all (its no-marker-to-clear guard) — every
+                // tab switch in a normal, non-debugging session used to send a pointless "clear" from here.
                 try { ApplyExecutionLine(MonacoSourceNavigator.GetExecutionLineFor(_filePath), true); } catch { }
                 // A just-opened CA Find pad is actively fighting for focus right now (its own
                 // FocusAttempt schedule, CaFindPad.cs) — this hook fires repeatedly while that
