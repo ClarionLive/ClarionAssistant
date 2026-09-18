@@ -230,8 +230,34 @@ check('bridge filters candidates by assembly name before looking for the type',
     /asm\.GetName\(\)\.Name[\s\S]{0,200}ControllerAssemblyName[\s\S]{0,200}asm\.GetType\(ControllerTypeName/.test(bridgeCs));
 check('bridge refuses anything other than exactly one candidate', /if \(candidates != 1\) return false;/.test(bridgeCs));
 check('bridge logs an ambiguity rather than binding silently', /refusing to guess/.test(bridgeCs));
+// f022fb4e item 3. The behavioural half — a debugger assembly loading mid-session binds within the rescan
+// interval, and a duplicate loading after that does NOT un-bind — is the "late" scenario in
+// DebuggerBridgeCheck.cs. What is pinned here is the policy the scenario cannot see: that the poll behind
+// the hook backs off and is capped, and that the handler takes no decision of its own.
 {
-    const bind = slice(bridgeCs, 'private static bool Bind()', '/// <summary>Is the CA Debugger loaded', 'Bind');
+    const bind = slice(bridgeCs, 'private static bool Bind()', '/// <summary>One scan.', 'Bind');
+    check('a rescan is forced by the AssemblyLoad hook, ahead of the cooldown',
+        /bool forced = _rescanNow;[\s\S]{0,200}else if \(DateTime\.UtcNow < _nextScanUtc\) return false;/.test(bind));
+    check('a forced rescan also resets the backoff', /if \(forced\) \{ _rescanNow = false; _rescanMs = InitialRescanMs; \}/.test(bind));
+    check('a fruitless scan waits longer next time, up to a cap',
+        /_rescanMs = _rescanMs < MaxRescanMs \/ 2 \? _rescanMs \* 2 : MaxRescanMs;/.test(bind));
+    check('the backoff is bounded (cap is a finite constant)', /private const int MaxRescanMs = \d+;/.test(bridgeCs));
+    check('once bound, Bind never scans again', /if \(_bound\) return true;/.test(bind));
+}
+{
+    const hook = slice(bridgeCs, 'private static void OnAssemblyLoad(', 'private static bool TryBind()', 'OnAssemblyLoad');
+    check('the handler only fires for an assembly named ClarionDebugger',
+        /if \(!string\.Equals\(name, ControllerAssemblyName, StringComparison\.OrdinalIgnoreCase\)\) return;/.test(hook));
+    check('the handler does no reflection into the type and binds nothing itself',
+        !/GetType\(|GetProperty\(|GetMethod\(|Invoke\(/.test(hook) && /_rescanNow = true;/.test(hook));
+    check('a duplicate arriving after the bind does not un-bind, and is logged once',
+        /if \(_bound\)[\s\S]{0,600}_lateDuplicateLogged = true;[\s\S]{0,400}return;/.test(hook)
+        && !/_bound = false/.test(bridgeCs));
+    check('cross-thread flags are volatile', /private static volatile bool _bound;/.test(bridgeCs)
+        && /private static volatile bool _rescanNow;/.test(bridgeCs));
+}
+{
+    const bind = slice(bridgeCs, 'private static bool TryBind()', '/// <summary>Is the CA Debugger loaded', 'TryBind');
     const gates = bind.match(/if \(\w+ == null \|\| \w+ == null\) return false;/g) || [];
     check('exactly ONE required-member gate, over State and RunToCursor — nothing else became mandatory',
         gates.length === 1 && /var state = controller\.GetProperty\("State"/.test(bind)

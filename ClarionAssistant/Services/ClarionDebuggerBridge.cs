@@ -20,6 +20,14 @@ namespace ClarionAssistant.Services
     /// ClarionDebugger.DebugSessionController. We bind only an assembly whose simple name is
     /// "ClarionDebugger", and refuse to guess when more than one of those defines the type.
     ///
+    /// THE BINDING IS DECIDED ONCE AND NEVER RE-OPENED. The debugger addin usually loads after us, so an
+    /// AppDomain.AssemblyLoad handler tells us the moment it appears, and the poll behind it backs off
+    /// instead of sweeping every loaded assembly forever. But once a single candidate has been resolved,
+    /// a SECOND ClarionDebugger assembly loading later does not unbind us: the ambiguity rule exists to
+    /// stop us CHOOSING wrongly, and a latecomer is no evidence that the choice already made was wrong.
+    /// Re-opening it would make the debugger context menu — and a Run to Cursor mid-session — appear and
+    /// disappear under the user. It is logged once and otherwise ignored.
+    ///
     /// Everything here is best-effort and never throws. A missing type or member reads as "debugger not
     /// available", which hides the menu item. Call on the IDE UI thread: RunToCursor ends in the debugger pad's
     /// WinForms/WebView2 state, which it does not marshal itself.
@@ -34,69 +42,141 @@ namespace ClarionAssistant.Services
 
         private static PropertyInfo _state;
         private static MethodInfo _runToCursor;
-        private static bool _bound;
+        // volatile: the AssemblyLoad handler reads this on whatever thread loaded the assembly.
+        private static volatile bool _bound;
         // Candidate count last written to the log, so an ambiguity is reported once rather than every rescan.
         private static int _reportedCandidates = -1;
-        // Not found yet: re-scan at most this often. The debugger addin may load after us, but scanning every
-        // assembly on every poll tick for an addin that is not installed at all would be pure waste.
+
+        // ── When to look again ──────────────────────────────────────────────────────────────────────
+        // The debugger addin normally loads AFTER us, so the question is how long we take to notice. The
+        // answer is not a faster poll: AppDomain.AssemblyLoad tells us the moment a ClarionDebugger assembly
+        // appears, and the handler raises _rescanNow so the very next tick scans — one tick (400ms, the
+        // editor's debugger-state poll), not up to a whole rescan interval.
+        //
+        // The poll behind it is only a safety net (a handler we failed to attach; an assembly that loaded
+        // before our first call), so it BACKS OFF: each fruitless scan doubles the wait up to a cap, which
+        // matters because the common case is an IDE where the debugger is not installed at all and a scan
+        // walks every loaded assembly. A long wait is harmless precisely because the handler resets it.
+        private static volatile bool _rescanNow;
+        private static bool _assemblyLoadHooked;
+        private static bool _lateDuplicateLogged;
         private static DateTime _nextScanUtc = DateTime.MinValue;
-        private const int RescanIntervalMs = 5000;
+        private const int InitialRescanMs = 5000;
+        private const int MaxRescanMs = 60000;
+        private static int _rescanMs = InitialRescanMs;
 
         private static bool Bind()
         {
             if (_bound) return true;
-            if (DateTime.UtcNow < _nextScanUtc) return false;
-            _nextScanUtc = DateTime.UtcNow.AddMilliseconds(RescanIntervalMs);
-            try
-            {
-                // Step 1 — WHICH assembly. Identity first: the type name is not a credential, so only an
-                // assembly actually called "ClarionDebugger" is a candidate. Two of those defining the type
-                // (a stale copy still loaded beside a fresh one, a side-by-side install) is a situation we
-                // cannot resolve correctly, and picking whichever loaded first is how you end up driving the
-                // wrong debugger. Refuse, and say so.
-                Type controller = null;
-                int candidates = 0;
-                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-                {
-                    string asmName;
-                    try { asmName = asm.GetName().Name; }
-                    catch { continue; }
-                    if (!string.Equals(asmName, ControllerAssemblyName, StringComparison.OrdinalIgnoreCase)) continue;
-                    Type t;
-                    try { t = asm.GetType(ControllerTypeName, false); }
-                    catch { t = null; }
-                    if (t == null) continue;
-                    candidates++;
-                    controller = t;
-                }
-                if (candidates != _reportedCandidates)
-                {
-                    _reportedCandidates = candidates;
-                    if (candidates > 1)
-                        try { MonacoSpikeLog.Write("ClarionDebuggerBridge: NOT bound - " + candidates + " loaded assemblies named " + ControllerAssemblyName + " define " + ControllerTypeName + "; refusing to guess"); } catch { }
-                }
-                if (candidates != 1) return false;
+            HookAssemblyLoad();
 
-                // Step 2 — REQUIRED members. Both or nothing: an older debugger build without RunToCursor must
-                // read as unavailable, not as a menu item that does nothing. (Unchanged by the identity work
-                // above: the required set is exactly State + RunToCursor, as it has always been.)
-                var state = controller.GetProperty("State", BindingFlags.Public | BindingFlags.Static);
-                var run = controller.GetMethod("RunToCursor", BindingFlags.Public | BindingFlags.Static, null, Type.EmptyTypes, null);
-                if (state == null || run == null) return false;
+            bool forced = _rescanNow;
+            if (forced) { _rescanNow = false; _rescanMs = InitialRescanMs; }
+            else if (DateTime.UtcNow < _nextScanUtc) return false;
 
-                // Step 3 — SEAM for optional members (e61e4f92 "Break on entry" is the next one). Resolve them
-                // HERE, after the required pair, and let a null one disable just that feature — never the whole
-                // bridge, which would take the entire debugger context menu down with it. For example:
-                //     _breakOnEntry = controller.GetMethod("BreakOnEntry", BindingFlags.Public | BindingFlags.Static,
-                //                         null, new[] { typeof(string), typeof(int) }, null);   // null = feature off
-                // Nothing optional is bound yet.
-
-                _state = state; _runToCursor = run; _bound = true;
-                return true;
-            }
+            bool ok = false;
+            try { ok = TryBind(); }
             catch { }
+            if (ok) { _bound = true; return true; }
+
+            _nextScanUtc = DateTime.UtcNow.AddMilliseconds(_rescanMs);
+            _rescanMs = _rescanMs < MaxRescanMs / 2 ? _rescanMs * 2 : MaxRescanMs;
             return false;
         }
+
+        /// <summary>Hear about a debugger addin that loads later, instead of waiting for the next scan. Attached
+        /// once, on the first Bind, and never detached: after we are bound it still reports a second
+        /// ClarionDebugger assembly, which is a thing a developer wants in the log even though we ignore it.</summary>
+        private static void HookAssemblyLoad()
+        {
+            if (_assemblyLoadHooked) return;
+            _assemblyLoadHooked = true;   // set first: a hook we cannot attach must not be retried every tick
+            try { AppDomain.CurrentDomain.AssemblyLoad += OnAssemblyLoad; }
+            catch (Exception ex)
+            {
+                try { MonacoSpikeLog.Write("ClarionDebuggerBridge: AssemblyLoad hook not attached (" + ex.Message + ") - falling back to the poll"); } catch { }
+            }
+        }
+
+        // Any thread. Does NO reflection and takes no decision: it only cancels the backoff, so the scan
+        // itself still happens on the UI thread where every other reflection call here happens.
+        private static void OnAssemblyLoad(object sender, AssemblyLoadEventArgs args)
+        {
+            try
+            {
+                var asm = args != null ? args.LoadedAssembly : null;
+                if (asm == null) return;
+                string name;
+                try { name = asm.GetName().Name; }
+                catch { return; }
+                if (!string.Equals(name, ControllerAssemblyName, StringComparison.OrdinalIgnoreCase)) return;
+
+                if (_bound)
+                {
+                    // Deliberately NOT an unbind — see the class remarks. Said once, so a log is not a
+                    // running commentary on an assembly load we are choosing to ignore.
+                    if (!_lateDuplicateLogged)
+                    {
+                        _lateDuplicateLogged = true;
+                        try { MonacoSpikeLog.Write("ClarionDebuggerBridge: another assembly named " + ControllerAssemblyName + " loaded after we bound; staying bound to the one already resolved"); } catch { }
+                    }
+                    return;
+                }
+                _rescanNow = true;
+            }
+            catch { }
+        }
+
+        /// <summary>One scan. Answers "is there exactly one debugger to bind, and does it carry the required
+        /// members" — and on yes, leaves _state/_runToCursor resolved. Bind() owns the caching and the
+        /// retry policy; this owns only the decision. Throwing is Bind()'s problem, not a caller's.</summary>
+        private static bool TryBind()
+        {
+            // Step 1 — WHICH assembly. Identity first: the type name is not a credential, so only an
+            // assembly actually called "ClarionDebugger" is a candidate. Two of those defining the type
+            // (a stale copy still loaded beside a fresh one, a side-by-side install) is a situation we
+            // cannot resolve correctly, and picking whichever loaded first is how you end up driving the
+            // wrong debugger. Refuse, and say so.
+            Type controller = null;
+            int candidates = 0;
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                string asmName;
+                try { asmName = asm.GetName().Name; }
+                catch { continue; }
+                if (!string.Equals(asmName, ControllerAssemblyName, StringComparison.OrdinalIgnoreCase)) continue;
+                Type t;
+                try { t = asm.GetType(ControllerTypeName, false); }
+                catch { t = null; }
+                if (t == null) continue;
+                candidates++;
+                controller = t;
+            }
+            if (candidates != _reportedCandidates)
+            {
+                _reportedCandidates = candidates;
+                if (candidates > 1)
+                    try { MonacoSpikeLog.Write("ClarionDebuggerBridge: NOT bound - " + candidates + " loaded assemblies named " + ControllerAssemblyName + " define " + ControllerTypeName + "; refusing to guess"); } catch { }
+            }
+            if (candidates != 1) return false;
+
+            // Step 2 — REQUIRED members. Both or nothing: an older debugger build without RunToCursor must
+            // read as unavailable, not as a menu item that does nothing. (Unchanged by the identity work
+            // above: the required set is exactly State + RunToCursor, as it has always been.)
+            var state = controller.GetProperty("State", BindingFlags.Public | BindingFlags.Static);
+            var run = controller.GetMethod("RunToCursor", BindingFlags.Public | BindingFlags.Static, null, Type.EmptyTypes, null);
+            if (state == null || run == null) return false;
+
+            // Step 3 — SEAM for optional members (e61e4f92 "Break on entry" is the next one). Resolve them
+            // HERE, after the required pair, and let a null one disable just that feature — never the whole
+            // bridge, which would take the entire debugger context menu down with it. For example:
+            //     _breakOnEntry = controller.GetMethod("BreakOnEntry", BindingFlags.Public | BindingFlags.Static,
+            //                         null, new[] { typeof(string), typeof(int) }, null);   // null = feature off
+            // Nothing optional is bound yet.
+
+            _state = state; _runToCursor = run;
+            return true;
+    }
 
         /// <summary>Is the CA Debugger loaded (with the RunToCursor entry point), and is its session paused?</summary>
         public static void GetState(out bool available, out bool paused)

@@ -4,7 +4,7 @@
 #
 # Two harnesses, compiled against the REAL sources:
 #   DebuggerHookGuardsCheck  Services\DocumentLineGuard.cs + Services\ExecutionLineGate.cs, executed directly.
-#   DebuggerBridgeCheck      Services\ClarionDebuggerBridge.cs, in four scenarios. Each scenario is its own
+#   DebuggerBridgeCheck      Services\ClarionDebuggerBridge.cs, in five scenarios. Each scenario is its own
 #                            process AND its own ASSEMBLY NAME, because that is exactly what the bridge's
 #                            identity and ambiguity guards are about: the same source compiled as
 #                            ClarionDebugger.exe and as SomeOtherAddin.exe must behave differently. The
@@ -33,6 +33,7 @@ if (-not $csc) { Write-Error "No C# compiler found (looked for VS2022 Roslyn csc
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $OutDir 'dup') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $OutDir 'dup2') | Out-Null
 Write-Host "csc:  $($csc.FullName)"
 Write-Host "out:  $OutDir`n"
 
@@ -47,7 +48,8 @@ Build (Join-Path $OutDir 'HookGuards.exe')          @($guardsCheck, $lineGuard, 
 Build (Join-Path $OutDir 'ClarionDebugger.exe')     @($bridgeCheck, $bridge) @()
 Build (Join-Path $OutDir 'SomeOtherAddin.exe')      @($bridgeCheck, $bridge) @()
 Build (Join-Path $OutDir 'NoClarionDebugger.exe')   @($bridgeCheck, $bridge) @('/define:NO_DEBUGGER')
-Build (Join-Path $OutDir 'dup\ClarionDebugger.dll') @($dupSrc)               @('/target:library')
+Build (Join-Path $OutDir 'dup\ClarionDebugger.dll')  @($dupSrc) @('/target:library')
+Build (Join-Path $OutDir 'dup2\ClarionDebugger.dll') @($dupSrc) @('/target:library', '/define:DUP2')
 
 $failed = @()
 function Run([string]$title, [string]$exe, [string[]]$exeArgs) {
@@ -62,6 +64,7 @@ Run 'bridge: installed debugger'                        'ClarionDebugger.exe'   
 Run 'bridge: debugger not installed'                    'NoClarionDebugger.exe' @('none')
 Run 'bridge: controller in a foreign assembly'          'SomeOtherAddin.exe'    @('decoy')
 Run 'bridge: two ClarionDebugger assemblies'            'ClarionDebugger.exe'   @('ambiguous', (Join-Path $OutDir 'dup\ClarionDebugger.dll'))
+Run 'bridge: debugger loads mid-session'                'NoClarionDebugger.exe' @('late', (Join-Path $OutDir 'dup\ClarionDebugger.dll'), (Join-Path $OutDir 'dup2\ClarionDebugger.dll'))
 
 if ($failed.Count) {
     Write-Host ("CHECKS FAILED: " + ($failed -join ', ')) -ForegroundColor Red

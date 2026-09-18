@@ -1,4 +1,6 @@
 using System;
+using System.Diagnostics;
+using System.IO;
 using System.Reflection;
 
 // Check for Services/ClarionDebuggerBridge.cs (tasks 2484592b, f022fb4e): the reflection binding into the CA
@@ -18,6 +20,10 @@ using System.Reflection;
 //                                           the controller type exists, but not in ClarionDebugger.
 //   ambiguous  ClarionDebugger.exe + a      TWO loaded assemblies named ClarionDebugger define the
 //              second ClarionDebugger.dll   controller: the bridge must refuse rather than pick one.
+//   late       NoClarionDebugger.exe + two  the debugger addin LOADS MID-SESSION, which is the normal case
+//              ClarionDebugger.dlls         in the IDE: the bridge must notice within the rescan interval,
+//                                           not after it. Then a THIRD copy loads once it is bound, which
+//                                           it must ignore rather than un-bind over.
 //
 // The scenario is passed as argv[0] and cross-checked against this assembly's own name, so a harness built
 // wrong fails loudly instead of passing for the wrong reason.
@@ -83,12 +89,18 @@ public static class Program
         Console.WriteLine("scenario \"" + scenario + "\" in assembly \"" + MyName() + "\"");
 
 #if NO_DEBUGGER
-        if (scenario != "none")
+        switch (scenario)
         {
-            Console.WriteLine("  ABORT: this build defines no controller at all — it can only run the \"none\" scenario.");
-            return 2;
+            case "none": NoDebuggerLoaded(); break;
+            case "late":
+                Check("harness built under a name that is NOT " + DebuggerAssemblyName + " (scenario precondition)",
+                      MyName() != DebuggerAssemblyName);
+                LateLoad(argv);
+                break;
+            default:
+                Console.WriteLine("  ABORT: this build defines no controller at all — it can only run \"none\" or \"late\".");
+                return 2;
         }
-        NoDebuggerLoaded();
 #else
         switch (scenario)
         {
@@ -126,6 +138,74 @@ public static class Program
         Check("no debugger loaded: not available", !available);
         Check("no debugger loaded: not paused", !paused);
         Check("no debugger loaded: RunToCursor returns false and does not throw", !ClarionAssistant.Services.ClarionDebuggerBridge.RunToCursor());
+    }
+
+    // f022fb4e item 3. In the IDE the debugger addin almost always loads AFTER us, so what matters is how
+    // long the menu stays missing. The bridge's poll backs off, so "we'll catch it on the next scan" is not
+    // an answer any more — it hears the load directly (AppDomain.AssemblyLoad) and cancels the wait. This
+    // runs in a build with NO controller of its own, so everything it binds to arrived at run time.
+    static void LateLoad(string[] argv)
+    {
+        const int RescanIntervalMs = 5000;   // the bridge's FIRST backoff step; it only grows from there
+        string firstPath = argv.Length > 1 ? argv[1] : null;
+        string secondPath = argv.Length > 2 ? argv[2] : null;
+        if (string.IsNullOrEmpty(firstPath) || string.IsNullOrEmpty(secondPath))
+        {
+            Console.WriteLine("  ABORT: the \"late\" scenario needs two ClarionDebugger.dll paths as argv[1] and argv[2].");
+            _fail++;
+            return;
+        }
+
+        bool available, paused;
+        Check("nothing defines the controller yet (scenario precondition)", CandidateAssemblies() == 0);
+
+        var sinceFirstScan = Stopwatch.StartNew();
+        ClarionAssistant.Services.ClarionDebuggerBridge.GetState(out available, out paused);
+        Check("before the debugger loads: not available", !available);
+
+        Assembly late = Load(firstPath);
+        Check("the debugger assembly loaded mid-session (scenario precondition)",
+              late != null && CandidateAssemblies() == 1);
+
+        ClarionAssistant.Services.ClarionDebuggerBridge.GetState(out available, out paused);
+        long ms = sinceFirstScan.ElapsedMilliseconds;
+        Check("an assembly that loads AFTER a failed scan is bound", available);
+        // Availability is part of THIS claim too: without it the check passes by measuring a clock while
+        // nothing was bound at all, which is exactly how it read against the pre-hook bridge.
+        Check("...without waiting out the rescan interval (bound " + ms + "ms after the failed scan, interval "
+              + RescanIntervalMs + "ms)", available && ms < RescanIntervalMs - 1000);
+
+        SetState(late, "Paused");
+        ClarionAssistant.Services.ClarionDebuggerBridge.GetState(out available, out paused);
+        Check("state is read from the late-loaded controller", available && paused);
+        Check("RunToCursor reaches the late-loaded controller",
+              ClarionAssistant.Services.ClarionDebuggerBridge.RunToCursor() && RunToCursorCalls(late) == 1);
+
+        // The deliberate half: a duplicate turning up after we bound is NOT evidence the binding was wrong,
+        // and un-binding would make the menu vanish mid-session. Stay bound; the bridge logs it once.
+        Assembly third = Load(secondPath);
+        Check("a SECOND ClarionDebugger assembly loaded after the bind (scenario precondition)",
+              third != null && !ReferenceEquals(third, late) && CandidateAssemblies() == 2);
+
+        ClarionAssistant.Services.ClarionDebuggerBridge.GetState(out available, out paused);
+        Check("a late duplicate does not un-bind: still available", available);
+        Check("...still reading the state it was reading", paused);
+        Check("...and RunToCursor still reaches the FIRST controller, not the newcomer",
+              ClarionAssistant.Services.ClarionDebuggerBridge.RunToCursor()
+              && RunToCursorCalls(late) == 2 && RunToCursorCalls(third) == 0);
+    }
+
+    // The controller in a run-time-loaded assembly, reached the way the bridge reaches it: by reflection,
+    // with no compile-time knowledge of its enum type.
+    static void SetState(Assembly asm, string stateName)
+    {
+        try
+        {
+            Type t = asm.GetType(ControllerTypeName, false);
+            PropertyInfo p = t.GetProperty("State", BindingFlags.Public | BindingFlags.Static);
+            p.SetValue(null, Enum.Parse(p.PropertyType, stateName), null);
+        }
+        catch (Exception ex) { Console.WriteLine("  set-state error: " + ex.Message); }
     }
 #else
     static void Bound()
@@ -180,9 +260,7 @@ public static class Program
             return;
         }
 
-        Assembly dup = null;
-        try { dup = Assembly.LoadFrom(duplicatePath); }
-        catch (Exception ex) { Console.WriteLine("  load error: " + ex.Message); }
+        Assembly dup = Load(duplicatePath);
 
         Check("the duplicate loaded", dup != null);
         Check("the duplicate is a SECOND assembly, not this one",
@@ -199,18 +277,31 @@ public static class Program
         Check("two candidates: not paused, though both controllers exist", !paused);
         Check("two candidates: RunToCursor returns false", !ClarionAssistant.Services.ClarionDebuggerBridge.RunToCursor());
         Check("two candidates: neither controller was invoked",
-              ClarionDebugger.DebugSessionController.RunToCursorCalls == 0 && DupRunToCursorCalls(dup) == 0);
+              ClarionDebugger.DebugSessionController.RunToCursorCalls == 0 && RunToCursorCalls(dup) == 0);
     }
 
-    static int DupRunToCursorCalls(Assembly dup)
+#endif
+
+    // Load a fixture assembly from BYTES, not with LoadFrom: on .NET Framework the LoadFrom context hands
+    // back an assembly with the same simple name that is already loaded, so a second ClarionDebugger.dll
+    // would silently BE the first one again — the scenario would test nothing and still look green (it did,
+    // until the preconditions below caught it). A byte-loaded assembly is always a distinct instance.
+    static Assembly Load(string path)
+    {
+        try { return Assembly.Load(File.ReadAllBytes(path)); }
+        catch (Exception ex) { Console.WriteLine("  load error: " + ex.Message); return null; }
+    }
+
+    // How many times the controller in a RUN-TIME-LOADED assembly was invoked. -1 means "could not ask",
+    // which no check may read as 0.
+    static int RunToCursorCalls(Assembly asm)
     {
         try
         {
-            Type t = dup == null ? null : dup.GetType(ControllerTypeName, false);
+            Type t = asm == null ? null : asm.GetType(ControllerTypeName, false);
             FieldInfo f = t == null ? null : t.GetField("RunToCursorCalls", BindingFlags.Public | BindingFlags.Static);
             return f == null ? -1 : (int)f.GetValue(null);
         }
         catch { return -1; }
     }
-#endif
 }
