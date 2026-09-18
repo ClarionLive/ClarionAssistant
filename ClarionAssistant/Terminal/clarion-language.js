@@ -252,12 +252,45 @@ function clarionFoldingRanges(model) {
             return ranges;
 }
 
+// Optional hook a host page installs to fetch folding from the LANGUAGE SERVER instead of the
+// line-oriented pass above. Signature: function(model) -> Promise<[{start,end,kind?}] | null>.
+//
+// The local pass opens a fold on LOOP and only ever closes one on END or a bare period, so a LOOP
+// terminated by UNTIL or WHILE — valid Clarion, and the form the Language Reference's own example
+// uses — never closes and swallows everything after it (#222). Expressing that in the pattern list
+// is not possible: which structure a terminator belongs to is a stack question, not a regex one.
+// The server already answers it, so when a page can reach the server we ask it.
+//
+// Deliberately a HOOK rather than a direct call: this file is shared with monaco-diff.html, which
+// has no host bridge, and folding must keep working when the LSP is absent, still starting, or slow.
+// A page that installs nothing behaves exactly as before.
+var clarionLspFolding = null;
+function setClarionLspFolding(fn) { clarionLspFolding = fn; }
+
 function registerClarionFolding() {
-    monaco.languages.registerFoldingRangeProvider('clarion', { provideFoldingRanges: clarionFoldingRanges });
+    monaco.languages.registerFoldingRangeProvider('clarion', {
+        provideFoldingRanges: function (model) {
+            if (!clarionLspFolding) return clarionFoldingRanges(model);
+            var local = clarionFoldingRanges(model);
+            try {
+                return Promise.resolve(clarionLspFolding(model)).then(function (server) {
+                    // Null/empty means no answer, not "no folds" — an empty gutter on a file that
+                    // plainly has structures reads as a bug, so fall back rather than trust it.
+                    return (server && server.length) ? server : local;
+                }, function () { return local; });
+            } catch (e) {
+                return local;
+            }
+        }
+    });
 }
 
 // Node-visible surface for Terminal/test/clarion-folding.test.js. Guarded exactly like
 // clarion-formatter.js — `module` is undefined in the WebView2 pages, so this is inert there.
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { splitClarionLine: splitClarionLine, clarionFoldingRanges: clarionFoldingRanges };
+    module.exports = {
+        splitClarionLine: splitClarionLine,
+        clarionFoldingRanges: clarionFoldingRanges,
+        setClarionLspFolding: setClarionLspFolding
+    };
 }

@@ -27,7 +27,7 @@ namespace ClarionAssistant.Terminal
     /// Mirrors the proven WebView2-as-view pattern from DiffViewContent.cs: shared environment
     /// cache, virtual-host folder mapping for large-buffer transfer, and a JS to C# message bridge.
     /// </summary>
-    public class ModernEmbeditorViewContent : AbstractViewContent, IMonacoEditorHost
+    public class ModernEmbeditorViewContent : AbstractViewContent, IMonacoEditorHost, IMonacoFoldingHost
     {
         // Converge step 3: _panel is now the reusable MonacoEditorControl (which IS a Panel), so every
         // designer/marshal/Control site that treated it as a Panel still compiles. The control owns the
@@ -382,6 +382,67 @@ namespace ClarionAssistant.Terminal
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] HandleDocumentStructure: " + ex.Message); }
                 PostResponse(reqId, new Dictionary<string, object> { { "symbols", symbols }, { "fileMode", _fileMode } });
+            });
+        }
+
+        // {action:"foldingRanges"} — collapsible regions from the language server instead of the
+        // line-oriented regex pass in clarion-language.js.
+        //
+        // The regex pass opens a fold on LOOP and only ever closes one on END or a bare period, so a
+        // LOOP terminated by UNTIL or WHILE — valid Clarion, and what the Language Reference's own
+        // example uses — never closes and swallows the rest of the file (ClarionAssistant#222). The
+        // server closes it correctly because its structure stack knows what each terminator belongs
+        // to, so asking the server is a fix rather than a patch to the pattern list.
+        //
+        // Same wrap/unwrap dance as HandleDocumentStructure: in embed/slot mode the buffer is a
+        // procedure slice, so LspBuffer() prepends the synthetic MEMBER header that makes it a
+        // compilable unit and MonacoLine1() maps the answer back. A range that lands entirely inside
+        // that header is the wrapper's own structure, not the developer's, and is dropped.
+        //
+        // Null ranges (no LSP, timeout, an error) are a real answer here: the page falls back to its
+        // local pass rather than showing an empty gutter.
+        private void HandleFoldingRanges(string json)
+        {
+            int reqId, line, column; string buffer;
+            if (!ParseRequest(json, out reqId, out line, out column, out buffer)) return;
+            Task.Run(() =>
+            {
+                List<Dictionary<string, object>> ranges = null;
+                try
+                {
+                    EnsureLspStarted();
+                    var resp = SharedLspBridge.GetFoldingRanges(_lspFileName, LspBuffer(buffer));
+                    object res = (resp != null && resp.ContainsKey("result")) ? resp["result"] : null;
+                    var list = res as System.Collections.IEnumerable;
+                    if (list != null)
+                    {
+                        ranges = new List<Dictionary<string, object>>();
+                        foreach (var item in list)
+                        {
+                            var d = item as Dictionary<string, object>;
+                            if (d == null || !d.ContainsKey("startLine") || !d.ContainsKey("endLine")) continue;
+                            int s0, e0;
+                            try
+                            {
+                                s0 = Convert.ToInt32(d["startLine"]);
+                                e0 = Convert.ToInt32(d["endLine"]);
+                            }
+                            catch { continue; }
+
+                            int start = MonacoLine1(s0);
+                            int end = MonacoLine1(e0);
+                            // MonacoLine1 clamps at 1, so a range wholly inside the wrapper header
+                            // collapses to 1..1 — not a fold, and not the developer's code.
+                            if (end <= start) continue;
+
+                            var r = new Dictionary<string, object> { { "start", start }, { "end", end } };
+                            if (d.ContainsKey("kind")) r["kind"] = d["kind"];
+                            ranges.Add(r);
+                        }
+                    }
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] HandleFoldingRanges: " + ex.Message); }
+                PostResponse(reqId, new Dictionary<string, object> { { "ranges", ranges } });
             });
         }
 
@@ -1522,6 +1583,7 @@ namespace ClarionAssistant.Terminal
         void IMonacoEditorHost.OnSignatureHelp(MonacoEditorControl editor, string rawJson) { HandleSignatureHelp(rawJson); }
         void IMonacoEditorHost.OnImplementation(MonacoEditorControl editor, string rawJson) { HandleImplementation(rawJson); }
         void IMonacoEditorHost.OnDocumentStructure(MonacoEditorControl editor, string rawJson) { HandleDocumentStructure(rawJson); }
+        void IMonacoFoldingHost.OnFoldingRanges(MonacoEditorControl editor, string rawJson) { HandleFoldingRanges(rawJson); }
         void IMonacoEditorHost.OnSaveSettings(MonacoEditorControl editor, string rawJson) { HandleSaveSettings(rawJson); }
         // Read-only preview feed for the gear panel's VS Code import; applying goes back through
         // OnSaveSettings above, so there is still exactly one write path.

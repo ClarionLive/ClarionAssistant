@@ -1011,6 +1011,11 @@
     var saveSafetyTimer = null;   // ensures the "Saving…" toast can never hang forever
     var pendingRequests = {};     // reqId -> resolver, for async LSP completion/hover round-trips
     var reqSeq = 0;
+    // Folding is re-asked constantly as you type, so its budget is tighter than the interactive
+    // default (4s) and far tighter than DIAG_TIMEOUT_MS. A late answer is worse than none: the local
+    // pass has already drawn a correct-enough gutter, and swapping it out seconds later would make
+    // folds jump under the cursor. Give up quickly and keep what is on screen.
+    var FOLD_TIMEOUT_MS = 1500;
     var lastSettings = null;      // latest editor settings applied (for the gear panel + re-apply)
     // When true, the suggest widget's highlighted item is accepted (and the typed char inserted) on an
     // "insert key" — space, '.', '(' — the way the native Clarion editor does it. Read fresh by
@@ -1287,6 +1292,16 @@
                 if (!monaco.languages.getLanguages().some(function (l) { return l.id === 'clarion'; })) {
                     monaco.languages.register({ id: 'clarion' });
                     registerClarionLanguage();
+                    // Fold from the language server when it can answer (#222: the local pass cannot
+                    // close a LOOP terminated by UNTIL/WHILE — that is a structure-stack question, not
+                    // a pattern one). Installed BEFORE registerClarionFolding so the provider sees it.
+                    // Returning null on any failure keeps the local pass as the fallback.
+                    if (typeof setClarionLspFolding === 'function') {
+                        setClarionLspFolding(function (model) {
+                            return requestFromHost('foldingRanges', { buffer: model.getValue() }, FOLD_TIMEOUT_MS)
+                                .then(function (resp) { return (resp && resp.ranges) ? resp.ranges : null; });
+                        });
+                    }
                     registerClarionFolding();
                     registerClarionProviders();
                 }
