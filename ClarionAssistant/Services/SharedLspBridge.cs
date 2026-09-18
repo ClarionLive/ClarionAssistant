@@ -2916,6 +2916,15 @@ namespace ClarionAssistant.Services
         private static string ResolveInstanceType(string[] lines, int line, string instance, string filePath, out bool isInlineClass)
         {
             isInlineClass = false;
+            // Resolving SELF/PARENT by NAME is not merely unhelpful, it is actively wrong (see
+            // IsPositionalClassKeyword). Neither is ever declared, so the buffer scan below always misses and
+            // the lookup falls through to FindSymbolByName — a solution-wide, scope-blind name search that
+            // matches ANY declaration that happens to be called SELF. ABC ships one: ABPOPUP.CLW's
+            // "GetUniqueName PROCEDURE(PopupClass SELF,STRING ThisItem)", a legal explicit-SELF parameter.
+            // Being the only such row in the DB it won every lookup, so EVERY "SELF." in the solution
+            // resolved to PopupClass — injecting its members into the completion list, and (via the caller's
+            // scoping pass) dropping the real ones the LSP had already resolved correctly.
+            if (IsPositionalClassKeyword(instance)) return null;
             try
             {
                 if (lines != null && lines.Length > 0)
@@ -2953,6 +2962,17 @@ namespace ClarionAssistant.Services
             }
             catch { }
             return null;
+        }
+
+        /// <summary>True for SELF / PARENT, which name no instance: they mean "the class of the enclosing
+        /// method" (and its parent) — a POSITIONAL fact about where the cursor sits, not a lexical one about
+        /// some declaration. Everything in this file resolves instances by NAME, so it cannot answer either,
+        /// and a name-based lookup can only ever match an unrelated coincidence. The LSP tracks the enclosing
+        /// scope and already resolves both correctly, so declining here leaves its answer intact.</summary>
+        private static bool IsPositionalClassKeyword(string instance)
+        {
+            return string.Equals(instance, "SELF", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(instance, "PARENT", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>If <paramref name="lineText"/> is a column-1 declaration of <paramref name="instance"/>,
