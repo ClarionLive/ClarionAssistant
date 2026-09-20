@@ -134,6 +134,8 @@
     <Compile Include="Services\MonacoFileOpener.cs" />
     <Compile Include="Services\MonacoSourceNavigator.cs" />
     <Compile Include="Services\ClarionDebuggerBridge.cs" />
+    <Compile Include="Services\DocumentLineGuard.cs" />
+    <Compile Include="Services\ExecutionLineGate.cs" />
     <Compile Include="Services\ActiveProcedureContext.cs" />
     <Compile Include="Services\EditorService.cs" />
     <Compile Include="Services\ClarionSourceText.cs" />

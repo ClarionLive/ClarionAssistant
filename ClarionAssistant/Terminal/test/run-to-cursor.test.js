@@ -3,16 +3,22 @@
 // Run:  node Terminal/test/run-to-cursor.test.js
 //
 // Zero-dependency. EXTRACTS the page section from monaco-embeditor.html and evaluates it against editor fakes
-// that record addAction descriptors and context keys. The host half is pinned by source checks here and by
-// Terminal/test/DebuggerBridgeCheck.cs (the reflection binding, compiled against the real bridge).
+// that record addAction descriptors and context keys. The host half is pinned by source checks here and by two
+// C# harnesses run from Terminal/test/run-debugger-host-checks.ps1 — DebuggerBridgeCheck.cs (the reflection
+// binding, in four real assembly scenarios) and DebuggerHookGuardsCheck.cs (the line and marker guards).
+// A source check here says the host CALLS the right guard; the harnesses say the guard is RIGHT.
 //
 // What is pinned:
 //   * the item exists only while the debugger is available AND paused (Monaco 0.52.2's addAction uses
 //     precondition as menu visibility — see the page comment), and a host that never sends debuggerState
 //     (the CA Embeditor) never shows it
 //   * run() posts runToCursor WITH the caret position, and nothing when not paused
+//   * right-click inside a multi-line selection sends the CARET, which is a decision, not an oversight
+//     (f022fb4e item 6 — reviewed and kept; the comment above requestRunToCursor is the record of it)
 //   * state pushes reach both split panes
-//   * host: the mirrored cursor is updated BEFORE the debugger is called, on the UI thread
+//   * host: the mirrored cursor is updated BEFORE the debugger is called, on the UI thread, and only for a
+//     line that exists in the document (f022fb4e item 2)
+//   * host: the bridge binds by assembly identity, and refuses two candidates (f022fb4e item 1)
 
 const fs = require('fs');
 const path = require('path');
@@ -49,12 +55,17 @@ function makeEditor(line, column) {
     const keys = {};
     const actions = [];
     let pos = { lineNumber: line, column: column };
+    let sel = null;
     return {
         _keys: keys, _actions: actions,
         createContextKey(name, def) { const k = { name: name, value: def, set(v) { this.value = v; } }; keys[name] = k; return k; },
         addAction(d) { actions.push(d); return { dispose() { } }; },
         getPosition() { return pos; },
-        setPosition(p) { pos = p; }
+        setPosition(p) { pos = p; },
+        // Present so a run() that reached for the selection instead of the caret would find something to
+        // reach for — the multi-line-selection case below would otherwise pass by accident.
+        getSelection() { return sel || { startLineNumber: pos.lineNumber, endLineNumber: pos.lineNumber }; },
+        setSelection(s) { sel = s; }
     };
 }
 // Monaco's context-key expression for this item: a plain conjunction of key names.
@@ -147,6 +158,20 @@ section('run');
     env.ed2._actions[0].run(env.ed2);
     check('split pane posts ITS caret', env.posts.length === 1 && env.posts[0].line === 20);
 }
+{
+    // f022fb4e item 6, reviewed and KEPT: right-clicking inside a multi-line selection is the one case where
+    // Monaco leaves the caret alone, so the run goes to the caret (the selection's active end) rather than to
+    // the line under the pointer. Moving the caret ourselves would destroy the selection as a side effect of
+    // a menu click. This pins the decision — anything that reads the selection's start instead fails here.
+    const env = makeEnv();
+    env.addRunToCursorAction(env.ed1);
+    env.setDebuggerState({ available: true, paused: true });
+    env.ed1.setPosition({ lineNumber: 30, column: 1 });                       // caret = the selection's end
+    env.ed1.setSelection({ startLineNumber: 25, endLineNumber: 30 });         // dragged 25..30, right-clicked inside
+    env.ed1._actions[0].run(env.ed1);
+    check('right-click inside a selection runs to the caret, not the selection start',
+        env.posts.length === 1 && env.posts[0].line === 30, JSON.stringify(env.posts));
+}
 
 // ---------- page wiring ----------
 section('page wiring');
@@ -178,12 +203,67 @@ check('OnUnknownAction routes runToCursor', /action == "runToCursor"\)\s*\{\s*Ru
     check('mirrored cursor is set only AFTER the active check', iGuard >= 0 && iCursor > iGuard);
     check('bridge is called only AFTER the active check', iGuard >= 0 && iCall > iGuard);
     check('reuses the hooked _wbWindow before reflection (like OnFocusEditor)', /object myWin = _wbWindow;\s*if \(myWin == null\)/.test(body));
+
+    // f022fb4e item 2: the page supplies the line, so a line that cannot exist must not reach the mirrored
+    // cursor (which the debugger reads back, and which is persisted as this file's saved cursor position).
+    // DocumentLineGuard.Contains is executed by Terminal/test/DebuggerHookGuardsCheck.cs; what is pinned
+    // here is that the host consults it, and does so before anything is written or sent.
+    const iRange = body.indexOf('DocumentLineGuard.Contains(line,');
+    check('refuses a line that is not in the document', iRange >= 0);
+    check('...asking the page\'s live mirror first, the native document second',
+        /DocumentLineGuard\.Contains\(line, live, nativeLines\)/.test(body)
+        && /string live = _overlayLiveText;/.test(body) && /int nativeLines = NativeLineCount\(\);/.test(body));
+    check('...and says so in the log', /runToCursor: NOT sent - line " \+ line \+ " is past the end of/.test(body));
+    check('...before the mirrored cursor is written', iRange >= 0 && iCursor > iRange);
+    check('...before the bridge is called', iRange >= 0 && iCall > iRange);
+    check('the low end is still rejected too', /if \(line < 1 \|\| string\.IsNullOrEmpty\(_filePath\)\) return;/.test(body));
 }
 check('OnReady starts the state poll / sends the current state', /EnsureDebuggerStatePoll\(\);/.test(slice(editorCs, 'void IMonacoEditorHost.OnReady(', 'public bool TryInsertReferenceAtPoint', 'OnReady')));
 check('bridge binds ClarionDebugger.DebugSessionController', /"ClarionDebugger\.DebugSessionController"/.test(bridgeCs));
 check('bridge requires BOTH State and parameterless RunToCursor', /GetProperty\("State"/.test(bridgeCs) && /GetMethod\("RunToCursor",[^;]*Type\.EmptyTypes/.test(bridgeCs) && /state == null \|\| run == null/.test(bridgeCs));
 check('bridge compares State by name "Paused"', /ToString\(\), "Paused"/.test(bridgeCs));
 check('bridge compiled into the addin', /<Compile Include="Services\\ClarionDebuggerBridge\.cs" \/>/.test(csproj));
+// f022fb4e item 1. The four behavioural scenarios (installed / absent / foreign assembly / two candidates)
+// are in DebuggerBridgeCheck.cs, which compiles this same source into real, differently-named assemblies.
+check('bridge takes the assembly name as part of the contract', /ControllerAssemblyName = "ClarionDebugger"/.test(bridgeCs));
+check('bridge filters candidates by assembly name before looking for the type',
+    /asm\.GetName\(\)\.Name[\s\S]{0,200}ControllerAssemblyName[\s\S]{0,200}asm\.GetType\(ControllerTypeName/.test(bridgeCs));
+check('bridge refuses anything other than exactly one candidate', /if \(candidates != 1\) return false;/.test(bridgeCs));
+check('bridge logs an ambiguity rather than binding silently', /refusing to guess/.test(bridgeCs));
+// f022fb4e item 3. The behavioural half — a debugger assembly loading mid-session binds within the rescan
+// interval, and a duplicate loading after that does NOT un-bind — is the "late" scenario in
+// DebuggerBridgeCheck.cs. What is pinned here is the policy the scenario cannot see: that the poll behind
+// the hook backs off and is capped, and that the handler takes no decision of its own.
+{
+    const bind = slice(bridgeCs, 'private static bool Bind()', '/// <summary>One scan.', 'Bind');
+    check('a rescan is forced by the AssemblyLoad hook, ahead of the cooldown',
+        /bool forced = _rescanNow;[\s\S]{0,200}else if \(DateTime\.UtcNow < _nextScanUtc\) return false;/.test(bind));
+    check('a forced rescan also resets the backoff', /if \(forced\) \{ _rescanNow = false; _rescanMs = InitialRescanMs; \}/.test(bind));
+    check('a fruitless scan waits longer next time, up to a cap',
+        /_rescanMs = _rescanMs < MaxRescanMs \/ 2 \? _rescanMs \* 2 : MaxRescanMs;/.test(bind));
+    check('the backoff is bounded (cap is a finite constant)', /private const int MaxRescanMs = \d+;/.test(bridgeCs));
+    check('once bound, Bind never scans again', /if \(_bound\) return true;/.test(bind));
+}
+{
+    const hook = slice(bridgeCs, 'private static void OnAssemblyLoad(', 'private static bool TryBind()', 'OnAssemblyLoad');
+    check('the handler only fires for an assembly named ClarionDebugger',
+        /if \(!string\.Equals\(name, ControllerAssemblyName, StringComparison\.OrdinalIgnoreCase\)\) return;/.test(hook));
+    check('the handler does no reflection into the type and binds nothing itself',
+        !/GetType\(|GetProperty\(|GetMethod\(|Invoke\(/.test(hook) && /_rescanNow = true;/.test(hook));
+    check('a duplicate arriving after the bind does not un-bind, and is logged once',
+        /if \(_bound\)[\s\S]{0,600}_lateDuplicateLogged = true;[\s\S]{0,400}return;/.test(hook)
+        && !/_bound = false/.test(bridgeCs));
+    check('cross-thread flags are volatile', /private static volatile bool _bound;/.test(bridgeCs)
+        && /private static volatile bool _rescanNow;/.test(bridgeCs));
+}
+{
+    const bind = slice(bridgeCs, 'private static bool TryBind()', '/// <summary>Is the CA Debugger loaded', 'TryBind');
+    const gates = bind.match(/if \(\w+ == null \|\| \w+ == null\) return false;/g) || [];
+    check('exactly ONE required-member gate, over State and RunToCursor — nothing else became mandatory',
+        gates.length === 1 && /var state = controller\.GetProperty\("State"/.test(bind)
+        && /var run = controller\.GetMethod\("RunToCursor"/.test(bind), gates.join(' | '));
+    check('an optional-member seam is left after it (e61e4f92 Break on entry)', /SEAM for optional members/.test(bind));
+}
 
 // ---------- summary ----------
 console.log('\n' + '='.repeat(60));

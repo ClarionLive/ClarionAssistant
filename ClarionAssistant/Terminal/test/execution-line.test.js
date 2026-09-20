@@ -11,8 +11,11 @@
 //   * one marker: setting moves it, 0 clears it, out-of-range lines paint nothing
 //   * reassert (tab re-activation) keeps a still-present marker where decoration tracking moved it
 //   * a marker that arrives while setSource's async fetch is running survives the content load
-//   * the host plumbing the page depends on: the frozen C# contract signature, and executionLine in BOTH
-//     setSource payloads (open + reload)
+//   * one normalisation of the incoming line, shared by both entry points (setExecutionLine + setSource)
+//   * the host plumbing the page depends on: the frozen C# contract signature, executionLine in BOTH
+//     setSource payloads (open + reload), and the one gate that stops a tab activation posting a "clear"
+//     to a page that has no marker (f022fb4e item 4 — the gate's own behaviour is executed by
+//     Terminal/test/DebuggerHookGuardsCheck.cs; what is checked here is that the host goes through it)
 
 const fs = require('fs');
 const path = require('path');
@@ -75,6 +78,7 @@ function makeEnv(lineCount) {
         ${execSrc}
         return {
             setExecutionLine: setExecutionLine,
+            normExecLine: normExecLine,
             paintExecutionLine: paintExecutionLine,
             wanted: function () { return execLineWanted; },
             setWanted: function (v) { execLineWanted = v; },
@@ -134,6 +138,27 @@ section('one global marker: move and clear');
     check('line past end paints nothing', env.model._decos.size === 0);
     check('...but is still wanted (content may be about to load)', env.wanted() === 50);
 }
+
+// ---------- normalisation ----------
+section('normExecLine: one rule for both entry points');
+{
+    const env = makeEnv();
+    check('a positive line is itself', env.normExecLine(12) === 12);
+    check('0 is 0', env.normExecLine(0) === 0);
+    check('a negative line is 0', env.normExecLine(-4) === 0);
+    check('null is 0', env.normExecLine(null) === 0);
+    check('undefined is 0', env.normExecLine(undefined) === 0);
+    check('a numeric string is its number (a host that JSON-quoted it)', env.normExecLine('7') === 7);
+    check('a fraction is truncated to a line number', env.normExecLine(9.8) === 9);
+    check('a non-number is 0', env.normExecLine('nope') === 0);
+}
+// The setSource handler lives far outside the extracted section, so pin that it uses the same helper —
+// that is the whole point of extracting it.
+check('setSource normalises through normExecLine',
+    /if \(msg\.executionLine != null\) execLineWanted = normExecLine\(msg\.executionLine\);/.test(html));
+check('setExecutionLine normalises through normExecLine', /function setExecutionLine\([^)]*\)\s*\{\s*line = normExecLine\(line\);/.test(html));
+check('no un-normalised copy of the rule is left in the page',
+    !/executionLine[^\n]*>\s*0\s*\?\s*\(/.test(html) && !/line = line > 0 \? \(line \| 0\) : 0;/.test(html));
 
 // ---------- reassert ----------
 section('reassert on tab re-activation');
@@ -195,11 +220,38 @@ check('frozen signature: public static bool SetExecutionLine(string filePath, in
 check('SetExecutionLine is inside MonacoSourceNavigator in ClarionAssistant.Services',
     /namespace ClarionAssistant\.Services[\s\S]*public static class MonacoSourceNavigator[\s\S]*SetExecutionLine\(string filePath, int line\)/.test(navigatorCs));
 {
-    const n = (editorCs.match(/\\"executionLine\\":" \+ MonacoSourceNavigator\.GetExecutionLineFor\(_filePath\)/g) || []).length;
+    const n = (editorCs.match(/\\"executionLine\\":" \+ SeedExecutionLineForPage\(\)/g) || []).length;
     check('executionLine carried in BOTH setSource payloads (OnReady + OnReload)', n === 2, 'found ' + n);
+    check('the setSource value comes from the navigator, via the seed helper',
+        /private int SeedExecutionLineForPage\(\)[\s\S]{0,400}MonacoSourceNavigator\.GetExecutionLineFor\(_filePath\)/.test(editorCs));
+    check('seeding records what the page now shows',
+        /private int SeedExecutionLineForPage\(\)[\s\S]{0,500}_execLineGate\.PageNowShows\(line\)/.test(editorCs));
 }
 check('tab activation re-asserts the marker',
-    /OnWorkbenchWindowSelected[\s\S]{0,1200}ApplyExecutionLine\(MonacoSourceNavigator\.GetExecutionLineFor\(_filePath\), true\)/.test(editorCs));
+    /OnWorkbenchWindowSelected[\s\S]{0,1500}ApplyExecutionLine\(MonacoSourceNavigator\.GetExecutionLineFor\(_filePath\), true\)/.test(editorCs));
+
+// f022fb4e item 4. ONE gate, consulted in ApplyExecutionLine — the activation call site stays
+// unconditional on purpose, so a second guard there cannot quietly make this one dead.
+section('host: no pointless marker message (f022fb4e item 4)');
+{
+    const body = slice(editorCs, 'internal void ApplyExecutionLine(int line, bool reassert = false)',
+        '// What this page is believed to be showing', 'ApplyExecutionLine');
+    const iGate = body.indexOf('_execLineGate.WorthSending(line)');
+    const iPost = body.indexOf('_editor.PostJson(');
+    const iShows = body.indexOf('_execLineGate.PageNowShows(line)');
+    check('asks the gate whether the message is worth sending', iGate >= 0);
+    check('...and returns without posting when it is not', /if \(!_execLineGate\.WorthSending\(line\)\) return;/.test(body));
+    check('asks BEFORE posting', iGate >= 0 && iPost > iGate);
+    check('records what the page now shows AFTER posting', iShows > iPost);
+    check('the gate is the ExecutionLineGate service',
+        /private readonly Services\.ExecutionLineGate _execLineGate = new Services\.ExecutionLineGate\(\);/.test(editorCs));
+}
+{
+    const body = slice(editorCs, 'private void OnWorkbenchWindowSelected(object sender, EventArgs e)',
+        'private void OnWorkbenchClosing(', 'OnWorkbenchWindowSelected');
+    check('the activation call site holds no second copy of the rule (one gate, not two)',
+        !/_execLineGate|GetExecutionLineFor\(_filePath\) > 0/.test(body));
+}
 
 // ---------- summary ----------
 console.log('\n' + '='.repeat(60));
