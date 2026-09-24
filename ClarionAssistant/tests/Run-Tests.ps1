@@ -51,9 +51,23 @@ function Section($t) { Write-Host ""; Write-Host "=== $t ===" -ForegroundColor C
 # --------------------------------------------------------------------------- C# harnesses
 if (-not $NodeOnly -and -not $InstallerOnly) {
 
-    # Resolve csc. The .NET Framework compiler is enough — these harnesses target the same
-    # net48 surface the addin does (System.Web.Extensions for JavaScriptSerializer).
-    $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+    # Resolve csc. Prefer the VS2022 Roslyn compiler — ClarionAppDataReader.cs (and its
+    # StructureScan harness) use C# 6 syntax (expression-bodied members) the old .NET Framework
+    # compiler (v4.0.30319, C# 5) rejects outright. Roslyn is a superset, so it still covers the
+    # net48-targeted harnesses (System.Web.Extensions for JavaScriptSerializer) that motivated the
+    # original choice. Fall back to the Framework compiler if VS2022 isn't installed — every
+    # harness present at that point predates the C# 6 requirement.
+    $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+    $vswhere = Join-Path $programFilesX86 "Microsoft Visual Studio\Installer\vswhere.exe"
+    $csc = $null
+    if (Test-Path $vswhere) {
+        $vsRoot = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
+        if ($vsRoot) {
+            $roslynCsc = Join-Path $vsRoot "MSBuild\Current\Bin\Roslyn\csc.exe"
+            if (Test-Path $roslynCsc) { $csc = $roslynCsc }
+        }
+    }
+    if (-not $csc) { $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe" }
     if (-not (Test-Path $csc)) { $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework\v4.0.30319\csc.exe" }
 
     if (-not (Test-Path $csc)) {
@@ -72,6 +86,10 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "VsCodeSettingsImporter.PayloadCheck"
                Sources = @("tests\VsCodeSettingsImporter.PayloadCheck.cs", "Services\VsCodeSettingsImporter.cs")
                Refs = @("System.dll", "System.Web.Extensions.dll") }
+            @{ Name = "ClarionAppDataReader.StructureScan"
+               Sources = @("tests\ClarionAppDataReader.StructureScan.cs", "tests\ClarionAppDataReader.StructureScan.Stubs.cs",
+                           "Services\ClarionAppDataReader.cs")
+               Refs = @("System.dll", "System.Xml.dll") }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"
