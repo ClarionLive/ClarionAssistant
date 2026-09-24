@@ -93,9 +93,9 @@ Go-to-definition, find-references, hover, document symbols and diagnostics now w
 <!-- release-docs: covered=skills -->
 ### The Clarion skills are a fifth of the size, and lose nothing
 
-The nine largest skills have been rewritten: **313,000 characters down to 61,000**. Because skills load into every session, that is roughly **78,000 tokens of context reduced to about 15,000** &mdash; a cost you were paying in every terminal, whether or not you touched a COM control that day.
+The nine largest skills have been rewritten: **313,000 characters down to 61,000**, roughly **78,000 tokens down to about 15,000** across the set. A session only ever loads each skill's short name and description up front; a skill's full body is read when the skill is actually used. So the saving shows up when a skill fires &mdash; a COM-control or embeditor task no longer pulls tens of thousands of tokens of instructions into the conversation before any work starts. ([#212](https://github.com/ClarionLive/ClarionAssistant/issues/212) &mdash; an earlier version of this note said skills load in full into every session, which was wrong.)
 
-Nothing was deleted. The detail moved into 52 `references/` files that a skill reads *only when it actually needs them*, so invoking one now costs around 1,500&ndash;2,000 tokens plus whatever it genuinely reads. The practical effect is that Clarion Assistant's skills can sit at user scope &mdash; available in any terminal, anywhere on your machine &mdash; without that convenience costing you context on unrelated work.
+Nothing was deleted. The detail moved into 52 `references/` files that a skill reads *only when it actually needs them*, so invoking one now costs around 1,500&ndash;2,000 tokens plus whatever it genuinely reads, instead of the whole skill at once.
 
 While rewriting them we also corrected the target framework. A find-and-replace had at some point turned every "net472 or net48" into "net48 or net48", which quietly made `net48` look like the only supported answer across seven files; the real COM controls target **net472**, and the skills now say so.
 
