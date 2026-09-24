@@ -2462,8 +2462,18 @@ namespace ClarionAssistant.Services
         // cross-file global fields remain a follow-up → ClarionGraph task 6e8f2439).
 
         private static readonly Regex CgGroupQueueOpen = new Regex(@"^([A-Za-z_][A-Za-z0-9_:]*)\s+(GROUP|QUEUE)\b(.*)$", RegexOptions.IgnoreCase);
+        // The type argument immediately after GROUP/QUEUE — "(SomeType)" in "Q QUEUE(SomeType),PRE(q)".
+        // Anchored so a later attribute's parentheses (PRE(q), NAME('x')) can't be read as the base type.
+        // ':' is allowed: a prefixed type name (PREFIX:SomeType) is a normal Clarion type reference.
+        private static readonly Regex CgBaseTypeArg = new Regex(@"^\s*\(\s*([A-Za-z_][A-Za-z0-9_:]*)\s*\)", RegexOptions.IgnoreCase);
         private static readonly Regex CgEndLine   = new Regex(@"^\s*END\b", RegexOptions.IgnoreCase);
         private static readonly Regex CgPeriodEnd = new Regex(@"^\s*\.\s*$");
+        // CgEndLine/CgPeriodEnd are both anchored at the START of a line, so neither can see a
+        // declaration that closes itself — "Settings GROUP(SomeType) END" — whose terminator sits at
+        // the END of the line, inside CgGroupQueueOpen's own group-3 capture. These spot that form.
+        private static readonly Regex CgStructLiteral         = new Regex(@"'(?:[^']|'')*'");
+        private static readonly Regex CgLineComment           = new Regex(@"!.*$");
+        private static readonly Regex CgSelfClosingStructure  = new Regex(@"(?:\bEND\b|\.)\s*$", RegexOptions.IgnoreCase);
         // MAP prototype block (module-scope). Its own END (and any nested MODULE(...)...END) is tracked so
         // GetModuleDataRanges can SKIP prototypes — they are procedure declarations (item #4), not data.
         private static readonly Regex CgMapOpen       = new Regex(@"^\s*MAP\b", RegexOptions.IgnoreCase);
@@ -2480,7 +2490,11 @@ namespace ClarionAssistant.Services
         private static readonly Regex CgQualifier = new Regex(@"([A-Za-z_][A-Za-z0-9_:]*)([:.])([A-Za-z0-9_]*)$");
 
         private sealed class CgStructField { public string Name; public string Type; }
-        private sealed class CgStruct { public string Name; public string Pre; public readonly List<CgStructField> Fields = new List<CgStructField>(); }
+        /// <summary>BaseType is the type argument of a "Name QUEUE(SomeType)" / "Name GROUP(SomeType)"
+        /// declaration. Such a structure has the named type's fields PLUS any declared inline, and the
+        /// type lives in another file we do NOT scan here — so when BaseType is set, Fields is known to
+        /// be INCOMPLETE and must never be used as an authoritative member scope.</summary>
+        private sealed class CgStruct { public string Name; public string Pre; public string BaseType; public readonly List<CgStructField> Fields = new List<CgStructField>(); }
 
         /// <summary>Full buffer (live text preferred, else disk) split into lines, or null.</summary>
         private static string[] CgGetLines(string bufferText, string filePath)
@@ -2701,11 +2715,17 @@ namespace ClarionAssistant.Services
                     {
                         string pre = CgExtractPre(gq.Groups[3].Value)
                                      ?? (stack.Count > 0 ? stack[stack.Count - 1].Pre : null);
-                        var s = new CgStruct { Name = gq.Groups[1].Value, Pre = pre };
+                        var s = new CgStruct { Name = gq.Groups[1].Value, Pre = pre, BaseType = CgExtractBaseType(gq.Groups[3].Value) };
                         if (stack.Count > 0)   // a nested group is also a field of its parent
                             stack[stack.Count - 1].Fields.Add(new CgStructField { Name = s.Name, Type = gq.Groups[2].Value });
                         all.Add(s);
-                        stack.Add(s);
+                        // A declaration that closes on its own line ("Settings GROUP(SomeType) END")
+                        // declares no inline fields. Pushing it left it open for the rest of the scope,
+                        // so every following declaration was collected as one of ITS fields — and
+                        // MergeMemberAccessCompletions then returned those as the member scope, filtering
+                        // the LSP's real members out of the completion list and leaving the surrounding
+                        // locals in their place.
+                        if (!CgClosesOnSameLine(gq.Groups[3].Value)) stack.Add(s);
                         continue;
                     }
                     if (stack.Count > 0 && (CgEndLine.IsMatch(ln) || CgPeriodEnd.IsMatch(ln)))
@@ -2732,6 +2752,38 @@ namespace ClarionAssistant.Services
         {
             var m = CgPreAttr.Match(attrs ?? "");
             return (m.Success && m.Groups[1].Success && m.Groups[1].Value.Length > 0) ? m.Groups[1].Value : null;
+        }
+
+        /// <summary>The type argument of "Name QUEUE(SomeType)" / "Name GROUP(SomeType)", or null when the
+        /// declaration names no base type. <paramref name="afterKeyword"/> is everything following the
+        /// GROUP/QUEUE keyword, so the argument (when present) is the FIRST thing on it — anything later is
+        /// an attribute list (",PRE(x),NAME('y')") and must not be mistaken for one. Never throws.</summary>
+        private static string CgExtractBaseType(string afterKeyword)
+        {
+            if (string.IsNullOrEmpty(afterKeyword)) return null;
+            try
+            {
+                var m = CgBaseTypeArg.Match(afterKeyword);
+                return (m.Success && m.Groups[1].Value.Length > 0) ? m.Groups[1].Value : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>True when a GROUP/QUEUE declaration terminates on its OWN line — a trailing END, or
+        /// the '.' shorthand — and therefore declares no inline fields. <paramref name="afterKeyword"/> is
+        /// everything following the GROUP/QUEUE keyword. String literals and any trailing comment are
+        /// removed first, so neither NAME('APPEND') nor "! ... end" can be misread as a terminator.
+        /// Never throws.</summary>
+        private static bool CgClosesOnSameLine(string afterKeyword)
+        {
+            if (string.IsNullOrEmpty(afterKeyword)) return false;
+            try
+            {
+                string tail = CgStructLiteral.Replace(afterKeyword, "''");   // keep tokens apart
+                tail = CgLineComment.Replace(tail, "");
+                return CgSelfClosingStructure.IsMatch(tail);
+            }
+            catch { return false; }
         }
 
         /// <summary>Group/queue FIELD completion for qualified contexts: PRE prefix ("Cus:partial" → fields
@@ -2863,6 +2915,20 @@ namespace ClarionAssistant.Services
                 foreach (var s in ParseScopeStructures(lines, GetScopeDataRanges(lines, line)))
                     if (string.Equals(s.Name, instance, StringComparison.OrdinalIgnoreCase))
                     {
+                        // "Q QUEUE(SomeType)" carries SomeType's fields PLUS any declared inline, and
+                        // SomeType lives in another file this buffer scan never reads. Scoping to the
+                        // inline-only set therefore DROPS every field the LSP correctly resolved from
+                        // the type — the same trap the CLASS path below documents and gates against.
+                        // Leave a typed structure to the LSP (our inline fields are still ADDED by
+                        // MergeQualifiedFieldCompletions; only the scope-filter is declined).
+                        //
+                        // Observed: "Q." listed just the 2 inline fields while the LSP had returned 13
+                        // from the type, yet "Q.L" listed the type's L* fields correctly — because a
+                        // partial filters our inline additions out, the scope matches nothing, and the
+                        // caller's "only scope when matches remain" guard then leaves the list alone.
+                        // Same request, opposite outcome, purely from whether our own additions survived.
+                        if (!string.IsNullOrEmpty(s.BaseType)) return null;
+
                         var fset = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                         foreach (var f in s.Fields)
                             if (f != null && !string.IsNullOrEmpty(f.Name)) fset.Add(f.Name);
