@@ -3399,12 +3399,8 @@ namespace ClarionAssistant
             }
 
             string systemPromptExtra = BuildSystemPromptInjection(ctx.WorkDir);
-            if (!claudeMdDelivered)
-            {
-                string briefing = ReadClarionAssistantPrompt();
-                if (!string.IsNullOrEmpty(briefing))
-                    systemPromptExtra = briefing + Environment.NewLine + Environment.NewLine + (systemPromptExtra ?? "");
-            }
+            systemPromptExtra = Services.ClaudeMdDeployer.ComposeSystemPromptExtra(
+                claudeMdDelivered, claudeMdDelivered ? null : ReadClarionAssistantPrompt(), systemPromptExtra);
             string initialPrompt = BuildInitialPrompt(ctx.WorkDir);
             System.Diagnostics.Debug.WriteLine("[LaunchClaude] prompts built");
 
@@ -4215,9 +4211,9 @@ namespace ClarionAssistant
                     Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR"));
                 System.Diagnostics.Debug.WriteLine("[DeployClaudeMd] " + outcome + " for " + workDir);
 
-                // Deploy statusLine config so Claude Code writes status data for this tab. This one
-                // still goes into the profile's .claude when workDir is the profile (New Chat) -
-                // DeployStatusLineConfig only ever creates the file or replaces its own.
+                // Deploy statusLine config so Claude Code writes status data for this tab. Same
+                // rules as CLAUDE.md: never in the user's config dir (so a New Chat in the profile
+                // folder has no CA status line), and never over a file that isn't CA's own.
                 if (!string.IsNullOrEmpty(workDir))
                     DeployStatusLineConfig(Path.Combine(workDir, ".claude"), assemblyDir);
 
@@ -4252,14 +4248,6 @@ namespace ClarionAssistant
                 string nodeExe = ResolveNodeExe();
                 if (nodeExe == null) return;
 
-                string settingsPath = Path.Combine(claudeDir, "settings.local.json");
-                // Never replace a settings.local.json that holds anything but our own statusLine -
-                // Claude Code stores the user's "don't ask again" permissions in this file (GH #227).
-                if (File.Exists(settingsPath)
-                    && !Services.ClaudeMdDeployer.IsCaOwnedSettingsLocal(File.ReadAllText(settingsPath)))
-                    return;
-                Directory.CreateDirectory(claudeDir);
-
                 string safeScript = scriptPath.Replace("\\", "/");
                 string safeNode = nodeExe.Replace("\\", "/");
                 string json = "{\"statusLine\":{\"type\":\"command\",\"command\":\"\\\"" + safeNode + "\\\" \\\"" + safeScript + "\\\"\"}}";
@@ -4268,8 +4256,13 @@ namespace ClarionAssistant
                 // line 1 column 1" and IGNORES THE WHOLE FILE. Since the file's only content is the
                 // statusLine command, that meant the Clarion Assistant status line silently never
                 // worked for anyone. We could not see it because File.ReadAllText strips BOMs, so
-                // every round-trip on our side looked fine (ticket 9b9dbc7d).
-                File.WriteAllText(settingsPath, json, Services.EncodingHelper.Utf8NoBom);
+                // every round-trip on our side looked fine (ticket 9b9dbc7d). WriteStatusLineSettings
+                // writes with Utf8NoBom, and only where GH #227's rules allow.
+                var outcome = Services.ClaudeMdDeployer.WriteStatusLineSettings(
+                    claudeDir, json,
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR"));
+                System.Diagnostics.Debug.WriteLine("[DeployStatusLineConfig] " + outcome + " for " + claudeDir);
             }
             catch { }
         }

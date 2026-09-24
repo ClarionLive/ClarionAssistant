@@ -31,6 +31,11 @@ namespace ClarionAssistant.Services
     /// real shipped prompt still opens with the signature, so the two cannot drift silently.
     /// A user who wants to keep an edited copy only has to change its first lines.
     ///
+    /// .claude\settings.local.json (the status line) follows the same two rules - see
+    /// <see cref="WriteStatusLineSettings"/>. Claude Code keeps the user's "don't ask again"
+    /// permissions in that file, and one in the user config dir would point every session at our
+    /// ca-statusline.js, which breaks if CA is uninstalled.
+    ///
     /// ZERO IDE coupling on purpose: the test compiles this file straight out of the tree.
     /// Keep it that way.
     /// </summary>
@@ -54,6 +59,47 @@ namespace ClarionAssistant.Services
         public static bool Delivered(Outcome o)
         {
             return o == Outcome.Created || o == Outcome.Refreshed;
+        }
+
+        /// <summary>
+        /// The text for --append-system-prompt-file. When CLAUDE.md was not delivered the
+        /// briefing goes first, ahead of the knowledge/recap <paramref name="extra"/>, so a skipped
+        /// CLAUDE.md never costs the session its instructions. When it was delivered, the
+        /// briefing is NOT repeated.
+        /// </summary>
+        public static string ComposeSystemPromptExtra(bool claudeMdDelivered, string briefing, string extra)
+        {
+            if (claudeMdDelivered || string.IsNullOrEmpty(briefing)) return extra;
+            return briefing + Environment.NewLine + Environment.NewLine + (extra ?? "");
+        }
+
+        /// <summary>
+        /// Writes CA's statusLine-only <paramref name="json"/> to &lt;claudeDir&gt;\settings.local.json
+        /// under the CLAUDE.md rules: never in the user config dir (not even to create it), and
+        /// elsewhere only when the file is absent or is CA's own (<see cref="IsCaOwnedSettingsLocal"/>).
+        /// Written without a BOM - node's JSON.parse rejects one and Claude Code then ignores the file.
+        /// </summary>
+        public static Outcome WriteStatusLineSettings(string claudeDir, string json, string userProfile, string claudeConfigDir)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(claudeDir) || string.IsNullOrEmpty(json)) return Outcome.Failed;
+                if (IsUserConfigDir(claudeDir, userProfile, claudeConfigDir))
+                    return Outcome.SkippedUserConfig;
+
+                string path = Path.Combine(claudeDir, "settings.local.json");
+                bool existed = File.Exists(path);
+                if (existed && !IsCaOwnedSettingsLocal(File.ReadAllText(path)))
+                    return Outcome.SkippedUserAuthored;
+
+                Directory.CreateDirectory(claudeDir);
+                File.WriteAllText(path, json, EncodingHelper.Utf8NoBom);
+                return existed ? Outcome.Refreshed : Outcome.Created;
+            }
+            catch
+            {
+                return Outcome.Failed;
+            }
         }
 
         /// <summary>

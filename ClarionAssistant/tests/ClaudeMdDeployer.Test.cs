@@ -13,9 +13,12 @@ using ClarionAssistant.Services;
 // Argument 1 (optional but passed by Run-Tests.ps1): the ClarionAssistant project dir, so the real
 // shipped prompt can be checked against ClaudeMdDeployer.Signature.
 //
-// PROVEN ABLE TO FAIL: this harness was run against a copy of Deploy() reduced to the pre-fix body
-// (create .claude, File.Copy overwrite:true) - 12 of 15 red - and against Deploy() with each guard
-// removed in turn; every mutation turned at least one check red. See ticket 79ef5f10.
+// PROVEN ABLE TO FAIL (30 checks): against a master-equivalent copy - Deploy() reduced to the pre-fix
+// body (create .claude, File.Copy overwrite:true), settings.local.json always written, the prompt
+// never appended - 20 of 30 are red, including the reported New Chat case. Each guard removed alone
+// is red too: Deploy config guard 3, Deploy owner guard 3, CLAUDE_CONFIG_DIR check 2, settings
+// config guard 3, settings owner guard 1, settings regex 2, ca-statusline.js check 1, compose never
+// appending 2, compose ignoring "delivered" 1, compose putting the briefing last 2. Ticket 79ef5f10.
 static class ClaudeMdDeployerTest
 {
     static int pass = 0, fail = 0;
@@ -138,6 +141,56 @@ static class ClaudeMdDeployerTest
             var o7 = ClaudeMdDeployer.Deploy(Path.Combine(root, "nope.md"), proj3, profile, null);
             Ok("Missing source: SourceMissing, no .claude created",
                o7 == ClaudeMdDeployer.Outcome.SourceMissing && !Directory.Exists(Path.Combine(proj3, ".claude")), o7.ToString());
+
+            // --- 9. WriteStatusLineSettings: the file-level guard DeployStatusLineConfig goes through.
+            string caJson = "{\"statusLine\":{\"type\":\"command\",\"command\":\"\\\"C:/node.exe\\\" \\\"C:/CA/Terminal/ca-statusline.js\\\"\"}}";
+            string userSettings = "{\n  \"permissions\": {\n    \"allow\": [\"Bash(git status)\"]\n  }\n}";
+
+            string profile3 = Path.Combine(root, "Users", "NoSettings");
+            Directory.CreateDirectory(profile3);
+            var s1 = ClaudeMdDeployer.WriteStatusLineSettings(Path.Combine(profile3, ".claude"), caJson, profile3, null);
+            Ok("settings: user config dir, file absent -> NOT created",
+               s1 == ClaudeMdDeployer.Outcome.SkippedUserConfig && !File.Exists(Path.Combine(profile3, ".claude", "settings.local.json")), s1.ToString());
+
+            string profSettings = Path.Combine(profile, ".claude", "settings.local.json");
+            File.WriteAllText(profSettings, caJson.Replace("C:/CA", "C:/OLD"), EncodingHelper.Utf8NoBom);
+            var s2 = ClaudeMdDeployer.WriteStatusLineSettings(Path.Combine(profile, ".claude"), caJson, profile, null);
+            Ok("settings: user config dir, CA's own old file -> NOT replaced either",
+               s2 == ClaudeMdDeployer.Outcome.SkippedUserConfig && File.ReadAllText(profSettings).Contains("C:/OLD"), s2.ToString());
+
+            var s3 = ClaudeMdDeployer.WriteStatusLineSettings(cfgDir, caJson, profile, cfgDir);
+            Ok("settings: CLAUDE_CONFIG_DIR -> NOT created",
+               s3 == ClaudeMdDeployer.Outcome.SkippedUserConfig && !File.Exists(Path.Combine(cfgDir, "settings.local.json")), s3.ToString());
+
+            string proj4 = Path.Combine(root, "Projects", "Settings");
+            string proj4Dir = Path.Combine(proj4, ".claude");
+            string proj4Settings = Path.Combine(proj4Dir, "settings.local.json");
+            Directory.CreateDirectory(proj4);
+            var s4 = ClaudeMdDeployer.WriteStatusLineSettings(proj4Dir, caJson, profile, null);
+            Ok("settings: project, absent -> created, exact content, no BOM",
+               s4 == ClaudeMdDeployer.Outcome.Created && File.ReadAllText(proj4Settings) == caJson && !HasBom(proj4Settings), s4.ToString());
+
+            File.WriteAllText(proj4Settings, caJson.Replace("C:/CA", "C:/OLD"), EncodingHelper.Utf8NoBom);
+            var s5 = ClaudeMdDeployer.WriteStatusLineSettings(proj4Dir, caJson, profile, null);
+            Ok("settings: project, CA's own old file -> refreshed",
+               s5 == ClaudeMdDeployer.Outcome.Refreshed && File.ReadAllText(proj4Settings) == caJson, s5.ToString());
+
+            File.WriteAllText(proj4Settings, userSettings, EncodingHelper.Utf8NoBom);
+            var s6 = ClaudeMdDeployer.WriteStatusLineSettings(proj4Dir, caJson, profile, null);
+            Ok("settings: project, user permissions file -> untouched",
+               s6 == ClaudeMdDeployer.Outcome.SkippedUserAuthored && File.ReadAllText(proj4Settings) == userSettings, s6.ToString());
+
+            // --- 10. ComposeSystemPromptExtra: the call-site fallback when CLAUDE.md is skipped.
+            const string brief = "BRIEFING", extra = "RECAP";
+            string c1 = ClaudeMdDeployer.ComposeSystemPromptExtra(false, brief, extra);
+            Ok("compose: CLAUDE.md skipped -> briefing first, then the recap",
+               c1 != null && c1.StartsWith(brief) && c1.EndsWith(extra), c1);
+            Ok("compose: CLAUDE.md delivered -> recap only, briefing not repeated",
+               ClaudeMdDeployer.ComposeSystemPromptExtra(true, brief, extra) == extra);
+            string c3 = ClaudeMdDeployer.ComposeSystemPromptExtra(false, brief, null);
+            Ok("compose: skipped with no recap -> briefing alone", c3 != null && c3.StartsWith(brief) && c3.Trim() == brief, c3);
+            Ok("compose: skipped but briefing unreadable -> recap unchanged",
+               ClaudeMdDeployer.ComposeSystemPromptExtra(false, null, extra) == extra);
         }
         finally
         {
