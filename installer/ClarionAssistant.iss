@@ -69,7 +69,7 @@
 ; Bundled LSP is now PURE/stock upstream (GitHub #40) — source from the pinned pure build under
 ; .lsp-build\<tag>, NOT the old codegraph-overlay clone. Tag tracks lsp-server-sync\lsp-snapshot.json
 ; "resolvedTag"; bump this path when the pin bumps (Sync-LspServer.ps1 -Pure -Tag <tag>).
-#define SrcLsp SrcBase + "\.lsp-build\v1.0.0"
+#define SrcLsp SrcBase + "\.lsp-build\v1.0.5"
 ; Bundled node.exe (so end users don't need Node.js installed). Override: CLARIONLSP_NODE
 #define SrcNodeExe GetEnv("CLARIONLSP_NODE") != "" ? GetEnv("CLARIONLSP_NODE") : "C:\Program Files\nodejs\node.exe"
 ; Bundled Markdown Editor — msarson/ClarionMarkdownEditor, redistributed under MIT. Upstream ships a
