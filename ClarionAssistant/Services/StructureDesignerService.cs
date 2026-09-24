@@ -99,11 +99,14 @@ namespace ClarionAssistant
                 string clwPath = Path.Combine(dir, safe + ".clw");
                 string normalized = structureText.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
                 if (!normalized.EndsWith("\r\n")) normalized += "\r\n";
-                // NO BOM. This is CLARION SOURCE, and a BOM at the head of a .clw is a known
-                // breaker - it is the first thing the compiler and the IDE's own reader see. The
-                // rest of this codebase already writes .clw through Utf8NoBom (ClarionSourceText);
-                // this scratch-file path was the one that did not (9b9dbc7d).
-                File.WriteAllText(clwPath, normalized, Services.EncodingHelper.Utf8NoBom);
+                // Clarion source rules via ClarionSourceText: NO BOM (a BOM at the head of a .clw is
+                // a known breaker, 9b9dbc7d) and the ANSI code page, which is what the native
+                // designer reads it as. Utf8NoBom turned accented PROMPT / window text into two
+                // characters each (GH #203). The encoding is given explicitly rather than resolved
+                // from the file: this scratch path is reused, and a leftover from an earlier session
+                // says nothing about the text being opened now. A character the code page can't
+                // hold throws, and the catch below reports it instead of opening mangled text.
+                Services.ClarionSourceText.WriteFile(clwPath, normalized, Services.EncodingHelper.Ansi);
                 L("Scratch .clw: " + clwPath + " (" + normalized.Length + " chars)");
 
                 // 2) Open through the IDE pipeline — attaches the designer secondary.

@@ -1624,7 +1624,8 @@ IdeOnly = true,
                     // Appends DIRECTLY rather than through IEditorService. That indirection made
                     // this tool look IDE-coupled and it was withheld from the standalone server
                     // for a whole release cycle — but EditorService.AppendTextToFile is a bare
-                    // File.AppendAllText that never consults the editor, the open buffer, or
+                    // file append (now ClarionSourceText.AppendFile, the same call as below) that
+                    // never consults the editor, the open buffer, or
                     // anything else in the IDE. It was filed on the editor service, not dependent
                     // on it. Same bytes, same behaviour in the addin, minus a coupling that was
                     // never real. (EditorService keeps the method; ClassHelperControl uses it.)

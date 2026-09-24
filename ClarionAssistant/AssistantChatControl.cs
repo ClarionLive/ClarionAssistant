@@ -2878,8 +2878,10 @@ namespace ClarionAssistant
                     "INCLUDE('" + newClassName + ".INC')",
                     "INCLUDE('" + newClassName + ".INC')");
 
-                File.WriteAllText(dstInc, incContent);
-                File.WriteAllText(dstClw, clwContent);
+                // Each new file takes its MODEL's encoding (GH #203). File.WriteAllText wrote UTF-8,
+                // so an accented comment in a cp1252 model came out as a UTF-8 class.
+                Services.ClarionSourceText.WriteFile(dstInc, incContent, Services.ClarionSourceText.ResolveEncoding(srcInc));
+                Services.ClarionSourceText.WriteFile(dstClw, clwContent, Services.ClarionSourceText.ResolveEncoding(srcClw));
 
                 // Save output folder as default for next time
                 _settings.Set("Class.OutputFolder", outputFolder);

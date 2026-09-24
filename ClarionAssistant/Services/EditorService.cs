@@ -468,7 +468,9 @@ namespace ClarionAssistant.Services
                 if (!File.Exists(filePath))
                     return InsertResult.Failed($"File not found: {filePath}");
 
-                File.AppendAllText(filePath, "\r\n" + text);
+                // Same writer as the append_to_file tool: a Clarion file gets its text appended in
+                // its own encoding (GH #203) rather than UTF-8 onto a possibly-ANSI .clw.
+                ClarionSourceText.AppendFile(filePath, text);
                 return InsertResult.Succeeded();
             }
             catch (Exception ex) { return InsertResult.Failed(ex.Message); }

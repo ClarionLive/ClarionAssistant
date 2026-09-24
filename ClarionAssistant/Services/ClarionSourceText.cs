@@ -40,7 +40,7 @@ namespace ClarionAssistant.Services
             if (string.IsNullOrEmpty(content)) return content ?? string.Empty;
 
             // Drop a leading BOM (U+FEFF) if one slipped into the string.
-            if (content[0] == '﻿') content = content.Substring(1);
+            if (content[0] == '\uFEFF') content = content.Substring(1);
 
             var sb = new StringBuilder(content.Length + 16);
             for (int i = 0; i < content.Length; i++)
@@ -80,8 +80,21 @@ namespace ClarionAssistant.Services
                 File.WriteAllText(path, content);
                 return null;
             }
+            return WriteFile(path, content, ResolveEncoding(path));
+        }
 
-            Encoding enc = ResolveEncoding(path);
+        /// <summary>
+        /// Writes Clarion source in an encoding the CALLER chose, for files whose encoding comes from
+        /// somewhere other than their own previous contents: a class created from a model file takes
+        /// the model's (<c>ResolveEncoding(modelPath)</c>), and a scratch file takes
+        /// <see cref="EncodingHelper.Ansi"/>. Same CRLF / no-BOM / refuse-rather-than-'?' rules as
+        /// the one-argument overload, whatever the extension.
+        /// </summary>
+        /// <exception cref="ClarionEncodingException">
+        /// The content holds a character <paramref name="enc"/> cannot represent. Nothing is written.
+        /// </exception>
+        public static Encoding WriteFile(string path, string content, Encoding enc)
+        {
             // UTF-16/32 has no BOM-free form Clarion can read; UTF-8 without a BOM is what this path
             // wrote for those before GH #203, and a UTF-16 .clw is not something Clarion produces.
             if (enc.CodePage != EncodingHelper.Ansi.CodePage) enc = EncodingHelper.Utf8NoBom;
@@ -136,6 +149,13 @@ namespace ClarionAssistant.Services
         /// Detection is <see cref="EncodingHelper.ReadAllText(string, out Encoding)"/>, the same ladder
         /// the Modern Embeditor and the diff viewer use to round-trip a file's encoding, so the tools
         /// and the editors cannot disagree about what a file is.
+        ///
+        /// KNOWN LIMIT OF THE HEURISTIC. A no-BOM file is UTF-8 if its bytes decode as valid UTF-8,
+        /// and an ANSI file can pass that test by accident: every high-bit byte has to be part of a
+        /// well-formed sequence, e.g. cp1252 "Ã©" (C3 A9) reads as UTF-8 "é". Such a file is treated
+        /// as UTF-8 and written back as UTF-8. Real Clarion source essentially never lines up like that
+        /// (an accented letter next to a lone one breaks it), and the embeditor makes the same call,
+        /// so the two stay consistent. Without a BOM there is no way to tell them apart for certain.
         /// </summary>
         public static Encoding ResolveEncoding(string path)
         {
@@ -168,6 +188,11 @@ namespace ClarionAssistant.Services
         /// </summary>
         private static byte[] Encode(string text, Encoding enc, string path)
         {
+            // The second test only matters on a machine whose ANSI code page IS UTF-8 (Windows' beta
+            // "Use Unicode UTF-8 for worldwide language support" option sets ACP = 65001). There
+            // Ansi.CodePage == 65001, so the first test passes UTF-8 through to the strict path, which
+            // would then throw on a lone surrogate. UTF-8 holds every character, so there is nothing
+            // to refuse: keep the replacement behavior.
             if (enc.CodePage != EncodingHelper.Ansi.CodePage || enc.CodePage == 65001)
                 return enc.GetBytes(text);
 
