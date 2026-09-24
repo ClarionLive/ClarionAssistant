@@ -39,7 +39,7 @@
              keeps reporting PASS. Warns (does not fail) if a guarded site drops to the implicit
              2-arg form, per the paragraph above.
     RULE 2 - repo-wide and categorical: no write API anywhere may be handed a BOM-emitting
-             encoding. Rule 1 protects four known readers; Rule 2 protects the reader nobody has
+             encoding. Rule 1 protects the known readers; Rule 2 protects the reader nobody has
              written yet. Rule 1's BOM check is deliberately belt-and-braces behind Rule 2, which
              is the stronger of the two; Rule 1's unique value is marker-gone detection.
 
@@ -476,9 +476,20 @@ $guarded = @(
     @{ File = 'AssistantChatControl.cs'
        Marker = 'initialPromptFile, initialPrompt'
        Reader = 'node' }
+    # Clarion source no longer goes through WriteAllText at all (GH #203): every .clw/.inc write in
+    # the addin and the MCP tools resolves an encoding in ClarionSourceText and ends in ONE raw-byte
+    # write, whose bytes come from Encoding.GetBytes - which never emits a preamble. `Api` names the
+    # call the marker must sit on; it defaults to WriteAllText. Guarding the final write (not just
+    # its callers) is what keeps a future "simplify it back to WriteAllText(path, s, enc)" visible:
+    # with a BOM'd UTF-8 enc that overload WOULD write a preamble.
     @{ File = 'Services\StructureDesignerService.cs'
        Marker = 'clwPath, normalized'
+       Api = 'ClarionSourceText.WriteFile'
        Reader = 'the Clarion compiler - a BOM in a .clw is a known breaker' }
+    @{ File = 'Services\ClarionSourceText.cs'
+       Marker = 'File.WriteAllBytes(path, bytes)'
+       Api = 'WriteAllBytes'
+       Reader = 'the Clarion compiler and IDE - every Clarion source write (write_file, create class, designer scratch) lands here' }
 )
 
 $failures = @()
@@ -495,22 +506,25 @@ foreach ($g in $guarded) {
     # -SimpleMatch takes the marker VERBATIM. Do NOT wrap it in [regex]::Escape: that escapes
     # spaces to "\ ", and SimpleMatch then hunts for a literal backslash that is not there, so
     # every marker reports GONE. Caught by breaking this script on its first run.
+    $api = if ($g.Api) { $g.Api } else { 'WriteAllText' }
     $line = Select-String -Path $path -Pattern $g.Marker -SimpleMatch |
-            Where-Object { $_.Line -match 'WriteAllText' } |
+            Where-Object { $_.Line.Contains($api) } |
             Select-Object -First 1
 
     if (-not $line) {
         # The write moved or was renamed. That is a real failure: this guard is now blind, and a
         # blind guard is worse than none because it keeps reporting PASS. THIS is Rule 1's unique
         # value - the BOM check below is belt-and-braces behind Rule 2, which is stronger.
-        $failures += "MARKER GONE   $($g.File): no WriteAllText matching '$($g.Marker)' - the guard can no longer see this write"
+        $failures += "MARKER GONE   $($g.File): no $api matching '$($g.Marker)' - the guard can no longer see this write"
         continue
     }
 
     $checked++
     if ($line.Line -match $bomEmitting) {
         $failures += "BOM REGRESSED $($g.File):$($line.LineNumber)`n                $($line.Line.Trim())`n                read by: $($g.Reader)"
-    } elseif ($line.Line -notmatch 'Utf8NoBom|UTF8Encoding\s*\(\s*false') {
+    } elseif ($api -eq 'WriteAllText' -and $line.Line -notmatch 'Utf8NoBom|UTF8Encoding\s*\(\s*false') {
+        # (Only WriteAllText has an implicit-encoding form. The Clarion sites pass pre-encoded bytes
+        # or an explicit ANSI/UTF-8-no-BOM encoding through ClarionSourceText.)
         # Not a failure - the 2-arg form is BOM-free. But at a site whose reader is node or the
         # Clarion compiler the encoding is load-bearing and should be visible, and the implicit
         # form also throws on invalid bytes where Utf8NoBom writes U+FFFD. Say so out loud rather
