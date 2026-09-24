@@ -528,6 +528,35 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// textDocument/foldingRange — collapsible regions computed by the language server's own
+        /// structure analysis (the same stack that answers hover/F12), rather than by the editor's
+        /// line-oriented regex pass in clarion-language.js.
+        ///
+        /// Buffer-aware for the same reason documentSymbol is: folding must follow what is on screen,
+        /// not what was last written to disk, so an unsaved edit that opens or closes a structure has
+        /// to reach the server before the ranges are asked for.
+        ///
+        /// Timeout is deliberately short. Monaco re-asks for folding constantly and treats a null
+        /// answer as "no ranges", so a slow reply is worse than no reply — the caller falls back to
+        /// the local pass instead of leaving the gutter empty.
+        /// </summary>
+        public Dictionary<string, object> GetFoldingRanges(string filePath, string bufferText)
+        {
+            TrackRequest("folding", filePath);
+            try
+            {
+                if (!string.IsNullOrEmpty(bufferText)) EnsureDocumentOpenWithText(filePath, bufferText);
+                else EnsureDocumentOpen(filePath);
+            }
+            catch { }
+            var parms = new Dictionary<string, object>
+            {
+                { "textDocument", new Dictionary<string, object> { { "uri", FilePathToUri(filePath) } } }
+            };
+            return SendRequest("textDocument/foldingRange", parms, 2000);
+        }
+
+        /// <summary>
         /// workspace/symbol - search for symbols across the workspace.
         /// </summary>
         public Dictionary<string, object> FindWorkspaceSymbol(string query)

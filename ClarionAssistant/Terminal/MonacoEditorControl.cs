@@ -173,6 +173,24 @@ namespace ClarionAssistant.Terminal
     }
 
     /// <summary>
+    /// OPTIONAL companion to <see cref="IMonacoEditorHost"/>: a host that can answer
+    /// {action:"foldingRanges"} from the language server.
+    ///
+    /// Kept off IMonacoEditorHost on purpose. That interface is implemented by every Monaco surface,
+    /// and only the ones with a real file + a running LSP can answer this — a surface that cannot
+    /// simply doesn't implement it, the request times out on the page (4s), and the editor falls back
+    /// to the line-oriented fold pass in clarion-language.js. Adding it to the main interface would
+    /// force a no-op on every other surface for no gain, and the fallback has to exist regardless
+    /// because the LSP may not be running at all.
+    /// </summary>
+    public interface IMonacoFoldingHost
+    {
+        /// <summary>{action:"foldingRanges", buffer} — host replies via PostResponse with
+        /// {ranges:[{start,end,kind}]} (1-based, inclusive) or {ranges:null} when unavailable.</summary>
+        void OnFoldingRanges(MonacoEditorControl editor, string rawJson);
+    }
+
+    /// <summary>
     /// Reusable Monaco-over-WebView2 surface. Owns the <see cref="Panel"/> + <see cref="WebView2"/>,
     /// CoreWebView2 init, a per-instance virtual-host temp folder (large-buffer transfer via
     /// source.txt), navigation to the Monaco HTML (default monaco-embeditor.html) with the ?v=
@@ -376,6 +394,14 @@ namespace ClarionAssistant.Terminal
                     case "signatureHelp":     h.OnSignatureHelp(this, json); break;
                     case "implementation":    h.OnImplementation(this, json); break;
                     case "documentStructure": h.OnDocumentStructure(this, json); break;
+                    case "foldingRanges":
+                        // Optional capability (IMonacoFoldingHost) — a surface that can't answer leaves
+                        // the page's request to time out, and it falls back to the local fold pass.
+                        {
+                            var foldHost = h as IMonacoFoldingHost;
+                            if (foldHost != null) foldHost.OnFoldingRanges(this, json);
+                        }
+                        break;
                     case "saveSettings":      h.OnSaveSettings(this, json); break;
                     case "readVsCodeSettings": h.OnReadVsCodeSettings(this, json); break;
                     case "saveHistory":       h.OnSaveHistory(this, json); break;

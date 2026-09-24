@@ -474,6 +474,29 @@ namespace ClarionAssistant.Services
             return SharedGetDocumentSymbols(c, filePath, bufferText);
         }
 
+        /// <summary>
+        /// textDocument/foldingRange (syncing the live buffer) → raw LSP dict, or null when no
+        /// buffer-aware client is available.
+        ///
+        /// Deliberately LOCAL-ONLY, unlike every other dispatcher here. The shared contract's
+        /// <c>GetFoldingRangesAsync(string filePath)</c> takes no bufferText — unlike its completion,
+        /// diagnostics and documentSymbol counterparts — so it can only fold the file AS SAVED ON
+        /// DISK. For folding that is not a degraded answer, it is a wrong one: the gutter would stop
+        /// matching the screen the moment an unsaved edit opened or closed a structure, which is
+        /// exactly when a developer looks at it. Returning null instead lets the caller fall back to
+        /// the editor's own line-oriented pass, which is at least consistent with the buffer.
+        ///
+        /// Wiring the shared path needs a bufferText overload on IClarionLanguageClient
+        /// (msarson/clarion-lsp); until then this covers the default configuration, since
+        /// Lsp.ForceLocal defaults to true and the bundled client is what serves requests.
+        /// </summary>
+        public static Dictionary<string, object> GetFoldingRanges(string filePath, string bufferText = null)
+        {
+            var lsp = LspClient.Active;
+            if (lsp == null || !lsp.IsRunning) return null;
+            return lsp.GetFoldingRanges(filePath, bufferText);
+        }
+
         /// <summary>workspace/symbol → raw LSP dict. CodeGraph fallback (cross-project) when empty.</summary>
         public static Dictionary<string, object> FindWorkspaceSymbol(string query)
         {

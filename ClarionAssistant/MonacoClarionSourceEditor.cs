@@ -35,7 +35,7 @@ namespace ClarionAssistant
     /// fully-working ClarionEditor (TextEditorDisplayBindingWrapper + IStructureDesignerCompatible),
     /// so the designer/app-gen keep functioning through us.
     /// </summary>
-    public class MonacoClarionEditor : ClarionEditor, IMonacoEditorHost, ICSharpCode.SharpDevelop.Gui.IPositionable
+    public class MonacoClarionEditor : ClarionEditor, IMonacoEditorHost, IMonacoFoldingHost, ICSharpCode.SharpDevelop.Gui.IPositionable
     {
         private Timer _captureTimer;     // polls until the view's Control (text area) is realized
         private int _captureTries;
@@ -1019,6 +1019,63 @@ namespace ClarionAssistant
                 }
                 catch (Exception ex) { MonacoSpikeLog.Write("overlay documentStructure error: " + ex.Message); }
                 try { editor.PostResponse(reqId, new Dictionary<string, object> { { "symbols", symbols }, { "fileMode", true } }); }
+                catch { }
+            });
+        }
+
+        // {action:"foldingRanges"} — collapsible regions from the language server rather than the
+        // line-oriented regex pass in clarion-language.js.
+        //
+        // That pass opens a fold on LOOP and only ever closes one on END or a bare period, so a LOOP
+        // terminated by UNTIL or WHILE — valid Clarion, and the form the Language Reference's own
+        // example uses — never closes and swallows the rest of the file (ClarionAssistant#222). Which
+        // structure a terminator belongs to is a stack question, not a pattern one, so the server
+        // (whose structure stack already answers hover and F12) is the right place to ask.
+        //
+        // This surface is FILE mode: the buffer is a whole module, so there is no synthetic MEMBER
+        // header to skip and the line mapping is the same identity (+1) that OnDocumentStructure uses
+        // above. The embeditor's slot mode needs the wrap/unwrap dance instead — see
+        // ModernEmbeditorViewContent.HandleFoldingRanges.
+        //
+        // Null ranges are a real answer: the page falls back to its local pass rather than showing an
+        // empty gutter.
+        void IMonacoFoldingHost.OnFoldingRanges(MonacoEditorControl editor, string rawJson)
+        {
+            int reqId, line, col; string buffer;
+            if (!ParseLspRequest(rawJson, out reqId, out line, out col, out buffer)) return;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                List<Dictionary<string, object>> ranges = null;
+                try
+                {
+                    EnsureLsp();
+                    var resp = SharedLspBridge.GetFoldingRanges(_filePath, buffer);
+                    object res = (resp != null && resp.ContainsKey("result")) ? resp["result"] : null;
+                    var list = res as System.Collections.IEnumerable;
+                    if (list != null)
+                    {
+                        ranges = new List<Dictionary<string, object>>();
+                        foreach (var item in list)
+                        {
+                            var d = item as Dictionary<string, object>;
+                            if (d == null || !d.ContainsKey("startLine") || !d.ContainsKey("endLine")) continue;
+                            int s0, e0;
+                            try
+                            {
+                                s0 = Convert.ToInt32(d["startLine"]);
+                                e0 = Convert.ToInt32(d["endLine"]);
+                            }
+                            catch { continue; }
+                            int start = s0 + 1, end = e0 + 1;
+                            if (end <= start) continue;
+                            var r = new Dictionary<string, object> { { "start", start }, { "end", end } };
+                            if (d.ContainsKey("kind")) r["kind"] = d["kind"];
+                            ranges.Add(r);
+                        }
+                    }
+                }
+                catch (Exception ex) { MonacoSpikeLog.Write("overlay foldingRanges error: " + ex.Message); }
+                try { editor.PostResponse(reqId, new Dictionary<string, object> { { "ranges", ranges } }); }
                 catch { }
             });
         }
