@@ -467,8 +467,8 @@ if ($SelfTest) {
 # ---------------------------------------------------------------- RULE 1: the curated readers
 # file (relative to the addin project) ; the write we are guarding ; who reads it and why
 $guarded = @(
-    @{ File = 'AssistantChatControl.cs'
-       Marker = 'settingsPath, json'
+    @{ File = 'Services\ClaudeMdDeployer.cs'      # moved out of AssistantChatControl by GH #227
+       Marker = 'path, json'
        Reader = 'Claude Code / Copilot, node JSON.parse - PROVEN to reject a BOM' }
     @{ File = 'AssistantChatControl.cs'
        Marker = 'promptFile, systemPromptExtra'
