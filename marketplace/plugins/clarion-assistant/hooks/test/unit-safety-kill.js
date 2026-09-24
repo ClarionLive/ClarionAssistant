@@ -177,6 +177,13 @@ const KILLS = [
   'cd x && "kill" 5',
   "if true; then 'kill' 5; fi",
   'echo $("kill" 5)',
+  // Run-8 findings (bash-verified): more places a command starts.
+  "if 'kill' 5; then :; fi",
+  "while 'kill' 5; do :; done",
+  "until 'kill' 5; do :; done",
+  "X=1 'kill' 5",
+  ">/dev/null 'kill' 5",
+  "case x in x) 'kill' 5;; esac",
   // Behind a wrapper the bare word is in the accepted class, but a path is
   // still a kill program wherever it stands.
   'timeout 5 "/usr/bin/kill" 1',
@@ -234,6 +241,7 @@ const LONG_SHAPES = {
   'long run of !': '!'.repeat(40000) + ' grep "kill" x',
   'many runner-like paths': ' a/b/c'.repeat(10000) + ' grep "kill" x',
   'many quoted kill words': 'echo' + ' "kill"    '.repeat(10000),
+  'many assignments before quotes': 'A=1 '.repeat(20000) + '"x" '.repeat(20000) + 'grep "kill" x',
 };
 for (const [shape, long] of Object.entries(LONG_SHAPES)) {
   checked++;

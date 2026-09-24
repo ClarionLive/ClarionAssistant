@@ -44,7 +44,9 @@
 // A simple quoted string that IS a kill program is not data, because bash runs
 // it: a path or .exe name ending in a kill word ("C:/Windows/System32/
 // taskkill.exe", "/usr/bin/kill") wherever it stands — quoting a full path is
-// ordinary on Windows — and the bare word ('kill') where a command starts.
+// ordinary on Windows — and the bare word ('kill') where a command starts
+// (see atCommandStart). The price: a quoted path ending in a kill word asks
+// even as an argument (rg "taskkill.exe", ls "C:/tools/kill.exe").
 // grep "kill" x stays silent: there the word is an argument.
 //
 // If the command also runs a program that executes code (a shell,
@@ -76,12 +78,27 @@ const RUNS_CODE = new RegExp(
 const KILL_PROGRAM = /(?:^|[\\/])(?:taskkill|kill|pkill|killall|fkill|Stop-Process|spps)(?:\.exe)?$/i;
 
 // True when `text` (the command read so far) ends where a new command starts:
-// at the beginning, or after ; & | ( { ` ! a newline, $( or do/then/else/elif.
+// at the beginning; after ; & | ( ) { ` ! or a newline (")" ends a case
+// pattern); after a keyword that is followed by a command (if while until do
+// then else elif); or after any of those followed only by VAR=val words and
+// redirections (X=1 'kill', >/dev/null 'kill'). It walks back one word at a
+// time and stops at the first word that is none of these, so it is linear.
+const COMMAND_KEYWORD = /^(?:if|while|until|do|then|else|elif)$/;
+const PREFIX_WORD = /^(?:\w+=|\d*[<>])/;
+const WORD_BREAK = ' \t\n;&|(){}`!';
+
 function atCommandStart(text) {
-  let j = text.length - 1;
-  while (j >= 0 && (text[j] === ' ' || text[j] === '\t')) j--;
-  if (j < 0 || ';&|({`!\n'.includes(text[j])) return true;
-  return /(?:^|[\s;&|({])(?:do|then|else|elif)$/.test(text.slice(Math.max(0, j - 5), j + 1));
+  let j = text.length;
+  for (;;) {
+    while (j > 0 && (text[j - 1] === ' ' || text[j - 1] === '\t')) j--;
+    if (j === 0 || ';&|(){`!\n'.includes(text[j - 1])) return true;
+    let k = j;
+    while (k > 0 && !WORD_BREAK.includes(text[k - 1])) k--;
+    const word = text.slice(k, j);
+    if (COMMAND_KEYWORD.test(word)) return true;
+    if (!PREFIX_WORD.test(word)) return false;
+    j = k;
+  }
 }
 
 // Whether a simple quoted string with this content is a kill program being run.
