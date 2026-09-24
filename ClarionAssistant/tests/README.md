@@ -38,6 +38,7 @@ test.
 | `..\Terminal\test\schema-sources-postgres.test.js` | GH #201: the Schema Sources *Index* cell showing the real error rather than the word `error` (handler extracted from the page), and the PostgreSQL procedure query excluding aggregates (`prokind <> 'a'`) but not window functions |
 | `NpgsqlLoader.SmokeTest.cs` | GH #188: only a *missing* Npgsql.dll is reported as not found; a present-but-broken one (a garbage `Npgsql.dll` is dropped beside the exe, loaded in a fresh AppDomain) surfaces the loader's own message |
 | `McpStdio.EndToEndTest.ps1` | the standalone MCP server's stdio transport as a real process — the stdout hijack, UTF-8-no-BOM on the real handle, and clean exit on stdin EOF, none of which `--selftest-stdio` can see |
+| `McpFileTools.EncodingTest.ps1` | `write_file` / `append_to_file` keeping Clarion source in its own encoding (GH #203): cp1252 stays cp1252, UTF-8 stays UTF-8, new and all-ASCII files are ANSI, a char the code page can't hold is refused with the file untouched. Fixtures are raw bytes in BOTH encodings; exits 2 unless the system ANSI code page is 1252 |
 | `LspDiagnostics.SemanticPassTest.ps1` | `lsp_diagnostics` reporting a file **clean** on the first query while the server had sent only its synchronous pass (b7505691). Fixture: `fixtures\lsp-semantic-pass\` |
 
 ## Dependencies

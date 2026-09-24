@@ -1573,7 +1573,10 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "write_file",
-                Description = "Write content to a file on disk. Creates the file if it doesn't exist, overwrites if it does.",
+                Description = "Write content to a file on disk. Creates the file if it doesn't exist, overwrites if it does. " +
+                              "Clarion source (.clw/.inc/.equ/.int/.trn/.tpw/.tpl) is written with CRLF, no BOM, and in the file's " +
+                              "existing encoding (the ANSI code page for a new or all-ASCII file); a character that encoding cannot " +
+                              "hold is refused rather than written as '?'.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
@@ -1589,11 +1592,13 @@ IdeOnly = true,
                     string dir = Path.GetDirectoryName(path);
                     if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                         Directory.CreateDirectory(dir);
-                    // Clarion source (.clw/.inc/.equ/.tpw/.tpl) is forced to CRLF +
-                    // UTF-8-no-BOM here so LF-only / BOM content can't reach the
-                    // Clarion compiler regardless of what the caller passed (issue #34).
-                    ClarionSourceText.WriteFile(path, content);
-                    string crlfNote = ClarionSourceText.IsClarionSource(path) ? ", CRLF/no-BOM" : "";
+                    // Clarion source (.clw/.inc/.equ/.int/.trn/.tpw/.tpl) is forced to CRLF, no
+                    // BOM, and the file's own encoding, so LF-only / BOM content can't reach the
+                    // Clarion compiler (issue #34) and an ANSI file stays ANSI (GH #203).
+                    Encoding written;
+                    try { written = ClarionSourceText.WriteFile(path, content); }
+                    catch (ClarionEncodingException ex) { return "Error: " + ex.Message; }
+                    string crlfNote = written != null ? ", CRLF/no-BOM, " + written.WebName : "";
                     return "File written: " + path + " (" + content.Length + " chars" + crlfNote + ")";
                 }
             });
@@ -1616,10 +1621,6 @@ IdeOnly = true,
                     string text = McpJsonRpc.GetString(args, "text", "");
                     if (!File.Exists(path))
                         return "Error: file not found: " + path;
-                    // Normalize appended Clarion source to CRLF (issue #34). The
-                    // existing file's encoding is left untouched on append.
-                    text = ClarionSourceText.NormalizeIfClarion(path, text);
-
                     // Appends DIRECTLY rather than through IEditorService. That indirection made
                     // this tool look IDE-coupled and it was withheld from the standalone server
                     // for a whole release cycle — but EditorService.AppendTextToFile is a bare
@@ -1627,9 +1628,13 @@ IdeOnly = true,
                     // anything else in the IDE. It was filed on the editor service, not dependent
                     // on it. Same bytes, same behaviour in the addin, minus a coupling that was
                     // never real. (EditorService keeps the method; ClassHelperControl uses it.)
+                    //
+                    // Appended Clarion source is CRLF-normalized (issue #34) and encoded in the
+                    // file's own encoding (GH #203): UTF-8 appended onto an ANSI file leaves one
+                    // file in two encodings. Other files are appended exactly as before.
                     try
                     {
-                        File.AppendAllText(path, "\r\n" + text);
+                        ClarionSourceText.AppendFile(path, text);
                         return "Text appended to " + path;
                     }
                     catch (Exception ex)
