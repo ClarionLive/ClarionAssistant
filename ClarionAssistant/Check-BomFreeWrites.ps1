@@ -536,8 +536,11 @@ foreach ($g in $guarded) {
 # ------------------------------------------------- RULE 2: no BOM-emitting encoding on any write
 $scanned = 0
 foreach ($cs in Get-ChildItem -Path $repoRoot -Filter *.cs -Recurse -File -ErrorAction SilentlyContinue) {
-    if ($cs.FullName -match $excludeDirs) { continue }
+    # Match the exclusions against the path RELATIVE to the repo root. Matched against FullName, the
+    # 'worktrees' exclusion fired on every file whenever the checkout itself lives under
+    # .claude\worktrees\ - which every task worktree does - so the scan read nothing and still PASSed.
     $rel = $cs.FullName.Substring($repoRoot.Length).TrimStart('\')
+    if (('\' + $rel) -match $excludeDirs) { continue }
     # A file that vanished or is locked between enumeration and read must not abort the run and
     # mask the other 177 results - report it as its own failure line instead.
     try   { $source = Get-Content -LiteralPath $cs.FullName -Raw -ErrorAction Stop }
@@ -546,6 +549,11 @@ foreach ($cs in Get-ChildItem -Path $repoRoot -Filter *.cs -Recurse -File -Error
     foreach ($hit in @(Test-CodeForBomWrites $source)) {
         $failures += "BOM-EMITTING  ${rel}:$($hit.Line)`n                $($hit.Snippet)`n                a write API was handed a BOM-emitting encoding"
     }
+}
+# A scan that read nothing proves nothing - and printed PASS, which is how the worktree exclusion
+# above went unnoticed.
+if ($scanned -eq 0) {
+    $failures += "SCANNED NOTHING  Rule 2 read 0 .cs files under $repoRoot - the exclusions or the root are wrong, so a PASS would be vacuous"
 }
 
 Write-Host ""
