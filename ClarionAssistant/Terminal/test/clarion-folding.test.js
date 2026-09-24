@@ -238,6 +238,9 @@ foldsAre('LOOP WHILE on the opener still closes on END',
 foldsAre('UNTIL does not close a non-LOOP structure',
     ['  CASE A', '  OF 1', '  UNTIL X', '  END'],
     ['1-4']);
+foldsAre('a colon-qualified name starting with While is not a terminator',
+    ['  LOOP', '    While:Count += 1', '    X += 1', '  END'],
+    ['1-4']);
 foldsAre('a commented-out UNTIL does not close the LOOP',
     ['  LOOP', '    ! UNTIL X > 10', '    X += 1', '  END'],
     ['1-4']);

@@ -223,8 +223,9 @@ function clarionFoldingRanges(model) {
                 // form the Language Reference's own example uses. It closes only a LOOP on top of the
                 // stack: anywhere else it is not a terminator this pass understands, and popping some
                 // other structure would cut that structure's fold short. (LOOP WHILE x / LOOP UNTIL x
-                // on the OPENING line starts with LOOP, so it never reaches this test.)
-                if (/^(UNTIL|WHILE)\b/.test(u)) {
+                // on the OPENING line starts with LOOP, so it never reaches this test.) Not \b: ':' is
+                // part of a Clarion name, so `While:Count += 1` is an assignment, not a terminator.
+                if (/^(UNTIL|WHILE)(?![\w:])/.test(u)) {
                     if (stack.length && loopOpeners[stack[stack.length - 1]]) {
                         var loopOpen = stack.pop();
                         if (i > loopOpen) ranges.push({ start: loopOpen, end: i });
