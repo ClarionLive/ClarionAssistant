@@ -88,7 +88,7 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Refs = @("System.dll", "System.Web.Extensions.dll") }
             @{ Name = "ClarionAppDataReader.StructureScan"
                Sources = @("tests\ClarionAppDataReader.StructureScan.cs", "tests\ClarionAppDataReader.StructureScan.Stubs.cs",
-                           "Services\ClarionAppDataReader.cs")
+                           "Services\ClarionAppDataReader.cs", "Services\ClarionAppDataReader.Model.cs")
                Refs = @("System.dll", "System.Xml.dll") }
         )
         if ($Probe) {
