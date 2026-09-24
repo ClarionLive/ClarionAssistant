@@ -28,147 +28,82 @@
 // stopped a helper on a confirmation prompt until the Owner answered it — a
 // hook's "ask" overrides bypass mode.
 //
-// It still asks for a kill word anywhere, but no longer counts what is only
-// DATA: quoted strings, heredoc bodies and # comments. Two things keep that
-// from hiding a real kill:
-//   - a double-quoted string holding $(...) or `...` is code, because bash
-//     runs those: echo "$(kill 1)" asks;
-//   - if the command runs a program that executes code (a shell, PowerShell,
-//     a language runtime, trap, watch, ssh, eval, ...), quoted text and
-//     heredocs count as well: bash -c "kill 1" and node -e "process.kill(1)"
-//     ask.
+// It still asks for a kill word anywhere, except inside a SIMPLE quoted
+// string: '...' or "..." that opens and closes on one line, where "..." holds
+// no $(, ${ or backtick (bash would run or expand those). Everything else is
+// left as it is. In particular this hook does not try to understand heredocs,
+// comments, ${...} or $'...': five review passes found that each attempt to
+// interpret them hid a real kill somewhere, while leaving them alone only
+// costs an extra prompt.
 //
-// FAIL SAFE: text is only treated as data when the construct around it is
-// read to its end — a closing quote, a heredoc's closing line, the end of a
-// comment's line. Anything that cannot be read to its end (an unmatched quote,
-// a heredoc with no closing line) is left visible, so a misreading makes the
-// rule ask, never stay silent. A kill word hidden by a misreading is the one
-// failure this rule must not have; an extra prompt is the cheap one.
+// FAIL SAFE: at the first quote that is not simple — unclosed, spanning a
+// line, $'...', or a "..." holding $( ${ ` — reading stops and the rest of
+// the command stays as it is. A misread therefore makes the rule ask, never
+// stay silent.
 //
-// A first version matched kill commands by their position in the command line
-// instead. Three review passes each found realistic kills it missed and one
-// input that made its regex run for seconds, so it was replaced.
+// If the command also runs a program that executes code (a shell,
+// PowerShell, a language runtime, awk, trap, watch, ssh, eval, ...), quoted
+// text counts too: bash -c "kill 1" and node -e "process.kill(1)" ask. That
+// check reads the command as written, quotes and all, so a quoted path such as
+// "/c/Program Files/Git/bin/bash.exe" is still seen.
 //
-// Accepted: an unquoted mention (grep -n kill *.cs) still asks, as before. A
-// kill inside quotes that is run by a program not listed below is not seen;
-// this guards against accidents, not evasion.
+// Accepted: an unquoted mention (grep -n kill *.cs) still asks, as before, and
+// so does a quoted one in a command that also names a runner (echo 'use sh to
+// kill it'). A kill inside quotes run by a program not listed below is not
+// seen; this guards against accidents, not evasion.
 
 const KILL_WORD = /\b(taskkill|kill|pkill|killall|fkill|Stop-Process|spps)\b/i;
 
-// A program that runs code handed to it as text. Matched as a whole word (with
-// an optional path and .exe), so "scripts/run.sh" and "src/cmd/" do not count.
+// A program that runs code handed to it as text: a whole word, after a
+// separator, a quote or the start, with an optional path and .exe.
 const RUNS_CODE = new RegExp(
-  String.raw`(?:^|[\s;&|(){}!` + '`' + String.raw`]|\$\()(?:[^\s;&|(){}` + '`' + String.raw`]*[\\/])?` +
+  String.raw`(?:^|[\s;&|(){}!"'` + '`' + String.raw`]|\$\()(?:[^\s;&|(){}!"'` + '`' + String.raw`]*[\\/])?` +
   String.raw`(?:powershell|pwsh|cmd|bash|sh|zsh|dash|wsl|iex|Invoke-Expression|Start-Process|` +
-  String.raw`node|deno|bun|tsx|python[23]?|py|perl|ruby|php|trap|watch|su|runuser|ssh|parallel|eval)` +
-  String.raw`(?:\.exe)?(?=[\s;&|)}` + '`' + String.raw`]|$)`,
+  String.raw`node|nodejs|ts-node|deno|bun|tsx|python[\d.]*|py|perl|ruby|php|awk|gawk|` +
+  String.raw`trap|watch|su|runuser|ssh|parallel|eval|\$\{?SHELL\}?|\$\{?BASH\}?)` +
+  String.raw`(?:\.exe)?(?=[\s;&|)}"'` + '`' + String.raw`]|$)`,
   'i'
 );
 
-// Characters after which a # starts a comment, as in bash. Not ")": bash reads
-// $(date)#tag as one word.
-const COMMENT_MAY_FOLLOW = /[\s;&|(]/;
-
-// A heredoc opener: <<WORD, <<-WORD, <<'WORD', <<"WORD", <<\WORD.
-const HEREDOC_OPENER = /^<<(-?)[ \t]*(?:(['"])([^'"\n]+)\2|\\?([A-Za-z_][\w-]*))/;
-
-// Index of the closing quote from `from`, honouring backslash escapes when
-// `escapes` is set; -1 if the quote never closes.
-function findClosingQuote(text, from, quote, escapes) {
+// Index of the closing double quote from `from`, honouring backslash escapes;
+// -1 if it never closes.
+function findClosingDoubleQuote(text, from) {
   for (let j = from; j < text.length; j++) {
-    if (escapes && text[j] === '\\') { j++; continue; }
-    if (text[j] === quote) return j;
+    if (text[j] === '\\') { j++; continue; }
+    if (text[j] === '"') return j;
   }
   return -1;
 }
 
-// Index of the newline that ends a heredoc's closing line (or text.length when
-// the closing line is the last), searching from the start of the body; -1 if
-// no line closes it. <<- allows leading tabs on the closing line; a trailing
-// \r (CRLF text) is ignored.
-function findHeredocEnd(text, from, delimiter, tabsAllowed) {
-  let pos = from;
-  for (;;) {
-    const nl = text.indexOf('\n', pos);
-    const lineEnd = nl < 0 ? text.length : nl;
-    let line = text.slice(pos, lineEnd).replace(/\r$/, '');
-    if (tabsAllowed) line = line.replace(/^\t+/, '');
-    if (line === delimiter) return lineEnd;
-    if (nl < 0) return -1;
-    pos = nl + 1;
-  }
-}
-
 /**
- * Returns the command with its data removed: the inside of '...', $'...' and
- * plain "..." strings, heredoc bodies, and # comments. Quotes are kept, empty,
- * so the structure stays readable. Whatever cannot be read to its end is kept
- * as it is (see FAIL SAFE above).
- *
- * A "..." string that holds $( or ` is code, and it may nest quotes of its own
- * ("$(cat "$f" | xargs kill)"), which a flat scan would close too early. So
- * nothing is removed from its opening quote onward: the rest of the command is
- * kept as it is.
+ * Returns the command with the inside of its simple quoted strings removed
+ * (the quotes are kept, empty). Stops at the first quote that is not simple
+ * and keeps the rest as it is (see FAIL SAFE above).
  */
-function removeData(command) {
-  const n = command.length;
-  const pendingHeredocs = [];
+function removeSimpleQuotes(command) {
   let out = '';
   let i = 0;
-  let escapedUpTo = -1; // index just past the last backslash escape
-  while (i < n) {
+  while (i < command.length) {
     const c = command[i];
-    if (c === '\\') { out += command.slice(i, i + 2); i += 2; escapedUpTo = i; continue; }
-    if (c === '\n' && pendingHeredocs.length > 0) {
-      out += c;
-      i++;
-      while (pendingHeredocs.length > 0) {
-        const { delimiter, tabsAllowed } = pendingHeredocs.shift();
-        const end = findHeredocEnd(command, i, delimiter, tabsAllowed);
-        if (end < 0) return out + command.slice(i);
-        i = end;
+    if (c === '\\') { out += command.slice(i, i + 2); i += 2; continue; }
+    if (c === "'") {
+      const close = command.indexOf("'", i + 1);
+      if (command[i - 1] === '$' || close < 0 || command.slice(i + 1, close).includes('\n')) {
+        return out + command.slice(i);
       }
-      continue;
-    }
-    // An escaped space ("a\ #b") is part of the word, so it starts no comment.
-    if (c === '#' && (i === 0 || (i !== escapedUpTo && COMMENT_MAY_FOLLOW.test(command[i - 1])))) {
-      const nl = command.indexOf('\n', i);
-      i = nl < 0 ? n : nl;
-      continue;
-    }
-    if (c === "'" || (c === '$' && command[i + 1] === "'")) {
-      const ansiC = c === '$';
-      const close = findClosingQuote(command, i + (ansiC ? 2 : 1), "'", ansiC);
-      if (close < 0) return out + command.slice(i);
       out += "''";
       i = close + 1;
       continue;
     }
     if (c === '"') {
-      const close = findClosingQuote(command, i + 1, '"', true);
-      if (close < 0) return out + command.slice(i);
-      if (/\$\(|`/.test(command.slice(i + 1, close))) return out + command.slice(i);
+      const close = findClosingDoubleQuote(command, i + 1);
+      const body = close < 0 ? '' : command.slice(i + 1, close);
+      if (close < 0 || body.includes('\n') || /\$[({]|`/.test(body)) {
+        return out + command.slice(i);
+      }
       out += '""';
       i = close + 1;
       continue;
-    }
-    // ((...)) and $((...)) are arithmetic: a << inside is a shift, not a heredoc.
-    if (c === '(' && command[i + 1] === '(') {
-      const close = command.indexOf('))', i + 2);
-      const stop = close < 0 ? n : close + 2;
-      out += command.slice(i, stop);
-      i = stop;
-      continue;
-    }
-    // << that is not part of <<< (a here-string) opens a heredoc.
-    if (c === '<' && command[i + 1] === '<' && command[i + 2] !== '<' && command[i - 1] !== '<') {
-      const m = HEREDOC_OPENER.exec(command.slice(i, i + 256));
-      if (m) {
-        pendingHeredocs.push({ delimiter: m[3] || m[4], tabsAllowed: m[1] === '-' });
-        out += m[0];
-        i += m[0].length;
-        continue;
-      }
     }
     out += c;
     i++;
@@ -178,9 +113,8 @@ function removeData(command) {
 
 function isProcessKill(command) {
   if (!KILL_WORD.test(command)) return false;
-  const code = removeData(command);
-  if (KILL_WORD.test(code)) return true;
-  return RUNS_CODE.test(code);
+  if (KILL_WORD.test(removeSimpleQuotes(command))) return true;
+  return RUNS_CODE.test(command);
 }
 
 // ── Rule Definitions ────────────────────────────────────────────────

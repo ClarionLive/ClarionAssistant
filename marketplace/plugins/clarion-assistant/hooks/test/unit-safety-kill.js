@@ -9,9 +9,11 @@
  * that are actually run — including pkill/killall, which the old rule missed —
  * must still ask.
  *
- * An UNQUOTED mention (grep -n kill *.cs) still asks, by the Owner's decision
- * after pipeline run 3: it is the price of a rule that cannot miss a kill the
- * old rule caught. So there are deliberately no such cases in MENTIONS.
+ * Only a SIMPLE quoted string is treated as data (see safety-hook.js). By the
+ * Owner's decisions after pipeline runs 3 and 6, these still ask, as the old
+ * rule did, so there are deliberately no such cases in MENTIONS: an unquoted
+ * mention (grep -n kill *.cs), a mention in a heredoc body, in a # comment or
+ * in $'...', and a quoted mention in a command that also names a runner.
  *
  * This file collects every failing case before exiting, so a mutation run
  * reports exactly which cases went red instead of the first.
@@ -63,15 +65,8 @@ const MENTIONS = [
   'grep -n "kill" scripts/*.sh',
   'grep "kill" build.cmd',
   'grep -rn "kill" src/cmd/',
-  // Heredoc bodies are data, like quoted text.
-  "git commit -F - <<'EOF'\nkill switch removed\nEOF",
-  'cat > notes.md <<EOF\nkill -9 is a last resort\nEOF',
-  "git commit -F - <<-EOF\n\tkill the stale helper\n\tEOF",
-  'cat <<\\EOF\nkill -9 is a last resort\nEOF',
-  'cat <<EOF\r\nkill notes\r\nEOF\r\n',
-  // Comments and $'...' strings are data too.
-  '# kill the helper later\necho done',
-  "echo $'kill\\tthe helper'",
+  // A simple quote after a double-quoted $VAR is still data.
+  'grep "kill" "$LOG"',
 ];
 
 // Kills that are run: MUST raise the kill prompt.
@@ -149,13 +144,30 @@ const KILLS = [
   'result="$(cat "$PIDFILE" | xargs kill -9)"',
   'echo $(date)#tag; kill $pid',
   'echo a\\ #b; kill 1',
-  // Contrived, and deliberately so: in the realistic forms above, a misreading
-  // leaves an unclosed construct and the fail-safe asks anyway. These three give
-  // the misreading something to close on, so each pins its own branch — the
-  // arithmetic (( )), the <<< here-string, and backslash escapes in $'...'.
+  // Constructs a smarter parser misread (runs 4-5); kept as regressions.
   'x=$((1<<N))\nkill 1\nN',
   'read x <<<EOF\nkill 1\nEOF',
+  // $'...' is not read; without that stop, its \' would pair with the next
+  // quote and hide the kill.
   "echo $'it\\'s'; kill 1; echo 'a'",
+  // Run-6 findings (each bash-verified to kill): a quoted runner path, a quoted
+  // $SHELL, # inside ${...}, quotes nested in "${...}", a comment after a
+  // backslash-newline, and $$ before a quote.
+  '"/c/Program Files/Git/bin/bash.exe" -c \'kill 1\'',
+  '"$SHELL" -c \'kill 1\'',
+  '"/c/Program Files/PowerShell/7/pwsh.exe" -NoProfile -Command "Stop-Process -Name node -Force"',
+  'line="a #b"; x=${line%% #*}; kill 1',
+  'echo "${msg:-"can\'t connect"}"; kill 1; echo \'done\'',
+  "true \\\n# don't run lint\nkill 1; echo 'x'",
+  "echo $$'x\\' ; kill 1; echo 'y'",
+  // Runner names the first list missed.
+  'nodejs -e "process.kill(1)"',
+  'ts-node -e "process.kill(1)"',
+  'python3.12 -c "import os; os.kill(1, 9)"',
+  "echo x 1 | awk '{system(\"kill \" $2)}'",
+  // Contrived: a " inside a comment pairing with a later quote; only the
+  // one-line rule for "..." keeps the kill between them visible.
+  '# a 12" pipe\nkill 1\necho "done"',
   // Nested shells: the quoted text is itself a command, so it is still checked.
   'powershell -Command "Stop-Process -Name MultiTerminal"',
   "pwsh -c 'Get-Process x | Stop-Process'",
@@ -204,6 +216,8 @@ const LONG_SHAPES = {
   'many arithmetic groups': 'echo $((1<<2)) '.repeat(5000) + 'grep "kill" x',
   'many comment lines': "# it's here\n".repeat(5000) + 'grep "kill" x',
   'many unclosed (( ': '(( '.repeat(5000) + 'grep "kill" x',
+  'long run of !': '!'.repeat(40000) + ' grep "kill" x',
+  'many runner-like paths': ' a/b/c'.repeat(10000) + ' grep "kill" x',
 };
 for (const [shape, long] of Object.entries(LONG_SHAPES)) {
   checked++;
