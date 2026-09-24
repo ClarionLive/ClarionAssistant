@@ -67,6 +67,11 @@ const MENTIONS = [
   "git commit -F - <<'EOF'\nkill switch removed\nEOF",
   'cat > notes.md <<EOF\nkill -9 is a last resort\nEOF',
   "git commit -F - <<-EOF\n\tkill the stale helper\n\tEOF",
+  'cat <<\\EOF\nkill -9 is a last resort\nEOF',
+  'cat <<EOF\r\nkill notes\r\nEOF\r\n',
+  // Comments and $'...' strings are data too.
+  '# kill the helper later\necho done',
+  "echo $'kill\\tthe helper'",
 ];
 
 // Kills that are run: MUST raise the kill prompt.
@@ -124,6 +129,27 @@ const KILLS = [
   // A heredoc fed to something that runs it is code, not data.
   'bash <<EOF\nkill 1\nEOF',
   "ssh host <<'EOF'\npkill node\nEOF",
+  // Run-4 findings: text wrongly taken for a quote or heredoc hid a real kill.
+  "# Restart the dev server (it's stuck on port 3000)\nkill $(lsof -t -i:3000)",
+  'cd /app  # won\'t hurt\nkill -9 4321',
+  "# don't\nkill 1\n# won't",
+  "echo '<<EOF' > marker.txt\nkill 1234",
+  'grep -n "<<EOF" *.sh\nkill 1234',
+  'read x <<<hello\nkill 1234',
+  'echo $((1<<SHIFT))\nkill 1234',
+  "echo $'it\\'s done'; kill 1234",
+  // Whatever cannot be parsed to its end stays visible.
+  "echo 'oops\nkill 1",
+  'cat <<EOF\ntext\nkill 5',
+  // A double-quoted string holding $( or ` is code, however it nests.
+  '"$(echo \')\' ; kill 1)"',
+  // Contrived, and deliberately so: in the realistic forms above, a misreading
+  // leaves an unclosed construct and the fail-safe asks anyway. These three give
+  // the misreading something to close on, so each pins its own branch — the
+  // arithmetic (( )), the <<< here-string, and backslash escapes in $'...'.
+  'x=$((1<<N))\nkill 1\nN',
+  'read x <<<EOF\nkill 1\nEOF',
+  "echo $'it\\'s'; kill 1; echo 'a'",
   // Nested shells: the quoted text is itself a command, so it is still checked.
   'powershell -Command "Stop-Process -Name MultiTerminal"',
   "pwsh -c 'Get-Process x | Stop-Process'",
@@ -169,6 +195,9 @@ const LONG_SHAPES = {
   'long path-like token': 'a/'.repeat(5000) + 'b grep "kill" x',
   'many heredoc openers': 'cat <<EOF '.repeat(2000) + '\nx\nEOF\ngrep "kill" x',
   'many quotes': '"a" '.repeat(5000) + 'grep "kill" x',
+  'many arithmetic groups': 'echo $((1<<2)) '.repeat(5000) + 'grep "kill" x',
+  'many comment lines': "# it's here\n".repeat(5000) + 'grep "kill" x',
+  'many unclosed (( ': '(( '.repeat(5000) + 'grep "kill" x',
 };
 for (const [shape, long] of Object.entries(LONG_SHAPES)) {
   checked++;
