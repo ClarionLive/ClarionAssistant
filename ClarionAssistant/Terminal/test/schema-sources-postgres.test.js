@@ -6,9 +6,10 @@
 //      string 'error' and throw st.error away, so every ingest failure was undiagnosable from the UI.
 //      The handler is EXTRACTED FROM THE PAGE at run time and driven against a stub document, so this
 //      tests the shipped code, not a copy of it.
-//   2. THE PROCEDURE-STAGE QUERY. pg_get_functiondef() raises 42809 on aggregates (prokind 'a') and
-//      window functions ('w'), and one such row aborted the whole ingest. The query must keep its
-//      prokind filter. Checked on the C# source text, since running it needs a PostgreSQL server.
+//   2. THE PROCEDURE-STAGE QUERY. pg_get_functiondef() raises 42809 on aggregates (prokind 'a'), and
+//      one such row aborted the whole ingest. It does NOT raise on window functions ('w'), which it
+//      renders with the WINDOW keyword (ruleutils.c), so those must keep being indexed. The query must
+//      exclude exactly 'a'. Checked on the C# source text, since running it needs a PostgreSQL server.
 
 var fs   = require('fs');
 var path = require('path');
@@ -68,8 +69,10 @@ ok('pg_get_functiondef query found', q >= 0);
 if (q >= 0) {
     var orderBy = cs.indexOf('ORDER BY n.nspname, p.proname', q);
     var where = cs.substring(q, orderBy);
-    ok('query restricts pg_proc to prokind IN (\'f\',\'p\')', /AND\s+p\.prokind\s+IN\s*\(\s*'f'\s*,\s*'p'\s*\)/.test(where),
-       'aggregates/window functions would reach pg_get_functiondef()');
+    ok('query excludes aggregates (prokind <> \'a\')', /AND\s+p\.prokind\s*<>\s*'a'/.test(where),
+       'aggregates would reach pg_get_functiondef()');
+    ok('query does not exclude window functions', !/prokind\s+(NOT\s+)?IN\s*\(/i.test(where) && !/'w'/.test(where),
+       'window functions are valid pg_get_functiondef() input and must stay indexed');
 }
 
 console.log('\n' + (fail === 0 ? 'ALL PASS (' + pass + ')' : fail + ' FAILED, ' + pass + ' passed'));

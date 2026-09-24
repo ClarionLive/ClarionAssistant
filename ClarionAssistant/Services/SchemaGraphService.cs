@@ -946,28 +946,6 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// Shown wherever Npgsql fails to load. The installer does not ship it, so this
-        /// is an instruction to the user, not a bug report.
-        /// </summary>
-        public const string NpgsqlNotFoundMessage =
-            "Npgsql.dll not found. Place Npgsql.dll in the ClarionAssistant folder to enable PostgreSQL support.";
-
-        /// <summary>
-        /// Load Npgsql dynamically to avoid a hard dependency. Returns null when it cannot be loaded.
-        /// </summary>
-        public static System.Reflection.Assembly TryLoadNpgsql()
-        {
-            try
-            {
-                return System.Reflection.Assembly.Load("Npgsql");
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
         /// Ingest schema from a PostgreSQL database using Npgsql (loaded dynamically).
         /// Requires Npgsql.dll in the lib folder.
         /// </summary>
@@ -976,9 +954,10 @@ namespace ClarionAssistant.Services
             if (string.IsNullOrEmpty(connectionString))
                 return "Error: connection string is required";
 
-            System.Reflection.Assembly npgsqlAsm = TryLoadNpgsql();
+            string loadError;
+            System.Reflection.Assembly npgsqlAsm = NpgsqlLoader.TryLoad(out loadError);
             if (npgsqlAsm == null)
-                return "Error: " + NpgsqlNotFoundMessage;
+                return "Error: " + loadError;
 
             Type connType = npgsqlAsm.GetType("Npgsql.NpgsqlConnection");
             System.Data.Common.DbConnection pgConn;
@@ -1159,7 +1138,7 @@ namespace ClarionAssistant.Services
                                 FROM pg_proc p
                                 JOIN pg_namespace n ON p.pronamespace = n.oid
                                 WHERE n.nspname NOT IN ('pg_catalog','information_schema')
-                                  AND p.prokind IN ('f','p')
+                                  AND p.prokind <> 'a'
                                 ORDER BY n.nspname, p.proname";
                             using (var reader = cmd.ExecuteReader())
                             {

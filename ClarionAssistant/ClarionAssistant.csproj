@@ -227,6 +227,7 @@
     <Compile Include="Services\ClarionTraceService.cs" />
     <Compile Include="Services\EverythingService.cs" />
     <Compile Include="Services\SchemaGraphService.cs" />
+    <Compile Include="Services\NpgsqlLoader.cs" />
     <Compile Include="Terminal\SchemaSourcesView.cs" />
     <Compile Include="Terminal\WebViewZoomHelper.cs" />
     <Compile Include="Models\MultiTerminalModels.cs" />

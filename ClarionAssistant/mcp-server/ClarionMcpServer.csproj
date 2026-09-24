@@ -150,6 +150,7 @@
     <Compile Include="..\Services\EverythingService.cs"><Link>Services\EverythingService.cs</Link></Compile>
     <Compile Include="..\Services\KnowledgeService.cs"><Link>Services\KnowledgeService.cs</Link></Compile>
     <Compile Include="..\Services\SchemaGraphService.cs"><Link>Services\SchemaGraphService.cs</Link></Compile>
+    <Compile Include="..\Services\NpgsqlLoader.cs"><Link>Services\NpgsqlLoader.cs</Link></Compile>
     <!-- SchemaGraphService calls into LspClient (SchemaGraphService.cs:2079, :2227). LspClient is
          itself IDE-free: it spawns the node language server in stdio mode and speaks JSON-RPC over
          pipes, which is why that server already works outside the IDE. -->

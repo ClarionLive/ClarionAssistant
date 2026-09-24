@@ -1897,10 +1897,11 @@ namespace ClarionAssistant
                     else if (type == "postgres")
                     {
                         string connStr = Services.SchemaGraphService.BuildPostgresConnectionString(connInfo);
-                        var asm = Services.SchemaGraphService.TryLoadNpgsql();
+                        string loadError;
+                        var asm = Services.NpgsqlLoader.TryLoad(out loadError);
                         if (asm == null)
                         {
-                            message = Services.SchemaGraphService.NpgsqlNotFoundMessage;
+                            message = loadError;
                         }
                         else
                         {

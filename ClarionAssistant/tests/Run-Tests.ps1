@@ -96,6 +96,9 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\ClaudeMdDeployer.Test.cs", "Services\ClaudeMdDeployer.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll")
                Args = @($RepoDir) }
+            @{ Name = "NpgsqlLoader.SmokeTest"
+               Sources = @("tests\NpgsqlLoader.SmokeTest.cs", "Services\NpgsqlLoader.cs")
+               Refs = @("System.dll") }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"
