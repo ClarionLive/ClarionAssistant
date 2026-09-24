@@ -5,8 +5,13 @@
  * The rule used to ask whenever the word "kill" appeared anywhere in a Bash
  * command, so a helper grepping for '"quit"\|"kill"' sat on a confirmation
  * prompt until the Owner answered it. These cases pin both directions:
- * mentions of a kill must pass silently, and kills that are actually run —
- * including pkill/killall, which the old rule missed — must still ask.
+ * mentions of a kill inside quotes or a heredoc must pass silently, and kills
+ * that are actually run — including pkill/killall, which the old rule missed —
+ * must still ask.
+ *
+ * An UNQUOTED mention (grep -n kill *.cs) still asks, by the Owner's decision
+ * after pipeline run 3: it is the price of a rule that cannot miss a kill the
+ * old rule caught. So there are deliberately no such cases in MENTIONS.
  *
  * This file collects every failing case before exiting, so a mutation run
  * reports exactly which cases went red instead of the first.
@@ -45,22 +50,23 @@ const MENTIONS = [
   'git commit -m "A closed pane no longer needs a kill to go away"',
   "echo 'taskkill is how the old launcher stopped it'",
   'grep -rn "Stop-Process" .',
-  'grep -n kill *.cs',
-  'cat docs/kill-switch.md',
   'rg -n "pkill|killall" hooks/',
-  // A separator INSIDE the quotes puts the word in command position; only the
-  // quote-stripping keeps these silent.
   'git commit -m "Retry once; kill the stale helper after"',
   'echo "cleanup | taskkill /F later"',
-  // Here the end-of-word rule (a quote is not a word end) already keeps it silent.
   "echo 'ps | pkill'",
-  // "sh" and "cmd" as parts of a path are not another shell being run.
-  'grep -n kill scripts/*.sh',
-  'grep -rn kill src/cmd/',
-  'cat kill.sh',
-  // An interpreter running a FILE is not inline code.
-  'node scripts/test.js --grep kill',
-  'npm test -- --grep kill',
+  'git log --grep="kill"',
+  'npm test -- --grep "kill"',
+  // "sh" and "cmd" as parts of a file or directory name are not a program that
+  // runs code. The first two need the check BEFORE the name (a name must start
+  // a word or follow a path separator); the third needs the check AFTER it (a
+  // "/" does not end a program name).
+  'grep -n "kill" scripts/*.sh',
+  'grep "kill" build.cmd',
+  'grep -rn "kill" src/cmd/',
+  // Heredoc bodies are data, like quoted text.
+  "git commit -F - <<'EOF'\nkill switch removed\nEOF",
+  'cat > notes.md <<EOF\nkill -9 is a last resort\nEOF',
+  "git commit -F - <<-EOF\n\tkill the stale helper\n\tEOF",
 ];
 
 // Kills that are run: MUST raise the kill prompt.
@@ -102,6 +108,22 @@ const KILLS = [
   'node -e "process.kill(12345)"',
   'node --eval "process.kill(1)"',
   "ruby -e 'Process.kill(9, 1)'",
+  // Run-3 findings: keywords, case patterns, unlisted wrappers and runtimes.
+  'if kill -9 $pid 2>/dev/null; then echo ok; fi',
+  'while kill -0 $pid; do sleep 1; done',
+  'until kill 123; do :; done',
+  'case $1 in stop) kill $pid;; esac',
+  'winpty taskkill /F /IM node.exe',
+  'trap "kill 0" EXIT',
+  'bun -e "process.kill(1)"',
+  'npx tsx -e "process.kill(1)"',
+  "perl -ne 'kill 9, $_'",
+  // Bash runs $(...) and `...` even inside double quotes.
+  'echo "$(kill 1)"',
+  'echo "`pkill x`"',
+  // A heredoc fed to something that runs it is code, not data.
+  'bash <<EOF\nkill 1\nEOF',
+  "ssh host <<'EOF'\npkill node\nEOF",
   // Nested shells: the quoted text is itself a command, so it is still checked.
   'powershell -Command "Stop-Process -Name MultiTerminal"',
   "pwsh -c 'Get-Process x | Stop-Process'",
@@ -134,20 +156,29 @@ if (!decisionFor('reg add HKCU\\Software\\X').reason.startsWith('Windows registr
   failures.push('reg add no longer asks');
 }
 
-// The hook runs before every Bash call, so a long command must not make the
-// regex backtrack. 300 wrapper-argument groups that never reach a kill. If the
-// argument shapes in COMMAND_PREFIX are allowed to overlap, the check time grows
-// exponentially and would never return — so it runs in a child process with a
-// hard limit, and a regression fails this test instead of hanging the suite.
-checked++;
-{
-  const long = 'sudo' + ' -n 5 -u x FOO=1'.repeat(300) + ' echo done';
+// The hook runs before every Bash call, so a long command must not make it
+// backtrack. The first design's regex took 4.8 s on 164 characters of
+// repeated "env A=1 B=2 " (pipeline run 3). Each shape ends in a QUOTED kill
+// word: the check returns early when there is no kill word at all, so without
+// one these shapes would never reach the code they are meant to time. Each runs
+// in a child process with a hard limit, so a regression fails instead of hanging.
+const LONG_SHAPES = {
+  'repeated env assignments': 'env A=1 B=2 '.repeat(400) + 'grep "kill" x',
+  'repeated wrappers': 'sudo -u r env A=1 timeout 5 '.repeat(300) + 'grep "kill" x',
+  'many flags': 'sudo' + ' -n 5 -u x FOO=1'.repeat(300) + ' grep "kill" x',
+  'long path-like token': 'a/'.repeat(5000) + 'b grep "kill" x',
+  'many heredoc openers': 'cat <<EOF '.repeat(2000) + '\nx\nEOF\ngrep "kill" x',
+  'many quotes': '"a" '.repeat(5000) + 'grep "kill" x',
+};
+for (const [shape, long] of Object.entries(LONG_SHAPES)) {
+  checked++;
+  // The payload goes in on stdin, as Claude Code sends it.
   const result = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: long } }),
     timeout: 5000,
   });
   if (result.error || result.status !== 0) {
-    failures.push(`a long wrapper command did not finish checking within 5 s (${result.error ? result.error.code : 'exit ' + result.status})`);
+    failures.push(`${shape}: did not finish checking within 5 s (${result.error ? result.error.code : 'exit ' + result.status})`);
   }
 }
 

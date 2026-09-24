@@ -22,77 +22,100 @@
 
 // ── Process-kill detection (ticket 24a72aa1) ────────────────────────
 //
-// The kill rule used to match the word anywhere in the command, so
+// The kill rule used to ask whenever a kill word appeared anywhere in the
+// command, so
 //   grep -n '"quit"\|"kill"' *.cs
 // stopped a helper on a confirmation prompt until the Owner answered it — a
-// hook's "ask" overrides bypass mode. It now asks only when a kill command
-// sits in COMMAND POSITION once quoted text is removed.
+// hook's "ask" overrides bypass mode.
 //
-// This guards against accidents, not evasion: a kill hidden inside "$(...)"
-// within double quotes is not seen, and neither is one run through a wrapper
-// this file does not list. The one nested case that is common by accident —
-// handing a command string to another shell, e.g.
-//   powershell -Command "Stop-Process -Name MultiTerminal"
-// — falls back to the old match-the-word-anywhere check, because the words
-// inside that string are a command, and this hook cannot parse them.
+// It still asks for a kill word anywhere, but no longer counts what is only
+// DATA: the inside of '...' and "..." and the body of a heredoc. Two things
+// keep that from hiding a real kill:
+//   - inside double quotes, $(...) and `...` are still read, because bash
+//     runs them: echo "$(kill 1)" asks;
+//   - if the command runs a program that executes code (a shell, PowerShell,
+//     a language runtime, trap, watch, ssh, eval, ...), the quoted text and
+//     heredocs count as well: bash -c "kill 1" and node -e "process.kill(1)"
+//     ask.
 //
-// Still asks needlessly (as the old rule did): a heredoc body with a line that
-// starts with a kill word, and `bash script.sh | grep kill`, where running a
-// shell triggers the fallback although the kill word is only grep's pattern.
+// A first version matched kill commands by their position in the command
+// line instead. Three review passes each found realistic kills it missed
+// (if kill ..., npx kill-port ..., find -exec kill ...) and one input that made
+// its regex run for seconds. This shape cannot miss a kill the old rule caught
+// unless the word is inside quotes or a heredoc, and nothing here backtracks.
+//
+// Accepted: an unquoted mention still asks (grep -n kill *.cs, cat kill.log),
+// as before. A kill inside quotes that is run by a program not listed below is
+// not seen; this guards against accidents, not evasion.
 
 const KILL_WORD = /\b(taskkill|kill|pkill|killall|fkill|Stop-Process|spps)\b/i;
 
-// Where a command can start: the beginning, a separator (; & | ( { ` ! newline
-// $( ), a shell keyword (do then else elif), or find's -exec family.
-const COMMAND_START =
-  String.raw`(?:^|[;&|({!\n` + '`' + String.raw`]|\$\(|(?:^|\s)(?:do|then|else|elif|-exec|-execdir|-ok|-okdir)(?=\s))\s*`;
-
-// What may sit in front of the command itself: VAR=val assignments, and
-// wrappers that run the next word as a command, each with its own flags
-// (a flag may take one value), numbers and VAR=val arguments. The three
-// argument shapes are kept disjoint so a long command cannot backtrack.
-const COMMAND_PREFIX =
-  String.raw`(?:(?:\w+=\S*|(?:sudo|doas|nohup|exec|command|builtin|time|env|xargs|timeout|nice|ionice|watch|stdbuf|setsid|npx|bunx)` +
-  String.raw`(?:\s+(?:-\S+(?:\s+[^\s\d=-][^\s=]*)?|\d\S*|\w+=\S*))*)\s+)*`;
-
-// A path in front of the executable, and the end of the word after it.
-const COMMAND_PATH = String.raw`(?:\S*[\\/])?`;
-const COMMAND_END = String.raw`(?:\.exe)?(?=\s|$|[;&|)}` + '`' + '])';
-
-function commandInPosition(words) {
-  return new RegExp(COMMAND_START + COMMAND_PREFIX + COMMAND_PATH + `(?:${words})` + COMMAND_END, 'i');
-}
-
-// kill-port and fkill are npm packages that kill by port or name; `npx kill-port
-// 5050` would take down MultiTerminal's own REST server.
-const KILL_COMMAND = commandInPosition('taskkill|kill|pkill|killall|kill-port|fkill|Stop-Process|spps');
-
-// A command that hands a string to another interpreter to run. It must be in
-// command position too, or "grep kill scripts/*.sh" would count as running sh.
-const NESTED_SHELL = commandInPosition('powershell|pwsh|cmd|bash|sh|zsh|wsl|Invoke-Expression|iex|Start-Process');
-
-// A language runtime given inline code (node -e, python -c, ...), which is a
-// nested command in the same way. Only flags may come before the inline-code
-// flag, so `node scripts/test.js --grep kill` runs a file and does not count.
-const INLINE_CODE = new RegExp(
-  COMMAND_START + COMMAND_PREFIX + COMMAND_PATH +
-  String.raw`(?:node|deno|python[23]?|py|perl|ruby|php)(?:\.exe)?(?:\s+-\S+)*?\s+(?:-e|--eval|-p|--print|-c|-r)(?=\s|$)`,
+// A program that runs code handed to it as text. Matched as a whole word (with
+// an optional path and .exe), so "scripts/run.sh" and "src/cmd/" do not count.
+const RUNS_CODE = new RegExp(
+  String.raw`(?:^|[\s;&|(){}!` + '`' + String.raw`]|\$\()(?:[^\s;&|(){}` + '`' + String.raw`]*[\\/])?` +
+  String.raw`(?:powershell|pwsh|cmd|bash|sh|zsh|dash|wsl|iex|Invoke-Expression|Start-Process|` +
+  String.raw`node|deno|bun|tsx|python[23]?|py|perl|ruby|php|trap|watch|su|runuser|ssh|parallel|eval)` +
+  String.raw`(?:\.exe)?(?=[\s;&|)}` + '`' + String.raw`]|$)`,
   'i'
 );
 
 /**
- * Returns the command with the contents of '...' and "..." removed, so a
- * rule can see what the command runs rather than what it mentions. Quotes
- * are kept (empty) so the surrounding structure stays intact. Backslash
- * escapes are honoured outside quotes and inside double quotes, as in bash.
+ * Returns the command with heredoc bodies removed (<<EOF, <<-EOF, <<'EOF',
+ * <<"EOF"; not the <<< here-string). The line that opens the heredoc is kept.
+ */
+function stripHeredocs(command) {
+  const opener = /<<(?!<)(-?)\s*(['"]?)([A-Za-z_][\w-]*)\2/g;
+  let out = '';
+  let from = 0;
+  let m;
+  while ((m = opener.exec(command)) !== null) {
+    const bodyStart = command.indexOf('\n', opener.lastIndex);
+    if (bodyStart < 0) break;
+    const closer = new RegExp(String.raw`\n${m[1] ? '\\t*' : ''}${m[3]}[ \t]*(?:\r?\n|$)`);
+    const rest = command.slice(bodyStart);
+    const end = rest.search(closer);
+    out += command.slice(from, bodyStart);
+    if (end < 0) { from = command.length; break; }
+    from = bodyStart + end + 1;
+    opener.lastIndex = from;
+  }
+  return out + command.slice(from);
+}
+
+/**
+ * Returns the command with the contents of '...' and "..." removed, keeping
+ * the quotes. Inside double quotes, $(...) and `...` are kept, because bash
+ * runs them. Backslash escapes are honoured outside quotes and inside double
+ * quotes, as in bash.
  */
 function stripQuoted(command) {
   let out = '';
   let quote = null;
   for (let i = 0; i < command.length; i++) {
     const c = command[i];
+    if (quote === '"') {
+      if (c === '\\') { i++; continue; }
+      if (c === '`') {
+        const end = command.indexOf('`', i + 1);
+        const stop = end < 0 ? command.length : end;
+        out += ' ' + command.slice(i + 1, stop) + ' ';
+        i = stop;
+        continue;
+      }
+      if (c === '$' && command[i + 1] === '(') {
+        let depth = 1;
+        let j = i + 2;
+        for (; j < command.length && depth > 0; j++) {
+          if (command[j] === '(') depth++;
+          else if (command[j] === ')') depth--;
+        }
+        out += ' ' + command.slice(i + 2, depth === 0 ? j - 1 : j) + ' ';
+        i = j - 1;
+        continue;
+      }
+    }
     if (quote) {
-      if (quote === '"' && c === '\\') { i++; continue; }
       if (c === quote) { quote = null; out += c; }
       continue;
     }
@@ -104,9 +127,10 @@ function stripQuoted(command) {
 }
 
 function isProcessKill(command) {
-  const unquoted = stripQuoted(command);
-  if (KILL_COMMAND.test(unquoted)) return true;
-  return (NESTED_SHELL.test(unquoted) || INLINE_CODE.test(unquoted)) && KILL_WORD.test(command);
+  if (!KILL_WORD.test(command)) return false;
+  const data = stripQuoted(stripHeredocs(command));
+  if (KILL_WORD.test(data)) return true;
+  return RUNS_CODE.test(data);
 }
 
 // ── Rule Definitions ────────────────────────────────────────────────
