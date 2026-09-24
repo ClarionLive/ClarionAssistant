@@ -1648,13 +1648,37 @@
         }
     }
 
-    function toMonacoCompletion(it, range) {
+    // `colonRun` (optional) is the identifier run before the caret WITH ':' kept in it — a Clarion label
+    // may contain colons (My:Test, TGLO:Var1, PROP:Bevel), but the replace-range the caller computed
+    // deliberately breaks at ':' (see provideCompletionItems). For a colon-qualified run the server's
+    // insertText cannot rebuild the qualifier, because the two server paths disagree on what it means:
+    // PROP:/PROPPRINT:/EVENT: send the WHOLE suffix ("Bevel" for a typed "PROP:Be"), while group-PRE
+    // qualifier completion sends only what is still UNTYPED ("r1" for "TGLO:Va", and "" once the name is
+    // complete). Against one range those conventions can't both hold: "" fell through '||' to the full
+    // label and re-inserted the qualifier ("My:" + "My:Test" -> "My:My:Test"), and "r1" replacing "Va"
+    // gave "TGLO:r1". So when the run is colon-qualified AND the label is the name being typed, ignore
+    // insertText and replace the WHOLE run with the label — acceptance then yields exactly the label,
+    // with the typed qualifier neither duplicated nor lost, whichever path produced the item. Deciding
+    // this from the label also makes it immune to whether a bridge delivers that "" as "" or as null.
+    // Colon-free runs (plain words, SELF.Member, ?Ctrl) are left on the original path untouched: a
+    // method's label carries its signature ("Init(LONG pId)"), so there the label is NOT insertable.
+    function toMonacoCompletion(it, range, colonRun) {
+        var label = String(it.label == null ? '' : it.label);
+        // '' is a MEANINGFUL insertText ("nothing left to insert"), so test for absence, not falsiness.
+        var text = (it.insertText != null) ? it.insertText : it.label;
+        var r = range;
+        if (colonRun && colonRun.indexOf(':') !== -1 &&
+            label.toUpperCase().indexOf(colonRun.toUpperCase()) === 0) {
+            text = label;
+            r = new monaco.Range(range.endLineNumber, range.endColumn - colonRun.length,
+                                 range.endLineNumber, range.endColumn);
+        }
         return {
             label: it.label,
             kind: lspKindToMonaco(it.kind),
             detail: it.detail || undefined,
             documentation: it.documentation ? { value: it.documentation } : undefined,
-            insertText: it.insertText || it.label,
+            insertText: text,
             // Rank AFTER the injected Clarion keywords ('0kw_*') — keywords first, like the native
             // Clarion completion list (END above EndKey/ENDPAGE). Tie-break only; fuzzy score still
             // orders within the group. (8933fa05)
@@ -1665,7 +1689,7 @@
             // handler normalizes it to " = " (tes= -> "TestVar = "); '{' starts Clarion property syntax
             // (win{PROP:...}). Gated by the gear toggle.
             commitCharacters: commitKeysEnabled ? ['.', '(', ' ', '=', '{'] : undefined,
-            range: range
+            range: r
         };
     }
 
@@ -4135,6 +4159,12 @@
                 var pfx = /[A-Za-z0-9_]*$/.exec(before);
                 var startCol = position.column - (pfx ? pfx[0].length : 0);
                 var range = new monaco.Range(position.lineNumber, startCol, position.lineNumber, position.column);
+                // The same run WITH ':' kept in it. toMonacoCompletion uses this to widen the range back
+                // over a colon-qualified name it can prove the label is completing, so neither server
+                // insertText convention can duplicate or eat the typed qualifier. Colon-free typing is
+                // unaffected — the run is then identical to `pfx` and the widening never triggers.
+                var colonPfx = /[A-Za-z0-9_:]*$/.exec(before);
+                var colonRun = colonPfx ? colonPfx[0] : '';
                 return requestFromHost('completion', { line: position.lineNumber, column: position.column, buffer: model.getValue() })
                     .then(function (resp) {
                         var items = (resp && resp.items) || [];
@@ -4144,7 +4174,7 @@
                         // host-side CodeGraph prefix merge (task a47a6cac) runs live as-you-type — without
                         // it, globals only appear on a forced Ctrl+Space (min-prefix guard suppresses the
                         // 1-char query, then the stale list is filtered and never re-fetched).
-                        var sugg = items.map(function (it) { return toMonacoCompletion(it, range); });
+                        var sugg = items.map(function (it) { return toMonacoCompletion(it, range, colonRun); });
                         // Keywords rank first + exact-typed keyword gets selected. The server ALSO returns
                         // some keywords (e.g. PROCEDURE) — those dedupe our injected copy away, so the
                         // promotion must happen on the HOST item too, or ProcedureReturn outscores it and
