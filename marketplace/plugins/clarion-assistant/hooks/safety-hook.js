@@ -65,8 +65,9 @@ const RUNS_CODE = new RegExp(
   'i'
 );
 
-// Characters after which a # starts a comment, as in bash.
-const COMMENT_MAY_FOLLOW = /[\s;&|()]/;
+// Characters after which a # starts a comment, as in bash. Not ")": bash reads
+// $(date)#tag as one word.
+const COMMENT_MAY_FOLLOW = /[\s;&|(]/;
 
 // A heredoc opener: <<WORD, <<-WORD, <<'WORD', <<"WORD", <<\WORD.
 const HEREDOC_OPENER = /^<<(-?)[ \t]*(?:(['"])([^'"\n]+)\2|\\?([A-Za-z_][\w-]*))/;
@@ -100,18 +101,24 @@ function findHeredocEnd(text, from, delimiter, tabsAllowed) {
 
 /**
  * Returns the command with its data removed: the inside of '...', $'...' and
- * "..." strings (unless a "..." string holds $( or `), heredoc bodies, and #
- * comments. Quotes are kept, empty, so the structure stays readable. Whatever
- * cannot be read to its end is kept as it is (see FAIL SAFE above).
+ * plain "..." strings, heredoc bodies, and # comments. Quotes are kept, empty,
+ * so the structure stays readable. Whatever cannot be read to its end is kept
+ * as it is (see FAIL SAFE above).
+ *
+ * A "..." string that holds $( or ` is code, and it may nest quotes of its own
+ * ("$(cat "$f" | xargs kill)"), which a flat scan would close too early. So
+ * nothing is removed from its opening quote onward: the rest of the command is
+ * kept as it is.
  */
 function removeData(command) {
   const n = command.length;
   const pendingHeredocs = [];
   let out = '';
   let i = 0;
+  let escapedUpTo = -1; // index just past the last backslash escape
   while (i < n) {
     const c = command[i];
-    if (c === '\\') { out += command.slice(i, i + 2); i += 2; continue; }
+    if (c === '\\') { out += command.slice(i, i + 2); i += 2; escapedUpTo = i; continue; }
     if (c === '\n' && pendingHeredocs.length > 0) {
       out += c;
       i++;
@@ -123,7 +130,8 @@ function removeData(command) {
       }
       continue;
     }
-    if (c === '#' && (i === 0 || COMMENT_MAY_FOLLOW.test(command[i - 1]))) {
+    // An escaped space ("a\ #b") is part of the word, so it starts no comment.
+    if (c === '#' && (i === 0 || (i !== escapedUpTo && COMMENT_MAY_FOLLOW.test(command[i - 1])))) {
       const nl = command.indexOf('\n', i);
       i = nl < 0 ? n : nl;
       continue;
@@ -139,8 +147,8 @@ function removeData(command) {
     if (c === '"') {
       const close = findClosingQuote(command, i + 1, '"', true);
       if (close < 0) return out + command.slice(i);
-      const body = command.slice(i + 1, close);
-      out += /\$\(|`/.test(body) ? ` ${body} ` : '""';
+      if (/\$\(|`/.test(command.slice(i + 1, close))) return out + command.slice(i);
+      out += '""';
       i = close + 1;
       continue;
     }

@@ -143,6 +143,12 @@ const KILLS = [
   'cat <<EOF\ntext\nkill 5',
   // A double-quoted string holding $( or ` is code, however it nests.
   '"$(echo \')\' ; kill 1)"',
+  // Run-5 findings: quotes nested inside "$(...)" closed the outer string early,
+  // and a # that bash does not treat as a comment start hid what followed.
+  'msg="$(ps aux | grep "myapp" | awk \'{print $2}\' | xargs kill)"',
+  'result="$(cat "$PIDFILE" | xargs kill -9)"',
+  'echo $(date)#tag; kill $pid',
+  'echo a\\ #b; kill 1',
   // Contrived, and deliberately so: in the realistic forms above, a misreading
   // leaves an unclosed construct and the fail-safe asks anyway. These three give
   // the misreading something to close on, so each pins its own branch — the
