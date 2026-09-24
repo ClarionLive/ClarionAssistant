@@ -158,7 +158,8 @@ function Save-Manifest($manifest, $path) {
     } catch {
         throw "Refusing to write $path -- the serialized manifest is not valid JSON: $($_.Exception.Message)"
     }
-    [System.IO.File]::WriteAllText($path, $json, (New-Object System.Text.UTF8Encoding($false)))
+    # ConvertTo-Json emits no final newline; add one so a sync does not strip it from the file.
+    [System.IO.File]::WriteAllText($path, $json + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
 }
 
 function Update-PinFields($manifest, $Tag, $repoRoot) {
