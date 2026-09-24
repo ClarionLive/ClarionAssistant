@@ -53,6 +53,24 @@ Without `-Apply` the script is **read-only** (fetch + drift report only). With `
 
 Then run `deploy.ps1` as usual to copy the freshly-built server into the add-in folder.
 
+## Re-pinning the pure build (current practice)
+
+The bundle has been **pure upstream** since #40, so there is no overlay to re-apply. A re-pin
+touches TWO places, and only the first one is automatic:
+
+1. `.\lsp-server-sync\Sync-LspServer.ps1 -Pure -Tag vX.Y.Z` clones/refreshes `.lsp-build\vX.Y.Z`,
+   builds it, and rewrites `lsp-snapshot.json`. `deploy.ps1` reads the path from the manifest and
+   refuses to copy a build whose commit does not match `resolvedCommit`.
+2. **By hand:** bump `#define SrcLsp` in `installer\ClarionAssistant.iss` to `.lsp-build\vX.Y.Z`.
+   The installer does not read the manifest, and nothing checks the define against it. After the
+   v1.0.2 re-pin (46cf93e, 2026-09-07) master's installer still pointed at `v1.0.0`. No release
+   carried the mismatch (5.8.x predate it), but 5.9.0 would have shipped 1.0.0 had it not been caught.
+
+Then check that the new release adds no runtime package that `$LspNodeModules` in `deploy.ps1` and the
+installer's hand list do not copy. Start the server from a tree that holds only those files, not
+from `.lsp-build` (which has every devDependency and hides a missing module). That is how the
+v1.0.0 pin nearly shipped without `iconv-lite` (#77).
+
 ## One-time hardening (optional, recommended)
 
 Right now the `server.ts` wiring lives only as uncommitted edits in `$CLARIONLSP_ROOT`. To make
