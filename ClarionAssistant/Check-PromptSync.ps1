@@ -7,7 +7,8 @@
 #
 # AssistantChatControl.DeployClaudeMd() copies the first over the second on EVERY terminal
 # spin-up ("Always overwrite - the dynamic context from last session needs to be cleared").
-# That is correct behaviour and is not what broke.
+# That is correct behaviour and is not what broke. (Since GH #227 it only overwrites a copy that
+# opens with the prompt's own first lines - Services\ClaudeMdDeployer.Signature - so keep those.)
 #
 # WHAT BROKE. In this repo the destination is also a TRACKED file, and it is the copy people
 # naturally edit - it is the one loaded as project instructions when you work here. So doc

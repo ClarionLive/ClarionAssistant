@@ -90,6 +90,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\ClarionAppDataReader.StructureScan.cs", "tests\ClarionAppDataReader.StructureScan.Stubs.cs",
                            "Services\ClarionAppDataReader.cs", "Services\ClarionAppDataReader.Model.cs")
                Refs = @("System.dll", "System.Xml.dll") }
+            # GH #227: New Chat overwrote the user's global ~\.claude\CLAUDE.md. Gets the project dir
+            # so it can check the real shipped prompt still opens with the ownership signature.
+            @{ Name = "ClaudeMdDeployer.Test"
+               Sources = @("tests\ClaudeMdDeployer.Test.cs", "Services\ClaudeMdDeployer.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll")
+               Args = @($RepoDir) }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"
@@ -117,7 +123,10 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                 continue
             }
 
-            & $exe
+            # @() around the whole thing: an if-expression unrolls a one-element array to a bare
+            # string, and splatting a string passes its FIRST CHARACTER ("H" for H:\...).
+            $exeArgs = @(if ($h.Args) { $h.Args })
+            & $exe @exeArgs
             $ran++
             if ($LASTEXITCODE -ne 0) { $failures += $h.Name }
         }

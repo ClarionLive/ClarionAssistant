@@ -3388,7 +3388,9 @@ namespace ClarionAssistant
             }
             System.Diagnostics.Debug.WriteLine("[LaunchClaude] mcpConfigPath=" + _mcpConfigPath + ", mcpArg=" + mcpArg);
 
-            DeployClaudeMd(ctx.WorkDir);
+            // False when CLAUDE.md was not written (user's global .claude, or a user-authored
+            // file) - the prompt then rides on --append-system-prompt-file below instead (GH #227).
+            bool claudeMdDelivered = DeployClaudeMd(ctx.WorkDir);
 
             if (_knowledgeService != null)
             {
@@ -3397,6 +3399,12 @@ namespace ClarionAssistant
             }
 
             string systemPromptExtra = BuildSystemPromptInjection(ctx.WorkDir);
+            if (!claudeMdDelivered)
+            {
+                string briefing = ReadClarionAssistantPrompt();
+                if (!string.IsNullOrEmpty(briefing))
+                    systemPromptExtra = briefing + Environment.NewLine + Environment.NewLine + (systemPromptExtra ?? "");
+            }
             string initialPrompt = BuildInitialPrompt(ctx.WorkDir);
             System.Diagnostics.Debug.WriteLine("[LaunchClaude] prompts built");
 
@@ -4187,27 +4195,48 @@ namespace ClarionAssistant
 
         #region Helpers
 
-        private void DeployClaudeMd(string workDir)
+        /// <summary>
+        /// Writes the IDE briefing to &lt;workDir&gt;\.claude\CLAUDE.md when that is safe, and
+        /// returns whether it did. The rules live in <see cref="Services.ClaudeMdDeployer"/>:
+        /// never the user's global Claude config dir, never a CLAUDE.md the user wrote (GH #227 -
+        /// New Chat's %USERPROFILE% fallback used to overwrite ~\.claude\CLAUDE.md).
+        /// </summary>
+        private bool DeployClaudeMd(string workDir)
         {
             try
             {
                 string assemblyDir = Path.GetDirectoryName(
                     System.Reflection.Assembly.GetExecutingAssembly().Location);
                 string source = Path.Combine(assemblyDir, "Terminal", "clarion-assistant-prompt.md");
-                if (!File.Exists(source)) return;
 
-                string claudeDir = Path.Combine(workDir, ".claude");
-                if (!Directory.Exists(claudeDir))
-                    Directory.CreateDirectory(claudeDir);
+                var outcome = Services.ClaudeMdDeployer.Deploy(
+                    source, workDir,
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR"));
+                System.Diagnostics.Debug.WriteLine("[DeployClaudeMd] " + outcome + " for " + workDir);
 
-                string dest = Path.Combine(claudeDir, "CLAUDE.md");
-                // Always overwrite — the dynamic context from last session needs to be cleared
-                File.Copy(source, dest, true);
+                // Deploy statusLine config so Claude Code writes status data for this tab. This one
+                // still goes into the profile's .claude when workDir is the profile (New Chat) -
+                // DeployStatusLineConfig only ever creates the file or replaces its own.
+                if (!string.IsNullOrEmpty(workDir))
+                    DeployStatusLineConfig(Path.Combine(workDir, ".claude"), assemblyDir);
 
-                // Deploy statusLine config so Claude Code writes status data for this tab
-                DeployStatusLineConfig(claudeDir, assemblyDir);
+                return Services.ClaudeMdDeployer.Delivered(outcome);
             }
-            catch { }
+            catch { return false; }
+        }
+
+        /// <summary>The shipped IDE briefing, or null if it cannot be read.</summary>
+        private static string ReadClarionAssistantPrompt()
+        {
+            try
+            {
+                string assemblyDir = Path.GetDirectoryName(
+                    System.Reflection.Assembly.GetExecutingAssembly().Location);
+                string source = Path.Combine(assemblyDir, "Terminal", "clarion-assistant-prompt.md");
+                return File.Exists(source) ? File.ReadAllText(source) : null;
+            }
+            catch { return null; }
         }
 
         private void DeployStatusLineConfig(string claudeDir, string assemblyDir)
@@ -4224,6 +4253,13 @@ namespace ClarionAssistant
                 if (nodeExe == null) return;
 
                 string settingsPath = Path.Combine(claudeDir, "settings.local.json");
+                // Never replace a settings.local.json that holds anything but our own statusLine -
+                // Claude Code stores the user's "don't ask again" permissions in this file (GH #227).
+                if (File.Exists(settingsPath)
+                    && !Services.ClaudeMdDeployer.IsCaOwnedSettingsLocal(File.ReadAllText(settingsPath)))
+                    return;
+                Directory.CreateDirectory(claudeDir);
+
                 string safeScript = scriptPath.Replace("\\", "/");
                 string safeNode = nodeExe.Replace("\\", "/");
                 string json = "{\"statusLine\":{\"type\":\"command\",\"command\":\"\\\"" + safeNode + "\\\" \\\"" + safeScript + "\\\"\"}}";

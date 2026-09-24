@@ -169,7 +169,8 @@ namespace ClarionAssistant.Services
                 // CLAUDE.md from a plugin root, so the file that sat there was inert and has been
                 // removed (d051fbd1 item 2). The IDE's own prompt reaches the session by a
                 // different route — AssistantChatControl.DeployClaudeMd copies
-                // Terminal\clarion-assistant-prompt.md to <workDir>\.claude\CLAUDE.md per launch.
+                // Terminal\clarion-assistant-prompt.md to <workDir>\.claude\CLAUDE.md per launch,
+                // or appends it to the system prompt where that file is not ours to write (GH #227).
                 // Note: use simple quoting, not EscapeArgument which double-escapes backslashes
                 string pluginDir = GetClarionAssistantPluginPath();
                 if (pluginDir != null)
