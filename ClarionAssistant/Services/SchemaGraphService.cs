@@ -946,6 +946,28 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// Shown wherever Npgsql fails to load. The installer does not ship it, so this
+        /// is an instruction to the user, not a bug report.
+        /// </summary>
+        public const string NpgsqlNotFoundMessage =
+            "Npgsql.dll not found. Place Npgsql.dll in the ClarionAssistant folder to enable PostgreSQL support.";
+
+        /// <summary>
+        /// Load Npgsql dynamically to avoid a hard dependency. Returns null when it cannot be loaded.
+        /// </summary>
+        public static System.Reflection.Assembly TryLoadNpgsql()
+        {
+            try
+            {
+                return System.Reflection.Assembly.Load("Npgsql");
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Ingest schema from a PostgreSQL database using Npgsql (loaded dynamically).
         /// Requires Npgsql.dll in the lib folder.
         /// </summary>
@@ -954,16 +976,9 @@ namespace ClarionAssistant.Services
             if (string.IsNullOrEmpty(connectionString))
                 return "Error: connection string is required";
 
-            // Load Npgsql dynamically to avoid hard dependency
-            System.Reflection.Assembly npgsqlAsm;
-            try
-            {
-                npgsqlAsm = System.Reflection.Assembly.Load("Npgsql");
-            }
-            catch
-            {
-                return "Error: Npgsql.dll not found. Place Npgsql.dll in the ClarionAssistant folder to enable PostgreSQL support.";
-            }
+            System.Reflection.Assembly npgsqlAsm = TryLoadNpgsql();
+            if (npgsqlAsm == null)
+                return "Error: " + NpgsqlNotFoundMessage;
 
             Type connType = npgsqlAsm.GetType("Npgsql.NpgsqlConnection");
             System.Data.Common.DbConnection pgConn;

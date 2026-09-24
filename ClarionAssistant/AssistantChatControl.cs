@@ -1897,13 +1897,20 @@ namespace ClarionAssistant
                     else if (type == "postgres")
                     {
                         string connStr = Services.SchemaGraphService.BuildPostgresConnectionString(connInfo);
-                        var asm = System.Reflection.Assembly.Load("Npgsql");
-                        var connType = asm.GetType("Npgsql.NpgsqlConnection");
-                        using (var conn = (System.Data.Common.DbConnection)Activator.CreateInstance(connType, connStr))
+                        var asm = Services.SchemaGraphService.TryLoadNpgsql();
+                        if (asm == null)
                         {
-                            conn.Open();
-                            message = "Connected to " + conn.Database;
-                            success = true;
+                            message = Services.SchemaGraphService.NpgsqlNotFoundMessage;
+                        }
+                        else
+                        {
+                            var connType = asm.GetType("Npgsql.NpgsqlConnection");
+                            using (var conn = (System.Data.Common.DbConnection)Activator.CreateInstance(connType, connStr))
+                            {
+                                conn.Open();
+                                message = "Connected to " + conn.Database;
+                                success = true;
+                            }
                         }
                     }
                     else
