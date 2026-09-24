@@ -25,7 +25,8 @@ namespace ClarionAssistant.Services
 
         /// <summary>
         /// This tool's handler drives the IDE itself, so it is registered ONLY in a host that has
-        /// one. Set on 57 of the 116 tools (ticket d051fbd1; get_app_dictionary added for GitHub #210 -
+        /// one. Set on 57 of the 118 tools (ticket d051fbd1; get_app_dictionary added for GitHub #210;
+        /// supersede_knowledge + remove_knowledge added standalone by PR #199 -
         /// the mcp-server --selftest asserts the split stays a partition, so update this when it moves).
         ///
         /// DELIBERATELY SEPARATE FROM RequiresUiThread, which is NOT a safe proxy - measured, and
