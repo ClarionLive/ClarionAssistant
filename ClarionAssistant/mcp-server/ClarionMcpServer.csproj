@@ -190,6 +190,7 @@
     <Compile Include="..\Services\LspService.cs"><Link>Services\LspService.cs</Link></Compile>
     <Compile Include="..\Services\SharedLspBridge.cs"><Link>Services\SharedLspBridge.cs</Link></Compile>
     <Compile Include="..\Services\McpToolRegistry.cs"><Link>Services\McpToolRegistry.cs</Link></Compile>
+    <Compile Include="..\Services\ClarionClDiagnosis.cs"><Link>Services\ClarionClDiagnosis.cs</Link></Compile>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- x86 SQLite.Interop.dll next to the exe, same as the indexer. -->

@@ -149,6 +149,7 @@
     <Compile Include="Services\McpDispatcher.cs" />
     <Compile Include="Services\McpSidecarMerge.cs" />
     <Compile Include="Services\McpToolRegistry.cs" />
+    <Compile Include="Services\ClarionClDiagnosis.cs" />
     <Compile Include="Services\NativeProbeService.cs" />
     <Compile Include="Services\FileSchemaVariableInserter.cs" />
     <Compile Include="Services\FileSchemaScopeReader.cs" />

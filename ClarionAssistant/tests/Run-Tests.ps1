@@ -99,6 +99,9 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "NpgsqlLoader.SmokeTest"
                Sources = @("tests\NpgsqlLoader.SmokeTest.cs", "Services\NpgsqlLoader.cs")
                Refs = @("System.dll") }
+            @{ Name = "ClarionClDiagnosis.Test"
+               Sources = @("tests\ClarionClDiagnosis.Test.cs", "Services\ClarionClDiagnosis.cs")
+               Refs = @("System.dll") }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"

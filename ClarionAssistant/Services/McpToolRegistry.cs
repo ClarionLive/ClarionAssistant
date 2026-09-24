@@ -5292,6 +5292,13 @@ IdeOnly = true,
                     result.AppendLine(success ? "BUILD SUCCEEDED" : "BUILD FAILED");
                     result.AppendLine(string.Format("Exit code: {0} | Errors: {1} | Warnings: {2}", process.ExitCode, errorCount, warningCount));
                     result.AppendLine(string.Format("Command: {0} {1}", fileName, arguments));
+                    // A locked .app (GH #204) fails exactly like a real generation error; say which it is
+                    // up front, where a caller reads first, rather than leaving it buried in the output.
+                    if (!success)
+                    {
+                        string lockDiagnosis = ClarionClDiagnosis.DescribeAppLock(output.ToString() + errors.ToString());
+                        if (lockDiagnosis != null) result.AppendLine(lockDiagnosis);
+                    }
                     result.AppendLine();
 
                     if (output.Length > 0)
