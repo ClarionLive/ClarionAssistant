@@ -694,7 +694,13 @@ if (window.chrome && window.chrome.webview) {
             var btnEl = document.getElementById('idx-' + msg.sourceId);
             var st = msg.status || {};
             if (st.error) {
-                if (statusEl) { statusEl.className = 'status-text error'; statusEl.textContent = 'error'; }
+                if (statusEl) {
+                    var emsg = String(st.error);
+                    statusEl.className = 'status-text error';
+                    statusEl.textContent = emsg.length > 120 ? emsg.substring(0, 120) + '…' : emsg;
+                    statusEl.title = emsg;
+                    console.error('[SchemaSources] index failed:', emsg);
+                }
                 if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Index'; }
             } else {
                 if (statusEl) {

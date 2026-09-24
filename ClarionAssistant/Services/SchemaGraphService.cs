@@ -1144,6 +1144,7 @@ namespace ClarionAssistant.Services
                                 FROM pg_proc p
                                 JOIN pg_namespace n ON p.pronamespace = n.oid
                                 WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+                                  AND p.prokind IN ('f','p')
                                 ORDER BY n.nspname, p.proname";
                             using (var reader = cmd.ExecuteReader())
                             {
