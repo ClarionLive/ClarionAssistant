@@ -20,11 +20,101 @@
  * Performance: Pure pattern matching, no HTTP or disk I/O. Target < 50ms.
  */
 
+// ── Process-kill detection (ticket 24a72aa1) ────────────────────────
+//
+// The kill rule used to match the word anywhere in the command, so
+//   grep -n '"quit"\|"kill"' *.cs
+// stopped a helper on a confirmation prompt until the Owner answered it — a
+// hook's "ask" overrides bypass mode. It now asks only when a kill command
+// sits in COMMAND POSITION once quoted text is removed.
+//
+// This guards against accidents, not evasion: a kill hidden inside "$(...)"
+// within double quotes is not seen, and neither is one run through a wrapper
+// this file does not list. The one nested case that is common by accident —
+// handing a command string to another shell, e.g.
+//   powershell -Command "Stop-Process -Name MultiTerminal"
+// — falls back to the old match-the-word-anywhere check, because the words
+// inside that string are a command, and this hook cannot parse them.
+//
+// Still asks needlessly (as the old rule did): a heredoc body with a line that
+// starts with a kill word, and `bash script.sh | grep kill`, where running a
+// shell triggers the fallback although the kill word is only grep's pattern.
+
+const KILL_WORD = /\b(taskkill|kill|pkill|killall|fkill|Stop-Process|spps)\b/i;
+
+// Where a command can start: the beginning, a separator (; & | ( { ` ! newline
+// $( ), a shell keyword (do then else elif), or find's -exec family.
+const COMMAND_START =
+  String.raw`(?:^|[;&|({!\n` + '`' + String.raw`]|\$\(|(?:^|\s)(?:do|then|else|elif|-exec|-execdir|-ok|-okdir)(?=\s))\s*`;
+
+// What may sit in front of the command itself: VAR=val assignments, and
+// wrappers that run the next word as a command, each with its own flags
+// (a flag may take one value), numbers and VAR=val arguments. The three
+// argument shapes are kept disjoint so a long command cannot backtrack.
+const COMMAND_PREFIX =
+  String.raw`(?:(?:\w+=\S*|(?:sudo|doas|nohup|exec|command|builtin|time|env|xargs|timeout|nice|ionice|watch|stdbuf|setsid|npx|bunx)` +
+  String.raw`(?:\s+(?:-\S+(?:\s+[^\s\d=-][^\s=]*)?|\d\S*|\w+=\S*))*)\s+)*`;
+
+// A path in front of the executable, and the end of the word after it.
+const COMMAND_PATH = String.raw`(?:\S*[\\/])?`;
+const COMMAND_END = String.raw`(?:\.exe)?(?=\s|$|[;&|)}` + '`' + '])';
+
+function commandInPosition(words) {
+  return new RegExp(COMMAND_START + COMMAND_PREFIX + COMMAND_PATH + `(?:${words})` + COMMAND_END, 'i');
+}
+
+// kill-port and fkill are npm packages that kill by port or name; `npx kill-port
+// 5050` would take down MultiTerminal's own REST server.
+const KILL_COMMAND = commandInPosition('taskkill|kill|pkill|killall|kill-port|fkill|Stop-Process|spps');
+
+// A command that hands a string to another interpreter to run. It must be in
+// command position too, or "grep kill scripts/*.sh" would count as running sh.
+const NESTED_SHELL = commandInPosition('powershell|pwsh|cmd|bash|sh|zsh|wsl|Invoke-Expression|iex|Start-Process');
+
+// A language runtime given inline code (node -e, python -c, ...), which is a
+// nested command in the same way. Only flags may come before the inline-code
+// flag, so `node scripts/test.js --grep kill` runs a file and does not count.
+const INLINE_CODE = new RegExp(
+  COMMAND_START + COMMAND_PREFIX + COMMAND_PATH +
+  String.raw`(?:node|deno|python[23]?|py|perl|ruby|php)(?:\.exe)?(?:\s+-\S+)*?\s+(?:-e|--eval|-p|--print|-c|-r)(?=\s|$)`,
+  'i'
+);
+
+/**
+ * Returns the command with the contents of '...' and "..." removed, so a
+ * rule can see what the command runs rather than what it mentions. Quotes
+ * are kept (empty) so the surrounding structure stays intact. Backslash
+ * escapes are honoured outside quotes and inside double quotes, as in bash.
+ */
+function stripQuoted(command) {
+  let out = '';
+  let quote = null;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (quote) {
+      if (quote === '"' && c === '\\') { i++; continue; }
+      if (c === quote) { quote = null; out += c; }
+      continue;
+    }
+    if (c === '\\') { out += c + (command[i + 1] || ''); i++; continue; }
+    if (c === "'" || c === '"') quote = c;
+    out += c;
+  }
+  return out;
+}
+
+function isProcessKill(command) {
+  const unquoted = stripQuoted(command);
+  if (KILL_COMMAND.test(unquoted)) return true;
+  return (NESTED_SHELL.test(unquoted) || INLINE_CODE.test(unquoted)) && KILL_WORD.test(command);
+}
+
 // ── Rule Definitions ────────────────────────────────────────────────
 
 /**
  * Bash command rules. Checked in order; first match wins.
- * pattern: regex tested against the full command string.
+ * pattern: regex tested against the full command string, OR
+ * test:    a function (command) => boolean, for a rule a regex cannot express.
  * action:  "deny" or "ask".
  * reason:  shown to the agent (and user, for "ask").
  */
@@ -152,9 +242,11 @@ const BASH_RULES = [
     action: 'ask',
     reason: 'git branch -D force-deletes a branch even if unmerged. Are you sure?'
   },
-  // Gate process killing — could take down MultiTerminal or other critical apps
+  // Gate process killing — could take down MultiTerminal or other critical apps.
+  // Matches a kill that is RUN, not the word appearing in a grep pattern or a
+  // message (ticket 24a72aa1); see isProcessKill below.
   {
-    pattern: /\b(taskkill|kill|Stop-Process|stop-process)\b/i,
+    test: isProcessKill,
     action: 'ask',
     reason: 'Process termination detected. This could kill MultiTerminal or other running apps. Are you sure?'
   },
@@ -315,7 +407,7 @@ function ask(reason) {
 function checkBash(command) {
   if (!command) return null;
   for (const rule of BASH_RULES) {
-    if (rule.pattern.test(command)) {
+    if (rule.test ? rule.test(command) : rule.pattern.test(command)) {
       return rule.action === 'deny' ? deny(rule.reason) : ask(rule.reason);
     }
   }
