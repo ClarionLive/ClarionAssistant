@@ -41,6 +41,12 @@
 // the command stays as it is. A misread therefore makes the rule ask, never
 // stay silent.
 //
+// A simple quoted string that IS a kill program is not data, because bash runs
+// it: a path or .exe name ending in a kill word ("C:/Windows/System32/
+// taskkill.exe", "/usr/bin/kill") wherever it stands — quoting a full path is
+// ordinary on Windows — and the bare word ('kill') where a command starts.
+// grep "kill" x stays silent: there the word is an argument.
+//
 // If the command also runs a program that executes code (a shell,
 // PowerShell, a language runtime, awk, trap, watch, ssh, eval, ...), quoted
 // text counts too: bash -c "kill 1" and node -e "process.kill(1)" ask. That
@@ -64,6 +70,25 @@ const RUNS_CODE = new RegExp(
   String.raw`(?:\.exe)?(?=[\s;&|)}"'` + '`' + String.raw`]|$)`,
   'i'
 );
+
+// The whole content of a quoted string that names a kill program, optionally
+// with a path in front and .exe after.
+const KILL_PROGRAM = /(?:^|[\\/])(?:taskkill|kill|pkill|killall|fkill|Stop-Process|spps)(?:\.exe)?$/i;
+
+// True when `text` (the command read so far) ends where a new command starts:
+// at the beginning, or after ; & | ( { ` ! a newline, $( or do/then/else/elif.
+function atCommandStart(text) {
+  let j = text.length - 1;
+  while (j >= 0 && (text[j] === ' ' || text[j] === '\t')) j--;
+  if (j < 0 || ';&|({`!\n'.includes(text[j])) return true;
+  return /(?:^|[\s;&|({])(?:do|then|else|elif)$/.test(text.slice(Math.max(0, j - 5), j + 1));
+}
+
+// Whether a simple quoted string with this content is a kill program being run.
+function isQuotedKillProgram(body, textBefore) {
+  if (!KILL_PROGRAM.test(body)) return false;
+  return /[\\/]|\.exe$/i.test(body) || atCommandStart(textBefore);
+}
 
 // Index of the closing double quote from `from`, honouring backslash escapes;
 // -1 if it never closes.
@@ -91,7 +116,8 @@ function removeSimpleQuotes(command) {
       if (command[i - 1] === '$' || close < 0 || command.slice(i + 1, close).includes('\n')) {
         return out + command.slice(i);
       }
-      out += "''";
+      const body = command.slice(i + 1, close);
+      out += isQuotedKillProgram(body, out) ? `'${body}'` : "''";
       i = close + 1;
       continue;
     }
@@ -101,7 +127,7 @@ function removeSimpleQuotes(command) {
       if (close < 0 || body.includes('\n') || /\$[({]|`/.test(body)) {
         return out + command.slice(i);
       }
-      out += '""';
+      out += isQuotedKillProgram(body, out) ? `"${body}"` : '""';
       i = close + 1;
       continue;
     }

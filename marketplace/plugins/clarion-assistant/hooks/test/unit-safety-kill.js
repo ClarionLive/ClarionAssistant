@@ -165,6 +165,21 @@ const KILLS = [
   'ts-node -e "process.kill(1)"',
   'python3.12 -c "import os; os.kill(1, 9)"',
   "echo x 1 | awk '{system(\"kill \" $2)}'",
+  // Run-7 findings (bash-verified kills): a quoted kill PROGRAM is a command,
+  // not data — a full path, common on Windows, or the bare word where a
+  // command starts.
+  '"/c/Windows/System32/taskkill.exe" //F //PID 5',
+  '"C:/Windows/System32/taskkill.exe" //F //PID 5',
+  '"C:\\\\Windows\\\\System32\\\\taskkill.exe" /F /PID 5',
+  '"$SYSTEMROOT/System32/taskkill.exe" //F //PID 5',
+  '"/usr/bin/kill" 5',
+  "'kill' 5",
+  'cd x && "kill" 5',
+  "if true; then 'kill' 5; fi",
+  'echo $("kill" 5)',
+  // Behind a wrapper the bare word is in the accepted class, but a path is
+  // still a kill program wherever it stands.
+  'timeout 5 "/usr/bin/kill" 1',
   // Contrived: a " inside a comment pairing with a later quote; only the
   // one-line rule for "..." keeps the kill between them visible.
   '# a 12" pipe\nkill 1\necho "done"',
@@ -218,6 +233,7 @@ const LONG_SHAPES = {
   'many unclosed (( ': '(( '.repeat(5000) + 'grep "kill" x',
   'long run of !': '!'.repeat(40000) + ' grep "kill" x',
   'many runner-like paths': ' a/b/c'.repeat(10000) + ' grep "kill" x',
+  'many quoted kill words': 'echo' + ' "kill"    '.repeat(10000),
 };
 for (const [shape, long] of Object.entries(LONG_SHAPES)) {
   checked++;
