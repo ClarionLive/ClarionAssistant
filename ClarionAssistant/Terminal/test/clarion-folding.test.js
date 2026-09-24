@@ -217,5 +217,30 @@ foldsAre('a region marker inside an OMIT block stays omitted', [
     ok('region range carries a kind property', rs.length === 1 && 'kind' in rs[0], JSON.stringify(rs[0]));
 })();
 
+// GH #222: UNTIL / WHILE terminate a LOOP. Before the fix the LOOP stayed on the stack, so the
+// following END closed the LOOP instead of its real owner and everything after was mis-folded.
+console.log('\nGH #222 — UNTIL/WHILE close a LOOP:');
+foldsAre('LOOP ... UNTIL folds to the UNTIL line',
+    ['  LOOP', '    X += 1', '  UNTIL X > 10'],
+    ['1-3']);
+foldsAre('LOOP ... WHILE folds to the WHILE line',
+    ['  LOOP', '    X += 1', '  WHILE X < 10'],
+    ['1-3']);
+foldsAre('UNTIL-terminated LOOP inside CASE leaves the CASE END to the CASE',
+    ['  CASE A', '  OF 1', '    LOOP', '      X += 1', '    UNTIL X > 10', '  END'],
+    ['1-6', '3-5']);
+foldsAre('labelled LOOP closed by UNTIL',
+    ['Scan LOOP', '    X += 1', '  UNTIL X > 10'],
+    ['1-3']);
+foldsAre('LOOP WHILE on the opener still closes on END',
+    ['  LOOP WHILE X < 10', '    X += 1', '  END'],
+    ['1-3']);
+foldsAre('UNTIL does not close a non-LOOP structure',
+    ['  CASE A', '  OF 1', '  UNTIL X', '  END'],
+    ['1-4']);
+foldsAre('a commented-out UNTIL does not close the LOOP',
+    ['  LOOP', '    ! UNTIL X > 10', '    X += 1', '  END'],
+    ['1-4']);
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed.');
 process.exit(fail ? 1 : 0);
