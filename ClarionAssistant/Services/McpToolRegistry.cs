@@ -5294,11 +5294,11 @@ IdeOnly = true,
                     result.AppendLine(string.Format("Command: {0} {1}", fileName, arguments));
                     // A locked .app (GH #204) fails exactly like a real generation error; say which it is
                     // up front, where a caller reads first, rather than leaving it buried in the output.
-                    if (!success)
-                    {
-                        string lockDiagnosis = ClarionClDiagnosis.DescribeAppLock(output.ToString() + errors.ToString());
-                        if (lockDiagnosis != null) result.AppendLine(lockDiagnosis);
-                    }
+                    // Deliberately NOT gated on the exit code: nobody has confirmed ClarionCL exits
+                    // non-zero on GENE000 "(status 32)", and the signature only ever appears on a
+                    // failure anyway, so gating it could only hide the message.
+                    string lockDiagnosis = ClarionClDiagnosis.DescribeAppLock(output.ToString() + errors.ToString());
+                    if (lockDiagnosis != null) result.AppendLine(lockDiagnosis);
                     result.AppendLine();
 
                     if (output.Length > 0)
