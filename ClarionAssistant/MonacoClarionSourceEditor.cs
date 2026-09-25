@@ -1768,6 +1768,32 @@ namespace ClarionAssistant
             return 0;
         }
 
+        /// <summary>Make THIS tab the IDE's active window and, only once that is verified, mirror
+        /// <paramref name="line"/>/<paramref name="col"/> as its cursor. False, with nothing written, when the tab
+        /// is still not the active window after SelectWindow: the debugger resolves the cursor from the ACTIVE
+        /// window, so it would pull the OTHER tab's and silently act on the wrong place (pipeline run 1). Shared by
+        /// Run to Cursor and Break on Entry (3517fd15 item 6); UI thread.</summary>
+        private bool TryActivateThisTab(int line, int col)
+        {
+            // The right-click normally activates the tab already; make sure.
+            object myWin = _wbWindow;
+            if (myWin == null) { try { myWin = GetType().GetProperty("WorkbenchWindow")?.GetValue(this, null); } catch { } }
+            var wb = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
+            if (myWin != null && !ReferenceEquals(myWin, ReflectProp(wb, "ActiveWorkbenchWindow")))
+            {
+                try { myWin.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(myWin, null); } catch { }
+            }
+
+            // Verify, don't assume: activation can lag or be refused.
+            if (myWin == null || !ReferenceEquals(myWin, ReflectProp(wb, "ActiveWorkbenchWindow")))
+                return false;
+
+            // Only now, with this tab confirmed active, is our mirrored cursor the one the debugger reads.
+            _lastCursorLine = line;
+            _lastCursorCol = col >= 1 ? col : 1;
+            return true;
+        }
+
         private void RunToCursorFromPage(string rawJson)
         {
             try
@@ -1794,27 +1820,11 @@ namespace ClarionAssistant
                 {
                     try
                     {
-                        // The right-click normally activates the tab already; make sure, since the debugger
-                        // resolves the cursor from the ACTIVE window, not from us.
-                        object myWin = _wbWindow;
-                        if (myWin == null) { try { myWin = GetType().GetProperty("WorkbenchWindow")?.GetValue(this, null); } catch { } }
-                        var wb = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
-                        if (myWin != null && !ReferenceEquals(myWin, ReflectProp(wb, "ActiveWorkbenchWindow")))
-                        {
-                            try { myWin.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(myWin, null); } catch { }
-                        }
-
-                        // Verify, don't assume: if activation lagged or was refused, the debugger would pull the
-                        // OTHER tab's cursor and silently run to the wrong place. Refuse instead (pipeline run 1).
-                        if (myWin == null || !ReferenceEquals(myWin, ReflectProp(wb, "ActiveWorkbenchWindow")))
+                        if (!TryActivateThisTab(line, col))
                         {
                             MonacoSpikeLog.Write("runToCursor: NOT sent - this tab is not the active window after SelectWindow (" + Path.GetFileName(_filePath) + ", line " + line + ")");
                             return;
                         }
-
-                        // Only now, with this tab confirmed active, is our mirrored cursor the one the debugger reads.
-                        _lastCursorLine = line;
-                        _lastCursorCol = col >= 1 ? col : 1;
 
                         bool sent = Services.ClarionDebuggerBridge.RunToCursor();
                         MonacoSpikeLog.Write("runToCursor: line " + line + " (" + Path.GetFileName(_filePath) + ") -> " + (sent ? "sent to CA Debugger" : "not sent (debugger unavailable or not paused)"));
@@ -1883,24 +1893,13 @@ namespace ClarionAssistant
                 {
                     try
                     {
-                        // The same activation and verification as Run to Cursor (kept as its own copy: that body
-                        // is pinned statement by statement by run-to-cursor.test.js).
-                        object myWin = _wbWindow;
-                        if (myWin == null) { try { myWin = GetType().GetProperty("WorkbenchWindow")?.GetValue(this, null); } catch { } }
-                        var wb = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
-                        if (myWin != null && !ReferenceEquals(myWin, ReflectProp(wb, "ActiveWorkbenchWindow")))
-                        {
-                            try { myWin.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(myWin, null); } catch { }
-                        }
-                        if (myWin == null || !ReferenceEquals(myWin, ReflectProp(wb, "ActiveWorkbenchWindow")))
+                        // The same activation, verification and caret as Run to Cursor.
+                        if (!TryActivateThisTab(line, col))
                         {
                             MonacoSpikeLog.Write("breakOnProcEntry: NOT sent - this tab is not the active window after SelectWindow (" + Path.GetFileName(filePath) + ", line " + line + ")");
                             ToastInPage("Break on entry: this tab could not be made the active editor - nothing was set. Click in it and try again.", false);
                             return;
                         }
-
-                        _lastCursorLine = line;
-                        _lastCursorCol = col >= 1 ? col : 1;
 
                         string message;
                         bool ok = Services.ClarionDebuggerBridge.BreakOnProcEntry(filePath, line, out message);

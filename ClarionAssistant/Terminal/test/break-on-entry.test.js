@@ -170,18 +170,19 @@ check('the poll re-sends when breakOnEntry alone changes',
 {
     const body = slice(editorCs, 'private void BreakOnProcEntryFromPage(string rawJson)', '/// <summary>Start the shared debugger-state poll', 'BreakOnProcEntryFromPage');
     const iRange = body.indexOf('DocumentLineGuard.Contains(line, live, nativeLines)');
-    const iSelect = body.indexOf('GetMethod("SelectWindow"');
-    const guard = /if \(myWin == null \|\| !ReferenceEquals\(myWin, ReflectProp\(wb, "ActiveWorkbenchWindow"\)\)\)\s*\{[^}]*return;\s*\}/.exec(body);
-    const iGuard = guard ? guard.index : -1;
-    const iCursor = body.indexOf('_lastCursorLine = line;');
+    const iRun = body.indexOf('Action run = () =>');
+    // The activation, its re-check after SelectWindow and the caret write are TryActivateThisTab, shared with
+    // Run to Cursor since 3517fd15 item 6 and pinned in run-to-cursor.test.js; here, that this caller uses it.
+    const act = /if \(!TryActivateThisTab\(line, col\)\)\s*\{[^}]*return;\s*\}/.exec(body);
+    const iAct = act ? act.index : -1;
     const iCall = body.indexOf('ClarionDebuggerBridge.BreakOnProcEntry(filePath, line, out message)');
-    check('refuses a line that is not in the document, before anything else', iRange >= 0 && iSelect > iRange && iCall > iRange);
+    check('refuses a line that is not in the document, before anything else', iRange >= 0 && iAct > iRange && iCall > iRange);
     check('...and toasts that refusal', iRange >= 0 && /is past the end of this file - nothing was set\.", false\);/.test(body));
-    check('re-checks the active window AFTER SelectWindow', iSelect >= 0 && iGuard > iSelect);
+    check('activates, verifies and sets the caret through TryActivateThisTab, on the UI-thread action', iRun >= 0 && iAct > iRun);
     check('not active: logs, toasts and returns without calling the debugger',
-        !!guard && /MonacoSpikeLog\.Write\("breakOnProcEntry: NOT sent/.test(guard[0]) && /ToastInPage\(/.test(guard[0]));
-    check('the caret is set only AFTER the active check', iGuard >= 0 && iCursor > iGuard);
-    check('the debugger is called only AFTER the active check, with this tab\'s file and the line', iGuard >= 0 && iCall > iGuard);
+        !!act && /MonacoSpikeLog\.Write\("breakOnProcEntry: NOT sent/.test(act[0]) && /ToastInPage\(/.test(act[0]));
+    check('writes no caret of its own, outside the helper\'s check', body.indexOf('_lastCursor') < 0);
+    check('the debugger is called only AFTER the active check, with this tab\'s file and the line', iAct >= 0 && iCall > iAct);
     check('a miss toasts the debugger\'s message, or CA\'s own when it gave none',
         /if \(!ok\)\s*ToastInPage\(string\.IsNullOrEmpty\(message\) \? Services\.ClarionDebuggerBridge\.BreakOnEntryNoAnswer : message, false\);/.test(body));
     check('a hit toasts nothing (the pad reports it): after the call, only the miss and the catch toast',
