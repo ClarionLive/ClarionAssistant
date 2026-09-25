@@ -75,6 +75,14 @@ $Versions = @{
 # addin — the developer ran the old indexer for a day while every verification pass showed
 # the new build "deployed and hash-verified" (in the four folders the script chose). A
 # machine with two installs of one version must get the addin in BOTH.
+#
+# The drive-root glob scan is the slow part. It used to walk every mounted filesystem drive
+# (network shares included) for every glob pattern, which turned every `-Version all` deploy
+# into a full-machine scan per version before any output appeared. It still has to run even
+# when registry+fallbacks already found a root: the 2026-08-13 incident's second install
+# happened to be in Fallbacks, but the same shape at a path that ISN'T listed there is only
+# caught by this scan. What the scan doesn't need is network shares, so it is restricted to
+# fixed local drives - that keeps the speedup without losing any realistic coverage.
 function Resolve-ClarionRoots {
     param(
         [string[]]$RegistryKeys,
@@ -108,8 +116,13 @@ function Resolve-ClarionRoots {
 
     foreach ($p in $Fallbacks) { Add-Root $p }
 
-    $drives = (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
-                Where-Object { Test-Path $_.Root }).Root
+    # Fixed local drives only. A Clarion install that's neither registered (registry) nor
+    # at a known path (Fallbacks) and lives ONLY on a network share isn't a realistic case —
+    # COM registration and templates need a local, registered install to actually work — and
+    # network shares are what makes this scan slow (SMB round-trips per drive per pattern).
+    $drives = [System.IO.DriveInfo]::GetDrives() |
+                Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady } |
+                ForEach-Object { $_.RootDirectory.FullName }
     foreach ($drive in $drives) {
         foreach ($pattern in $GlobPatterns) {
             Get-ChildItem -Path $drive -Directory -Filter $pattern -ErrorAction SilentlyContinue |
