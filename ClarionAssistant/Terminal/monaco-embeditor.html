@@ -1361,6 +1361,7 @@
                 installGlyphBookmarkClick();   // far-left margin click toggles a bookmark (#16)
                 addFormatAction(editor);       // right-click → Format Selection (Ctrl+I dispatched via keybindings)
                 addRunToCursorAction(editor);  // right-click → Run to Cursor (CA Debugger, only while paused; 2484592b)
+                addBreakOnEntryAction(editor); // right-click → Break on Entry (CA Debugger, any state; e61e4f92)
                 installAutoCase(editor);        // as-you-type keyword casing (of → OF on word boundary)
                 installFormatOnEnter(editor);   // format the completed line on Enter (Clarion-style)
                 installCaretBehindEol(editor);  // Clarion "Can move caret behind EOL" (inert until settings arm it)
@@ -2321,7 +2322,7 @@
     // KEPT (PM decision, ticket f022fb4e): "Run to Cursor" means the cursor, VS and VS Code behave the same
     // way, and moving the caret ourselves would destroy the user's selection as a side effect of a menu
     // click. So: ed.getPosition() on purpose — do not "fix" this to the clicked line.
-    var debuggerState = { available: false, paused: false };
+    var debuggerState = { available: false, paused: false, breakOnEntry: false };
     function addRunToCursorAction(ed) {
         if (!ed || ed.__runToCursorKeys) return;
         try {
@@ -2350,11 +2351,46 @@
     function setDebuggerState(msg) {
         debuggerState.available = !!msg.available;
         debuggerState.paused = !!msg.available && !!msg.paused;
+        debuggerState.breakOnEntry = !!msg.available && !!msg.breakOnEntry;
         [editor, editor2].forEach(function (ed) {
             var k = ed && ed.__runToCursorKeys;
             if (!k) return;
             try { k.available.set(debuggerState.available); k.paused.set(debuggerState.paused); } catch (e) { }
         });
+        [editor, editor2].forEach(function (ed) {
+            var k = ed && ed.__breakOnEntryKey;
+            if (!k) return;
+            try { k.set(debuggerState.breakOnEntry); } catch (e) { }
+        });
+    }
+
+    // ----- Debugger "Break on Entry" (task e61e4f92) -----
+    // Right-click -> "Break on Entry" asks the CA Debugger for a breakpoint on the entry of the procedure that
+    // contains the caret line. Unlike Run to Cursor it is shown in EVERY debugger state (owner decision 5,
+    // 2026-09-24: idle stages it for the next Start), whenever the host says the loaded debugger has the
+    // member (debuggerState.breakOnEntry). Hidden, not greyed, for the reason given above. The caret is the
+    // position for the same reason too. The host answers a miss with {type:'toast'}; a hit shows in the pad.
+    function addBreakOnEntryAction(ed) {
+        if (!ed || ed.__breakOnEntryKey) return;
+        try {
+            ed.__breakOnEntryKey = ed.createContextKey('caDebuggerBreakOnEntry', debuggerState.breakOnEntry);
+            ed.addAction({
+                id: 'ca-debugger-break-on-entry',
+                label: 'Break on Entry',
+                contextMenuGroupId: 'navigation',
+                contextMenuOrder: 0.6,
+                precondition: 'caDebuggerBreakOnEntry',
+                run: function (e) { requestBreakOnEntry(e || ed); }
+            });
+        } catch (e) { }
+    }
+    function requestBreakOnEntry(ed) {
+        try {
+            if (!debuggerState.breakOnEntry) return;
+            var p = ed && ed.getPosition();
+            if (!p) return;
+            postToHost({ action: 'breakOnProcEntry', line: p.lineNumber, column: p.column });
+        } catch (e) { }
     }
 
     // ----- As-you-type keyword casing -----
@@ -3121,6 +3157,7 @@
         installCommandPalette(editor2); // F1 / Ctrl+Shift+P in the split pane too
         addFormatAction(editor2);       // right-click → Format Selection in the split pane too
         addRunToCursorAction(editor2);  // ...and Run to Cursor (keys seeded from the current debuggerState)
+        addBreakOnEntryAction(editor2); // ...and Break on Entry
         installAutoCase(editor2);       // as-you-type keyword casing in the split pane too
         installFormatOnEnter(editor2);  // format the completed line on Enter in the split pane too
         installCaretBehindEol(editor2); // caret-behind-EOL in the split pane too (shared model, one padded line)
@@ -7260,6 +7297,8 @@
                 setBreakpointLines(msg.lines);
             } else if (msg.type === 'debuggerState') {
                 setDebuggerState(msg);
+            } else if (msg.type === 'toast') {
+                showToast(String(msg.message || ''), msg.ok !== false);   // host notice, e.g. a Break on Entry miss (e61e4f92)
             } else if (msg.type === 'setExecutionLine') {
                 setExecutionLine(msg.line, !!msg.reassert);
             } else if (msg.type === 'revealLine') {

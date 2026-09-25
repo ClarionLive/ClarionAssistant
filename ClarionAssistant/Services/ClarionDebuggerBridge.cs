@@ -14,7 +14,10 @@ namespace ClarionAssistant.Services
     ///     public static DebugControllerState State { get; }   // compared by name: "Paused"
     ///     public static void RunToCursor();                   // silent no-op unless Paused with a ready pad
     ///   Both are REQUIRED: either one missing reads as "debugger not available". Members added later are
-    ///   optional and bind separately — see the seam in <see cref="Bind"/>.
+    ///   optional and bind separately — see the seam in <see cref="Bind"/>:
+    ///     public static bool BreakOnProcEntry(string filePath, int line, out string message);   // e61e4f92
+    ///   frozen by the debugger's PM on 2026-09-25. Absent, or of another shape (the void (string, int) one
+    ///   an earlier debugger build carried), it reads as "Break on entry is off" and nothing else changes.
     ///
     /// The type name alone does not identify the debugger: any assembly in the IDE's AppDomain can define
     /// ClarionDebugger.DebugSessionController. We bind only an assembly whose simple name is
@@ -42,6 +45,8 @@ namespace ClarionAssistant.Services
 
         private static PropertyInfo _state;
         private static MethodInfo _runToCursor;
+        // OPTIONAL (e61e4f92). Null = this debugger build has no usable BreakOnProcEntry: the item stays hidden.
+        private static MethodInfo _breakOnProcEntry;
         // volatile: the AssemblyLoad handler reads this on whatever thread loaded the assembly.
         private static volatile bool _bound;
         // Candidate count last written to the log, so an ambiguity is reported once rather than every rescan.
@@ -167,29 +172,80 @@ namespace ClarionAssistant.Services
             var run = controller.GetMethod("RunToCursor", BindingFlags.Public | BindingFlags.Static, null, Type.EmptyTypes, null);
             if (state == null || run == null) return false;
 
-            // Step 3 — SEAM for optional members (e61e4f92 "Break on entry" is the next one). Resolve them
-            // HERE, after the required pair, and let a null one disable just that feature — never the whole
-            // bridge, which would take the entire debugger context menu down with it. For example:
-            //     _breakOnEntry = controller.GetMethod("BreakOnEntry", BindingFlags.Public | BindingFlags.Static,
-            //                         null, new[] { typeof(string), typeof(int) }, null);   // null = feature off
-            // Nothing optional is bound yet.
+            // Step 3 — SEAM for optional members. Resolve them HERE, after the required pair, and let a null
+            // one disable just that feature — never the whole bridge, which would take the entire debugger
+            // context menu down with it.
+            //
+            // e61e4f92 "Break on entry": bound by EXACT signature AND return type. An older debugger carried a
+            // void (string, int) member of the same name that answered nothing, so a bool return is what says
+            // this build can tell us whether anything was set.
+            MethodInfo boe;
+            try
+            {
+                boe = controller.GetMethod("BreakOnProcEntry", BindingFlags.Public | BindingFlags.Static, null,
+                          new[] { typeof(string), typeof(int), typeof(string).MakeByRefType() }, null);
+                if (boe != null && boe.ReturnType != typeof(bool)) boe = null;
+            }
+            catch { boe = null; }
 
-            _state = state; _runToCursor = run;
+            _state = state; _runToCursor = run; _breakOnProcEntry = boe;
             return true;
     }
 
         /// <summary>Is the CA Debugger loaded (with the RunToCursor entry point), and is its session paused?</summary>
         public static void GetState(out bool available, out bool paused)
         {
-            available = false; paused = false;
+            bool breakOnEntry;
+            GetState(out available, out paused, out breakOnEntry);
+        }
+
+        /// <summary><see cref="GetState(out bool, out bool)"/>, plus whether this debugger build has the optional
+        /// Break on entry member (e61e4f92). That one does not depend on the session state: the debugger
+        /// accepts it in every state, idle included.</summary>
+        public static void GetState(out bool available, out bool paused, out bool breakOnEntry)
+        {
+            available = false; paused = false; breakOnEntry = false;
             try
             {
                 if (!Bind()) return;
                 available = true;
+                breakOnEntry = _breakOnProcEntry != null;
                 object s = _state.GetValue(null, null);
                 paused = s != null && string.Equals(s.ToString(), "Paused", StringComparison.Ordinal);
             }
             catch { paused = false; }
+        }
+
+        /// <summary>CA's own words for a Break on entry that got no usable answer from the debugger.</summary>
+        public const string BreakOnEntryNoAnswer = "The debugger did not answer.";
+
+        /// <summary>Ask the debugger to break on the entry of the procedure containing
+        /// <paramref name="filePath"/>:<paramref name="line"/> (1-based). True when it says a breakpoint was
+        /// sent or staged; false when nothing was set, with <paramref name="message"/> the reason to show the
+        /// user (never empty on false). Never throws. UI thread only — see the class remarks.</summary>
+        public static bool BreakOnProcEntry(string filePath, int line, out string message)
+        {
+            message = null;
+            bool ok = false;
+            try
+            {
+                if (!Bind() || _breakOnProcEntry == null)
+                    message = "Break on entry needs a CA Debugger that supports it.";
+                else
+                {
+                    var args = new object[] { filePath, line, null };
+                    ok = (bool)_breakOnProcEntry.Invoke(null, args);
+                    message = args[2] as string;
+                }
+            }
+            catch (Exception ex)
+            {
+                ok = false;
+                message = BreakOnEntryNoAnswer;
+                try { MonacoSpikeLog.Write("ClarionDebuggerBridge.BreakOnProcEntry error: " + (ex.InnerException ?? ex).Message); } catch { }
+            }
+            if (!ok && string.IsNullOrEmpty(message)) message = BreakOnEntryNoAnswer;
+            return ok;
         }
 
         /// <summary>Ask the debugger to run to the active Monaco editor's cursor. Returns false if the debugger

@@ -1695,6 +1695,7 @@ namespace ClarionAssistant
 
         private static Timer _debugStatePoll;
         private static bool _debugAvailable, _debugPaused;
+        private static bool _debugBreakOnEntry;   // the debugger build has BreakOnProcEntry (e61e4f92)
         private const int DebugStatePollMs = 400;
 
         /// <summary>Lines in the captured native document, or 0 if there isn't one. Only a fallback: it is what
@@ -1773,6 +1774,98 @@ namespace ClarionAssistant
             catch (Exception ex) { MonacoSpikeLog.Write("RunToCursorFromPage error: " + ex.Message); }
         }
 
+        // ── CA Debugger "Break on Entry" (task e61e4f92) ────────────────────────────────────────────
+        // The page's right-click item posts {action:"breakOnProcEntry", line, column}. Unlike Run to Cursor the
+        // position travels WITH the call - DebugSessionController.BreakOnProcEntry(filePath, line, out message)
+        // - but it goes through the same checks first: a line that exists, and THIS tab confirmed as the active
+        // window, so what the user right-clicked is what the debugger is asked about, and the caret the IDE
+        // shows agrees with it. Shown whenever the debugger is loaded with that member, in ANY state (owner
+        // decision 5, 2026-09-24): the debugger stages it while idle. It answers whether anything was set. A
+        // miss is toasted in THIS tab; a hit is not, because the debugger pad reports it.
+
+        /// <summary>A toast in this tab's page: the page's own showToast, red when <paramref name="ok"/> is
+        /// false.</summary>
+        private void ToastInPage(string message, bool ok)
+        {
+            try
+            {
+                if (_editor == null) return;
+                // The message is text from another addin, so it goes LAST: a reader that takes the first
+                // "key": it finds cannot be steered by a member spelled inside it.
+                var d = new Dictionary<string, object>();
+                d["type"] = "toast";
+                d["ok"] = ok;
+                d["message"] = message ?? "";
+                _editor.PostJson(new JavaScriptSerializer().Serialize(d));
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("ToastInPage error: " + ex.Message); }
+        }
+
+        private void BreakOnProcEntryFromPage(string rawJson)
+        {
+            try
+            {
+                var data = new JavaScriptSerializer().DeserializeObject(rawJson) as Dictionary<string, object>;
+                int line = (data != null && data.ContainsKey("line")) ? Convert.ToInt32(data["line"]) : 0;
+                int col = (data != null && data.ContainsKey("column")) ? Convert.ToInt32(data["column"]) : 1;
+                if (line < 1 || string.IsNullOrEmpty(_filePath)) return;
+                // Run to Cursor's range guard: a line that cannot exist is refused before it can reach the
+                // mirrored cursor (persisted as this file's saved cursor on close) or the debugger.
+                string live = _overlayLiveText;
+                int nativeLines = NativeLineCount();
+                if (!Services.DocumentLineGuard.Contains(line, live, nativeLines))
+                {
+                    MonacoSpikeLog.Write("breakOnProcEntry: NOT sent - line " + line + " is past the end of "
+                        + Path.GetFileName(_filePath));
+                    ToastInPage("Break on entry: line " + line + " is past the end of this file - nothing was set.", false);
+                    return;
+                }
+                string filePath = _filePath;
+
+                Action run = () =>
+                {
+                    try
+                    {
+                        // The same activation and verification as Run to Cursor (kept as its own copy: that body
+                        // is pinned statement by statement by run-to-cursor.test.js).
+                        object myWin = _wbWindow;
+                        if (myWin == null) { try { myWin = GetType().GetProperty("WorkbenchWindow")?.GetValue(this, null); } catch { } }
+                        var wb = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
+                        if (myWin != null && !ReferenceEquals(myWin, ReflectProp(wb, "ActiveWorkbenchWindow")))
+                        {
+                            try { myWin.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(myWin, null); } catch { }
+                        }
+                        if (myWin == null || !ReferenceEquals(myWin, ReflectProp(wb, "ActiveWorkbenchWindow")))
+                        {
+                            MonacoSpikeLog.Write("breakOnProcEntry: NOT sent - this tab is not the active window after SelectWindow (" + Path.GetFileName(filePath) + ", line " + line + ")");
+                            ToastInPage("Break on entry: this tab could not be made the active editor - nothing was set. Click in it and try again.", false);
+                            return;
+                        }
+
+                        _lastCursorLine = line;
+                        _lastCursorCol = col >= 1 ? col : 1;
+
+                        string message;
+                        bool ok = Services.ClarionDebuggerBridge.BreakOnProcEntry(filePath, line, out message);
+                        MonacoSpikeLog.Write("breakOnProcEntry: line " + line + " (" + Path.GetFileName(filePath) + ") -> " + (ok ? "set" : "not set") + ": " + message);
+                        if (!ok)
+                            ToastInPage(string.IsNullOrEmpty(message) ? Services.ClarionDebuggerBridge.BreakOnEntryNoAnswer : message, false);
+                    }
+                    catch (Exception ex)
+                    {
+                        MonacoSpikeLog.Write("breakOnProcEntry error: " + ex.Message);
+                        ToastInPage(Services.ClarionDebuggerBridge.BreakOnEntryNoAnswer, false);
+                    }
+                };
+
+                // The debugger touches its pad's WinForms/WebView2 state; call it on the UI thread.
+                var form = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
+                if (form != null && form.InvokeRequired) form.BeginInvoke(run);
+                else run();
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("BreakOnProcEntryFromPage error: " + ex.Message); }
+        }
+
         /// <summary>Start the shared debugger-state poll (idempotent; UI thread) and give THIS page the current
         /// state, so a tab opened mid-session shows the item without waiting for a change.</summary>
         private void EnsureDebuggerStatePoll()
@@ -1781,20 +1874,21 @@ namespace ClarionAssistant
             {
                 if (_debugStatePoll == null)
                 {
-                    Services.ClarionDebuggerBridge.GetState(out _debugAvailable, out _debugPaused);
+                    Services.ClarionDebuggerBridge.GetState(out _debugAvailable, out _debugPaused, out _debugBreakOnEntry);
                     _debugStatePoll = new Timer { Interval = DebugStatePollMs };
                     _debugStatePoll.Tick += (s, e) => PollDebuggerState();
                     _debugStatePoll.Start();
                 }
-                if (_editor != null) _editor.PostJson(DebuggerStateJson(_debugAvailable, _debugPaused));
+                if (_editor != null) _editor.PostJson(DebuggerStateJson(_debugAvailable, _debugPaused, _debugBreakOnEntry));
             }
             catch (Exception ex) { MonacoSpikeLog.Write("EnsureDebuggerStatePoll error: " + ex.Message); }
         }
 
-        private static string DebuggerStateJson(bool available, bool paused)
+        private static string DebuggerStateJson(bool available, bool paused, bool breakOnEntry)
         {
             return "{\"type\":\"debuggerState\",\"available\":" + (available ? "true" : "false")
-                + ",\"paused\":" + (available && paused ? "true" : "false") + "}";
+                + ",\"paused\":" + (available && paused ? "true" : "false")
+                + ",\"breakOnEntry\":" + (available && breakOnEntry ? "true" : "false") + "}";
         }
 
         private static void PollDebuggerState()
@@ -1810,12 +1904,12 @@ namespace ClarionAssistant
                     return;
                 }
 
-                bool available, paused;
-                Services.ClarionDebuggerBridge.GetState(out available, out paused);
-                if (available == _debugAvailable && paused == _debugPaused) return;
-                _debugAvailable = available; _debugPaused = paused;
+                bool available, paused, breakOnEntry;
+                Services.ClarionDebuggerBridge.GetState(out available, out paused, out breakOnEntry);
+                if (available == _debugAvailable && paused == _debugPaused && breakOnEntry == _debugBreakOnEntry) return;
+                _debugAvailable = available; _debugPaused = paused; _debugBreakOnEntry = breakOnEntry;
 
-                string json = DebuggerStateJson(available, paused);
+                string json = DebuggerStateJson(available, paused, breakOnEntry);
                 foreach (var inst in snapshot)
                 {
                     try { if (inst._editor != null && inst._pageReady) inst._editor.PostJson(json); } catch { }
@@ -1840,6 +1934,7 @@ namespace ClarionAssistant
             if (action == "diffWithDisk") { ShowDiskDiff(rawJson); return; }
             if (action == "closeTab") { CloseWorkbenchTab(); return; }
             if (action == "runToCursor") { RunToCursorFromPage(rawJson); return; }
+            if (action == "breakOnProcEntry") { BreakOnProcEntryFromPage(rawJson); return; }
             if (action != "toggleBreakpoint") return;
             // Gutter click in Monaco → toggle the IDE breakpoint on the native document. The native + CA
             // debuggers both listen to DebuggerService; the BreakPointAdded/Removed event re-pushes the set.

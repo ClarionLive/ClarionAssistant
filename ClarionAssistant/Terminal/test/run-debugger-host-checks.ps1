@@ -4,7 +4,7 @@
 #
 # Two harnesses, compiled against the REAL sources:
 #   DebuggerHookGuardsCheck  Services\DocumentLineGuard.cs + Services\ExecutionLineGate.cs, executed directly.
-#   DebuggerBridgeCheck      Services\ClarionDebuggerBridge.cs, in five scenarios. Each scenario is its own
+#   DebuggerBridgeCheck      Services\ClarionDebuggerBridge.cs, in eight scenarios. Each scenario is its own
 #                            process AND its own ASSEMBLY NAME, because that is exactly what the bridge's
 #                            identity and ambiguity guards are about: the same source compiled as
 #                            ClarionDebugger.exe and as SomeOtherAddin.exe must behave differently. The
@@ -34,6 +34,9 @@ if (-not $csc) { Write-Error "No C# compiler found (looked for VS2022 Roslyn csc
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $OutDir 'dup') | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $OutDir 'dup2') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $OutDir 'boevoid') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $OutDir 'boenone') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $OutDir 'boewrongret') | Out-Null
 Write-Host "csc:  $($csc.FullName)"
 Write-Host "out:  $OutDir`n"
 
@@ -50,6 +53,11 @@ Build (Join-Path $OutDir 'SomeOtherAddin.exe')      @($bridgeCheck, $bridge) @()
 Build (Join-Path $OutDir 'NoClarionDebugger.exe')   @($bridgeCheck, $bridge) @('/define:NO_DEBUGGER')
 Build (Join-Path $OutDir 'dup\ClarionDebugger.dll')  @($dupSrc) @('/target:library')
 Build (Join-Path $OutDir 'dup2\ClarionDebugger.dll') @($dupSrc) @('/target:library', '/define:DUP2')
+# e61e4f92: a debugger with the OLD void BreakOnProcEntry, and one with none. Named ClarionDebugger, so each
+# binds, and only the optional member can differ.
+Build (Join-Path $OutDir 'boevoid\ClarionDebugger.exe') @($bridgeCheck, $bridge) @('/define:BOE_VOID')
+Build (Join-Path $OutDir 'boenone\ClarionDebugger.exe') @($bridgeCheck, $bridge) @('/define:BOE_NONE')
+Build (Join-Path $OutDir 'boewrongret\ClarionDebugger.exe') @($bridgeCheck, $bridge) @('/define:BOE_WRONGRET')
 
 $failed = @()
 function Run([string]$title, [string]$exe, [string[]]$exeArgs) {
@@ -65,6 +73,9 @@ Run 'bridge: debugger not installed'                    'NoClarionDebugger.exe' 
 Run 'bridge: controller in a foreign assembly'          'SomeOtherAddin.exe'    @('decoy')
 Run 'bridge: two ClarionDebugger assemblies'            'ClarionDebugger.exe'   @('ambiguous', (Join-Path $OutDir 'dup\ClarionDebugger.dll'))
 Run 'bridge: debugger loads mid-session'                'NoClarionDebugger.exe' @('late', (Join-Path $OutDir 'dup\ClarionDebugger.dll'), (Join-Path $OutDir 'dup2\ClarionDebugger.dll'))
+Run 'bridge: old void BreakOnProcEntry'                 'boevoid\ClarionDebugger.exe' @('boevoid')
+Run 'bridge: no BreakOnProcEntry'                       'boenone\ClarionDebugger.exe' @('boenone')
+Run 'bridge: BreakOnProcEntry with no bool to return'   'boewrongret\ClarionDebugger.exe' @('boewrongret')
 
 if ($failed.Count) {
     Write-Host ("CHECKS FAILED: " + ($failed -join ', ')) -ForegroundColor Red
