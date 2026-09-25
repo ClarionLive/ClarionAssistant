@@ -35,6 +35,7 @@ test.
 | `..\Terminal\test\vscode-import-ui.test.js` | the gear panel's VS Code import UI, driven from markup and JS **extracted from the page at run time** |
 | `..\Terminal\test\clarion-folding.test.js` | the shared Clarion folding provider (GH #158, #133) |
 | `..\Terminal\test\clarion-formatter.test.js` | the Smart Formatter |
+| `..\Terminal\test\mark-word.test.js` | GH #229: Mark Word (Ctrl+W) selecting the `[A-Za-z0-9_]` word at every cursor, `LOC:Name` as two words, a second press widening to the double-click word under the real Clarion `wordPattern`, and its `EDITOR_COMMANDS` entry being the only Ctrl+W default and not handed to the IDE |
 | `..\Terminal\test\schema-sources-postgres.test.js` | GH #201: the Schema Sources *Index* cell showing the real error rather than the word `error` (handler extracted from the page), and the PostgreSQL procedure query excluding aggregates (`prokind <> 'a'`) but not window functions |
 | `NpgsqlLoader.SmokeTest.cs` | GH #188: only a *missing* Npgsql.dll is reported as not found; a present-but-broken one (a garbage `Npgsql.dll` is dropped beside the exe, loaded in a fresh AppDomain) surfaces the loader's own message |
 | `McpStdio.EndToEndTest.ps1` | the standalone MCP server's stdio transport as a real process — the stdout hijack, UTF-8-no-BOM on the real handle, and clean exit on stdin EOF, none of which `--selftest-stdio` can see |

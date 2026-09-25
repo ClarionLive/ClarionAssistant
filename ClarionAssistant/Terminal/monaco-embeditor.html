@@ -2085,6 +2085,7 @@
         { id: 'upperCase',         label: 'Uppercase Selection',  def: 'Ctrl+Shift+U', run: cmdUpperCase },
         { id: 'lowerCase',         label: 'Lowercase Selection',  def: 'Ctrl+Shift+L', run: cmdLowerCase },
         { id: 'invertCase',        label: 'Invert Case',          def: 'Ctrl+\\',      run: cmdInvertCase },
+        { id: 'markWord',          label: 'Mark Word',            def: 'Ctrl+W',       run: cmdMarkWord },
         { id: 'structureDesigner', label: 'Structure Designer',   def: 'Ctrl+D',       run: cmdStructureDesigner },
         { id: 'toggleBookmark',    label: 'Toggle Bookmark',      def: 'Ctrl+F2',      run: cmdToggleBookmark },
         { id: 'nextBookmark',      label: 'Next Bookmark',        def: 'F2',           run: cmdNextBookmark },
@@ -3134,6 +3135,60 @@
     }
     function cmdNextBookmark() { navBookmark(1); }
     function cmdPrevBookmark() { navBookmark(-1); }
+
+    // ===================== Mark Word (Ctrl+W, GH #229) =====================
+    // Select the word the caret is in, at every cursor. A word is a run of [A-Za-z0-9_] -- the colon is
+    // deliberately NOT part of one. The Clarion wordPattern (clarion-language.js) keeps `LOC:Name` whole,
+    // so double-click already takes the full prefixed name; Mark Word is how to take just `LOC` or just
+    // `Name`. Pressed again while that part is still exactly what is selected, it widens to the whole
+    // word the editor sees (getWordAtPosition under that wordPattern, i.e. the double-click word), so
+    // Ctrl+W Ctrl+W takes `LOC:Name`. Selection only, no edit, so like the bookmark commands it works
+    // anywhere, not only in the editable slots.
+    var MARK_WORD_CHAR = /[A-Za-z0-9_]/;
+
+    // The word touching Monaco column `column` (1-based; the caret sits before character column-1) as
+    // { startColumn, endColumn } with endColumn exclusive, or null when the caret touches no word. The
+    // character before the caret is tried first, so a caret just after a word (`Name| = 1`) marks it.
+    function markWordRange(text, column) {
+        var i = Math.max(0, Math.min(column - 1, text.length));   // 0-based index of the char after the caret
+        var anchor;
+        if (i > 0 && MARK_WORD_CHAR.test(text.charAt(i - 1))) anchor = i - 1;
+        else if (i < text.length && MARK_WORD_CHAR.test(text.charAt(i))) anchor = i;
+        else return null;
+        var start = anchor, end = anchor + 1;
+        while (start > 0 && MARK_WORD_CHAR.test(text.charAt(start - 1))) start--;
+        while (end < text.length && MARK_WORD_CHAR.test(text.charAt(end))) end++;
+        return { startColumn: start + 1, endColumn: end + 1 };
+    }
+
+    // Each selection is judged at its caret end (its position, not its anchor). A selection that is exactly
+    // the part there widens to the editor's word, when that is wider; one that already IS that wider word
+    // stays (so a third press is a no-op); anything else becomes the part. A cursor touching no word keeps
+    // what it had. One setSelections call, and none when nothing changed.
+    function cmdMarkWord() {
+        var ed = activeEd(); if (!ed) return;
+        var model = ed.getModel(); if (!model) return;
+        var sels = ed.getSelections(); if (!sels || !sels.length) return;
+        var changed = false;
+        var next = sels.map(function (s) {
+            var ln = s.positionLineNumber;
+            var r = markWordRange(model.getLineContent(ln), s.positionColumn);
+            if (!r) return s;
+            var from = Math.min(s.selectionStartColumn, s.positionColumn), to = Math.max(s.selectionStartColumn, s.positionColumn);
+            var oneLine = s.selectionStartLineNumber === ln;
+            var w = model.getWordAtPosition({ lineNumber: ln, column: r.startColumn });
+            var wider = w && w.startColumn <= r.startColumn && w.endColumn >= r.endColumn
+                && (w.startColumn < r.startColumn || w.endColumn > r.endColumn);
+            if (oneLine && wider && from === w.startColumn && to === w.endColumn) return s;      // already the whole word
+            if (oneLine && from === r.startColumn && to === r.endColumn) {
+                if (!wider) return s;                                                             // nothing wider
+                r = { startColumn: w.startColumn, endColumn: w.endColumn };
+            }
+            changed = true;
+            return new monaco.Selection(ln, r.startColumn, ln, r.endColumn);
+        });
+        if (changed) ed.setSelections(next);
+    }
 
     // ===================== Split view (#15) =====================
     // Two Monaco editors over ONE shared ITextModel. Model edits, decorations (read-only / embed /
