@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Data.SQLite;
 using System.Diagnostics;
@@ -156,6 +156,7 @@ namespace ClarionAssistant.Services
         {
             try
             {
+                int rows;
                 using (var conn = OpenConnection())
                 using (var cmd = new SQLiteCommand(@"
                     UPDATE instances SET
@@ -170,7 +171,19 @@ namespace ClarionAssistant.Services
                     cmd.Parameters.AddWithValue("@file", (object)ActiveFile ?? DBNull.Value);
                     cmd.Parameters.AddWithValue("@proc", (object)ActiveProcedure ?? DBNull.Value);
                     cmd.Parameters.AddWithValue("@work", (object)WorkingOn ?? DBNull.Value);
-                    cmd.ExecuteNonQuery();
+                    rows = cmd.ExecuteNonQuery();
+                }
+
+                // SELF-HEAL: the UPDATE touching 0 rows means our row is gone — a peer's sweep decided we
+                // were dead (Process.Responding is also false for a HEALTHY instance whose UI thread is
+                // blocked past the timeout: a long generation, a build, a big dictionary load), or the db
+                // was cleared out from under us. Before this, an UPDATE-only heartbeat left that instance
+                // invisible to every peer until it was restarted; re-registering costs one INSERT on a
+                // path that already runs every 10s. (PR #208 review.)
+                if (rows == 0)
+                {
+                    Debug.WriteLine("[InstanceCoord] heartbeat found no row for pid " + _pid + " — re-registering");
+                    Register();
                 }
 
                 CleanupStale();
@@ -203,9 +216,10 @@ namespace ClarionAssistant.Services
                     foreach (int pid in stalePids)
                         if (!IsAliveAndResponding(pid)) DeleteInstance(conn, pid);
 
-                    // PASS 2 — GH #179 (2026-08-29 report): a Clarion.exe left hung inside a native modal can
-                    // keep pumping just enough of its own message loop for its WinForms heartbeat Timer to
-                    // keep firing, so its row NEVER goes stale by timestamp alone — it squats as a permanently
+                    // PASS 2 — GH #179 (2026-08-29 report): the heartbeat is a System.Timers.Timer, so it
+                    // fires on a threadpool thread and is completely unaffected by a blocked UI thread. A
+                    // Clarion.exe hung inside a native modal therefore KEEPS heart-beating: its row never
+                    // goes stale by timestamp, ever — it squats as a permanently
                     // "live" peer, and every subsequent CheckProcedureConflict/GetPeers call from ANY instance
                     // collides with a zombie that will never release anything, until the process is killed
                     // (the user needed a full reboot). Sweep the fresh rows too: Process.Responding is cheap
