@@ -14,6 +14,8 @@
 //   * Run to Cursor's gating is unchanged by the new state member
 //   * host: the same line guard and active-tab verification as Run to Cursor, BEFORE the debugger is called;
 //     a miss is toasted in this tab and a hit is not; the toast carries the debugger's text LAST
+//   * host: a tab with no file path is toasted, not silently ignored (3517fd15 item 5); that the toast cannot
+//     replace a "file changed on disk" notice is executed by toast-stacking.test.js
 
 const fs = require('fs');
 const path = require('path');
@@ -157,7 +159,13 @@ check('added to the main editor', /^[ \t]*addBreakOnEntryAction\(editor\);/m.tes
 check('added to the split editor', /^[ \t]*addBreakOnEntryAction\(editor2\);/m.test(html));
 check('router shows a host toast through showToast, red unless ok',
     /msg\.type === 'toast'\)\s*\{\s*showToast\(String\(msg\.message \|\| ''\), msg\.ok !== false\);/.test(html));
-check('...and showToast writes TEXT, not markup', /function showToast\(message, ok, persist\) \{[\s\S]{0,120}t\.textContent = message;/.test(html));
+{
+    // Both places showToast can write (#toast, or #toastAux above an action toast: 3517fd15 item 5, executed
+    // by toast-stacking.test.js) take TEXT.
+    const st = slice(html, 'function showToast(message, ok, persist) {', 'function hideToastAux()', 'showToast');
+    check('...and showToast writes TEXT, not markup, wherever it writes',
+        /\baux\.textContent = message;/.test(st) && /\bt\.textContent = message;/.test(st) && !/innerHTML/.test(st));
+}
 
 // ---------- host ----------
 section('host (C#)');
@@ -176,6 +184,14 @@ check('the poll re-sends when breakOnEntry alone changes',
     const act = /if \(!TryActivateThisTab\(line, col\)\)\s*\{[^}]*return;\s*\}/.exec(body);
     const iAct = act ? act.index : -1;
     const iCall = body.indexOf('ClarionDebuggerBridge.BreakOnProcEntry(filePath, line, out message)');
+    // 3517fd15 item 5: the debugger is asked by path, so a tab without one says so instead of doing nothing.
+    const noPath = /if \(string\.IsNullOrEmpty\(_filePath\)\)\s*\{[^}]*return;\s*\}/.exec(body);
+    const iNoPath = noPath ? noPath.index : -1;
+    check('a tab with no file path: logs, toasts and returns',
+        !!noPath && /MonacoSpikeLog\.Write\("breakOnProcEntry: NOT sent/.test(noPath[0])
+        && /ToastInPage\("Break on entry: this tab has no file on disk - save it first\.", false\);/.test(noPath[0]));
+    check('...before the range check, the activation and the debugger', iNoPath >= 0 && iRange > iNoPath && iAct > iNoPath && iCall > iNoPath);
+    check('...and a line below 1 is still refused before it', /if \(line < 1\) return;\s*(\/\/[^\n]*\n\s*)*if \(string\.IsNullOrEmpty\(_filePath\)\)/.test(body));
     check('refuses a line that is not in the document, before anything else', iRange >= 0 && iAct > iRange && iCall > iRange);
     check('...and toasts that refusal', iRange >= 0 && /is past the end of this file - nothing was set\.", false\);/.test(body));
     check('activates, verifies and sets the caret through TryActivateThisTab, on the UI-thread action', iRun >= 0 && iAct > iRun);

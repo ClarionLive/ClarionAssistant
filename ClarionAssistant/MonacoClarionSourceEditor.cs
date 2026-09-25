@@ -1875,7 +1875,15 @@ namespace ClarionAssistant
                 var data = new JavaScriptSerializer().DeserializeObject(rawJson) as Dictionary<string, object>;
                 int line = (data != null && data.ContainsKey("line")) ? Convert.ToInt32(data["line"]) : 0;
                 int col = (data != null && data.ContainsKey("column")) ? Convert.ToInt32(data["column"]) : 1;
-                if (line < 1 || string.IsNullOrEmpty(_filePath)) return;
+                if (line < 1) return;
+                // The debugger is asked by file path, so a tab with none (never saved) has nothing to ask
+                // about; say so rather than let the click do nothing (3517fd15 item 5).
+                if (string.IsNullOrEmpty(_filePath))
+                {
+                    MonacoSpikeLog.Write("breakOnProcEntry: NOT sent - this tab has no file path");
+                    ToastInPage("Break on entry: this tab has no file on disk - save it first.", false);
+                    return;
+                }
                 // Run to Cursor's range guard: a line that cannot exist is refused before it can reach the
                 // mirrored cursor (persisted as this file's saved cursor on close) or the debugger.
                 string live = _overlayLiveText;
