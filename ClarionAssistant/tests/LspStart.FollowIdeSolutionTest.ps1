@@ -61,7 +61,8 @@ $recordDir  = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) '
 $recordFile = Join-Path $recordDir ("ide-" + $PID + ".json")
 New-Item -ItemType Directory -Force $recordDir | Out-Null
 function Publish([string]$sln) {
-    if ($null -eq $sln) { if (Test-Path $recordFile) { [System.IO.File]::Delete($recordFile) }; return }
+    # [string] turns $null into '', so test for empty: the record must be DELETED, not written blank.
+    if ([string]::IsNullOrEmpty($sln)) { if (Test-Path $recordFile) { [System.IO.File]::Delete($recordFile) }; return }
     $rec = @{ solution = $sln; pid = $PID; writtenAt = (Get-Date).ToString('o') } | ConvertTo-Json -Compress
     [System.IO.File]::WriteAllText($recordFile, $rec, (New-Object System.Text.UTF8Encoding($false)))
 }
