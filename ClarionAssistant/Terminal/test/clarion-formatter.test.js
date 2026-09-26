@@ -424,5 +424,64 @@ console.log('\nKeyword-named data labels (label + type, not a structure):');
         pv.some(function (l) { return /^\s+Count\s*=\s*1/.test(l); }), JSON.stringify(pv));
 })();
 
+// ---- Post-condition LOOP: a trailing UNTIL/WHILE line closes the LOOP (GH #222 follow-up) ----
+// Clarion's LOOP ... UNTIL expr / LOOP ... WHILE expr form (SoftVelocity's libsrc\win\abbrowse.clw
+// uses it). The UNTIL/WHILE line is the LOOP's closer and aligns with the LOOP like END does.
+// It closes ONLY a LOOP: with an IF innermost it is an ordinary body line. The pre-condition form
+// (LOOP WHILE x / LOOP UNTIL x) starts with LOOP and still needs END.
+console.log('\nPost-condition LOOP (UNTIL/WHILE closer):');
+(function () {
+    var o = { alignAssignments: false };   // keep x# += 1 as written; alignment is a separate pass
+    function body(lines) {
+        var src = ['Main PROCEDURE', '  CODE'].concat(lines).join('\n');
+        var out = F.formatClarion(src, o).text;
+        return { lines: out.split('\n').slice(2), text: out };
+    }
+    function eq(name, got, want) {
+        ok(name, JSON.stringify(got) === JSON.stringify(want),
+            'got  ' + JSON.stringify(got) + '\n      want ' + JSON.stringify(want));
+    }
+
+    var snippet = ['LOOP', '  x# += 1', 'UNTIL x# > 10', 'LOOP', '  x# -= 1', 'WHILE x# > 0'];
+    var want = ['    LOOP', '        x# += 1', '    UNTIL x# > 10', '    LOOP', '        x# -= 1', '    WHILE x# > 0'];
+    var r = body(snippet);
+    eq('LOOP..UNTIL then LOOP..WHILE: closers align with their LOOP, next LOOP not over-indented', r.lines, want);
+    var again = F.formatClarion(r.text, o).text;
+    ok('LOOP..UNTIL / LOOP..WHILE formatting is idempotent', again === r.text, JSON.stringify(again.split('\n')));
+
+    eq('statement after the UNTIL is back at the LOOP column',
+        body(['LOOP', 'x# += 1', 'UNTIL x# > 10', 'y# = 1']).lines,
+        ['    LOOP', '        x# += 1', '    UNTIL x# > 10', '    y# = 1']);
+
+    eq('IF nested inside LOOP..UNTIL',
+        body(['LOOP', 'IF a', 'b()', 'END', 'UNTIL done', 'c()']).lines,
+        ['    LOOP', '        IF a', '            b()', '        END', '    UNTIL done', '    c()']);
+
+    eq('LOOP..WHILE nested inside IF',
+        body(['IF a', 'LOOP', 'x# -= 1', 'WHILE x# > 0', 'END', 'c()']).lines,
+        ['    IF a', '        LOOP', '            x# -= 1', '        WHILE x# > 0', '    END', '    c()']);
+
+    eq('pre-condition LOOP WHILE / LOOP UNTIL still close on END',
+        body(['LOOP WHILE x# > 0', 'x# -= 1', 'END', 'LOOP UNTIL x# > 10', 'x# += 1', 'END', 'c()']).lines,
+        ['    LOOP WHILE x# > 0', '        x# -= 1', '    END', '    LOOP UNTIL x# > 10', '        x# += 1', '    END', '    c()']);
+
+    // UNTIL with an IF (not a LOOP) innermost must NOT close the IF: it is a body line of the IF,
+    // END closes the IF, and the following UNTIL then closes the LOOP.
+    eq('UNTIL with IF on top does not close the IF',
+        body(['LOOP', 'IF a', 'UNTIL x', 'END', 'UNTIL y', 'c()']).lines,
+        ['    LOOP', '        IF a', '            UNTIL x', '        END', '    UNTIL y', '    c()']);
+
+    eq('lowercase until/while close the LOOP (and are cased)',
+        body(['loop', 'x# += 1', 'until x# > 10', 'loop', 'x# -= 1', 'while x# > 0']).lines,
+        ['    LOOP', '        x# += 1', '    UNTIL x# > 10', '    LOOP', '        x# -= 1', '    WHILE x# > 0']);
+
+    // keywordCase 'asis': WHILE is an always-cased word, so the default would print WHILE:Count —
+    // a separate (casing) behaviour this case is not about.
+    o.keywordCase = 'asis';
+    eq('prefixed name While:Count is a statement, not a closer',
+        body(['LOOP', 'While:Count += 1', 'UNTIL While:Count > 3', 'c()']).lines,
+        ['    LOOP', '        While:Count += 1', '    UNTIL While:Count > 3', '    c()']);
+})();
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed.');
 process.exit(fail ? 1 : 0);

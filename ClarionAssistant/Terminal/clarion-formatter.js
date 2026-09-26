@@ -372,7 +372,15 @@
             if (routinePending) { routinePending = false; }  // first non-DATA line after ROUTINE ⇒ code
 
             // ---- closers ----
-            if (first === 'END' || trimmed === '.') {
+            // A post-condition LOOP ends with 'UNTIL expr' / 'WHILE expr' instead of END (GH #222
+            // follow-up; SoftVelocity's own abbrowse.clw uses it). That line closes the LOOP and aligns
+            // with it — but ONLY when a LOOP is the innermost open structure: with an IF on top it is
+            // an ordinary body line. The pre-condition form (LOOP WHILE x) starts with LOOP and is an
+            // opener. The lookahead keeps a prefixed name (While:Count) from reading as the keyword.
+            var postCondClose = (first === 'UNTIL' || first === 'WHILE') &&
+                /^\s*(UNTIL|WHILE)(?![A-Za-z0-9_:])/i.test(code) &&
+                top() && top().kind === 'code' && top().opener === 'LOOP';
+            if (first === 'END' || trimmed === '.' || postCondClose) {
                 var closed = stack.pop();
                 if (closed && closed.opener === 'MAP' && mapDepth > 0) mapDepth--;
                 rec.cat = 'close';
@@ -483,7 +491,7 @@
                 var midCol = indentFrom ? col + T : col;       // OF/OROF/ELSE/ELSIF column
                 var bodyCol = indentFrom ? col + 2 * T : col + T;
                 colOfStruct[id] = col;
-                stack.push({ id: id, kind: 'code', col: midCol, bodyCol: bodyCol });
+                stack.push({ id: id, kind: 'code', col: midCol, bodyCol: bodyCol, opener: opener });   // opener: UNTIL/WHILE close only a LOOP
             }
             else { stack.push({ id: id, kind: 'data', col: null, bodyCol: null, opener: opener }); }   // data col resolved in pass 2
             if (opener === 'MAP') mapDepth++;
