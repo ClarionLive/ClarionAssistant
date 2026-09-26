@@ -50,11 +50,74 @@ namespace ClarionAssistant.Services
         public static LspClient Client { get { return _client; } }
 
         /// <summary>
+        /// The .sln the client currently running was started for, or null. Lets a caller that
+        /// names a DIFFERENT solution be told the truth ("already running for X") instead of
+        /// "started for Y" while X keeps serving.
+        /// </summary>
+        private static string _runningSolutionPath;
+
+        /// <summary>
+        /// The last solution named explicitly (lsp_start workspace_path). Used as a fallback when
+        /// the host hook has nothing, so a later auto-start - lsp_diagnostics after the server
+        /// died, say - restarts on the solution the user chose instead of failing "no solution".
+        /// </summary>
+        private static string _lastExplicitSolutionPath;
+
+        /// <summary>The .sln the running client was started for, or null when none is running.</summary>
+        public static string RunningSolutionPath
+        {
+            get
+            {
+                var c = LspClient.Active;
+                return (c != null && c.IsRunning) ? _runningSolutionPath : null;
+            }
+        }
+
+        /// <summary>The outcome of the most recent start attempt (null before the first call).</summary>
+        public static LspStartResult LastResult { get; private set; }
+
+        /// <summary>Starts on the host's solution. See <see cref="EnsureRunning(string)"/>.</summary>
+        public static LspStartResult EnsureRunning()
+        {
+            return EnsureRunning(null);
+        }
+
+        /// <summary>
         /// Starts the LSP synchronously if it isn't already running. Resolves the solution,
         /// server.js, version config and redirection file UP FRONT and starts ONCE — there
         /// is no live post-start path update. Never throws to callers.
+        ///
+        /// <paramref name="explicitSolutionPath"/>, when given, is the .sln to start on, and wins
+        /// over <see cref="SolutionPathProvider"/>. It used to be impossible to pass one: lsp_start
+        /// resolved its workspace_path argument and then called a parameterless EnsureRunning that
+        /// read only the host hook, so the argument was silently discarded (ticket 77aceec5).
+        /// It does NOT restart a server already running on another solution - the addin shares one
+        /// client with the embeditor, and swapping its workspace under it is not this call's to do.
+        /// The result says which solution is actually being served.
+        ///
+        /// RETURNS WHAT HAPPENED rather than only tracing it, so callers can say why the server is
+        /// not running instead of guessing (see <see cref="LspStartResult"/>).
         /// </summary>
-        public static void EnsureRunning()
+        public static LspStartResult EnsureRunning(string explicitSolutionPath)
+        {
+            LspStartResult result;
+            try { result = EnsureRunningCore(explicitSolutionPath); }
+            catch (Exception ex)
+            {
+                LspTrace.Write("[LspService] EnsureRunning failed: " + ex.Message);
+                result = LspStartResult.Of(LspStartOutcome.Error, ex.Message);
+            }
+            LastResult = result;
+            return result;
+        }
+
+        private static LspStartResult AlreadyRunning()
+        {
+            return new LspStartResult(LspStartOutcome.AlreadyRunning, "already running",
+                _runningSolutionPath, null, null, null);
+        }
+
+        private static LspStartResult EnsureRunningCore(string explicitSolutionPath)
         {
             try
             {
@@ -66,23 +129,44 @@ namespace ClarionAssistant.Services
                 if (SharedLspBridge.IsSharedActive)
                 {
                     LspTrace.Write("[LspService] Shared ClarionLsp addin active — not starting the bundled LSP server.");
-                    return;
+                    return LspStartResult.Of(LspStartOutcome.SharedActive,
+                        "the shared ClarionLsp addin is active; the bundled server is not started while it is.");
                 }
 
                 // Fast pre-check against the process-wide Active client (set by LspClient.Start).
-                if (LspClient.Active != null && LspClient.Active.IsRunning) return;
+                if (LspClient.Active != null && LspClient.Active.IsRunning) return AlreadyRunning();
 
                 lock (_lock)
                 {
                     // Re-check inside the lock — another thread may have started it.
-                    if (_client != null && _client.IsRunning) return;
+                    if (_client != null && _client.IsRunning) return AlreadyRunning();
 
                     // Was EditorService.GetOpenSolutionPath() - a static call into an
                     // IDE-coupled class, and the one thing stopping this otherwise IDE-free
                     // file compiling in the standalone MCP server (ticket d051fbd1). Routed
                     // through a host-supplied hook, the same pattern SharedLspBridge already
                     // uses for CodeGraphDbPathProvider / SchemaGraphDbPathProvider.
-                    string slnPath = SolutionPathProvider != null ? SolutionPathProvider() : null;
+                    //
+                    // An EXPLICIT solution (lsp_start workspace_path) wins over the hook; the
+                    // last explicit one is the fallback when the hook has nothing (77aceec5).
+                    string slnPath = null;
+                    string slnSource = null;
+                    if (!string.IsNullOrEmpty(explicitSolutionPath))
+                    {
+                        slnPath = explicitSolutionPath;
+                        slnSource = "workspace_path";
+                        _lastExplicitSolutionPath = explicitSolutionPath;
+                    }
+                    if (string.IsNullOrEmpty(slnPath) && SolutionPathProvider != null)
+                    {
+                        slnPath = SolutionPathProvider();
+                        slnSource = "current solution";
+                    }
+                    if (string.IsNullOrEmpty(slnPath) && !string.IsNullOrEmpty(_lastExplicitSolutionPath))
+                    {
+                        slnPath = _lastExplicitSolutionPath;
+                        slnSource = "earlier workspace_path";
+                    }
                     if (string.IsNullOrEmpty(slnPath))
                     {
                         // Traced, not silent. This is the standalone server's MOST LIKELY exit —
@@ -97,7 +181,7 @@ namespace ClarionAssistant.Services
                                 ? "The host installed no SolutionPathProvider."
                                 : "SolutionPathProvider returned nothing; pass --solution <path.sln> "
                                   + "or run where exactly one .sln is discoverable."));
-                        return;
+                        return LspStartResult.Of(LspStartOutcome.NoSolution, LspStartResult.NoSolutionMessage);
                     }
 
                     string wsPath = Path.GetDirectoryName(slnPath);
@@ -111,7 +195,8 @@ namespace ClarionAssistant.Services
                     {
                         LspTrace.Write("[LspService] no server.js - nothing to start. "
                             + (string.IsNullOrEmpty(resolveSource) ? "(resolver gave no detail)" : resolveSource));
-                        return;
+                        return new LspStartResult(LspStartOutcome.NoServer, resolveSource,
+                            slnPath, slnSource, null, resolveSource);
                     }
                     LspTrace.Write("[LspService] server.js: " + serverJs + "  (source: " + resolveSource + ")");
 
@@ -220,12 +305,23 @@ namespace ClarionAssistant.Services
 
                     string wsUri = "file:///" + wsPath.Replace("\\", "/");
                     string wsName = Path.GetFileName(wsPath);
-                    _client.Start(serverJs, wsUri, wsName); // Start sets LspClient.Active itself
+                    bool started = _client.Start(serverJs, wsUri, wsName); // Start sets LspClient.Active itself
+                    if (started && _client.IsRunning)
+                    {
+                        _runningSolutionPath = slnPath;
+                        return new LspStartResult(LspStartOutcome.Started, "started",
+                            slnPath, slnSource, serverJs, resolveSource);
+                    }
+                    _runningSolutionPath = null;
+                    return new LspStartResult(LspStartOutcome.StartFailed,
+                        "LspClient.Start returned false (process launch or initialize handshake failed)",
+                        slnPath, slnSource, serverJs, resolveSource);
                 }
             }
             catch (Exception ex)
             {
                 LspTrace.Write("[LspService] EnsureRunning failed: " + ex.Message);
+                return LspStartResult.Of(LspStartOutcome.Error, ex.Message);
             }
         }
 

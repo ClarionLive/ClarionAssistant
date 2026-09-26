@@ -165,6 +165,7 @@
     <Compile Include="Services\LspTrace.cs" />
     <Compile Include="Services\LspClient.cs" />
     <Compile Include="Services\LspService.cs" />
+    <Compile Include="Services\LspStartResult.cs" />
     <Compile Include="Services\SharedLspBridge.cs" />
     <Compile Include="Services\LibraryIndexer.cs" />
     <Compile Include="Services\ClarionGraphService.cs" />

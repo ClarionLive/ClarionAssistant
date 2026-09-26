@@ -40,6 +40,7 @@ test.
 | `McpStdio.EndToEndTest.ps1` | the standalone MCP server's stdio transport as a real process — the stdout hijack, UTF-8-no-BOM on the real handle, and clean exit on stdin EOF, none of which `--selftest-stdio` can see |
 | `McpFileTools.EncodingTest.ps1` | `write_file` / `append_to_file` keeping Clarion source in its own encoding (GH #203): cp1252 stays cp1252, UTF-8 stays UTF-8, new and all-ASCII files are ANSI, a char the code page can't hold is refused with the file untouched. Fixtures are raw bytes in BOTH encodings; exits 2 unless the system ANSI code page is 1252 |
 | `LspDiagnostics.SemanticPassTest.ps1` | `lsp_diagnostics` reporting a file **clean** on the first query while the server had sent only its synchronous pass (b7505691). Fixture: `fixtures\lsp-semantic-pass\` |
+| `LspStart.WorkspacePathTest.ps1` | 77aceec5: `lsp_start` **using** `workspace_path` (a .sln, or a folder with exactly one; several or none refused), and every LSP start path saying *why* it did not start (no solution / no server.js) instead of blaming a handshake that never ran. Needs no language server: the single-.sln cases accept any outcome that names the solution |
 
 ## Dependencies
 
