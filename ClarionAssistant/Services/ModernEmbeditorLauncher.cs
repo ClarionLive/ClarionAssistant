@@ -319,11 +319,16 @@ namespace ClarionAssistant.Services
         /// target from an unrelated procedure. We therefore take the column-0 declaration via
         /// <see cref="ProcNameFromSource"/> and require an exact name match.
         ///
-        /// Returns true (with the mirror) only on an exact match. Returns false with <paramref name="error"/>
-        /// set when something else is open — the caller should surface that rather than open anything. Returns
-        /// false with <paramref name="error"/> null when NO embeditor is open, i.e. "carry on and open one".
-        /// Never closes, cancels or writes: a non-matching editor is left exactly as the developer left it.
-        /// UI thread only.
+        /// It is also refused - see <see cref="EmbedAdoptPolicy"/>, which makes the decision - when the CA
+        /// Embeditor (Monaco overlay or live tab) holds the embed, or when the native buffer has unsaved changes
+        /// (or its dirty flag is unreadable): adoption ends in a save of the WHOLE buffer, so it must never
+        /// persist edits that are not ours, nor write behind a Monaco buffer that would overwrite them.
+        ///
+        /// Returns true (with the mirror) only when adoption is safe. Returns false with <paramref name="error"/>
+        /// set when an embeditor is open but may not be adopted — the caller should surface that rather than open
+        /// anything. Returns false with <paramref name="error"/> null when NO embeditor is open, i.e. "carry on
+        /// and open one". Never closes, cancels or writes: a refused editor is left exactly as the developer left
+        /// it. UI thread only.
         /// </summary>
         internal static bool TryAdoptOpenEmbeditor(AppTreeService appTree, string procName,
             out string source, out List<int[]> ranges, out string error)
@@ -332,35 +337,44 @@ namespace ClarionAssistant.Services
             if (appTree == null || string.IsNullOrWhiteSpace(procName)) return false;
 
             // Nothing open → not an error, just nothing to adopt.
-            try { if (appTree.GetEmbedInfo() == null) return false; }
-            catch { return false; }
+            bool open;
+            try { open = appTree.GetEmbedInfo() != null; }
+            catch { open = false; }
 
-            string title, ferr, mirrored;
-            List<int[]> mirroredRanges;
-            if (!EmbeditorCompletionService.TryGetActiveEmbeditorSource(
-                    out title, out mirrored, out mirroredRanges, out ferr))
+            string mirrored = null, openProc = null, readErr = null;
+            List<int[]> mirroredRanges = null;
+            bool caLive = false;
+            bool? nativeDirty = null;
+            if (open)
             {
-                error = "An embeditor is open but its source could not be read (" + ferr +
-                        "); close it and try again.";
-                return false;
+                string title, ferr;
+                if (!EmbeditorCompletionService.TryGetActiveEmbeditorSource(
+                        out title, out mirrored, out mirroredRanges, out ferr))
+                {
+                    readErr = ferr ?? "unknown error";
+                }
+                else
+                {
+                    ICollection<string> knownProcs = null;
+                    try { knownProcs = appTree.GetProcedureNames(); } catch { }
+                    openProc = ProcNameFromSource(mirrored, knownProcs);
+                }
+
+                // Any CA Embeditor view holding the native embed (overlay OR live tab): its Monaco buffer,
+                // not the native one, is what the developer edits and what its save writes.
+                try { caLive = ModernEmbeditorViewContent.HasLiveOverlay; } catch { caLive = true; }
+                nativeDirty = appTree.GetEmbeditorIsDirty();
             }
 
-            ICollection<string> knownProcs = null;
-            try { knownProcs = appTree.GetProcedureNames(); } catch { }
-
-            string openProc = ProcNameFromSource(mirrored, knownProcs);
-            if (string.IsNullOrEmpty(openProc) ||
-                !string.Equals(openProc, procName.Trim(), StringComparison.OrdinalIgnoreCase))
+            switch (EmbedAdoptPolicy.Decide(open, readErr, openProc, procName, caLive, nativeDirty, out error))
             {
-                error = "An embeditor is still open on '" +
-                        (string.IsNullOrEmpty(openProc) ? "an unidentified procedure" : openProc) +
-                        "', not '" + procName + "'; close it and try again.";
-                return false;
+                case EmbedAdoptDecision.Adopt:
+                    source = mirrored;
+                    ranges = mirroredRanges;
+                    return true;
+                default:
+                    return false;   // OpenFresh (error null) or Refuse (error set)
             }
-
-            source = mirrored;
-            ranges = mirroredRanges;
-            return true;
         }
 
         /// <summary>

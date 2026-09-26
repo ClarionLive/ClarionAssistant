@@ -1448,6 +1448,22 @@ namespace ClarionAssistant.Services
             return last;
         }
 
+        /// <summary>
+        /// The open native embeditor's IsDirty (the same CommonGenEditor flag the save path confirms), or
+        /// null when no embeditor is open or the flag cannot be read. Read by apply_embed_edits before it
+        /// adopts a developer-opened embeditor (PR #198): true or null means "may hold edits that are not
+        /// ours", and the adopt is refused. UI thread only.
+        /// </summary>
+        public bool? GetEmbeditorIsDirty()
+        {
+            try
+            {
+                var editor = GetClaGenEditor();
+                return editor == null ? (bool?)null : GetIsDirty(editor);
+            }
+            catch { return null; }
+        }
+
         private bool? GetIsDirty(object editor)
         {
             var t = editor.GetType();

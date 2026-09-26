@@ -21,8 +21,9 @@ namespace ClarionAssistant.Services
     {
         // Max time a UI-thread MCP tool may run before the request is abandoned with a timeout
         // error, so a busy/wedged UI thread can't hold a worker (and leak the connection as
-        // CLOSE_WAIT) indefinitely.
-        private const int UiToolTimeoutSeconds = 30;
+        // CLOSE_WAIT) indefinitely. No longer one constant (PR #198): see McpUiTimeoutPolicy and
+        // ResolveUiToolTimeoutSeconds - default 30s, raised per tool by McpTool.UiTimeoutSeconds
+        // and per install by the "Mcp.UiToolTimeoutSeconds" setting.
 
         // Minimum interval between notifications/progress frames. The indexer emits at file
         // boundaries (up to ~30/s during parsing) — relaying every one would flood the client
@@ -34,6 +35,15 @@ namespace ClarionAssistant.Services
         private readonly Action<string, string> _onToolCall;
         private readonly string _serverName;
         private readonly string _serverVersion;
+
+        /// <summary>
+        /// Reads the raw "Mcp.UiToolTimeoutSeconds" setting, or null when unset. Optional: the addin
+        /// points it at its SettingsService; a host that never marshals onto a UI thread (the
+        /// standalone server) has no use for it and leaves it null, which means the 30s default.
+        /// Read per call from the in-memory settings snapshot, so a hand edit of settings.txt takes
+        /// effect on the next IDE start.
+        /// </summary>
+        public Func<string> UiTimeoutSettingReader { get; set; }
 
         /// <summary>
         /// </summary>
@@ -257,6 +267,7 @@ namespace ClarionAssistant.Services
 
             object uiResult = null;
             Exception uiException = null;
+            int timeoutSeconds = ResolveUiToolTimeoutSeconds(toolName);
 
             // Marshal onto the UI thread WITHOUT blocking the worker forever. A synchronous
             // Control.Invoke here deadlocks (and leaks the connection as CLOSE_WAIT) whenever the
@@ -273,12 +284,16 @@ namespace ClarionAssistant.Services
                 // Give the UI thread a bounded window to run the tool. On timeout we abandon the
                 // delegate (it will complete harmlessly later) and return an error instead of
                 // holding the worker + connection open.
-                if (!done.Wait(TimeSpan.FromSeconds(UiToolTimeoutSeconds)))
+                if (!done.Wait(TimeSpan.FromSeconds(timeoutSeconds)))
                 {
                     RaiseToolCall(toolName, "TIMEOUT (UI thread busy)");
                     timeoutResponse = McpJsonRpc.SerializeResponse(request.Id, McpJsonRpc.BuildToolResult(
                         "Error executing tool '" + toolName + "': UI thread did not respond within "
-                        + UiToolTimeoutSeconds + "s (busy or blocked).", true));
+                        + timeoutSeconds + "s (busy or blocked). If the IDE was working rather than "
+                        + "wedged, raise '" + McpUiTimeoutPolicy.SettingKey + "' in "
+                        + @"%APPDATA%\ClarionAssistant\settings.txt (allowed range "
+                        + McpUiTimeoutPolicy.MinSeconds + "-" + McpUiTimeoutPolicy.MaxSeconds
+                        + "s) and restart the IDE.", true));
                     return false;
                 }
             }
@@ -286,6 +301,21 @@ namespace ClarionAssistant.Services
             if (uiException != null) throw uiException;
             result = uiResult;
             return true;
+        }
+
+        /// <summary>
+        /// Timeout budget for ONE UI-thread tool call, in seconds - see McpUiTimeoutPolicy.Resolve.
+        /// A throwing settings reader is treated as "unset": the guard must never be lost to it.
+        /// </summary>
+        private int ResolveUiToolTimeoutSeconds(string toolName)
+        {
+            string configured = null;
+            var reader = UiTimeoutSettingReader;
+            if (reader != null)
+            {
+                try { configured = reader(); } catch { configured = null; }
+            }
+            return McpUiTimeoutPolicy.Resolve(configured, _toolRegistry.UiTimeoutSeconds(toolName));
         }
 
         /// <summary>

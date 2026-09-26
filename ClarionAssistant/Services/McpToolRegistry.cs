@@ -24,11 +24,11 @@ namespace ClarionAssistant.Services
         public bool RequiresUiThread { get; set; }
 
         /// <summary>
-        /// Minimum seconds this tool needs on the UI thread before McpServer may abandon
-        /// the call as timed out. 0 (default) = take the server's configured budget.
-        /// Only set it where the handler's OWN internal waits already exceed that budget —
-        /// the embeditor round-trips, whose single native open waits up to 45s (see
-        /// <see cref="ModernEmbeditorLauncher"/>) — so the timeout stays a wedged-UI guard
+        /// Minimum seconds this tool needs on the UI thread before McpDispatcher may abandon
+        /// the call as timed out (resolved by McpUiTimeoutPolicy). 0 (default) = take the
+        /// configured budget. Only set it where the handler's OWN internal waits already exceed
+        /// that budget — the embeditor round-trips, whose single native open waits up to 45s
+        /// (ModernEmbeditorLauncher, addin only) — so the timeout stays a wedged-UI guard
         /// everywhere else instead of becoming a blanket grace period.
         /// </summary>
         public int UiTimeoutSeconds { get; set; }
@@ -1301,8 +1301,10 @@ IdeOnly = true,
                     "COMPLETE replacement for that slot (end with a trailing newline). Edits are applied bottom-to-top. " +
                     "If an embeditor is ALREADY open on the SAME procedure it is adopted rather than refused — the edits " +
                     "go into that buffer and the save closes it (the IDE has no save-without-close), so re-open it if you " +
-                    "want to keep working there. An embeditor open on a DIFFERENT procedure is never touched: the call " +
-                    "aborts and asks you to close it. " +
+                    "want to keep working there. It is NOT adopted (the call aborts, nothing is written, the editor is " +
+                    "left as it was) when the developer has unsaved changes in it, or when the CA Embeditor is open " +
+                    "over it - ask the developer to save/close it, then retry. An embeditor open on a DIFFERENT " +
+                    "procedure is never touched: the call aborts and asks you to close it. " +
                     "If ANY line_number is not a current embed-slot start, NOTHING is written. The procedure is opened, " +
                     "written, saved and closed automatically — do NOT wrap this in open_procedure_embed / " +
                     "save_and_close_embeditor.",

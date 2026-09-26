@@ -299,16 +299,15 @@ namespace ClarionAssistant.Services
         ///
         /// ADOPTION: when an embeditor is already open on this SAME procedure we write into it rather than
         /// refuse (see <see cref="ModernEmbeditorLauncher.TryAdoptOpenEmbeditor"/>) — on a large procedure the
-        /// fresh open is the step that fails, so that editor is often the only working handle. Two consequences,
-        /// both deliberate:
-        /// <list type="bullet">
-        /// <item>the save still closes the tab, because <c>SaveAndCloseEmbeditor</c> is the only persist path the
-        /// IDE exposes;</item>
-        /// <item>an ADOPTED editor is never cancelled on a failure. Cancel would silently discard whatever the
-        /// developer had unsaved in that buffer, and since nothing is persisted on any failure path anyway, the
-        /// atomicity guarantee holds without it. We leave the buffer on screen and say so instead.</item>
-        /// </list>
-        /// An embeditor open on a DIFFERENT procedure is refused and left untouched.
+        /// fresh open is the step that fails, so that editor is often the only working handle. The save still
+        /// closes the tab, because <c>SaveAndCloseEmbeditor</c> is the only persist path the IDE exposes - and it
+        /// persists the WHOLE buffer, so an editor is adopted only when that buffer holds nothing but saved code
+        /// (native IsDirty == false) and no CA Embeditor sits over it (<see cref="EmbedAdoptPolicy"/>). Otherwise
+        /// the call is refused and the editor left untouched, as is one open on a DIFFERENT procedure.
+        ///
+        /// Because an adopted buffer was clean before we touched it, a failure AFTER writing discards it exactly
+        /// like one we opened ourselves (CancelEmbeditor drops only our own writes, and no half-written buffer is
+        /// left on screen to be saved by accident). A failure BEFORE writing leaves an adopted editor open.
         /// </summary>
         public static string ApplyLineEdits(string procName, IList<KeyValuePair<int, string>> edits, out bool ok)
         {
@@ -324,7 +323,8 @@ namespace ClarionAssistant.Services
             // the fresh open is the fragile step, so the developer-opened editor is frequently the only
             // handle that worked — refusing it (the old behaviour) made this tool unusable exactly where
             // it is most needed, and closing their editor to satisfy the precondition throws away that
-            // handle. An editor open on a DIFFERENT procedure is still refused, and left untouched.
+            // handle. An editor open on a DIFFERENT procedure is still refused, and left untouched - as is one
+            // with unsaved developer edits, or one the CA Embeditor is covering (see EmbedAdoptPolicy).
             string fsource, openErr;
             List<int[]> franges;
             bool adopted = ModernEmbeditorLauncher.TryAdoptOpenEmbeditor(
@@ -343,21 +343,23 @@ namespace ClarionAssistant.Services
                     return "Apply aborted: " + openErr;
             }
 
-            // An editor WE opened is ours to cancel on failure; one we adopted is the developer's, and
-            // cancelling it would throw away their unsaved buffer. Nothing is persisted on any failure
-            // path either way, so skipping the cancel costs no atomicity.
+            // Before anything is written, an editor WE opened is ours to cancel; an adopted one is left open
+            // exactly as the developer had it. Once we have written, the buffer holds only saved code plus
+            // our writes (adoption requires a clean buffer), so discarding it on failure loses nothing of
+            // theirs and leaves no half-written buffer behind.
             Action cancelIfOurs = () =>
             {
                 if (!adopted) { try { appTree.CancelEmbeditor(); } catch { } }
             };
-            // Two adoption notes, because the two failure stages leave the buffer in different states.
+            Action discardOurWrites = () => { try { appTree.CancelEmbeditor(); } catch { } };
             string adoptedCleanNote = adopted
                 ? " Your open embeditor on '" + procName + "' is untouched and still open."
                 : "";
-            string adoptedDirtyNote = adopted
-                ? " NOTE: your open embeditor on '" + procName + "' now holds partially-written slots in its " +
-                  "BUFFER — nothing was saved, so undo or cancel it in the IDE rather than saving it."
+            string adoptedDiscardNote = adopted
+                ? " The embeditor you had open on '" + procName + "' had no unsaved changes; it was closed " +
+                  "without saving - re-open it if you were still working there."
                 : "";
+            bool wrote = false;
 
             try
             {
@@ -383,6 +385,7 @@ namespace ClarionAssistant.Services
                 var errors = new List<string>();
                 foreach (var e in edits.OrderByDescending(x => x.Key))
                 {
+                    wrote = true;
                     string res = appTree.WriteEmbedContentByLine(e.Key, e.Value ?? "", false);
                     if (res != null && res.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
                         errors.Add("  • slot@line " + e.Key + ": " + res);
@@ -390,8 +393,8 @@ namespace ClarionAssistant.Services
 
                 if (errors.Count > 0)
                 {
-                    cancelIfOurs(); // discard — persist nothing on partial failure
-                    return "Apply FAILED — nothing persisted:\r\n" + string.Join("\r\n", errors) + adoptedDirtyNote;
+                    discardOurWrites(); // discard — persist nothing on partial failure
+                    return "Apply FAILED — nothing persisted:\r\n" + string.Join("\r\n", errors) + adoptedDiscardNote;
                 }
 
                 string saveRes = appTree.SaveAndCloseEmbeditor();
@@ -410,9 +413,9 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
-                cancelIfOurs();
+                if (wrote) discardOurWrites(); else cancelIfOurs();
                 return "Apply error: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message) +
-                       adoptedDirtyNote;
+                       (wrote ? adoptedDiscardNote : adoptedCleanNote);
             }
         }
 
