@@ -427,6 +427,10 @@ namespace ClarionAssistant.Services
                     toolArgs.Add(System.Diagnostics.Process.GetCurrentProcess().Id.ToString());
                     string liveSln = null;
                     try { liveSln = EditorService.GetOpenSolutionPath(); } catch { liveSln = null; }
+                    // --solution below is fixed at launch; this record is what lets the standalone
+                    // LSP follow a solution opened LATER (77aceec5). Kept current by
+                    // AssistantChatControl.PollForSolutionChange.
+                    IdeSolutionRecord.Publish(liveSln);
                     if (!string.IsNullOrEmpty(liveSln) && File.Exists(liveSln))
                     {
                         toolArgs.Add("--solution");

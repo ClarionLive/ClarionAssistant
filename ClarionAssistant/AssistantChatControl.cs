@@ -833,6 +833,12 @@ namespace ClarionAssistant
             try
             {
                 string slnPath = EditorService.GetOpenSolutionPath();
+
+                // Hand the IDE's live solution to the standalone clarion-mcp-server(s) this IDE
+                // launched: their --solution was fixed at tab launch, so a Chat tab opened before
+                // the solution had none (77aceec5). Writes only on change, removes on close.
+                Services.IdeSolutionRecord.Publish(slnPath);
+
                 if (!string.IsNullOrEmpty(slnPath) && File.Exists(slnPath) &&
                     !string.Equals(slnPath, _currentSlnPath, StringComparison.OrdinalIgnoreCase))
                 {

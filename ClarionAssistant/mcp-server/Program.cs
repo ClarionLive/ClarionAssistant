@@ -405,8 +405,26 @@ namespace ClarionAssistant.McpServer
                 // traces (item 0), so the "and no clue why" half of this warning is fixed and the
                 // line is still required. The addin sets the same hook from
                 // AssistantChatControl.StartMcpServer.
-                ClarionAssistant.Services.LspService.SolutionPathProvider =
-                    () => workspace.CurrentSolutionPath;
+                //
+                // FALLBACK: THE IDE'S OPEN SOLUTION (77aceec5). --solution is a launch-time
+                // snapshot. A plain Chat tab launched before any solution was open gets none, and
+                // kept none for its whole life while the developer opened one in the IDE - every
+                // lsp_* tool then failed with no way forward short of a new tab. When the IDE
+                // launched us (--ide-pid), the addin publishes its live open solution
+                // (IdeSolutionRecord), and the LSP falls back to that. Only the LSP: the
+                // CodeGraph/solution tools keep the --solution they were launched with.
+                ClarionAssistant.Services.LspService.SolutionPathProvider = () =>
+                {
+                    string sln = workspace.CurrentSolutionPath;
+                    if (!string.IsNullOrEmpty(sln)) return sln;
+                    int? idePid = ClarionAssistant.Services.McpToolRegistry.IdeProcessId;
+                    if (!idePid.HasValue) return null;
+                    string note;
+                    string ideSln = ClarionAssistant.Services.IdeSolutionRecord.Read(idePid.Value, out note);
+                    ClarionAssistant.Services.LspTrace.Write("[LspService] no --solution; falling back to "
+                        + "the IDE's published solution: " + (ideSln ?? "none") + " (" + note + ")");
+                    return ideSln;
+                };
 
                 // And WHICH CLARION, for the same reason. Without this the LSP resolved its own
                 // version independently, so --clarion-version and the solution's committed

@@ -14,6 +14,9 @@
 # spawning anything ("no solution"), and the caller guessed "handshake". The fix makes the argument
 # reach the start and makes the start REPORT its outcome.
 #
+# Plus the plain-Chat fallback: a server launched by the IDE (--ide-pid) with no --solution falls
+# back to the solution the IDE PUBLISHES (IdeSolutionRecord) when lsp_* needs one.
+#
 # WHY A REAL PROCESS. The defect lived in the wiring between the tool handler, LspService and the
 # standalone's provider hook - exactly what a stub would re-decide. The server is built and driven
 # over stdio as a client would.
@@ -56,10 +59,11 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) {
 }
 
 # ---------------------------------------------------------------- stage the fixtures
-# Three directories, each shaped to make exactly one resolver branch decide:
+# Four directories, each shaped to make exactly one resolver branch decide:
 #   empty\   no .sln at all        - the server's working directory, so it resolves NO solution
 #   two\     a.sln + b.sln         - ambiguous: must be refused, not guessed
 #   one\     ctrl.sln (+ sources)  - exactly one: must be the solution the start uses
+#   ide\     ctrl.sln (+ sources)  - what the fake IDE "has open" in the --ide-pid run
 $fixtureSrc = Join-Path $PSScriptRoot 'fixtures\lsp-semantic-pass'
 if (-not (Test-Path (Join-Path $fixtureSrc 'ctrl.sln'))) {
     Write-Host "COULD NOT RUN: fixture missing at $fixtureSrc" -ForegroundColor Red
@@ -69,15 +73,25 @@ $work = Join-Path $env:TEMP ("ca-lspstart-" + [System.Guid]::NewGuid().ToString(
 $empty = Join-Path $work 'empty'
 $two   = Join-Path $work 'two'
 $one   = Join-Path $work 'one'
-foreach ($d in @($empty, $two, $one)) { New-Item -ItemType Directory -Force $d | Out-Null }
+$ide   = Join-Path $work 'ide'
+foreach ($d in @($empty, $two, $one, $ide)) { New-Item -ItemType Directory -Force $d | Out-Null }
 Copy-Item (Join-Path $fixtureSrc '*') $one -Force
+Copy-Item (Join-Path $fixtureSrc '*') $ide -Force
 Copy-Item (Join-Path $fixtureSrc 'ctrl.sln') (Join-Path $two 'a.sln')
 Copy-Item (Join-Path $fixtureSrc 'ctrl.sln') (Join-Path $two 'b.sln')
 $notSln = Join-Path $one 'ctrl.clw'
 $oneSln = Join-Path $one 'ctrl.sln'
+$ideSln = Join-Path $ide 'ctrl.sln'
 # Matched by TAIL, not full path: $env:TEMP may be an 8.3 short path (JOHNHI~1) on one side and the
 # server may print the long form on the other. The tail still carries the unique run directory.
 $oneTail = (Split-Path $work -Leaf) + '\one\ctrl.sln'
+$ideTail = (Split-Path $work -Leaf) + '\ide\ctrl.sln'
+
+# The IDE record this harness plants for the --ide-pid run. Keyed on THIS process's pid, which is
+# alive for the whole run - the reader drops records whose IDE pid is dead. Same location and shape
+# IdeSolutionRecord.Publish writes (its own round trip is covered by IdeSolutionRecord.Test.cs).
+$recordDir  = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'ClarionAssistant\ide-solution'
+$recordFile = Join-Path $recordDir ("ide-" + $PID + ".json")
 
 function Invoke-Server([string[]]$extraArgs, [string[]]$toolCalls) {
     # MCP stdio framing is newline-delimited JSON. Requests go in one batch, then stdin closes;
@@ -204,8 +218,39 @@ try {
         Write-Host "  note: the language server was spawned and failed its start on this machine." -ForegroundColor Yellow
     }
 
+    # ============================================================ RUN 2: plain-Chat fallback
+    # Launched as the IDE launches it (--ide-pid), with NO --solution and an empty working
+    # directory - the plain Chat tab. The "IDE" (this process) has published ctrl.sln.
+    New-Item -ItemType Directory -Force $recordDir | Out-Null
+    $rec = @{ solution = $ideSln; pid = $PID; writtenAt = (Get-Date).ToString('o') } | ConvertTo-Json -Compress
+    [System.IO.File]::WriteAllText($recordFile, $rec, (New-Object System.Text.UTF8Encoding($false)))
+
+    $r2 = Invoke-Server @('--ide-pid', "$PID") @(
+        (Call 'lsp_start' @{})
+    )
+    Show 'start/ide-record' $r2[0]
+    Assert-That ($r2[0] -notmatch 'No solution selected') `
+        "a server launched by the IDE with no --solution ignored the IDE's published solution: $($r2[0])"
+    Assert-That ($r2[0].Contains($ideTail)) `
+        "lsp_start via the IDE record does not name the IDE's solution ($ideSln): $($r2[0])"
+
+    # -- NEGATIVE CONTROL: a record whose IDE is dead must NOT be used -------------------------
+    # Without this, "read any record lying around" would pass the case above. pid 0x7FFFFFF0 is
+    # not a live process on any Windows machine this runs on.
+    $deadPid = 2147483632
+    $deadFile = Join-Path $recordDir ("ide-" + $deadPid + ".json")
+    $rec = @{ solution = $ideSln; pid = $deadPid; writtenAt = (Get-Date).ToString('o') } | ConvertTo-Json -Compress
+    [System.IO.File]::WriteAllText($deadFile, $rec, (New-Object System.Text.UTF8Encoding($false)))
+    $r3 = Invoke-Server @('--ide-pid', "$deadPid") @(
+        (Call 'lsp_start' @{})
+    )
+    Show 'start/dead-ide-record' $r3[0]
+    Assert-That ($r3[0] -match 'No solution selected') `
+        "a record from a dead IDE pid was used as the solution: $($r3[0])"
 }
 finally {
+    try { Remove-Item $recordFile -Force -ErrorAction SilentlyContinue } catch { }
+    try { if ($deadFile) { Remove-Item $deadFile -Force -ErrorAction SilentlyContinue } } catch { }
     try { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 }
 
