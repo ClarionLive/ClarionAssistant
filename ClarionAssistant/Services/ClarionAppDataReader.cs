@@ -39,8 +39,7 @@ namespace ClarionAssistant.Services
                 {
                     // Anchor relative redirection paths (e.g. "*.clw = ..\v8Source") to the APP dir, and cover
                     // the C12 section names (Debug32/Release32) plus the older Debug/Release and Common.
-                    string viaRed = red.ResolveFrom(clwName, dir, RedFileService.BuildSectionOrder)
-                                 ?? red.ResolveFrom(clwName, dir, "Common");
+                    string viaRed = red.ResolveFrom(clwName, dir, RedFileService.BuildSectionOrder);
                     if (!string.IsNullOrEmpty(viaRed)) candidates.Add(viaRed);
                 }
                 if (!string.IsNullOrEmpty(dir))

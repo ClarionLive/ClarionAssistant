@@ -31,12 +31,13 @@ static class EmbedLspContextRedResolveTest
         return p;
     }
 
-    static RedFileService LoadRed(string name, string body)
+    static RedFileService LoadRed(string name, string body, Dictionary<string, string> macros = null)
     {
         string p = Path.Combine(Root, name);
+        Directory.CreateDirectory(Path.GetDirectoryName(p));
         File.WriteAllText(p, body);
         var red = new RedFileService();
-        if (!red.Load(p, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)))
+        if (!red.Load(p, macros ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)))
             throw new Exception("could not load fixture .red " + p);
         return red;
     }
@@ -98,6 +99,28 @@ static class EmbedLspContextRedResolveTest
             Touch(@"common\Demo006.clw");
             string r6 = EmbedLspContext.ResolveModulePath(app, " Demo006.clw ", red);
             Ok("a module next to the .app is used first (and the name is trimmed)", SamePath(r6, beside), "got " + (r6 ?? "null"));
+
+            // An .app whose own project folder has its own .red is resolved through THAT .red, not the
+            // solution's (Active). Both trees hold a Demo007.clw; only the project's .red is right.
+            string projApp = Path.Combine(Root, "proj2", "Demo.app");
+            Directory.CreateDirectory(Path.GetDirectoryName(projApp));
+            File.WriteAllText(projApp, "");
+            string mine = Touch(@"proj2gen\Demo007.clw");
+            Touch(@"common\Demo007.clw");
+            string viaMacro = Touch(@"macrogen\Demo008.clw");
+            var solutionRed = LoadRed("solution.red", "[Common]\r\n*.clw = ..\\common\r\n",
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { { "GENROOT", Root } });
+            File.WriteAllText(Path.Combine(Root, "proj2", "proj2.red"),
+                "[Debug32]\r\nDemo008.clw = %GENROOT%\\macrogen\r\n[Common]\r\n*.clw = ..\\proj2gen\r\n");
+
+            string r7 = EmbedLspContext.ResolveModulePath(projApp, "Demo007.clw", solutionRed);
+            Ok("an .app with its own project .red resolves through it, not the solution's", SamePath(r7, mine),
+               "got " + (r7 ?? "null"));
+            Ok("...without replacing RedFileService.Active", ReferenceEquals(RedFileService.Active, solutionRed));
+            string r8 = EmbedLspContext.ResolveModulePath(projApp, "Demo008.clw", solutionRed);
+            Ok("the project .red is expanded with the solution's macros", SamePath(r8, viaMacro), "got " + (r8 ?? "null"));
+            string r9 = EmbedLspContext.ResolveModulePath(app, "Demo003.clw", solutionRed);
+            Ok("an .app folder without a .red still uses the solution's", SamePath(r9, common), "got " + (r9 ?? "null"));
 
             // Give-up paths: nowhere on disk, and no .red loaded.
             Ok("a module found nowhere returns null", EmbedLspContext.ResolveModulePath(app, "Nope.clw", red) == null);

@@ -99,36 +99,40 @@ namespace ClarionAssistant.Services
             if (string.IsNullOrEmpty(dir)) return null;
             string fileName = Path.GetFileName(module.Trim());
             string candidate = Path.Combine(dir, fileName);
-            if (!File.Exists(candidate))
+            if (File.Exists(candidate)) return candidate;
+
+            // The generated module is NOT necessarily next to the .app. A redirection entry
+            // (e.g. "*.clw = Z:\ClwAux\Caj11clw") sends generated sources to another tree
+            // entirely, and then this probe always misses and every embed falls back to the
+            // synthetic LSP name - diagnostics and navigation run against a file that does not
+            // exist, and RevertShadow has nothing to restore. Live symptom: the log line
+            // "generated module not on disk" followed by lspRevertShadow(ctx=False).
+            // Ask the .red, anchored at the .app directory, exactly as the MCP file tools do.
+            //
+            // Search the build sections too, not just [Common] (ResolveFrom's default): a .red that
+            // redirects generated sources under [Debug32]/[Release32] only was still missed. Same
+            // order ClarionAppDataReader uses to find the PROGRAM module (RedFileService.BuildSectionOrder).
+            //
+            // And ask the .red that governs THIS .app: RedFileService.Active is the solution's, and an .app
+            // whose own project folder carries its own .red is built through that one instead.
+            //
+            // No File.Exists re-probes below: ResolveFrom only returns a path it has just found on disk,
+            // and the .app-dir candidate already failed above. This runs on the UI thread, and every probe
+            // of an unreachable UNC path can stall it.
+            try
             {
-                // The generated module is NOT necessarily next to the .app. A redirection entry
-                // (e.g. "*.clw = Z:\ClwAux\Caj11clw") sends generated sources to another tree
-                // entirely, and then this probe always misses and every embed falls back to the
-                // synthetic LSP name - diagnostics and navigation run against a file that does not
-                // exist, and RevertShadow has nothing to restore. Live symptom: the log line
-                // "generated module not on disk" followed by lspRevertShadow(ctx=False).
-                // Ask the .red, anchored at the .app directory, exactly as the MCP file tools do.
-                //
-                // Search the build sections too, not just [Common] (ResolveFrom's default): a .red that
-                // redirects generated sources under [Debug32]/[Release32] only was still missed. Same
-                // order ClarionAppDataReader uses to find the PROGRAM module (RedFileService.BuildSectionOrder).
-                try
-                {
-                    string viaRed = red?.ResolveForBuild(fileName, dir);
-                    if (!string.IsNullOrEmpty(viaRed) && File.Exists(viaRed)) candidate = viaRed;
-                }
-                catch (Exception rex)
-                {
-                    System.Diagnostics.Debug.WriteLine("[EmbedLspContext] redirection lookup failed: " + rex.Message);
-                }
+                var governing = RedFileService.ForProjectDirectory(dir, red);
+                string viaRed = governing?.ResolveForBuild(fileName, dir);
+                if (!string.IsNullOrEmpty(viaRed)) return viaRed;
             }
-            if (!File.Exists(candidate))
+            catch (Exception rex)
             {
-                System.Diagnostics.Debug.WriteLine(
-                    "[EmbedLspContext] generated module not on disk: '" + candidate + "' — keeping synthetic LSP name.");
-                return null;
+                System.Diagnostics.Debug.WriteLine("[EmbedLspContext] redirection lookup failed: " + rex.Message);
             }
-            return candidate;
+
+            System.Diagnostics.Debug.WriteLine(
+                "[EmbedLspContext] generated module not on disk: '" + candidate + "' — keeping synthetic LSP name.");
+            return null;
         }
 
         /// <summary>The LSP-facing copy of a Monaco buffer: the MEMBER header + the buffer. The embed

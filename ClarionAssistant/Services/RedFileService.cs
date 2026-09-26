@@ -56,6 +56,12 @@ namespace ClarionAssistant.Services
         /// A redirection for generated sources often lives ONLY under a build-specific section, so a
         /// Common-only lookup (the <see cref="ResolveFrom"/> default) misses it. Single source of truth:
         /// pass this rather than spelling the list out at each call site.
+        ///
+        /// The order is FIXED, not the build's active configuration: nothing in this codebase reads which
+        /// configuration (Debug/Release) is current. It is the order ClarionAppDataReader has always used,
+        /// so a .red that maps *.clw differently under [Debug32] and [Release32] resolves the [Debug32] one.
+        ///
+        /// Shared array: DO NOT MUTATE it — every caller passes this same instance.
         /// </summary>
         public static readonly string[] BuildSectionOrder = { "Debug32", "Release32", "Debug", "Release", "Common" };
 
@@ -80,6 +86,11 @@ namespace ClarionAssistant.Services
         /// Load and parse a .red file using macros from the version config.
         /// </summary>
         public bool Load(string redFilePath, Dictionary<string, string> macros)
+        {
+            return Load(redFilePath, macros, makeActive: true);
+        }
+
+        private bool Load(string redFilePath, Dictionary<string, string> macros, bool makeActive)
         {
             if (string.IsNullOrEmpty(redFilePath) || !File.Exists(redFilePath))
                 return false;
@@ -107,7 +118,7 @@ namespace ClarionAssistant.Services
             try
             {
                 Parse(EncodingHelper.ReadAllLines(redFilePath, out _));
-                Active = this;
+                if (makeActive) Active = this;
                 return true;
             }
             catch
@@ -175,6 +186,39 @@ namespace ClarionAssistant.Services
                 return Load(config.RedFilePath, macros);
 
             return false;
+        }
+
+        /// <summary>
+        /// The redirection file that governs a project living in <paramref name="projectDirectory"/>: the
+        /// directory's own .red when it has one (a local .red completely supersedes the solution/version one,
+        /// the same rule as <see cref="LoadForProject"/>), otherwise <paramref name="fallback"/> — normally
+        /// <see cref="Active"/>, which is loaded for the SOLUTION's directory. Without this, an .app in its own
+        /// project folder with its own .red resolves through another project's redirection.
+        /// The local file is parsed with the fallback's macros (%ROOT%, %BIN%, ...) and is NOT made
+        /// <see cref="Active"/>. Returns <paramref name="fallback"/> when the local .red is the file it already
+        /// holds, or when the local one can't be read.
+        /// </summary>
+        public static RedFileService ForProjectDirectory(string projectDirectory, RedFileService fallback)
+        {
+            if (string.IsNullOrEmpty(projectDirectory)) return fallback;
+            string localRed = FindLocalRedFile(projectDirectory);
+            if (localRed == null) return fallback;
+            if (fallback != null && !string.IsNullOrEmpty(fallback.RedFilePath))
+            {
+                try
+                {
+                    if (string.Equals(Path.GetFullPath(localRed), Path.GetFullPath(fallback.RedFilePath),
+                                      StringComparison.OrdinalIgnoreCase))
+                        return fallback;
+                }
+                catch { }
+            }
+
+            var macros = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (fallback != null)
+                foreach (var kv in fallback.Macros) macros[kv.Key] = kv.Value;
+            var local = new RedFileService();
+            return local.Load(localRed, macros, makeActive: false) ? local : fallback;
         }
 
         /// <summary>
