@@ -100,6 +100,16 @@ static class UiTimeoutTest
 
         Ok("TryCommit outside a dispatched call is allowed", McpCallContext.TryCommit(), null);
 
+        // ---- the cancelled message is tool-accurate ----
+        string mSave = McpDispatcher.BuildTimeoutMessage("save_and_close_embeditor", 180, McpCallToken.Running);
+        Ok("cancelled save_and_close_embeditor: nothing saved, edits remain unsaved, no rollback claimed",
+            mSave.Contains("nothing was saved") && mSave.Contains("remain UNSAVED") && !mSave.Contains("rolled back"), mSave);
+        string mApply = McpDispatcher.BuildTimeoutMessage("apply_embed_edits", 180, McpCallToken.Running);
+        Ok("cancelled apply_embed_edits: rolled back", mApply.Contains("rolled back"), mApply);
+        string mOther = McpDispatcher.BuildTimeoutMessage("open_procedure_embed", 180, McpCallToken.Running);
+        Ok("cancelled other tool: may stand, no rollback claimed",
+            mOther.Contains("may stand") && !mOther.Contains("rolled back"), mOther);
+
         var dDefault = new McpDispatcher(reg, new ThreadUiDispatcher(), null, "test", "1");
         string rFast = Call(dDefault, "fast_tool");
         Ok("no setting reader: a fast tool still completes (default path)", rFast.Contains("done:fast_tool"), rFast);

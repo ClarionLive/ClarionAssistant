@@ -321,8 +321,9 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// The timeout error, truthful about what the abandoned call may still do. <paramref name="found"/>
         /// is the state McpCallToken.Abandon saw: NotStarted = it never ran and never will; Running = it
-        /// was cancelled, and a tool that honours the token (apply_embed_edits, save_and_close_embeditor)
-        /// rolls back instead of saving, but work other tools already did in the IDE cannot be interrupted;
+        /// was cancelled - tool-specific, because the tools that honour the token react differently:
+        /// apply_embed_edits rolls its writes back, save_and_close_embeditor skips the save and leaves the
+        /// edits unsaved in the open embeditor, and work other tools already did cannot be interrupted;
         /// Committed = it was already saving and may still complete.
         /// </summary>
         public static string BuildTimeoutMessage(string toolName, int timeoutSeconds, int found)
@@ -334,9 +335,15 @@ namespace ClarionAssistant.Services
                 what = "The UI thread was busy and never started the call; it was cancelled and will not run. ";
             else if (found == McpCallToken.Committed)
                 what = "The call was already SAVING when the wait ended, so it may still complete. ";
+            else if (string.Equals(toolName, "apply_embed_edits", StringComparison.OrdinalIgnoreCase))
+                what = "The call was cancelled: the embed edits it had not saved yet are rolled back instead of "
+                    + "saved (the result says so if the rollback itself fails). ";
+            else if (string.Equals(toolName, "save_and_close_embeditor", StringComparison.OrdinalIgnoreCase))
+                what = "The call was cancelled before saving: nothing was saved, and the edits remain UNSAVED in the "
+                    + "open embeditor. ";
             else
-                what = "The call was cancelled: embeditor edits it had not saved yet are rolled back instead of "
-                    + "saved, but other work it had already done in the IDE may stand. ";
+                what = "The call was cancelled, but work it had already done in the IDE may stand (it cannot be "
+                    + "interrupted part-way). ";
             return head + what
                 + "Re-read with get_embeditor_source (or check the IDE) before retrying - line numbers may have "
                 + "moved. If the IDE was working rather than wedged, set '" + McpUiTimeoutPolicy.SettingKey
