@@ -123,14 +123,20 @@ static class CompletionMergeDuplicates
             Check(csl != null && csl.Detail == "Long, virtual",
                 "the surviving _ColorFromCSL lost its detail: '" + (csl == null ? "(missing)" : csl.Detail) + "'");
 
-            // 2. No label appears twice anywhere in the merged list.
-            var dups = items.GroupBy(it => it.Label ?? "", StringComparer.OrdinalIgnoreCase)
+            // 2. No row appears twice anywhere in the merged list (same label AND same detail).
+            var dups = items.GroupBy(it => (it.Label ?? "") + " | " + (it.Detail ?? ""), StringComparer.OrdinalIgnoreCase)
                             .Where(g => g.Count() > 1).Select(g => g.Key + " x" + g.Count()).ToList();
-            Check(dups.Count == 0, "duplicate labels in the merged list: " + string.Join(", ", dups));
+            Check(dups.Count == 0, "duplicate rows in the merged list: " + string.Join(", ", dups));
 
             // 3. OVERLOADS are not duplicates: same insertText, different signatures - both stay.
             Check(countLabel("Trace(<string errMsg>)") == 1 && countLabel("Trace(Queue pQueue)") == 1,
                 "an overload of Trace was dropped - overloads are distinct items, not duplicates");
+
+            // 3b. ...including when the server labels overloads BARE and puts the signature only in the
+            // detail: two "Append" rows with different details are two overloads, not one repeat.
+            var appends = items.Where(it => it.Label == "Append").Select(it => it.Detail ?? "").ToList();
+            Check(appends.Count == 2 && appends.Contains("(STRING pStr)") && appends.Contains("(StringTheory pStr)"),
+                "bare-label overloads of Append collapsed: [" + string.Join("; ", appends) + "] - expected both signatures");
 
             // 4. The CodeGraph merge adds nothing the server already listed, by its bare name either.
             foreach (var bare in new[] { "_ColorToHex", "_ColorFromCSL", "Trace", "_DataEnd" })

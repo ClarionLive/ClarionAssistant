@@ -637,27 +637,36 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>GH #187: drop repeats from the language server's own completion list, in place. Two
-        /// items are the same row when kind, label and inserted text all match (case-insensitive, like
-        /// every other completion dedup here). Detail is deliberately NOT part of the key: the reporter's
-        /// doubled rows were indistinguishable in the list, and a declaration/implementation pair of one
-        /// method can differ only by the attribute detail. Overloads keep distinct labels
-        /// ("Trace(Queue pQueue)" vs "Trace(&lt;string errMsg&gt;)") and so are never collapsed. The first
-        /// copy stays, taking a later copy's detail/documentation when it has none. Never throws.</summary>
+        /// items are candidates when kind, label and inserted text all match (case-insensitive, like
+        /// every other completion dedup here); a later candidate is dropped only when its detail is empty,
+        /// equals a kept copy's detail, or the kept copy has none (it then inherits this one's detail/
+        /// documentation). A declaration/implementation pair that differs only by a MISSING detail still
+        /// collapses, while overloads survive whether the server puts the signature in the label
+        /// ("Trace(Queue pQueue)" vs "Trace(&lt;string errMsg&gt;)") or only in the detail (two bare
+        /// "Trace" rows with different details). Never throws.</summary>
         private static void RemoveDuplicateServerItems(List<LspClient.CompletionItemInfo> items)
         {
             if (items == null || items.Count < 2) return;
             try
             {
-                var kept = new Dictionary<string, LspClient.CompletionItemInfo>(StringComparer.OrdinalIgnoreCase);
+                var kept = new Dictionary<string, List<LspClient.CompletionItemInfo>>(StringComparer.OrdinalIgnoreCase);
                 items.RemoveAll(it =>
                 {
                     if (it == null) return false;
                     string key = it.Kind + "\u0001" + (it.Label ?? "") + "\u0001" + (it.InsertText ?? it.Label ?? "");
-                    LspClient.CompletionItemInfo first;
-                    if (!kept.TryGetValue(key, out first)) { kept[key] = it; return false; }
-                    if (string.IsNullOrEmpty(first.Detail)) first.Detail = it.Detail;
-                    if (string.IsNullOrEmpty(first.Documentation)) first.Documentation = it.Documentation;
-                    return true;
+                    List<LspClient.CompletionItemInfo> same;
+                    if (!kept.TryGetValue(key, out same)) { kept[key] = new List<LspClient.CompletionItemInfo> { it }; return false; }
+                    foreach (var k in same)
+                    {
+                        bool dup = string.IsNullOrEmpty(it.Detail) || string.IsNullOrEmpty(k.Detail) ||
+                                   string.Equals(k.Detail, it.Detail, StringComparison.OrdinalIgnoreCase);
+                        if (!dup) continue;
+                        if (string.IsNullOrEmpty(k.Detail)) k.Detail = it.Detail;
+                        if (string.IsNullOrEmpty(k.Documentation)) k.Documentation = it.Documentation;
+                        return true;
+                    }
+                    same.Add(it);   // same label, different detail: a distinct row (e.g. a bare-label overload)
+                    return false;
                 });
             }
             catch (Exception ex) { LspTrace.Write("[SharedLspBridge] completion dedupe failed: " + ex.Message); }

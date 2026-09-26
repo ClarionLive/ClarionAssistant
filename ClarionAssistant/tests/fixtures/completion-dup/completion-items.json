@@ -5,5 +5,7 @@
   { "label": "_ColorFromCSL(string pColor)", "kind": 2, "insertText": "_ColorFromCSL", "detail": "Long, virtual" },
   { "label": "_DataEnd LONG", "kind": 5, "insertText": "_DataEnd", "detail": "LONG" },
   { "label": "Trace(<string errMsg>)", "kind": 2, "insertText": "Trace", "detail": "virtual" },
-  { "label": "Trace(Queue pQueue)", "kind": 2, "insertText": "Trace", "detail": "virtual" }
+  { "label": "Trace(Queue pQueue)", "kind": 2, "insertText": "Trace", "detail": "virtual" },
+  { "label": "Append", "kind": 2, "insertText": "Append", "detail": "(STRING pStr)" },
+  { "label": "Append", "kind": 2, "insertText": "Append", "detail": "(StringTheory pStr)" }
 ]
