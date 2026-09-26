@@ -134,7 +134,14 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             if ($h.RepoRefs) { $refArgs += @($h.RepoRefs | ForEach-Object { "/r:" + (Join-Path $RepoDir $_) }) }
             $platArgs = @(if ($h.Platform) { "/platform:" + $h.Platform })
             # Copy: runtime files the harness exe must find next to itself (native interop, vendored refs).
-            if ($h.Copy) { $h.Copy | ForEach-Object { Copy-Item (Join-Path $RepoDir $_) $OutDir -Force } }
+            if ($h.Copy) {
+                try { $h.Copy | ForEach-Object { Copy-Item (Join-Path $RepoDir $_) $OutDir -Force -ErrorAction Stop } }
+                catch {
+                    Write-Host "  COPY FAILED: $($_.Exception.Message)" -ForegroundColor Red
+                    $failures += $h.Name + " (copy failed)"
+                    continue
+                }
+            }
             & $csc /nologo /warn:0 /out:$exe $platArgs $refArgs $srcs 2>&1 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "  COMPILE FAILED" -ForegroundColor Red

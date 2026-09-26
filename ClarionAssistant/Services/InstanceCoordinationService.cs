@@ -22,15 +22,44 @@ namespace ClarionAssistant.Services
         private const int StaleSeconds = 30;
         private const int HeartbeatIntervalMs = 10000; // 10 seconds
 
+        // How long a peer whose heartbeat is still CURRENT must stay continuously not-responding before
+        // this instance deletes its row. The trade-off: too short and a healthy IDE vanishes from every
+        // peer during a code generation, a build or a big dictionary load (its UI thread is blocked well
+        // past Process.Responding's 5s, while its threadpool heartbeat keeps the row fresh) — and
+        // CheckProcedureConflict goes blind to it exactly while it is working. Too long and a real zombie
+        // (GH #179: hung inside a native modal, heart-beating forever) squats that much longer. Two
+        // minutes outlasts ordinary generations and builds; a zombie is there for hours, so a couple of
+        // minutes is nothing next to "until reboot". A busy IDE that runs past it is swept and puts
+        // itself back on the first heartbeat after its UI frees up.
+        private const int HungPeerGraceSeconds = 120;
+
+        // Wall-clock budget for the Responding checks in one sweep. Each check can wait ~5s on a hung
+        // peer; with several peers in a row the heartbeat itself stalled. Peers past the budget are
+        // checked on the next beat (the sweep resumes where it stopped, so none is starved).
+        private const int SweepBudgetMs = 3000;
+
         // Set by Stop() so a heartbeat already in flight neither re-arms the timer nor re-inserts the
-        // row Deregister() just removed.
+        // row Deregister() just removed. Written and re-checked under _registrationLock.
         private volatile bool _stopping;
+        private readonly object _registrationLock = new object();
+
+        // Fresh-row peers seen not responding: pid -> (their row's started_at, first time seen hung).
+        // Per sweeping instance, in memory; touched only by the (non-overlapping) sweep.
+        private readonly Dictionary<int, KeyValuePair<string, DateTime>> _hungSince = new Dictionary<int, KeyValuePair<string, DateTime>>();
+        private int _sweepCursor;
+
+        internal enum PeerState { Gone, Responding, NotResponding }
 
         // Test seams (tests\InstanceCoordination.ReRegister.Test.cs). Production uses the defaults.
         /// <summary>Is THIS process's UI alive? Gates re-registering a row a peer's sweep deleted.</summary>
         internal Func<bool> SelfResponsive = CurrentProcessResponding;
-        /// <summary>The per-peer liveness check the sweep uses (existence AND a responding UI).</summary>
-        internal Func<int, bool> PeerAliveAndResponding = IsAliveAndResponding;
+        /// <summary>The per-peer liveness check the sweep uses.</summary>
+        internal Func<int, PeerState> PeerCheck = CheckPeer;
+        /// <summary>Runs in Heartbeat after the re-register decision, before taking the registration lock.</summary>
+        internal Action BeforeReRegister = null;   // explicit: only the harness sets it (CS0649)
+        internal Func<DateTime> UtcNow = () => DateTime.UtcNow;
+        internal TimeSpan HungPeerGrace = TimeSpan.FromSeconds(HungPeerGraceSeconds);
+        internal TimeSpan SweepBudget = TimeSpan.FromMilliseconds(SweepBudgetMs);
         internal int HeartbeatInterval = HeartbeatIntervalMs;
 
         // Current state — updated by the host before each heartbeat
@@ -110,7 +139,8 @@ namespace ClarionAssistant.Services
         public void Start()
         {
             _stopping = false;
-            CleanupStale();
+            // No CleanupStale() here: Start() runs on the IDE's UI thread (AssistantChatControl), and the
+            // sweep's Process.Responding checks can wait ~5s per hung peer. The first timer beat sweeps.
             Register();
 
             // AutoReset=false, re-armed at the END of each beat: beats never overlap. The sweep calls
@@ -142,14 +172,20 @@ namespace ClarionAssistant.Services
         /// </summary>
         public void Stop()
         {
-            _stopping = true;
-            if (_heartbeatTimer != null)
+            // Under the lock, so a heartbeat that already decided to re-register either finishes its
+            // INSERT before this DELETE, or sees _stopping and skips it — never inserts after it.
+            lock (_registrationLock)
             {
-                _heartbeatTimer.Stop();
-                _heartbeatTimer.Dispose();
-                _heartbeatTimer = null;
+                _stopping = true;
+                Deregister();
             }
-            Deregister();
+            var t = _heartbeatTimer;
+            _heartbeatTimer = null;
+            if (t != null)
+            {
+                t.Stop();
+                t.Dispose();
+            }
         }
 
         private void Register()
@@ -174,11 +210,7 @@ namespace ClarionAssistant.Services
             try
             {
                 using (var conn = OpenConnection())
-                using (var cmd = new SQLiteCommand("DELETE FROM instances WHERE pid = @pid", conn))
-                {
-                    cmd.Parameters.AddWithValue("@pid", _pid);
-                    cmd.ExecuteNonQuery();
-                }
+                    DeleteInstance(conn, _pid);
             }
             catch { /* best-effort on shutdown */ }
         }
@@ -220,10 +252,19 @@ namespace ClarionAssistant.Services
                 // beat after its UI frees up, a hung one stays deleted.
                 if (rows == 0 && !_stopping)
                 {
+                    // SelfResponsive can wait ~5s, so it runs OUTSIDE the lock (Stop() on the UI thread
+                    // must not wait on it); _stopping is re-checked inside.
                     if (SelfResponsive())
                     {
-                        Debug.WriteLine("[InstanceCoord] heartbeat found no row for pid " + _pid + " — re-registering");
-                        Register();
+                        BeforeReRegister?.Invoke();
+                        lock (_registrationLock)
+                        {
+                            if (!_stopping)
+                            {
+                                Debug.WriteLine("[InstanceCoord] heartbeat found no row for pid " + _pid + " — re-registering");
+                                Register();
+                            }
+                        }
                     }
                     else
                     {
@@ -239,49 +280,62 @@ namespace ClarionAssistant.Services
             }
         }
 
-        private void CleanupStale()
+        private sealed class SweepRow
+        {
+            public int Pid;
+            public string HeartbeatAt;
+            public string StartedAt;
+            public bool Stale;
+        }
+
+        internal void CleanupStale()
         {
             try
             {
                 using (var conn = OpenConnection())
                 {
-                    // PASS 1 — timestamp-stale rows (no heartbeat in StaleSeconds). Existence alone is enough
-                    // here: a heartbeat that stopped this long ago means the owner either exited or is hung
-                    // badly enough that its own 10s timer no longer fires.
-                    var stalePids = new List<int>();
-                    using (var cmd = new SQLiteCommand(
-                        "SELECT pid FROM instances WHERE heartbeat_at < datetime('now', '-' || @sec || ' seconds')", conn))
-                    {
-                        cmd.Parameters.AddWithValue("@sec", StaleSeconds);
-                        using (var reader = cmd.ExecuteReader())
-                            while (reader.Read())
-                                stalePids.Add(reader.GetInt32(0));
-                    }
-
-                    foreach (int pid in stalePids)
-                        if (!PeerAliveAndResponding(pid)) DeleteInstance(conn, pid);
-
-                    // PASS 2 — GH #179 (2026-08-29 report): the heartbeat is a System.Timers.Timer, so it
-                    // fires on a threadpool thread and is completely unaffected by a blocked UI thread. A
-                    // Clarion.exe hung inside a native modal therefore KEEPS heart-beating: its row never
-                    // goes stale by timestamp, ever — it squats as a permanently
-                    // "live" peer, and every subsequent CheckProcedureConflict/GetPeers call from ANY instance
-                    // collides with a zombie that will never release anything, until the process is killed
-                    // (the user needed a full reboot). Sweep the fresh rows too: Process.Responding is cheap
-                    // for a genuinely responsive window and bounded even for a hung one (SendMessageTimeout).
-                    var freshPids = new List<int>();
-                    using (var cmd = new SQLiteCommand(
-                        "SELECT pid FROM instances WHERE pid != @pid AND heartbeat_at >= datetime('now', '-' || @sec || ' seconds')", conn))
+                    // Every peer row (never our own — we are plainly running this code), with what we saw of
+                    // it, so each DELETE below can be conditional on the row still being the one we judged.
+                    var rows = new List<SweepRow>();
+                    using (var cmd = new SQLiteCommand(@"
+                        SELECT pid, heartbeat_at, started_at,
+                               heartbeat_at < datetime('now', '-' || @sec || ' seconds')
+                        FROM instances WHERE pid != @pid ORDER BY pid", conn))
                     {
                         cmd.Parameters.AddWithValue("@pid", _pid);
                         cmd.Parameters.AddWithValue("@sec", StaleSeconds);
                         using (var reader = cmd.ExecuteReader())
                             while (reader.Read())
-                                freshPids.Add(reader.GetInt32(0));
+                                rows.Add(new SweepRow
+                                {
+                                    Pid = reader.GetInt32(0),
+                                    HeartbeatAt = reader.IsDBNull(1) ? null : reader.GetString(1),
+                                    StartedAt = reader.IsDBNull(2) ? null : reader.GetString(2),
+                                    Stale = !reader.IsDBNull(3) && reader.GetInt64(3) != 0
+                                });
                     }
 
-                    foreach (int pid in freshPids)
-                        if (!PeerAliveAndResponding(pid)) DeleteInstance(conn, pid);
+                    // Forget hung-tracking for peers whose row is gone (deleted, or they exited cleanly).
+                    var present = new HashSet<int>();
+                    foreach (var r in rows) present.Add(r.Pid);
+                    foreach (int pid in new List<int>(_hungSince.Keys))
+                        if (!present.Contains(pid)) _hungSince.Remove(pid);
+
+                    if (rows.Count == 0) { _sweepCursor = 0; return; }
+
+                    // Bounded: stop once SweepBudget is spent and resume from that peer next beat, so a
+                    // run of slow Responding checks can neither stall this beat nor starve a later peer.
+                    var budget = Stopwatch.StartNew();
+                    int start = _sweepCursor % rows.Count;
+                    int next = start;
+                    for (int i = 0; i < rows.Count; i++)
+                    {
+                        int idx = (start + i) % rows.Count;
+                        if (i > 0 && budget.Elapsed >= SweepBudget) { next = idx; break; }
+                        SweepOne(conn, rows[idx]);
+                        next = (idx + 1) % rows.Count;
+                    }
+                    _sweepCursor = next;
                 }
             }
             catch (Exception ex)
@@ -290,16 +344,106 @@ namespace ClarionAssistant.Services
             }
         }
 
-        /// <summary>True only when a process with this PID exists AND its UI is answering — existence alone
-        /// (the old check) is also true for a hung-but-not-exited zombie.</summary>
-        private static bool IsAliveAndResponding(int pid)
+        private void SweepOne(SQLiteConnection conn, SweepRow row)
         {
-            try
+            PeerState state = PeerCheck(row.Pid);
+
+            if (row.Stale)
+            {
+                // PASS 1 — timestamp-stale rows (no heartbeat in StaleSeconds): the owner exited, or is
+                // hung badly enough that even its threadpool timer stopped. Delete unless it answers —
+                // and only if its heartbeat has not moved since we looked (it may have recovered while
+                // we waited on Responding) and the pid was not reused by a newly registered process.
+                _hungSince.Remove(row.Pid);
+                if (state != PeerState.Responding)
+                    DeleteIfUnchanged(conn, row, requireSameHeartbeat: true);
+                return;
+            }
+
+            // PASS 2 — GH #179 (2026-08-29 report): the heartbeat is a System.Timers.Timer, so it fires
+            // on a threadpool thread and is completely unaffected by a blocked UI thread. A Clarion.exe
+            // hung inside a native modal therefore KEEPS heart-beating: its row never goes stale by
+            // timestamp, ever — it squats as a permanently "live" peer that every CheckProcedureConflict/
+            // GetPeers call collides with, until the process is killed (the user needed a reboot).
+            // But a single not-responding answer is also what a BUSY IDE gives mid-build, so a fresh row
+            // is deleted only after its owner stays not-responding for HungPeerGrace (see the constant).
+            switch (state)
+            {
+                case PeerState.Responding:
+                    _hungSince.Remove(row.Pid);
+                    break;
+
+                case PeerState.Gone:
+                    _hungSince.Remove(row.Pid);
+                    DeleteIfUnchanged(conn, row, requireSameHeartbeat: false);
+                    break;
+
+                case PeerState.NotResponding:
+                    DateTime now = UtcNow();
+                    KeyValuePair<string, DateTime> seen;
+                    if (!_hungSince.TryGetValue(row.Pid, out seen) || seen.Key != row.StartedAt)
+                    {
+                        // First sighting — or the pid now belongs to a different registration.
+                        _hungSince[row.Pid] = new KeyValuePair<string, DateTime>(row.StartedAt, now);
+                    }
+                    else if (now - seen.Value >= HungPeerGrace)
+                    {
+                        // Its heartbeat keeps moving (that is the zombie's signature), so match on the
+                        // registration (started_at), not on heartbeat_at.
+                        if (DeleteIfUnchanged(conn, row, requireSameHeartbeat: false))
+                        {
+                            Debug.WriteLine("[InstanceCoord] swept pid " + row.Pid + ": not responding for " +
+                                            (int)(now - seen.Value).TotalSeconds + "s");
+                            _hungSince.Remove(row.Pid);
+                        }
+                    }
+                    break;
+            }
+        }
+
+        /// <summary>Delete the peer's row only if it is still the registration we judged: same started_at
+        /// (a reused pid that registered anew is left alone) and, for a stale row, a heartbeat no newer than
+        /// the one we saw (a peer that recovered meanwhile is left alone).</summary>
+        private static bool DeleteIfUnchanged(SQLiteConnection conn, SweepRow row, bool requireSameHeartbeat)
+        {
+            string sql = "DELETE FROM instances WHERE pid = @pid AND started_at IS @started";
+            if (requireSameHeartbeat) sql += " AND heartbeat_at <= @observed";
+            using (var cmd = new SQLiteCommand(sql, conn))
+            {
+                cmd.Parameters.AddWithValue("@pid", row.Pid);
+                cmd.Parameters.AddWithValue("@started", (object)row.StartedAt ?? DBNull.Value);
+                if (requireSameHeartbeat)
+                    cmd.Parameters.AddWithValue("@observed", (object)row.HeartbeatAt ?? DBNull.Value);
+                return cmd.ExecuteNonQuery() > 0;
+            }
+        }
+
+        private static PeerState CheckPeer(int pid)
+        {
+            return ClassifyPeer(() =>
             {
                 using (var p = Process.GetProcessById(pid))
                     return p.Responding;
+            });
+        }
+
+        /// <summary>
+        /// Existence AND a responding UI — existence alone (the pre-#208 check) is also true for a
+        /// hung-but-not-exited zombie. No such process (GetProcessById's ArgumentException) or one that
+        /// exited mid-check (InvalidOperationException) is Gone. Anything else that stops us asking — access
+        /// denied on an elevated peer, UIPI (Win32Exception), or an error we did not foresee — is treated
+        /// as ALIVE: not being allowed to look is no evidence of a hang, and deleting a live peer's row
+        /// blinds conflict detection to it.
+        /// </summary>
+        internal static PeerState ClassifyPeer(Func<bool> responding)
+        {
+            try
+            {
+                return responding() ? PeerState.Responding : PeerState.NotResponding;
             }
-            catch { return false; }
+            catch (ArgumentException) { return PeerState.Gone; }
+            catch (InvalidOperationException) { return PeerState.Gone; }
+            catch (Exception) { return PeerState.Responding; }
         }
 
         /// <summary>
