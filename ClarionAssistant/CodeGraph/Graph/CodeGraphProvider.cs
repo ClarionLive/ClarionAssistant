@@ -273,28 +273,126 @@ namespace ClarionCodeGraph.Graph
                 var sym = FindSymbolByName(symbolName);
                 if (sym == null) return refs;
 
-                refs.Add(new ReferenceLocation
-                {
-                    FilePath = sym.FilePath,
-                    LineNumber = sym.LineNumber,
-                    IsDefinition = true
-                });
+                // EVERY same-named declaration of the same kind, not just the first row (77aceec5).
+                // FindSymbolByName's unordered LIMIT 1 typically lands on the MAP PROTOTYPE, and
+                // prototypes carry no call edges by design - the edges sit on the implementation
+                // row - so the old code reported the prototype line and no callers at all. The
+                // union covers prototype + implementation (and per-app template copies). Same Type
+                // keeps an unrelated local variable of the same name out.
+                var decls = FindAllSymbolsByName(symbolName, 200).FindAll(
+                    s => string.Equals(s.Type, sym.Type, StringComparison.OrdinalIgnoreCase));
+                if (decls.Count == 0) decls.Add(sym);
 
-                foreach (var caller in GetCallers(sym.Id))
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var lineCache = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+                var caseCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var d in decls)
+                    AddReference(refs, seen, lineCache, caseCache, d.FilePath, d.LineNumber, symbolName, true);
+
+                foreach (var d in decls)
                 {
-                    if (!string.IsNullOrEmpty(caller.CallFile) && caller.CallLine > 0)
+                    foreach (var caller in GetCallers(d.Id))
                     {
-                        refs.Add(new ReferenceLocation
-                        {
-                            FilePath = caller.CallFile,
-                            LineNumber = caller.CallLine,
-                            IsDefinition = false
-                        });
+                        if (!string.IsNullOrEmpty(caller.CallFile) && caller.CallLine > 0)
+                            AddReference(refs, seen, lineCache, caseCache, caller.CallFile, caller.CallLine, symbolName, false);
                     }
                 }
             }
             catch { }
             return refs;
+        }
+
+        private static void AddReference(List<ReferenceLocation> refs, HashSet<string> seen,
+            Dictionary<string, string[]> lineCache, Dictionary<string, string> caseCache,
+            string filePath, int line1Based, string name, bool isDefinition)
+        {
+            if (string.IsNullOrEmpty(filePath)) return;
+            if (!seen.Add(filePath + "|" + line1Based)) return;
+
+            string onDisk;
+            if (!caseCache.TryGetValue(filePath, out onDisk))
+            {
+                onDisk = OnDiskPath(filePath);
+                caseCache[filePath] = onDisk;
+            }
+
+            int col = -1;
+            string[] lines;
+            if (!lineCache.TryGetValue(filePath, out lines))
+            {
+                try { lines = File.Exists(filePath) ? File.ReadAllLines(filePath) : null; }
+                catch { lines = null; }
+                lineCache[filePath] = lines;
+            }
+            if (lines != null && line1Based >= 1 && line1Based <= lines.Length)
+                col = FindNameColumn(lines[line1Based - 1], name);
+
+            refs.Add(new ReferenceLocation
+            {
+                FilePath = onDisk,
+                LineNumber = line1Based,
+                IsDefinition = isDefinition,
+                Character = col < 0 ? 0 : col,
+                Length = col < 0 ? 0 : name.Length
+            });
+        }
+
+        /// <summary>
+        /// 0-based column of <paramref name="name"/> as a whole word in <paramref name="text"/>
+        /// (case-insensitive, Clarion identifier chars incl. ':' - labels carry colons), or -1.
+        /// Lets a reference cover the symbol's real width instead of a zero-width range at column 0.
+        /// </summary>
+        internal static int FindNameColumn(string text, string name)
+        {
+            if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(name)) return -1;
+            int from = 0;
+            while (from <= text.Length - name.Length)
+            {
+                int i = text.IndexOf(name, from, StringComparison.OrdinalIgnoreCase);
+                if (i < 0) return -1;
+                bool startOk = i == 0 || !IsIdentChar(text[i - 1]);
+                int end = i + name.Length;
+                bool endOk = end >= text.Length || !IsIdentChar(text[end]);
+                if (startOk && endOk)
+                {
+                    // Skip a match inside a trailing '!' comment when the line has one before it.
+                    int bang = text.IndexOf('!');
+                    if (bang < 0 || bang > i) return i;
+                }
+                from = i + 1;
+            }
+            return -1;
+        }
+
+        private static bool IsIdentChar(char c)
+        {
+            return char.IsLetterOrDigit(c) || c == '_' || c == ':';
+        }
+
+        /// <summary>
+        /// The path as the file system spells it. The index stores file_path lowercased, and a
+        /// reference returned as '...\source\x.clw' for '...\Source\X.clw' reads as a different file
+        /// to any case-sensitive consumer. Walks each segment once; returns the input unchanged if the
+        /// file is missing or anything fails.
+        /// </summary>
+        internal static string OnDiskPath(string path)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(path) || !File.Exists(path)) return path;
+                string full = Path.GetFullPath(path);
+                string root = Path.GetPathRoot(full);
+                if (string.IsNullOrEmpty(root)) return path;
+                string cur = root.ToUpperInvariant();
+                foreach (string seg in full.Substring(root.Length).Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var matches = new DirectoryInfo(cur).GetFileSystemInfos(seg);
+                    cur = Path.Combine(cur, matches.Length == 1 ? matches[0].Name : seg);
+                }
+                return cur;
+            }
+            catch { return path; }
         }
 
         /// <summary>
@@ -413,6 +511,10 @@ namespace ClarionCodeGraph.Graph
         public string FilePath;
         public int LineNumber;
         public bool IsDefinition;
+        /// <summary>0-based start column of the name on the line; 0 when it could not be found.</summary>
+        public int Character;
+        /// <summary>Width of the name; 0 when the column could not be found (zero-width range).</summary>
+        public int Length;
     }
 
     public class DefinitionLocation

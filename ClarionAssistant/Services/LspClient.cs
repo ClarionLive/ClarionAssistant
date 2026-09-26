@@ -461,6 +461,11 @@ namespace ClarionAssistant.Services
         public Dictionary<string, object> GetReferences(string filePath, int line, int character)
         {
             TrackRequest("references", filePath);
+            // Open the document first, as definition/hover/implementation do (SendTextDocumentPositionRequest).
+            // Without it the server answers null for any file it has not opened, and the caller then fell
+            // back to CodeGraph and reported a wrong answer as the result (77aceec5): measured, the same
+            // server returns the MAP line, the implementation and the call site once the file is open.
+            EnsureDocumentOpen(filePath);
             var parms = BuildTextDocumentPosition(filePath, line, character);
             parms["context"] = new Dictionary<string, object> { { "includeDeclaration", true } };
             return SendRequest("textDocument/references", parms);

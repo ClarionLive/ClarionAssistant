@@ -1999,7 +1999,22 @@ namespace ClarionAssistant.Services
                     var refs = p.GetReferences(word);
                     if (refs == null || refs.Count == 0) return null;
                     var list = new System.Collections.ArrayList();
-                    foreach (var r in refs) list.Add(CgLocation(r.FilePath, r.LineNumber));
+                    // The symbol's real width where the provider found it on the line (77aceec5);
+                    // CgLocation's zero-width column-0 range otherwise.
+                    foreach (var r in refs)
+                    {
+                        var loc = CgLocation(r.FilePath, r.LineNumber);
+                        if (r.Length > 0)
+                        {
+                            int l = r.LineNumber > 0 ? r.LineNumber - 1 : 0;
+                            loc["range"] = new Dictionary<string, object>
+                            {
+                                { "start", new Dictionary<string, object> { { "line", l }, { "character", r.Character } } },
+                                { "end",   new Dictionary<string, object> { { "line", l }, { "character", r.Character + r.Length } } }
+                            };
+                        }
+                        list.Add(loc);
+                    }
                     return WrapResult(list);
                 }
             }
