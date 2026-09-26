@@ -124,6 +124,14 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\EmbedLspContext.RedResolve.Test.cs", "tests\EmbedLspContext.RedResolve.Stubs.cs",
                            "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll") }
+            # PR #208: a hung instance stays swept, a busy one re-registers, beats never overlap.
+            # The vendored SQLite is x86-only (SQLite.Interop.dll), hence Platform and the copies.
+            @{ Name = "InstanceCoordination.ReRegister.Test"
+               Sources = @("tests\InstanceCoordination.ReRegister.Test.cs", "Services\InstanceCoordinationService.cs")
+               Refs = @("System.dll", "System.Data.dll")
+               RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
+               Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
+               Platform = "x86" }
             # Per-embed-slot structure balance (Passes 2 & 3), LSP pass stubbed. Reuses the
             # StructureScan stubs so the REAL ClarionAppDataReader supplies the routine set.
             @{ Name = "ModernEmbeditorDiagnostics.SlotBalance"
@@ -151,8 +159,20 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                 continue
             }
 
-            $refArgs = $h.Refs | ForEach-Object { "/r:$_" }
-            & $csc /nologo /warn:0 /out:$exe $refArgs $srcs 2>&1 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+            $refArgs = @($h.Refs | ForEach-Object { "/r:$_" })
+            # RepoRefs: assemblies vendored in the repo (paths relative to ClarionAssistant\).
+            if ($h.RepoRefs) { $refArgs += @($h.RepoRefs | ForEach-Object { "/r:" + (Join-Path $RepoDir $_) }) }
+            $platArgs = @(if ($h.Platform) { "/platform:" + $h.Platform })
+            # Copy: runtime files the harness exe must find next to itself (native interop, vendored refs).
+            if ($h.Copy) {
+                try { $h.Copy | ForEach-Object { Copy-Item (Join-Path $RepoDir $_) $OutDir -Force -ErrorAction Stop } }
+                catch {
+                    Write-Host "  COPY FAILED: $($_.Exception.Message)" -ForegroundColor Red
+                    $failures += $h.Name + " (copy failed)"
+                    continue
+                }
+            }
+            & $csc /nologo /warn:0 /out:$exe $platArgs $refArgs $srcs 2>&1 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "  COMPILE FAILED" -ForegroundColor Red
                 $failures += $h.Name + " (compile failed)"
