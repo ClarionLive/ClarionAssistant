@@ -106,11 +106,14 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// Appends a CRLF and then <paramref name="text"/> to the existing file at
-        /// <paramref name="path"/>. For Clarion source the text is CRLF-normalized and encoded in the
-        /// file's own encoding — appending UTF-8 onto an ANSI file leaves one file in two encodings,
-        /// which no single decode can read (GH #203). The existing bytes, BOM included, are never
-        /// rewritten. Any other file keeps the prior behavior.
+        /// Appends <paramref name="text"/> to the end of the existing file at <paramref name="path"/>,
+        /// on a new line: a CRLF goes in first ONLY when the file is non-empty and does not already end
+        /// in a line break (GH #232 — an unconditional CRLF put a blank line after every file that
+        /// ends in one, which is most of them). An empty file, or one holding nothing but a BOM, gets
+        /// no leading break. For Clarion source the text is CRLF-normalized and encoded in the file's
+        /// own encoding — appending UTF-8 onto an ANSI file leaves one file in two encodings, which no
+        /// single decode can read (GH #203). The existing bytes, BOM included, are never rewritten.
+        /// Any other file has its text appended verbatim (UTF-8, no BOM), as before.
         /// </summary>
         /// <exception cref="ClarionEncodingException">
         /// The text holds a character the file's code page cannot represent. Nothing is written.
@@ -119,12 +122,13 @@ namespace ClarionAssistant.Services
         {
             if (!IsClarionSource(path))
             {
-                File.AppendAllText(path, "\r\n" + text);
+                // File.AppendAllText writes UTF-8, so the break test looks for UTF-8 (= ASCII) bytes.
+                File.AppendAllText(path, (NeedsLeadingBreak(path, EncodingHelper.Utf8NoBom) ? "\r\n" : "") + text);
                 return;
             }
 
             Encoding enc = ResolveEncoding(path);
-            byte[] eol = enc.GetBytes("\r\n");
+            byte[] eol = NeedsLeadingBreak(path, enc) ? enc.GetBytes("\r\n") : new byte[0];
             byte[] body = Encode(Normalize(text), enc, path);
 
             using (var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read))
@@ -132,6 +136,59 @@ namespace ClarionAssistant.Services
                 fs.Write(eol, 0, eol.Length);
                 fs.Write(body, 0, body.Length);
             }
+        }
+
+        /// <summary>
+        /// True when text appended to <paramref name="path"/> must be preceded by a line break: the
+        /// file has content (a BOM alone is not content) and its last character is not a line break
+        /// (LF, or a lone CR, as <paramref name="enc"/> encodes it). Reads only the file's head and tail.
+        /// </summary>
+        private static bool NeedsLeadingBreak(string path, Encoding enc)
+        {
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                long len = fs.Length;
+                if (len == 0) return false;
+
+                byte[] head = new byte[(int)Math.Min(4, len)];
+                ReadFully(fs, head);
+                long contentLen = len - BomLength(head);
+                if (contentLen <= 0) return false;
+
+                foreach (string brk in new[] { "\n", "\r" })
+                {
+                    byte[] want = enc.GetBytes(brk);
+                    if (want.Length == 0 || contentLen < want.Length) continue;
+                    byte[] tail = new byte[want.Length];
+                    fs.Seek(len - want.Length, SeekOrigin.Begin);
+                    ReadFully(fs, tail);
+                    bool same = true;
+                    for (int i = 0; i < want.Length; i++) if (tail[i] != want[i]) { same = false; break; }
+                    if (same) return false;
+                }
+                return true;
+            }
+        }
+
+        private static void ReadFully(Stream s, byte[] buf)
+        {
+            int got = 0;
+            while (got < buf.Length)
+            {
+                int n = s.Read(buf, got, buf.Length - got);
+                if (n <= 0) break;
+                got += n;
+            }
+        }
+
+        // Length of the byte-order mark at the start of a file (UTF-8, UTF-32 LE/BE, UTF-16 LE/BE), 0 if none.
+        private static int BomLength(byte[] h)
+        {
+            if (h.Length >= 3 && h[0] == 0xEF && h[1] == 0xBB && h[2] == 0xBF) return 3;
+            if (h.Length >= 4 && h[0] == 0xFF && h[1] == 0xFE && h[2] == 0 && h[3] == 0) return 4;
+            if (h.Length >= 4 && h[0] == 0 && h[1] == 0 && h[2] == 0xFE && h[3] == 0xFF) return 4;
+            if (h.Length >= 2 && ((h[0] == 0xFF && h[1] == 0xFE) || (h[0] == 0xFE && h[1] == 0xFF))) return 2;
+            return 0;
         }
 
         /// <summary>
