@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
+using System.Text.RegularExpressions;
 using System.Xml;
 
 namespace ClarionAssistant.Services
@@ -76,7 +78,8 @@ namespace ClarionAssistant.Services
         /// old first-match returned whichever came first in the XML — on the reporter's machine the
         /// .NET compiler, not the IDE. Candidates are now narrowed by what the running process can
         /// prove about itself, and first-match survives only as the tie-break:
-        ///   1. IsWindowsVersion=True — Clarion.exe is the Win32 IDE; a Clarion.NET entry never is.
+        ///   1. Drop IsWindowsVersion=False — Clarion.exe is the Win32 IDE; a Clarion.NET entry never
+        ///      is. An entry that omits the flag stays a candidate.
         ///   2. The exe's build number (FileVersion's last part, e.g. 13372) as a whole number in the
         ///      entry name — how Clarion names the entries it creates ("Clarion 11.0.13372").
         /// Each step narrows only when it leaves at least one candidate, so an XML without those
@@ -98,13 +101,15 @@ namespace ClarionAssistant.Services
             }
             if (candidates.Count <= 1) return candidates.Count == 1 ? candidates[0] : null;
 
-            candidates = Narrow(candidates, v => v.IsWindowsVersion == true);
+            // Drop only PROVEN .NET entries: an older XML can mark the .NET entry False and omit
+            // the flag on the Win32 one, and "== true" would then keep nothing and fall to first-match.
+            candidates = Narrow(candidates, v => v.IsWindowsVersion != false);
 
             int build = ClarionExeVersion != null ? ClarionExeVersion.Revision : -1;
             if (build > 0)
             {
-                var token = new System.Text.RegularExpressions.Regex(
-                    "(?<![0-9])" + build.ToString(System.Globalization.CultureInfo.InvariantCulture) + "(?![0-9])");
+                var token = new Regex(
+                    "(?<![0-9])" + build.ToString(CultureInfo.InvariantCulture) + "(?![0-9])");
                 candidates = Narrow(candidates, v => v.Name != null && token.IsMatch(v.Name));
             }
 

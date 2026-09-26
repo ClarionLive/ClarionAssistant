@@ -91,6 +91,14 @@ static class ClarionVersionServiceExeMatchTest
         Expect("nothing discriminates -> first match, as before",
                "Clarion 11.0.13401", info.GetCurrentConfig() != null ? info.GetCurrentConfig().Name : "(null)");
 
+        // An older XML: the .NET entry says IsWindowsVersion=False but the Win32 entry omits the flag.
+        // Only a PROVEN .NET entry may be dropped; "unknown" must stay a candidate.
+        var older = new ClarionVersionInfo { ClarionExePath = @"C:\C11\bin\Clarion.exe", ClarionExeVersion = null };
+        older.Versions.Add(new ClarionVersionConfig { Name = "Clarion.NET 4.0.13372", BinPath = @"C:\C11\bin", IsWindowsVersion = false });
+        older.Versions.Add(new ClarionVersionConfig { Name = "Clarion 11.0.13372", BinPath = @"C:\C11\bin", IsWindowsVersion = null });
+        Expect("flag missing on the Win32 entry, False on .NET, exe version unreadable -> the Win32 entry",
+               "Clarion 11.0.13372", older.GetCurrentConfig() != null ? older.GetCurrentConfig().Name : "(null)");
+
         Console.WriteLine(fail == 0 ? "PASSED - " + pass + " assertions" : "FAILED - " + fail + " of " + (pass + fail) + " assertions");
         return fail == 0 ? 0 : 1;
     }

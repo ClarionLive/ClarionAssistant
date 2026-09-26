@@ -128,6 +128,7 @@ namespace ClarionAssistant.Services
             }
 
             Encoding enc = ResolveEncoding(path);
+            // Check-then-append is not atomic (another writer could append in between); accepted for a local tool.
             byte[] eol = NeedsLeadingBreak(path, enc) ? enc.GetBytes("\r\n") : new byte[0];
             byte[] body = Encode(Normalize(text), enc, path);
 
@@ -141,7 +142,8 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// True when text appended to <paramref name="path"/> must be preceded by a line break: the
         /// file has content (a BOM alone is not content) and its last character is not a line break
-        /// (LF, or a lone CR, as <paramref name="enc"/> encodes it). Reads only the file's head and tail.
+        /// (LF, or a lone CR, as <paramref name="enc"/> encodes it). This helper reads only the file's head and tail
+        /// (AppendFile as a whole still reads the file once, in ResolveEncoding).
         /// </summary>
         private static bool NeedsLeadingBreak(string path, Encoding enc)
         {
