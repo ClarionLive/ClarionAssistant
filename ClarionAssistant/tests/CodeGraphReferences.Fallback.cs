@@ -1,18 +1,20 @@
 // Harness for CodeGraphProvider.GetReferences - the CodeGraph FALLBACK behind lsp_references
-// (ticket 77aceec5 item 5). Built and run by CodeGraphReferences.FallbackTest.ps1, which supplies the
-// vendored x86 System.Data.SQLite.
+// (ticket 77aceec5 item 5, and pipeline run 1 B1). Built and run by CodeGraphReferences.FallbackTest.ps1,
+// which supplies the vendored x86 System.Data.SQLite.
 //
-// The database is SYNTHETIC and shaped like a real index of a Clarion app, because the three defects
-// are properties of that shape:
+// The database is SYNTHETIC and shaped like a real index of a multi-app Clarion solution, because the
+// defects are properties of that shape:
 //   * a procedure has TWO rows - the MAP prototype (inserted first, so an unordered LIMIT 1 finds it)
 //     and the implementation - and the call edges sit on the IMPLEMENTATION row only;
+//   * the SAME procedure name exists in TWO projects (template copies per app), each with its own
+//     callers - a request from app A must see A's, never B's (B1);
+//   * the SAME local name exists in TWO procedures - a request inside ProcOne must see ProcOne's local
+//     only (B1; a real db had 3,278 rows for one such name);
 //   * file_path is stored LOWERCASED, while the files on disk are MixedCase\Source\...;
 //   * nothing records a column, so the old fallback emitted a zero-width range at column 0.
-// A same-named row of a different TYPE (a variable) is the negative control for the union: pulling in
-// every same-named row would satisfy the caller check while reporting unrelated symbols.
 //
-// Character/Length are read by REFLECTION so this compiles against the pre-fix provider too, where
-// those fields do not exist - that is a red result there, not a build break.
+// The position-aware overload and Character/Length are reached by REFLECTION so this compiles against
+// older providers too; a missing member is a red result there, not a build break.
 using System;
 using System.Collections.Generic;
 using System.Data.SQLite;
@@ -36,16 +38,36 @@ static class CodeGraphReferencesFallback
         using (var cmd = new SQLiteCommand(sql, c)) cmd.ExecuteNonQuery();
     }
 
+    static long Sym(SQLiteConnection c, string name, string type, string file, int line, int project, string scope, string declKind, string parent)
+    {
+        Exec(c, "INSERT INTO symbols (name,type,file_path,line_number,project_id,scope,decl_kind,parent_name) VALUES ('"
+            + name + "','" + type + "','" + file.ToLowerInvariant() + "'," + line + "," + project + ",'" + scope + "',"
+            + (declKind == null ? "NULL" : "'" + declKind + "'") + "," + (parent == null ? "NULL" : "'" + parent + "'") + ")");
+        using (var cmd = new SQLiteCommand("SELECT last_insert_rowid()", c)) return (long)cmd.ExecuteScalar();
+    }
+
+    static List<ReferenceLocation> Refs(CodeGraphProvider p, string name, string file, int line1)
+    {
+        MethodInfo m = typeof(CodeGraphProvider).GetMethod("GetReferences", new[] { typeof(string), typeof(string), typeof(int) });
+        if (m == null) return p.GetReferences(name);   // pre-B1 provider: no position awareness
+        return (List<ReferenceLocation>)m.Invoke(p, new object[] { name, file, line1 });
+    }
+
     static int Main()
     {
         string root = Path.Combine(Path.GetTempPath(), "ca-cgref-" + Guid.NewGuid().ToString("N").Substring(0, 8));
-        string src = Path.Combine(root, "MixedCase", "Source");
-        Directory.CreateDirectory(src);
-        string mainClw = Path.Combine(src, "Main.clw");
-        string implClw = Path.Combine(src, "Impl.clw");
+        string srcA = Path.Combine(root, "MixedCase", "Source");
+        string srcB = Path.Combine(root, "OtherApp");
+        Directory.CreateDirectory(srcA);
+        Directory.CreateDirectory(srcB);
+        string mainA = Path.Combine(srcA, "Main.clw");
+        string implA = Path.Combine(srcA, "Impl.clw");
+        string mainB = Path.Combine(srcB, "Main.clw");
+        string implB = Path.Combine(srcB, "Impl.clw");
 
-        // 1-based lines: MAP entry on 4, call on 7; implementation on 3.
-        File.WriteAllLines(mainClw, new[] {
+        // App A. 1-based lines: MAP entry 4, Main 6, call 7; SecondProc impl 3; ProcOne 10 (local 12);
+        // ProcTwo 20 (local 22).
+        string[] mainText = {
             "  PROGRAM",
             "",
             "  MAP",
@@ -53,17 +75,27 @@ static class CodeGraphReferencesFallback
             "  END",
             "  CODE",
             "  SecondProc(1)          ! call site",
-            "  RETURN" });
-        File.WriteAllLines(implClw, new[] {
-            "  MEMBER('Main.clw')",
-            "",
-            "SecondProc PROCEDURE(LONG pX)",
-            "  CODE",
-            "  RETURN" });
+            "  RETURN" };
+        File.WriteAllLines(mainA, mainText);
+        var impl = new string[25];
+        for (int i = 0; i < impl.Length; i++) impl[i] = "";
+        impl[0]  = "  MEMBER('Main.clw')";
+        impl[2]  = "SecondProc PROCEDURE(LONG pX)";
+        impl[3]  = "  CODE";
+        impl[9]  = "ProcOne PROCEDURE";
+        impl[11] = "LocalRequest         LONG";
+        impl[12] = "  CODE";
+        impl[13] = "  LocalRequest = 1";
+        impl[19] = "ProcTwo PROCEDURE";
+        impl[21] = "LocalRequest         LONG";
+        impl[22] = "  CODE";
+        impl[23] = "  LocalRequest = 2";
+        File.WriteAllLines(implA, impl);
+        // App B: the same shapes, its own copy.
+        File.WriteAllLines(mainB, mainText);
+        File.WriteAllLines(implB, new[] { "  MEMBER('Main.clw')", "", "SecondProc PROCEDURE(LONG pX)", "  CODE", "  RETURN" });
 
         string db = Path.Combine(root, "t.codegraph.db");
-        string lowerMain = mainClw.ToLowerInvariant();
-        string lowerImpl = implClw.ToLowerInvariant();
         try
         {
             using (var c = new SQLiteConnection("Data Source=" + db + ";Version=3;"))
@@ -78,50 +110,86 @@ static class CodeGraphReferencesFallback
                       + "parent_name TEXT, member_of TEXT, scope TEXT, source_preview TEXT, decl_kind TEXT)");
                 Exec(c, "CREATE TABLE relationships (id INTEGER PRIMARY KEY AUTOINCREMENT, from_id INTEGER, to_id INTEGER, "
                       + "type TEXT NOT NULL, file_path TEXT, line_number INTEGER, ambiguous INTEGER NOT NULL DEFAULT 0)");
-                Exec(c, "INSERT INTO projects (name) VALUES ('Main')");
-                // id 1: the MAP prototype - FIRST, so FindSymbolByName's LIMIT 1 lands on it.
-                Exec(c, "INSERT INTO symbols (name,type,file_path,line_number,project_id,scope,decl_kind) VALUES "
-                      + "('SecondProc','procedure','" + lowerMain + "',4,1,'global','prototype')");
-                // id 2: the implementation - the row the call edge points at.
-                Exec(c, "INSERT INTO symbols (name,type,file_path,line_number,project_id,scope,decl_kind) VALUES "
-                      + "('SecondProc','procedure','" + lowerImpl + "',3,1,'module','implementation')");
-                // id 3: the caller.
-                Exec(c, "INSERT INTO symbols (name,type,file_path,line_number,project_id,scope,decl_kind) VALUES "
-                      + "('Main','procedure','" + lowerMain + "',6,1,'global','implementation')");
-                // id 4: NEGATIVE CONTROL - same name, different kind.
-                Exec(c, "INSERT INTO symbols (name,type,file_path,line_number,project_id,scope) VALUES "
-                      + "('SecondProc','variable','" + lowerImpl + "',1,1,'local')");
-                Exec(c, "INSERT INTO relationships (from_id,to_id,type,file_path,line_number) VALUES "
-                      + "(3,2,'calls','" + lowerMain + "',7)");
+                Exec(c, "INSERT INTO projects (name) VALUES ('AppA')");
+                Exec(c, "INSERT INTO projects (name) VALUES ('AppB')");
+
+                // App A - the MAP prototype FIRST, so FindSymbolByName's LIMIT 1 lands on it.
+                Sym(c, "SecondProc", "procedure", mainA, 4, 1, "global", "prototype", null);
+                long implAId = Sym(c, "SecondProc", "procedure", implA, 3, 1, "module", "implementation", null);
+                long mainAId = Sym(c, "Main", "procedure", mainA, 6, 1, "global", "implementation", null);
+                Sym(c, "ProcOne", "procedure", implA, 10, 1, "module", "implementation", null);
+                Sym(c, "LocalRequest", "variable", implA, 12, 1, "local", null, "ProcOne");
+                Sym(c, "ProcTwo", "procedure", implA, 20, 1, "module", "implementation", null);
+                Sym(c, "LocalRequest", "variable", implA, 22, 1, "local", null, "ProcTwo");
+                // Same name, other KIND, in A: must not ride along with the procedure.
+                Sym(c, "SecondProc", "variable", implA, 1, 1, "local", null, "SomethingElse");
+                Exec(c, "INSERT INTO relationships (from_id,to_id,type,file_path,line_number) VALUES ("
+                      + mainAId + "," + implAId + ",'calls','" + mainA.ToLowerInvariant() + "',7)");
+
+                // App B - its own copy of everything, its own caller.
+                Sym(c, "SecondProc", "procedure", mainB, 4, 2, "global", "prototype", null);
+                long implBId = Sym(c, "SecondProc", "procedure", implB, 3, 2, "module", "implementation", null);
+                long mainBId = Sym(c, "Main", "procedure", mainB, 6, 2, "global", "implementation", null);
+                Exec(c, "INSERT INTO relationships (from_id,to_id,type,file_path,line_number) VALUES ("
+                      + mainBId + "," + implBId + ",'calls','" + mainB.ToLowerInvariant() + "',7)");
             }
 
-            List<ReferenceLocation> refs;
+            string runDir = Path.GetFileName(root);
+            // Matched by TAIL: %TEMP% can be an 8.3 short path on one side and the provider returns the
+            // on-disk long form, so a full-path compare would fail for a reason unrelated to the code.
+            Func<List<ReferenceLocation>, string, int, ReferenceLocation> find = (refs, rel, line) =>
+                refs.Find(r => r.FilePath != null && r.LineNumber == line
+                    && r.FilePath.EndsWith(runDir + "\\" + rel, StringComparison.OrdinalIgnoreCase));
+            Action<string, List<ReferenceLocation>> dump = (label, refs) =>
+            {
+                Console.WriteLine("     " + label + ":");
+                foreach (var r in refs) Console.WriteLine("       " + r.FilePath + ":" + r.LineNumber + (r.IsDefinition ? " (decl)" : ""));
+            };
+
+            List<ReferenceLocation> fromA, fromB, localOne, localTwo, noFile;
             using (var p = new CodeGraphProvider())
             {
                 Check(p.Open(db), "provider opens the synthetic db");
-                refs = p.GetReferences("SecondProc");
+                fromA    = Refs(p, "SecondProc", mainA, 7);      // at app A's call site
+                fromB    = Refs(p, "SecondProc", mainB, 7);      // at app B's call site
+                localOne = Refs(p, "LocalRequest", implA, 14);   // inside ProcOne
+                localTwo = Refs(p, "LocalRequest", implA, 24);   // inside ProcTwo
+                noFile   = Refs(p, "SecondProc", null, 0);          // position unknown
             }
             SQLiteConnection.ClearAllPools();
+            dump("SecondProc from app A", fromA);
+            dump("SecondProc from app B", fromB);
+            dump("LocalRequest in ProcOne", localOne);
+            dump("LocalRequest in ProcTwo", localTwo);
 
-            foreach (var r in refs)
-                Console.WriteLine("       ref " + r.FilePath + ":" + r.LineNumber + (r.IsDefinition ? " (decl)" : ""));
+            string A = "MixedCase\\Source\\", B = "OtherApp\\";
 
-            // Matched by TAIL: %TEMP% can be an 8.3 short path on one side and the provider returns the
-            // on-disk long form, so a full-path compare would fail for a reason unrelated to the code.
-            string runDir = Path.GetFileName(root);
-            Func<string, int, ReferenceLocation> find = (file, line) =>
-                refs.Find(r => r.FilePath != null && r.LineNumber == line
-                    && r.FilePath.EndsWith(runDir + "\\MixedCase\\Source\\" + Path.GetFileName(file), StringComparison.OrdinalIgnoreCase));
-
-            var call = find(mainClw, 7);
+            // --- the procedure, from app A: A's prototype + implementation + call, nothing of B's
+            var call = find(fromA, A + "Main.clw", 7);
             Check(call != null && !call.IsDefinition,
-                "the CALL SITE is reported (edges live on the implementation row, not the prototype FindSymbolByName picks)");
-            Check(find(mainClw, 4) != null, "the MAP prototype line is reported");
-            Check(find(implClw, 3) != null, "the implementation line is reported");
-            Check(find(implClw, 1) == null, "a same-named VARIABLE is not reported (union is limited to the same kind)");
-            Check(refs.Count == 3, "exactly three locations (got " + refs.Count + ")");
+                "A: the CALL SITE is reported (edges live on the implementation row, not the prototype)");
+            Check(find(fromA, A + "Main.clw", 4) != null, "A: the MAP prototype line is reported");
+            Check(find(fromA, A + "Impl.clw", 3) != null, "A: the implementation line is reported");
+            Check(find(fromA, A + "Impl.clw", 1) == null, "A: a same-named VARIABLE is not reported");
+            Check(!fromA.Exists(r => r.FilePath.IndexOf("\\OtherApp\\", StringComparison.OrdinalIgnoreCase) >= 0),
+                "A: nothing from app B (same procedure name, other project) - B1");
+            Check(fromA.Count == 3, "A: exactly three locations (got " + fromA.Count + ")");
 
-            // Real width, via reflection (absent fields = the pre-fix provider = red).
+            // --- the same name, from app B: B's own three
+            Check(find(fromB, B + "Main.clw", 7) != null && find(fromB, B + "Impl.clw", 3) != null
+                && fromB.Count == 3 && !fromB.Exists(r => r.FilePath.IndexOf("MixedCase", StringComparison.OrdinalIgnoreCase) >= 0),
+                "B: exactly its own prototype, implementation and call (got " + fromB.Count + ")");
+
+            // --- locals: the requester's procedure only
+            Check(localOne.Count == 1 && find(localOne, A + "Impl.clw", 12) != null,
+                "local in ProcOne resolves to ProcOne's declaration only (got " + localOne.Count + ") - B1");
+            Check(localTwo.Count == 1 && find(localTwo, A + "Impl.clw", 22) != null,
+                "local in ProcTwo resolves to ProcTwo's declaration only (got " + localTwo.Count + ") - B1");
+
+            // --- no request position: the project cannot be proven, so ONE row - never the union
+            Check(noFile.Count == 1, "no request file: a single declaration row, not a union (got " + noFile.Count + ")");
+
+            // --- real width, via reflection (absent fields = the pre-fix provider = red)
             FieldInfo fChar = typeof(ReferenceLocation).GetField("Character");
             FieldInfo fLen = typeof(ReferenceLocation).GetField("Length");
             Check(fChar != null && fLen != null, "ReferenceLocation carries Character/Length");
@@ -131,12 +199,8 @@ static class CodeGraphReferencesFallback
                 Check(ch == 2 && len == "SecondProc".Length,
                     "call-site range covers the name: character 2, length 10 (got " + ch + ", " + len + ")");
             }
-            var impl = find(implClw, 3);
-            if (fChar != null && fLen != null && impl != null)
-                Check((int)fChar.GetValue(impl) == 0 && (int)fLen.GetValue(impl) == 10,
-                    "implementation range starts at column 0 with the name's width");
 
-            // On-disk case, not the index's lowercased copy.
+            // --- on-disk case, not the index's lowercased copy
             Check(call != null && call.FilePath.Contains(Path.Combine("MixedCase", "Source", "Main.clw")),
                 "paths come back in their on-disk case (got " + (call != null ? call.FilePath : "null") + ")");
         }

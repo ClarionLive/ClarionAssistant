@@ -1996,7 +1996,9 @@ namespace ClarionAssistant.Services
                 using (var p = new CodeGraphProvider())
                 {
                     if (!p.Open(db)) return null;
-                    var refs = p.GetReferences(word);
+                    // The request position scopes the answer: the requester's own local, or its own
+                    // project's declarations - never every same-named row in the db (pipeline run 1).
+                    var refs = p.GetReferences(word, filePath, line + 1);
                     if (refs == null || refs.Count == 0) return null;
                     var list = new System.Collections.ArrayList();
                     // The symbol's real width where the provider found it on the line (77aceec5);

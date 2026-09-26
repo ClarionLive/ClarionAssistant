@@ -32,7 +32,7 @@ namespace ClarionCodeGraph.Graph
         private const string SymbolSelect =
             "SELECT s.id, s.name, s.type, s.file_path, s.line_number, " +
             "       p.name AS project_name, s.params, s.return_type, " +
-            "       s.parent_name, s.member_of, s.scope " +
+            "       s.parent_name, s.member_of, s.scope, s.project_id " +
             "FROM symbols s " +
             "LEFT JOIN projects p ON s.project_id = p.id ";
 
@@ -266,22 +266,29 @@ namespace ClarionCodeGraph.Graph
         /// </summary>
         public List<ReferenceLocation> GetReferences(string symbolName)
         {
+            return GetReferences(symbolName, null, 0);
+        }
+
+        /// <summary>
+        /// References to <paramref name="symbolName"/> AS SEEN FROM a request position.
+        ///
+        /// The name alone does not identify a symbol: a real index holds thousands of same-named
+        /// locals (FilesOpened / LocalRequest: 3,278 rows in one production db) and a template
+        /// procedure copied into every app (5,426 names with per-app duplicates). Merging them
+        /// reported unrelated definitions and cross-app callers (77aceec5, pipeline run 1). So the
+        /// declarations are chosen from the requester's position (see <see cref="SelectDeclarations"/>),
+        /// and when that cannot be proven the answer narrows to ONE row rather than widening.
+        /// </summary>
+        /// <param name="requestFile">The file the request came from, or null (then: a single row).</param>
+        /// <param name="requestLine1Based">1-based line of the request, or 0 when unknown.</param>
+        public List<ReferenceLocation> GetReferences(string symbolName, string requestFile, int requestLine1Based)
+        {
             var refs = new List<ReferenceLocation>();
             if (_connection == null) return refs;
             try
             {
-                var sym = FindSymbolByName(symbolName);
-                if (sym == null) return refs;
-
-                // EVERY same-named declaration of the same kind, not just the first row (77aceec5).
-                // FindSymbolByName's unordered LIMIT 1 typically lands on the MAP PROTOTYPE, and
-                // prototypes carry no call edges by design - the edges sit on the implementation
-                // row - so the old code reported the prototype line and no callers at all. The
-                // union covers prototype + implementation (and per-app template copies). Same Type
-                // keeps an unrelated local variable of the same name out.
-                var decls = FindAllSymbolsByName(symbolName, 200).FindAll(
-                    s => string.Equals(s.Type, sym.Type, StringComparison.OrdinalIgnoreCase));
-                if (decls.Count == 0) decls.Add(sym);
+                var decls = SelectDeclarations(symbolName, requestFile, requestLine1Based);
+                if (decls.Count == 0) return refs;
 
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var lineCache = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
@@ -301,6 +308,141 @@ namespace ClarionCodeGraph.Graph
             }
             catch { }
             return refs;
+        }
+
+        private static bool IsLocalScope(CodeGraphSymbol s)
+        {
+            string sc = (s.Scope ?? "").ToLowerInvariant();
+            return sc == "local" || sc == "parameter";
+        }
+
+        private static string NormPath(string p)
+        {
+            if (string.IsNullOrEmpty(p)) return null;
+            try { p = Path.GetFullPath(p); } catch { }
+            return p.Replace('/', '\\').ToLowerInvariant();
+        }
+
+        /// <summary>
+        /// The declaration rows a reference request means, chosen from where it was made:
+        ///   1. a LOCAL/PARAMETER declared in the requester's own routine or procedure (same
+        ///      file_path AND parent_name) - and only that one;
+        ///   2. otherwise the non-local rows of the requester's PROJECT with the same type as the
+        ///      one visible from the requesting file - the MAP prototype + implementation pair of THAT
+        ///      app, never another app's copy;
+        ///   3. if the project cannot be proven (no request file, or the file maps to zero or several
+        ///      projects): ONE row, deterministically - the one in the requesting file, else the first
+        ///      by scope/file/line. Narrow, never a broad union.
+        /// Locals of OTHER procedures are never candidates.
+        /// </summary>
+        internal List<CodeGraphSymbol> SelectDeclarations(string name, string requestFile, int requestLine1Based)
+        {
+            var result = new List<CodeGraphSymbol>();
+            var all = FindAllSymbolsByName(name, 100000);
+            if (all.Count == 0) return result;
+
+            string file = NormPath(requestFile);
+            var inFile = file == null ? new List<CodeGraphSymbol>()
+                : all.FindAll(s => NormPath(s.FilePath) == file);
+
+            // 1. The requester's own local.
+            if (file != null && requestLine1Based > 0)
+            {
+                foreach (string parent in EnclosingScopes(file, requestLine1Based))
+                {
+                    var mine = inFile.FindAll(s => IsLocalScope(s)
+                        && string.Equals(s.ParentName, parent, StringComparison.OrdinalIgnoreCase));
+                    if (mine.Count > 0) return mine;
+                }
+            }
+
+            var nonLocal = all.FindAll(s => !IsLocalScope(s));
+            if (nonLocal.Count == 0) return result;   // only other procedures' locals: none of ours
+
+            CodeGraphSymbol anchor = inFile.Find(s => !IsLocalScope(s)) ?? nonLocal[0];
+
+            // 2. The requester's project.
+            long project = file != null ? ProjectOfFile(file) : 0;
+            if (project > 0)
+            {
+                CodeGraphSymbol typeAnchor = inFile.Find(s => !IsLocalScope(s) && s.ProjectId == project)
+                    ?? nonLocal.Find(s => s.ProjectId == project);
+                if (typeAnchor != null)
+                {
+                    result = nonLocal.FindAll(s => s.ProjectId == project
+                        && string.Equals(s.Type, typeAnchor.Type, StringComparison.OrdinalIgnoreCase));
+                    if (result.Count > 0) return result;
+                }
+            }
+
+            // 3. Not provable: a single row.
+            result = new List<CodeGraphSymbol> { anchor };
+            return result;
+        }
+
+        /// <summary>
+        /// Names of the routine/procedure enclosing a line (innermost first): the nearest preceding
+        /// procedure/function/method/routine row in the file, plus the routine's parent procedure.
+        /// Prototype rows are skipped where the index records decl_kind.
+        /// </summary>
+        private List<string> EnclosingScopes(string normFile, int line1Based)
+        {
+            var names = new List<string>();
+            const string baseSql =
+                "SELECT name, type, parent_name FROM symbols " +
+                "WHERE LOWER(file_path) = @f AND line_number <= @l " +
+                "AND LOWER(type) IN ('procedure','function','method','routine') ";
+            foreach (string extra in new[] { "AND COALESCE(decl_kind,'') <> 'prototype' ", "" })
+            {
+                try
+                {
+                    using (var cmd = new SQLiteCommand(baseSql + extra + "ORDER BY line_number DESC LIMIT 1", _connection))
+                    {
+                        cmd.Parameters.AddWithValue("@f", normFile);
+                        cmd.Parameters.AddWithValue("@l", line1Based);
+                        using (var r = cmd.ExecuteReader())
+                        {
+                            if (r.Read())
+                            {
+                                names.Add(r.IsDBNull(0) ? "" : r.GetValue(0).ToString());
+                                string type = r.IsDBNull(1) ? "" : r.GetValue(1).ToString();
+                                if (string.Equals(type, "routine", StringComparison.OrdinalIgnoreCase) && !r.IsDBNull(2))
+                                    names.Add(r.GetValue(2).ToString());
+                            }
+                        }
+                    }
+                    return names;   // the query ran (with or without decl_kind): done
+                }
+                catch { names.Clear(); }   // no decl_kind column in an older index: retry without it
+            }
+            return names;
+        }
+
+        /// <summary>
+        /// The ONE project a file belongs to, or 0 when it is none or several (an .inc shared by apps).
+        /// From the symbols declared in it, else the indexed_files audit table where present.
+        /// </summary>
+        private long ProjectOfFile(string normFile)
+        {
+            foreach (string sql in new[] {
+                "SELECT DISTINCT project_id FROM symbols WHERE LOWER(file_path) = @f AND project_id IS NOT NULL",
+                "SELECT DISTINCT project_id FROM indexed_files WHERE LOWER(resolved_path) = @f AND project_id IS NOT NULL" })
+            {
+                try
+                {
+                    var ids = new List<long>();
+                    using (var cmd = new SQLiteCommand(sql, _connection))
+                    {
+                        cmd.Parameters.AddWithValue("@f", normFile);
+                        using (var r = cmd.ExecuteReader())
+                            while (r.Read()) ids.Add(Convert.ToInt64(r.GetValue(0)));
+                    }
+                    if (ids.Count == 1) return ids[0];
+                    if (ids.Count > 1) return 0;
+                }
+                catch { }
+            }
+            return 0;
         }
 
         private static void AddReference(List<ReferenceLocation> refs, HashSet<string> seen,
@@ -455,7 +597,8 @@ namespace ClarionCodeGraph.Graph
                 ReturnType = GetString(reader, "return_type"),
                 ParentName = GetString(reader, "parent_name"),
                 MemberOf = GetString(reader, "member_of"),
-                Scope = GetString(reader, "scope")
+                Scope = GetString(reader, "scope"),
+                ProjectId = GetLong(reader, "project_id")
             };
         }
 
@@ -493,6 +636,8 @@ namespace ClarionCodeGraph.Graph
         public string ParentName;
         public string MemberOf;
         public string Scope;
+        /// <summary>symbols.project_id (0 when null).</summary>
+        public long ProjectId;
     }
 
     public class CallerInfo
