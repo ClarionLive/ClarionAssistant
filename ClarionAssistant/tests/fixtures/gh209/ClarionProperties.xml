@@ -1,5 +1,5 @@
 <ClarionProperties>
-  <!-- GH #209 fixture: the reporter's ClarionProperties.xml (KevinErskine, attached 2026-09-24),
+  <!-- GH #209 fixture: the reporter's ClarionProperties.xml (attached to the issue),
        cut down to the two elements ClarionVersionService reads - Clarion.Versions (verbatim) and
        Clarion.Version (verbatim). Everything else (serials, name, search history) is dropped. -->
   <Properties name="Clarion.Versions">
