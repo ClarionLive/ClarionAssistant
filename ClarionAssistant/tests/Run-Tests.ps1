@@ -111,7 +111,7 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             # registry stubbed. Gets the project dir to check the real registry still declares the budgets.
             @{ Name = "McpDispatcher.UiTimeout.Test"
                Sources = @("tests\McpDispatcher.UiTimeout.Test.cs", "tests\McpDispatcher.UiTimeout.Stubs.cs",
-                           "Services\McpDispatcher.cs", "Services\McpUiTimeoutPolicy.cs",
+                           "Services\McpDispatcher.cs", "Services\McpUiTimeoutPolicy.cs", "Services\McpCallContext.cs",
                            "Services\McpJsonRpc.cs", "Services\IUiDispatcher.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
                Args = @($RepoDir) }
@@ -119,6 +119,11 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "EmbedAdoptPolicy.Test"
                Sources = @("tests\EmbedAdoptPolicy.Test.cs", "Services\EmbedAdoptPolicy.cs")
                Refs = @("System.dll") }
+            # PR #198 pipeline round: apply_embed_edits' write/commit/save half - an abandoned call rolls
+            # back instead of saving; a failed save or unconfirmed close discards our writes.
+            @{ Name = "EmbedApplyFlow.Test"
+               Sources = @("tests\EmbedApplyFlow.Test.cs", "Services\EmbedApplyFlow.cs", "Services\McpCallContext.cs")
+               Refs = @("System.dll", "System.Core.dll") }
             # Per-embed-slot structure balance (Passes 2 & 3), LSP pass stubbed. Reuses the
             # StructureScan stubs so the REAL ClarionAppDataReader supplies the routine set.
             @{ Name = "ModernEmbeditorDiagnostics.SlotBalance"

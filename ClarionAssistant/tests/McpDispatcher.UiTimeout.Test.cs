@@ -4,16 +4,17 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using ClarionAssistant.Services;
 
-// PR #198 point 1: the UI-thread tool timeout is no longer a hardcoded 30s in McpDispatcher.
+// PR #198: the UI-thread tool timeout in McpDispatcher.
 //
-//   * McpUiTimeoutPolicy.Resolve - default 30, the "Mcp.UiToolTimeoutSeconds" setting, a tool's declared
-//     minimum (the larger wins), clamped to [5, 600].
-//   * The REAL McpDispatcher.cs actually waits that long: a tool on the (fake) UI thread that outlives a
-//     configured 5s budget times out and says "5s"; the same sleep under a declared 10s budget finishes.
-//     Against the old hardcoded 30s the first case returns success instead - that is the red.
+//   * McpUiTimeoutPolicy.Resolve - default 30, the "Mcp.UiToolTimeoutSeconds" setting overrides it (5-600s),
+//     never below a tool's declared minimum.
+//   * The REAL McpDispatcher.cs waits that long: a tool on the (fake) UI thread that outlives a configured
+//     5s budget times out and says "5s"; the same sleep under a declared 10s budget finishes.
+//   * Pipeline round: a timed-out call is ABANDONED. A tool that reaches its commit point (TryCommit)
+//     afterwards is refused, so it cannot save behind the caller's back; a call the UI thread never started
+//     never runs; one already committed is reported "may still complete". Each message says which.
 //   * The real McpToolRegistry.cs still declares the embed round-trip budget on the four slow tools
 //     (source scan - the registry itself cannot compile outside the IDE).
-//
 // Run:  tests\Run-Tests.ps1   (arg 0 = the ClarionAssistant project dir)
 static class UiTimeoutTest
 {
@@ -35,8 +36,8 @@ static class UiTimeoutTest
     {
         // ---- the pure policy ----
         Ok("default is 30s", McpUiTimeoutPolicy.Resolve(null, 0) == 30, McpUiTimeoutPolicy.Resolve(null, 0).ToString());
-        Ok("setting raises the default", McpUiTimeoutPolicy.Resolve("90", 0) == 90, null);
-        Ok("setting may lower the default", McpUiTimeoutPolicy.Resolve(" 10 ", 0) == 10, null);
+        Ok("setting overrides the default upward", McpUiTimeoutPolicy.Resolve("90", 0) == 90, null);
+        Ok("setting overrides the default downward", McpUiTimeoutPolicy.Resolve(" 10 ", 0) == 10, null);
         Ok("garbage setting = default", McpUiTimeoutPolicy.Resolve("abc", 0) == 30, null);
         Ok("zero setting = default (cannot disable the guard)", McpUiTimeoutPolicy.Resolve("0", 0) == 30, null);
         Ok("negative setting = default", McpUiTimeoutPolicy.Resolve("-5", 0) == 30, null);
@@ -45,24 +46,59 @@ static class UiTimeoutTest
         Ok("declared beats a smaller setting", McpUiTimeoutPolicy.Resolve("30", 180) == 180, null);
         Ok("setting beats a smaller declared", McpUiTimeoutPolicy.Resolve("300", 180) == 300, null);
         Ok("declared clamps to 600", McpUiTimeoutPolicy.Resolve(null, 900) == 600, null);
+        Ok("setting 10 never undercuts a declared 180", McpUiTimeoutPolicy.Resolve("10", 180) == 180, null);
 
-        // ---- the real dispatcher honours it ----
+        // ---- the real dispatcher honours it, and abandons what it gives up on ----
         var reg = new McpToolRegistry();
         reg.Add("fast_tool", 100, 0);
-        reg.Add("slow_undeclared", 7000, 0);   // outlives a 5s setting
-        reg.Add("slow_declared", 7000, 10);    // same sleep, declares 10s
+        reg.Add("slow_undeclared", 7000, 0);                              // outlives a 5s setting
+        reg.Add("slow_declared", 7000, 10);                               // same sleep, declares 10s
+        reg.Add("commit_late", 7000, 0, FakeToolMode.CommitAtEnd);        // reaches its save after the timeout
+        reg.Add("commit_early", 7000, 0, FakeToolMode.CommitAtStart);     // already saving when the wait ends
+        reg.Add("never_started", 100, 0);                                 // the UI thread is busy for 7s first
         var d = new McpDispatcher(reg, new ThreadUiDispatcher(), null, "test", "1");
         d.UiTimeoutSettingReader = () => "5";
+        var dBusy = new McpDispatcher(reg, new ThreadUiDispatcher { StartDelayMs = 7000 }, null, "test", "1");
+        dBusy.UiTimeoutSettingReader = () => "5";
 
-        string rUndeclared = null, rDeclared = null;
-        var t1 = new Thread(() => rUndeclared = Call(d, "slow_undeclared"));
-        var t2 = new Thread(() => rDeclared = Call(d, "slow_declared"));
-        t1.Start(); t2.Start(); t1.Join(); t2.Join();
+        string rUndeclared = null, rDeclared = null, rLate = null, rEarly = null, rNever = null;
+        var threads = new[]
+        {
+            new Thread(() => rUndeclared = Call(d, "slow_undeclared")),
+            new Thread(() => rDeclared = Call(d, "slow_declared")),
+            new Thread(() => rLate = Call(d, "commit_late")),
+            new Thread(() => rEarly = Call(d, "commit_early")),
+            new Thread(() => rNever = Call(dBusy, "never_started")),
+        };
+        foreach (var t in threads) t.Start();
+        foreach (var t in threads) t.Join();
+        Thread.Sleep(3000);   // let the abandoned UI work (7s sleeps, 7s busy start) run to its end
 
-        Ok("configured 5s: a 7s UI tool times out", rUndeclared != null && rUndeclared.Contains("did not respond within 5s"), rUndeclared);
-        Ok("timeout names the setting to raise", rUndeclared != null && rUndeclared.Contains("Mcp.UiToolTimeoutSeconds"), rUndeclared);
+        Ok("configured 5s: a 7s UI tool times out", rUndeclared != null && rUndeclared.Contains("did not answer within 5s"), rUndeclared);
+        Ok("timeout names the setting", rUndeclared != null && rUndeclared.Contains("Mcp.UiToolTimeoutSeconds"), rUndeclared);
+        Ok("timeout says cancelled and to re-read before retrying", rUndeclared != null
+            && rUndeclared.Contains("was cancelled") && rUndeclared.Contains("get_embeditor_source"), rUndeclared);
         Ok("declared 10s: the same 7s UI tool completes", rDeclared != null && rDeclared.Contains("done:slow_declared")
-            && !rDeclared.Contains("did not respond"), rDeclared);
+            && !rDeclared.Contains("did not answer"), rDeclared);
+
+        bool lateCommit;
+        Ok("abandoned call reaching its save AFTER the timeout: TryCommit refused",
+            McpToolRegistry.CommitResults.TryGetValue("commit_late", out lateCommit) && !lateCommit,
+            McpToolRegistry.CommitResults.ContainsKey("commit_late") ? lateCommit.ToString() : "never reached");
+        Ok("  ...and the caller was told it was cancelled", rLate != null && rLate.Contains("was cancelled"), rLate);
+
+        bool earlyCommit;
+        Ok("call already committed before the timeout: TryCommit granted",
+            McpToolRegistry.CommitResults.TryGetValue("commit_early", out earlyCommit) && earlyCommit, null);
+        Ok("  ...and the caller was told it may still complete", rEarly != null && rEarly.Contains("may still complete"), rEarly);
+
+        int neverRuns;
+        Ok("UI thread busy past the timeout: caller told it never started",
+            rNever != null && rNever.Contains("never started"), rNever);
+        Ok("  ...and the tool never runs once the UI thread frees up",
+            !McpToolRegistry.Executions.TryGetValue("never_started", out neverRuns) || neverRuns == 0, neverRuns.ToString());
+
+        Ok("TryCommit outside a dispatched call is allowed", McpCallContext.TryCommit(), null);
 
         var dDefault = new McpDispatcher(reg, new ThreadUiDispatcher(), null, "test", "1");
         string rFast = Call(dDefault, "fast_tool");

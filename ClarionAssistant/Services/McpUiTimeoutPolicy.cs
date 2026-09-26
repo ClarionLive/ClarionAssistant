@@ -9,7 +9,7 @@ namespace ClarionAssistant.Services
     /// speed. On a large procedure the outer wait could therefore never let those tools finish - the call
     /// came back "UI thread did not respond within 30s" while the work was still running correctly.
     /// Such tools declare their own McpTool.UiTimeoutSeconds; everything else takes the default, which an
-    /// install can raise with the "Mcp.UiToolTimeoutSeconds" setting.
+    /// install can override with the "Mcp.UiToolTimeoutSeconds" setting (5-600s, never below a tool's declared minimum).
     ///
     /// Pure and dependency-free so tests\McpDispatcher.UiTimeout.Test.cs can pin it without an IDE.
     /// </summary>
@@ -26,8 +26,8 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// The larger of the configured setting (default 30; unparsable or non-positive = default) and the
         /// tool's declared minimum, clamped to [MinSeconds, MaxSeconds] so neither a typo nor a zero can
-        /// disable the guard. Taking the LARGER means raising the global setting still lifts the slow tools,
-        /// while a tool that needs more than the default never silently loses it.
+        /// disable the guard. Taking the LARGER means the setting overrides the default (up or down) for every tool,
+        /// but never below a tool's declared minimum.
         /// </summary>
         public static int Resolve(string configuredRaw, int declaredSeconds)
         {

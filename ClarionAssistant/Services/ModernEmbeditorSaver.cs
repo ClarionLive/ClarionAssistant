@@ -305,9 +305,10 @@ namespace ClarionAssistant.Services
         /// (native IsDirty == false) and no CA Embeditor sits over it (<see cref="EmbedAdoptPolicy"/>). Otherwise
         /// the call is refused and the editor left untouched, as is one open on a DIFFERENT procedure.
         ///
-        /// Because an adopted buffer was clean before we touched it, a failure AFTER writing discards it exactly
-        /// like one we opened ourselves (CancelEmbeditor drops only our own writes, and no half-written buffer is
-        /// left on screen to be saved by accident). A failure BEFORE writing leaves an adopted editor open.
+        /// Once an embeditor is open, the write -> commit -> save -> confirm-closed half is
+        /// <see cref="EmbedApplyFlow"/>: every exit after the first write that does not end in a confirmed save
+        /// discards the buffer (an adopted one was clean, so only our writes go), and a call McpDispatcher has
+        /// abandoned on timeout rolls back instead of saving.
         /// </summary>
         public static string ApplyLineEdits(string procName, IList<KeyValuePair<int, string>> edits, out bool ok)
         {
@@ -343,80 +344,19 @@ namespace ClarionAssistant.Services
                     return "Apply aborted: " + openErr;
             }
 
-            // Before anything is written, an editor WE opened is ours to cancel; an adopted one is left open
-            // exactly as the developer had it. Once we have written, the buffer holds only saved code plus
-            // our writes (adoption requires a clean buffer), so discarding it on failure loses nothing of
-            // theirs and leaves no half-written buffer behind.
-            Action cancelIfOurs = () =>
-            {
-                if (!adopted) { try { appTree.CancelEmbeditor(); } catch { } }
-            };
-            Action discardOurWrites = () => { try { appTree.CancelEmbeditor(); } catch { } };
-            string adoptedCleanNote = adopted
-                ? " Your open embeditor on '" + procName + "' is untouched and still open."
-                : "";
-            string adoptedDiscardNote = adopted
-                ? " The embeditor you had open on '" + procName + "' had no unsaved changes; it was closed " +
-                  "without saving - re-open it if you were still working there."
-                : "";
-            bool wrote = false;
+            return EmbedApplyFlow.Apply(new AppTreeApplyOps(appTree), procName, franges, edits, adopted,
+                McpCallContext.Current, out ok);
+        }
 
-            try
-            {
-                // Valid write targets = the slot-START lines of the mirrored structure.
-                var slotStarts = new HashSet<int>();
-                if (franges != null)
-                    foreach (var r in franges)
-                        if (r != null && r.Length >= 1) slotStarts.Add(r[0]);
-
-                // Validate ALL edits BEFORE writing anything (all-or-nothing).
-                foreach (var e in edits)
-                {
-                    if (e.Key <= 0 || !slotStarts.Contains(e.Key))
-                    {
-                        cancelIfOurs();
-                        return "Apply aborted: line " + e.Key + " is not a current embed-slot start in '" +
-                               procName + "'. Re-read with get_embeditor_source and retry. Nothing was written." +
-                               adoptedCleanNote;
-                    }
-                }
-
-                // Write changed slots bottom-to-top so earlier slots' line numbers stay valid; verbatim.
-                var errors = new List<string>();
-                foreach (var e in edits.OrderByDescending(x => x.Key))
-                {
-                    wrote = true;
-                    string res = appTree.WriteEmbedContentByLine(e.Key, e.Value ?? "", false);
-                    if (res != null && res.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
-                        errors.Add("  • slot@line " + e.Key + ": " + res);
-                }
-
-                if (errors.Count > 0)
-                {
-                    discardOurWrites(); // discard — persist nothing on partial failure
-                    return "Apply FAILED — nothing persisted:\r\n" + string.Join("\r\n", errors) + adoptedDiscardNote;
-                }
-
-                string saveRes = appTree.SaveAndCloseEmbeditor();
-                if (saveRes != null && saveRes.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
-                    return "Apply error: " + saveRes;
-
-                if (!ModernEmbeditorLauncher.WaitForEmbedClosed(appTree, 3000))
-                    return "Apply error: '" + procName + "' was written but the embeditor did not confirm closed — " +
-                           "close it in the IDE before applying again.";
-
-                ok = true;
-                return "Applied " + edits.Count + " embed edit(s) to '" + procName + "'." + (adopted
-                    ? " Adopted the embeditor you already had open on it; the save closed that tab (the IDE has " +
-                      "no save-without-close) — re-open it if you were still working there."
-                    : "");
-            }
-            catch (Exception ex)
-            {
-                if (wrote) discardOurWrites(); else cancelIfOurs();
-                return "Apply error: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message) +
-                       (wrote ? adoptedDiscardNote : adoptedCleanNote);
-            }
+        /// <summary>The live IDE behind <see cref="IEmbedApplyOps"/>. UI thread only.</summary>
+        private sealed class AppTreeApplyOps : IEmbedApplyOps
+        {
+            private readonly AppTreeService _appTree;
+            public AppTreeApplyOps(AppTreeService appTree) { _appTree = appTree; }
+            public string WriteSlot(int line, string code) { return _appTree.WriteEmbedContentByLine(line, code, false); }
+            public string SaveAndClose() { return _appTree.SaveAndCloseEmbeditor(); }
+            public bool WaitClosed(int timeoutMs) { return ModernEmbeditorLauncher.WaitForEmbedClosed(_appTree, timeoutMs); }
+            public void Discard() { try { _appTree.CancelEmbeditor(); } catch { } }
         }
 
         private static bool RangesMatch(List<int[]> a, List<int[]> b)

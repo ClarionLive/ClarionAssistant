@@ -176,6 +176,7 @@
     <Compile Include="..\Services\McpJsonRpc.cs"><Link>Services\McpJsonRpc.cs</Link></Compile>
     <Compile Include="..\Services\McpDispatcher.cs"><Link>Services\McpDispatcher.cs</Link></Compile>
     <Compile Include="..\Services\McpUiTimeoutPolicy.cs"><Link>Services\McpUiTimeoutPolicy.cs</Link></Compile>
+    <Compile Include="..\Services\McpCallContext.cs"><Link>Services\McpCallContext.cs</Link></Compile>
     <Compile Include="..\Services\McpSidecarMerge.cs"><Link>Services\McpSidecarMerge.cs</Link></Compile>
     <Compile Include="..\Services\SettingsService.cs"><Link>Services\SettingsService.cs</Link></Compile>
     <Compile Include="..\Services\ClarionGraphService.cs"><Link>Services\ClarionGraphService.cs</Link></Compile>

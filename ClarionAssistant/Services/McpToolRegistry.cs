@@ -960,7 +960,12 @@ IdeOnly = true,
                 // The native save regenerates the module; on a large procedure that outruns
                 // the 30s default — see EmbedRoundTripTimeoutSeconds.
                 UiTimeoutSeconds = EmbedRoundTripTimeoutSeconds,
-                Handler = args => _appTree.SaveAndCloseEmbeditor()
+                // Claim the save first (PR #198 review): a call McpDispatcher already abandoned on timeout
+                // must not save behind the caller's back. The buffer is left open and unchanged.
+                Handler = args => McpCallContext.TryCommit()
+                    ? _appTree.SaveAndCloseEmbeditor()
+                    : "Error: cancelled - the MCP call timed out before saving; nothing was saved and the " +
+                      "embeditor is still open. Check it in the IDE before retrying."
             });
 
             Register(new McpTool

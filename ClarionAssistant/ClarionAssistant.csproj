@@ -148,6 +148,7 @@
     <Compile Include="Services\McpJsonRpc.cs" />
     <Compile Include="Services\McpDispatcher.cs" />
     <Compile Include="Services\McpUiTimeoutPolicy.cs" />
+    <Compile Include="Services\McpCallContext.cs" />
     <Compile Include="Services\McpSidecarMerge.cs" />
     <Compile Include="Services\McpToolRegistry.cs" />
     <Compile Include="Services\ClarionClDiagnosis.cs" />
@@ -193,6 +194,7 @@
     <Compile Include="Services\ModernEmbeditorLauncher.cs" />
     <Compile Include="Services\ModernEmbeditorSaver.cs" />
     <Compile Include="Services\EmbedAdoptPolicy.cs" />
+    <Compile Include="Services\EmbedApplyFlow.cs" />
     <Compile Include="Services\ModernEmbeditorDiagnostics.cs" />
     <Compile Include="Services\ModernEmbeditorSettings.cs" />
     <Compile Include="Services\MonacoSettingsBroadcaster.cs" />

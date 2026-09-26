@@ -955,7 +955,7 @@ namespace ClarionAssistant.Services
                             RaiseToolCall,
                             "clarion-assistant",
                             "1.0.0");
-                        // PR #198: an install can raise the UI-thread tool budget (see McpUiTimeoutPolicy).
+                        // PR #198: an install can override the UI-thread tool budget (5-600s, never below a tool's declared minimum) (see McpUiTimeoutPolicy).
                         _dispatcher.UiTimeoutSettingReader = () =>
                             _settings != null ? _settings.Get(McpUiTimeoutPolicy.SettingKey) : null;
                     }
