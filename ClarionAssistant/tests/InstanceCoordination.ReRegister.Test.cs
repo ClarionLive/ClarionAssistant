@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Data.SQLite;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Threading;
 using ClarionAssistant.Services;
 using PeerState = ClarionAssistant.Services.InstanceCoordinationService.PeerState;
@@ -92,6 +93,7 @@ static class InstanceCoordinationReRegisterTest
             StartDoesNotSweep();
             StopRacingReRegister();
             HungGrace();
+            ClockJumps();
             ConditionalDeletes();
             SweepBudget();
             ClassifyPeer();
@@ -180,8 +182,7 @@ static class InstanceCoordinationReRegisterTest
     static void HungGrace()
     {
         var svc = NewService();
-        DateTime now = new DateTime(2026, 9, 26, 12, 0, 0, DateTimeKind.Utc);
-        svc.UtcNow = () => now;
+        var clock = Clocks.Attach(svc);
         const int Hung = 900010, Flaky = 900011;
         var states = new Dictionary<int, PeerState> { { Hung, PeerState.NotResponding }, { Flaky, PeerState.NotResponding } };
         svc.PeerCheck = pid => states.ContainsKey(pid) ? states[pid] : PeerState.Responding;
@@ -191,27 +192,78 @@ static class InstanceCoordinationReRegisterTest
         svc.CleanupStale();
         Ok("a busy peer (one not-responding answer, heartbeat fresh) is NOT deleted", HasRow(Hung));
 
-        now = now.AddSeconds(60);
+        clock.Advance(60);
         states[Flaky] = PeerState.Responding;       // Flaky's build finishes
         svc.CleanupStale();
         Ok("still not responding at 60s: not deleted yet", HasRow(Hung));
 
-        now = now.AddSeconds(40);
+        clock.Advance(40);
         states[Flaky] = PeerState.NotResponding;    // Flaky busy again at 100s
         svc.CleanupStale();
 
-        now = now.AddSeconds(30);                   // 130s
+        clock.Advance(30);                          // 130s
         AddPeer(Hung);                              // it keeps heart-beating: row stays fresh
         svc.CleanupStale();
         Ok("continuously not responding past the grace: deleted", !HasRow(Hung));
         Ok("a peer that responded in between restarts its grace (30s < 120s): kept", HasRow(Flaky));
 
-        now = now.AddSeconds(125);                  // Flaky: 155s since it went quiet again
+        clock.Advance(125);                         // Flaky: 155s since it went quiet again
         svc.CleanupStale();
         Ok("...and is deleted once its own grace runs out", !HasRow(Flaky));
 
         Ok("HungPeerGrace defaults to 2 minutes",
            new InstanceCoordinationService(DbPath).HungPeerGrace == TimeSpan.FromMinutes(2));
+    }
+
+    // ---- 4b ---------------------------------------------------------------------------------------
+    /// <summary>
+    /// The service's clocks, driven through whichever seams it has: MonotonicTicks (hang durations since
+    /// the run-2 fix) and UtcNow (the wall-clock seam b9f9883 measured them with). Set by reflection so this
+    /// same harness also runs against b9f9883 and shows its clock-jump defect red.
+    /// </summary>
+    sealed class Clocks
+    {
+        public DateTime Wall = new DateTime(2026, 9, 26, 12, 0, 0, DateTimeKind.Utc);
+        public long Mono = 1000000;
+        public void Advance(double seconds) { Wall = Wall.AddSeconds(seconds); Mono += (long)(seconds * Stopwatch.Frequency); }
+        public void JumpWall(double seconds) { Wall = Wall.AddSeconds(seconds); }   // a Windows time correction
+
+        public static Clocks Attach(InstanceCoordinationService svc)
+        {
+            var c = new Clocks();
+            const BindingFlags F = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var mono = typeof(InstanceCoordinationService).GetField("MonotonicTicks", F);
+            if (mono != null) mono.SetValue(svc, (Func<long>)(() => c.Mono));
+            var wall = typeof(InstanceCoordinationService).GetField("UtcNow", F);
+            if (wall != null) wall.SetValue(svc, (Func<DateTime>)(() => c.Wall));
+            return c;
+        }
+    }
+
+    static void ClockJumps()
+    {
+        const int Busy = 900015, Zombie = 900016;
+
+        var svc = NewService();
+        var clock = Clocks.Attach(svc);
+        svc.PeerCheck = pid => PeerState.NotResponding;
+        AddPeer(Busy);
+        svc.CleanupStale();                          // first sighting
+        clock.JumpWall(24 * 3600);                   // the wall clock leaps a day forward...
+        clock.Advance(10);                           // ...but only 10s really pass
+        svc.CleanupStale();
+        Ok("a forward wall-clock jump does not satisfy the grace (busy peer kept)", HasRow(Busy));
+
+        var svc2 = NewService();
+        var clock2 = Clocks.Attach(svc2);
+        svc2.PeerCheck = pid => PeerState.NotResponding;
+        AddPeer(Zombie);
+        svc2.CleanupStale();                         // first sighting
+        clock2.JumpWall(-3600);                      // the wall clock steps an hour back...
+        clock2.Advance(130);                         // ...and 130s really pass
+        AddPeer(Zombie);                             // still heart-beating
+        svc2.CleanupStale();
+        Ok("a backward wall-clock jump does not postpone the grace (zombie swept)", !HasRow(Zombie));
     }
 
     // ---- 5 ----------------------------------------------------------------------------------------
@@ -230,9 +282,8 @@ static class InstanceCoordinationReRegisterTest
         Ok("control: a stale row whose process is gone is deleted", !HasRow(Dead));
         Ok("a stale peer that heart-beats during the check is NOT deleted", HasRow(Recovers));
 
-        DateTime now = new DateTime(2026, 9, 26, 12, 0, 0, DateTimeKind.Utc);
         var svc2 = NewService();
-        svc2.UtcNow = () => now;
+        var clock2 = Clocks.Attach(svc2);
         AddPeer(Reused, startedAt: "2026-01-01 00:00:00");
         bool replaced = false;
         svc2.PeerCheck = pid =>
@@ -241,7 +292,7 @@ static class InstanceCoordinationReRegisterTest
             return PeerState.NotResponding;
         };
         svc2.CleanupStale();
-        now = now.AddSeconds(130);
+        clock2.Advance(130);
         replaced = true;
         svc2.CleanupStale();
         Ok("a pid reused by a new registration is NOT deleted on the old one's grace", HasRow(Reused));

@@ -45,7 +45,9 @@ namespace ClarionAssistant.Services
 
         // Fresh-row peers seen not responding: pid -> (their row's started_at, first time seen hung).
         // Per sweeping instance, in memory; touched only by the (non-overlapping) sweep.
-        private readonly Dictionary<int, KeyValuePair<string, DateTime>> _hungSince = new Dictionary<int, KeyValuePair<string, DateTime>>();
+        // Monotonic (Stopwatch ticks), NOT wall clock: a Windows time correction between sweeps must neither
+        // satisfy the grace at once (a forward jump evicting a busy IDE) nor postpone it indefinitely (a backward one).
+        private readonly Dictionary<int, KeyValuePair<string, long>> _hungSince = new Dictionary<int, KeyValuePair<string, long>>();
         private int _sweepCursor;
 
         internal enum PeerState { Gone, Responding, NotResponding }
@@ -57,7 +59,8 @@ namespace ClarionAssistant.Services
         internal Func<int, PeerState> PeerCheck = CheckPeer;
         /// <summary>Runs in Heartbeat after the re-register decision, before taking the registration lock.</summary>
         internal Action BeforeReRegister = null;   // explicit: only the harness sets it (CS0649)
-        internal Func<DateTime> UtcNow = () => DateTime.UtcNow;
+        /// <summary>Monotonic clock in Stopwatch ticks (Stopwatch.Frequency per second) for hang durations.</summary>
+        internal Func<long> MonotonicTicks = Stopwatch.GetTimestamp;
         internal TimeSpan HungPeerGrace = TimeSpan.FromSeconds(HungPeerGraceSeconds);
         internal TimeSpan SweepBudget = TimeSpan.FromMilliseconds(SweepBudgetMs);
         internal int HeartbeatInterval = HeartbeatIntervalMs;
@@ -379,21 +382,21 @@ namespace ClarionAssistant.Services
                     break;
 
                 case PeerState.NotResponding:
-                    DateTime now = UtcNow();
-                    KeyValuePair<string, DateTime> seen;
+                    long now = MonotonicTicks();
+                    KeyValuePair<string, long> seen;
                     if (!_hungSince.TryGetValue(row.Pid, out seen) || seen.Key != row.StartedAt)
                     {
                         // First sighting — or the pid now belongs to a different registration.
-                        _hungSince[row.Pid] = new KeyValuePair<string, DateTime>(row.StartedAt, now);
+                        _hungSince[row.Pid] = new KeyValuePair<string, long>(row.StartedAt, now);
                     }
-                    else if (now - seen.Value >= HungPeerGrace)
+                    else if (TimeSpan.FromSeconds((now - seen.Value) / (double)Stopwatch.Frequency) >= HungPeerGrace)
                     {
                         // Its heartbeat keeps moving (that is the zombie's signature), so match on the
                         // registration (started_at), not on heartbeat_at.
                         if (DeleteIfUnchanged(conn, row, requireSameHeartbeat: false))
                         {
                             Debug.WriteLine("[InstanceCoord] swept pid " + row.Pid + ": not responding for " +
-                                            (int)(now - seen.Value).TotalSeconds + "s");
+                                            (int)((now - seen.Value) / Stopwatch.Frequency) + "s");
                             _hungSince.Remove(row.Pid);
                         }
                     }
