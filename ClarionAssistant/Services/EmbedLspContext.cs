@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Reflection;
 
@@ -71,34 +71,8 @@ namespace ClarionAssistant.Services
                 string module = GetProp(pwee, "Module") as string;
                 if (string.IsNullOrEmpty(appName) || string.IsNullOrEmpty(module)) return null;
 
-                string dir = Path.GetDirectoryName(appName);
-                if (string.IsNullOrEmpty(dir)) return null;
-                string candidate = Path.Combine(dir, Path.GetFileName(module.Trim()));
-                if (!File.Exists(candidate))
-                {
-                    // The generated module is NOT necessarily next to the .app. A redirection entry
-                    // (e.g. "*.clw = Z:\ClwAux\Caj11clw") sends generated sources to another tree
-                    // entirely, and then this probe always misses and every embed falls back to the
-                    // synthetic LSP name - diagnostics and navigation run against a file that does not
-                    // exist, and RevertShadow has nothing to restore. Live symptom: the log line
-                    // "generated module not on disk" followed by lspRevertShadow(ctx=False).
-                    // Ask the .red, anchored at the .app directory, exactly as the MCP file tools do.
-                    try
-                    {
-                        string viaRed = RedFileService.Active?.ResolveFrom(Path.GetFileName(module.Trim()), dir);
-                        if (!string.IsNullOrEmpty(viaRed) && File.Exists(viaRed)) candidate = viaRed;
-                    }
-                    catch (Exception rex)
-                    {
-                        System.Diagnostics.Debug.WriteLine("[EmbedLspContext] redirection lookup failed: " + rex.Message);
-                    }
-                }
-                if (!File.Exists(candidate))
-                {
-                    System.Diagnostics.Debug.WriteLine(
-                        "[EmbedLspContext] generated module not on disk: '" + candidate + "' — keeping synthetic LSP name.");
-                    return null;
-                }
+                string candidate = ResolveModulePath(appName, module, RedFileService.Active);
+                if (candidate == null) return null;
 
                 string header = ReadMemberLine(candidate)
                     ?? "  MEMBER('" + Path.GetFileNameWithoutExtension(appName) + ".clw')";
@@ -111,6 +85,50 @@ namespace ClarionAssistant.Services
                 System.Diagnostics.Debug.WriteLine("[EmbedLspContext] TryCapture: " + ex.Message);
                 return null;
             }
+        }
+
+        /// <summary>
+        /// The generated module's full path on disk, or null when it can't be found. First the .app's own
+        /// directory, then the redirection file. Split out of <see cref="TryCapture"/> (which needs the live
+        /// embeditor) so the lookup can be exercised without the IDE — see tests\EmbedLspContext.RedResolve.Test.cs.
+        /// </summary>
+        internal static string ResolveModulePath(string appName, string module, RedFileService red)
+        {
+            if (string.IsNullOrEmpty(appName) || string.IsNullOrEmpty(module)) return null;
+            string dir = Path.GetDirectoryName(appName);
+            if (string.IsNullOrEmpty(dir)) return null;
+            string fileName = Path.GetFileName(module.Trim());
+            string candidate = Path.Combine(dir, fileName);
+            if (!File.Exists(candidate))
+            {
+                // The generated module is NOT necessarily next to the .app. A redirection entry
+                // (e.g. "*.clw = Z:\ClwAux\Caj11clw") sends generated sources to another tree
+                // entirely, and then this probe always misses and every embed falls back to the
+                // synthetic LSP name - diagnostics and navigation run against a file that does not
+                // exist, and RevertShadow has nothing to restore. Live symptom: the log line
+                // "generated module not on disk" followed by lspRevertShadow(ctx=False).
+                // Ask the .red, anchored at the .app directory, exactly as the MCP file tools do.
+                //
+                // Search the build sections too, not just [Common] (ResolveFrom's default): a .red that
+                // redirects generated sources under [Debug32]/[Release32] only was still missed. Same
+                // order ClarionAppDataReader uses to find the PROGRAM module (RedFileService.BuildSectionOrder).
+                try
+                {
+                    string viaRed = red?.ResolveForBuild(fileName, dir);
+                    if (!string.IsNullOrEmpty(viaRed) && File.Exists(viaRed)) candidate = viaRed;
+                }
+                catch (Exception rex)
+                {
+                    System.Diagnostics.Debug.WriteLine("[EmbedLspContext] redirection lookup failed: " + rex.Message);
+                }
+            }
+            if (!File.Exists(candidate))
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    "[EmbedLspContext] generated module not on disk: '" + candidate + "' — keeping synthetic LSP name.");
+                return null;
+            }
+            return candidate;
         }
 
         /// <summary>The LSP-facing copy of a Monaco buffer: the MEMBER header + the buffer. The embed

@@ -50,6 +50,15 @@ namespace ClarionAssistant.Services
         /// the host reports truncation from the out-param, so the UI hint and the flag never disagree.</summary>
         public const int MaxFiles = 20000;
 
+        /// <summary>
+        /// The section order to search when resolving a file the BUILD produces or consumes — the C12 names
+        /// (Debug32/Release32) first, then the legacy Debug/Release, then the universal Common fallback.
+        /// A redirection for generated sources often lives ONLY under a build-specific section, so a
+        /// Common-only lookup (the <see cref="ResolveFrom"/> default) misses it. Single source of truth:
+        /// pass this rather than spelling the list out at each call site.
+        /// </summary>
+        public static readonly string[] BuildSectionOrder = { "Debug32", "Release32", "Debug", "Release", "Common" };
+
         private readonly Dictionary<string, RedSection> _sections;
         private readonly Dictionary<string, string> _macros;
         private string _redFilePath;
@@ -292,6 +301,16 @@ namespace ClarionAssistant.Services
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Resolve a build-related file (e.g. a generated module .clw) through every section in
+        /// <see cref="BuildSectionOrder"/>, anchoring relative entries at <paramref name="baseDir"/>.
+        /// Returns the first existing match, or null.
+        /// </summary>
+        public string ResolveForBuild(string fileName, string baseDir)
+        {
+            return ResolveFrom(fileName, baseDir, BuildSectionOrder);
         }
 
         /// <summary>

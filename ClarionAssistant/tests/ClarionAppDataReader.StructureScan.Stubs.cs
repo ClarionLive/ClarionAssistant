@@ -22,6 +22,7 @@ namespace ClarionAssistant.Services
     public static class RedFileService
     {
         public static RedFile Active { get { return null; } }
+        public static readonly string[] BuildSectionOrder = { "Debug32", "Release32", "Debug", "Release", "Common" };
     }
 
     public static class EncodingHelper
