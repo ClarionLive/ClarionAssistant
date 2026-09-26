@@ -36,6 +36,7 @@ test.
 | `..\Terminal\test\clarion-folding.test.js` | the shared Clarion folding provider (GH #158, #133) |
 | `..\Terminal\test\clarion-formatter.test.js` | the Smart Formatter |
 | `..\Terminal\test\schema-sources-postgres.test.js` | GH #201: the Schema Sources *Index* cell showing the real error rather than the word `error` (handler extracted from the page), and the PostgreSQL procedure query excluding aggregates (`prokind <> 'a'`) but not window functions |
+| `..\Terminal\test\f12-keys.test.js` | 77aceec5: the CA Editor's F12 family (interceptor extracted from the page) - F12 goes to definition, Ctrl+F12 to implementation, and Shift+F12 no longer silently goes to definition |
 | `NpgsqlLoader.SmokeTest.cs` | GH #188: only a *missing* Npgsql.dll is reported as not found; a present-but-broken one (a garbage `Npgsql.dll` is dropped beside the exe, loaded in a fresh AppDomain) surfaces the loader's own message |
 | `McpStdio.EndToEndTest.ps1` | the standalone MCP server's stdio transport as a real process — the stdout hijack, UTF-8-no-BOM on the real handle, and clean exit on stdin EOF, none of which `--selftest-stdio` can see |
 | `McpFileTools.EncodingTest.ps1` | `write_file` / `append_to_file` keeping Clarion source in its own encoding (GH #203): cp1252 stays cp1252, UTF-8 stays UTF-8, new and all-ASCII files are ANSI, a char the code page can't hold is refused with the file untouched. Fixtures are raw bytes in BOTH encodings; exits 2 unless the system ANSI code page is 1252 |
