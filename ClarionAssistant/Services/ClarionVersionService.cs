@@ -15,6 +15,12 @@ namespace ClarionAssistant.Services
         public List<string> LibSrcPaths { get; set; }
         public Dictionary<string, string> Macros { get; set; }
 
+        /// <summary>
+        /// The entry's &lt;IsWindowsVersion&gt;: true for a Win32 Clarion, false for a Clarion.NET
+        /// (Clarion#) compiler entry, null when the XML does not say.
+        /// </summary>
+        public bool? IsWindowsVersion { get; set; }
+
         public string RedFilePath
         {
             get
@@ -29,6 +35,14 @@ namespace ClarionAssistant.Services
     public class ClarionVersionInfo
     {
         public string ClarionExePath { get; set; }
+
+        /// <summary>
+        /// The running Clarion.exe's file version (e.g. 11.0.0.13372 — the Clarion build is the last
+        /// part), or null if it could not be read. Used only to tell apart version entries that share
+        /// the running exe's bin folder.
+        /// </summary>
+        public Version ClarionExeVersion { get; set; }
+
         public string PropertiesXmlPath { get; set; }
         public string CurrentVersionName { get; set; }
         public List<ClarionVersionConfig> Versions { get; set; }
@@ -52,20 +66,55 @@ namespace ClarionAssistant.Services
                 ?? (Versions.Count > 0 ? Versions[0] : null);
         }
 
+        /// <summary>
+        /// The version entry for the running Clarion.exe, found by its bin folder.
+        ///
+        /// GH #209: several entries can share one bin folder. Every Clarion install registers its
+        /// Clarion.NET compiler on the same bin as the Win32 IDE ("Clarion.NET 4.0.13372" and
+        /// "Clarion 11.0.13372" both on C:\Clarion\v11\bin), and Clarion 11 / 11.1 installs all
+        /// share one ClarionProperties.xml, so the list can also hold other installs' entries. The
+        /// old first-match returned whichever came first in the XML — on the reporter's machine the
+        /// .NET compiler, not the IDE. Candidates are now narrowed by what the running process can
+        /// prove about itself, and first-match survives only as the tie-break:
+        ///   1. IsWindowsVersion=True — Clarion.exe is the Win32 IDE; a Clarion.NET entry never is.
+        ///   2. The exe's build number (FileVersion's last part, e.g. 13372) as a whole number in the
+        ///      entry name — how Clarion names the entries it creates ("Clarion 11.0.13372").
+        /// Each step narrows only when it leaves at least one candidate, so an XML without those
+        /// fields, or a renamed entry, degrades to the old answer rather than to none.
+        /// </summary>
         private ClarionVersionConfig ResolveByExePath()
         {
             if (string.IsNullOrEmpty(ClarionExePath)) return null;
             string exeDir = Path.GetDirectoryName(ClarionExePath);
             if (string.IsNullOrEmpty(exeDir)) return null;
+            exeDir = exeDir.TrimEnd('\\');
 
-            // Match against each version config's BinPath
+            var candidates = new List<ClarionVersionConfig>();
             foreach (var v in Versions)
             {
                 if (!string.IsNullOrEmpty(v.BinPath) &&
                     exeDir.Equals(v.BinPath.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
-                    return v;
+                    candidates.Add(v);
             }
-            return null;
+            if (candidates.Count <= 1) return candidates.Count == 1 ? candidates[0] : null;
+
+            candidates = Narrow(candidates, v => v.IsWindowsVersion == true);
+
+            int build = ClarionExeVersion != null ? ClarionExeVersion.Revision : -1;
+            if (build > 0)
+            {
+                var token = new System.Text.RegularExpressions.Regex(
+                    "(?<![0-9])" + build.ToString(System.Globalization.CultureInfo.InvariantCulture) + "(?![0-9])");
+                candidates = Narrow(candidates, v => v.Name != null && token.IsMatch(v.Name));
+            }
+
+            return candidates[0];
+        }
+
+        private static List<ClarionVersionConfig> Narrow(List<ClarionVersionConfig> list, Predicate<ClarionVersionConfig> keep)
+        {
+            var kept = list.FindAll(keep);
+            return kept.Count > 0 ? kept : list;
         }
     }
 
@@ -85,6 +134,12 @@ namespace ClarionAssistant.Services
                 if (info != null)
                 {
                     info.ClarionExePath = exePath;
+                    try
+                    {
+                        var fv = FileVersionInfo.GetVersionInfo(exePath);
+                        info.ClarionExeVersion = new Version(fv.FileMajorPart, fv.FileMinorPart, fv.FileBuildPart, fv.FilePrivatePart);
+                    }
+                    catch { }
 
                     // Try to get the LIVE current version from the running IDE
                     // (the XML may be stale until IDE closes)
@@ -193,7 +248,8 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
-        private static ClarionVersionInfo ParsePropertiesXml(string xmlPath)
+        // internal (not private) so tests\ClarionVersionService.ExeMatchTest.cs can parse a fixture.
+        internal static ClarionVersionInfo ParsePropertiesXml(string xmlPath)
         {
             try
             {
@@ -235,6 +291,12 @@ namespace ClarionAssistant.Services
                 var pathNode = node.SelectSingleNode("path");
                 if (pathNode != null && pathNode.Attributes["value"] != null)
                     config.BinPath = pathNode.Attributes["value"].Value;
+
+                var winNode = node.SelectSingleNode("IsWindowsVersion");
+                bool isWin;
+                if (winNode != null && winNode.Attributes["value"] != null &&
+                    bool.TryParse(winNode.Attributes["value"].Value, out isWin))
+                    config.IsWindowsVersion = isWin;
 
                 var redNode = node.SelectSingleNode("Properties[@name='RedirectionFile']");
                 if (redNode != null)
