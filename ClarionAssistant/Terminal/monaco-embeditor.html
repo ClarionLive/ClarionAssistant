@@ -4131,11 +4131,30 @@
     // longer clearing markers (below), overshooting costs nothing but a late no-op.
     var DIAG_TIMEOUT_MS = 10000;
 
+    // GH #176: ordering guard. requestFromHost correlates each reply to its own request, but nothing said
+    // whether that reply is still the NEWEST one — setModelMarkers replaces the whole set, so whichever
+    // .then ran last won, even an older request's, and painted line numbers from another buffer version
+    // (squiggles a few lines off until the next round-trip). Each request is stamped with a sequence
+    // number and the model's version id at dispatch; a reply renders only if no newer request has been
+    // sent AND the buffer it was computed for is still the buffer on screen.
+    var diagReqSeq = 0;
+
     function refreshDiagnostics() {
         if (!editor) return;
         var model = editor.getModel();
+        var mySeq = ++diagReqSeq;
+        var myVersion = model.getVersionId();
         requestFromHost('diagnostics', { buffer: model.getValue(), ranges: liveEditableRanges() }, DIAG_TIMEOUT_MS)
             .then(function (resp) {
+                // Superseded: a newer request is in flight (or already rendered) — its answer owns the markers.
+                if (mySeq !== diagReqSeq) return;
+                // The buffer moved on since dispatch (or the model was swapped): these line numbers belong to
+                // text that is no longer on screen. Ask again for the current buffer rather than paint them —
+                // a programmatic edit may not have scheduled a pass of its own.
+                if (!editor || editor.getModel() !== model || model.getVersionId() !== myVersion) {
+                    if (editor && editor.getModel() === model) scheduleDiagnostics();
+                    return;
+                }
                 // null = the host never replied in time: NO INFORMATION, which is not the same claim as
                 // "this file has zero diagnostics". setModelMarkers REPLACES the whole set, so treating a
                 // timeout as an empty list actively wipes every squiggle AND its gutter/overview-ruler
