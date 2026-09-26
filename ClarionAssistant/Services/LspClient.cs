@@ -101,11 +101,18 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// Set when the last <see cref="Start"/> failed because the node process could not be
+        /// launched (Process.Start threw); null otherwise, including for a handshake failure.
+        /// </summary>
+        public string LastSpawnError { get; private set; }
+
+        /// <summary>
         /// Start the LSP server and initialize the protocol.
         /// </summary>
         public bool Start(string serverJsPath, string workspaceUri, string workspaceName)
         {
             if (_running) return true;
+            LastSpawnError = null;
 
             if (!File.Exists(serverJsPath))
                 return false;
@@ -190,7 +197,14 @@ namespace ClarionAssistant.Services
                     }
                 };
 
-                _process.Start();
+                try { _process.Start(); }
+                catch (Exception spawnEx)
+                {
+                    // node.exe could not be launched at all. Recorded separately so the caller can
+                    // say so instead of blaming an initialize handshake that never began (77aceec5).
+                    LastSpawnError = "could not launch '" + nodeExe + "': " + spawnEx.Message;
+                    throw;
+                }
                 _process.BeginErrorReadLine();
                 _running = true;
 
@@ -461,6 +475,11 @@ namespace ClarionAssistant.Services
         public Dictionary<string, object> GetReferences(string filePath, int line, int character)
         {
             TrackRequest("references", filePath);
+            // Open the document first, as definition/hover/implementation do (SendTextDocumentPositionRequest).
+            // Without it the server answers null for any file it has not opened, and the caller then fell
+            // back to CodeGraph and reported a wrong answer as the result (77aceec5): measured, the same
+            // server returns the MAP line, the implementation and the call site once the file is open.
+            EnsureDocumentOpen(filePath);
             var parms = BuildTextDocumentPosition(filePath, line, character);
             parms["context"] = new Dictionary<string, object> { { "includeDeclaration", true } };
             return SendRequest("textDocument/references", parms);

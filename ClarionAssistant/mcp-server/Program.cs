@@ -405,8 +405,39 @@ namespace ClarionAssistant.McpServer
                 // traces (item 0), so the "and no clue why" half of this warning is fixed and the
                 // line is still required. The addin sets the same hook from
                 // AssistantChatControl.StartMcpServer.
+                //
+                // FALLBACK: THE IDE'S OPEN SOLUTION (77aceec5). --solution is a launch-time
+                // snapshot. A plain Chat tab launched before any solution was open gets none, and
+                // kept none for its whole life while the developer opened one in the IDE - every
+                // lsp_* tool then failed with no way forward short of a new tab. When the IDE
+                // launched us (--ide-pid), the addin publishes its live open solution
+                // (IdeSolutionRecord), and the LSP falls back to that. Only the LSP: the
+                // CodeGraph/solution tools keep the --solution they were launched with.
+                //
+                // It is a FOLLOWED source, not a one-shot fallback: the IDE can switch or close the
+                // solution while the server runs, and LspService re-asks it on every lsp_* call and
+                // restarts or stops the server to match (pipeline run 1). ReadCached keeps that to
+                // one file stat per call.
                 ClarionAssistant.Services.LspService.SolutionPathProvider =
                     () => workspace.CurrentSolutionPath;
+                int? launchingIde = ClarionAssistant.Services.McpToolRegistry.IdeProcessId;
+                if (string.IsNullOrEmpty(workspace.CurrentSolutionPath) && launchingIde.HasValue)
+                {
+                    int idePid = launchingIde.Value;
+                    string lastSeen = null;
+                    ClarionAssistant.Services.LspService.FollowedSolutionProvider = () =>
+                    {
+                        string note;
+                        string ideSln = ClarionAssistant.Services.IdeSolutionRecord.ReadCached(idePid, out note);
+                        if (!string.Equals(ideSln, lastSeen, StringComparison.OrdinalIgnoreCase))
+                        {
+                            ClarionAssistant.Services.LspTrace.Write("[LspService] no --solution; the IDE's "
+                                + "published solution is now: " + (ideSln ?? "none") + " (" + note + ")");
+                            lastSeen = ideSln;
+                        }
+                        return ideSln;
+                    };
+                }
 
                 // And WHICH CLARION, for the same reason. Without this the LSP resolved its own
                 // version independently, so --clarion-version and the solution's committed

@@ -5623,7 +5623,10 @@
                     recordNavAt(ipos.lineNumber, ipos.column);   // seed origin so Navigate Back returns here (#40)
                     requestFromHost('implementation', { line: ipos.lineNumber, column: ipos.column, buffer: editor.getModel().getValue() });
                 }
-            } else if (ev.keyCode === 123 || ev.key === 'F12') {                            // F12 → go to definition (#40)
+            } else if (!ev.shiftKey && (ev.keyCode === 123 || ev.key === 'F12')) {          // F12 → go to definition (#40)
+                // NOT Shift+F12: that is Find All References elsewhere, and this editor has no references UI.
+                // It used to match here and silently go to definition (77aceec5); now it falls through to
+                // Monaco, whose references action is inert without a reference provider.
                 ev.preventDefault(); ev.stopImmediatePropagation();
                 var dpos = editor && editor.getPosition();
                 if (dpos) {
