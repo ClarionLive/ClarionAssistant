@@ -6,7 +6,8 @@ param(
     [switch]$Sign,
     [switch]$NoDocGraph,
     [switch]$AllowStaleBins,          # bypass the per-config version freshness gate (escape hatch only)
-    [switch]$AllowMissingComponents   # ship even if ISCC reported "shipping WITHOUT ..." (escape hatch only)
+    [switch]$AllowMissingComponents,  # ship even if ISCC reported "shipping WITHOUT ..." (escape hatch only)
+    [switch]$AllowUnpinnedLsp         # package an LSP that fails the pin gate (escape hatch only; never publish)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -116,6 +117,97 @@ if (-not (Test-Path $ps51)) {
     }
     Write-Host ""
 }
+
+# -- Step 0b: LSP pin gate -- the bundled server.js must be the one lsp-snapshot.json pins --------
+# The .iss only checks that server.js EXISTS (HaveLsp), so without this an overlay build, a build
+# from another tag, or a hand-edited file shipped to every user with nothing saying so. This is the
+# release path, so it is stricter than deploy.ps1 (which lets a local dev deploy warn and continue):
+#   - targetPin.tag must equal resolvedTag (a staged pin bump that was never synced is refused),
+#   - the .iss #define SrcLsp must point at .lsp-build\<that tag> (what ISCC actually packages),
+#   - resolvedServerSha256 must be PRESENT, and must equal the sha256 of that server.js.
+# A MISSING server.js is left to the missing-component gate after ISCC (it has its own override).
+# Override: -AllowUnpinnedLsp (escape hatch only; never for a published release).
+
+# Lowercase hex sha256 of a file's bytes -- the same digest as Get-FileHash -Algorithm SHA256, in the
+# lowercase form lsp-snapshot.json stores. Identical to the helper in deploy.ps1 and
+# Sync-LspServer.ps1, so all three format it the same way.
+function Get-FileSha256($path) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($path)
+        return -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+    } finally { $sha.Dispose() }
+}
+
+# Returns $true when the LSP the installer will package matches the pin (or is absent -- see above),
+# $false otherwise. Prints why. Pure function of its three paths, so a harness can call it directly.
+function Test-InstallerLspPin($issPath, $manifestPath, $srcBase) {
+    $ok = $true
+    $manifest = [System.IO.File]::ReadAllText($manifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $targetTag   = $manifest.targetPin.tag
+    $resolvedTag = $manifest.resolvedTag
+    $tag = if ($resolvedTag) { $resolvedTag } else { $targetTag }
+
+    if ($targetTag -and $resolvedTag -and ($targetTag -ne $resolvedTag)) {
+        Write-Host "  FAIL  lsp-snapshot.json targets $targetTag but is still resolved to $resolvedTag -- the pin bump was never synced." -ForegroundColor Red
+        Write-Host "        Run ClarionAssistant\lsp-server-sync\Sync-LspServer.ps1 -Pure and commit lsp-snapshot.json." -ForegroundColor Red
+        $ok = $false
+    }
+
+    $issText = [System.IO.File]::ReadAllText($issPath)
+    $m = [regex]::Match($issText, '(?m)^\s*#define\s+SrcLsp\s+SrcBase\s*\+\s*"\\\.lsp-build\\([^"\\]+)"')
+    if (-not $m.Success) {
+        Write-Host "  FAIL  cannot find '#define SrcLsp SrcBase + ""\.lsp-build\<tag>""' in $issPath -- cannot tell which LSP ISCC packages." -ForegroundColor Red
+        return $false
+    }
+    $issTag = $m.Groups[1].Value
+    if ($issTag -ne $tag) {
+        Write-Host "  FAIL  ClarionAssistant.iss packages .lsp-build\$issTag but lsp-snapshot.json pins $tag." -ForegroundColor Red
+        Write-Host "        Bump '#define SrcLsp' in installer\ClarionAssistant.iss to .lsp-build\$tag (see lsp-server-sync\README.md)." -ForegroundColor Red
+        $ok = $false
+    }
+
+    $pinnedHash = $manifest.resolvedServerSha256
+    if (-not $pinnedHash) {
+        Write-Host "  FAIL  lsp-snapshot.json has no resolvedServerSha256 -- the bundled server.js cannot be verified." -ForegroundColor Red
+        Write-Host "        Run Sync-LspServer.ps1 -Pure and commit lsp-snapshot.json. (deploy.ps1 only warns on this; a release may not.)" -ForegroundColor Red
+        return $false
+    }
+
+    $serverJs = Join-Path $srcBase (".lsp-build\" + $issTag + "\out\server\src\server.js")
+    if (-not (Test-Path -LiteralPath $serverJs)) {
+        Write-Host "  WARN  no server.js at $serverJs -- nothing to hash; the missing-component gate after ISCC decides." -ForegroundColor Yellow
+        return $ok
+    }
+    $actual = Get-FileSha256 $serverJs
+    if ($actual -ne $pinnedHash) {
+        Write-Host "  FAIL  bundled server.js does NOT match the pin." -ForegroundColor Red
+        Write-Host "        file   : $serverJs" -ForegroundColor Red
+        Write-Host "        built  : $actual" -ForegroundColor Red
+        Write-Host "        pinned : $pinnedHash" -ForegroundColor Red
+        Write-Host "        server.js is upstream's full esbuild bundle, so ANY difference in what was built changes it." -ForegroundColor Red
+        Write-Host "        Wrong build: delete that tree's out\ and re-run Sync-LspServer.ps1 -Pure. Legitimate rebuild" -ForegroundColor Red
+        Write-Host "        that no longer reproduces the pinned bytes: re-run -Pure on the machine that owns the pin" -ForegroundColor Red
+        Write-Host "        and commit the new resolvedServerSha256." -ForegroundColor Red
+        return $false
+    }
+    if ($ok) { Write-Host "  OK    bundled server.js matches pin $tag ($($pinnedHash.Substring(0,16))...)" -ForegroundColor Green }
+    return $ok
+}
+
+Write-Host "Checking the bundled LSP against lsp-snapshot.json..." -ForegroundColor Yellow
+$lspPinOk = Test-InstallerLspPin (Join-Path $scriptDir 'ClarionAssistant.iss') `
+                                 (Join-Path $repoRoot 'ClarionAssistant\lsp-server-sync\lsp-snapshot.json') `
+                                 (Join-Path $repoRoot 'ClarionAssistant')
+if (-not $lspPinOk) {
+    if ($AllowUnpinnedLsp) {
+        Write-Warning "Packaging an LSP that does not match lsp-snapshot.json because -AllowUnpinnedLsp was passed. Do NOT publish this installer."
+    } else {
+        Write-Error "LSP pin gate failed (see FAIL above). Fix the pin, or pass -AllowUnpinnedLsp for a local, never-published build."
+        exit 1
+    }
+}
+Write-Host ""
 
 # ── Step 1: Build ClarionAssistant ──
 if (-not $SkipBuild) {

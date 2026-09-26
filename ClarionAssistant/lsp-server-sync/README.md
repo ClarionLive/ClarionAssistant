@@ -66,6 +66,25 @@ touches TWO places, and only the first one is automatic:
    v1.0.2 re-pin (46cf93e, 2026-09-07) master's installer still pointed at `v1.0.0`. No release
    carried the mismatch (5.8.x predate it), but 5.9.0 would have shipped 1.0.0 had it not been caught.
 
+`-Pure` also records `resolvedServerSha256`: the sha256 of the built `out\server\src\server.js`, which is
+what ships. `deploy.ps1` refuses to copy a server.js that does not hash to it (only
+`-AllowUnpinnedLsp` overrides that, and `CLARIONLSP_ROOT` alone does not), and
+`installer\build-installer.ps1` refuses to package one. The installer also refuses a manifest with no
+hash, a `targetPin.tag` that differs from `resolvedTag` (a bump that was never synced), and a
+`#define SrcLsp` that points at another tag. **Commit `lsp-snapshot.json` after every `-Pure` run.**
+
+`server.js` is upstream's **full esbuild bundle**, so anything that changes the build changes the
+hash: another tag, an overlay, or different dependency or toolchain resolution. The v1.0.0 and v1.0.5
+builds have reproduced byte-for-byte on separate machines, so a mismatch normally means the wrong
+build is sitting in `out\`. Delete that `out\` folder and re-run `-Pure`. If a legitimate rebuild on
+another machine stops reproducing the pinned bytes, do not edit the hash to match. Re-run `-Pure` on
+the machine that owns the pin and commit the `resolvedServerSha256` it records.
+
+`-Pure` only runs `npm` in a checkout it can verify. Its `origin` must be exactly `source.repo`, and
+HEAD must be exactly the commit the tag names. When the tag is the one already pinned, HEAD must also
+be `resolvedCommit`, so a tag moved upstream is refused. A `.lsp-build` tree that is not a git
+checkout is built only with `-TrustNonGitTree`.
+
 Then check that the new release adds no runtime package that `$LspNodeModules` in `deploy.ps1` and the
 installer's hand list do not copy. Start the server from a tree that holds only those files, not
 from `.lsp-build` (which has every devDependency and hides a missing module). That is how the
