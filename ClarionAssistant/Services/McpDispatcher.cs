@@ -21,8 +21,9 @@ namespace ClarionAssistant.Services
     {
         // Max time a UI-thread MCP tool may run before the request is abandoned with a timeout
         // error, so a busy/wedged UI thread can't hold a worker (and leak the connection as
-        // CLOSE_WAIT) indefinitely.
-        private const int UiToolTimeoutSeconds = 30;
+        // CLOSE_WAIT) indefinitely. No longer one constant (PR #198): see McpUiTimeoutPolicy and
+        // ResolveUiToolTimeoutSeconds - default 30s, never below a tool's declared McpTool.UiTimeoutSeconds
+        // and overridable per install (5-600s) by the "Mcp.UiToolTimeoutSeconds" setting.
 
         // Minimum interval between notifications/progress frames. The indexer emits at file
         // boundaries (up to ~30/s during parsing) — relaying every one would flood the client
@@ -34,6 +35,15 @@ namespace ClarionAssistant.Services
         private readonly Action<string, string> _onToolCall;
         private readonly string _serverName;
         private readonly string _serverVersion;
+
+        /// <summary>
+        /// Reads the raw "Mcp.UiToolTimeoutSeconds" setting, or null when unset. Optional: the addin
+        /// points it at its SettingsService; a host that never marshals onto a UI thread (the
+        /// standalone server) has no use for it and leaves it null, which means the 30s default.
+        /// Read per call from the in-memory settings snapshot, so a hand edit of settings.txt takes
+        /// effect on the next IDE start.
+        /// </summary>
+        public Func<string> UiTimeoutSettingReader { get; set; }
 
         /// <summary>
         /// </summary>
@@ -257,35 +267,105 @@ namespace ClarionAssistant.Services
 
             object uiResult = null;
             Exception uiException = null;
+            int timeoutSeconds = ResolveUiToolTimeoutSeconds(toolName);
 
             // Marshal onto the UI thread WITHOUT blocking the worker forever. A synchronous
             // Control.Invoke here deadlocks (and leaks the connection as CLOSE_WAIT) whenever the
             // UI thread is busy/wedged.
+            // The call's lifecycle token (PR #198 review): on timeout we ABANDON it, and a tool that
+            // mutates the IDE checks it at its commit point (McpCallContext.TryCommit) so it cannot
+            // save after the caller was told the call failed. A call the UI thread never picked up
+            // does not run at all.
+            var token = new McpCallToken();
             using (var done = new ManualResetEventSlim(false))
             {
                 _ui.BeginInvokeOnUi(() =>
                 {
-                    try { uiResult = _toolRegistry.ExecuteTool(toolName, arguments); }
+                    try
+                    {
+                        if (!token.TryStart()) return;   // abandoned before the UI thread got to it
+                        var outer = McpCallContext.Current;   // a re-entrant (DoEvents-pumped) call nests
+                        McpCallContext.Current = token;
+                        try { uiResult = _toolRegistry.ExecuteTool(toolName, arguments); }
+                        finally { McpCallContext.Current = outer; token.Complete(); }
+                    }
                     catch (Exception ex) { uiException = ex; }
                     finally { try { done.Set(); } catch { } }
                 });
 
-                // Give the UI thread a bounded window to run the tool. On timeout we abandon the
-                // delegate (it will complete harmlessly later) and return an error instead of
-                // holding the worker + connection open.
-                if (!done.Wait(TimeSpan.FromSeconds(UiToolTimeoutSeconds)))
+                // Give the UI thread a bounded window to run the tool. On timeout we abandon the call
+                // and return an error instead of holding the worker + connection open.
+                if (!done.Wait(TimeSpan.FromSeconds(timeoutSeconds)))
                 {
-                    RaiseToolCall(toolName, "TIMEOUT (UI thread busy)");
-                    timeoutResponse = McpJsonRpc.SerializeResponse(request.Id, McpJsonRpc.BuildToolResult(
-                        "Error executing tool '" + toolName + "': UI thread did not respond within "
-                        + UiToolTimeoutSeconds + "s (busy or blocked).", true));
-                    return false;
+                    int found = token.Abandon();
+                    if (found == McpCallToken.Completed)
+                    {
+                        // Finished in the same instant we gave up: its result is real, use it.
+                        done.Wait(TimeSpan.FromSeconds(5));
+                    }
+                    else
+                    {
+                        RaiseToolCall(toolName, "TIMEOUT (UI thread busy)");
+                        timeoutResponse = McpJsonRpc.SerializeResponse(request.Id, McpJsonRpc.BuildToolResult(
+                            BuildTimeoutMessage(toolName, timeoutSeconds, found), true));
+                        return false;
+                    }
                 }
             }
 
             if (uiException != null) throw uiException;
             result = uiResult;
             return true;
+        }
+
+        /// <summary>
+        /// The timeout error, truthful about what the abandoned call may still do. <paramref name="found"/>
+        /// is the state McpCallToken.Abandon saw: NotStarted = it never ran and never will; Running = it
+        /// was cancelled - tool-specific, because the tools that honour the token react differently:
+        /// apply_embed_edits discards its writes at its save step (after this reply, so unconfirmed), save_and_close_embeditor skips the save and leaves the
+        /// edits unsaved in the open embeditor, and work other tools already did cannot be interrupted;
+        /// Committed = it was already saving and may still complete.
+        /// </summary>
+        public static string BuildTimeoutMessage(string toolName, int timeoutSeconds, int found)
+        {
+            string head = "Error executing tool '" + toolName + "': the IDE did not answer within "
+                + timeoutSeconds + "s. ";
+            string what;
+            if (found == McpCallToken.NotStarted)
+                what = "The UI thread was busy and never started the call; it was cancelled and will not run. ";
+            else if (found == McpCallToken.Committed)
+                what = "The call was already SAVING when the wait ended, so it may still complete. ";
+            else if (string.Equals(toolName, "apply_embed_edits", StringComparison.OrdinalIgnoreCase))
+                what = "The call was cancelled: when the IDE reaches its save step it discards the embed edits "
+                    + "instead of saving them. That rollback happens after this reply and is NOT confirmed here - "
+                    + "if it fails, the embeditor stays open with unsaved agent edits (close it without saving). ";
+            else if (string.Equals(toolName, "save_and_close_embeditor", StringComparison.OrdinalIgnoreCase))
+                what = "The call was cancelled before saving: nothing was saved, and the edits remain UNSAVED in the "
+                    + "open embeditor. ";
+            else
+                what = "The call was cancelled, but work it had already done in the IDE may stand (it cannot be "
+                    + "interrupted part-way). ";
+            return head + what
+                + "Re-read with get_embeditor_source (or check the IDE) before retrying - line numbers may have "
+                + "moved. If the IDE was working rather than wedged, set '" + McpUiTimeoutPolicy.SettingKey
+                + "' in " + @"%APPDATA%\ClarionAssistant\settings.txt ("
+                + McpUiTimeoutPolicy.MinSeconds + "-" + McpUiTimeoutPolicy.MaxSeconds
+                + "s; never below a tool's own minimum) and restart the IDE.";
+        }
+
+        /// <summary>
+        /// Timeout budget for ONE UI-thread tool call, in seconds - see McpUiTimeoutPolicy.Resolve.
+        /// A throwing settings reader is treated as "unset": the guard must never be lost to it.
+        /// </summary>
+        private int ResolveUiToolTimeoutSeconds(string toolName)
+        {
+            string configured = null;
+            var reader = UiTimeoutSettingReader;
+            if (reader != null)
+            {
+                try { configured = reader(); } catch { configured = null; }
+            }
+            return McpUiTimeoutPolicy.Resolve(configured, _toolRegistry.UiTimeoutSeconds(toolName));
         }
 
         /// <summary>

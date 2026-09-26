@@ -307,6 +307,77 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// Adopt an ALREADY-OPEN embeditor when it is showing <paramref name="procName"/>, mirroring its live
+        /// buffer instead of demanding the caller close it first. A large procedure is exactly where a fresh
+        /// open is unreliable, so the developer-opened editor is often the only handle that worked — refusing
+        /// it makes the round-trip unusable in the case that needs it most.
+        ///
+        /// The identity check here is deliberately STRICTER than the post-open sanity check in
+        /// <see cref="OpenAndMirror"/>. That one only asks whether the name appears anywhere in the source,
+        /// which is sound after WE typed the name into the locator (a mis-select is the unlikely branch).
+        /// Here the editor was opened by someone else, so a bare mention could just as well be a CALL to the
+        /// target from an unrelated procedure. We therefore take the column-0 declaration via
+        /// <see cref="ProcNameFromSource"/> and require an exact name match.
+        ///
+        /// It is also refused - see <see cref="EmbedAdoptPolicy"/>, which makes the decision - when the CA
+        /// Embeditor (Monaco overlay or live tab) holds the embed, or when the native buffer has unsaved changes
+        /// (or its dirty flag is unreadable): adoption ends in a save of the WHOLE buffer, so it must never
+        /// persist edits that are not ours, nor write behind a Monaco buffer that would overwrite them.
+        ///
+        /// Returns true (with the mirror) only when adoption is safe. Returns false with <paramref name="error"/>
+        /// set when an embeditor is open but may not be adopted — the caller should surface that rather than open
+        /// anything. Returns false with <paramref name="error"/> null when NO embeditor is open, i.e. "carry on
+        /// and open one". Never closes, cancels or writes: a refused editor is left exactly as the developer left
+        /// it. UI thread only.
+        /// </summary>
+        internal static bool TryAdoptOpenEmbeditor(AppTreeService appTree, string procName,
+            out string source, out List<int[]> ranges, out string error)
+        {
+            source = null; ranges = null; error = null;
+            if (appTree == null || string.IsNullOrWhiteSpace(procName)) return false;
+
+            // Nothing open → not an error, just nothing to adopt.
+            bool open;
+            try { open = appTree.GetEmbedInfo() != null; }
+            catch { open = false; }
+
+            string mirrored = null, openProc = null, readErr = null;
+            List<int[]> mirroredRanges = null;
+            bool caLive = false;
+            bool? nativeDirty = null;
+            if (open)
+            {
+                string title, ferr;
+                if (!EmbeditorCompletionService.TryGetActiveEmbeditorSource(
+                        out title, out mirrored, out mirroredRanges, out ferr))
+                {
+                    readErr = ferr ?? "unknown error";
+                }
+                else
+                {
+                    ICollection<string> knownProcs = null;
+                    try { knownProcs = appTree.GetProcedureNames(); } catch { }
+                    openProc = ProcNameFromSource(mirrored, knownProcs);
+                }
+
+                // Any CA Embeditor view holding the native embed (overlay OR live tab): its Monaco buffer,
+                // not the native one, is what the developer edits and what its save writes.
+                try { caLive = ModernEmbeditorViewContent.HasLiveOverlay; } catch { caLive = true; }
+                nativeDirty = appTree.GetEmbeditorIsDirty();
+            }
+
+            switch (EmbedAdoptPolicy.Decide(open, readErr, openProc, procName, caLive, nativeDirty, out error))
+            {
+                case EmbedAdoptDecision.Adopt:
+                    source = mirrored;
+                    ranges = mirroredRanges;
+                    return true;
+                default:
+                    return false;   // OpenFresh (error null) or Refuse (error set)
+            }
+        }
+
+        /// <summary>
         /// Extract the authoritative procedure name from generated embed source (cardinal rule #7 — name from
         /// source, NEVER the temp pwee FileName/caption). MIRROR SCOPE IS SINGLE-PROC: the embeditor buffer is
         /// one procedure's assembled source (verified live — BrowseAuthors' buffer contained only its own

@@ -293,9 +293,22 @@ namespace ClarionAssistant.Services
         /// path: OpenAndMirror -&gt; WriteEmbedContentByLine -&gt; SaveAndCloseEmbeditor -&gt; WaitForEmbedClosed).
         ///
         /// Each edit is (1-based «E:N» slot-start line, COMPLETE replacement code for that slot). Every line is
-        /// validated against the freshly-opened embed structure; if ANY line is not a current embed-slot start,
-        /// NOTHING is written (the embeditor is cancelled). Writes run bottom-to-top so earlier slots' line
-        /// numbers stay valid, verbatim (no re-indent — the caller supplies fully-indented code). UI thread only.
+        /// validated against the mirrored embed structure; if ANY line is not a current embed-slot start,
+        /// NOTHING is written. Writes run bottom-to-top so earlier slots' line numbers stay valid, verbatim
+        /// (no re-indent — the caller supplies fully-indented code). UI thread only.
+        ///
+        /// ADOPTION: when an embeditor is already open on this SAME procedure we write into it rather than
+        /// refuse (see <see cref="ModernEmbeditorLauncher.TryAdoptOpenEmbeditor"/>) — on a large procedure the
+        /// fresh open is the step that fails, so that editor is often the only working handle. The save still
+        /// closes the tab, because <c>SaveAndCloseEmbeditor</c> is the only persist path the IDE exposes - and it
+        /// persists the WHOLE buffer, so an editor is adopted only when that buffer holds nothing but saved code
+        /// (native IsDirty == false) and no CA Embeditor sits over it (<see cref="EmbedAdoptPolicy"/>). Otherwise
+        /// the call is refused and the editor left untouched, as is one open on a DIFFERENT procedure.
+        ///
+        /// Once an embeditor is open, the write -> commit -> save -> confirm-closed half is
+        /// <see cref="EmbedApplyFlow"/>: every exit after the first write that does not end in a confirmed save
+        /// discards the buffer (an adopted one was clean, so only our writes go), and a call McpDispatcher has
+        /// abandoned on timeout rolls back instead of saving.
         /// </summary>
         public static string ApplyLineEdits(string procName, IList<KeyValuePair<int, string>> edits, out bool ok)
         {
@@ -306,62 +319,62 @@ namespace ClarionAssistant.Services
                 return "Error: no edits supplied.";
 
             var appTree = new AppTreeService();
-            // Reliably re-open the correct procedure and mirror its current source + ranges; leaves the
-            // embeditor open for us to write into (same entry point the interactive save uses).
+
+            // Prefer an embeditor ALREADY open on this procedure over a fresh open. On a large procedure
+            // the fresh open is the fragile step, so the developer-opened editor is frequently the only
+            // handle that worked — refusing it (the old behaviour) made this tool unusable exactly where
+            // it is most needed, and closing their editor to satisfy the precondition throws away that
+            // handle. An editor open on a DIFFERENT procedure is still refused, and left untouched - as is one
+            // with unsaved developer edits, or one the CA Embeditor is covering (see EmbedAdoptPolicy).
             string fsource, openErr;
             List<int[]> franges;
-            if (!ModernEmbeditorLauncher.OpenAndMirror(appTree, procName, out fsource, out franges, out openErr))
-                return "Apply aborted: " + openErr;
+            bool adopted = ModernEmbeditorLauncher.TryAdoptOpenEmbeditor(
+                appTree, procName, out fsource, out franges, out openErr);
 
-            try
+            if (!adopted)
             {
-                // Valid write targets = the slot-START lines of the freshly-opened structure.
-                var slotStarts = new HashSet<int>();
-                if (franges != null)
-                    foreach (var r in franges)
-                        if (r != null && r.Length >= 1) slotStarts.Add(r[0]);
+                // A non-null error means something else is open — say that, don't try to open over it.
+                if (!string.IsNullOrEmpty(openErr))
+                    return "Apply aborted: " + openErr;
 
-                // Validate ALL edits BEFORE writing anything (all-or-nothing).
-                foreach (var e in edits)
-                {
-                    if (e.Key <= 0 || !slotStarts.Contains(e.Key))
-                    {
-                        try { appTree.CancelEmbeditor(); } catch { }
-                        return "Apply aborted: line " + e.Key + " is not a current embed-slot start in '" +
-                               procName + "'. Re-read with get_embeditor_source and retry. Nothing was written.";
-                    }
-                }
-
-                // Write changed slots bottom-to-top so earlier slots' line numbers stay valid; verbatim.
-                var errors = new List<string>();
-                foreach (var e in edits.OrderByDescending(x => x.Key))
-                {
-                    string res = appTree.WriteEmbedContentByLine(e.Key, e.Value ?? "", false);
-                    if (res != null && res.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
-                        errors.Add("  • slot@line " + e.Key + ": " + res);
-                }
-
-                if (errors.Count > 0)
-                {
-                    try { appTree.CancelEmbeditor(); } catch { } // discard — persist nothing on partial failure
-                    return "Apply FAILED — nothing persisted:\r\n" + string.Join("\r\n", errors);
-                }
-
-                string saveRes = appTree.SaveAndCloseEmbeditor();
-                if (saveRes != null && saveRes.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
-                    return "Apply error: " + saveRes;
-
-                if (!ModernEmbeditorLauncher.WaitForEmbedClosed(appTree, 3000))
-                    return "Apply error: '" + procName + "' was written but the embeditor did not confirm closed — " +
-                           "close it in the IDE before applying again.";
-
-                ok = true;
-                return "Applied " + edits.Count + " embed edit(s) to '" + procName + "'.";
+                // Nothing open: reliably open the correct procedure and mirror its current source +
+                // ranges; leaves the embeditor open for us to write into (same entry point the
+                // interactive save uses).
+                if (!ModernEmbeditorLauncher.OpenAndMirror(appTree, procName, out fsource, out franges, out openErr))
+                    return "Apply aborted: " + openErr;
             }
-            catch (Exception ex)
+
+            return EmbedApplyFlow.Apply(new AppTreeApplyOps(appTree), procName, franges, edits, adopted,
+                McpCallContext.Current, out ok);
+        }
+
+        /// <summary>The live IDE behind <see cref="IEmbedApplyOps"/>. UI thread only.</summary>
+        private sealed class AppTreeApplyOps : IEmbedApplyOps
+        {
+            private readonly AppTreeService _appTree;
+            public AppTreeApplyOps(AppTreeService appTree) { _appTree = appTree; }
+            public string WriteSlot(int line, string code) { return _appTree.WriteEmbedContentByLine(line, code, false); }
+            public string SaveAndClose() { return _appTree.SaveAndCloseEmbeditor(); }
+            public bool WaitClosed(int timeoutMs) { return ModernEmbeditorLauncher.WaitForEmbedClosed(_appTree, timeoutMs); }
+            // Success only when CancelEmbeditor reports no error AND the embeditor is confirmed closed - an
+            // unconfirmed rollback must never be reported as one. "No embeditor is currently open" is success:
+            // there is nothing left to hold our writes.
+            public string Discard()
             {
-                try { appTree.CancelEmbeditor(); } catch { }
-                return "Apply error: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message);
+                try
+                {
+                    string res = _appTree.CancelEmbeditor();
+                    if (res != null && res.StartsWith("Error", StringComparison.OrdinalIgnoreCase)
+                        && res.IndexOf("No embeditor is currently open", StringComparison.OrdinalIgnoreCase) < 0)
+                        return res;
+                    if (!ModernEmbeditorLauncher.WaitForEmbedClosed(_appTree, 3000))
+                        return "the embeditor did not confirm closed";
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    return ex.InnerException != null ? ex.InnerException.Message : ex.Message;
+                }
             }
         }
 
