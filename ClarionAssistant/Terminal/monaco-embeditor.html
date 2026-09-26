@@ -4166,9 +4166,10 @@
                 if (mySeq !== diagReqSeq) return;
                 // The buffer moved on since dispatch (or the model was swapped): these line numbers belong to
                 // text that is no longer on screen. Ask again for the current buffer rather than paint them —
-                // a programmatic edit may not have scheduled a pass of its own.
+                // a programmatic edit may not have scheduled a pass of its own. Only when no pass is pending:
+                // typing already armed one, and re-arming would just push it back.
                 if (!editor || editor.getModel() !== model || model.getVersionId() !== myVersion) {
-                    if (editor && editor.getModel() === model) scheduleDiagnostics();
+                    if (editor && editor.getModel() === model && !diagTimer) scheduleDiagnostics();
                     return;
                 }
                 // null = the host never replied in time: NO INFORMATION, which is not the same claim as
@@ -4196,7 +4197,7 @@
 
     function scheduleDiagnostics() {
         if (diagTimer) clearTimeout(diagTimer);
-        diagTimer = setTimeout(refreshDiagnostics, 600);
+        diagTimer = setTimeout(function () { diagTimer = null; refreshDiagnostics(); }, 600);   // null = no pass pending
     }
 
     // registerClarionFolding() now lives in the shared clarion-language.js (loaded above) so the
@@ -4959,7 +4960,7 @@
         }
         if ((el = document.getElementById('setFontFamily'))) {
             var followingFontFamily = (s.followIdeIndentation !== false) && _ideOpts && typeof _ideOpts.fontFamily === 'string' && _ideOpts.fontFamily !== '';
-            el.value = followingFontFamily ? _ideOpts.fontFamily : ((typeof s.fontFamily === 'string') ? s.fontFamily : '');
+            setFontFamilyBox(el, followingFontFamily ? _ideOpts.fontFamily : ((typeof s.fontFamily === 'string') ? s.fontFamily : ''));
         }
         if ((el = document.getElementById('setOccurrenceHighlight'))) el.checked = (s.occurrenceHighlight !== false);   // default ON (#62)
         if ((el = document.getElementById('setHorizontalScrollbar'))) el.value = s.horizontalScrollbar || 'auto';
@@ -5133,7 +5134,7 @@
         if (!e) return;
         // Set the control ONLY — deliberately no 'change' dispatch. The import commits once via
         // onSettingChanged(); firing per-control events would post one saveSettings per imported key.
-        if (m.kind === 'chk') e.checked = !!v; else e.value = String(v);
+        if (m.kind === 'chk') e.checked = !!v; else if (e.id === 'setFontFamily') setFontFamilyBox(e, String(v)); else e.value = String(v);
         // An import IS a deliberate new stored pref, so update _storedPrefs for the follow-owned keys as well.
         // Without this, importing a font while follow-mode owns the field would write the value into a control
         // that storedPref() then overrides on the commit below, and the imported font would vanish silently.
@@ -5598,6 +5599,12 @@
         e.placeholder = _ffStash;
         e.value = '';
     }
+    // Every page write to the box goes through here (settings from the host, follow-IDE, VS Code import): the
+    // written value is the new truth, so drop any blanking state — blur must not put the old font back over it.
+    function setFontFamilyBox(e, v) {
+        if (_ffStash !== null) { e.placeholder = _ffPlaceholder; _ffStash = null; _ffEdited = false; }
+        e.value = v;
+    }
     function ffRestore(e) {
         if (_ffStash === null) return;
         if (e.value === '' && !_ffEdited) e.value = _ffStash;
@@ -5608,9 +5615,9 @@
     function wireFontFamilyPicker() {
         var e = document.getElementById('setFontFamily');
         if (!e) return;
+        // Only on the way IN. A click inside the already-focused box (to edit the name in place, say to add a
+        // fallback font) leaves the text alone; the full list comes back on the next focus.
         e.addEventListener('focus', function () { ffBlank(e); });
-        // Already focused (say, a font was just picked) and clicked again to reopen the list.
-        e.addEventListener('pointerdown', function () { if (document.activeElement === e) ffBlank(e); });
         e.addEventListener('input', function () { if (_ffStash !== null) _ffEdited = true; });
         // Must be registered BEFORE the generic change -> onSettingChanged listener: a change that fires on the
         // way out while the box is still blank then sees the restored value, not a false "default".
@@ -5656,7 +5663,7 @@
                 var s = _storedPrefs || lastSettings || {};   // _storedPrefs is null until the first host payload
                 var el;
                 if ((el = document.getElementById('setFontSize')) && typeof s.fontSize === 'number') el.value = s.fontSize;
-                if ((el = document.getElementById('setFontFamily'))) el.value = (typeof s.fontFamily === 'string') ? s.fontFamily : '';
+                if ((el = document.getElementById('setFontFamily'))) setFontFamilyBox(el, (typeof s.fontFamily === 'string') ? s.fontFamily : '');
                 if ((el = document.getElementById('setCursorBehindEol'))) el.checked = !!s.cursorBehindEOL;
             }
             syncFollowIdeUi();

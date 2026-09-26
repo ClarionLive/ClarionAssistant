@@ -105,9 +105,10 @@ namespace ClarionAssistant
 
         // Cover that hides the native editor until Monaco paints: the same pre-paint backdrop as the Monaco
         // control it covers for (the mirrored theme pref; the system window colour under Windows High
-        // Contrast, GH #195 — it used to be light regardless). (It cannot hide the WebView2 itself — a native HWND always paints over WinForms siblings,
-        // so the on-load flash is fixed on the page side by applying the theme on first paint; this cover only
-        // keeps the native ClaTextAreaControl from peeking through underneath.)
+        // Contrast, GH #195 — it used to be light regardless). It cannot hide the WebView2 itself — a native
+        // HWND always paints over WinForms siblings, so the on-load flash is fixed on the page side by
+        // applying the theme on first paint; this cover only keeps the native ClaTextAreaControl from
+        // peeking through underneath.
         private static Color CoverColor { get { return MonacoEditorControl.PrePaintBackdrop(Services.CaEditorSettings.MonacoThemeDark); } }
 
         // Every live tab, so a build-triggered save (SaveAllDirtyBeforeBuild) can reach all of them. This

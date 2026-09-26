@@ -56,13 +56,15 @@ function loadDiag() {
         pending: [],
         applied: [],       // one entry per setModelMarkers call: the list of start lines
         scheduled: 0,      // setTimeout(refreshDiagnostics, ...) calls
+        timers: [],        // their callbacks, so a test can let the debounce fire
+        cleared: 0,        // clearTimeout calls (a pending pass pushed back)
     };
     const monaco = { editor: { setModelMarkers: (m, owner, list) => env.applied.push(list.map(x => x.startLineNumber)) } };
     function requestFromHost(action, payload) {
         return new Promise(resolve => env.pending.push({ action, payload, resolve }));
     }
-    const fakeSetTimeout = () => { env.scheduled++; return 1; };
-    const fakeClearTimeout = () => { };
+    const fakeSetTimeout = (fn) => { env.scheduled++; env.timers.push(fn); return env.timers.length; };
+    const fakeClearTimeout = () => { env.cleared++; };
     const api = new Function('editor', 'monaco', 'requestFromHost', 'liveEditableRanges', 'setTimeout', 'clearTimeout',
         'var diagTimer = null;\n' + diagSrc + '\nreturn { refreshDiagnostics: refreshDiagnostics, scheduleDiagnostics: scheduleDiagnostics };')(
         env.editor, monaco, requestFromHost, () => [[1, 10]], fakeSetTimeout, fakeClearTimeout);
@@ -116,6 +118,26 @@ async function testDiagnostics() {
             'scheduled ' + (env.scheduled - before));
     }
     {
+        // Typing already armed a pass: a stale reply must not re-arm it (that only pushes the pass back).
+        const env = loadDiag();
+        env.api.refreshDiagnostics();
+        env.model.version = 2;
+        env.api.scheduleDiagnostics();   // the edit's own debounce
+        const sched = env.scheduled, cleared = env.cleared;
+        env.pending[0].resolve(reply(3));
+        await flush();
+        check('a stale reply with a pass already pending leaves that pass alone', env.applied.length === 0 &&
+            env.scheduled === sched && env.cleared === cleared, JSON.stringify({ s: env.scheduled - sched, c: env.cleared - cleared }));
+        // Once the debounce has fired there is no pass pending, so the next stale reply does ask again.
+        env.timers[env.timers.length - 1]();   // fires refreshDiagnostics -> request 2 (for v2)
+        env.model.version = 3;                 // a programmatic edit, no debounce of its own
+        const sched2 = env.scheduled;
+        env.pending[1].resolve(reply(4));
+        await flush();
+        check('...and after the debounce fired, a stale reply schedules a fresh pass', env.scheduled === sched2 + 1,
+            'scheduled ' + (env.scheduled - sched2));
+    }
+    {
         // The model was swapped (file reload) while the request was in flight.
         const env = loadDiag();
         env.api.refreshDiagnostics();
@@ -163,7 +185,8 @@ function testFontPicker() {
     function load(initial) {
         const dom = new JSDOM('<!DOCTYPE html><body><button id="other">x</button>' + inputMarkup[0] + listMarkup[0] + '</body>');
         const win = dom.window, doc = win.document;
-        const api = new Function('document', src + '\nreturn { wireFontFamilyPicker: wireFontFamilyPicker, fontFamilyFieldValue: fontFamilyFieldValue };')(doc);
+        const api = new Function('document', src + '\nreturn { wireFontFamilyPicker: wireFontFamilyPicker, fontFamilyFieldValue: fontFamilyFieldValue,' +
+            ' setFontFamilyBox: typeof setFontFamilyBox === "function" ? setFontFamilyBox : null };')(doc);
         const el = doc.getElementById('setFontFamily');
         el.value = initial;
         api.wireFontFamilyPicker();
@@ -206,10 +229,33 @@ function testFontPicker() {
         const p = load('Consolas');
         p.el.focus();
         p.el.value = 'Fira Code'; p.fire('input'); p.fire('change');   // pick, focus stays in the box
-        p.fire('pointerdown');                                         // click it again to reopen the list
-        check('clicking the focused box again clears it to reopen the full list', p.el.value === '', JSON.stringify(p.el.value));
+        p.fire('pointerdown'); p.fire('mousedown'); p.fire('click');  // click inside it to edit the name in place
+        check('clicking inside the already-focused box leaves its text alone', p.el.value === 'Fira Code', JSON.stringify(p.el.value));
+        p.el.value = 'Fira Code, Consolas'; p.fire('input'); p.fire('change');
         p.el.blur();
-        check('...and leaving restores the picked font', p.el.value === 'Fira Code', JSON.stringify(p.el.value));
+        check('...so a fallback font can be added in place', p.el.value === 'Fira Code, Consolas' &&
+            p.saved[p.saved.length - 1] === 'Fira Code, Consolas', JSON.stringify({ v: p.el.value, saved: p.saved }));
+    }
+    {
+        // The page writes the box while it is focused and blanked (settings from the host, follow-IDE, import).
+        const p = load('Consolas');
+        const origPlaceholder = p.el.placeholder;
+        p.el.focus();
+        if (p.api.setFontFamilyBox) p.api.setFontFamilyBox(p.el, ''); else p.el.value = '';   // host: font back to default
+        p.el.blur();
+        check('a page write of "" (default) while blanked survives blur', p.el.value === '', JSON.stringify(p.el.value));
+        check('...and saves as the default', p.api.fontFamilyFieldValue(p.el) === '', JSON.stringify(p.api.fontFamilyFieldValue(p.el)));
+        check('...with the original placeholder back', p.el.placeholder === origPlaceholder, p.el.placeholder);
+    }
+    {
+        const p = load('Consolas');
+        p.el.focus();
+        if (p.api.setFontFamilyBox) p.api.setFontFamilyBox(p.el, 'Lucida Console'); else p.el.value = 'Lucida Console';
+        check('settings read after a page write while blanked see the written font', p.api.fontFamilyFieldValue(p.el) === 'Lucida Console');
+        p.el.blur();
+        check('a page write of a font while blanked survives blur', p.el.value === 'Lucida Console', JSON.stringify(p.el.value));
+        p.el.focus();
+        check('...and the next focus blanks it again for the full list', p.el.value === '' && p.el.placeholder === 'Lucida Console');
     }
     {
         const p = load('Consolas');
@@ -228,6 +274,11 @@ function testFontPicker() {
     }
     check('the settings payload reads the box through fontFamilyFieldValue',
         /fontFamily: storedPref\('fontFamily', \(function \(\) \{ var e = document\.getElementById\('setFontFamily'\); return e \? fontFamilyFieldValue\(e\)/.test(html));
+    check('every page write to the font box goes through setFontFamilyBox',
+        !/getElementById\('setFontFamily'\)\)\)?\s*el\.value\s*=/.test(html) &&
+        /setFontFamilyBox\(el, followingFontFamily/.test(html) &&
+        /else if \(e\.id === 'setFontFamily'\) setFontFamilyBox\(e, String\(v\)\)/.test(html) &&
+        /\(el = document\.getElementById\('setFontFamily'\)\)\) setFontFamilyBox\(el, \(typeof s\.fontFamily/.test(html));
     const wireAt = html.indexOf('wireFontFamilyPicker();'), idsAt = html.indexOf("var ids = ['setCursorBehindEol'");
     check('the picker is wired before the generic change listeners', wireAt > 0 && idsAt > 0 && wireAt < idsAt);
 }

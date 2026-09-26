@@ -57,6 +57,8 @@ const vscJsFull = slice(html,
     '    // ----- Keyboard rebinding table (gear panel) -----', 'VS Code import section');
 
 const escHtmlJs = slice(html, '    function escHtml(s) {', '    }', 'escHtml');
+// The import writes the font box through the font picker's setFontFamilyBox (GH #184), so that section rides along.
+const fontPickerJs = slice(html, '    // ===================== Font family picker (GH #184)', '    // ===================== end Font family picker', 'font picker section');
 
 if (!/vscImportBtn/.test(gearMarkup)) throw new Error('extracted markup has no import button');
 if (!/function vscApply/.test(vscJsFull)) throw new Error('extracted JS has no vscApply');
@@ -123,7 +125,7 @@ function makeEnv(opts) {
         }
     };
 
-    const src = escHtmlJs + '\n' + vscJsFull + '\n' +
+    const src = escHtmlJs + '\n' + fontPickerJs + '\n' + vscJsFull + '\n' +
         'return { vscRequest, vscRenderResult, vscApply, vscHide, vscBuildDiff, vscDisplay, ' +
         'VSC_IMPORT_MAP, VSC_READ_TIMEOUT_MS, VSC_BROWSE_TIMEOUT_MS };';
     const api = new Function(...Object.keys(scope), src)(...Object.values(scope));
