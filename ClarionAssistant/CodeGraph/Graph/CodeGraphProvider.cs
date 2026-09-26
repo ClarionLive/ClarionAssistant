@@ -329,17 +329,22 @@ namespace ClarionCodeGraph.Graph
         /// PRECISION OVER RECALL (pipeline run 2). This backs a FALLBACK that runs only when the
         /// language server gave no answer; a wrong answer there is worse than none, because it is
         /// presented as the server's. So a declaration is returned only when it is PROVEN visible from
-        /// the requesting position, and the result is otherwise EMPTY - never an arbitrary row:
-        ///   1. a LOCAL/PARAMETER (or routine) declared in the requester's own routine, method or
-        ///      procedure - same file_path AND parent_name. A local-class method body sees its
-        ///      procedure's locals too (see <see cref="EnclosingScopes"/>);
-        ///   2. otherwise, when the requesting file belongs to exactly ONE project: that project's
-        ///      non-local rows of the type visible from the file (its MAP prototype + implementation
-        ///      pair). MODULE data only from the requesting file itself - it is invisible elsewhere.
-        ///      Nothing in the project: empty, never another app's copy;
-        ///   3. when the project is ambiguous (a file shared by apps, or no project_id): the one
-        ///      visible candidate solution-wide if there is exactly one, else empty.
-        /// No request file: empty.
+        /// the requesting file, and the result is otherwise EMPTY - never an arbitrary row:
+        ///   - LOCALS ARE NEVER RETURNED (scope 'local' or 'parameter', which includes routines and
+        ///     routine DATA locals). If the requesting file declares a local of this name, the answer
+        ///     is empty, since that local may be what the request means. Locals cannot be attributed
+        ///     reliably: the indexer stores CLASS-body method declarations as module-level
+        ///     implementation rows, so a local used inside a local-CLASS method body has no provable
+        ///     owner (indexer ticket, see 77aceec5 notes). The language server answers locals itself,
+        ///     and LspClient.GetReferences now opens the document first so it can;
+        ///   - when the requesting file belongs to exactly ONE project: that project's non-local rows
+        ///     of the type visible from the file (its MAP prototype + implementation pair). MODULE data
+        ///     only from the requesting file itself - it is invisible elsewhere. Nothing in the
+        ///     project: empty, never another app's copy;
+        ///   - when the project is ambiguous (a file shared by apps, or no project_id): the one
+        ///     visible candidate solution-wide if there is exactly one, else empty.
+        /// No request file: empty. <paramref name="requestLine1Based"/> is not used since locals were
+        /// cut; it stays in the signature for callers.
         /// </summary>
         internal List<CodeGraphSymbol> SelectDeclarations(string name, string requestFile, int requestLine1Based)
         {
@@ -350,26 +355,16 @@ namespace ClarionCodeGraph.Graph
             var all = FindAllSymbolsByName(name, 100000);
             if (all.Count == 0) return empty;
 
-            var inFile = all.FindAll(s => NormPath(s.FilePath) == file);
+            // A local of this name in the requesting file may be what is meant: not provable, so empty.
+            if (all.Exists(s => IsLocalScope(s) && NormPath(s.FilePath) == file)) return empty;
 
-            // 1. The requester's own local.
-            if (requestLine1Based > 0)
-            {
-                foreach (string parent in EnclosingScopes(file, requestLine1Based))
-                {
-                    var mine = inFile.FindAll(s => IsLocalScope(s)
-                        && string.Equals(s.ParentName, parent, StringComparison.OrdinalIgnoreCase));
-                    if (mine.Count > 0) return mine;
-                }
-            }
-
-            // Candidates visible from this file at all: not another procedure's local, and module
-            // data only when it is THIS file's (R3).
+            // Candidates visible from this file at all: never a local, and module data only when it is
+            // THIS file's (R3).
             var visible = all.FindAll(s => !IsLocalScope(s)
                 && (!IsModuleData(s) || NormPath(s.FilePath) == file));
             if (visible.Count == 0) return empty;
 
-            // 2. Exactly one project: that project only.
+            // Exactly one project: that project only.
             long project = ProjectOfFile(file);
             if (project > 0)
             {
@@ -380,7 +375,7 @@ namespace ClarionCodeGraph.Graph
                     && string.Equals(s.Type, typeAnchor.Type, StringComparison.OrdinalIgnoreCase));
             }
 
-            // 3. Project ambiguous or unknown: only a unique candidate is provable.
+            // Project ambiguous or unknown: only a unique candidate is provable.
             return visible.Count == 1 ? visible : empty;
         }
 
@@ -390,76 +385,6 @@ namespace ClarionCodeGraph.Graph
             string t = (s.Type ?? "").ToLowerInvariant();
             return t != "procedure" && t != "function" && t != "method";
         }
-
-        /// <summary>
-        /// Names of the scopes enclosing a line, innermost first: the nearest preceding
-        /// procedure/function/method/routine implementation in the file; a routine's parent; and,
-        /// when that is a DOTTED method implementation ("Class.Method" - a local class's method,
-        /// indexed as its own procedure with no parent), the nearest preceding NON-dotted
-        /// procedure/function in the file, whose locals the method body can see (generated local-class
-        /// methods follow their procedure). Pipeline run 2, R1: without that last step, a procedure's
-        /// local used inside its class method resolved to nothing (290/300) or the wrong symbol.
-        /// </summary>
-        private List<string> EnclosingScopes(string normFile, int line1Based)
-        {
-            var names = new List<string>();
-            string name, type, parent; int line;
-            if (!NearestScope(normFile, line1Based, false, out name, out type, out parent, out line))
-                return names;
-            names.Add(name);
-            string last = name;
-            if (string.Equals(type, "routine", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(parent))
-            {
-                names.Add(parent);
-                last = parent;
-            }
-            if (last.IndexOf('.') >= 0)
-            {
-                string pName, pType, pParent; int pLine;
-                if (NearestScope(normFile, line, true, out pName, out pType, out pParent, out pLine))
-                    names.Add(pName);
-            }
-            return names;
-        }
-
-        /// <summary>
-        /// The nearest scope row at or above a line in a file. <paramref name="procedureOnly"/>: only
-        /// non-dotted procedure/function rows. Prototype rows are skipped where the index records
-        /// decl_kind (older indexes lack the column; the query is retried without it).
-        /// </summary>
-        private bool NearestScope(string normFile, int line1Based, bool procedureOnly,
-            out string name, out string type, out string parent, out int line)
-        {
-            name = type = parent = null; line = 0;
-            string sql = "SELECT name, type, parent_name, line_number FROM symbols " +
-                "WHERE LOWER(file_path) = @f AND line_number <= @l " +
-                (procedureOnly
-                    ? "AND LOWER(type) IN ('procedure','function') AND name NOT LIKE '%.%' "
-                    : "AND LOWER(type) IN ('procedure','function','method','routine') ");
-            foreach (string extra in new[] { "AND COALESCE(decl_kind,'') <> 'prototype' ", "" })
-            {
-                try
-                {
-                    using (var cmd = new SQLiteCommand(sql + extra + "ORDER BY line_number DESC LIMIT 1", _connection))
-                    {
-                        cmd.Parameters.AddWithValue("@f", normFile);
-                        cmd.Parameters.AddWithValue("@l", line1Based);
-                        using (var r = cmd.ExecuteReader())
-                        {
-                            if (!r.Read()) return false;
-                            name = r.IsDBNull(0) ? "" : r.GetValue(0).ToString();
-                            type = r.IsDBNull(1) ? "" : r.GetValue(1).ToString();
-                            parent = r.IsDBNull(2) ? null : r.GetValue(2).ToString();
-                            line = r.IsDBNull(3) ? 0 : Convert.ToInt32(r.GetValue(3));
-                            return true;
-                        }
-                    }
-                }
-                catch { }   // no decl_kind column in an older index: retry without it
-            }
-            return false;
-        }
-
         /// <summary>
         /// The ONE project a file belongs to, or 0 when it is none or several (an .inc shared by apps).
         /// From the symbols declared in it, else the indexed_files audit table where present.

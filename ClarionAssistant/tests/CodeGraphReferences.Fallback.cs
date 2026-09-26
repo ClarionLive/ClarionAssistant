@@ -8,13 +8,15 @@
 //     and the implementation - and the call edges sit on the IMPLEMENTATION row only;
 //   * the SAME procedure name exists in TWO projects (template copies per app), each with its own
 //     callers - a request from app A must see A's, never B's (B1);
-//   * the SAME local name exists in TWO procedures - a request inside ProcOne must see ProcOne's local
-//     only (B1; a real db had 3,278 rows for one such name);
+//   * the SAME local name exists in TWO procedures (a real db had 3,278 rows for one such name);
 //   * file_path is stored LOWERCASED, while the files on disk are MixedCase\Source\...;
 //   * nothing records a column, so the old fallback emitted a zero-width range at column 0.
-// Pipeline run 2 (precision over recall - unprovable means EMPTY): a local used inside its procedure's
-// local-class method (R1); a usage-only file, a file in two projects, and rows with no project_id (R2);
-// the same MODULE variable in two files of one project (R3).
+// Pipeline run 2 (precision over recall - unprovable means EMPTY): a usage-only file, a file in two
+// projects, and rows with no project_id (R2); the same MODULE variable in two files of one project (R3).
+// LOCALS WERE CUT (77aceec5, John's decision after run 3): the fallback never returns a local. Every
+// local case - in its own procedure, in a local-class method body, and a local that SHADOWS a project
+// global of the same name - must come back EMPTY. The shadow case is the negative control: re-enabling
+// any locals path, or dropping the guard, turns it red.
 //
 // The position-aware overload and Character/Length are reached by REFLECTION so this compiles against
 // older providers too; a missing member is a red result there, not a build break.
@@ -142,8 +144,8 @@ static class CodeGraphReferencesFallback
                       + mainBId + "," + implBId + ",'calls','" + mainB.ToLowerInvariant() + "',7)");
 
                 // --- pipeline run 2 fixtures ---------------------------------------------------
-                // R1: a procedure's local used inside its LOCAL CLASS METHOD, which the index stores as
-                //     its own dotted procedure with no parent_name.
+                // A procedure's local used inside its LOCAL CLASS METHOD, which the index stores as its
+                // own dotted procedure with no parent_name - one reason locals cannot be attributed.
                 Sym(c, "ProcThree", "procedure", implA, 30, 1, "module", "implementation", null);
                 Sym(c, "Counter", "variable", implA, 31, 1, "local", null, "ProcThree");
                 Sym(c, "ThreeClass.Bump", "function", implA, 35, 1, "module", "implementation", null);
@@ -163,6 +165,9 @@ static class CodeGraphReferencesFallback
                 // R3: the same MODULE variable name in two files of one project.
                 Sym(c, "ModVar", "variable", implA, 2, 1, "module", null, null);
                 Sym(c, "ModVar", "variable", impl2A, 2, 1, "module", null, null);
+                // NEGATIVE CONTROL: a local in ProcOne that shadows a project GLOBAL of the same name.
+                Sym(c, "Shadowed", "variable", mainA, 2, 1, "global", null, null);
+                Sym(c, "Shadowed", "variable", implA, 13, 1, "local", null, "ProcOne");
             }
 
             string runDir = Path.GetFileName(root);
@@ -178,7 +183,7 @@ static class CodeGraphReferencesFallback
             };
 
             List<ReferenceLocation> fromA, fromB, localOne, localTwo, noFile,
-                inMethod, usageOnly, sharedTwo, sharedOne, looseTwo, looseOne, modVar;
+                inMethod, usageOnly, sharedTwo, sharedOne, looseTwo, looseOne, modVar, shadowed;
             using (var p = new CodeGraphProvider())
             {
                 Check(p.Open(db), "provider opens the synthetic db");
@@ -194,6 +199,7 @@ static class CodeGraphReferencesFallback
                 looseTwo   = Refs(p, "LooseTwice", looseA, 10);     // R2c: no project, 2 candidates
                 looseOne   = Refs(p, "LooseOnce", looseA, 10);      // R2c: no project, 1 candidate
                 modVar     = Refs(p, "ModVar", implA, 5);           // R3
+                shadowed   = Refs(p, "Shadowed", implA, 14);        // local shadowing a global, in ProcOne
             }
             SQLiteConnection.ClearAllPools();
             dump("SecondProc from app A", fromA);
@@ -219,19 +225,19 @@ static class CodeGraphReferencesFallback
                 && fromB.Count == 3 && !fromB.Exists(r => r.FilePath.IndexOf("MixedCase", StringComparison.OrdinalIgnoreCase) >= 0),
                 "B: exactly its own prototype, implementation and call (got " + fromB.Count + ")");
 
-            // --- locals: the requester's procedure only
-            Check(localOne.Count == 1 && find(localOne, A + "Impl.clw", 12) != null,
-                "local in ProcOne resolves to ProcOne's declaration only (got " + localOne.Count + ") - B1");
-            Check(localTwo.Count == 1 && find(localTwo, A + "Impl.clw", 22) != null,
-                "local in ProcTwo resolves to ProcTwo's declaration only (got " + localTwo.Count + ") - B1");
+            // --- locals are never returned (cut, 77aceec5): the language server answers them
+            Check(localOne.Count == 0, "local in ProcOne -> EMPTY (got " + localOne.Count + ")");
+            Check(localTwo.Count == 0, "local in ProcTwo -> EMPTY (got " + localTwo.Count + ")");
+            // NEGATIVE CONTROL: the local shadows a project global. Returning the global would be the
+            // wrong symbol, returning the local re-enables the cut path - both are red.
+            Check(shadowed.Count == 0,
+                "local shadowing a project global -> EMPTY, neither the local nor the global (got " + shadowed.Count + ")");
 
-            // --- no request position: the project cannot be proven, so ONE row - never the union
             // PRECISION OVER RECALL (pipeline run 2): unprovable = empty, never an arbitrary row.
             Check(noFile.Count == 0, "no request file: EMPTY, not an arbitrary row (got " + noFile.Count + ")");
 
-            // --- R1: a procedure's local, used inside that procedure's local-class method
-            Check(inMethod.Count == 1 && find(inMethod, A + "Impl.clw", 31) != null,
-                "R1: local used in a class method resolves to its procedure's declaration (got " + inMethod.Count + ")");
+            // --- a procedure's local used inside its local-class method: EMPTY (cut)
+            Check(inMethod.Count == 0, "local used in a class method -> EMPTY (got " + inMethod.Count + ")");
 
             // --- R2: never another app's declaration
             Check(usageOnly.Count == 0,
