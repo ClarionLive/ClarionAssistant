@@ -261,8 +261,8 @@ namespace ClarionCodeGraph.Graph
         }
 
         /// <summary>
-        /// All references to a symbol name: its definition (isDefinition=true) plus every call
-        /// site. Backs textDocument/references. Port of bridge.getReferences.
+        /// References to a symbol name with NO request position. Nothing is then provably visible,
+        /// so this is always empty; use the position-aware overload. Kept for the old signature.
         /// </summary>
         public List<ReferenceLocation> GetReferences(string symbolName)
         {
@@ -277,9 +277,9 @@ namespace ClarionCodeGraph.Graph
         /// procedure copied into every app (5,426 names with per-app duplicates). Merging them
         /// reported unrelated definitions and cross-app callers (77aceec5, pipeline run 1). So the
         /// declarations are chosen from the requester's position (see <see cref="SelectDeclarations"/>),
-        /// and when that cannot be proven the answer narrows to ONE row rather than widening.
+        /// and when visibility cannot be proven the answer is EMPTY - never an arbitrary row.
         /// </summary>
-        /// <param name="requestFile">The file the request came from, or null (then: a single row).</param>
+        /// <param name="requestFile">The file the request came from, or null (then: empty).</param>
         /// <param name="requestLine1Based">1-based line of the request, or 0 when unknown.</param>
         public List<ReferenceLocation> GetReferences(string symbolName, string requestFile, int requestLine1Based)
         {
@@ -324,29 +324,36 @@ namespace ClarionCodeGraph.Graph
         }
 
         /// <summary>
-        /// The declaration rows a reference request means, chosen from where it was made:
-        ///   1. a LOCAL/PARAMETER declared in the requester's own routine or procedure (same
-        ///      file_path AND parent_name) - and only that one;
-        ///   2. otherwise the non-local rows of the requester's PROJECT with the same type as the
-        ///      one visible from the requesting file - the MAP prototype + implementation pair of THAT
-        ///      app, never another app's copy;
-        ///   3. if the project cannot be proven (no request file, or the file maps to zero or several
-        ///      projects): ONE row, deterministically - the one in the requesting file, else the first
-        ///      by scope/file/line. Narrow, never a broad union.
-        /// Locals of OTHER procedures are never candidates.
+        /// The declaration rows a reference request means, chosen from where it was made.
+        ///
+        /// PRECISION OVER RECALL (pipeline run 2). This backs a FALLBACK that runs only when the
+        /// language server gave no answer; a wrong answer there is worse than none, because it is
+        /// presented as the server's. So a declaration is returned only when it is PROVEN visible from
+        /// the requesting position, and the result is otherwise EMPTY - never an arbitrary row:
+        ///   1. a LOCAL/PARAMETER (or routine) declared in the requester's own routine, method or
+        ///      procedure - same file_path AND parent_name. A local-class method body sees its
+        ///      procedure's locals too (see <see cref="EnclosingScopes"/>);
+        ///   2. otherwise, when the requesting file belongs to exactly ONE project: that project's
+        ///      non-local rows of the type visible from the file (its MAP prototype + implementation
+        ///      pair). MODULE data only from the requesting file itself - it is invisible elsewhere.
+        ///      Nothing in the project: empty, never another app's copy;
+        ///   3. when the project is ambiguous (a file shared by apps, or no project_id): the one
+        ///      visible candidate solution-wide if there is exactly one, else empty.
+        /// No request file: empty.
         /// </summary>
         internal List<CodeGraphSymbol> SelectDeclarations(string name, string requestFile, int requestLine1Based)
         {
-            var result = new List<CodeGraphSymbol>();
-            var all = FindAllSymbolsByName(name, 100000);
-            if (all.Count == 0) return result;
-
+            var empty = new List<CodeGraphSymbol>();
             string file = NormPath(requestFile);
-            var inFile = file == null ? new List<CodeGraphSymbol>()
-                : all.FindAll(s => NormPath(s.FilePath) == file);
+            if (file == null) return empty;
+
+            var all = FindAllSymbolsByName(name, 100000);
+            if (all.Count == 0) return empty;
+
+            var inFile = all.FindAll(s => NormPath(s.FilePath) == file);
 
             // 1. The requester's own local.
-            if (file != null && requestLine1Based > 0)
+            if (requestLine1Based > 0)
             {
                 foreach (string parent in EnclosingScopes(file, requestLine1Based))
                 {
@@ -356,66 +363,101 @@ namespace ClarionCodeGraph.Graph
                 }
             }
 
-            var nonLocal = all.FindAll(s => !IsLocalScope(s));
-            if (nonLocal.Count == 0) return result;   // only other procedures' locals: none of ours
+            // Candidates visible from this file at all: not another procedure's local, and module
+            // data only when it is THIS file's (R3).
+            var visible = all.FindAll(s => !IsLocalScope(s)
+                && (!IsModuleData(s) || NormPath(s.FilePath) == file));
+            if (visible.Count == 0) return empty;
 
-            CodeGraphSymbol anchor = inFile.Find(s => !IsLocalScope(s)) ?? nonLocal[0];
-
-            // 2. The requester's project.
-            long project = file != null ? ProjectOfFile(file) : 0;
+            // 2. Exactly one project: that project only.
+            long project = ProjectOfFile(file);
             if (project > 0)
             {
-                CodeGraphSymbol typeAnchor = inFile.Find(s => !IsLocalScope(s) && s.ProjectId == project)
-                    ?? nonLocal.Find(s => s.ProjectId == project);
-                if (typeAnchor != null)
-                {
-                    result = nonLocal.FindAll(s => s.ProjectId == project
-                        && string.Equals(s.Type, typeAnchor.Type, StringComparison.OrdinalIgnoreCase));
-                    if (result.Count > 0) return result;
-                }
+                CodeGraphSymbol typeAnchor = visible.Find(s => s.ProjectId == project && NormPath(s.FilePath) == file)
+                    ?? visible.Find(s => s.ProjectId == project);
+                if (typeAnchor == null) return empty;   // declared only in other projects: not ours
+                return visible.FindAll(s => s.ProjectId == project
+                    && string.Equals(s.Type, typeAnchor.Type, StringComparison.OrdinalIgnoreCase));
             }
 
-            // 3. Not provable: a single row.
-            result = new List<CodeGraphSymbol> { anchor };
-            return result;
+            // 3. Project ambiguous or unknown: only a unique candidate is provable.
+            return visible.Count == 1 ? visible : empty;
+        }
+
+        private static bool IsModuleData(CodeGraphSymbol s)
+        {
+            if (!string.Equals(s.Scope, "module", StringComparison.OrdinalIgnoreCase)) return false;
+            string t = (s.Type ?? "").ToLowerInvariant();
+            return t != "procedure" && t != "function" && t != "method";
         }
 
         /// <summary>
-        /// Names of the routine/procedure enclosing a line (innermost first): the nearest preceding
-        /// procedure/function/method/routine row in the file, plus the routine's parent procedure.
-        /// Prototype rows are skipped where the index records decl_kind.
+        /// Names of the scopes enclosing a line, innermost first: the nearest preceding
+        /// procedure/function/method/routine implementation in the file; a routine's parent; and,
+        /// when that is a DOTTED method implementation ("Class.Method" - a local class's method,
+        /// indexed as its own procedure with no parent), the nearest preceding NON-dotted
+        /// procedure/function in the file, whose locals the method body can see (generated local-class
+        /// methods follow their procedure). Pipeline run 2, R1: without that last step, a procedure's
+        /// local used inside its class method resolved to nothing (290/300) or the wrong symbol.
         /// </summary>
         private List<string> EnclosingScopes(string normFile, int line1Based)
         {
             var names = new List<string>();
-            const string baseSql =
-                "SELECT name, type, parent_name FROM symbols " +
+            string name, type, parent; int line;
+            if (!NearestScope(normFile, line1Based, false, out name, out type, out parent, out line))
+                return names;
+            names.Add(name);
+            string last = name;
+            if (string.Equals(type, "routine", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(parent))
+            {
+                names.Add(parent);
+                last = parent;
+            }
+            if (last.IndexOf('.') >= 0)
+            {
+                string pName, pType, pParent; int pLine;
+                if (NearestScope(normFile, line, true, out pName, out pType, out pParent, out pLine))
+                    names.Add(pName);
+            }
+            return names;
+        }
+
+        /// <summary>
+        /// The nearest scope row at or above a line in a file. <paramref name="procedureOnly"/>: only
+        /// non-dotted procedure/function rows. Prototype rows are skipped where the index records
+        /// decl_kind (older indexes lack the column; the query is retried without it).
+        /// </summary>
+        private bool NearestScope(string normFile, int line1Based, bool procedureOnly,
+            out string name, out string type, out string parent, out int line)
+        {
+            name = type = parent = null; line = 0;
+            string sql = "SELECT name, type, parent_name, line_number FROM symbols " +
                 "WHERE LOWER(file_path) = @f AND line_number <= @l " +
-                "AND LOWER(type) IN ('procedure','function','method','routine') ";
+                (procedureOnly
+                    ? "AND LOWER(type) IN ('procedure','function') AND name NOT LIKE '%.%' "
+                    : "AND LOWER(type) IN ('procedure','function','method','routine') ");
             foreach (string extra in new[] { "AND COALESCE(decl_kind,'') <> 'prototype' ", "" })
             {
                 try
                 {
-                    using (var cmd = new SQLiteCommand(baseSql + extra + "ORDER BY line_number DESC LIMIT 1", _connection))
+                    using (var cmd = new SQLiteCommand(sql + extra + "ORDER BY line_number DESC LIMIT 1", _connection))
                     {
                         cmd.Parameters.AddWithValue("@f", normFile);
                         cmd.Parameters.AddWithValue("@l", line1Based);
                         using (var r = cmd.ExecuteReader())
                         {
-                            if (r.Read())
-                            {
-                                names.Add(r.IsDBNull(0) ? "" : r.GetValue(0).ToString());
-                                string type = r.IsDBNull(1) ? "" : r.GetValue(1).ToString();
-                                if (string.Equals(type, "routine", StringComparison.OrdinalIgnoreCase) && !r.IsDBNull(2))
-                                    names.Add(r.GetValue(2).ToString());
-                            }
+                            if (!r.Read()) return false;
+                            name = r.IsDBNull(0) ? "" : r.GetValue(0).ToString();
+                            type = r.IsDBNull(1) ? "" : r.GetValue(1).ToString();
+                            parent = r.IsDBNull(2) ? null : r.GetValue(2).ToString();
+                            line = r.IsDBNull(3) ? 0 : Convert.ToInt32(r.GetValue(3));
+                            return true;
                         }
                     }
-                    return names;   // the query ran (with or without decl_kind): done
                 }
-                catch { names.Clear(); }   // no decl_kind column in an older index: retry without it
+                catch { }   // no decl_kind column in an older index: retry without it
             }
-            return names;
+            return false;
         }
 
         /// <summary>

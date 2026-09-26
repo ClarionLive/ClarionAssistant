@@ -12,6 +12,9 @@
 //     only (B1; a real db had 3,278 rows for one such name);
 //   * file_path is stored LOWERCASED, while the files on disk are MixedCase\Source\...;
 //   * nothing records a column, so the old fallback emitted a zero-width range at column 0.
+// Pipeline run 2 (precision over recall - unprovable means EMPTY): a local used inside its procedure's
+// local-class method (R1); a usage-only file, a file in two projects, and rows with no project_id (R2);
+// the same MODULE variable in two files of one project (R3).
 //
 // The position-aware overload and Character/Length are reached by REFLECTION so this compiles against
 // older providers too; a missing member is a red result there, not a build break.
@@ -41,7 +44,7 @@ static class CodeGraphReferencesFallback
     static long Sym(SQLiteConnection c, string name, string type, string file, int line, int project, string scope, string declKind, string parent)
     {
         Exec(c, "INSERT INTO symbols (name,type,file_path,line_number,project_id,scope,decl_kind,parent_name) VALUES ('"
-            + name + "','" + type + "','" + file.ToLowerInvariant() + "'," + line + "," + project + ",'" + scope + "',"
+            + name + "','" + type + "','" + file.ToLowerInvariant() + "'," + line + "," + (project == 0 ? "NULL" : project.ToString()) + ",'" + scope + "',"
             + (declKind == null ? "NULL" : "'" + declKind + "'") + "," + (parent == null ? "NULL" : "'" + parent + "'") + ")");
         using (var cmd = new SQLiteCommand("SELECT last_insert_rowid()", c)) return (long)cmd.ExecuteScalar();
     }
@@ -64,6 +67,11 @@ static class CodeGraphReferencesFallback
         string implA = Path.Combine(srcA, "Impl.clw");
         string mainB = Path.Combine(srcB, "Main.clw");
         string implB = Path.Combine(srcB, "Impl.clw");
+        string usageA = Path.Combine(srcA, "Usage.clw");
+        string impl2A = Path.Combine(srcA, "Impl2.clw");
+        string sharedInc = Path.Combine(root, "Shared.inc");
+        string looseA = Path.Combine(root, "Loose.clw");
+        string looseB = Path.Combine(root, "Loose2.clw");
 
         // App A. 1-based lines: MAP entry 4, Main 6, call 7; SecondProc impl 3; ProcOne 10 (local 12);
         // ProcTwo 20 (local 22).
@@ -132,6 +140,29 @@ static class CodeGraphReferencesFallback
                 long mainBId = Sym(c, "Main", "procedure", mainB, 6, 2, "global", "implementation", null);
                 Exec(c, "INSERT INTO relationships (from_id,to_id,type,file_path,line_number) VALUES ("
                       + mainBId + "," + implBId + ",'calls','" + mainB.ToLowerInvariant() + "',7)");
+
+                // --- pipeline run 2 fixtures ---------------------------------------------------
+                // R1: a procedure's local used inside its LOCAL CLASS METHOD, which the index stores as
+                //     its own dotted procedure with no parent_name.
+                Sym(c, "ProcThree", "procedure", implA, 30, 1, "module", "implementation", null);
+                Sym(c, "Counter", "variable", implA, 31, 1, "local", null, "ProcThree");
+                Sym(c, "ThreeClass.Bump", "function", implA, 35, 1, "module", "implementation", null);
+                // R2a: a usage-only file of app A; the name is declared only in app B.
+                Sym(c, "UsageProc", "procedure", usageA, 1, 1, "module", "implementation", null);
+                Sym(c, "OnlyInB", "procedure", implB, 10, 2, "module", "implementation", null);
+                // R2b: a file in TWO projects; one name declared in both apps, one in a single app.
+                Sym(c, "SharedA", "variable", sharedInc, 1, 1, "global", null, null);
+                Sym(c, "SharedB", "variable", sharedInc, 2, 2, "global", null, null);
+                Sym(c, "Twice", "procedure", implA, 40, 1, "module", "implementation", null);
+                Sym(c, "Twice", "procedure", implB, 40, 2, "module", "implementation", null);
+                Sym(c, "OnceOnly", "procedure", implA, 45, 1, "module", "implementation", null);
+                // R2c: rows with NO project_id at all.
+                Sym(c, "LooseOnce", "procedure", looseA, 2, 0, "global", null, null);
+                Sym(c, "LooseTwice", "procedure", looseA, 3, 0, "global", null, null);
+                Sym(c, "LooseTwice", "procedure", looseB, 3, 0, "global", null, null);
+                // R3: the same MODULE variable name in two files of one project.
+                Sym(c, "ModVar", "variable", implA, 2, 1, "module", null, null);
+                Sym(c, "ModVar", "variable", impl2A, 2, 1, "module", null, null);
             }
 
             string runDir = Path.GetFileName(root);
@@ -146,7 +177,8 @@ static class CodeGraphReferencesFallback
                 foreach (var r in refs) Console.WriteLine("       " + r.FilePath + ":" + r.LineNumber + (r.IsDefinition ? " (decl)" : ""));
             };
 
-            List<ReferenceLocation> fromA, fromB, localOne, localTwo, noFile;
+            List<ReferenceLocation> fromA, fromB, localOne, localTwo, noFile,
+                inMethod, usageOnly, sharedTwo, sharedOne, looseTwo, looseOne, modVar;
             using (var p = new CodeGraphProvider())
             {
                 Check(p.Open(db), "provider opens the synthetic db");
@@ -155,6 +187,13 @@ static class CodeGraphReferencesFallback
                 localOne = Refs(p, "LocalRequest", implA, 14);   // inside ProcOne
                 localTwo = Refs(p, "LocalRequest", implA, 24);   // inside ProcTwo
                 noFile   = Refs(p, "SecondProc", null, 0);          // position unknown
+                inMethod   = Refs(p, "Counter", implA, 37);         // R1: inside ThreeClass.Bump
+                usageOnly  = Refs(p, "OnlyInB", usageA, 3);         // R2a
+                sharedTwo  = Refs(p, "Twice", sharedInc, 5);        // R2b: ambiguous project, 2 candidates
+                sharedOne  = Refs(p, "OnceOnly", sharedInc, 5);     // R2b: ambiguous project, 1 candidate
+                looseTwo   = Refs(p, "LooseTwice", looseA, 10);     // R2c: no project, 2 candidates
+                looseOne   = Refs(p, "LooseOnce", looseA, 10);      // R2c: no project, 1 candidate
+                modVar     = Refs(p, "ModVar", implA, 5);           // R3
             }
             SQLiteConnection.ClearAllPools();
             dump("SecondProc from app A", fromA);
@@ -187,7 +226,28 @@ static class CodeGraphReferencesFallback
                 "local in ProcTwo resolves to ProcTwo's declaration only (got " + localTwo.Count + ") - B1");
 
             // --- no request position: the project cannot be proven, so ONE row - never the union
-            Check(noFile.Count == 1, "no request file: a single declaration row, not a union (got " + noFile.Count + ")");
+            // PRECISION OVER RECALL (pipeline run 2): unprovable = empty, never an arbitrary row.
+            Check(noFile.Count == 0, "no request file: EMPTY, not an arbitrary row (got " + noFile.Count + ")");
+
+            // --- R1: a procedure's local, used inside that procedure's local-class method
+            Check(inMethod.Count == 1 && find(inMethod, A + "Impl.clw", 31) != null,
+                "R1: local used in a class method resolves to its procedure's declaration (got " + inMethod.Count + ")");
+
+            // --- R2: never another app's declaration
+            Check(usageOnly.Count == 0,
+                "R2a: name declared only in ANOTHER project -> empty (got " + usageOnly.Count + ")");
+            Check(sharedTwo.Count == 0,
+                "R2b: file in two projects, name in both -> empty (got " + sharedTwo.Count + ")");
+            Check(sharedOne.Count == 1 && find(sharedOne, A + "Impl.clw", 45) != null,
+                "R2b: file in two projects, exactly one candidate -> that one (got " + sharedOne.Count + ")");
+            Check(looseTwo.Count == 0,
+                "R2c: no project_id, two candidates -> empty (got " + looseTwo.Count + ")");
+            Check(looseOne.Count == 1,
+                "R2c: no project_id, exactly one candidate -> that one (got " + looseOne.Count + ")");
+
+            // --- R3: module data is visible only in its own file
+            Check(modVar.Count == 1 && find(modVar, A + "Impl.clw", 2) != null,
+                "R3: module variable resolves to the requesting file's own only (got " + modVar.Count + ")");
 
             // --- real width, via reflection (absent fields = the pre-fix provider = red)
             FieldInfo fChar = typeof(ReferenceLocation).GetField("Character");
