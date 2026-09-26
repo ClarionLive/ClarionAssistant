@@ -103,11 +103,13 @@ namespace ClarionAssistant
         private EventHandler _selectedHandler;
         private Timer _hookRetry;        // OnReady-time hook attach: retries until the workbench window is realized
 
-        // Cover that hides the native editor until Monaco paints. Light (#eff1f5) to match the page's DEFAULT
-        // light theme. (It cannot hide the WebView2 itself — a native HWND always paints over WinForms siblings,
-        // so the on-load flash is fixed on the page side by applying the theme on first paint; this cover only
-        // keeps the native ClaTextAreaControl from peeking through underneath.)
-        private static readonly Color CoverColor = Color.FromArgb(0xEF, 0xF1, 0xF5);
+        // Cover that hides the native editor until Monaco paints: the same pre-paint backdrop as the Monaco
+        // control it covers for (the mirrored theme pref; the system window colour under Windows High
+        // Contrast, GH #195 — it used to be light regardless). It cannot hide the WebView2 itself — a native
+        // HWND always paints over WinForms siblings, so the on-load flash is fixed on the page side by
+        // applying the theme on first paint; this cover only keeps the native ClaTextAreaControl from
+        // peeking through underneath.
+        private static Color CoverColor { get { return MonacoEditorControl.PrePaintBackdrop(Services.CaEditorSettings.MonacoThemeDark); } }
 
         // Every live tab, so a build-triggered save (SaveAllDirtyBeforeBuild) can reach all of them. This
         // class has no other central registry — unlike ModernEmbeditorViewContent's own _instances — because

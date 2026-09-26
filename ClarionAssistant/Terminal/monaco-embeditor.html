@@ -22,6 +22,12 @@
     }
 
     html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', Tahoma, sans-serif; background: var(--bg); color: var(--fg); }
+    /* GH #195: Windows High Contrast — before Monaco paints, the backdrop is the contrast theme's own window
+       colour, not the light/dark pref's (a near-white flash for a dark contrast theme). !important beats the
+       early inline background the boot script sets. */
+    @media (forced-colors: active) {
+        html, body { background: Canvas !important; color: CanvasText; }
+    }
 
     #toolbar {
         display: flex; align-items: center; gap: 8px;
@@ -1211,7 +1217,17 @@
         // Apply the persisted theme to the document IMMEDIATELY — before Monaco initializes — so the page never
         // shows its default-dark body for the ~1s Monaco takes to load (that was the on-load "black flash",
         // most visible on a light theme). setTheme() still re-applies once Monaco is live.
-        try { document.documentElement.style.background = themePrefDark ? '#1e1e2e' : '#eff1f5'; } catch (e) { }
+        // GH #195: high contrast gets its own backdrop. Windows High Contrast (forced colors) -> the system
+        // window colour, which is what Monaco's auto-detected hc theme paints; Monaco's own persisted HC toggle
+        // -> hc-black (from dark) / hc-light (from light), pure black / white. Otherwise the pref's colour.
+        try {
+            var forcedColors = !!(window.matchMedia && window.matchMedia('(forced-colors: active)').matches);
+            var monacoHc = false;
+            try { monacoHc = localStorage.getItem('modernEmbeditor.themeHC') === '1'; } catch (e) { }
+            document.documentElement.style.background = forcedColors ? 'Canvas'
+                : monacoHc ? (themePrefDark ? '#000000' : '#ffffff')
+                : (themePrefDark ? '#1e1e2e' : '#eff1f5');
+        } catch (e) { }
         function applyEarlyTheme() { try { document.body.classList.toggle('light', !themePrefDark); } catch (e) { } }
         if (document.body) applyEarlyTheme(); else document.addEventListener('DOMContentLoaded', applyEarlyTheme);
         // Mirror the effective pref to the host (settings.txt) so the NEXT open's pre-paint surfaces —
@@ -4131,11 +4147,31 @@
     // longer clearing markers (below), overshooting costs nothing but a late no-op.
     var DIAG_TIMEOUT_MS = 10000;
 
+    // GH #176: ordering guard. requestFromHost correlates each reply to its own request, but nothing said
+    // whether that reply is still the NEWEST one — setModelMarkers replaces the whole set, so whichever
+    // .then ran last won, even an older request's, and painted line numbers from another buffer version
+    // (squiggles a few lines off until the next round-trip). Each request is stamped with a sequence
+    // number and the model's version id at dispatch; a reply renders only if no newer request has been
+    // sent AND the buffer it was computed for is still the buffer on screen.
+    var diagReqSeq = 0;
+
     function refreshDiagnostics() {
         if (!editor) return;
         var model = editor.getModel();
+        var mySeq = ++diagReqSeq;
+        var myVersion = model.getVersionId();
         requestFromHost('diagnostics', { buffer: model.getValue(), ranges: liveEditableRanges() }, DIAG_TIMEOUT_MS)
             .then(function (resp) {
+                // Superseded: a newer request is in flight (or already rendered) — its answer owns the markers.
+                if (mySeq !== diagReqSeq) return;
+                // The buffer moved on since dispatch (or the model was swapped): these line numbers belong to
+                // text that is no longer on screen. Ask again for the current buffer rather than paint them —
+                // a programmatic edit may not have scheduled a pass of its own. Only when no pass is pending:
+                // typing already armed one, and re-arming would just push it back.
+                if (!editor || editor.getModel() !== model || model.getVersionId() !== myVersion) {
+                    if (editor && editor.getModel() === model && !diagTimer) scheduleDiagnostics();
+                    return;
+                }
                 // null = the host never replied in time: NO INFORMATION, which is not the same claim as
                 // "this file has zero diagnostics". setModelMarkers REPLACES the whole set, so treating a
                 // timeout as an empty list actively wipes every squiggle AND its gutter/overview-ruler
@@ -4161,7 +4197,7 @@
 
     function scheduleDiagnostics() {
         if (diagTimer) clearTimeout(diagTimer);
-        diagTimer = setTimeout(refreshDiagnostics, 600);
+        diagTimer = setTimeout(function () { diagTimer = null; refreshDiagnostics(); }, 600);   // null = no pass pending
     }
 
     // registerClarionFolding() now lives in the shared clarion-language.js (loaded above) so the
@@ -4924,7 +4960,7 @@
         }
         if ((el = document.getElementById('setFontFamily'))) {
             var followingFontFamily = (s.followIdeIndentation !== false) && _ideOpts && typeof _ideOpts.fontFamily === 'string' && _ideOpts.fontFamily !== '';
-            el.value = followingFontFamily ? _ideOpts.fontFamily : ((typeof s.fontFamily === 'string') ? s.fontFamily : '');
+            setFontFamilyBox(el, followingFontFamily ? _ideOpts.fontFamily : ((typeof s.fontFamily === 'string') ? s.fontFamily : ''));
         }
         if ((el = document.getElementById('setOccurrenceHighlight'))) el.checked = (s.occurrenceHighlight !== false);   // default ON (#62)
         if ((el = document.getElementById('setHorizontalScrollbar'))) el.value = s.horizontalScrollbar || 'auto';
@@ -5010,7 +5046,7 @@
             minimap: chk('setMinimap'),
             completeOnInsertKey: chk('setCompleteOnInsertKey'),
             fontSize: storedPref('fontSize', num('setFontSize', 13, 6, 48)),
-            fontFamily: storedPref('fontFamily', (function () { var e = document.getElementById('setFontFamily'); return e ? e.value.trim().slice(0, 64) : ''; })()),
+            fontFamily: storedPref('fontFamily', (function () { var e = document.getElementById('setFontFamily'); return e ? fontFamilyFieldValue(e).trim().slice(0, 64) : ''; })()),
             occurrenceHighlight: (function () { var e = document.getElementById('setOccurrenceHighlight'); return e ? !!e.checked : true; })(),
             horizontalScrollbar: sel('setHorizontalScrollbar', 'auto'),
             // ----- Smart Formatter -----
@@ -5098,7 +5134,7 @@
         if (!e) return;
         // Set the control ONLY — deliberately no 'change' dispatch. The import commits once via
         // onSettingChanged(); firing per-control events would post one saveSettings per imported key.
-        if (m.kind === 'chk') e.checked = !!v; else e.value = String(v);
+        if (m.kind === 'chk') e.checked = !!v; else if (e.id === 'setFontFamily') setFontFamilyBox(e, String(v)); else e.value = String(v);
         // An import IS a deliberate new stored pref, so update _storedPrefs for the follow-owned keys as well.
         // Without this, importing a font while follow-mode owns the field would write the value into a control
         // that storedPref() then overrides on the commit below, and the imported font would vanish silently.
@@ -5540,6 +5576,56 @@
         ov.remove();
     }
 
+    // ===================== Font family picker (GH #184)
+    // A native <input list> filters its <datalist> by the text already in the box, so once a font was set,
+    // opening the list showed only that one font. While the box has focus it is blanked (the full list shows;
+    // the current font stays readable as the placeholder), and on the way out the old value is put back
+    // unless the developer picked or typed something. Deliberately erasing it still means "default": the
+    // erase is an input event, so it counts as an edit. fontFamilyFieldValue() reads through the blanking,
+    // so anything that saves settings while the box is focused never mistakes it for "default".
+    var _ffStash = null;         // the value the box held when it was blanked; null = not blanked
+    var _ffEdited = false;       // an input event since blanking (a pick from the list is one)
+    var _ffPlaceholder = null;
+    function fontFamilyFieldValue(e) {
+        if (!e) return '';
+        if (e.value === '' && _ffStash !== null && !_ffEdited) return _ffStash;
+        return e.value;
+    }
+    function ffBlank(e) {
+        if (_ffStash !== null || e.disabled || e.value === '') return;
+        _ffStash = e.value;
+        _ffEdited = false;
+        _ffPlaceholder = e.placeholder;
+        e.placeholder = _ffStash;
+        e.value = '';
+    }
+    // Every page write to the box goes through here (settings from the host, follow-IDE, VS Code import): the
+    // written value is the new truth, so drop any blanking state — blur must not put the old font back over it.
+    function setFontFamilyBox(e, v) {
+        if (_ffStash !== null) { e.placeholder = _ffPlaceholder; _ffStash = null; _ffEdited = false; }
+        e.value = v;
+    }
+    function ffRestore(e) {
+        if (_ffStash === null) return;
+        if (e.value === '' && !_ffEdited) e.value = _ffStash;
+        e.placeholder = _ffPlaceholder;
+        _ffStash = null;
+        _ffEdited = false;
+    }
+    function wireFontFamilyPicker() {
+        var e = document.getElementById('setFontFamily');
+        if (!e) return;
+        // Only on the way IN. A click inside the already-focused box (to edit the name in place, say to add a
+        // fallback font) leaves the text alone; the full list comes back on the next focus.
+        e.addEventListener('focus', function () { ffBlank(e); });
+        e.addEventListener('input', function () { if (_ffStash !== null) _ffEdited = true; });
+        // Must be registered BEFORE the generic change -> onSettingChanged listener: a change that fires on the
+        // way out while the box is still blank then sees the restored value, not a false "default".
+        e.addEventListener('change', function () { ffRestore(e); });
+        e.addEventListener('blur', function () { ffRestore(e); });
+    }
+    // ===================== end Font family picker
+
     function wireSettingsPanel() {
         var btn = document.getElementById('settingsBtn');
         if (btn) btn.addEventListener('click', function () {
@@ -5550,6 +5636,7 @@
             // reopening later must not offer a stale "current → imported" the developer has since changed.
             if (p.classList.contains('hidden')) vscHide();
         });
+        wireFontFamilyPicker();   // GH #184 — before the change listeners below (see its comment)
         var ids = ['setCursorBehindEol', 'setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setFontFamily', 'setOccurrenceHighlight', 'setHorizontalScrollbar',
             // Smart Formatter controls
             'setPreferredColumn', 'setContLineMultiplier', 'setIndentComments', 'setDontIndentCol1Comments', 'setFormatLineOnEnter',
@@ -5576,7 +5663,7 @@
                 var s = _storedPrefs || lastSettings || {};   // _storedPrefs is null until the first host payload
                 var el;
                 if ((el = document.getElementById('setFontSize')) && typeof s.fontSize === 'number') el.value = s.fontSize;
-                if ((el = document.getElementById('setFontFamily'))) el.value = (typeof s.fontFamily === 'string') ? s.fontFamily : '';
+                if ((el = document.getElementById('setFontFamily'))) setFontFamilyBox(el, (typeof s.fontFamily === 'string') ? s.fontFamily : '');
                 if ((el = document.getElementById('setCursorBehindEol'))) el.checked = !!s.cursorBehindEOL;
             }
             syncFollowIdeUi();
