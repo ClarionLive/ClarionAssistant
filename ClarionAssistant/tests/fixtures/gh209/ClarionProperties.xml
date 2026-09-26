@@ -1,0 +1,146 @@
+<ClarionProperties>
+  <!-- GH #209 fixture: the reporter's ClarionProperties.xml (attached to the issue),
+       cut down to the two elements ClarionVersionService reads - Clarion.Versions (verbatim) and
+       Clarion.Version (verbatim). Everything else (serials, name, search history) is dropped. -->
+  <Properties name="Clarion.Versions">
+    <Properties name="Clarion.NET 2.0.11529">
+      <path value="C:\Program Files\Clarion91\bin" />
+      <IsWindowsVersion value="False" />
+      <Properties name="RedirectionFile">
+        <Name value="ClarionNet20.red" />
+        <SupportsInclude value="True" />
+        <Properties name="Macros">
+          <root value="C:\Program Files\Clarion91" />
+          <reddir value="C:\Program Files\Clarion91\bin" />
+        </Properties>
+      </Properties>
+      <libsrc value="C:\Program Files\Clarion91\libsrc\DotNet" />
+      <ini value="" />
+    </Properties>
+    <Properties name="Clarion.NET 4.0.12799">
+      <path value="C:\Clarion\v10\bin" />
+      <IsWindowsVersion value="False" />
+      <Properties name="RedirectionFile">
+        <Name value="ClarionNet40.red" />
+        <SupportsInclude value="True" />
+        <Properties name="Macros">
+          <root value="C:\Clarion\v10" />
+          <reddir value="C:\Clarion\v10\bin" />
+        </Properties>
+      </Properties>
+      <libsrc value="C:\Clarion\v10\libsrc\DotNet" />
+      <CWVersion value="2000" />
+      <ini value="" />
+    </Properties>
+    <Properties name="Clarion.NET 4.0.13372">
+      <path value="C:\Clarion\v11\bin" />
+      <IsWindowsVersion value="False" />
+      <Properties name="RedirectionFile">
+        <Name value="ClarionNet40.red" />
+        <SupportsInclude value="True" />
+        <Properties name="Macros">
+          <root value="C:\Clarion\v11" />
+          <reddir value="C:\Clarion\v11\bin" />
+        </Properties>
+      </Properties>
+      <libsrc value="C:\Clarion\v11\libsrc\DotNet" />
+      <CWVersion value="2000" />
+      <WideAppgenDialogs value="False" />
+      <ini value="" />
+    </Properties>
+    <Properties name="Clarion v11.0.13401.TXDocs">
+      <IsWindowsVersion value="True" />
+      <path value="C:\Clarion\v11.0.13401.TXDocs\bin" />
+      <IsClarion62 value="False" />
+      <ovl value="svdata.ovl" />
+      <libsrc value="C:\Clarion\v11.0.13401.TXDocs\Accessory\libsrc\win;C:\Clarion\v11.0.13401.TXDocs\libsrc\win" />
+      <Properties name="Compilers">
+        <asm value="Claasm.dll" />
+        <clw value="Claclw.dll" />
+        <cpp value="Clacpp.dll" />
+        <lpe value="Clalpe.dll" />
+        <mod value="Clamod.dll" />
+      </Properties>
+      <Properties name="RedirectionFile">
+        <Name value="Clarion110.red" />
+        <SupportsInclude value="True" />
+        <Properties name="Macros">
+          <root value="C:\Clarion\v11.0.13401.TXDocs" />
+          <reddir value="C:\Clarion\v11.0.13401.TXDocs\bin" />
+        </Properties>
+      </Properties>
+      <CWVersion value="11000" />
+      <WideAppgenDialogs value="True" />
+      <DdeTimeOut value="0" />
+      <ini value="" />
+    </Properties>
+    <Properties name="Clarion.NET 4.0.13401">
+      <path value="C:\Clarion\v11.0.13401.TXDocs\bin" />
+      <IsWindowsVersion value="False" />
+      <Properties name="RedirectionFile">
+        <Name value="ClarionNet40.red" />
+        <SupportsInclude value="True" />
+        <Properties name="Macros">
+          <root value="C:\Clarion\v11.0.13401.TXDocs" />
+          <reddir value="C:\Clarion\v11.0.13401.TXDocs\bin" />
+        </Properties>
+      </Properties>
+      <libsrc value="C:\Clarion\v11.0.13401.TXDocs\libsrc\DotNet" />
+      <CWVersion value="2000" />
+      <WideAppgenDialogs value="False" />
+      <ini value="" />
+    </Properties>
+    <Properties name="Clarion 11.0.13372">
+      <path value="C:\Clarion\v11\bin" />
+      <IsWindowsVersion value="True" />
+      <IsClarion62 value="False" />
+      <Properties name="RedirectionFile">
+        <Name value="Clarion110.red" />
+        <SupportsInclude value="True" />
+        <Properties name="Macros">
+          <root value="C:\Clarion\v11" />
+          <reddir value="C:\Clarion\v11\bin" />
+        </Properties>
+      </Properties>
+      <libsrc value="C:\Clarion\v11\Accessory\libsrc\win;C:\Clarion\v11\libsrc\win" />
+      <Properties name="Compilers">
+        <clw value="Claclw.dll" />
+        <cpp value="Clacpp.dll" />
+        <mod value="Clamod.dll" />
+        <asm value="Claasm.dll" />
+        <lpe value="Clalpe.dll" />
+      </Properties>
+      <CWVersion value="11000" />
+      <WideAppgenDialogs value="True" />
+      <ini value="" />
+      <DdeTimeOut value="0" />
+    </Properties>
+    <Properties name="Clarion v11.0.13372.CStone">
+      <path value="C:\Clarion\v11.0.13372.CStone\bin" />
+      <IsWindowsVersion value="True" />
+      <ovl value="svdata.ovl" />
+      <DdeTimeOut value="0" />
+      <IsClarion62 value="False" />
+      <Properties name="RedirectionFile">
+        <Name value="Clarion110.red" />
+        <SupportsInclude value="True" />
+        <Properties name="Macros">
+          <root value="C:\Clarion\v11.0.13372.CStone" />
+          <reddir value="C:\Clarion\v11.0.13372.CStone\bin" />
+        </Properties>
+      </Properties>
+      <libsrc value="C:\Clarion\v11.0.13372.CStone\libsrc\win;C:\Clarion\v11.0.13372.CStone\Accessory\libsrc\win" />
+      <Properties name="Compilers">
+        <clw value="Claclw.dll" />
+        <cpp value="Clacpp.dll" />
+        <mod value="Clamod.dll" />
+        <asm value="Claasm.dll" />
+        <lpe value="Clalpe.dll" />
+      </Properties>
+      <CWVersion value="11000" />
+      <WideAppgenDialogs value="True" />
+      <ini value="" />
+    </Properties>
+  </Properties>
+  <Clarion.Version value="Clarion v11.0.13401.TXDocs" />
+</ClarionProperties>

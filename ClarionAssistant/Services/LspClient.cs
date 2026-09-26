@@ -101,11 +101,20 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// Set when the last <see cref="Start"/> failed because the node process could not be
+        /// launched (Process.Start threw); null otherwise, including for a handshake failure.
+        /// </summary>
+        public string LastSpawnError { get; private set; }
+
+        /// <summary>
         /// Start the LSP server and initialize the protocol.
         /// </summary>
         public bool Start(string serverJsPath, string workspaceUri, string workspaceName)
         {
             if (_running) return true;
+            LastSpawnError = null;
+            // A new server session: status support is re-detected from its own traffic (see Stop).
+            _serverSendsDiagnosticsStatus = false;
 
             if (!File.Exists(serverJsPath))
                 return false;
@@ -190,7 +199,14 @@ namespace ClarionAssistant.Services
                     }
                 };
 
-                _process.Start();
+                try { _process.Start(); }
+                catch (Exception spawnEx)
+                {
+                    // node.exe could not be launched at all. Recorded separately so the caller can
+                    // say so instead of blaming an initialize handshake that never began (77aceec5).
+                    LastSpawnError = "could not launch '" + nodeExe + "': " + spawnEx.Message;
+                    throw;
+                }
                 _process.BeginErrorReadLine();
                 _running = true;
 
@@ -424,8 +440,15 @@ namespace ClarionAssistant.Services
                 {
                     try { set.Ready.Dispose(); } catch { }
                 }
-                _diagnostics.Clear();
+                _diagnostics.Clear();   // also drops every per-URI diagnosticsStatus record
             }
+
+            // GH #216: whether the server sends clarion/diagnosticsStatus is a property of THIS server
+            // session. LspService always creates a fresh LspClient per start, so today this is only a
+            // guard against instance reuse (Stop then Start on the same object) — but if that ever
+            // happens onto a server that does not send the status, a stale true here would turn every
+            // lsp_diagnostics call into a full-budget pending:true. Start resets it too.
+            _serverSendsDiagnosticsStatus = false;
         }
 
         #region LSP Requests
@@ -461,6 +484,11 @@ namespace ClarionAssistant.Services
         public Dictionary<string, object> GetReferences(string filePath, int line, int character)
         {
             TrackRequest("references", filePath);
+            // Open the document first, as definition/hover/implementation do (SendTextDocumentPositionRequest).
+            // Without it the server answers null for any file it has not opened, and the caller then fell
+            // back to CodeGraph and reported a wrong answer as the result (77aceec5): measured, the same
+            // server returns the MAP line, the implementation and the call site once the file is open.
+            EnsureDocumentOpen(filePath);
             var parms = BuildTextDocumentPosition(filePath, line, character);
             parms["context"] = new Dictionary<string, object> { { "includeDeclaration", true } };
             return SendRequest("textDocument/references", parms);
@@ -785,6 +813,12 @@ namespace ClarionAssistant.Services
             if (!IsRunning || string.IsNullOrEmpty(filePath)) return result;
             TrackRequest("diagnostics", filePath);
 
+            // Snapshot the diagnosticsStatus counter BEFORE the trigger goes out (GH #216), so a
+            // `complete` the server sends in answer to it can never be mistaken for an older one,
+            // however fast the server replies.
+            int statusBaseline = GetStatusSeq(filePath);
+            int sentVersion = -1;
+
             // Trigger server analysis before waiting. We always force a new publish
             // so Claude sees the state of the file as of this call — stale cached
             // diagnostics from before the last edit are not good enough.
@@ -794,6 +828,12 @@ namespace ClarionAssistant.Services
                     SendDidChangeFromDisk(filePath);
                 else
                     EnsureDocumentOpen(filePath);
+
+                lock (_docSyncLock)
+                {
+                    int v;
+                    if (_openDocuments.TryGetValue(filePath, out v)) sentVersion = v;
+                }
             }
             catch (Exception ex)
             {
@@ -804,7 +844,25 @@ namespace ClarionAssistant.Services
             // waitForSemanticPass: this is the one-shot tool answer (lsp_diagnostics). It gets no
             // second frame in which to correct itself, so it must not settle for the server's
             // partial first publish — see ticket b7505691 and the overload's remarks.
-            return WaitForDiagnostics(filePath, timeoutMs, forceRefresh: true, waitForSemanticPass: true);
+            return WaitForDiagnosticsCore(filePath, timeoutMs, forceRefresh: true, waitForSemanticPass: true,
+                                          expectedVersion: sentVersion, statusBaseline: statusBaseline);
+        }
+
+        // True once THIS server session has sent ANY clarion/diagnosticsStatus notification (GH #216).
+        // Server 1.0.4+ sends one after its final publish for every analysis; older servers never do.
+        // Detected from the wire rather than from a version string because the version the server
+        // reports is not something every build fills in, and "has it ever said it" is the exact
+        // property the wait depends on. Reset in Start and Stop; surfaced by GetDebugStatus.
+        private volatile bool _serverSendsDiagnosticsStatus;
+
+        private int GetStatusSeq(string filePath)
+        {
+            string key = FilePathToUri(filePath);
+            lock (_diagnosticsLock)
+            {
+                DiagnosticSet set;
+                return _diagnostics.TryGetValue(key, out set) ? set.StatusSeq : 0;
+            }
         }
 
         /// <summary>
@@ -838,10 +896,13 @@ namespace ClarionAssistant.Services
                     {
                         { "uri", kv.Key },
                         { "wasPublished", kv.Value.WasPublished },
-                        { "entryCount", kv.Value.Entries.Count }
+                        { "entryCount", kv.Value.Entries.Count },
+                        { "lastStatusState", kv.Value.LastStatusState },
+                        { "lastStatusVersion", kv.Value.LastStatusVersion }
                     });
                 }
                 result["diagnosticsCache"] = cache;
+                result["serverSendsDiagnosticsStatus"] = _serverSendsDiagnosticsStatus;
             }
 
             // Currently-open documents (tracked by EnsureDocumentOpen / didChange)
@@ -905,6 +966,30 @@ namespace ClarionAssistant.Services
         /// </summary>
         public DiagnosticWaitResult WaitForDiagnostics(string filePath, int timeoutMs, bool forceRefresh,
                                                        bool waitForSemanticPass)
+        {
+            // No trigger of our own here, so the version to wait for is whatever we last synced, and
+            // only a diagnosticsStatus arriving from now on can release the wait.
+            int expectedVersion = -1;
+            if (!string.IsNullOrEmpty(filePath))
+            {
+                lock (_docSyncLock)
+                {
+                    int v;
+                    if (_openDocuments.TryGetValue(filePath, out v)) expectedVersion = v;
+                }
+            }
+            return WaitForDiagnosticsCore(filePath, timeoutMs, forceRefresh, waitForSemanticPass,
+                                          expectedVersion, string.IsNullOrEmpty(filePath) ? 0 : GetStatusSeq(filePath));
+        }
+
+        /// <param name="expectedVersion">The textDocument version our trigger sent, or -1 if unknown.
+        /// A diagnosticsStatus `complete` carrying an OLDER version is an answer about text we have
+        /// since replaced, and does not release the wait.</param>
+        /// <param name="statusBaseline">DiagnosticSet.StatusSeq as it stood before the trigger. Only a
+        /// `complete` recorded after it counts — the guard for a server that omits `version`.</param>
+        private DiagnosticWaitResult WaitForDiagnosticsCore(string filePath, int timeoutMs, bool forceRefresh,
+                                                            bool waitForSemanticPass, int expectedVersion,
+                                                            int statusBaseline)
         {
             var result = new DiagnosticWaitResult { Entries = new List<DiagnosticEntry>(), Pending = true };
             if (string.IsNullOrEmpty(filePath)) return result;
@@ -981,6 +1066,30 @@ namespace ClarionAssistant.Services
             // On (3) with only the partial publish seen, the result is Pending=TRUE even though
             // entries were cached. That is the whole point of the ticket: "still analysing" is a
             // true statement the caller is documented to handle, and "0 problems" is not.
+            //
+            // ── GH #216: clarion/diagnosticsStatus supersedes (1) and (2) ────────────────────────
+            // Neither exit above is sound. symbolsRefreshed is not the end of analysis, and when the
+            // server DEFERS the async pass (solution or index not ready yet) the stream goes quiet
+            // for seconds with only the partial publish banked — so (2) fires and answers "clean".
+            // Server 1.0.4+ ends every analysis with clarion/diagnosticsStatus {uri, version, state}:
+            //   complete   -> the final publish for that version has landed. The only real answer.
+            //   deferred   -> queued behind the index; a drain pass will publish later. Keep waiting.
+            //   superseded -> that version will never complete; a newer one will. Keep waiting.
+            // Once the server has been seen to send it (any URI, ever — see
+            // ServerSendsDiagnosticsStatus), ONLY a `complete` for this URI, recorded after our
+            // trigger, for the version we sent or newer, ends the wait. (1) and (2) are then off, and
+            // the budget expiring gives pending:true. A server that never sends it keeps (1)/(2): the
+            // check happens on every iteration, so a first-ever status arriving mid-wait (it follows
+            // the first publish immediately) switches this wait over before the settle window can
+            // fire — status notifications signal Ready just as publishes do.
+            //
+            // SERVER-CONTRACT ASSUMPTION: one status for ANY document turns status mode on for EVERY
+            // document of this server session. That rests on the server sending the status from the
+            // single exit path of its validation (msarson, GH #216: "sent alongside the existing
+            // publishes", including the libsrc single-publish case), so a server that sends it for one
+            // document sends it for all. If a document class is ever found that is published but never
+            // given a status, its lsp_diagnostics would read pending:true at the budget — wrong in the
+            // safe direction (never a false "clean"), and the place to add a per-URI fallback.
             const int SettleMs = 400;
 
             var startedTicks = DateTime.UtcNow.Ticks;
@@ -988,9 +1097,25 @@ namespace ClarionAssistant.Services
             int lastPublishSeqSeen = -1;
             bool sawSemantic = false;
             bool streamSettled = false;
+            bool sawComplete = false;
+            bool statusMode = false;
 
             while (true)
             {
+                // Checked BEFORE the budget test so a `complete` that landed during the final
+                // Wait still counts — the budget expiring on the same tick is not a reason to
+                // throw away an answer that is already here.
+                lock (_diagnosticsLock)
+                {
+                    if (!_diagnostics.TryGetValue(key, out set)) return result;
+                    if (_serverSendsDiagnosticsStatus) statusMode = true;
+                    if (statusMode && set.IsCompleteFor(expectedVersion, statusBaseline))
+                    {
+                        sawComplete = true;
+                        break;
+                    }
+                }
+
                 long elapsed = DateTime.UtcNow.Ticks - startedTicks;
                 int remainingMs = (int)((budgetTicks - elapsed) / TimeSpan.TicksPerMillisecond);
                 if (remainingMs <= 0) break;
@@ -1011,6 +1136,7 @@ namespace ClarionAssistant.Services
 
                     publishSeq = set.PublishSeq;
                     sawSemantic = set.SemanticPassPublished;
+                    if (_serverSendsDiagnosticsStatus) statusMode = true;
 
                     if (set.WasPublished)
                         result.Entries = new List<DiagnosticEntry>(set.Entries);
@@ -1019,6 +1145,10 @@ namespace ClarionAssistant.Services
                     // returning instantly on this one's still-set event.
                     try { set.Ready.Reset(); } catch { }
                 }
+
+                // The completion test for status mode is at the top of the loop; (1) and (2) are
+                // the fallback for a server that does not send diagnosticsStatus.
+                if (statusMode) continue;
 
                 if (sawSemantic) break;
 
@@ -1029,24 +1159,33 @@ namespace ClarionAssistant.Services
                 lastPublishSeqSeen = publishSeq;
             }
 
-            // Exactly one of three exits got us here, and each has its own honest answer:
-            //   sawSemantic    -> the semantic pass reported. Complete.
-            //   streamSettled  -> the server stopped publishing. Complete as far as it is concerned.
-            //   neither        -> the budget expired mid-analysis. NOT complete, and saying "clean"
+            // Exactly one of four exits got us here, and each has its own honest answer:
+            //   sawComplete    -> the server said `complete` for our version. Authoritative.
+            //   sawSemantic    -> (no-status server) the semantic pass reported. Complete.
+            //   streamSettled  -> (no-status server) the server stopped publishing.
+            //   none           -> the budget expired mid-analysis. NOT complete, and saying "clean"
             //                     here is the defect this method exists to prevent.
+            string lastState = null;
             lock (_diagnosticsLock)
             {
-                if (_diagnostics.TryGetValue(key, out set) && set.WasPublished)
+                if (_diagnostics.TryGetValue(key, out set))
                 {
-                    result.Entries = new List<DiagnosticEntry>(set.Entries);
-                    sawSemantic = sawSemantic || set.SemanticPassPublished;
+                    if (set.WasPublished)
+                        result.Entries = new List<DiagnosticEntry>(set.Entries);
+                    if (!statusMode)
+                        sawSemantic = sawSemantic || set.SemanticPassPublished;
+                    lastState = set.LastStatusState;
                 }
             }
-            result.Pending = !(sawSemantic || streamSettled);
+            result.Pending = !(sawComplete || (!statusMode && (sawSemantic || streamSettled)));
 
             if (result.Pending)
-                LspTrace.Write("[LSP] WaitForDiagnostics: " + timeoutMs + "ms budget expired for "
-                    + key + " with only the partial (pre-semantic) publish — reporting pending, NOT clean.");
+                LspTrace.Write("[LSP] WaitForDiagnostics: " + timeoutMs + "ms budget expired for " + key
+                    + (statusMode
+                        ? " without diagnosticsStatus 'complete' for version " + expectedVersion
+                          + " (last state: " + (lastState ?? "none") + ")"
+                        : " with only the partial (pre-semantic) publish")
+                    + " — reporting pending, NOT clean.");
 
             return result;
         }
@@ -1411,6 +1550,11 @@ namespace ClarionAssistant.Services
                     // arriving; nothing was listening.
                     HandleSymbolsRefreshed(msg["params"] as Dictionary<string, object>);
                     break;
+                case "clarion/diagnosticsStatus":
+                    // GH #216: the server's own end-of-analysis marker (1.0.4+). See
+                    // WaitForDiagnosticsCore for how the states gate lsp_diagnostics.
+                    HandleDiagnosticsStatus(msg["params"] as Dictionary<string, object>);
+                    break;
                 default:
                     // THE METHOD NAME ALONE IS NOT A DIAGNOSTIC. This line used to say only
                     // "Ignored notification: clarion/graphStatus" — telling us the language
@@ -1567,6 +1711,60 @@ namespace ClarionAssistant.Services
 
             LspTrace.Write("[LSP] symbolsRefreshed for " + canonical
                 + " — awaiting the semantic-pass publish.");
+        }
+
+        /// <summary>
+        /// Records a clarion/diagnosticsStatus notification: { uri, version?, state } where state is
+        /// complete | deferred | superseded (GH #216). The server sends it AFTER its final publish
+        /// for that analysis, so by the time `complete` is recorded the cached entries are the
+        /// answer. Also flips ServerSendsDiagnosticsStatus, which switches lsp_diagnostics off the
+        /// timing heuristics for good.
+        /// </summary>
+        private void HandleDiagnosticsStatus(Dictionary<string, object> parms)
+        {
+            if (parms == null) return;
+
+            string uri = parms.ContainsKey("uri") ? parms["uri"] as string : null;
+            if (string.IsNullOrEmpty(uri)) return;
+
+            string state = parms.ContainsKey("state") ? parms["state"] as string : null;
+            int version = -1;
+            object rawVersion;
+            if (parms.TryGetValue("version", out rawVersion) && rawVersion != null)
+            {
+                try { version = Convert.ToInt32(rawVersion); } catch { version = -1; }
+            }
+
+            string canonical = CanonicalizeUri(uri);
+
+            // Set before the per-URI record is signalled, so a waiter woken by it sees status mode.
+            _serverSendsDiagnosticsStatus = true;
+
+            lock (_diagnosticsLock)
+            {
+                DiagnosticSet set;
+                if (!_diagnostics.TryGetValue(canonical, out set))
+                {
+                    set = new DiagnosticSet();
+                    _diagnostics[canonical] = set;
+                    EvictOldestIfFull_NoLock();
+                }
+
+                set.StatusSeq++;
+                set.LastStatusState = state;
+                set.LastStatusVersion = version;
+                if (string.Equals(state, "complete", StringComparison.OrdinalIgnoreCase))
+                {
+                    set.LastCompleteStatusSeq = set.StatusSeq;
+                    set.LastCompleteVersion = version;
+                }
+                set.LastUpdateTicks = DateTime.UtcNow.Ticks;
+                // Wake a waiter: this may be the signal it is gated on, and it carries no publish.
+                try { set.Ready.Set(); } catch (ObjectDisposedException) { }
+            }
+
+            LspTrace.Write("[LSP] diagnosticsStatus: " + (state ?? "(no state)")
+                + " v" + (version >= 0 ? version.ToString() : "?") + " for " + canonical);
         }
 
         private void EvictOldestIfFull_NoLock()
@@ -1756,6 +1954,28 @@ namespace ClarionAssistant.Services
             public bool SemanticPassPublished
             {
                 get { return SymbolsRefreshedSeq > 0 && PublishSeq > PublishSeqAtLastSymbols; }
+            }
+
+            // ── clarion/diagnosticsStatus tracking (GH #216) ──────────────────────────────────
+            // Counters for the same reason as above. Read and written under _diagnosticsLock.
+            public int StatusSeq;                   // ++ on every diagnosticsStatus for this URI
+            public string LastStatusState;          // complete | deferred | superseded (as sent)
+            public int LastStatusVersion = -1;      // -1 = the server omitted `version`
+            public int LastCompleteStatusSeq;       // StatusSeq of the most recent `complete`; 0 = none
+            public int LastCompleteVersion = -1;    // its version; -1 = omitted
+
+            /// <summary>
+            /// True when a `complete` has been recorded after <paramref name="statusBaseline"/> and it
+            /// is for <paramref name="expectedVersion"/> or newer. A newer version is accepted because
+            /// the cached entries are always the LATEST publish: once the server has finished a later
+            /// buffer (ours having been superseded), that is exactly what we would be returning. When
+            /// either side has no version (-1) the baseline alone decides.
+            /// </summary>
+            public bool IsCompleteFor(int expectedVersion, int statusBaseline)
+            {
+                if (LastCompleteStatusSeq <= statusBaseline) return false;
+                if (expectedVersion < 0 || LastCompleteVersion < 0) return true;
+                return LastCompleteVersion >= expectedVersion;
             }
         }
 

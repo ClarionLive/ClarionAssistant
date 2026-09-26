@@ -24,6 +24,12 @@ using System.Reflection;
 //              ClarionDebugger.dlls         in the IDE: the bridge must notice within the rescan interval,
 //                                           not after it. Then a THIRD copy loads once it is bound, which
 //                                           it must ignore rather than un-bind over.
+//   boevoid    ClarionDebugger.exe built    the controller has the OLD void BreakOnProcEntry(string, int)
+//              with /define:BOE_VOID        (e61e4f92): Break on entry must read as off, Run to Cursor as on.
+//   boenone    ClarionDebugger.exe built    the controller has no BreakOnProcEntry at all: the same.
+//              with /define:BOE_NONE
+//   boewrongret  ClarionDebugger.exe built  the right parameters (string, int, out string) but a VOID return:
+//              with /define:BOE_WRONGRET    only the bridge's return-type check can turn this one off.
 //
 // The scenario is passed as argv[0] and cross-checked against this assembly's own name, so a harness built
 // wrong fails loudly instead of passing for the wrong reason.
@@ -45,6 +51,25 @@ namespace ClarionDebugger
         public static DebugControllerState State { get; set; }
         public static int RunToCursorCalls;
         public static void RunToCursor() { RunToCursorCalls++; }
+
+        // e61e4f92. The frozen shape (bool, with an out message) by default; the shapes the bridge must
+        // refuse under BOE_VOID, BOE_NONE and BOE_WRONGRET.
+        public static int BoeCalls;
+        public static string BoeFile; public static int BoeLine;
+#if BOE_VOID
+        public static void BreakOnProcEntry(string filePath, int line) { BoeCalls++; BoeFile = filePath; BoeLine = line; }
+#elif BOE_WRONGRET
+        public static void BreakOnProcEntry(string filePath, int line, out string message) { BoeCalls++; message = "set"; }
+#elif !BOE_NONE
+        public static bool BoeResult; public static string BoeMessage; public static bool BoeThrows;
+        public static bool BreakOnProcEntry(string filePath, int line, out string message)
+        {
+            BoeCalls++; BoeFile = filePath; BoeLine = line;
+            if (BoeThrows) throw new InvalidOperationException("debugger blew up");
+            message = BoeMessage;
+            return BoeResult;
+        }
+#endif
     }
 }
 #endif
@@ -106,7 +131,19 @@ public static class Program
         {
             case "bound":
                 Check("harness built as the debugger assembly (scenario precondition)", MyName() == DebuggerAssemblyName);
+#if BOE_VOID || BOE_NONE || BOE_WRONGRET
+                Console.WriteLine("  ABORT: \"bound\" needs the current BreakOnProcEntry; this build defines another shape.");
+                return 2;
+#else
                 Bound();
+                BreakOnEntryBound();
+                break;
+#endif
+            case "boevoid":
+            case "boenone":
+            case "boewrongret":
+                Check("harness built as the debugger assembly (scenario precondition)", MyName() == DebuggerAssemblyName);
+                BreakOnEntryOff(scenario);
                 break;
             case "decoy":
                 Check("harness built under a name that is NOT " + DebuggerAssemblyName + " (scenario precondition)",
@@ -138,6 +175,12 @@ public static class Program
         Check("no debugger loaded: not available", !available);
         Check("no debugger loaded: not paused", !paused);
         Check("no debugger loaded: RunToCursor returns false and does not throw", !ClarionAssistant.Services.ClarionDebuggerBridge.RunToCursor());
+        bool boe;
+        ClarionAssistant.Services.ClarionDebuggerBridge.GetState(out available, out paused, out boe);
+        Check("no debugger loaded: Break on entry is off", !boe);
+        string message;
+        bool ok = ClarionAssistant.Services.ClarionDebuggerBridge.BreakOnProcEntry(@"C:\src\app.clw", 12, out message);
+        Check("no debugger loaded: BreakOnProcEntry returns false with a message, and does not throw", !ok && !string.IsNullOrEmpty(message));
     }
 
     // f022fb4e item 3. In the IDE the debugger addin almost always loads AFTER us, so what matters is how
@@ -229,6 +272,83 @@ public static class Program
         ClarionDebugger.DebugSessionController.State = ClarionDebugger.DebugControllerState.Idle;
         Check("Idle: RunToCursor not sent", !ClarionAssistant.Services.ClarionDebuggerBridge.RunToCursor());
         Check("Idle: controller still invoked once", ClarionDebugger.DebugSessionController.RunToCursorCalls == 1);
+    }
+
+#if !BOE_VOID && !BOE_NONE && !BOE_WRONGRET
+    // e61e4f92: the debugger's current BreakOnProcEntry(string, int, out string) : bool, bound optionally.
+    static void BreakOnEntryBound()
+    {
+        var C = typeof(ClarionDebugger.DebugSessionController);
+        bool available, paused, boe;
+        foreach (var st in new[] { ClarionDebugger.DebugControllerState.Idle, ClarionDebugger.DebugControllerState.Running,
+                                   ClarionDebugger.DebugControllerState.Paused })
+        {
+            ClarionDebugger.DebugSessionController.State = st;
+            ClarionAssistant.Services.ClarionDebuggerBridge.GetState(out available, out paused, out boe);
+            Check("Break on entry is on in state " + st + " (it does not depend on the session)", available && boe);
+        }
+
+        string message;
+        ClarionDebugger.DebugSessionController.State = ClarionDebugger.DebugControllerState.Idle;
+        ClarionDebugger.DebugSessionController.BoeResult = true;
+        ClarionDebugger.DebugSessionController.BoeMessage = "Break on entry: MAIN  app.clw:40 (staged for the next Start)";
+        bool ok = ClarionAssistant.Services.ClarionDebuggerBridge.BreakOnProcEntry(@"C:\src\app.clw", 44, out message);
+        Check("a hit: true, with the debugger's message", ok && message == ClarionDebugger.DebugSessionController.BoeMessage);
+        Check("...and the file and line reached the debugger unchanged",
+              ClarionDebugger.DebugSessionController.BoeCalls == 1
+              && ClarionDebugger.DebugSessionController.BoeFile == @"C:\src\app.clw" && ClarionDebugger.DebugSessionController.BoeLine == 44);
+
+        ClarionDebugger.DebugSessionController.BoeResult = false;
+        ClarionDebugger.DebugSessionController.BoeMessage = "Open the CA Debugger pad first.";
+        ok = ClarionAssistant.Services.ClarionDebuggerBridge.BreakOnProcEntry(@"C:\src\app.clw", 44, out message);
+        Check("a miss: false, with the debugger's reason verbatim", !ok && message == "Open the CA Debugger pad first.");
+
+        ClarionDebugger.DebugSessionController.BoeMessage = null;
+        ok = ClarionAssistant.Services.ClarionDebuggerBridge.BreakOnProcEntry(@"C:\src\app.clw", 44, out message);
+        Check("a miss with no message: false, with CA's own", !ok && message == ClarionAssistant.Services.ClarionDebuggerBridge.BreakOnEntryNoAnswer);
+
+        ClarionDebugger.DebugSessionController.BoeThrows = true;
+        try
+        {
+            ok = ClarionAssistant.Services.ClarionDebuggerBridge.BreakOnProcEntry(@"C:\src\app.clw", 44, out message);
+            Check("a debugger that throws: false, \"" + ClarionAssistant.Services.ClarionDebuggerBridge.BreakOnEntryNoAnswer + "\", and nothing escapes",
+                  !ok && message == ClarionAssistant.Services.ClarionDebuggerBridge.BreakOnEntryNoAnswer);
+        }
+        catch (Exception ex) { Check("a debugger that throws: nothing escapes (" + ex.GetType().Name + " did)", false); }
+        ClarionDebugger.DebugSessionController.BoeThrows = false;
+        Check("the required pair still works beside it", C.GetMethod("RunToCursor") != null && ClarionDebugger.DebugSessionController.RunToCursorCalls == 1);
+    }
+#endif
+
+    // e61e4f92: a debugger whose BreakOnProcEntry is the old void (string, int) one, missing, or of the right
+    // parameters with no bool to return. The bridge must read each as "Break on entry is off" and change
+    // nothing else.
+    static void BreakOnEntryOff(string scenario)
+    {
+        var C = typeof(ClarionDebugger.DebugSessionController);
+        var flags = BindingFlags.Public | BindingFlags.Static;
+        bool isVoid = C.GetMethod("BreakOnProcEntry", flags, null, new[] { typeof(string), typeof(int) }, null) != null;
+        var withOut = C.GetMethod("BreakOnProcEntry", flags, null, new[] { typeof(string), typeof(int), typeof(string).MakeByRefType() }, null);
+        bool any = C.GetMethod("BreakOnProcEntry", flags) != null;
+        if (scenario == "boevoid")
+            Check("the controller has ONLY the old void (string, int) member (scenario precondition)", isVoid && any && withOut == null);
+        else if (scenario == "boewrongret")
+            Check("the controller has (string, int, out string) returning VOID (scenario precondition)",
+                  withOut != null && withOut.ReturnType == typeof(void) && !isVoid);
+        else
+            Check("the controller has no BreakOnProcEntry at all (scenario precondition)", !any);
+
+        bool available, paused, boe;
+        ClarionDebugger.DebugSessionController.State = ClarionDebugger.DebugControllerState.Paused;
+        ClarionAssistant.Services.ClarionDebuggerBridge.GetState(out available, out paused, out boe);
+        Check("the debugger is still available and paused (the required pair is unaffected)", available && paused);
+        Check("Break on entry is OFF", !boe);
+        Check("Run to Cursor still reaches the controller",
+              ClarionAssistant.Services.ClarionDebuggerBridge.RunToCursor() && ClarionDebugger.DebugSessionController.RunToCursorCalls == 1);
+        string message;
+        bool ok = ClarionAssistant.Services.ClarionDebuggerBridge.BreakOnProcEntry(@"C:\src\app.clw", 44, out message);
+        Check("BreakOnProcEntry returns false with a message", !ok && !string.IsNullOrEmpty(message));
+        Check("...and the unusable member was never invoked", ClarionDebugger.DebugSessionController.BoeCalls == 0);
     }
 
     // The type name is not a credential (f022fb4e item 1). This scenario is byte-for-byte the "bound" one

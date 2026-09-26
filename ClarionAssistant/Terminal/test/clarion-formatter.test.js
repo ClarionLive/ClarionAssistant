@@ -424,5 +424,221 @@ console.log('\nKeyword-named data labels (label + type, not a structure):');
         pv.some(function (l) { return /^\s+Count\s*=\s*1/.test(l); }), JSON.stringify(pv));
 })();
 
+// ---- Post-condition LOOP: a trailing UNTIL/WHILE line closes the LOOP (GH #222 follow-up) ----
+// Clarion's LOOP ... UNTIL expr / LOOP ... WHILE expr form (SoftVelocity's libsrc\win\abbrowse.clw
+// uses it). The UNTIL/WHILE line is the LOOP's closer and aligns with the LOOP like END does.
+// It closes ONLY a LOOP: with an IF innermost it is an ordinary body line. The pre-condition form
+// (LOOP WHILE x / LOOP UNTIL x) starts with LOOP and still needs END.
+console.log('\nPost-condition LOOP (UNTIL/WHILE closer):');
+(function () {
+    var o = { alignAssignments: false };   // keep x# += 1 as written; alignment is a separate pass
+    function body(lines) {
+        var src = ['Main PROCEDURE', '  CODE'].concat(lines).join('\n');
+        var out = F.formatClarion(src, o).text;
+        return { lines: out.split('\n').slice(2), text: out };
+    }
+    function eq(name, got, want) {
+        ok(name, JSON.stringify(got) === JSON.stringify(want),
+            'got  ' + JSON.stringify(got) + '\n      want ' + JSON.stringify(want));
+    }
+
+    var snippet = ['LOOP', '  x# += 1', 'UNTIL x# > 10', 'LOOP', '  x# -= 1', 'WHILE x# > 0'];
+    var want = ['    LOOP', '        x# += 1', '    UNTIL x# > 10', '    LOOP', '        x# -= 1', '    WHILE x# > 0'];
+    var r = body(snippet);
+    eq('LOOP..UNTIL then LOOP..WHILE: closers align with their LOOP, next LOOP not over-indented', r.lines, want);
+    var again = F.formatClarion(r.text, o).text;
+    ok('LOOP..UNTIL / LOOP..WHILE formatting is idempotent', again === r.text, JSON.stringify(again.split('\n')));
+
+    eq('statement after the UNTIL is back at the LOOP column',
+        body(['LOOP', 'x# += 1', 'UNTIL x# > 10', 'y# = 1']).lines,
+        ['    LOOP', '        x# += 1', '    UNTIL x# > 10', '    y# = 1']);
+
+    eq('IF nested inside LOOP..UNTIL',
+        body(['LOOP', 'IF a', 'b()', 'END', 'UNTIL done', 'c()']).lines,
+        ['    LOOP', '        IF a', '            b()', '        END', '    UNTIL done', '    c()']);
+
+    eq('LOOP..WHILE nested inside IF',
+        body(['IF a', 'LOOP', 'x# -= 1', 'WHILE x# > 0', 'END', 'c()']).lines,
+        ['    IF a', '        LOOP', '            x# -= 1', '        WHILE x# > 0', '    END', '    c()']);
+
+    eq('pre-condition LOOP WHILE / LOOP UNTIL still close on END',
+        body(['LOOP WHILE x# > 0', 'x# -= 1', 'END', 'LOOP UNTIL x# > 10', 'x# += 1', 'END', 'c()']).lines,
+        ['    LOOP WHILE x# > 0', '        x# -= 1', '    END', '    LOOP UNTIL x# > 10', '        x# += 1', '    END', '    c()']);
+
+    // UNTIL with an IF (not a LOOP) innermost must NOT close the IF: it is a body line of the IF,
+    // END closes the IF, and the following UNTIL then closes the LOOP.
+    eq('UNTIL with IF on top does not close the IF',
+        body(['LOOP', 'IF a', 'UNTIL x', 'END', 'UNTIL y', 'c()']).lines,
+        ['    LOOP', '        IF a', '            UNTIL x', '        END', '    UNTIL y', '    c()']);
+
+    eq('lowercase until/while close the LOOP (and are cased)',
+        body(['loop', 'x# += 1', 'until x# > 10', 'loop', 'x# -= 1', 'while x# > 0']).lines,
+        ['    LOOP', '        x# += 1', '    UNTIL x# > 10', '    LOOP', '        x# -= 1', '    WHILE x# > 0']);
+
+    // keywordCase 'asis': WHILE is an always-cased word, so the default would print WHILE:Count —
+    // a separate (casing) behaviour this case is not about.
+    o.keywordCase = 'asis';
+    eq('prefixed name While:Count is a statement, not a closer',
+        body(['LOOP', 'While:Count += 1', 'UNTIL While:Count > 3', 'c()']).lines,
+        ['    LOOP', '        While:Count += 1', '    UNTIL While:Count > 3', '    c()']);
+})();
+
+// ---- Labelled executable structures (eb0f0c6d) ----
+// "MyLoop LOOP" / "Scan:Loop LOOP" / "Retry IF x": the column-1 token is a statement label (the
+// target of BREAK/CYCLE/GOTO) and MUST stay in column 1 — Clarion rejects an indented label. The
+// keyword sits at the column the unlabelled form would use (label padded out to it, one space when
+// the label is longer), and the structure's body and its END / '.' / UNTIL / WHILE lay out exactly as
+// the unlabelled form. Before the fix the label was moved to the body column, no structure opened,
+// the body stayed flush, and the loop's END popped the ENCLOSING structure.
+console.log('\nLabelled executable structures (eb0f0c6d):');
+(function () {
+    var o = { alignAssignments: false };
+    function fmtWith(opts, lines) {
+        var src = ['Main PROCEDURE', '  CODE'].concat(lines).join('\n');
+        var out = F.formatClarion(src, opts).text;
+        return { lines: out.split('\n').slice(2), text: out };
+    }
+    function body(lines) { return fmtWith(o, lines); }
+    function eq(name, got, want) {
+        ok(name, JSON.stringify(got) === JSON.stringify(want),
+            'got  ' + JSON.stringify(got) + '\n      want ' + JSON.stringify(want));
+    }
+    function idem(name, r, opts) {
+        var again = F.formatClarion(r.text, opts || o).text;
+        ok(name + ' (second pass changes nothing)', again === r.text, JSON.stringify(again.split('\n')));
+    }
+
+    // The ticket's example, verbatim.
+    var ex = F.formatClarion(['MyProc PROCEDURE', '  CODE', 'MyLoop LOOP', 'x# += 1',
+        'IF x# > 3 THEN BREAK MyLoop.', 'END', 'y# = 1'].join('\n'), o).text;
+    eq('ticket example: label col 1, body indented, END at the LOOP column', ex.split('\n'),
+        ['MyProc                          PROCEDURE', '    CODE', 'MyLoop LOOP', '        x# += 1',
+         '        IF x# > 3 THEN BREAK MyLoop.', '    END', '    y# = 1']);
+    idem('ticket example', { text: ex });
+
+    // Nested in an IF: the loop's END must close the LOOP, not the IF, so everything after it stays put.
+    var r = body(['IF a', 'MyLoop LOOP', 'x# += 1', 'END', 'y# = 1', 'END', 'z# = 1']);
+    eq('labelled LOOP inside IF: END closes the LOOP, not the IF', r.lines,
+        ['    IF a', 'MyLoop  LOOP', '            x# += 1', '        END', '        y# = 1', '    END', '    z# = 1']);
+    idem('labelled LOOP inside IF', r);
+
+    eq('labelled LOOP closed by a lone "."',
+        body(['IF a', 'Lp LOOP', 'x# += 1', '.', 'y# = 1', 'END']).lines,
+        ['    IF a', 'Lp      LOOP', '            x# += 1', '        .', '        y# = 1', '    END']);
+
+    eq('labelled LOOP closed by UNTIL, then one closed by WHILE',
+        body(['IF a', 'Up LOOP', 'x# += 1', 'UNTIL x# > 9', 'Dn LOOP', 'x# -= 1', 'WHILE x# > 0', 'END', 'c()']).lines,
+        ['    IF a', 'Up      LOOP', '            x# += 1', '        UNTIL x# > 9',
+         'Dn      LOOP', '            x# -= 1', '        WHILE x# > 0', '    END', '    c()']);
+
+    // keywordCase 'asis': the default cases the 'Loop' half of 'Scan:Loop' in the BREAK operand (a
+    // separate, pre-existing casing behaviour; see the While:Count case above).
+    var ka = { alignAssignments: false, keywordCase: 'asis' };
+    eq('colon label Scan:Loop LOOP with a counter (and BREAK Scan:Loop)',
+        fmtWith(ka,['Scan:Loop LOOP i# = 1 TO 3', 'IF i# = 2 THEN BREAK Scan:Loop.', 'END', 'c()']).lines,
+        ['Scan:Loop LOOP i# = 1 TO 3', '        IF i# = 2 THEN BREAK Scan:Loop.', '    END', '    c()']);
+
+    // A prefix-style label that STARTS with a keyword spelling is still a label (whole token counts).
+    eq('Loop:Top LOOP (keyword-spelled prefix label) is a label',
+        fmtWith(ka,['Loop:Top LOOP', 'CYCLE Loop:Top', 'END', 'c()']).lines,
+        ['Loop:Top LOOP', '        CYCLE Loop:Top', '    END', '    c()']);
+
+    // A label longer than the keyword column: one space, and the body/END still use the nominal column.
+    eq('long label: one space before the keyword, body/END at the unlabelled columns',
+        body(['AVeryLongLoopLabel LOOP', 'x# += 1', 'END', 'c()']).lines,
+        ['AVeryLongLoopLabel LOOP', '        x# += 1', '    END', '    c()']);
+
+    eq('labelled ACCEPT',
+        body(['IF a', 'WinLoop ACCEPT', 'CASE EVENT()', 'OF EVENT:CloseWindow', 'BREAK WinLoop', 'END', 'END', 'END']).lines,
+        ['    IF a', 'WinLoop ACCEPT', '            CASE EVENT()', '            OF EVENT:CloseWindow',
+         '                BREAK WinLoop', '            END', '        END', '    END']);
+
+    eq('labelled IF with ELSE',
+        body(['Chk IF a', 'b()', 'ELSE', 'c()', 'END', 'd()']).lines,
+        ['Chk IF a', '        b()', '    ELSE', '        c()', '    END', '    d()']);
+
+    eq('labelled CASE with OF',
+        body(['Pick CASE x', 'OF 1', 'b()', 'END', 'd()']).lines,
+        ['Pick CASE x', '    OF 1', '        b()', '    END', '    d()']);
+
+    eq('labelled EXECUTE and BEGIN',
+        body(['Run EXECUTE n', 'a()', 'b()', 'END', 'Blk BEGIN', 'c()', 'END', 'd()']).lines,
+        ['Run EXECUTE n', '        a()', '        b()', '    END', 'Blk BEGIN', '        c()', '    END', '    d()']);
+
+    // A labelled ONE-LINE structure keeps its label in col 1 and opens nothing.
+    eq('labelled one-line IF ... THEN ... . keeps its label and opens nothing',
+        body(['IF a', 'Chk IF b THEN c().', 'd()', 'END', 'e()']).lines,
+        ['    IF a', 'Chk     IF b THEN c().', '        d()', '    END', '    e()']);
+
+    // Assignment alignment must not treat "Lbl LOOP i = 1 TO 3" as an assignment.
+    var al = fmtWith({}, ['Scan LOOP i# = 1 TO 3', 'x = 1', 'END']);
+    eq('alignAssignments leaves a labelled LOOP i = 1 TO n alone',
+        al.lines, ['Scan LOOP i# = 1 TO 3', '        x  =  1', '    END']);
+
+    // colonAsLabel on: a bare "Retry:" still pins to col 1 and a labelled LOOP still formats.
+    var cl = fmtWith({ alignAssignments: false, colonAsLabel: true }, ['Retry:', 'Lp LOOP', 'x# += 1', 'END', 'GOTO Retry']);
+    eq('colonAsLabel: "Retry:" col 1, labelled LOOP unaffected', cl.lines,
+        ['Retry:', 'Lp  LOOP', '        x# += 1', '    END', '    GOTO Retry']);
+
+    // ---- Guards (things the fix must NOT treat as labelled structures) ----
+    // Column-1 unlabelled control keyword whose operand is spelled like a keyword: "IF Begin > 3".
+    var ko = { alignAssignments: false, keywordCase: 'asis' };
+    eq('guard: col-1 "IF Begin > 3" is the IF keyword, not a label "IF" + BEGIN',
+        fmtWith(ko, ['IF Begin > 3', 'b()', 'END', 'c()']).lines,
+        ['    IF Begin > 3', '        b()', '    END', '    c()']);
+    // A label followed by a PREFIXED name starting with a keyword spelling is not a structure.
+    var pn = F._internal.classify(['Main PROCEDURE', '  CODE', 'Lbl LOOP:Count = 1', 'x = 2'], F.DEFAULTS, 0);
+    ok('guard: "Lbl LOOP:Count = 1" opens no structure',
+        !pn.recs.some(function (rr) { return rr.opensId; }), JSON.stringify(pn.recs.map(function (rr) { return rr.cat; })));
+    // MAP prototypes, data declarations and ROUTINE headers keep their exact layout (label + word
+    // lines that are NOT labelled control structures).
+    var P32 = new Array(33).join(' ');
+    eq('guard: MAP prototype / data decls / ROUTINE header unaffected',
+        F.formatClarion(['  MEMBER()', '  MAP', 'Scan PROCEDURE(LONG)', '  END', '', 'Main PROCEDURE',
+            'Scan:Cnt LONG', 'Scan     LONG', '  CODE', '  Scan = 1', '', 'Lbl ROUTINE', '  Scan = 2'].join('\n'), o).text.split('\n'),
+        [P32 + 'MEMBER()', P32 + 'MAP', 'Scan                                PROCEDURE(LONG)', P32 + 'END', '',
+         'Main                            PROCEDURE', 'Scan:Cnt                            LONG',
+         'Scan                                LONG', '    CODE', '    Scan = 1', '',
+         'Lbl                             ROUTINE', '    Scan = 2']);
+
+    // ---- Real SoftVelocity-shipped code ----
+    // C:\Clarion12\accessory\libsrc\win\StringTheory.clw (RemoveBetween): "L   loop" ... "end !loop L"
+    // inside an IF/ELSE, with BREAK L from nested loops.
+    var st = body(['if a', 'x = 1', '  else', '    ! multi-character delimiters and/or pContentsOnly',
+        'L   loop', '      lAddr = startPtr', '      loop  ! look for left delimiter',
+        '        if lAddr > maxStartAddr then break L.                          ! not enough room for delimiters',
+        '        if MemCmp(lAddr, Address(pLeft), lLen) = 0 then break.         ! matched left delim',
+        '        lAddr += 1', '      end', '      count += 1', '      if count = pCount then break.',
+        '    end !loop L', '  end', 'done()']);
+    eq('StringTheory.clw "L   loop" fixture', st.lines,
+        ['    IF a', '        x = 1', '    ELSE', '        ! multi-character delimiters and/or pContentsOnly',
+         'L       LOOP', '            lAddr = startPtr', '            LOOP  ! look for left delimiter',
+         '                IF lAddr > maxStartAddr THEN BREAK L.                          ! not enough room for delimiters',
+         '                IF MemCmp(lAddr, ADDRESS(pLeft), lLen) = 0 THEN BREAK.         ! matched left delim',
+         '                lAddr += 1', '            END', '            count += 1', '            IF count = pCount THEN BREAK.',
+         '        END !loop L', '    END', '    done()']);
+    idem('StringTheory.clw fixture', st);
+
+    // C:\Clarion6PSC6\libsrc\PRMInvc003.clw: "mainloop    loop while" / "subloop1            loop x# = ..."
+    // closed by lone '.' terminators, with BREAK/CYCLE <label>.
+    var pr = body(['mainloop    loop while FIELDSIZE# > 0',
+        '                if CLIPLENGTH# > LEN(CLIP(WME:LARGETEXT))',
+        '                    if CLIPLENGTH# = 0 then break mainloop.', '                .',
+        '                if found#<cliplength# and FOUND#>0', '                    cycle mainloop',
+        '                else', '                    found#=0',
+        'subloop1            loop x# = cliplength# to 1 by -1',
+        "                        if WME:LARGETEXT[x#:X#]=' '", '                            found#=X#',
+        '                            break subloop1', '                        .', '                    .',
+        '                .', '                Fieldsize# = len(clip(WME:LARGETEXT))', '            .', 'done()']);
+    eq('PRMInvc003.clw "mainloop"/"subloop1" fixture', pr.lines,
+        ['mainloop LOOP WHILE FIELDSIZE# > 0', '        IF CLIPLENGTH# > LEN(CLIP(WME:LARGETEXT))',
+         '            IF CLIPLENGTH# = 0 THEN BREAK mainloop.', '        .',
+         '        IF found#<cliplength# AND FOUND#>0', '            CYCLE mainloop', '        ELSE', '            found#=0',
+         'subloop1    LOOP x# = cliplength# TO 1 BY -1', "                IF WME:LARGETEXT[x#:X#]=' '",
+         '                    found#=X#', '                    BREAK subloop1', '                .', '            .',
+         '        .', '        Fieldsize# = LEN(CLIP(WME:LARGETEXT))', '    .', '    done()']);
+    idem('PRMInvc003.clw fixture', pr);
+})();
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed.');
 process.exit(fail ? 1 : 0);

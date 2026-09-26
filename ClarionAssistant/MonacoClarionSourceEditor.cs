@@ -103,11 +103,13 @@ namespace ClarionAssistant
         private EventHandler _selectedHandler;
         private Timer _hookRetry;        // OnReady-time hook attach: retries until the workbench window is realized
 
-        // Cover that hides the native editor until Monaco paints. Light (#eff1f5) to match the page's DEFAULT
-        // light theme. (It cannot hide the WebView2 itself — a native HWND always paints over WinForms siblings,
-        // so the on-load flash is fixed on the page side by applying the theme on first paint; this cover only
-        // keeps the native ClaTextAreaControl from peeking through underneath.)
-        private static readonly Color CoverColor = Color.FromArgb(0xEF, 0xF1, 0xF5);
+        // Cover that hides the native editor until Monaco paints: the same pre-paint backdrop as the Monaco
+        // control it covers for (the mirrored theme pref; the system window colour under Windows High
+        // Contrast, GH #195 — it used to be light regardless). It cannot hide the WebView2 itself — a native
+        // HWND always paints over WinForms siblings, so the on-load flash is fixed on the page side by
+        // applying the theme on first paint; this cover only keeps the native ClaTextAreaControl from
+        // peeking through underneath.
+        private static Color CoverColor { get { return MonacoEditorControl.PrePaintBackdrop(Services.CaEditorSettings.MonacoThemeDark); } }
 
         // Every live tab, so a build-triggered save (SaveAllDirtyBeforeBuild) can reach all of them. This
         // class has no other central registry — unlike ModernEmbeditorViewContent's own _instances — because
@@ -1752,6 +1754,7 @@ namespace ClarionAssistant
 
         private static Timer _debugStatePoll;
         private static bool _debugAvailable, _debugPaused;
+        private static bool _debugBreakOnEntry;   // the debugger build has BreakOnProcEntry (e61e4f92)
         private const int DebugStatePollMs = 400;
 
         /// <summary>Lines in the captured native document, or 0 if there isn't one. Only a fallback: it is what
@@ -1765,6 +1768,32 @@ namespace ClarionAssistant
             }
             catch (Exception ex) { MonacoSpikeLog.Write("NativeLineCount error: " + ex.Message); }
             return 0;
+        }
+
+        /// <summary>Make THIS tab the IDE's active window and, only once that is verified, mirror
+        /// <paramref name="line"/>/<paramref name="col"/> as its cursor. False, with nothing written, when the tab
+        /// is still not the active window after SelectWindow: the debugger resolves the cursor from the ACTIVE
+        /// window, so it would pull the OTHER tab's and silently act on the wrong place (pipeline run 1). Shared by
+        /// Run to Cursor and Break on Entry (3517fd15 item 6); UI thread.</summary>
+        private bool TryActivateThisTab(int line, int col)
+        {
+            // The right-click normally activates the tab already; make sure.
+            object myWin = _wbWindow;
+            if (myWin == null) { try { myWin = GetType().GetProperty("WorkbenchWindow")?.GetValue(this, null); } catch { } }
+            var wb = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
+            if (myWin != null && !ReferenceEquals(myWin, ReflectProp(wb, "ActiveWorkbenchWindow")))
+            {
+                try { myWin.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(myWin, null); } catch { }
+            }
+
+            // Verify, don't assume: activation can lag or be refused.
+            if (myWin == null || !ReferenceEquals(myWin, ReflectProp(wb, "ActiveWorkbenchWindow")))
+                return false;
+
+            // Only now, with this tab confirmed active, is our mirrored cursor the one the debugger reads.
+            _lastCursorLine = line;
+            _lastCursorCol = col >= 1 ? col : 1;
+            return true;
         }
 
         private void RunToCursorFromPage(string rawJson)
@@ -1793,27 +1822,11 @@ namespace ClarionAssistant
                 {
                     try
                     {
-                        // The right-click normally activates the tab already; make sure, since the debugger
-                        // resolves the cursor from the ACTIVE window, not from us.
-                        object myWin = _wbWindow;
-                        if (myWin == null) { try { myWin = GetType().GetProperty("WorkbenchWindow")?.GetValue(this, null); } catch { } }
-                        var wb = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
-                        if (myWin != null && !ReferenceEquals(myWin, ReflectProp(wb, "ActiveWorkbenchWindow")))
-                        {
-                            try { myWin.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(myWin, null); } catch { }
-                        }
-
-                        // Verify, don't assume: if activation lagged or was refused, the debugger would pull the
-                        // OTHER tab's cursor and silently run to the wrong place. Refuse instead (pipeline run 1).
-                        if (myWin == null || !ReferenceEquals(myWin, ReflectProp(wb, "ActiveWorkbenchWindow")))
+                        if (!TryActivateThisTab(line, col))
                         {
                             MonacoSpikeLog.Write("runToCursor: NOT sent - this tab is not the active window after SelectWindow (" + Path.GetFileName(_filePath) + ", line " + line + ")");
                             return;
                         }
-
-                        // Only now, with this tab confirmed active, is our mirrored cursor the one the debugger reads.
-                        _lastCursorLine = line;
-                        _lastCursorCol = col >= 1 ? col : 1;
 
                         bool sent = Services.ClarionDebuggerBridge.RunToCursor();
                         MonacoSpikeLog.Write("runToCursor: line " + line + " (" + Path.GetFileName(_filePath) + ") -> " + (sent ? "sent to CA Debugger" : "not sent (debugger unavailable or not paused)"));
@@ -1830,6 +1843,95 @@ namespace ClarionAssistant
             catch (Exception ex) { MonacoSpikeLog.Write("RunToCursorFromPage error: " + ex.Message); }
         }
 
+        // ── CA Debugger "Break on Entry" (task e61e4f92) ────────────────────────────────────────────
+        // The page's right-click item posts {action:"breakOnProcEntry", line, column}. Unlike Run to Cursor the
+        // position travels WITH the call - DebugSessionController.BreakOnProcEntry(filePath, line, out message)
+        // - but it goes through the same checks first: a line that exists, and THIS tab confirmed as the active
+        // window, so what the user right-clicked is what the debugger is asked about, and the caret the IDE
+        // shows agrees with it. Shown whenever the debugger is loaded with that member, in ANY state (owner
+        // decision 5, 2026-09-24): the debugger stages it while idle. It answers whether anything was set. A
+        // miss is toasted in THIS tab; a hit is not, because the debugger pad reports it.
+
+        /// <summary>A toast in this tab's page: the page's own showToast, red when <paramref name="ok"/> is
+        /// false.</summary>
+        private void ToastInPage(string message, bool ok)
+        {
+            try
+            {
+                if (_editor == null) return;
+                // The message is text from another addin, so it goes LAST: a reader that takes the first
+                // "key": it finds cannot be steered by a member spelled inside it.
+                var d = new Dictionary<string, object>();
+                d["type"] = "toast";
+                d["ok"] = ok;
+                d["message"] = message ?? "";
+                _editor.PostJson(new JavaScriptSerializer().Serialize(d));
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("ToastInPage error: " + ex.Message); }
+        }
+
+        private void BreakOnProcEntryFromPage(string rawJson)
+        {
+            try
+            {
+                var data = new JavaScriptSerializer().DeserializeObject(rawJson) as Dictionary<string, object>;
+                int line = (data != null && data.ContainsKey("line")) ? Convert.ToInt32(data["line"]) : 0;
+                int col = (data != null && data.ContainsKey("column")) ? Convert.ToInt32(data["column"]) : 1;
+                if (line < 1) return;
+                // The debugger is asked by file path, so a tab with none (never saved) has nothing to ask
+                // about; say so rather than let the click do nothing (3517fd15 item 5).
+                if (string.IsNullOrEmpty(_filePath))
+                {
+                    MonacoSpikeLog.Write("breakOnProcEntry: NOT sent - this tab has no file path");
+                    ToastInPage("Break on entry: this tab has no file on disk - save it first.", false);
+                    return;
+                }
+                // Run to Cursor's range guard: a line that cannot exist is refused before it can reach the
+                // mirrored cursor (persisted as this file's saved cursor on close) or the debugger.
+                string live = _overlayLiveText;
+                int nativeLines = NativeLineCount();
+                if (!Services.DocumentLineGuard.Contains(line, live, nativeLines))
+                {
+                    MonacoSpikeLog.Write("breakOnProcEntry: NOT sent - line " + line + " is past the end of "
+                        + Path.GetFileName(_filePath));
+                    ToastInPage("Break on entry: line " + line + " is past the end of this file - nothing was set.", false);
+                    return;
+                }
+                string filePath = _filePath;
+
+                Action run = () =>
+                {
+                    try
+                    {
+                        // The same activation, verification and caret as Run to Cursor.
+                        if (!TryActivateThisTab(line, col))
+                        {
+                            MonacoSpikeLog.Write("breakOnProcEntry: NOT sent - this tab is not the active window after SelectWindow (" + Path.GetFileName(filePath) + ", line " + line + ")");
+                            ToastInPage("Break on entry: this tab could not be made the active editor - nothing was set. Click in it and try again.", false);
+                            return;
+                        }
+
+                        string message;
+                        bool ok = Services.ClarionDebuggerBridge.BreakOnProcEntry(filePath, line, out message);
+                        MonacoSpikeLog.Write("breakOnProcEntry: line " + line + " (" + Path.GetFileName(filePath) + ") -> " + (ok ? "set" : "not set") + ": " + message);
+                        if (!ok)
+                            ToastInPage(string.IsNullOrEmpty(message) ? Services.ClarionDebuggerBridge.BreakOnEntryNoAnswer : message, false);
+                    }
+                    catch (Exception ex)
+                    {
+                        MonacoSpikeLog.Write("breakOnProcEntry error: " + ex.Message);
+                        ToastInPage(Services.ClarionDebuggerBridge.BreakOnEntryNoAnswer, false);
+                    }
+                };
+
+                // The debugger touches its pad's WinForms/WebView2 state; call it on the UI thread.
+                var form = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
+                if (form != null && form.InvokeRequired) form.BeginInvoke(run);
+                else run();
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("BreakOnProcEntryFromPage error: " + ex.Message); }
+        }
+
         /// <summary>Start the shared debugger-state poll (idempotent; UI thread) and give THIS page the current
         /// state, so a tab opened mid-session shows the item without waiting for a change.</summary>
         private void EnsureDebuggerStatePoll()
@@ -1838,20 +1940,21 @@ namespace ClarionAssistant
             {
                 if (_debugStatePoll == null)
                 {
-                    Services.ClarionDebuggerBridge.GetState(out _debugAvailable, out _debugPaused);
+                    Services.ClarionDebuggerBridge.GetState(out _debugAvailable, out _debugPaused, out _debugBreakOnEntry);
                     _debugStatePoll = new Timer { Interval = DebugStatePollMs };
                     _debugStatePoll.Tick += (s, e) => PollDebuggerState();
                     _debugStatePoll.Start();
                 }
-                if (_editor != null) _editor.PostJson(DebuggerStateJson(_debugAvailable, _debugPaused));
+                if (_editor != null) _editor.PostJson(DebuggerStateJson(_debugAvailable, _debugPaused, _debugBreakOnEntry));
             }
             catch (Exception ex) { MonacoSpikeLog.Write("EnsureDebuggerStatePoll error: " + ex.Message); }
         }
 
-        private static string DebuggerStateJson(bool available, bool paused)
+        private static string DebuggerStateJson(bool available, bool paused, bool breakOnEntry)
         {
             return "{\"type\":\"debuggerState\",\"available\":" + (available ? "true" : "false")
-                + ",\"paused\":" + (available && paused ? "true" : "false") + "}";
+                + ",\"paused\":" + (available && paused ? "true" : "false")
+                + ",\"breakOnEntry\":" + (available && breakOnEntry ? "true" : "false") + "}";
         }
 
         private static void PollDebuggerState()
@@ -1867,12 +1970,12 @@ namespace ClarionAssistant
                     return;
                 }
 
-                bool available, paused;
-                Services.ClarionDebuggerBridge.GetState(out available, out paused);
-                if (available == _debugAvailable && paused == _debugPaused) return;
-                _debugAvailable = available; _debugPaused = paused;
+                bool available, paused, breakOnEntry;
+                Services.ClarionDebuggerBridge.GetState(out available, out paused, out breakOnEntry);
+                if (available == _debugAvailable && paused == _debugPaused && breakOnEntry == _debugBreakOnEntry) return;
+                _debugAvailable = available; _debugPaused = paused; _debugBreakOnEntry = breakOnEntry;
 
-                string json = DebuggerStateJson(available, paused);
+                string json = DebuggerStateJson(available, paused, breakOnEntry);
                 foreach (var inst in snapshot)
                 {
                     try { if (inst._editor != null && inst._pageReady) inst._editor.PostJson(json); } catch { }
@@ -1897,6 +2000,7 @@ namespace ClarionAssistant
             if (action == "diffWithDisk") { ShowDiskDiff(rawJson); return; }
             if (action == "closeTab") { CloseWorkbenchTab(); return; }
             if (action == "runToCursor") { RunToCursorFromPage(rawJson); return; }
+            if (action == "breakOnProcEntry") { BreakOnProcEntryFromPage(rawJson); return; }
             if (action != "toggleBreakpoint") return;
             // Gutter click in Monaco → toggle the IDE breakpoint on the native document. The native + CA
             // debuggers both listen to DebuggerService; the BreakPointAdded/Removed event re-pushes the set.

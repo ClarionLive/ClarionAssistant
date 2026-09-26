@@ -1606,7 +1606,7 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "append_to_file",
-                Description = "Append text to the end of an existing file",
+                Description = "Append text to the end of an existing file, on a new line. A line break (CRLF) is inserted first only if the file is non-empty and does not already end with one; an empty file gets no leading break. Clarion source (.clw/.inc/...) keeps its own encoding and CRLF endings, no BOM.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
@@ -2392,55 +2392,86 @@ COMMON QUERIES:
             Register(new McpTool
             {
                 Name = "lsp_start",
-                Description = "Start the Clarion Language Server for advanced code intelligence. Must be called before using other lsp_ tools. Provide the workspace folder path (the directory containing the .sln file).",
+                Description = "Start the Clarion Language Server for advanced code intelligence. Must be called before using other lsp_ tools. Optionally name the solution with workspace_path (the .sln file, or the folder holding exactly one .sln); without it the current solution is used. On failure the error says why (no solution, no server.js, or a failed start).",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
-                        { "workspace_path", "Path to the workspace folder (directory containing .sln file). Optional - auto-detected from current solution." }
+                        { "workspace_path", "The .sln file, or the folder holding exactly one .sln, to start the server on. Optional - defaults to the current solution. A folder with several .sln files, or none, is refused rather than guessed." }
                     }),
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    string wsPath = McpJsonRpc.GetString(args, "workspace_path");
-                    if (string.IsNullOrEmpty(wsPath) && _workspace != null)
+                    // workspace_path, when given, is now actually USED for the start (77aceec5). It
+                    // used to be resolved, checked for existence, and then dropped: EnsureRunning()
+                    // took no argument and read only the host's hook, so a plain Chat tab with no
+                    // solution selected got "failed to start ... client handshake" for a .sln
+                    // directory it had been handed explicitly.
+                    string explicitSln = null;
+                    string wsArg = McpJsonRpc.GetString(args, "workspace_path");
+                    if (!string.IsNullOrEmpty(wsArg) && wsArg.Trim().Length > 0)
                     {
-                        string slnPath = _workspace.CurrentSolutionPath;
-                        if (!string.IsNullOrEmpty(slnPath))
-                            wsPath = Path.GetDirectoryName(slnPath);
+                        string resolveError;
+                        explicitSln = LspStartResult.ResolveSolutionArgument(wsArg, out resolveError);
+                        if (explicitSln == null)
+                            return "Error: " + resolveError;
                     }
 
-                    if (string.IsNullOrEmpty(wsPath) || !Directory.Exists(wsPath))
-                        return "Error: workspace_path required (directory containing .sln)";
-
-                    // Single-process (#17): if the shared ClarionLsp addin is the active server, we
-                    // don't start (or need) our bundled server — all LSP calls route through it.
-                    if (SharedLspBridge.IsSharedActive)
-                        return "LSP ready via the shared ClarionLsp addin (resolver=shared). "
-                            + "The bundled server is not started while ClarionLsp is active.";
-
-                    // Resolve up front for a precise error if nothing is installed.
-                    string resolveSource;
-                    string serverJs = LspService.ResolveServerPath(out resolveSource);
-                    if (serverJs == null)
-                    {
-                        // resolveSource may contain a descriptive error from the VS Code scan
-                        // (e.g., "extension found but layout was X").
-                        string extra = !string.IsNullOrEmpty(resolveSource) ? "\n  " + resolveSource : "";
-                        return "Error: LSP server not found. Install the Clarion extension for VS Code, "
-                            + "place server.js in the lsp-server subfolder next to the addin DLL, or set "
-                            + "the 'Lsp.ServerPath' setting to the full path." + extra;
-                    }
-
-                    // Delegate to the single owner — no second construct site / start race.
-                    LspService.EnsureRunning();
+                    // Delegate to the single owner — no second construct site / start race. It
+                    // reports WHAT happened, so each branch below says why rather than guessing.
+                    var start = LspService.EnsureRunning(explicitSln);
                     _lspClient = LspClient.Active;
 
-                    if (_lspClient != null && _lspClient.IsRunning)
-                        return "LSP server started for workspace: " + wsPath + "\n  Source: " + resolveSource + "\n  Server: " + serverJs;
+                    switch (start.Outcome)
+                    {
+                        case LspStartOutcome.SharedActive:
+                            return "LSP ready via the shared ClarionLsp addin (resolver=shared). "
+                                + "The bundled server is not started while ClarionLsp is active.";
 
-                    // Provide diagnostic info on failure
+                        case LspStartOutcome.AlreadyRunning:
+                        {
+                            string running = start.SolutionPath;
+                            if (explicitSln != null && running != null
+                                && !string.Equals(Path.GetFullPath(running), explicitSln, StringComparison.OrdinalIgnoreCase))
+                                return "LSP already running for a different solution: " + running
+                                    + "\n  It was NOT restarted for " + explicitSln + " - lsp_* answers still come "
+                                    + "from the solution above.";
+                            return "LSP already running" + (running != null ? " for solution: " + running : ".");
+                        }
+
+                        case LspStartOutcome.Started:
+                            return "LSP server started for solution: " + start.SolutionPath
+                                + " (from " + start.SolutionSource + ")"
+                                + "\n  Source: " + start.ServerSource + "\n  Server: " + start.ServerJs;
+
+                        case LspStartOutcome.NoSolution:
+                            return "Error: " + (start.Detail ?? LspStartResult.NoSolutionMessage);
+
+                        case LspStartOutcome.NoServer:
+                        {
+                            // Detail may contain a descriptive error from the VS Code scan
+                            // (e.g., "extension found but layout was X").
+                            string extra = !string.IsNullOrEmpty(start.Detail) ? "\n  " + start.Detail : "";
+                            return "Error: LSP server not found, so nothing was started for "
+                                + (start.SolutionPath ?? "the solution") + ". Install the Clarion extension for VS Code, "
+                                + "place server.js in the lsp-server subfolder next to the addin DLL, or set "
+                                + "the 'Lsp.ServerPath' setting to the full path." + extra;
+                        }
+
+                        case LspStartOutcome.Error:
+                            return "Error: LSP start failed before a server was spawned: " + start.Detail;
+
+                        case LspStartOutcome.SpawnFailed:
+                            return "Error: " + start.DescribeWhyNotRunning()
+                                + "\n  server.js: " + start.ServerJs
+                                + "\n  solution: " + start.SolutionPath;
+                    }
+
+                    // StartFailed: a solution and server.js were both in hand and the start was
+                    // really attempted. This is the ONLY branch where the handshake can be to blame.
+                    string serverJs = start.ServerJs;
+                    string resolveSource = start.ServerSource;
+                    string wsPath = Path.GetDirectoryName(start.SolutionPath);
                     string wsUri = "file:///" + wsPath.Replace("\\", "/");
-                    string lspRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(serverJs), "..", "..", ".."));
 
                     // Ask the resolver what node it would ACTUALLY use, rather than re-deriving
                     // one candidate here. This line used to compute only the bundled path and
@@ -2479,9 +2510,9 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    EnsureLspRunning();
+                    var lspStart = EnsureLspRunning();
                     if (!SharedLspBridge.IsRunning)
-                        return "Error: LSP not running. Call lsp_start first or set a solution.";
+                        return LspNotRunningError(lspStart);
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     int line = McpJsonRpc.GetInt(args, "line");
@@ -2507,9 +2538,9 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    EnsureLspRunning();
+                    var lspStart = EnsureLspRunning();
                     if (!SharedLspBridge.IsRunning)
-                        return "Error: LSP not running.";
+                        return LspNotRunningError(lspStart);
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     int line = McpJsonRpc.GetInt(args, "line");
@@ -2535,9 +2566,9 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    EnsureLspRunning();
+                    var lspStart = EnsureLspRunning();
                     if (!SharedLspBridge.IsRunning)
-                        return "Error: LSP not running.";
+                        return LspNotRunningError(lspStart);
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     int line = McpJsonRpc.GetInt(args, "line");
@@ -2561,9 +2592,9 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    EnsureLspRunning();
+                    var lspStart = EnsureLspRunning();
                     if (!SharedLspBridge.IsRunning)
-                        return "Error: LSP not running.";
+                        return LspNotRunningError(lspStart);
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     var result = SharedLspBridge.GetDocumentSymbols(filePath);
@@ -2584,9 +2615,9 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    EnsureLspRunning();
+                    var lspStart = EnsureLspRunning();
                     if (!SharedLspBridge.IsRunning)
-                        return "Error: LSP not running.";
+                        return LspNotRunningError(lspStart);
 
                     string query = McpJsonRpc.GetString(args, "query");
                     var result = SharedLspBridge.FindWorkspaceSymbol(query);
@@ -2613,9 +2644,9 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    EnsureLspRunning();
+                    var lspStart = EnsureLspRunning();
                     if (!SharedLspBridge.IsRunning)
-                        return "Error: LSP not running. Start it with lsp_start or check Lsp.ServerPath.";
+                        return LspNotRunningError(lspStart);
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     if (string.IsNullOrEmpty(filePath))
@@ -2684,9 +2715,9 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    EnsureLspRunning();
+                    var lspStart = EnsureLspRunning();
                     if (!SharedLspBridge.IsRunning)
-                        return "Error: LSP not running. Start it with lsp_start or check Lsp.ServerPath.";
+                        return LspNotRunningError(lspStart);
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     int line = McpJsonRpc.GetInt(args, "line", -1);
@@ -2762,10 +2793,21 @@ COMMON QUERIES:
                         });
 
                     if (_lspClient == null)
-                        return new JavaScriptSerializer().Serialize(new Dictionary<string, object>
+                    {
+                        // Carry the last start attempt's outcome, if there was one: "never
+                        // started" alone does not say whether anything was ever TRIED (77aceec5).
+                        var last = LspService.LastResult;
+                        var notStarted = new Dictionary<string, object>
                         {
                             { "error", "LSP client has never been started. Call lsp_start first." }
-                        });
+                        };
+                        if (last != null)
+                        {
+                            notStarted["lastStartOutcome"] = last.Outcome.ToString();
+                            notStarted["lastStartReason"] = last.DescribeWhyNotRunning();
+                        }
+                        return new JavaScriptSerializer().Serialize(notStarted);
+                    }
 
                     var status = _lspClient.GetDebugStatus();
                     return new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(status);
@@ -4928,12 +4970,26 @@ IdeOnly = true,
             LspService.EnsureRunningInBackground();
         }
 
-        private void EnsureLspRunning()
+        private LspStartResult EnsureLspRunning()
         {
             // LspService is the single owner of the one LspClient. After this returns,
             // _lspClient == LspClient.Active == the one running client (when startable).
-            LspService.EnsureRunning();
+            var result = LspService.EnsureRunning();
             _lspClient = LspClient.Active;
+            return result;
+        }
+
+        /// <summary>
+        /// The "not running" error for the lsp_* tools that auto-start, carrying the REASON the
+        /// start did not happen (77aceec5). It used to be a bare "LSP not running", which sent the
+        /// caller to lsp_start - which then blamed the handshake - when the answer was simply that
+        /// no solution was known.
+        /// </summary>
+        private static string LspNotRunningError(LspStartResult start)
+        {
+            if (start == null || start.IsRunning)
+                return "Error: LSP not running. Call lsp_start for a diagnostic.";
+            return "Error: LSP not running - " + start.DescribeWhyNotRunning();
         }
 
         private string FormatLspResult(Dictionary<string, object> response)
