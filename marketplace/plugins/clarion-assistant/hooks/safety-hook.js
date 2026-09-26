@@ -106,9 +106,9 @@ const KILL_PROGRAM = /(?:^|[\\/])(?:taskkill|kill|pkill|killall|fkill|Stop-Proce
 // back over all the earlier ones each time, which is quadratic too.
 // `seen` only holds word boundaries, so it cannot help quotes glued into one
 // word ('kill''kill'..., ,"kill","kill"...): each would rescan the whole word.
-// A word longer than MAX_WORD therefore counts as a command start, which
-// keeps the quoted string and asks. Nobody glues 256 characters to a quoted
-// kill word by hand.
+// A word longer than MAX_WORD therefore counts as a command start, so a quoted
+// bare kill word after it is kept and the command asks; other quoted text is
+// unaffected. Nobody glues 256 characters to a quoted kill word by hand.
 const MAX_WORD = 256;
 const COMMAND_KEYWORD = /^(?:if|while|until|do|then|else|elif)$/;
 const PREFIX_WORD = /^(?:\w+=|\d*[<>])/;
