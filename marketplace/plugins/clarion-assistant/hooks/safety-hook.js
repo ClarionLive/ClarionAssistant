@@ -81,30 +81,50 @@ const KILL_PROGRAM = /(?:^|[\\/])(?:taskkill|kill|pkill|killall|fkill|Stop-Proce
 // at the beginning; after ; & | ( ) { ` ! or a newline (")" ends a case
 // pattern); after a keyword that is followed by a command (if while until do
 // then else elif); or after any of those followed only by VAR=val words and
-// redirections (X=1 'kill', >/dev/null 'kill'). It walks back one word at a
-// time and stops at the first word that is none of these, so it is linear.
+// redirections written against their target (X=1 'kill', >/dev/null 'kill',
+// 2>/dev/null 'kill'). It walks back one word at a time and stops at the first
+// word that is none of these.
+//
+// Accepted: a redirection with a space before its target (> /dev/null 'kill',
+// < in 'kill') or one ending in &N (2>&1 'kill') is not skipped, so a quoted
+// bare kill after it is read as an argument and does not ask. Nobody writes a
+// kill that way by accident.
+//
+// `text` is an array of single characters, not a string: reading one character
+// of a string built with += makes V8 copy the whole string first, so indexing
+// it once per quote was quadratic on its own (80000 quotes took 8 s).
+// `seen` maps a position in `text` to the answer for the text before it. The
+// caller only ever appends to `text`, so an answer never goes stale, and every
+// position is walked once per command: without it, X='kill' repeated walks
+// back over all the earlier ones each time, which is quadratic too.
 const COMMAND_KEYWORD = /^(?:if|while|until|do|then|else|elif)$/;
 const PREFIX_WORD = /^(?:\w+=|\d*[<>])/;
 const WORD_BREAK = ' \t\n;&|(){}`!';
 
-function atCommandStart(text) {
+function atCommandStart(text, seen) {
+  const walked = [];
   let j = text.length;
+  let answer;
   for (;;) {
     while (j > 0 && (text[j - 1] === ' ' || text[j - 1] === '\t')) j--;
-    if (j === 0 || ';&|(){`!\n'.includes(text[j - 1])) return true;
+    if (seen.has(j)) { answer = seen.get(j); break; }
+    walked.push(j);
+    if (j === 0 || ';&|(){`!\n'.includes(text[j - 1])) { answer = true; break; }
     let k = j;
     while (k > 0 && !WORD_BREAK.includes(text[k - 1])) k--;
-    const word = text.slice(k, j);
-    if (COMMAND_KEYWORD.test(word)) return true;
-    if (!PREFIX_WORD.test(word)) return false;
+    const word = text.slice(k, j).join('');
+    if (COMMAND_KEYWORD.test(word)) { answer = true; break; }
+    if (!PREFIX_WORD.test(word)) { answer = false; break; }
     j = k;
   }
+  for (const position of walked) seen.set(position, answer);
+  return answer;
 }
 
 // Whether a simple quoted string with this content is a kill program being run.
-function isQuotedKillProgram(body, textBefore) {
+function isQuotedKillProgram(body, textBefore, seen) {
   if (!KILL_PROGRAM.test(body)) return false;
-  return /[\\/]|\.exe$/i.test(body) || atCommandStart(textBefore);
+  return /[\\/]|\.exe$/i.test(body) || atCommandStart(textBefore, seen);
 }
 
 // Index of the closing double quote from `from`, honouring backslash escapes;
@@ -123,18 +143,20 @@ function findClosingDoubleQuote(text, from) {
  * and keeps the rest as it is (see FAIL SAFE above).
  */
 function removeSimpleQuotes(command) {
-  let out = '';
+  const seen = new Map();
+  const out = []; // one character per element (see atCommandStart)
+  const append = (s) => { for (let n = 0; n < s.length; n++) out.push(s[n]); };
   let i = 0;
   while (i < command.length) {
     const c = command[i];
-    if (c === '\\') { out += command.slice(i, i + 2); i += 2; continue; }
+    if (c === '\\') { append(command.slice(i, i + 2)); i += 2; continue; }
     if (c === "'") {
       const close = command.indexOf("'", i + 1);
       if (command[i - 1] === '$' || close < 0 || command.slice(i + 1, close).includes('\n')) {
-        return out + command.slice(i);
+        return out.join('') + command.slice(i);
       }
       const body = command.slice(i + 1, close);
-      out += isQuotedKillProgram(body, out) ? `'${body}'` : "''";
+      append(isQuotedKillProgram(body, out, seen) ? `'${body}'` : "''");
       i = close + 1;
       continue;
     }
@@ -142,16 +164,16 @@ function removeSimpleQuotes(command) {
       const close = findClosingDoubleQuote(command, i + 1);
       const body = close < 0 ? '' : command.slice(i + 1, close);
       if (close < 0 || body.includes('\n') || /\$[({]|`/.test(body)) {
-        return out + command.slice(i);
+        return out.join('') + command.slice(i);
       }
-      out += isQuotedKillProgram(body, out) ? `"${body}"` : '""';
+      append(isQuotedKillProgram(body, out, seen) ? `"${body}"` : '""');
       i = close + 1;
       continue;
     }
-    out += c;
+    out.push(c);
     i++;
   }
-  return out;
+  return out.join('');
 }
 
 function isProcessKill(command) {

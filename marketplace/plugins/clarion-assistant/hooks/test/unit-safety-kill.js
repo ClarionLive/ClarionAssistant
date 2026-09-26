@@ -242,6 +242,14 @@ const LONG_SHAPES = {
   'many runner-like paths': ' a/b/c'.repeat(10000) + ' grep "kill" x',
   'many quoted kill words': 'echo' + ' "kill"    '.repeat(10000),
   'many assignments before quotes': 'A=1 '.repeat(20000) + '"x" '.repeat(20000) + 'grep "kill" x',
+  // Each quoted kill word below makes atCommandStart walk back over every
+  // X='...' before it (pipeline run 9: 8000 repeats took 6.6 s). In the first
+  // the strings are kept as kill programs; in the second none is, because the
+  // walk ends at echo, so returning early on a kept string would not fix it.
+  // 150000 repeats because building the text as a string rather than a
+  // character array is quadratic too, but only takes over 5 s at this size.
+  "repeated X='kill'": "X='kill' ".repeat(150000),
+  "echo then repeated X='kill'": 'echo ' + "X='kill' ".repeat(150000),
 };
 for (const [shape, long] of Object.entries(LONG_SHAPES)) {
   checked++;
