@@ -537,6 +537,11 @@ namespace ClarionAssistant.Services
             }
             if (primary == null) primary = new List<LspClient.CompletionItemInfo>();
 
+            // GH #187: the server's own list can name the same member twice. Every merge below dedupes
+            // what IT adds against this list, but nothing deduped the list against itself, so both copies
+            // reached Monaco as identical rows. Collapse them first; the merges are unchanged.
+            RemoveDuplicateServerItems(primary);
+
             // CodeGraph prefix-completion augmentation (task a47a6cac Phase 1). Mark's pure upstream
             // server does MEMBER-ACCESS-ONLY completion; for a BARE PREFIX (line not ending in '.') it
             // returns nothing. We merge in global symbols (procedures/functions/classes/vars) from the
@@ -629,6 +634,33 @@ namespace ClarionAssistant.Services
             catch (Exception ex) { LspTrace.Write("[SharedLspBridge] colon-qualifier completion failed: " + ex.Message); }
 
             return primary;
+        }
+
+        /// <summary>GH #187: drop repeats from the language server's own completion list, in place. Two
+        /// items are the same row when kind, label and inserted text all match (case-insensitive, like
+        /// every other completion dedup here). Detail is deliberately NOT part of the key: the reporter's
+        /// doubled rows were indistinguishable in the list, and a declaration/implementation pair of one
+        /// method can differ only by the attribute detail. Overloads keep distinct labels
+        /// ("Trace(Queue pQueue)" vs "Trace(&lt;string errMsg&gt;)") and so are never collapsed. The first
+        /// copy stays, taking a later copy's detail/documentation when it has none. Never throws.</summary>
+        private static void RemoveDuplicateServerItems(List<LspClient.CompletionItemInfo> items)
+        {
+            if (items == null || items.Count < 2) return;
+            try
+            {
+                var kept = new Dictionary<string, LspClient.CompletionItemInfo>(StringComparer.OrdinalIgnoreCase);
+                items.RemoveAll(it =>
+                {
+                    if (it == null) return false;
+                    string key = it.Kind + "\u0001" + (it.Label ?? "") + "\u0001" + (it.InsertText ?? it.Label ?? "");
+                    LspClient.CompletionItemInfo first;
+                    if (!kept.TryGetValue(key, out first)) { kept[key] = it; return false; }
+                    if (string.IsNullOrEmpty(first.Detail)) first.Detail = it.Detail;
+                    if (string.IsNullOrEmpty(first.Documentation)) first.Documentation = it.Documentation;
+                    return true;
+                });
+            }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] completion dedupe failed: " + ex.Message); }
         }
 
         // Matches an "IDENT:" qualifier (with the trailing ':') immediately left of the cursor, allowing a
