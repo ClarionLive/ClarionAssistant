@@ -38,7 +38,14 @@ static class EmbedApplyFlowTest
         }
         public string SaveAndClose() { Log.Add("save"); if (OnSave != null) OnSave(); return SaveResult; }
         public bool WaitClosed(int timeoutMs) { Log.Add("waitclosed"); return Closed; }
-        public void Discard() { Log.Add("discard"); }
+        public string DiscardError;         // non-null = CancelEmbeditor failed
+        public bool DiscardThrows;
+        public string Discard()
+        {
+            Log.Add("discard");
+            if (DiscardThrows) throw new InvalidOperationException("cancel blew up");
+            return DiscardError;
+        }
         public bool Has(string op) { return Log.Contains(op); }
         public override string ToString() { return string.Join(",", Log); }
     }
@@ -120,6 +127,32 @@ static class EmbedApplyFlowTest
             var ops2 = new FakeOps { WritesLeft = 1, Closed = false };
             msg = EmbedApplyFlow.Apply(ops2, "P", Ranges, Edits(40), adopted, Running(), out ok);
             Ok("close unconfirmed: discards (closes)" + tag, !ok && ops2.Has("discard"), ops2 + " / " + msg);
+        }
+
+        // --- rollback itself fails: never claim it happened (Codex run-2 HIGH) ---
+        {
+            var ops = new FakeOps { WritesLeft = 2, FailWriteAt = 10, DiscardError = "Error: TryClose returned false" };
+            msg = EmbedApplyFlow.Apply(ops, "P", Ranges, Edits(10, 90), true, Running(), out ok);
+            Ok("failed rollback after write error: says it could not roll back",
+                !ok && msg.Contains("Could not roll back") && msg.Contains("close it WITHOUT saving")
+                && !msg.Contains("was closed without saving our edits"), msg);
+
+            var tok = Running();
+            var ops2 = new FakeOps { WritesLeft = 1, DiscardError = "Error: TryClose returned false" };
+            ops2.OnLastWrite = () => tok.Abandon();
+            msg = EmbedApplyFlow.Apply(ops2, "P", Ranges, Edits(40), false, tok, out ok);
+            Ok("failed rollback after abandon: not saved, and not claimed rolled back",
+                !ops2.Has("save") && msg.Contains("Could not roll back") && !msg.Contains("were rolled back"), msg);
+
+            var ops3 = new FakeOps { WritesLeft = 1, SaveResult = "Error: Save() threw: boom", DiscardThrows = true };
+            msg = EmbedApplyFlow.Apply(ops3, "P", Ranges, Edits(40), true, Running(), out ok);
+            Ok("throwing rollback after save error: says it could not roll back",
+                msg.Contains("Could not roll back") && msg.Contains("cancel blew up") && !msg.Contains("were discarded"), msg);
+
+            var ops4 = new FakeOps { WritesLeft = 1, DiscardError = "Error: stuck" };
+            msg = EmbedApplyFlow.Apply(ops4, "P", Ranges, Edits(11), false, Running(), out ok);
+            Ok("failed close before any write: says it could not be closed, holds no edits",
+                msg.Contains("could not be closed") && msg.Contains("holds no edits"), msg);
         }
 
         // --- write failure: discard, no save ---

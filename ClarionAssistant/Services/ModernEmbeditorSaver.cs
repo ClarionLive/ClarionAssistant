@@ -356,7 +356,26 @@ namespace ClarionAssistant.Services
             public string WriteSlot(int line, string code) { return _appTree.WriteEmbedContentByLine(line, code, false); }
             public string SaveAndClose() { return _appTree.SaveAndCloseEmbeditor(); }
             public bool WaitClosed(int timeoutMs) { return ModernEmbeditorLauncher.WaitForEmbedClosed(_appTree, timeoutMs); }
-            public void Discard() { try { _appTree.CancelEmbeditor(); } catch { } }
+            // Success only when CancelEmbeditor reports no error AND the embeditor is confirmed closed - an
+            // unconfirmed rollback must never be reported as one. "No embeditor is currently open" is success:
+            // there is nothing left to hold our writes.
+            public string Discard()
+            {
+                try
+                {
+                    string res = _appTree.CancelEmbeditor();
+                    if (res != null && res.StartsWith("Error", StringComparison.OrdinalIgnoreCase)
+                        && res.IndexOf("No embeditor is currently open", StringComparison.OrdinalIgnoreCase) < 0)
+                        return res;
+                    if (!ModernEmbeditorLauncher.WaitForEmbedClosed(_appTree, 3000))
+                        return "the embeditor did not confirm closed";
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    return ex.InnerException != null ? ex.InnerException.Message : ex.Message;
+                }
+            }
         }
 
         private static bool RangesMatch(List<int[]> a, List<int[]> b)
