@@ -232,10 +232,69 @@ function testFontPicker() {
     check('the picker is wired before the generic change listeners', wireAt > 0 && idsAt > 0 && wireAt < idsAt);
 }
 
+// =====================================================================================================
+// GH #195 — no white backdrop before Monaco's theme applies (high contrast)
+// =====================================================================================================
+const isWhiteish = (c) => /^(white|#fff|#ffffff|#fffffe|#eff1f5|rgb\(255, 255, 255\))$/i.test(String(c).trim());
+
+function testBackdrop() {
+    section('GH #195 — the pre-Monaco backdrop is never a light flash under high contrast');
+
+    // Static CSS: the page's initial background, and the Windows High Contrast override.
+    const rootBg = /:root\s*\{[^}]*--bg:\s*([^;]+);/.exec(html);
+    const bodyRule = /html, body \{[^}]*background: var\(--bg\)/.test(html);
+    check('the initial page background (html/body before any theme class) is not white',
+        !!rootBg && bodyRule && !isWhiteish(rootBg[1]), rootBg ? rootBg[1] : 'no :root --bg');
+    check('a forced-colors (Windows High Contrast) rule paints html/body with the system Canvas colour',
+        /@media \(forced-colors: active\)\s*\{\s*html, body \{[^}]*background: Canvas !important/.test(html));
+
+    // The boot script that paints the backdrop before Monaco loads, run against fakes.
+    let src = null;
+    try { src = slice(html, '    var themePrefDark = false;', '    function updateThemeBtn()', 'early theme script'); }
+    catch (e) { check('early theme script present', false, e.message); return; }
+    function boot(opts) {
+        const store = { 'modernEmbeditor.themeDark': opts.dark ? '1' : '0' };
+        if (opts.hc) store['modernEmbeditor.themeHC'] = '1';
+        const docEl = { style: {} };
+        const document = { documentElement: docEl, body: { classList: { toggle() { } } }, addEventListener() { } };
+        const window = { matchMedia: (q) => ({ matches: !!opts.forced && q.indexOf('forced-colors: active') >= 0 }) };
+        const localStorage = { getItem: (k) => (k in store ? store[k] : null), setItem() { } };
+        new Function('window', 'document', 'localStorage', 'postToHost', src)(window, document, localStorage, () => { });
+        return docEl.style.background;
+    }
+    check('Windows High Contrast: the early backdrop is the system Canvas colour (light pref)',
+        boot({ dark: false, forced: true }) === 'Canvas', boot({ dark: false, forced: true }));
+    check('Windows High Contrast: the early backdrop is the system Canvas colour (dark pref)',
+        boot({ dark: true, forced: true }) === 'Canvas', boot({ dark: true, forced: true }));
+    check("Monaco's HC toggle from dark (hc-black): the early backdrop is black, not the dark pref's grey",
+        boot({ dark: true, hc: true }) === '#000000', boot({ dark: true, hc: true }));
+    check('no high contrast: dark pref keeps its backdrop', boot({ dark: true }) === '#1e1e2e', boot({ dark: true }));
+    check('no high contrast: light pref keeps its backdrop', boot({ dark: false }) === '#eff1f5', boot({ dark: false }));
+
+    // Host side: every surface painted before the page (WebView2 DefaultBackgroundColor, the control
+    // backdrop, the covers over the native editor) goes through one high-contrast-aware helper.
+    const caDir = path.join(path.dirname(HTML_PATH), '..');
+    const readCs = (rel) => { try { return fs.readFileSync(path.join(caDir, rel), 'utf8'); } catch (e) { return null; } };
+    const mec = readCs('Terminal/MonacoEditorControl.cs');
+    const mev = readCs('Terminal/ModernEmbeditorViewContent.cs');
+    const mcs = readCs('MonacoClarionSourceEditor.cs');
+    check('host sources found', !!(mec && mev && mcs), caDir);
+    if (!(mec && mev && mcs)) return;
+    const helper = /static Color PrePaintBackdrop\(bool isDark\)\s*\{[\s\S]*?SystemInformation\.HighContrast[\s\S]*?SystemColors\.Window[\s\S]*?\n        \}/.exec(mec);
+    check('PrePaintBackdrop uses the system window colour under Windows High Contrast', !!helper);
+    check('the Monaco control backdrop (and so WebView2 DefaultBackgroundColor) comes from PrePaintBackdrop',
+        /BackColor = PrePaintBackdrop\(isDark\);\s*\r?\n[\s\S]{0,400}?new WebView2 \{[^}]*DefaultBackgroundColor = BackColor/.test(mec));
+    check('the embeditor covers come from PrePaintBackdrop (no hardcoded white)',
+        (mev.match(/BackColor = MonacoEditorControl\.PrePaintBackdrop\(/g) || []).length === 2 && !/Color\.White \}/.test(mev));
+    check('the CA Editor cover comes from PrePaintBackdrop',
+        /CoverColor \{ get \{ return MonacoEditorControl\.PrePaintBackdrop\(/.test(mcs));
+}
+
 // ---------- run ----------
 (async function main() {
     await testDiagnostics();
     testFontPicker();
+    testBackdrop();
 
     console.log('\n' + '='.repeat(60));
     console.log(pass + ' passed, ' + fail + ' failed');

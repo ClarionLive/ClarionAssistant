@@ -22,6 +22,12 @@
     }
 
     html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', Tahoma, sans-serif; background: var(--bg); color: var(--fg); }
+    /* GH #195: Windows High Contrast — before Monaco paints, the backdrop is the contrast theme's own window
+       colour, not the light/dark pref's (a near-white flash for a dark contrast theme). !important beats the
+       early inline background the boot script sets. */
+    @media (forced-colors: active) {
+        html, body { background: Canvas !important; color: CanvasText; }
+    }
 
     #toolbar {
         display: flex; align-items: center; gap: 8px;
@@ -1211,7 +1217,17 @@
         // Apply the persisted theme to the document IMMEDIATELY — before Monaco initializes — so the page never
         // shows its default-dark body for the ~1s Monaco takes to load (that was the on-load "black flash",
         // most visible on a light theme). setTheme() still re-applies once Monaco is live.
-        try { document.documentElement.style.background = themePrefDark ? '#1e1e2e' : '#eff1f5'; } catch (e) { }
+        // GH #195: high contrast gets its own backdrop. Windows High Contrast (forced colors) -> the system
+        // window colour, which is what Monaco's auto-detected hc theme paints; Monaco's own persisted HC toggle
+        // -> hc-black (from dark) / hc-light (from light), pure black / white. Otherwise the pref's colour.
+        try {
+            var forcedColors = !!(window.matchMedia && window.matchMedia('(forced-colors: active)').matches);
+            var monacoHc = false;
+            try { monacoHc = localStorage.getItem('modernEmbeditor.themeHC') === '1'; } catch (e) { }
+            document.documentElement.style.background = forcedColors ? 'Canvas'
+                : monacoHc ? (themePrefDark ? '#000000' : '#ffffff')
+                : (themePrefDark ? '#1e1e2e' : '#eff1f5');
+        } catch (e) { }
         function applyEarlyTheme() { try { document.body.classList.toggle('light', !themePrefDark); } catch (e) { } }
         if (document.body) applyEarlyTheme(); else document.addEventListener('DOMContentLoaded', applyEarlyTheme);
         // Mirror the effective pref to the host (settings.txt) so the NEXT open's pre-paint surfaces —

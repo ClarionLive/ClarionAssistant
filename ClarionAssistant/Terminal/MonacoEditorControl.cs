@@ -244,7 +244,7 @@ namespace ClarionAssistant.Terminal
 
             Dock = DockStyle.Fill;
             IsDark = isDark;
-            BackColor = isDark ? Color.FromArgb(30, 30, 46) : Color.FromArgb(239, 241, 245);
+            BackColor = PrePaintBackdrop(isDark);
 
             // Plain WebView2 — Monaco's native mouseWheelZoom owns Ctrl+wheel inside the renderer.
             // DefaultBackgroundColor = the themed backdrop so the WebView2 surface shows the editor's colour
@@ -925,12 +925,31 @@ namespace ClarionAssistant.Terminal
         public void ApplyTheme(bool isDark)
         {
             IsDark = isDark;
-            BackColor = isDark ? Color.FromArgb(30, 30, 46) : Color.FromArgb(239, 241, 245);
+            BackColor = PrePaintBackdrop(isDark);
             if (_isInitialized)
                 PostJson("{\"type\":\"applyTheme\",\"isDark\":" + (isDark ? "true" : "false") + "}");
         }
 
         // ── Helpers ─────────────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// The colour every surface painted BEFORE the Monaco page — the control backdrop, the WebView2
+        /// DefaultBackgroundColor, the covers over the native editor — should show, so the swap to Monaco
+        /// doesn't flash. The page's own backdrop colours (#1e1e2e dark / #eff1f5 light), except under
+        /// Windows High Contrast (GH #195): the page then paints the contrast theme's window colour
+        /// (forced-colors Canvas) and Monaco auto-switches to its hc theme, so a light pref backdrop was a
+        /// white flash for a dark contrast theme. Returned as a plain ARGB colour (not a KnownColor) so it
+        /// is safe to hand to WebView2.
+        /// </summary>
+        internal static Color PrePaintBackdrop(bool isDark)
+        {
+            try
+            {
+                if (SystemInformation.HighContrast) return Color.FromArgb(SystemColors.Window.ToArgb());
+            }
+            catch { }
+            return isDark ? Color.FromArgb(30, 30, 46) : Color.FromArgb(239, 241, 245);
+        }
 
         private string GetHtmlPath()
         {

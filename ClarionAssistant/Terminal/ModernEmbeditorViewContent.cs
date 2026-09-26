@@ -2597,7 +2597,7 @@ namespace ClarionAssistant.Terminal
 
         internal static Panel AddInstantCover(Control host, bool isDark)
         {
-            var cover = new Panel { Dock = DockStyle.Fill, BackColor = isDark ? Color.FromArgb(0x1E, 0x1E, 0x1E) : Color.White };
+            var cover = new Panel { Dock = DockStyle.Fill, BackColor = MonacoEditorControl.PrePaintBackdrop(isDark) };   // GH #195
             host.Controls.Add(cover);
             cover.BringToFront();
             return cover;
@@ -2627,7 +2627,7 @@ namespace ClarionAssistant.Terminal
             }
             else
             {
-                _overlayCover = new Panel { Dock = DockStyle.Fill, BackColor = _isDark ? Color.FromArgb(0x1E, 0x1E, 0x1E) : Color.White };
+                _overlayCover = new Panel { Dock = DockStyle.Fill, BackColor = MonacoEditorControl.PrePaintBackdrop(_isDark) };   // GH #195
                 host.Controls.Add(_overlayCover);
             }
             _overlayCover.BringToFront();
