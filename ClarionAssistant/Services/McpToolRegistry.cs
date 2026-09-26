@@ -1606,7 +1606,7 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "append_to_file",
-                Description = "Append text to the end of an existing file",
+                Description = "Append text to the end of an existing file, on a new line. A line break (CRLF) is inserted first only if the file is non-empty and does not already end with one; an empty file gets no leading break. Clarion source (.clw/.inc/...) keeps its own encoding and CRLF endings, no BOM.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {

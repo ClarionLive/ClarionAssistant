@@ -104,6 +104,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "IdeSolutionRecord.Test"
                Sources = @("tests\IdeSolutionRecord.Test.cs", "Services\IdeSolutionRecord.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Web.Extensions.dll") }
+            # GH #209: the running Clarion.exe matched the FIRST version entry on its bin folder (a
+            # Clarion.NET compiler, not the IDE). Fixture = the reporter's own ClarionProperties.xml.
+            @{ Name = "ClarionVersionService.ExeMatchTest"
+               Sources = @("tests\ClarionVersionService.ExeMatchTest.cs", "Services\ClarionVersionService.cs", "Services\ClarionConfigDirectory.cs")
+               Refs = @("System.dll", "System.Xml.dll")
+               Args = @((Join-Path $TestDir "fixtures\gh209\ClarionProperties.xml")) }
             @{ Name = "ClarionClDiagnosis.Test"
                Sources = @("tests\ClarionClDiagnosis.Test.cs", "Services\ClarionClDiagnosis.cs")
                Refs = @("System.dll") }
