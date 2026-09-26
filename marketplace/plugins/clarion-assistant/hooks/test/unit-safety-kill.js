@@ -67,6 +67,13 @@ const MENTIONS = [
   'grep -rn "kill" src/cmd/',
   // A simple quote after a double-quoted $VAR is still data.
   'grep "kill" "$LOG"',
+  // A $VAR that is an argument, or glued to an assignment, is not a command.
+  'grep "kill" $FILE',
+  'X=$HOME grep "kill" x',
+  'for f in $FILES; do grep "kill" $f; done',
+  // A quoted path to a file that is not a program, whose name holds a kill word.
+  'rg "kill" "src/process/kill.ts"',
+  'cat "scripts/killer.sh"',
 ];
 
 // Kills that are run: MUST raise the kill prompt.
@@ -194,6 +201,17 @@ const KILLS = [
   'powershell -Command "Stop-Process -Name MultiTerminal"',
   "pwsh -c 'Get-Process x | Stop-Process'",
   'bash -c "kill 1"',
+  // Security-audit findings: a quoted script whose name holds a kill word, and
+  // a kill stored in a variable that is then run. No case here names a runner
+  // (node, sh, ...), so none asks for that reason instead.
+  '"./scripts/kill.sh"',
+  '"./kill.cmd"',
+  '"C:/My Tools/kill-server.bat"',
+  '"H:/Dev Tools/stop-and-kill.sh" 5050',
+  'CMD="taskkill //F //IM MultiTerminal.exe"; $CMD',
+  'CMD="taskkill //F //IM vite.exe"; $CMD',
+  'K="kill -9"; $K 1234',
+  'K="kill -9"; ${K} 1234',
 ];
 
 const failures = [];
@@ -250,6 +268,13 @@ const LONG_SHAPES = {
   // character array is quadratic too, but only takes over 5 s at this size.
   "repeated X='kill'": "X='kill' ".repeat(150000),
   "echo then repeated X='kill'": 'echo ' + "X='kill' ".repeat(150000),
+  // The same with nothing between the quotes, so they all sit in one growing
+  // word (security audit): each quote used to rescan that whole word.
+  "glued 'kill'": "'kill'".repeat(150000),
+  'glued ,"kill"': 'grep ' + ',"kill"'.repeat(150000),
+  "glued X='kill'": "X='kill'".repeat(150000),
+  // runsVariable checks every $VAR that starts a word.
+  'many variables': 'grep "kill" x ' + 'X=1 $A '.repeat(150000),
 };
 for (const [shape, long] of Object.entries(LONG_SHAPES)) {
   checked++;

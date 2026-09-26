@@ -45,9 +45,15 @@
 // it: a path or .exe name ending in a kill word ("C:/Windows/System32/
 // taskkill.exe", "/usr/bin/kill") wherever it stands — quoting a full path is
 // ordinary on Windows — and the bare word ('kill') where a command starts
-// (see atCommandStart). The price: a quoted path ending in a kill word asks
-// even as an argument (rg "taskkill.exe", ls "C:/tools/kill.exe").
+// (see atCommandStart). So is a quoted script or program whose file name holds
+// a kill word anywhere ("./scripts/kill.sh", "C:/My Tools/kill-server.bat";
+// see isKillScript). The price: such a path asks even as an argument
+// (rg "taskkill.exe", ls "C:/tools/kill.exe", cat "kill.sh").
 // grep "kill" x stays silent: there the word is an argument.
+//
+// Quoted text also counts when the command runs a variable as a command
+// (CMD="taskkill //F //IM x.exe"; $CMD), because the kill is stored in quotes
+// and run from the variable.
 //
 // If the command also runs a program that executes code (a shell,
 // PowerShell, a language runtime, awk, trap, watch, ssh, eval, ...), quoted
@@ -77,7 +83,8 @@ const RUNS_CODE = new RegExp(
 // with a path in front and .exe after.
 const KILL_PROGRAM = /(?:^|[\\/])(?:taskkill|kill|pkill|killall|fkill|Stop-Process|spps)(?:\.exe)?$/i;
 
-// True when `text` (the command read so far) ends where a new command starts:
+// True when `text` up to `end` (the command read so far) ends where a new
+// command starts:
 // at the beginning; after ; & | ( ) { ` ! or a newline (")" ends a case
 // pattern); after a keyword that is followed by a command (if while until do
 // then else elif); or after any of those followed only by VAR=val words and
@@ -97,13 +104,19 @@ const KILL_PROGRAM = /(?:^|[\\/])(?:taskkill|kill|pkill|killall|fkill|Stop-Proce
 // caller only ever appends to `text`, so an answer never goes stale, and every
 // position is walked once per command: without it, X='kill' repeated walks
 // back over all the earlier ones each time, which is quadratic too.
+// `seen` only holds word boundaries, so it cannot help quotes glued into one
+// word ('kill''kill'..., ,"kill","kill"...): each would rescan the whole word.
+// A word longer than MAX_WORD therefore counts as a command start, which
+// keeps the quoted string and asks. Nobody glues 256 characters to a quoted
+// kill word by hand.
+const MAX_WORD = 256;
 const COMMAND_KEYWORD = /^(?:if|while|until|do|then|else|elif)$/;
 const PREFIX_WORD = /^(?:\w+=|\d*[<>])/;
 const WORD_BREAK = ' \t\n;&|(){}`!';
 
-function atCommandStart(text, seen) {
+function atCommandStart(text, seen, end = text.length) {
   const walked = [];
-  let j = text.length;
+  let j = end;
   let answer;
   for (;;) {
     while (j > 0 && (text[j - 1] === ' ' || text[j - 1] === '\t')) j--;
@@ -111,7 +124,8 @@ function atCommandStart(text, seen) {
     walked.push(j);
     if (j === 0 || ';&|(){`!\n'.includes(text[j - 1])) { answer = true; break; }
     let k = j;
-    while (k > 0 && !WORD_BREAK.includes(text[k - 1])) k--;
+    while (k > 0 && j - k <= MAX_WORD && !WORD_BREAK.includes(text[k - 1])) k--;
+    if (j - k > MAX_WORD) { answer = true; break; }
     const word = text.slice(k, j).join('');
     if (COMMAND_KEYWORD.test(word)) { answer = true; break; }
     if (!PREFIX_WORD.test(word)) { answer = false; break; }
@@ -121,10 +135,43 @@ function atCommandStart(text, seen) {
   return answer;
 }
 
+// A program or script file whose name holds a kill word anywhere (kill.sh,
+// kill-server.bat, stop-and-kill.sh): a name with a runnable extension, or a
+// path whose last part has no extension. kill.ts or a directory is not one,
+// and neither is a grep pattern such as "quit"\|"kill", whose \ is not a path
+// separator: the last part must look like a file name.
+const RUNNABLE_EXTENSION = /\.(?:exe|com|sh|bash|bat|cmd|ps1)$/i;
+const FILE_NAME = /^[\w.+-]+$/;
+
+function isKillScript(body) {
+  const name = body.slice(Math.max(body.lastIndexOf('/'), body.lastIndexOf('\\')) + 1);
+  if (!FILE_NAME.test(name) || !KILL_WORD.test(name)) return false;
+  if (RUNNABLE_EXTENSION.test(name)) return true;
+  return !name.includes('.') && /[\\/]/.test(body);
+}
+
 // Whether a simple quoted string with this content is a kill program being run.
 function isQuotedKillProgram(body, textBefore, seen) {
+  if (isKillScript(body)) return true;
   if (!KILL_PROGRAM.test(body)) return false;
   return /[\\/]|\.exe$/i.test(body) || atCommandStart(textBefore, seen);
+}
+
+// Whether `text` (quotes already emptied) runs a variable as a command:
+// CMD="taskkill //F //IM x.exe"; $CMD. The kill is inside the quotes, so
+// without this it would pass. A $VAR glued to other text (X=$HOME) or used as
+// an argument (grep "kill" $FILE) is not a command.
+function runsVariable(text) {
+  const chars = text.split('');
+  const seen = new Map();
+  const variable = /\$\{?[A-Za-z_]/g;
+  let match;
+  while ((match = variable.exec(text)) !== null) {
+    const at = match.index;
+    if (at > 0 && !WORD_BREAK.includes(text[at - 1])) continue;
+    if (atCommandStart(chars, seen, at)) return true;
+  }
+  return false;
 }
 
 // Index of the closing double quote from `from`, honouring backslash escapes;
@@ -178,8 +225,9 @@ function removeSimpleQuotes(command) {
 
 function isProcessKill(command) {
   if (!KILL_WORD.test(command)) return false;
-  if (KILL_WORD.test(removeSimpleQuotes(command))) return true;
-  return RUNS_CODE.test(command);
+  const stripped = removeSimpleQuotes(command);
+  if (KILL_WORD.test(stripped)) return true;
+  return runsVariable(stripped) || RUNS_CODE.test(command);
 }
 
 // ── Rule Definitions ────────────────────────────────────────────────
