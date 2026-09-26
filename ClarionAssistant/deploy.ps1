@@ -82,7 +82,9 @@ $Versions = @{
 # when registry+fallbacks already found a root: the 2026-08-13 incident's second install
 # happened to be in Fallbacks, but the same shape at a path that ISN'T listed there is only
 # caught by this scan. What the scan doesn't need is network shares, so it is restricted to
-# fixed local drives - that keeps the speedup without losing any realistic coverage.
+# fixed local drives — that keeps the speedup without losing any realistic coverage.
+# Removable, optical and RAM drives are left out on purpose too (external USB hard disks
+# report Fixed, so they are still scanned).
 function Resolve-ClarionRoots {
     param(
         [string[]]$RegistryKeys,
@@ -120,7 +122,11 @@ function Resolve-ClarionRoots {
     # at a known path (Fallbacks) and lives ONLY on a network share isn't a realistic case —
     # COM registration and templates need a local, registered install to actually work — and
     # network shares are what makes this scan slow (SMB round-trips per drive per pattern).
-    $drives = [System.IO.DriveInfo]::GetDrives() |
+    # GetDrives() can throw (IOException/UnauthorizedAccessException) and this script runs
+    # with ErrorActionPreference=Stop; the old Get-PSDrive call had SilentlyContinue, so keep
+    # a failure here a skipped scan rather than an aborted deploy.
+    $allDrives = try { [System.IO.DriveInfo]::GetDrives() } catch { @() }
+    $drives = $allDrives |
                 Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady } |
                 ForEach-Object { $_.RootDirectory.FullName }
     foreach ($drive in $drives) {
