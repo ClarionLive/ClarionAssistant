@@ -5029,7 +5029,7 @@
             minimap: chk('setMinimap'),
             completeOnInsertKey: chk('setCompleteOnInsertKey'),
             fontSize: storedPref('fontSize', num('setFontSize', 13, 6, 48)),
-            fontFamily: storedPref('fontFamily', (function () { var e = document.getElementById('setFontFamily'); return e ? e.value.trim().slice(0, 64) : ''; })()),
+            fontFamily: storedPref('fontFamily', (function () { var e = document.getElementById('setFontFamily'); return e ? fontFamilyFieldValue(e).trim().slice(0, 64) : ''; })()),
             occurrenceHighlight: (function () { var e = document.getElementById('setOccurrenceHighlight'); return e ? !!e.checked : true; })(),
             horizontalScrollbar: sel('setHorizontalScrollbar', 'auto'),
             // ----- Smart Formatter -----
@@ -5559,6 +5559,50 @@
         ov.remove();
     }
 
+    // ===================== Font family picker (GH #184)
+    // A native <input list> filters its <datalist> by the text already in the box, so once a font was set,
+    // opening the list showed only that one font. While the box has focus it is blanked (the full list shows;
+    // the current font stays readable as the placeholder), and on the way out the old value is put back
+    // unless the developer picked or typed something. Deliberately erasing it still means "default": the
+    // erase is an input event, so it counts as an edit. fontFamilyFieldValue() reads through the blanking,
+    // so anything that saves settings while the box is focused never mistakes it for "default".
+    var _ffStash = null;         // the value the box held when it was blanked; null = not blanked
+    var _ffEdited = false;       // an input event since blanking (a pick from the list is one)
+    var _ffPlaceholder = null;
+    function fontFamilyFieldValue(e) {
+        if (!e) return '';
+        if (e.value === '' && _ffStash !== null && !_ffEdited) return _ffStash;
+        return e.value;
+    }
+    function ffBlank(e) {
+        if (_ffStash !== null || e.disabled || e.value === '') return;
+        _ffStash = e.value;
+        _ffEdited = false;
+        _ffPlaceholder = e.placeholder;
+        e.placeholder = _ffStash;
+        e.value = '';
+    }
+    function ffRestore(e) {
+        if (_ffStash === null) return;
+        if (e.value === '' && !_ffEdited) e.value = _ffStash;
+        e.placeholder = _ffPlaceholder;
+        _ffStash = null;
+        _ffEdited = false;
+    }
+    function wireFontFamilyPicker() {
+        var e = document.getElementById('setFontFamily');
+        if (!e) return;
+        e.addEventListener('focus', function () { ffBlank(e); });
+        // Already focused (say, a font was just picked) and clicked again to reopen the list.
+        e.addEventListener('pointerdown', function () { if (document.activeElement === e) ffBlank(e); });
+        e.addEventListener('input', function () { if (_ffStash !== null) _ffEdited = true; });
+        // Must be registered BEFORE the generic change -> onSettingChanged listener: a change that fires on the
+        // way out while the box is still blank then sees the restored value, not a false "default".
+        e.addEventListener('change', function () { ffRestore(e); });
+        e.addEventListener('blur', function () { ffRestore(e); });
+    }
+    // ===================== end Font family picker
+
     function wireSettingsPanel() {
         var btn = document.getElementById('settingsBtn');
         if (btn) btn.addEventListener('click', function () {
@@ -5569,6 +5613,7 @@
             // reopening later must not offer a stale "current → imported" the developer has since changed.
             if (p.classList.contains('hidden')) vscHide();
         });
+        wireFontFamilyPicker();   // GH #184 — before the change listeners below (see its comment)
         var ids = ['setCursorBehindEol', 'setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setFontFamily', 'setOccurrenceHighlight', 'setHorizontalScrollbar',
             // Smart Formatter controls
             'setPreferredColumn', 'setContLineMultiplier', 'setIndentComments', 'setDontIndentCol1Comments', 'setFormatLineOnEnter',
