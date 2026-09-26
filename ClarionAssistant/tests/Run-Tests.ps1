@@ -102,6 +102,14 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "ClarionClDiagnosis.Test"
                Sources = @("tests\ClarionClDiagnosis.Test.cs", "Services\ClarionClDiagnosis.cs")
                Refs = @("System.dll") }
+            # Per-embed-slot structure balance (Passes 2 & 3), LSP pass stubbed. Reuses the
+            # StructureScan stubs so the REAL ClarionAppDataReader supplies the routine set.
+            @{ Name = "ModernEmbeditorDiagnostics.SlotBalance"
+               Sources = @("tests\ModernEmbeditorDiagnostics.SlotBalance.cs", "tests\ModernEmbeditorDiagnostics.SlotBalance.Stubs.cs",
+                           "tests\ClarionAppDataReader.StructureScan.Stubs.cs",
+                           "Services\ModernEmbeditorDiagnostics.cs",
+                           "Services\ClarionAppDataReader.cs", "Services\ClarionAppDataReader.Model.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Xml.dll") }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"
