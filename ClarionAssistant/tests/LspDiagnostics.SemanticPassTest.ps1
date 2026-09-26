@@ -93,7 +93,8 @@ $serverExtRoot = $null
 $junction      = $null
 try {
     $snapshot = Get-Content (Join-Path $PSScriptRoot '..\lsp-server-sync\lsp-snapshot.json') -Raw | ConvertFrom-Json
-    $tag = $snapshot.currentPin.tag
+    # The same field, and fallback, deploy.ps1's Resolve-LspBuild uses to pick what ships.
+    $tag = if ($snapshot.resolvedTag) { $snapshot.resolvedTag } else { $snapshot.targetPin.tag }
     $candidates = @([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.lsp-build\$tag")))
     # A worktree shares .git with the main checkout, whose ClarionAssistant\.lsp-build holds the build.
     $common = (& git -C $PSScriptRoot rev-parse --path-format=absolute --git-common-dir 2>$null)

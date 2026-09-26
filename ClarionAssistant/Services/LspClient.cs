@@ -113,6 +113,8 @@ namespace ClarionAssistant.Services
         {
             if (_running) return true;
             LastSpawnError = null;
+            // A new server session: status support is re-detected from its own traffic (see Stop).
+            _serverSendsDiagnosticsStatus = false;
 
             if (!File.Exists(serverJsPath))
                 return false;
@@ -438,8 +440,15 @@ namespace ClarionAssistant.Services
                 {
                     try { set.Ready.Dispose(); } catch { }
                 }
-                _diagnostics.Clear();
+                _diagnostics.Clear();   // also drops every per-URI diagnosticsStatus record
             }
+
+            // GH #216: whether the server sends clarion/diagnosticsStatus is a property of THIS server
+            // session. LspService always creates a fresh LspClient per start, so today this is only a
+            // guard against instance reuse (Stop then Start on the same object) — but if that ever
+            // happens onto a server that does not send the status, a stale true here would turn every
+            // lsp_diagnostics call into a full-budget pending:true. Start resets it too.
+            _serverSendsDiagnosticsStatus = false;
         }
 
         #region LSP Requests
@@ -839,14 +848,11 @@ namespace ClarionAssistant.Services
                                           expectedVersion: sentVersion, statusBaseline: statusBaseline);
         }
 
-        /// <summary>
-        /// True once the server has sent ANY clarion/diagnosticsStatus notification (GH #216).
-        /// Server 1.0.4+ sends one after its final publish for every analysis; older servers never
-        /// do. Detected from the wire rather than from a version string because the version the
-        /// server reports is not something every build fills in, and "has it ever said it" is the
-        /// exact property the wait depends on.
-        /// </summary>
-        public bool ServerSendsDiagnosticsStatus { get { return _serverSendsDiagnosticsStatus; } }
+        // True once THIS server session has sent ANY clarion/diagnosticsStatus notification (GH #216).
+        // Server 1.0.4+ sends one after its final publish for every analysis; older servers never do.
+        // Detected from the wire rather than from a version string because the version the server
+        // reports is not something every build fills in, and "has it ever said it" is the exact
+        // property the wait depends on. Reset in Start and Stop; surfaced by GetDebugStatus.
         private volatile bool _serverSendsDiagnosticsStatus;
 
         private int GetStatusSeq(string filePath)
@@ -1076,6 +1082,14 @@ namespace ClarionAssistant.Services
             // check happens on every iteration, so a first-ever status arriving mid-wait (it follows
             // the first publish immediately) switches this wait over before the settle window can
             // fire — status notifications signal Ready just as publishes do.
+            //
+            // SERVER-CONTRACT ASSUMPTION: one status for ANY document turns status mode on for EVERY
+            // document of this server session. That rests on the server sending the status from the
+            // single exit path of its validation (msarson, GH #216: "sent alongside the existing
+            // publishes", including the libsrc single-publish case), so a server that sends it for one
+            // document sends it for all. If a document class is ever found that is published but never
+            // given a status, its lsp_diagnostics would read pending:true at the budget — wrong in the
+            // safe direction (never a false "clean"), and the place to add a per-URI fallback.
             const int SettleMs = 400;
 
             var startedTicks = DateTime.UtcNow.Ticks;
