@@ -50,6 +50,11 @@
 .PARAMETER PureRoot
     Where the pure build lives / is created. Defaults to <repo>\.lsp-build\<Tag>.
 
+.PARAMETER TrustNonGitTree
+    -Pure only. Allow `npm ci` / `npm run compile` in a $PureRoot that is NOT a git checkout. Such a
+    tree's origin and commit cannot be verified, and npm runs its package scripts, so by default -Pure
+    refuses to build one. An existing, stamped build there is still hashed and recorded without it.
+
 .EXAMPLE
     # Dry run — show how far the bundled server has drifted from v0.9.6
     .\Sync-LspServer.ps1
@@ -69,7 +74,8 @@ param(
     [switch]$Apply,
     [switch]$SkipBuild,
     [switch]$Pure,
-    [string]$PureRoot
+    [string]$PureRoot,
+    [switch]$TrustNonGitTree
 )
 
 $ErrorActionPreference = 'Stop'
@@ -124,6 +130,72 @@ function Invoke-GitQuiet([string[]]$GitArgs) {
 function Read-Manifest($path) {
     Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
 }
+
+# Lowercase hex sha256 of a file's bytes -- the same digest as Get-FileHash -Algorithm SHA256, in the
+# lowercase form lsp-snapshot.json stores. One explicit helper, identical in deploy.ps1 and
+# installer\build-installer.ps1 (which check the value this script records), so all three format it
+# the same way.
+function Get-FileSha256($path) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($path)
+        return -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+    } finally { $sha.Dispose() }
+}
+
+# Build identity for a pure tree that is NOT a git checkout (the supported "Using existing (non-git)
+# pure tree as-is" case), where there is no HEAD to stamp the build with. Without a fallback the
+# stamp check could never match there, so -Pure rebuilt on every run. Fingerprint the inputs the
+# server build is compiled from instead: the root package/tsconfig/esbuild files plus every file
+# under server\ and common\ (node_modules and out excluded). Any edit to those sources changes the
+# fingerprint and forces a rebuild, exactly as a moved HEAD does for a git tree. Returns
+# "tree:<sha256>", or $null when nothing fingerprintable is there.
+function Get-SourceFingerprint($root) {
+    $files = @()
+    foreach ($name in @('package.json', 'package-lock.json', 'tsconfig.json', 'tsconfig.base.json', 'esbuild.mjs')) {
+        $p = Join-Path $root $name
+        if (Test-Path -LiteralPath $p -PathType Leaf) { $files += (Get-Item -LiteralPath $p) }
+    }
+    foreach ($dir in @('server', 'common')) {
+        $d = Join-Path $root $dir
+        if (Test-Path -LiteralPath $d -PathType Container) {
+            $files += Get-ChildItem -LiteralPath $d -Recurse -File -Force
+        }
+    }
+    if (-not $files) { return $null }
+    $rootFull = (Resolve-Path -LiteralPath $root).ProviderPath.TrimEnd('\', '/')
+    $lines = foreach ($f in $files) {
+        $rel = $f.FullName.Substring($rootFull.Length).TrimStart('\', '/').Replace('\', '/')
+        # Exclude on the ROOT-RELATIVE path: matching FullName would also drop every file when the
+        # tree itself sits under a folder named out\ or node_modules\.
+        if ("/$rel" -match '/(node_modules|out)/') { continue }
+        "$rel`t$(Get-FileSha256 $f.FullName)"
+    }
+    if (-not $lines) { return $null }
+    $lines = [string[]]$lines
+    [Array]::Sort($lines, [StringComparer]::Ordinal)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))
+        return 'tree:' + (-join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') }))
+    } finally { $sha.Dispose() }
+}
+
+# Comparison key for a repo URL: case, surrounding whitespace, a trailing slash and a trailing ".git"
+# are not significant; everything else (host, owner, repo name) must match exactly.
+function ConvertTo-RepoKey($url) {
+    if (-not $url) { return $null }
+    $k = ([string]$url).Trim().TrimEnd('/', '\')
+    if ($k.EndsWith('.git', [StringComparison]::OrdinalIgnoreCase)) { $k = $k.Substring(0, $k.Length - 4) }
+    return $k.TrimEnd('/', '\').ToLowerInvariant()
+}
+
+# Short display form of a build id: 8 chars of a commit, or "tree:" + 8 chars of a fingerprint.
+function Format-BuildId($id) {
+    if (-not $id) { return '(none)' }
+    if ($id.StartsWith('tree:')) { return 'tree:' + $id.Substring(5, [Math]::Min(8, $id.Length - 5)) }
+    return $id.Substring(0, [Math]::Min(8, $id.Length))
+}
 # The unescape has to be backslash-aware. A blanket `-replace '\\u0026', '&'` over the SERIALIZED
 # TEXT cannot tell an escape ConvertTo-Json just emitted from characters that belong to a value.
 # Put a backslash followed by the characters u0026 into a note as ordinary prose, and
@@ -163,8 +235,11 @@ function Save-Manifest($manifest, $path) {
 }
 
 function Update-PinFields($manifest, $Tag, $repoRoot) {
-    $commit     = (git -C $repoRoot rev-parse --short HEAD)
-    $commitDate = (git -C $repoRoot show -s --format=%cs HEAD)
+    # Via Invoke-GitQuiet: on the supported non-git pure tree these two printed two bare
+    # "fatal: not a git repository" lines into an otherwise clean run and recorded null anyway.
+    # Same result, without the noise that reads like something went wrong.
+    $commit     = Invoke-GitQuiet @('-C', $repoRoot, 'rev-parse', '--short', 'HEAD')
+    $commitDate = Invoke-GitQuiet @('-C', $repoRoot, 'show', '-s', '--format=%cs', 'HEAD')
     $manifest | Add-Member -NotePropertyName 'targetPin' -NotePropertyValue ([pscustomobject]@{
         note = "Tag to sync toward; -Tag overrides. AUTO-UPDATED to the last successfully synced tag by Sync-LspServer.ps1 -- edit by hand only to stage a pin to a NEWER release before running the sync."
         tag  = $Tag
@@ -209,7 +284,18 @@ if ($Pure) {
 
     # Ensure a clean tag checkout at $PureRoot, cloned from source.repo.
     if ((Test-Path (Join-Path $PureRoot 'package.json')) -and -not (Test-Path (Join-Path $PureRoot '.git'))) {
-        Info "Using existing (non-git) pure tree as-is"
+        # Refuse the WHOLE non-git path without -TrustNonGitTree, not just its npm step. Such a tree's
+        # origin and commit cannot be verified, and a build stamp inside it proves nothing (anyone can
+        # write one matching the local fingerprint), so an untrusted tree must neither run npm NOR have
+        # its server.js hash recorded as the pin.
+        if (-not $TrustNonGitTree) {
+            Fail "$PureRoot is not a git checkout, so its origin and commit cannot be verified — refusing to build it or record its hash."
+            Write-Host "         Delete it and re-run -Pure to clone $repoUrl at $Tag (verified), or, if you vouch" -ForegroundColor Red
+            Write-Host "         for this tree, re-run with -TrustNonGitTree." -ForegroundColor Red
+            exit 2
+        }
+        Warn "-TrustNonGitTree: using an UNVERIFIED non-git tree at the developer's word — its server.js hash"
+        Warn "will be recorded as resolvedServerSha256. Do not commit that manifest unless you vouch for this tree."
     } else {
         if (Test-Path (Join-Path $PureRoot '.git')) {
             Info "Refreshing existing checkout -> $Tag"
@@ -220,10 +306,13 @@ if ($Pure) {
             if ($LASTEXITCODE) { Fail "clone failed ($LASTEXITCODE): $repoUrl"; exit 2 }
         }
 
-        # Assert this is the expected upstream repo before we build anything out of it.
+        # Assert this is the expected upstream repo before we build anything out of it. EXACT match
+        # against the manifest's source.repo (modulo case, a trailing slash and ".git"): `npm ci` and
+        # `npm run compile` below execute that repo's package scripts, so "a URL containing
+        # Clarion-Extension" -- which any fork or look-alike satisfies -- is not good enough.
         $pureOrigin = Invoke-GitQuiet @('-C', $PureRoot, 'remote', 'get-url', 'origin')
-        if ($pureOrigin -notmatch 'Clarion-Extension') {
-            Fail "origin of $PureRoot is '$pureOrigin' — expected msarson/Clarion-Extension. Aborting."
+        if (-not $pureOrigin -or ((ConvertTo-RepoKey $pureOrigin) -ne (ConvertTo-RepoKey $repoUrl))) {
+            Fail "origin of $PureRoot is '$pureOrigin' — expected exactly '$repoUrl' (lsp-snapshot.json source.repo). Aborting before any npm step."
             exit 2
         }
         OK "origin: $pureOrigin"
@@ -248,7 +337,24 @@ if ($Pure) {
         }
         git -C $PureRoot checkout --quiet --force $Tag
         if ($LASTEXITCODE) { Fail "checkout of '$Tag' failed in $PureRoot"; exit 2 }
-        OK "checked out $Tag"
+
+        # Verify the checkout BEFORE any npm step: HEAD must be exactly the commit the tag names, and
+        # when this run re-syncs the tag the manifest is already resolved to, exactly the commit the
+        # manifest pinned. A tag re-pointed upstream after the pin was recorded is refused here,
+        # rather than having its package scripts run and its build recorded as the pin.
+        $headFull = Invoke-GitQuiet @('-C', $PureRoot, 'rev-parse', 'HEAD')
+        $tagFull  = Invoke-GitQuiet @('-C', $PureRoot, 'rev-parse', "$Tag^{commit}")
+        if (-not $headFull -or -not $tagFull -or ($headFull -ne $tagFull)) {
+            Fail "HEAD of $PureRoot is '$headFull' but tag '$Tag' names '$tagFull'. Aborting before any npm step."
+            exit 2
+        }
+        if (($Tag -eq $manifest.resolvedTag) -and $manifest.resolvedCommit -and -not $headFull.StartsWith([string]$manifest.resolvedCommit)) {
+            Fail "tag '$Tag' now names $($headFull.Substring(0,8)), but lsp-snapshot.json pinned it at $($manifest.resolvedCommit)."
+            Write-Host "         The tag was moved upstream after the pin was recorded. Refusing to build or re-pin it" -ForegroundColor Red
+            Write-Host "         silently. If the move is legitimate, clear resolvedCommit in lsp-snapshot.json and re-run." -ForegroundColor Red
+            exit 2
+        }
+        OK "checked out $Tag at $($headFull.Substring(0,8)) (verified against the tag$(if ($Tag -eq $manifest.resolvedTag -and $manifest.resolvedCommit) { ' and the pinned commit' }))"
     }
 
     # Assert PURE source: the overlay .ts must NOT be present in this tree.
@@ -259,18 +365,67 @@ if ($Pure) {
     }
     OK "no CodeGraph overlay in source (pure)"
 
-    # Build (idempotent: skip if a pure build is already present)
+    # Which commit produced the out/ that is sitting there? out/ is gitignored and survives
+    # `git checkout --force`, so its presence says nothing about WHICH tag built it. The stamp lives
+    # inside out/ deliberately: delete out/ to force a rebuild (as the message below advertises) and
+    # the stamp goes with it, so a stale stamp can never outlive the build it describes.
+    $buildStamp = Join-Path $PureRoot 'out\.pure-build-stamp.json'
+    $stampedId = $null
+    if (Test-Path -LiteralPath $buildStamp) {
+        try {
+            $stampObj  = Get-Content -LiteralPath $buildStamp -Raw -Encoding UTF8 | ConvertFrom-Json
+            # buildId is the comparison key; a stamp from before it existed carried only a commit.
+            $stampedId = if ($stampObj.buildId) { $stampObj.buildId } else { $stampObj.commit }
+        } catch { $stampedId = $null }   # unreadable stamp == no stamp, so we rebuild
+    }
+    $headNow = Invoke-GitQuiet @('-C', $PureRoot, 'rev-parse', 'HEAD')
+    # The build identity: the commit for a git tree. A non-git tree has no HEAD, and with a null id
+    # the stamp could never match, so -Pure rebuilt on EVERY run there. Fall back to a fingerprint
+    # of the build's source inputs, and say which identity is in use so the choice is visible.
+    $buildId = $headNow
+    if (-not $buildId) {
+        $buildId = Get-SourceFingerprint $PureRoot
+        if ($buildId) {
+            Info "not a git tree — identifying the build by source fingerprint $(Format-BuildId $buildId)"
+        } else {
+            Warn "not a git tree and no build sources found to fingerprint — cannot tell which source built out/; rebuilding"
+        }
+    }
+
+    # Build (idempotent: skip if a pure build is already present FOR THIS COMMIT / SOURCE)
+    $builtThisRun = $false
     if ($SkipBuild) {
         Warn "Skipping build (-SkipBuild)."
-    } elseif ((Test-Path $builtServer) -and ((Get-Content $builtServer -Raw) -notmatch 'codegraph|CodeGraph')) {
-        OK "pure build already present (skipping rebuild; delete out/ to force)"
+    } elseif ((Test-Path $builtServer) -and ((Get-Content $builtServer -Raw) -notmatch 'codegraph|CodeGraph') `
+              -and $buildId -and $stampedId -and ($stampedId -eq $buildId)) {
+        OK "pure build already present for $(Format-BuildId $buildId) (skipping rebuild; delete out/ to force)"
     } else {
+        # Rebuild when the stamp is missing or names a different commit. Without this, a re-pointed
+        # upstream tag was invisible: the refresh moved HEAD, out/ was already there so the rebuild
+        # was skipped, and the manifest was then rewritten with the NEW commit describing an OLD
+        # artifact -- a manifest that agreed with itself and was wrong.
+        if ((Test-Path $builtServer) -and $buildId -and $stampedId -and ($stampedId -ne $buildId)) {
+            Info "existing out/ was built from $(Format-BuildId $stampedId) but the source is now $(Format-BuildId $buildId) — rebuilding"
+        } elseif ((Test-Path $builtServer) -and -not $stampedId) {
+            Info "existing out/ has no build stamp — rebuilding so the manifest can describe it honestly"
+        }
+        # A non-git tree's origin and commit cannot be verified (the git path above checked both), and
+        # npm runs the tree's package scripts. Refuse rather than execute unverifiable code; the
+        # developer can vouch for the tree explicitly.
+        if (-not $headNow -and -not $TrustNonGitTree) {
+            Fail "$PureRoot is not a git checkout, so its origin and commit cannot be verified — refusing to run npm in it."
+            Write-Host "         Delete it and re-run -Pure to clone $repoUrl at $Tag (verified), or, if you vouch" -ForegroundColor Red
+            Write-Host "         for this tree, re-run with -TrustNonGitTree." -ForegroundColor Red
+            exit 2
+        }
+        if (-not $headNow) { Warn "-TrustNonGitTree: building an unverified non-git tree at the developer's word" }
         Info "Building (npm ci && npm run compile) — can take a minute..."
         Push-Location $PureRoot
         try {
             npm ci;          if ($LASTEXITCODE) { throw "npm ci failed ($LASTEXITCODE)" }
             npm run compile; if ($LASTEXITCODE) { throw "npm run compile failed ($LASTEXITCODE)" }
         } finally { Pop-Location }
+        $builtThisRun = $true
         OK "build complete"
     }
 
@@ -284,6 +439,36 @@ if ($Pure) {
         Fail "Expected build output not found: $builtServer"; exit 6
     }
 
+    # Hash the ARTIFACT, not just the source. A commit alone cannot describe what ships: out/ is
+    # gitignored, survives `git checkout --force`, and this script skips the rebuild when a server.js
+    # is already present -- so an overlay build, or a build from another tag, could sit under a
+    # checkout whose HEAD matches the pin perfectly. The hash is of the exact file deploy.ps1 and
+    # the installer copy, so it is the only field that says what a consumer actually received.
+    $serverHash = $null
+    if (Test-Path $builtServer) {
+        $serverHash = Get-FileSha256 $builtServer
+        OK "server.js sha256: $($serverHash.Substring(0,16))..."
+        # Stamp the build so a later run can tell WHICH commit/source produced this out/ (see
+        # $buildStamp) -- ONLY when this run built it. A skipped rebuild already has the right stamp
+        # (rewriting it would just move builtAt), and under -SkipBuild nothing was built, so stamping
+        # would certify an out/ of unknown origin for the next run to trust.
+        if (-not $builtThisRun) {
+            if ($SkipBuild -and ($stampedId -ne $buildId)) {
+                Warn "-SkipBuild: out/ not stamped (this run did not build it) — the next run without -SkipBuild will rebuild"
+            }
+        } else {
+            $stamp = [pscustomobject]@{
+                buildId = $buildId
+                commit  = $headNow
+                tag     = $Tag
+                sha256  = $serverHash
+                builtAt = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssK')
+            }
+            [System.IO.File]::WriteAllText($buildStamp, ($stamp | ConvertTo-Json),
+                                           (New-Object System.Text.UTF8Encoding($false)))
+        }
+    }
+
     # Record the pure pin (targetPin/currentPin included -- see Update-PinFields)
     $resolved = Invoke-GitQuiet @('-C', $PureRoot, 'rev-parse', '--short', 'HEAD')
     if (-not $resolved) {
@@ -295,6 +480,7 @@ if ($Pure) {
     Update-PinFields $manifest $Tag $PureRoot
     $manifest | Add-Member -NotePropertyName 'pure'           -NotePropertyValue $true   -Force
     $manifest | Add-Member -NotePropertyName 'resolvedCommit' -NotePropertyValue $resolved -Force
+    $manifest | Add-Member -NotePropertyName 'resolvedServerSha256' -NotePropertyValue $serverHash -Force
     $manifest | Add-Member -NotePropertyName 'resolvedTag'    -NotePropertyValue $Tag      -Force
     $manifest | Add-Member -NotePropertyName 'lastSync'       -NotePropertyValue (Get-Date -Format 'yyyy-MM-dd') -Force
     Save-Manifest $manifest $ManifestPath
