@@ -159,6 +159,109 @@ namespace ClarionAssistant.Services
             return editor.TryGetLiveCursor(out filePath, out line, out column);
         }
 
+        // ── Debugger execution-line marker (CA-Debugger GitHub #26, ticket e6721573) ─────────────────────────
+        // ONE global marker: the file + 1-based line the debugger is paused on. It is state, not a one-shot
+        // request — unlike _pending it is never consumed, so an editor that loads (or reloads, or is closed and
+        // reopened) while the marker is set paints it from here. _execFile == null means "no marker".
+        private static string _execFile;
+        private static int _execLine;
+
+        /// <summary>
+        /// FROZEN CROSS-ADDIN CONTRACT — the standalone ClarionDebugger binds this by reflection. Do NOT change
+        /// the name, signature or semantics:
+        ///   bool ClarionAssistant.Services.MonacoSourceNavigator.SetExecutionLine(string filePath, int line)
+        ///
+        /// SET (<paramref name="filePath"/> non-empty AND <paramref name="line"/> &gt;= 1, 1-based): paint the
+        /// debugger's execution-line marker (white-on-green gutter line number) in that file's Monaco editor.
+        /// There is ONE global marker — setting it removes any previous marker, in any file. It does NOT
+        /// navigate, scroll, activate a tab or take focus (callers navigate separately via
+        /// <see cref="NavigateToFileAndLine"/>). If the file's Monaco editor isn't open/ready yet, the marker is
+        /// remembered and painted when that editor loads. Returns true when the Monaco overlay shows that file
+        /// (the marker is or will be painted); false when the stock editor is the visible surface — the caller
+        /// then paints the native SharpDevelop current-line marker instead. A false set still removes any
+        /// previous Monaco marker (one global marker).
+        ///
+        /// CLEAR (<paramref name="filePath"/> null/empty OR <paramref name="line"/> &lt;= 0): remove the marker
+        /// everywhere and drop any remembered one. Idempotent; always returns true.
+        ///
+        /// File paths match full-path, case-insensitive. Never throws. Safe from any thread (UI-marshalled).
+        /// </summary>
+        public static bool SetExecutionLine(string filePath, int line)
+        {
+            try
+            {
+                bool clear = string.IsNullOrEmpty(filePath) || line <= 0;
+                string full = clear ? null : Norm(filePath);
+
+                var form = WorkbenchSingleton.Workbench as Form;
+                if (form != null && form.InvokeRequired)
+                {
+                    bool ok = clear;
+                    form.Invoke(new Action(() => { ok = DoSetExecutionLine(full, clear ? 0 : line); }));
+                    return clear || ok;
+                }
+                return DoSetExecutionLine(full, clear ? 0 : line);
+            }
+            catch (Exception ex)
+            {
+                try { MonacoSpikeLog.Write("SetExecutionLine error: " + ex.Message); } catch { }
+                return string.IsNullOrEmpty(filePath) || line <= 0;
+            }
+        }
+
+        // Always on the UI thread. full == null / line == 0 means clear.
+        private static bool DoSetExecutionLine(string full, int line)
+        {
+            bool clear = full == null || line <= 0;
+            string oldFile;
+            MonacoClarionEditor oldEditor = null, newEditor = null;
+            lock (_gate)
+            {
+                oldFile = _execFile;
+                if (clear) { _execFile = null; _execLine = 0; }
+                else { _execFile = full; _execLine = line; }
+                if (oldFile != null) _live.TryGetValue(oldFile, out oldEditor);
+                if (!clear) _live.TryGetValue(full, out newEditor);
+            }
+
+            // Remove the previous marker unless the same editor is about to be repainted anyway.
+            if (oldEditor != null && !ReferenceEquals(oldEditor, newEditor))
+            {
+                try { oldEditor.ApplyExecutionLine(0); }
+                catch (Exception ex) { MonacoSpikeLog.Write("SetExecutionLine clear-old error: " + ex.Message); }
+            }
+            if (clear) return true;
+
+            bool monacoShown;
+            if (newEditor != null)
+            {
+                // A live editor knows for sure: its overlay is attached or it isn't (the overlay switch only
+                // applies to files opened AFTER a toggle, so the setting alone can be wrong for an open tab).
+                monacoShown = newEditor.HasOverlay;
+                try { if (monacoShown) newEditor.ApplyExecutionLine(line); }
+                catch (Exception ex) { MonacoSpikeLog.Write("SetExecutionLine apply error: " + ex.Message); }
+            }
+            else
+            {
+                // Not open yet: it will get the overlay iff the switch is on and the file-type filter admits it —
+                // the same gate CaptureTick uses. The marker stays remembered and paints on the editor's load.
+                monacoShown = MonacoSourceOverlay.Enabled && CaEditorSettings.SourceAppliesTo(full);
+            }
+            return monacoShown;
+        }
+
+        /// <summary>The execution-line marker for <paramref name="filePath"/>: 1-based line, or 0 if the global
+        /// marker is not set or is in another file. Editors read this whenever they (re)load content.</summary>
+        internal static int GetExecutionLineFor(string filePath)
+        {
+            string full = Norm(filePath);
+            if (string.IsNullOrEmpty(full)) return 0;
+            lock (_gate)
+            {
+                return _execFile != null && string.Equals(_execFile, full, StringComparison.OrdinalIgnoreCase) ? _execLine : 0;
+            }
+        }
+
         /// <summary>Pop a parked navigation for <paramref name="filePath"/> (the editor applies it on load).</summary>
         internal static bool TryConsumePending(string filePath, out int line, out int column)
         {

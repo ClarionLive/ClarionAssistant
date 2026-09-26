@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
-using System.Text;
 using System.Web.Script.Serialization;
 
 namespace ClarionAssistant.Services
@@ -503,7 +502,7 @@ namespace ClarionAssistant.Services
                     { "replace", savedReplace },
                     { "procFind", procFind }
                 });
-                File.WriteAllText(path, payload, Encoding.UTF8);
+                File.WriteAllText(path, payload, EncodingHelper.Utf8NoBom);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditorHistory] Save: " + ex.Message); }
         }

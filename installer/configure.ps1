@@ -164,7 +164,18 @@ $skipSettingsWrite = $false
 
 if (Test-Path $settingsPath) {
     try {
-        $parsed = Get-Content $settingsPath -Raw | ConvertFrom-Json
+        # GH #200: read through .NET, NOT Get-Content. Under Windows PowerShell 5.1 - which is what
+        # powershell.exe always is, and what the installer runs this script with - Get-Content with
+        # no -Encoding decodes using the system ANSI codepage. A BOM-less UTF-8 settings.json
+        # therefore has every non-ASCII character mangled on the way IN, and the mangled form is
+        # what gets written back out. Measured on 5.1.26100: U+2019 (bytes e2 80 99) came back as
+        # c3 a2 e2 82 ac e2 84 a2, the classic mojibake triple.
+        #
+        # ReadAllText honours a BOM when one is present and otherwise decodes UTF-8, and does so
+        # identically on 5.1 and 7.x. Deliberately NOT Get-Content -Encoding UTF8: that happens to
+        # be correct on both hosts today, but it is the same "one token, two meanings depending on
+        # the host" trap that produced the BOM defect on the write side below.
+        $parsed = [System.IO.File]::ReadAllText($settingsPath) | ConvertFrom-Json
         $settings = ConvertTo-HashtableDeep $parsed
         if ($null -eq $settings) { $settings = @{} }
         $originalTopLevelKeys = @($settings.Keys)
@@ -311,9 +322,31 @@ if ($skipSettingsWrite) {
         Write-Host "  Your settings.json was LEFT UNCHANGED (a copy is at $backupPath)."
         Write-Host "  This is a bug in the installer - please report it with the key names above."
     } else {
+        # GH #200: back up on the SUCCESS path too. Until now a copy was kept only when we REFUSED
+        # to write - a parse failure, or the dropped-key guard above - so the COMMON case, a merge
+        # that succeeds, overwrote the user's file with no backup at all. The 5.8 release notes told
+        # affected users to look for settings.json.backup.<timestamp>, a file the success path never
+        # produced. Test-Path guards the fresh-machine case where there is nothing to copy yet.
+        $backupPath = $null
+        if (Test-Path $settingsPath) {
+            $backupPath = Join-Path $claudeDir "settings.json.backup.$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+            Copy-Item $settingsPath $backupPath -Force
+        }
+
         $settingsJson = $settings | ConvertTo-Json -Depth 10
-        Set-Content -Path $settingsPath -Value $settingsJson -Encoding UTF8
-        Write-Host "Updated settings.json ($($finalKeys.Count) top-level keys preserved)"
+
+        # GH #200: write BOM-less UTF-8 explicitly. Set-Content -Encoding UTF8 means UTF-8 WITH BOM
+        # under Windows PowerShell 5.1, and BOM-less under PowerShell 7 - the two hosts disagree
+        # about what the token "UTF8" names, so the old call silently added a BOM to a file that
+        # belongs to Claude Code rather than to us. UTF8Encoding($false) means the same thing on
+        # every host, and also strips a BOM left behind by an earlier 5.8 / 5.8.1 install.
+        [System.IO.File]::WriteAllText($settingsPath, $settingsJson, (New-Object System.Text.UTF8Encoding $false))
+
+        if ($backupPath) {
+            Write-Host "Updated settings.json ($($finalKeys.Count) top-level keys preserved; backup at $backupPath)"
+        } else {
+            Write-Host "Created settings.json ($($finalKeys.Count) top-level keys)"
+        }
     }
 }
 
@@ -342,7 +375,10 @@ if ($ClarionRoot) {
 # Merge with existing file if present
 if (Test-Path $clarionComEnv) {
     $existing = @{}
-    Get-Content $clarionComEnv | ForEach-Object {
+    # GH #200, same defect class as settings.json above: Get-Content with no -Encoding decodes as
+    # ANSI on Windows PowerShell 5.1. CLARIONCOM_HOME is built from %APPDATA%, so a Windows account
+    # whose name contains a non-ASCII character would have its path mangled here on every re-run.
+    [System.IO.File]::ReadAllLines($clarionComEnv) | ForEach-Object {
         if ($_ -match '^([^=]+)=(.*)$') {
             $existing[$matches[1]] = $matches[2]
         }
@@ -352,7 +388,11 @@ if (Test-Path $clarionComEnv) {
     if ($ClarionRoot) { $existing['CLARION_PATH'] = $ClarionRoot }
     $envLines = $existing.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }
 }
-$envLines | Out-File -FilePath $clarionComEnv -Encoding UTF8
+# GH #200: BOM-less UTF-8, for the same reason as settings.json. Out-File -Encoding UTF8 emits a BOM
+# under Windows PowerShell 5.1, and a BOM on line 1 makes the leading key parse as
+# "<U+FEFF>CLARIONCOM_HOME" for any consumer that does not strip it - which the regex above would
+# then fail to match. PowerShell's own Get-Content hid this by stripping the BOM on read.
+[System.IO.File]::WriteAllLines($clarionComEnv, [string[]]@($envLines), (New-Object System.Text.UTF8Encoding $false))
 Write-Host "Updated $clarionComEnv"
 
 Write-Host "`nClarion Assistant configuration complete."

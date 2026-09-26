@@ -27,7 +27,7 @@ namespace ClarionAssistant.Terminal
     /// Mirrors the proven WebView2-as-view pattern from DiffViewContent.cs: shared environment
     /// cache, virtual-host folder mapping for large-buffer transfer, and a JS to C# message bridge.
     /// </summary>
-    public class ModernEmbeditorViewContent : AbstractViewContent, IMonacoEditorHost
+    public class ModernEmbeditorViewContent : AbstractViewContent, IMonacoEditorHost, IMonacoFoldingHost
     {
         // Converge step 3: _panel is now the reusable MonacoEditorControl (which IS a Panel), so every
         // designer/marshal/Control site that treated it as a Panel still compiles. The control owns the
@@ -223,7 +223,6 @@ namespace ClarionAssistant.Terminal
         private Timer _overlayCoverSafety;     // backstop: drop the cover even if navigation-completed never arrives
         private object _overlayGenEditor;      // the ClaGenEditor view content, for the Disposed teardown backstop
         private object _overlayPwee;           // the PweeEditorDetails we attached FOR — duplicate-trigger identity (d4635694)
-        private EventHandler _overlayDisposedHandler; // our subscription to ClaGenEditor.Disposed (removed on detach)
         private bool _overlayDetached;         // idempotent guard so teardown runs exactly once
         // The native embeditor chrome (its ~24px Dock=Top toolbar strip: green-check save / red-X cancel /
         // embed-nav + header) we hide while the overlay is up, so only OUR Monaco toolbar shows. Restored on
@@ -383,6 +382,67 @@ namespace ClarionAssistant.Terminal
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] HandleDocumentStructure: " + ex.Message); }
                 PostResponse(reqId, new Dictionary<string, object> { { "symbols", symbols }, { "fileMode", _fileMode } });
+            });
+        }
+
+        // {action:"foldingRanges"} — collapsible regions from the language server instead of the
+        // line-oriented regex pass in clarion-language.js.
+        //
+        // The regex pass opens a fold on LOOP and only ever closes one on END or a bare period, so a
+        // LOOP terminated by UNTIL or WHILE — valid Clarion, and what the Language Reference's own
+        // example uses — never closes and swallows the rest of the file (ClarionAssistant#222). The
+        // server closes it correctly because its structure stack knows what each terminator belongs
+        // to, so asking the server is a fix rather than a patch to the pattern list.
+        //
+        // Same wrap/unwrap dance as HandleDocumentStructure: in embed/slot mode the buffer is a
+        // procedure slice, so LspBuffer() prepends the synthetic MEMBER header that makes it a
+        // compilable unit and MonacoLine1() maps the answer back. A range that lands entirely inside
+        // that header is the wrapper's own structure, not the developer's, and is dropped.
+        //
+        // Null ranges (no LSP, timeout, an error) are a real answer here: the page falls back to its
+        // local pass rather than showing an empty gutter.
+        private void HandleFoldingRanges(string json)
+        {
+            int reqId, line, column; string buffer;
+            if (!ParseRequest(json, out reqId, out line, out column, out buffer)) return;
+            Task.Run(() =>
+            {
+                List<Dictionary<string, object>> ranges = null;
+                try
+                {
+                    EnsureLspStarted();
+                    var resp = SharedLspBridge.GetFoldingRanges(_lspFileName, LspBuffer(buffer));
+                    object res = (resp != null && resp.ContainsKey("result")) ? resp["result"] : null;
+                    var list = res as System.Collections.IEnumerable;
+                    if (list != null)
+                    {
+                        ranges = new List<Dictionary<string, object>>();
+                        foreach (var item in list)
+                        {
+                            var d = item as Dictionary<string, object>;
+                            if (d == null || !d.ContainsKey("startLine") || !d.ContainsKey("endLine")) continue;
+                            int s0, e0;
+                            try
+                            {
+                                s0 = Convert.ToInt32(d["startLine"]);
+                                e0 = Convert.ToInt32(d["endLine"]);
+                            }
+                            catch { continue; }
+
+                            int start = MonacoLine1(s0);
+                            int end = MonacoLine1(e0);
+                            // MonacoLine1 clamps at 1, so a range wholly inside the wrapper header
+                            // collapses to 1..1 — not a fold, and not the developer's code.
+                            if (end <= start) continue;
+
+                            var r = new Dictionary<string, object> { { "start", start }, { "end", end } };
+                            if (d.ContainsKey("kind")) r["kind"] = d["kind"];
+                            ranges.Add(r);
+                        }
+                    }
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] HandleFoldingRanges: " + ex.Message); }
+                PostResponse(reqId, new Dictionary<string, object> { { "ranges", ranges } });
             });
         }
 
@@ -1295,6 +1355,10 @@ namespace ClarionAssistant.Terminal
         private List<string> _mirroredSlots;     // last embedState push from the page (live edited slot texts)
         private bool _mirroredDirty;             // page's dirty flag at that push
         private bool _teardownIntentional;       // set by our own Save/Cancel paths — suppresses the stash
+        // True between a close-gesture sync and the close actually happening. Distinguishes "we set
+        // _teardownIntentional for a close that is pending" from our own Save/Cancel, which never come back.
+        // Cleared on the next buffer push, which only arrives if the user answered Cancel. (bcba6efb)
+        private bool _closeSyncArmed;
         private sealed class EmbedEditStash
         {
             public string Proc;
@@ -1507,6 +1571,9 @@ namespace ClarionAssistant.Terminal
 
         void IMonacoEditorHost.OnSave(MonacoEditorControl editor, string rawJson) { HandleSave(rawJson); }
         void IMonacoEditorHost.OnCancel(MonacoEditorControl editor) { HandleCancel(); }
+        void IMonacoEditorHost.OnConfirmSaveExit(MonacoEditorControl editor) { HandleConfirmSaveExit(editor); }
+        void IMonacoEditorHost.OnSyncNativeForClose(MonacoEditorControl editor) { HandleSyncNativeForClose(); }
+        void IMonacoEditorHost.OnConfirmCancel(MonacoEditorControl editor) { HandleConfirmCancel(editor); }
         void IMonacoEditorHost.OnOpenSource(MonacoEditorControl editor) { HandleOpenSource(); }
         void IMonacoEditorHost.OnClipboard(MonacoEditorControl editor, string rawJson) { HandleClipboard(rawJson); }
         void IMonacoEditorHost.OnCompletion(MonacoEditorControl editor, string rawJson) { HandleCompletion(rawJson); }
@@ -1516,6 +1583,7 @@ namespace ClarionAssistant.Terminal
         void IMonacoEditorHost.OnSignatureHelp(MonacoEditorControl editor, string rawJson) { HandleSignatureHelp(rawJson); }
         void IMonacoEditorHost.OnImplementation(MonacoEditorControl editor, string rawJson) { HandleImplementation(rawJson); }
         void IMonacoEditorHost.OnDocumentStructure(MonacoEditorControl editor, string rawJson) { HandleDocumentStructure(rawJson); }
+        void IMonacoFoldingHost.OnFoldingRanges(MonacoEditorControl editor, string rawJson) { HandleFoldingRanges(rawJson); }
         void IMonacoEditorHost.OnSaveSettings(MonacoEditorControl editor, string rawJson) { HandleSaveSettings(rawJson); }
         // Read-only preview feed for the gear panel's VS Code import; applying goes back through
         // OnSaveSettings above, so there is still exactly one write path.
@@ -1638,6 +1706,18 @@ namespace ClarionAssistant.Terminal
                 if (arr == null) return;
                 _mirroredSlots = arr.Select(o => o == null ? "" : o.ToString()).ToList();
                 _mirroredDirty = data.TryGetValue("dirty", out dirtyObj) && dirtyObj is bool && (bool)dirtyObj;
+
+                // PAIRED RESET for the close-sync stash suppression. Receiving a buffer push means the embed is
+                // still alive and being edited, so the close we armed for did not happen — the user answered
+                // Cancel. Re-arm the stash, or an interruption after that Cancel would discard their work with
+                // the guard switched off. Only the Cancel path can reach here; Yes and No both tear the overlay
+                // down and no further pushes arrive.
+                if (_closeSyncArmed)
+                {
+                    _closeSyncArmed = false;
+                    _teardownIntentional = false;
+                    MonacoSpikeLog.Write("[native-dirty] close cancelled (still editing) — stash guard re-armed");
+                }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] embedState: " + ex.Message); }
         }
@@ -1689,6 +1769,171 @@ namespace ClarionAssistant.Terminal
         /// overlay then discard the native embed (CancelEmbeditor); tab/file mode: close the workbench tab (its
         /// Dispose does the discard). Deferred off the web-message stack — cancelling the native embed pumps
         /// DoEvents and disposing the WebView2 on that reentrant stack would deadlock the IDE.</summary>
+        /// <summary>GH #193 (BoxSoft): Ctrl+Q's confirm, as a NATIVE Windows dialog.
+        ///
+        /// Matched character-for-character to the dialog Clarion's own embeditor raises — title,
+        /// message, button set and order, default button and Question icon — because that is exactly
+        /// what was asked for: "It should use the same visible style as the regular window." What we
+        /// had was an in-page dark panel, and the mismatch is what "causes one to pause".
+        ///
+        /// The host owns the DIALOG only; the page still owns what each answer DOES (save-and-exit
+        /// versus discard-and-close differ by live-linked/snapshot/file mode, and that logic is
+        /// proven). So this posts the answer back and gets out of the way.
+        ///
+        /// Note the page has a key-swallowing shield up across this whole round trip. Ctrl+Q then
+        /// Enter is muscle memory from the native editor, and without the shield that Enter would
+        /// land in the buffer as a newline before this dialog ever appeared.</summary>
+        private void HandleConfirmSaveExit(MonacoEditorControl editor)
+        {
+            if (editor == null) return;
+            Action work = () =>
+            {
+                string result = "cancel";
+                try
+                {
+                    // Own the dialog to the form actually hosting the WebView2. In overlay mode that is
+                    // the window the native embeditor is docked into, which is exactly what the dialog
+                    // should be modal to. FindForm() can return null mid-teardown, hence the fallback.
+                    IWin32Window owner = null;
+                    try { owner = editor.FindForm(); } catch { }
+                    var r = owner != null
+                        ? MessageBox.Show(owner, "Do you want to save the current changes?",
+                            "Save Changes in Embed Editor?", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question)
+                        : MessageBox.Show("Do you want to save the current changes?",
+                            "Save Changes in Embed Editor?", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+                    result = r == DialogResult.Yes ? "yes" : (r == DialogResult.No ? "no" : "cancel");
+                }
+                catch (Exception ex)
+                {
+                    // Never strand the page behind its shield: any failure here answers "cancel", which
+                    // keeps the user editing with their changes intact. Silence would leave the editor
+                    // permanently unresponsive to keys.
+                    MonacoSpikeLog.Write("HandleConfirmSaveExit dialog error: " + ex.Message);
+                }
+                // "type", not "action": page->host messages are keyed on action, host->page on type.
+                try { editor.PostJson("{\"type\":\"confirmSaveExitResult\",\"result\":\"" + result + "\"}"); }
+                catch (Exception ex) { MonacoSpikeLog.Write("HandleConfirmSaveExit post error: " + ex.Message); }
+            };
+            if (editor.InvokeRequired) editor.BeginInvoke(work); else work();
+        }
+
+        /// <summary>Page is about to hand a close gesture (Ctrl+F4) to the IDE. Make the NATIVE embed tell the
+        /// truth about itself first, so Clarion's own prompt fires and its Yes saves the right content.
+        ///
+        /// WHY THIS IS THE FIX AND THE ClosingEvent HOOK WAS NOT (measured, bcba6efb):
+        /// CommonGenEditor.WorkbenchWindow_ClosingEvent subscribes when the embed opens — long before our
+        /// overlay attaches — so it always runs FIRST. It sets e.Cancel = true (it does not want the WINDOW
+        /// closed) and then closes the embed itself via TryClose(), which consults the NATIVE IsDirty and
+        /// raises "Save Changes in Embed Editor?". By the time our own handler ran, that decision was already
+        /// made: we logged `ClosingEvent FIRED (cancel=True ... dirty=True)` and the embed closed anyway.
+        /// A veto on the workspace window has no authority over the embed teardown.
+        ///
+        /// So we do not fight the close. We make the native editor dirty BEFORE the key is dispatched, and
+        /// Clarion prompts natively — exact parity by construction, nothing reimplemented, which is what the
+        /// report asked for.
+        ///
+        /// ORDER IS THE WHOLE MECHANISM: the page posts this, then posts the key. Host messages are processed
+        /// in order on the UI thread, so the sync and the dirty flag are both in place before File>Close>File
+        /// ever runs. Do not make this async, and do not move it onto a timer — see SyncLive's remarks on
+        /// driving the live PWEE repeatedly.</summary>
+        private void HandleSyncNativeForClose()
+        {
+            try
+            {
+                if (!_embedOverlay || _fileMode) return;
+                if (!_mirroredDirty || _mirroredSlots == null || _originalSlotTexts == null)
+                {
+                    MonacoSpikeLog.Write("[native-dirty] nothing to sync (dirty=" + _mirroredDirty + ")");
+                    return;
+                }
+
+                bool ok;
+                string msg = ModernEmbeditorSaver.SyncLive(_procedureName, _editableRanges,
+                    _originalSlotTexts, _mirroredSlots, out ok);
+                MonacoSpikeLog.Write("[native-dirty] SyncLive ok=" + ok + " — " + msg);
+
+                // Set the flag even if the sync failed: a prompt on stale content is bad, but closing with NO
+                // prompt loses the edits outright. The user still gets asked, and the log names the failure.
+                SetNativeDirty(true, ok);
+
+                if (ok)
+                {
+                    // SUPPRESS THE STASH. From here the edits live in the NATIVE buffer and Clarion owns what
+                    // happens to them — Yes persists them, No discards them deliberately. The stash exists for
+                    // teardowns that interrupt unsaved work, and this is not one.
+                    //
+                    // Without this the user SEES the bug as its own opposite (measured 11:57): the save
+                    // succeeded, DetachOverlay stashed 120 slots anyway because _teardownIntentional was false
+                    // (Clarion closed us, not our own save path), and the re-open then refused the stash
+                    // because the generated source had changed — which it had, BECAUSE THE SAVE WORKED. The
+                    // toast then announces that unsaved edits could not be restored, about edits that were
+                    // saved. Alarming, and exactly backwards.
+                    _teardownIntentional = true;
+                    _closeSyncArmed = true;   // paired reset below, for the Cancel case
+                }
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[native-dirty] EXCEPTION: " + ex.Message); }
+        }
+
+        /// <summary>Set the native ClaGenEditor's IsDirty. This is CommonGenEditor's override (confirmed by
+        /// reflection: declared canWrite=True, alongside TryClose/SaveAndExit/ExitNotSave), and it is the flag
+        /// Clarion's own close prompt reads.
+        ///
+        /// NOT to be confused with TrySetHostDirty, which is a deliberate no-op on OUR view and must stay one:
+        /// this view has no file binding, so setting ITS IsDirty pops a bogus Save As into ...\libsrc\win and
+        /// then throws from AbstractViewContent.Save(fileName). The ClaGenEditor is a real view with real
+        /// Clarion save machinery — a different object with a different contract.</summary>
+        private void SetNativeDirty(bool dirty, bool contentSynced)
+        {
+            try
+            {
+                if (_overlayGenEditor == null) { MonacoSpikeLog.Write("[native-dirty] no genEditor"); return; }
+                var p = _overlayGenEditor.GetType().GetProperty("IsDirty");
+                if (p == null || !p.CanWrite) { MonacoSpikeLog.Write("[native-dirty] IsDirty not writable"); return; }
+                p.SetValue(_overlayGenEditor, dirty, null);
+                MonacoSpikeLog.Write("[native-dirty] native IsDirty=" + dirty + " (contentSynced=" + contentSynced
+                    + ") — Clarion's TryClose() should now prompt");
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[native-dirty] set failed: " + ex.Message); }
+        }
+
+        /// <summary>Clarion's own red-X confirmation, reproduced character-for-character from the dialog John
+        /// screenshotted (2026-08-27): title "Exit from embed editor?", message "Are you sure you want to
+        /// cancel?", Yes/No, Question icon, Yes default. It is a STOCK MessageBox, which is what makes exact
+        /// parity achievable here rather than approximate — the same reason the GH #193 Ctrl+Q dialog matches.
+        ///
+        /// Unlike Ctrl+F4 we cannot delegate to Clarion: cancelling never reaches Clarion's own close path,
+        /// because our toolbar replaced the native red-X and the host tears the embed down itself. So this one
+        /// we do have to raise.
+        ///
+        /// Any failure answers "no" — the page then keeps editing. A dialog that fails must never be the thing
+        /// that discards someone's work.</summary>
+        private void HandleConfirmCancel(MonacoEditorControl editor)
+        {
+            if (editor == null) return;
+            Action work = () =>
+            {
+                string result = "no";
+                try
+                {
+                    IWin32Window owner = null;
+                    try { owner = editor.FindForm(); } catch { }
+                    var r = owner != null
+                        ? MessageBox.Show(owner, "Are you sure you want to cancel?",
+                            "Exit from embed editor?", MessageBoxButtons.YesNo, MessageBoxIcon.Question)
+                        : MessageBox.Show("Are you sure you want to cancel?",
+                            "Exit from embed editor?", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                    result = r == DialogResult.Yes ? "yes" : "no";
+                }
+                catch (Exception ex) { MonacoSpikeLog.Write("HandleConfirmCancel dialog error: " + ex.Message); }
+                MonacoSpikeLog.Write("[confirm-cancel] answered " + result);
+                // Always reply, or the page stays shielded and deaf to keys behind an invisible overlay.
+                try { editor.PostJson("{\"type\":\"confirmCancelResult\",\"result\":\"" + result + "\"}"); }
+                catch (Exception ex) { MonacoSpikeLog.Write("HandleConfirmCancel post error: " + ex.Message); }
+            };
+            if (editor.InvokeRequired) editor.BeginInvoke(work); else work();
+        }
+
         private void HandleCancel()
         {
             Action work = () =>
@@ -2691,34 +2936,81 @@ namespace ClarionAssistant.Terminal
             catch { }
         }
 
-        /// <summary>Subscribe to the ClaGenEditor's Disposed so an embed close we did NOT initiate (native cancel,
-        /// Source-tab close, app-gen regen) detaches the overlay. Best-effort/reflection — the event name matches
-        /// SharpDevelop's IViewContent.Disposed.</summary>
-        private void HookOverlayTeardown(object genEditor)
+        /// <summary>Tear down an overlay whose native embed has vanished underneath it.
+        ///
+        /// REPLACES A SAFETY NET THAT WAS NEVER CONNECTED (89ab4e4c). This used to subscribe to
+        /// ClaGenEditor's "Disposed", on the assumption that the name matched SharpDevelop's
+        /// IViewContent.Disposed. It does not, in this fork: reflection over CWBinding 12.0.0.14000 says
+        /// GetEvent("Disposed") returns NULL on ClaGenEditor and on every one of its bases — IViewContent and
+        /// AbstractViewContent declare only Saving and Saved. The `if (evt == null) return;` then swallowed it,
+        /// so the hook NEVER ONCE FIRED and the code read like a backstop while providing none.
+        ///
+        /// The condition it was meant to catch is real and has bitten before: the ORPHANED overlay (John,
+        /// 2026-08-07). When the native embed closes under us — Errors-pane navigation opening the module
+        /// .clw, native cancel, app-gen regen — the overlay keeps its text and its pwee baseline, so it still
+        /// looks healthy. Save then logs liveCheck(live=False,overlay=True), takes the re-open path and reports
+        /// "nothing to save"; Cancel blanks the buffer. Downstream code grew defensive guards to compensate
+        /// (see the orphan check in the error-reveal path) precisely because nothing tore the overlay down.
+        ///
+        /// EmbedEditorMonitorService already DETECTS this — it logs "dedup reset — pwee gone, editor alive"
+        /// and "dedup reset — editor no longer found" at exactly the orphan moment. It just never told anyone.
+        /// It now calls this. Detection and action in one place beats a reflection hook onto an event that has
+        /// to exist for the whole thing to work.
+        ///
+        /// Deferred via PostDetachOverlay for the same reason the old hook was: the WebView2 must not be
+        /// disposed on a native close stack. Idempotent — our own Save/Cancel paths have usually run first,
+        /// and DetachOverlay no-ops on a second call.
+        ///
+        /// Deliberately does NOT set _teardownIntentional: this IS an interrupted session, so the edit stash
+        /// SHOULD fire. That is the data-loss guard doing its job.</summary>
+        internal static void DetachOrphanedOverlay(string reason)
         {
             try
             {
-                var evt = genEditor?.GetType().GetEvent("Disposed");
-                if (evt == null) return;
-                _overlayDisposedHandler = (s, e) => PostDetachOverlay();
-                evt.AddEventHandler(genEditor, _overlayDisposedHandler);
+                var live = _liveInstance;
+                if (live == null || !live._embedOverlay || live._overlayDetached) return;
+
+                // SECOND, INDEPENDENT CONFIRMATION before tearing anything down. The caller reached us from a
+                // single poll tick in which GetOpenPweeDetails() came back null; IsStillLive() asks the IDE a
+                // different question (GetEmbedInfo), and it is the same test Save uses to choose its path.
+                //
+                // This guard is the whole difference between fixing a bug and causing one. A transient null on
+                // one tick used to be harmless — it just reset the dedup — but now it would dispose a HEALTHY
+                // overlay out from under someone mid-edit, sending their work to the stash. Requiring two
+                // independent signals means a real orphan still gets caught while a blip does not.
+                if (live.IsStillLive())
+                {
+                    MonacoSpikeLog.Write("[orphan-detach] SKIP (" + reason + ") — embed still live on recheck;"
+                        + " treating the null as a transient");
+                    return;
+                }
+
+                MonacoSpikeLog.Write("[orphan-detach] native embed gone (" + reason + ") — tearing down the overlay"
+                    + " (dirty=" + live._mirroredDirty + ")");
+                live.PostDetachOverlay();
             }
-            catch { }
+            catch (Exception ex) { MonacoSpikeLog.Write("[orphan-detach] failed: " + ex.Message); }
         }
 
+        /// <summary>No longer hooks anything — see DetachOrphanedOverlay for why the Disposed subscription was
+        /// removed. Kept as a named call site so ShowAsEmbedOverlay still reads as "arrange teardown", and so
+        /// the next person looking for the teardown wiring lands here and is pointed at the monitor.</summary>
+        private void HookOverlayTeardown(object genEditor)
+        {
+            // Teardown for an externally-closed embed is driven by EmbedEditorMonitorService ->
+            // DetachOrphanedOverlay. Nothing to subscribe to here.
+        }
+
+        /// <summary>Nothing to unsubscribe any more — the Disposed hook it mirrored is gone. Kept as a call
+        /// site so DetachOverlay's step order stays readable.</summary>
         private void UnhookOverlayTeardown()
         {
-            try
-            {
-                if (_overlayGenEditor != null && _overlayDisposedHandler != null)
-                {
-                    var evt = _overlayGenEditor.GetType().GetEvent("Disposed");
-                    evt?.RemoveEventHandler(_overlayGenEditor, _overlayDisposedHandler);
-                }
-            }
-            catch { }
-            _overlayDisposedHandler = null;
         }
+
+        // over the embed teardown - ClaGenEditor is an ISecondaryViewContent living inside the .app's
+        // window. The working route is upstream: HandleSyncNativeForClose sets the NATIVE editor's
+        // IsDirty before the key is dispatched, so Clarion's own TryClose() raises its own prompt.
+
 
         /// <summary>Defer overlay teardown onto a clean, non-reentrant turn (never the native embed-close stack —
         /// disposing a WebView2 there risks the native&lt;-&gt;WebView2 focus deadlock).</summary>
@@ -2790,6 +3082,9 @@ namespace ClarionAssistant.Terminal
         {
             if (_overlayDetached) return;
             _overlayDetached = true;
+
+            // The [detach-who] stack walk that used to sit here is REMOVED (89ab4e4c). It answered its
+            // question — the teardown route — and then cost a frame walk on every single teardown.
             // DIAGNOSTIC (e1162adf): the save-timing marks proved the ~65s stall lives HERE, not in the save
             // (SaveLive itself takes ~700ms). These bisect DetachOverlay's steps so the next reproduction
             // names the culprit outright instead of narrowing it again.
@@ -3770,7 +4065,7 @@ namespace ClarionAssistant.Terminal
             {
                 // Transfer source via the virtual host (temp file) to avoid huge postMessage payloads.
                 string sourceFile = Path.Combine(_panel.TempDir, "source.txt");
-                File.WriteAllText(sourceFile, _sourceText ?? "", Encoding.UTF8);
+                File.WriteAllText(sourceFile, _sourceText ?? "", Services.EncodingHelper.Utf8NoBom);
 
                 string settingsJson;
                 try { settingsJson = new JavaScriptSerializer().Serialize(ModernEmbeditorSettings.Load().ToDict()); }

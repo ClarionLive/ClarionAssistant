@@ -1,9 +1,19 @@
 {
   "name": "clarion-assistant",
   "description": "Clarion language development tools for Claude Code. Skills for Clarion syntax, COM controls, WebView2 components, jFiles JSON, code analysis, and IDE addin development.",
-  "version": "1.0.0",
+  "version": "2.0.2",
   "author": {
     "name": "John Hickey",
     "email": "noreply@multiterminal.dev"
+  },
+  "mcpServers": {
+    "clarion-tools": {
+      "command": "cmd",
+      "args": [
+        "/c",
+        "${CLAUDE_PLUGIN_ROOT}/launcher/clarion-tools.cmd"
+      ],
+      "description": "Clarion code intelligence without the IDE: documentation search across SoftVelocity and installed third-party vendors, CodeGraph indexing and queries, LSP, dictionary and SQL schema tools, knowledge base, file and Everything search. Requires Clarion Assistant to be installed; the launcher locates the server inside your Clarion tree."
+    }
   }
 }

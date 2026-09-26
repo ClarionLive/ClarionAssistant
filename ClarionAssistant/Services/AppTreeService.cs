@@ -1,5 +1,6 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -13,7 +14,10 @@ namespace ClarionAssistant.Services
     /// Service to interact with the Clarion Application tree and embeditor.
     /// Uses reflection to access the Clarion-specific IDE objects.
     /// </summary>
-    public class AppTreeService
+    // Implements IAppTreeService (ticket d051fbd1) so the SHARED McpToolRegistry.cs can name
+    // this surface without importing the IDE. The interface is a compile seam only - every
+    // member here is permanently IDE-only and nothing else will ever implement it.
+    public class AppTreeService : IAppTreeService
     {
         private const BindingFlags AllInstance = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
         private const BindingFlags PubStatic = BindingFlags.Public | BindingFlags.Static;
@@ -177,19 +181,118 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// Get info about the currently open application.
         /// </summary>
+        // ---------------------------------------------------------------------------------
+        // IAppTreeService: forwards to ModernEmbeditorLauncher (ticket d051fbd1).
+        //
+        // The registry used to call these statically. ModernEmbeditorLauncher is IDE-coupled, so
+        // naming it from the SHARED McpToolRegistry.cs would have kept that file un-compilable
+        // outside the addin. Forwarding here costs nothing and moves the dependency to a class
+        // that is IDE-only anyway.
+        // ---------------------------------------------------------------------------------
+
+        /// <summary>Block until the embeditor has opened, or timeoutMs elapses.</summary>
+        public bool WaitForEmbedOpen(int timeoutMs)
+        {
+            return ModernEmbeditorLauncher.WaitForEmbedOpen(this, timeoutMs);
+        }
+
+        /// <summary>Apply several embed-slot edits in one transient round-trip.</summary>
+        public string ApplyEmbedLineEdits(string procName, System.Collections.Generic.IList<System.Collections.Generic.KeyValuePair<int, string>> edits, out bool ok)
+        {
+            return ModernEmbeditorSaver.ApplyLineEdits(procName, edits, out ok);
+        }
+
+        /// <summary>Force the IDE's lazy ABC class load now.</summary>
+        public string WarmupAbc()
+        {
+            return ModernEmbeditorLauncher.WarmupAbc();
+        }
+
         public Dictionary<string, object> GetAppInfo()
         {
             var app = GetAppObject();
             if (app == null) return null;
 
+            // dictionaryPath/dictionaryName: GitHub #210. Kevin's "compare ITEM and ITEMSERVICE" went to a
+            // stale .dctx from another project because nothing could tell the assistant WHICH dictionary the
+            // open app uses. It is one property away from the object this method already holds.
+            string dictPath = GetAppDictionaryPath();
             return new Dictionary<string, object>
             {
                 { "name", GetProp(app, "Name")?.ToString() ?? "" },
                 { "fileName", GetProp(app, "FileName")?.ToString() ?? "" },
                 { "isLoaded", GetProp(app, "IsLoaded") },
                 { "targetType", GetProp(app, "TargetType")?.ToString() ?? "" },
-                { "language", GetProp(app, "Language")?.ToString() ?? "" }
+                { "language", GetProp(app, "Language")?.ToString() ?? "" },
+                { "dictionaryPath", dictPath },
+                { "dictionaryName", string.IsNullOrEmpty(dictPath) ? null : Path.GetFileNameWithoutExtension(dictPath) }
             };
+        }
+
+        /// <summary>
+        /// Path of the dictionary the open app is bound to, or null. The dictionary object under the app view is
+        /// SoftVelocity.DataDictionary.DDDataDictionary (Generator.dll: ApplicationMainWindowControl_ViewContent
+        /// .FileSchema -> FileSchema.DataDictionary), and its <c>FileName</c> is the .dct path - established by
+        /// reflection-only load of the Clarion 12 assemblies, not guessed. FileSchema also carries a second
+        /// <c>SchemaDataDictionary</c>; we read <c>DataDictionary</c> because that is the one
+        /// <see cref="ReadLiveDictionaryTables"/> walks, so the path and the tables always describe the same dictionary.
+        /// UI thread. The registry caches the result (McpToolRegistry.LastKnownDictionaryPath) for its
+        /// off-thread schema-db lookup; this method itself keeps no state.
+        /// </summary>
+        public string GetAppDictionaryPath()
+        {
+            try
+            {
+                var app = GetAppObject();
+                if (app == null) return null;
+                var dict = GetLiveDataDictionary(app);
+                string path = dict == null ? null : (GetProp(dict, "FileName") ?? "").ToString();
+                if (!string.IsNullOrEmpty(path)) return path;
+
+                // Last resort: the bare name the app records (Application.DictionaryFileName =
+                // "invoice.dct"), anchored to the app's own folder when that file exists there.
+                string bare = (GetProp(app, "DictionaryFileName") ?? "").ToString();
+                if (string.IsNullOrEmpty(bare)) return null;
+                if (Path.IsPathRooted(bare)) return bare;
+                string appFile = (GetProp(app, "FileName") ?? "").ToString();
+                string appDir = string.IsNullOrEmpty(appFile) ? null : Path.GetDirectoryName(appFile);
+                if (!string.IsNullOrEmpty(appDir))
+                {
+                    string candidate = Path.Combine(appDir, bare);
+                    if (File.Exists(candidate)) return candidate;
+                }
+                return bare;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[AppTree] GetAppDictionaryPath: " + ex.Message);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// The live DDDataDictionary of the open app. App.Win32App.DataDictionary FIRST - it is the
+        /// app-level dictionary, loaded with the app (Win32App.DictionaryLoaded) - and only then
+        /// FileSchema.DataDictionary. App.FileSchema is NOT an app-level object: it is a per-procedure
+        /// EMBEDITOR SESSION object, null until the first open_procedure_embed of the IDE session and
+        /// left in place afterwards. Reading it alone made get_app_info return dictionaryPath null and
+        /// get_app_dictionary tableCount 0 on a freshly loaded app - Kevin's exact first-use path -
+        /// while both "worked" the moment any embeditor had been opened (CA-demoleg-CC, 5.9.0.1192,
+        /// by dump_object_api on the live object). A reflection-only load proves what a TYPE exposes,
+        /// never what an INSTANCE holds at rest.
+        /// </summary>
+        private object GetLiveDataDictionary(object app)
+        {
+            if (app == null) return null;
+            try
+            {
+                var w32 = GetProp(app, "Win32App");
+                var dd = w32 == null ? null : GetProp(w32, "DataDictionary");
+                if (dd != null) return dd;
+                var fs = GetProp(app, "FileSchema") ?? GetAppFileSchema();
+                return fs == null ? null : GetProp(fs, "DataDictionary");
+            }
+            catch { return null; }
         }
 
         /// <summary>
@@ -284,13 +387,18 @@ namespace ClarionAssistant.Services
         /// can't tell which app a tree selection belongs to, so the selection path fails closed. Counts distinct
         /// App objects across the same workbench collections FindAppViewContent searches. Pure managed reflection.
         /// </summary>
-        public int CountOpenAppViews()
+        public int CountOpenAppViews() { return DistinctOpenApps().Count; }
+
+        // The union walk CountOpenAppViews has always done, exposed so GetOpenAppFileNames can name
+        // the same set the count was taken over (one walk, one answer - a second, subtly different
+        // walk is how a guard reads "1" while the message lists 2).
+        private HashSet<object> DistinctOpenApps()
         {
             var apps = new HashSet<object>();
             try
             {
                 var workbench = WorkbenchSingleton.Workbench;
-                if (workbench == null) return 0;
+                if (workbench == null) return apps;
 
                 Func<object, object> appFrom = obj =>
                 {
@@ -322,7 +430,39 @@ namespace ClarionAssistant.Services
                 }
             }
             catch { }
-            return apps.Count;
+            return apps;
+        }
+
+        /// <summary>
+        /// True when the ACTIVE workbench window is itself an app view - i.e. "the open app" is the
+        /// one with focus and FindAppViewContent's fast path resolves it unambiguously, however many
+        /// other apps are open. False when focus is on an editor, an embeditor, a pad, or nothing.
+        /// </summary>
+        public bool IsActiveWindowAppView()
+        {
+            try
+            {
+                var workbench = WorkbenchSingleton.Workbench;
+                var win = workbench == null ? null : GetProp(workbench, "ActiveWorkbenchWindow");
+                if (win == null) return false;
+                if (GetProp(win, "App") != null) return true;
+                var vc = GetProp(win, "ViewContent") ?? GetProp(win, "ActiveViewContent");
+                return vc != null && GetProp(vc, "App") != null;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>.app file names of every distinct open app view (same walk as CountOpenAppViews), for
+        /// the ambiguity message a tool returns instead of guessing.</summary>
+        public List<string> GetOpenAppFileNames()
+        {
+            var names = new List<string>();
+            foreach (var app in DistinctOpenApps())
+            {
+                string f = (GetProp(app, "FileName") ?? GetProp(app, "Name") ?? "").ToString();
+                if (f.Length > 0) names.Add(f);
+            }
+            return names;
         }
 
         /// <summary>
@@ -2083,7 +2223,10 @@ namespace ClarionAssistant.Services
             {
                 var app = GetAppObject();
                 if (app == null) return outp;
-                var dict = GetProp(GetProp(app, "FileSchema"), "DataDictionary");
+                // Win32App.DataDictionary first, FileSchema.DataDictionary as fallback - see
+                // GetLiveDataDictionary for why the old FileSchema-only read was empty until an
+                // embeditor had been opened.
+                var dict = GetLiveDataDictionary(app);
                 if (dict == null) return outp;
                 if (!(GetProp(dict, "Tables") is System.Collections.IEnumerable tables)) return outp;
 
@@ -2531,7 +2674,7 @@ namespace ClarionAssistant.Services
         /// Find an embed section by name in the embeditor and navigate to it.
         /// Searches the editor text for the section header comment and positions the cursor there.
         /// </summary>
-        public string FindEmbed(string searchName, EditorService editorService)
+        public string FindEmbed(string searchName, IEditorService editorService)
         {
             var editor = GetClaGenEditor();
             if (editor == null) return "Error: No embeditor is currently open.";

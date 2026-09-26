@@ -1933,8 +1933,22 @@ namespace ClarionAssistant.Services
 
                 if (!string.IsNullOrEmpty(library))
                 {
-                    sql += " AND l.name = @library";
+                    // Exact name OR name-with-a-version-suffix. Vendors ship libraries under a
+                    // versioned name — CapeSoft's StringTheory is ingested as "StringTheory3" —
+                    // so an exact match silently returned NOTHING for the name every user
+                    // actually types. That included query_docs' own documented example,
+                    // library='StringTheory', which this tool advertised and which had never
+                    // worked. A no-match is indistinguishable from "no such documentation", so
+                    // it read as a missing corpus rather than a filter bug.
+                    //
+                    // Suffix is constrained to digits/dot/space so this stays a version match
+                    // and does not turn into a prefix search: 'NetTalk' must not start matching
+                    // 'NetTalkWebServer'. GLOB is used because LIKE cannot express a character
+                    // class, and GLOB is case-sensitive — hence the explicit exact test first,
+                    // which preserves today's behaviour for a name given in full.
+                    sql += " AND (l.name = @library OR l.name GLOB @libraryVersioned)";
                     parameters.Add(new SQLiteParameter("@library", library));
+                    parameters.Add(new SQLiteParameter("@libraryVersioned", library + "[0-9. ]*"));
                 }
                 if (!string.IsNullOrEmpty(className))
                 {

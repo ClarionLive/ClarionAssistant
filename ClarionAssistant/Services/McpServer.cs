@@ -25,30 +25,8 @@ namespace ClarionAssistant.Services
         private McpToolRegistry _toolRegistry;
         private int _port;
 
-        // Max time a UI-thread MCP tool may run before the request is abandoned
-        // with a timeout error, so a busy/wedged UI thread can't hold a worker
-        // (and leak the connection as CLOSE_WAIT) indefinitely.
-        //
-        // 30s is the right budget for the prompt tools (read a line, list
-        // procedures) but it was never a universal one: a single native
-        // embeditor open already waits up to 45s on its own
-        // (ModernEmbeditorLauncher.WaitForEmbedOpen, called straight from the
-        // open_procedure_embed handler), and OpenAndMirror may retry it at a
-        // slower locator speed. Those tools' internal budget therefore EXCEEDS
-        // this window by design, so on a large procedure the outer wait could
-        // never let them finish — the call always came back "UI thread did not
-        // respond within 30s" even though the work was still running correctly.
-        // Such tools now declare their own McpTool.UiTimeoutSeconds; everything
-        // else takes the default, which an install can raise with the
-        // "Mcp.UiToolTimeoutSeconds" setting.
-        private const int DefaultUiToolTimeoutSeconds = 30;
-        private const string UiToolTimeoutSettingKey = "Mcp.UiToolTimeoutSeconds";
-
-        // Clamp whatever is configured: under ~5s even a trivial tool races its
-        // own marshal onto the UI thread, and an unbounded value reintroduces
-        // the wedged-UI hang this timeout exists to prevent.
-        private const int MinUiToolTimeoutSeconds = 5;
-        private const int MaxUiToolTimeoutSeconds = 600;
+        // (The UI-thread tool timeout moved to McpDispatcher with the dispatch it guards. Left
+        // here it would have read as the live knob and silently done nothing when tuned.)
 
         // Per-session auth token — regenerated on every Start(). Embedded as
         // `Authorization: Bearer <token>` in the MCP config file so the spawned
@@ -337,6 +315,31 @@ namespace ClarionAssistant.Services
                 "mcp-extra.json");
         }
 
+        /// <summary>
+        /// Full path to the installed standalone MCP server, or null when it is not there.
+        ///
+        /// It sits NEXT TO THE ADDIN DLL, which is not incidental: the server resolves the bundled
+        /// language server relative to its own directory, so from that folder it finds
+        /// lsp-server\server.js and lsp-server\node.exe. Anywhere else and every lsp_ tool quietly
+        /// falls back to whatever else is on the machine.
+        ///
+        /// Returning null is a supported state, not a failure: the addin then serves the full 115
+        /// itself, so a partial deploy or an older install degrades to exactly today's behaviour
+        /// rather than to a pane missing half its tools.
+        /// </summary>
+        public static string GetStandaloneServerPath()
+        {
+            try
+            {
+                string dir = Path.GetDirectoryName(
+                    System.Reflection.Assembly.GetExecutingAssembly().Location);
+                if (string.IsNullOrEmpty(dir)) return null;
+                string exe = Path.Combine(dir, "clarion-mcp-server.exe");
+                return File.Exists(exe) ? exe : null;
+            }
+            catch { return null; }
+        }
+
         public string GenerateMcpConfig(McpConfigFormat format = McpConfigFormat.Claude)
         {
             // Both Claude and Copilot MCP client configs accept a `headers` map
@@ -391,40 +394,101 @@ namespace ClarionAssistant.Services
                 servers["multiterminal"] = mt;
             }
 
+            // The editor-agnostic half, served by clarion-mcp-server.exe as its own stdio process
+            // (ticket d051fbd1). Together with the entry above this partitions all 115 tools:
+            // clarion-assistant keeps the 56 that drive the IDE, clarion-tools serves the other 59.
+            //
+            // --strict-mcp-config means the plugin's own clarion-tools entry never reaches this
+            // pane, so declaring it here is not a duplicate - it is the ONLY way those tools arrive
+            // inside the IDE, and the reason the addin can safely stop serving them itself.
+            //
+            // THE LIVE SOLUTION IS INJECTED HERE, which is the whole reason this cannot be a static
+            // config. Regenerated at every tab launch, so it always names the solution the
+            // developer currently has open. The plugin's copy passes no --solution at all and
+            // discovers one from the working directory, which is right for a terminal opened in a
+            // project folder and useless for an IDE pane whose working directory means nothing.
+            //
+            // Omitted entirely when the exe is absent, which is what lets the addin fall back to
+            // serving all 115 itself rather than advertising a server that cannot start.
+            if (format == McpConfigFormat.Claude)
+            {
+                string standaloneExe = GetStandaloneServerPath();
+                if (standaloneExe != null)
+                {
+                    var toolArgs = new List<string> { "--stdio" };
+                    // WHO LAUNCHED ME. The open-app record the addin writes for the standalone
+                    // (McpToolRegistry.OpenAppRecord, GitHub #210) was first keyed on the solution
+                    // path - and the two processes disagree about that the moment the developer
+                    // loads a different solution in the IDE: this pane's --solution is fixed at
+                    // launch while the addin follows the IDE. CA-demoleg-CC: POSitiveAnywhere open,
+                    // get_app_info said positive.dct, schema_stats still named invoice.dct. The IDE
+                    // process id cannot drift, so the record is keyed on it and handed over here.
+                    toolArgs.Add("--ide-pid");
+                    toolArgs.Add(System.Diagnostics.Process.GetCurrentProcess().Id.ToString());
+                    string liveSln = null;
+                    try { liveSln = EditorService.GetOpenSolutionPath(); } catch { liveSln = null; }
+                    // --solution below is fixed at launch; this record is what lets the standalone
+                    // LSP follow a solution opened LATER (77aceec5). Kept current by
+                    // AssistantChatControl.PollForSolutionChange.
+                    IdeSolutionRecord.Publish(liveSln);
+                    if (!string.IsNullOrEmpty(liveSln) && File.Exists(liveSln))
+                    {
+                        toolArgs.Add("--solution");
+                        toolArgs.Add(liveSln);
+                    }
+
+                    servers["clarion-tools"] = new Dictionary<string, object>
+                    {
+                        { "type", "stdio" },
+                        { "command", standaloneExe },
+                        { "args", toolArgs.ToArray() }
+                    };
+                }
+            }
+
             // Add the multiterminal-channel MCP server so the embedded Claude receives
             // real <channel> notifications. Parent-process env vars MULTITERMINAL_NAME
             // and MULTITERMINAL_DOC_ID are exported from LaunchClaudeForTab per tab and
             // inherited by this stdio subprocess. --strict-mcp-config blocks user-level
             // mcpServers entries, so we must include the channel server here explicitly.
-            string channelPath = (format == McpConfigFormat.Claude) ? ResolveMultiTerminalChannelPath() : null;
-            if (channelPath != null)
-            {
-                servers["multiterminal-channel"] = new Dictionary<string, object>
-                {
-                    { "type", "stdio" },
-                    { "command", "node" },
-                    { "args", new string[] { channelPath } },
-                    { "env", new Dictionary<string, object>
-                        {
-                            // Claude Code expands ${VAR} against its own environment at load time,
-                            // then merges onto the inherited parent env (additive, not replacing).
-                            // Belt + braces: rely on inheritance AND declare the keys explicitly.
-                            { "MT_API_URL", "http://localhost:5050" },
-                            { "MULTITERMINAL_NAME", "${MULTITERMINAL_NAME}" },
-                            { "MULTITERMINAL_DOC_ID", "${MULTITERMINAL_DOC_ID}" }
-                        }
-                    }
-                };
-                IncludeMultiTerminalChannel = true;
-            }
-            else
-            {
-                IncludeMultiTerminalChannel = false;
-            }
+            // THE CHANNEL IS NO LONGER DECLARED HERE. It arrives via --plugin-dir instead, and this
+            // block used to be the reason it did not arrive at all (ticket 7913ead6).
+            //
+            // Claude Code 2.1.265 resolves "--dangerously-load-development-channels server:<name>"
+            // against five PERSISTED config scopes only - enterprise, managed, user, project, local.
+            // A server supplied through --mcp-config is in none of them, so a channel declared here
+            // could never be authorised, and the launch printed
+            //     server:multiterminal-channel - no MCP server configured with that name
+            // The old code was not wrong when written: it put the server here PRECISELY because
+            // --strict-mcp-config blocks user-scope entries. 2.1.265 made those two requirements
+            // mutually exclusive, and the plugin form is the way out of the bind.
+            //
+            // MultiTerminal already does it this way and is unaffected - its terminals carry
+            // "plugin:multiterminal@inline" and declare no channel server in their own --mcp-config.
+            // We now mirror that, so there is exactly ONE channel provider rather than a plugin copy
+            // and a redundant second stdio copy of the same .mjs.
+            //
+            // NOTHING IS LOST BY DROPPING THE ENTRY: both paths resolve the same file in the same
+            // MultiTerminal plugin, so if the plugin is absent there was never a channel to declare.
+            //
+            // IDENTITY NOW RIDES ON INHERITANCE ALONE. The env block above used to declare
+            // MULTITERMINAL_NAME / MULTITERMINAL_DOC_ID explicitly as belt-and-braces alongside
+            // inheritance. The plugin-loaded server inherits them from the pwsh process, which
+            // LaunchClaudeForTab exports per tab (see channelEnv). That is also how MultiTerminal
+            // does it. If a tab ever registers under the wrong identity, this is the first place to
+            // look.
+            IncludeMultiTerminalChannel =
+                (format == McpConfigFormat.Claude) && GetMultiTerminalPluginPath() != null;
 
             // Merge user-supplied MCP servers from
             // %APPDATA%\ClarionAssistant\mcp-extra.json. Claude format only —
             // Copilot's schema differs and needs separate handling.
+            // ORDERING INVARIANT: this runs LAST, after every addin-supplied server has been
+            // added above. A key is reserved purely by already being present, so moving this call
+            // earlier - or adding a new addin server below it - would let the user's sidecar
+            // override a real one, silently, with the pane still apparently working while talking
+            // to whatever executable that entry named. McpSidecarMerge carries the reasoning and
+            // is covered by a test that fails if the order changes.
             ExtraMcpServerNames = new List<string>();
             if (format == McpConfigFormat.Claude)
             {
@@ -433,30 +497,10 @@ namespace ClarionAssistant.Services
                     string sidecar = GetMcpExtraConfigPath();
                     if (File.Exists(sidecar))
                     {
-                        string raw = File.ReadAllText(sidecar);
-                        var parsed = McpJsonRpc.Deserialize(raw);
-                        object entriesObj;
-                        if (parsed != null && parsed.TryGetValue("mcpServers", out entriesObj))
-                        {
-                            var entries = entriesObj as Dictionary<string, object>;
-                            if (entries != null)
-                            {
-                                foreach (var kv in entries)
-                                {
-                                    if (string.IsNullOrEmpty(kv.Key)) continue;
-                                    if (servers.ContainsKey(kv.Key))
-                                    {
-                                        System.Diagnostics.Debug.WriteLine(
-                                            "[McpServer] mcp-extra.json: skipping reserved key '" + kv.Key + "'");
-                                        continue;
-                                    }
-                                    servers[kv.Key] = kv.Value;
-                                    ExtraMcpServerNames.Add(kv.Key);
-                                    System.Diagnostics.Debug.WriteLine(
-                                        "[McpServer] mcp-extra.json: merged server '" + kv.Key + "'");
-                                }
-                            }
-                        }
+                        ExtraMcpServerNames = McpSidecarMerge.Merge(
+                            servers,
+                            File.ReadAllText(sidecar),
+                            msg => System.Diagnostics.Debug.WriteLine("[McpServer] mcp-extra.json: " + msg));
                     }
                 }
                 catch (Exception ex)
@@ -473,11 +517,26 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// Locate multiterminal-channel.mjs on this machine. Resolution order:
-        /// 1. %USERPROFILE%\.claude\plugins\marketplaces\multiterminal-marketplace\plugins\multiterminal\server\multiterminal-channel.mjs
-        /// 2. Return null if not present — caller falls back to channel-disabled mode.
+        /// The MultiTerminal PLUGIN DIRECTORY, or null when it is not installed:
+        /// %USERPROFILE%\.claude\plugins\marketplaces\multiterminal-marketplace\plugins\multiterminal
+        ///
+        /// This is what gets passed to --plugin-dir, and the channel server lives INSIDE it at
+        /// server\multiterminal-channel.mjs. Presence of that file is the gate, which is the same
+        /// test MultiTerminal itself applies before emitting the channels flag; a plugin folder
+        /// without a server\ subtree cannot serve a channel, and claiming otherwise would produce a
+        /// flag naming a channel that never registers.
+        ///
+        /// THE LAST PATH SEGMENT IS LOAD-BEARING - DO NOT "SIMPLIFY" IT TO THE PARENT. Claude Code
+        /// treats a --plugin-dir pointing at a FOLDER OF PLUGINS as "load every child", so trimming
+        /// this to ...\plugins would silently load every plugin in the marketplace. That folder
+        /// holds exactly one entry today, so both spellings behave identically right now - which is
+        /// what would make the change look correct, test clean, and only misbehave the day a second
+        /// plugin is added. Flagged by Alice, who owns the MultiTerminal side (ticket c9285d2a).
+        ///
+        /// The DIRECTORY BASENAME is also the token before the '@' in the channels flag, so callers
+        /// derive that from this path rather than hard-coding "multiterminal" twice.
         /// </summary>
-        private static string ResolveMultiTerminalChannelPath()
+        public static string GetMultiTerminalPluginPath()
         {
             try
             {
@@ -486,9 +545,8 @@ namespace ClarionAssistant.Services
 
                 string pluginRoot = Path.Combine(userProfile, ".claude", "plugins", "marketplaces",
                     "multiterminal-marketplace", "plugins", "multiterminal");
-                string candidate = Path.Combine(pluginRoot, "server", "multiterminal-channel.mjs");
-                if (File.Exists(candidate))
-                    return candidate;
+                if (File.Exists(Path.Combine(pluginRoot, "server", "multiterminal-channel.mjs")))
+                    return pluginRoot;
             }
             catch { }
             return null;
@@ -790,12 +848,9 @@ namespace ClarionAssistant.Services
                     try { parsed = McpJsonRpc.ParseRequest(body); }
                     catch { /* ProcessJsonRpc below reports the parse error */ }
                 }
-                if (parsed != null && parsed.Method == "tools/call" && _toolRegistry != null)
+                if (parsed != null && _toolRegistry != null)
                 {
-                    string streamToolName = McpJsonRpc.GetString(parsed.Params, "name");
-                    if (!string.IsNullOrEmpty(streamToolName)
-                        && ExtractProgressToken(parsed.Params) != null
-                        && _toolRegistry.SupportsStreaming(streamToolName))
+                    if (Dispatcher.WouldStream(parsed))
                     {
                         response.StatusCode = 200;
                         response.ContentType = "text/event-stream";
@@ -817,7 +872,11 @@ namespace ClarionAssistant.Services
                                 }
                             };
 
-                            string streamedResponse = HandleToolCall(parsed, send);
+                            // Re-parses the body (WouldStream already parsed it once), which
+                            // costs one extra parse on the streaming path only — dwarfed by the
+                            // index run that follows, and worth it to keep a single dispatch
+                            // entry point rather than a public HandleToolCall back door.
+                            string streamedResponse = ProcessJsonRpc(body, send);
                             send(streamedResponse);
                         }
                         return; // finally releases the connection
@@ -871,265 +930,82 @@ namespace ClarionAssistant.Services
 
         #region JSON-RPC Dispatch
 
+        // The dispatch itself now lives in McpDispatcher, which knows nothing about HTTP
+        // (ticket d051fbd1) — the stdio server shares it rather than growing a second copy of
+        // initialize/tools/list/tools/call. Everything HTTP-shaped stays here: SSE, bearer auth,
+        // Host/Origin validation, port scanning, session tracking.
+        //
+        // Built lazily because SetToolRegistry() can land after the constructor.
+        private McpDispatcher _dispatcher;
+        private readonly object _dispatcherLock = new object();
+
+        private McpDispatcher Dispatcher
+        {
+            get
+            {
+                var d = _dispatcher;
+                if (d != null) return d;
+                lock (_dispatcherLock)
+                {
+                    if (_dispatcher == null)
+                    {
+                        _dispatcher = new McpDispatcher(
+                            _toolRegistry,
+                            new ControlUiDispatcher(_uiControl),
+                            RaiseToolCall,
+                            "clarion-assistant",
+                            "1.0.0");
+                    }
+                    return _dispatcher;
+                }
+            }
+        }
+
         private string ProcessJsonRpc(string body)
         {
             return ProcessJsonRpc(body, null);
         }
 
-        /// <summary>
-        /// Process a JSON-RPC message. sendNotification, when non-null, is a transport
-        /// sink for server→client notifications emitted DURING a tools/call (progress
-        /// streaming, ticket 0d788f8b): the legacy SSE transport passes its session
-        /// stream, the Streamable HTTP transport an SSE response writer. Null = the
-        /// transport can't carry mid-call notifications; tools run buffered as before.
-        /// </summary>
         private string ProcessJsonRpc(string body, Action<string> sendNotification)
         {
-            JsonRpcRequest request;
-            try
-            {
-                request = McpJsonRpc.ParseRequest(body);
-            }
-            catch (Exception ex)
-            {
-                return McpJsonRpc.SerializeError(null, -32700, "Parse error: " + ex.Message);
-            }
-
-            if (string.IsNullOrEmpty(request.Method))
-            {
-                return McpJsonRpc.SerializeError(request.Id, -32600, "Invalid request: missing method");
-            }
-
-            try
-            {
-                switch (request.Method)
-                {
-                    case "initialize":
-                        var initResult = McpJsonRpc.BuildInitializeResult("clarion-assistant", "1.0.0");
-                        return McpJsonRpc.SerializeResponse(request.Id, initResult);
-
-                    case "notifications/initialized":
-                        return McpJsonRpc.SerializeResponse(request.Id, new Dictionary<string, object>());
-
-                    case "ping":
-                        return McpJsonRpc.SerializeResponse(request.Id, new Dictionary<string, object>());
-
-                    case "tools/list":
-                        var tools = _toolRegistry.GetToolDefinitions();
-                        var listResult = new Dictionary<string, object> { { "tools", tools } };
-                        return McpJsonRpc.SerializeResponse(request.Id, listResult);
-
-                    case "tools/call":
-                        return HandleToolCall(request, sendNotification);
-
-                    default:
-                        return McpJsonRpc.SerializeError(request.Id, -32601,
-                            "Method not found: " + request.Method);
-                }
-            }
-            catch (Exception ex)
-            {
-                return McpJsonRpc.SerializeError(request.Id, -32603,
-                    "Internal error: " + ex.Message);
-            }
+            return Dispatcher.ProcessJsonRpc(body, sendNotification);
         }
 
         /// <summary>
-        /// Extract the MCP progress token (params._meta.progressToken) from a tools/call
-        /// request. Null when the client didn't ask for progress. The spec allows only
-        /// string or number tokens; anything else (or an oversized string) is treated as
-        /// absent rather than echoed into every progress frame — the token is reflected
-        /// back once per notification, so it must stay a cheap scalar (Codex security
-        /// finding, run 1).
+        /// Adapts the addin's WinForms control to IUiDispatcher, matching the semantics
+        /// AssistantChatControl already implements for the same interface.
+        ///
+        /// HasUiThread IS UNCONDITIONALLY TRUE, and that is deliberate. It answers the
+        /// ARCHITECTURAL question "does this host have a UI thread at all" — not the liveness
+        /// question "is the handle up right now". Folding liveness into it looks like a safety
+        /// improvement and is the opposite: the dispatcher reads HasUiThread to decide whether to
+        /// marshal, so a false here would send a genuinely thread-affine IDE tool to run inline on
+        /// a worker thread during startup or shutdown. A clean error beats touching IDE objects
+        /// from the wrong thread. Liveness belongs in BeginInvokeOnUi, below, where the fallback
+        /// is inline execution of work that would otherwise simply be dropped.
         /// </summary>
-        private static object ExtractProgressToken(Dictionary<string, object> parms)
+        private sealed class ControlUiDispatcher : IUiDispatcher
         {
-            if (parms == null) return null;
-            object metaObj;
-            if (!parms.TryGetValue("_meta", out metaObj)) return null;
-            var meta = metaObj as Dictionary<string, object>;
-            if (meta == null) return null;
-            object token;
-            meta.TryGetValue("progressToken", out token);
+            private readonly Control _control;
 
-            string s = token as string;
-            if (s != null) return s.Length <= 256 ? token : null;
-            // JavaScriptSerializer materializes JSON numbers as int, long, decimal or double.
-            if (token is int || token is long || token is decimal || token is double) return token;
-            return null;
-        }
+            public ControlUiDispatcher(Control control) { _control = control; }
 
-        // Minimum interval between notifications/progress frames. The indexer emits at
-        // file boundaries (up to ~30/s during parsing) — relaying every one would flood
-        // the client for zero information gain.
-        private const int ProgressThrottleMs = 1000;
+            public bool HasUiThread { get { return true; } }
 
-        /// <summary>
-        /// Timeout budget for ONE UI-thread tool call, in seconds: the larger of the
-        /// per-install "Mcp.UiToolTimeoutSeconds" setting (default 30) and the tool's
-        /// own declared <see cref="McpTool.UiTimeoutSeconds"/>, clamped to
-        /// [<see cref="MinUiToolTimeoutSeconds"/>, <see cref="MaxUiToolTimeoutSeconds"/>]
-        /// so neither a typo nor a zero can disable the guard. Taking the LARGER means
-        /// raising the global setting still lifts the slow tools, while a tool that
-        /// needs more than the default never silently loses it.
-        /// The setting is read from the in-memory settings snapshot, so a hand edit of
-        /// settings.txt takes effect on the next IDE start.
-        /// </summary>
-        private int ResolveUiToolTimeoutSeconds(string toolName)
-        {
-            int seconds = DefaultUiToolTimeoutSeconds;
-
-            if (_settings != null)
+            public void BeginInvokeOnUi(Action action)
             {
-                int configured;
-                string raw = _settings.Get(UiToolTimeoutSettingKey);
-                if (raw != null && int.TryParse(raw.Trim(), out configured) && configured > 0)
-                    seconds = configured;
-            }
-
-            int declared = _toolRegistry != null ? _toolRegistry.UiTimeoutSeconds(toolName) : 0;
-            if (declared > seconds) seconds = declared;
-
-            if (seconds < MinUiToolTimeoutSeconds) seconds = MinUiToolTimeoutSeconds;
-            if (seconds > MaxUiToolTimeoutSeconds) seconds = MaxUiToolTimeoutSeconds;
-            return seconds;
-        }
-
-        private string HandleToolCall(JsonRpcRequest request)
-        {
-            return HandleToolCall(request, null);
-        }
-
-        private string HandleToolCall(JsonRpcRequest request, Action<string> sendNotification)
-        {
-            var parms = request.Params;
-            string toolName = McpJsonRpc.GetString(parms, "name");
-            var arguments = parms.ContainsKey("arguments")
-                ? parms["arguments"] as Dictionary<string, object>
-                : new Dictionary<string, object>();
-
-            if (string.IsNullOrEmpty(toolName))
-            {
-                return McpJsonRpc.SerializeError(request.Id, -32602,
-                    "Missing tool name in tools/call");
-            }
-
-            object progressToken = sendNotification != null ? ExtractProgressToken(parms) : null;
-            bool streaming = progressToken != null && _toolRegistry.SupportsStreaming(toolName);
-
-            object result;
-            try
-            {
-                if (streaming)
+                if (action == null) return;
+                if (_control != null && _control.IsHandleCreated && !_control.IsDisposed)
                 {
-                    // Streaming path: runs on THIS worker thread regardless of
-                    // RequiresUiThread — the tool's StreamingHandler marshals its own UI
-                    // work (see McpTool.StreamingHandler). Notification failures are
-                    // swallowed after the first: a disconnected client must not abort a
-                    // long index run and leave a partial database behind.
-                    // Throttle math uses unchecked int subtraction so the TickCount wrap
-                    // (~24.9 days uptime) can't permanently silence the stream.
-                    int lastSentTick = 0;
-                    bool sentAny = false;
-                    bool sinkBroken = false;
-                    double lastSentPercent = 0.0;
-                    Action<double, string> onProgress = (percent, message) =>
-                    {
-                        if (sinkBroken) return;
-                        int now = Environment.TickCount;
-                        if (sentAny && unchecked(now - lastSentTick) < ProgressThrottleMs) return;
-                        sentAny = true;
-                        lastSentTick = now;
-                        // MCP requires progress to increase with each notification. Phases
-                        // that pin their percentage (finishing-tail heartbeats sit at 98)
-                        // get a minimal synthetic increment, capped short of 100 so only a
-                        // real completion can claim it.
-                        if (percent <= lastSentPercent)
-                            percent = Math.Min(99.9, lastSentPercent + 0.1);
-                        lastSentPercent = percent;
-                        try
-                        {
-                            sendNotification(McpJsonRpc.Serialize(new Dictionary<string, object>
-                            {
-                                { "jsonrpc", "2.0" },
-                                { "method", "notifications/progress" },
-                                { "params", new Dictionary<string, object>
-                                    {
-                                        { "progressToken", progressToken },
-                                        { "progress", Math.Round(percent, 1) },
-                                        { "total", 100 },
-                                        { "message", message }
-                                    }
-                                }
-                            }));
-                        }
-                        catch
-                        {
-                            sinkBroken = true;
-                        }
-                    };
-                    result = _toolRegistry.ExecuteToolStreaming(toolName, arguments, onProgress);
+                    try { _control.BeginInvoke(action); return; }
+                    catch (System.ComponentModel.InvalidAsynchronousStateException) { }
+                    catch (ObjectDisposedException) { }
                 }
-                else if (_toolRegistry.RequiresUiThread(toolName))
-                {
-                    object uiResult = null;
-                    Exception uiException = null;
-                    int timeoutSeconds = ResolveUiToolTimeoutSeconds(toolName);
-
-                    // Marshal onto the UI thread WITHOUT blocking the worker forever.
-                    // A synchronous Control.Invoke here deadlocks (and leaks the
-                    // connection as CLOSE_WAIT) whenever the UI thread is busy/wedged.
-                    using (var done = new ManualResetEventSlim(false))
-                    {
-                        _uiControl.BeginInvoke((Action)(() =>
-                        {
-                            try { uiResult = _toolRegistry.ExecuteTool(toolName, arguments); }
-                            catch (Exception ex) { uiException = ex; }
-                            finally { try { done.Set(); } catch { } }
-                        }));
-
-                        // Give the UI thread a bounded window to run the tool. On timeout
-                        // we abandon the delegate (it will complete harmlessly later) and
-                        // return an error instead of holding the worker + connection open.
-                        if (!done.Wait(TimeSpan.FromSeconds(timeoutSeconds)))
-                        {
-                            RaiseToolCall(toolName, "TIMEOUT (UI thread busy)");
-                            return McpJsonRpc.SerializeResponse(request.Id, McpJsonRpc.BuildToolResult(
-                                "Error executing tool '" + toolName + "': UI thread did not respond within "
-                                + timeoutSeconds + "s (busy or blocked). If the IDE was working rather than "
-                                + "wedged, raise '" + UiToolTimeoutSettingKey + "' in "
-                                + @"%APPDATA%\ClarionAssistant\settings.txt (allowed range "
-                                + MinUiToolTimeoutSeconds + "-" + MaxUiToolTimeoutSeconds + "s) and restart the IDE.",
-                                true));
-                        }
-                    }
-
-                    if (uiException != null) throw uiException;
-                    result = uiResult;
-                }
-                else
-                {
-                    result = _toolRegistry.ExecuteTool(toolName, arguments);
-                }
+                // No handle (or it died under us): running inline is better than dropping the
+                // work. Safe for the dispatcher's timeout path — the action completes before
+                // BeginInvokeOnUi returns, so its wait handle is already set.
+                action();
             }
-            catch (Exception ex)
-            {
-                RaiseToolCall(toolName, "ERROR: " + ex.Message);
-                var errorResult = McpJsonRpc.BuildToolResult(
-                    "Error executing tool '" + toolName + "': " + ex.Message, true);
-                return McpJsonRpc.SerializeResponse(request.Id, errorResult);
-            }
-
-            string resultText = result is string
-                ? (string)result
-                : McpJsonRpc.Serialize(result);
-
-            RaiseToolCall(toolName, resultText.Length > 100
-                ? resultText.Substring(0, 100) + "..."
-                : resultText);
-
-            var toolResult = McpJsonRpc.BuildToolResult(resultText);
-            return McpJsonRpc.SerializeResponse(request.Id, toolResult);
         }
 
         #endregion

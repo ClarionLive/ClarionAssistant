@@ -35,7 +35,7 @@ namespace ClarionAssistant
     /// fully-working ClarionEditor (TextEditorDisplayBindingWrapper + IStructureDesignerCompatible),
     /// so the designer/app-gen keep functioning through us.
     /// </summary>
-    public class MonacoClarionEditor : ClarionEditor, IMonacoEditorHost, ICSharpCode.SharpDevelop.Gui.IPositionable
+    public class MonacoClarionEditor : ClarionEditor, IMonacoEditorHost, IMonacoFoldingHost, ICSharpCode.SharpDevelop.Gui.IPositionable
     {
         private Timer _captureTimer;     // polls until the view's Control (text area) is realized
         private int _captureTries;
@@ -457,6 +457,51 @@ namespace ClarionAssistant
             catch (Exception ex) { MonacoSpikeLog.Write("JumpTo mirror error: " + ex.Message); }
         }
 
+        /// <summary>True when the Monaco overlay is attached, i.e. Monaco (not the native editor) is the visible
+        /// surface for this file.</summary>
+        internal bool HasOverlay { get { return _editor != null; } }
+
+        /// <summary>
+        /// Paint (line &gt;= 1) or remove (line &lt;= 0) the debugger's execution-line marker in this editor
+        /// (CA-Debugger #26, via MonacoSourceNavigator.SetExecutionLine). A no-op until the page is ready:
+        /// OnReady / OnReload carry the navigator's current marker inside setSource, so a marker set while the
+        /// page loads is still painted once the content is in. <paramref name="reassert"/> = tab re-activation:
+        /// the page keeps a still-present marker where Monaco's decoration tracking has moved it, rather than
+        /// snapping it back to the original line after edits above it.
+        ///
+        /// A clear (line &lt;= 0) for a page that has no marker is skipped entirely: tab activation re-asserts
+        /// unconditionally, so without this every single tab switch posted a "clear" to a page that has never
+        /// seen the debugger — noise on the hot path for the overwhelmingly common no-debug-session case.
+        /// </summary>
+        internal void ApplyExecutionLine(int line, bool reassert = false)
+        {
+            try
+            {
+                if (_editor == null || !_pageReady) return;
+                line = Math.Max(0, line);
+                if (!_execLineGate.WorthSending(line)) return;   // nothing painted, nothing to clear
+                _editor.PostJson("{\"type\":\"setExecutionLine\",\"line\":" + line
+                    + (reassert ? ",\"reassert\":true" : "") + "}");
+                _execLineGate.PageNowShows(line);
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("ApplyExecutionLine error: " + ex.Message); }
+        }
+
+        // What this page is believed to be showing — see Services/ExecutionLineGate.
+        private readonly Services.ExecutionLineGate _execLineGate = new Services.ExecutionLineGate();
+
+        /// <summary>The marker value for a setSource payload (OnReady / OnReload), recording that the page's
+        /// marker state is now in sync with it. Both senders must go through here, or the activation guard in
+        /// <see cref="ApplyExecutionLine"/> would keep believing in a marker a reload just wiped.</summary>
+        private int SeedExecutionLineForPage()
+        {
+            int line = 0;
+            try { line = MonacoSourceNavigator.GetExecutionLineFor(_filePath); }
+            catch (Exception ex) { MonacoSpikeLog.Write("SeedExecutionLineForPage error: " + ex.Message); }
+            _execLineGate.PageNowShows(line);
+            return line;
+        }
+
         /// <summary>Pull and apply a navigation that the navigator parked for this file (on capture / ready).</summary>
         internal void ApplyPendingNavigation()
         {
@@ -588,7 +633,7 @@ namespace ClarionAssistant
                 catch (Exception rex) { MonacoSpikeLog.Write("overlay read document error: " + rex.Message); }
 
                 // Large-buffer transfer via the virtual host (same mechanism the embeditor uses).
-                File.WriteAllText(Path.Combine(_editor.TempDir, "source.txt"), text, Encoding.UTF8);
+                File.WriteAllText(Path.Combine(_editor.TempDir, "source.txt"), text, Services.EncodingHelper.Utf8NoBom);
 
                 string settingsJson;
                 try { settingsJson = new JavaScriptSerializer().Serialize(ModernEmbeditorSettings.Load().ToDict()); }
@@ -672,6 +717,7 @@ namespace ClarionAssistant
                     + "\"folds\":" + foldsJson + ","
                     + "\"snippets\":" + Services.SnippetStore.ToJson(Services.SnippetStore.Load()) + ","
                     + "\"breakpoints\":[" + bpCsv + "],"
+                    + "\"executionLine\":" + SeedExecutionLineForPage() + ","   // debugger marker (#26), painted after the content is in
                     + "\"sourceUrl\":\"https://clarion-embeditor-data/source.txt\"}";
                 _editor.PostJson(json);
                 MonacoSpikeLog.Write("overlay setSource sent (fileMode editable, " + text.Length + " chars, file=" + (_filePath ?? "?") + (navLine >= 1 ? (", nav->line " + navLine) : "") + ", bps=[" + bpCsv + "])");
@@ -688,6 +734,7 @@ namespace ClarionAssistant
                 if (_navPendingLine >= 1) { _editor.RevealLine(_navPendingLine, _navPendingCol); _navPendingLine = 0; }
                 if (navLine >= 1) _editor.RevealLine(navLine, navCol);
                 else ApplyPendingNavigation();   // nothing seeded → drain any nav that arrived between capture and ready
+                EnsureDebuggerStatePoll();   // CA Debugger "Run to Cursor" menu gating (2484592b)
                 WireDiskWatch();   // start watching for external readonly/readwrite + content changes
             }
             catch (Exception ex) { MonacoSpikeLog.Write("overlay OnReady error: " + ex.Message); }
@@ -733,6 +780,47 @@ namespace ClarionAssistant
 
         // Monaco owns the buffer and saves straight to disk — the native editor underneath stays a clean,
         // untouched shell (never edited → never dirty → no dueling save). It's just a file on disk.
+        /// <summary>Ctrl+Q is NOT a CA Editor gesture, so this host deliberately raises no dialog.
+        ///
+        /// GH #192 (BoxSoft — who asked for Ctrl+Q in the first place): "we added support for Ctrl+Q to
+        /// close the embeditor. That should have been only when it was used as an Embeditor. When
+        /// editing normal files, Ctrl+F4 should close the window." Clarion's own binding table agrees:
+        /// Ctrl+Q is CodonId CancelEditorMenuItem, an EDITOR menu command, so a plain source tab is not
+        /// where it belongs. Closing a file tab is Ctrl+F4 (CodonId CloseFile), wired up under #192.
+        ///
+        /// An earlier revision of #193 showed a "CA Editor — unsaved changes" MessageBox here. It was
+        /// REMOVED rather than reworded, because #192 is explicit that the gesture should not exist on
+        /// this surface at all.
+        ///
+        /// The page already returns early in fileMode, so this should be unreachable. It still ANSWERS
+        /// rather than doing nothing: the page raises a key-swallowing shield before posting and only
+        /// drops it on a reply, so silence here would leave the editor permanently deaf to keystrokes.
+        /// "cancel" is the safe answer — buffer and changes left exactly as they are.</summary>
+        /// <summary>Nothing to do on this host. The CA Editor already prompts on close through its own
+        /// ClosingEvent hook (OnWorkbenchClosing), which works here precisely because a source tab IS the
+        /// workbench window — unlike the embeditor, which is a secondary view inside the .app's window and
+        /// whose close Clarion handles itself. Present because the interface requires it. (bcba6efb)</summary>
+        void IMonacoEditorHost.OnSyncNativeForClose(MonacoEditorControl editor) { }
+
+        /// <summary>The CA Editor has no red-X cancel — that toolbar button is embeditor-only. Reached only if
+        /// that ever changes, so it answers "no" (keep editing) rather than silently discarding, and says so in
+        /// the log. Never leave the page shielded: it must always get a reply. (bcba6efb)</summary>
+        void IMonacoEditorHost.OnConfirmCancel(MonacoEditorControl editor)
+        {
+            MonacoSpikeLog.Write("OnConfirmCancel reached the CA Editor host — no cancel gesture here; answering no");
+            try { editor?.PostJson("{\"type\":\"confirmCancelResult\",\"result\":\"no\"}"); }
+            catch (Exception ex) { MonacoSpikeLog.Write("OnConfirmCancel post error: " + ex.Message); }
+        }
+
+        void IMonacoEditorHost.OnConfirmSaveExit(MonacoEditorControl editor)
+        {
+            if (editor == null) return;
+            MonacoSpikeLog.Write("OnConfirmSaveExit reached the CA Editor host — Ctrl+Q is embeditor-only (GH #192); answering cancel");
+            // "type", not "action": page->host messages are keyed on action, host->page on type.
+            try { editor.PostJson("{\"type\":\"confirmSaveExitResult\",\"result\":\"cancel\"}"); }
+            catch (Exception ex) { MonacoSpikeLog.Write("OnConfirmSaveExit post error: " + ex.Message); }
+        }
+
         void IMonacoEditorHost.OnSave(MonacoEditorControl editor, string rawJson)
         {
             try
@@ -931,6 +1019,63 @@ namespace ClarionAssistant
                 }
                 catch (Exception ex) { MonacoSpikeLog.Write("overlay documentStructure error: " + ex.Message); }
                 try { editor.PostResponse(reqId, new Dictionary<string, object> { { "symbols", symbols }, { "fileMode", true } }); }
+                catch { }
+            });
+        }
+
+        // {action:"foldingRanges"} — collapsible regions from the language server rather than the
+        // line-oriented regex pass in clarion-language.js.
+        //
+        // That pass opens a fold on LOOP and only ever closes one on END or a bare period, so a LOOP
+        // terminated by UNTIL or WHILE — valid Clarion, and the form the Language Reference's own
+        // example uses — never closes and swallows the rest of the file (ClarionAssistant#222). Which
+        // structure a terminator belongs to is a stack question, not a pattern one, so the server
+        // (whose structure stack already answers hover and F12) is the right place to ask.
+        //
+        // This surface is FILE mode: the buffer is a whole module, so there is no synthetic MEMBER
+        // header to skip and the line mapping is the same identity (+1) that OnDocumentStructure uses
+        // above. The embeditor's slot mode needs the wrap/unwrap dance instead — see
+        // ModernEmbeditorViewContent.HandleFoldingRanges.
+        //
+        // Null ranges are a real answer: the page falls back to its local pass rather than showing an
+        // empty gutter.
+        void IMonacoFoldingHost.OnFoldingRanges(MonacoEditorControl editor, string rawJson)
+        {
+            int reqId, line, col; string buffer;
+            if (!ParseLspRequest(rawJson, out reqId, out line, out col, out buffer)) return;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                List<Dictionary<string, object>> ranges = null;
+                try
+                {
+                    EnsureLsp();
+                    var resp = SharedLspBridge.GetFoldingRanges(_filePath, buffer);
+                    object res = (resp != null && resp.ContainsKey("result")) ? resp["result"] : null;
+                    var list = res as System.Collections.IEnumerable;
+                    if (list != null)
+                    {
+                        ranges = new List<Dictionary<string, object>>();
+                        foreach (var item in list)
+                        {
+                            var d = item as Dictionary<string, object>;
+                            if (d == null || !d.ContainsKey("startLine") || !d.ContainsKey("endLine")) continue;
+                            int s0, e0;
+                            try
+                            {
+                                s0 = Convert.ToInt32(d["startLine"]);
+                                e0 = Convert.ToInt32(d["endLine"]);
+                            }
+                            catch { continue; }
+                            int start = s0 + 1, end = e0 + 1;
+                            if (end <= start) continue;
+                            var r = new Dictionary<string, object> { { "start", start }, { "end", end } };
+                            if (d.ContainsKey("kind")) r["kind"] = d["kind"];
+                            ranges.Add(r);
+                        }
+                    }
+                }
+                catch (Exception ex) { MonacoSpikeLog.Write("overlay foldingRanges error: " + ex.Message); }
+                try { editor.PostResponse(reqId, new Dictionary<string, object> { { "ranges", ranges } }); }
                 catch { }
             });
         }
@@ -1290,7 +1435,7 @@ namespace ClarionAssistant
                 _overlayDirty = false;
                 RefreshDiskWatchBaseline();   // we just resynced with disk — any pending watcher event is now stale
 
-                File.WriteAllText(Path.Combine(_editor.TempDir, "source.txt"), text, Encoding.UTF8);
+                File.WriteAllText(Path.Combine(_editor.TempDir, "source.txt"), text, Services.EncodingHelper.Utf8NoBom);
 
                 string settingsJson;
                 try { settingsJson = new JavaScriptSerializer().Serialize(ModernEmbeditorSettings.Load().ToDict()); }
@@ -1340,6 +1485,7 @@ namespace ClarionAssistant
                     + "\"folds\":[],"
                     + "\"snippets\":" + Services.SnippetStore.ToJson(Services.SnippetStore.Load()) + ","
                     + "\"breakpoints\":[" + bpCsv + "],"
+                    + "\"executionLine\":" + SeedExecutionLineForPage() + ","   // debugger marker (#26) survives a reload
                     + "\"sourceUrl\":\"https://clarion-embeditor-data/source.txt\"}";
                 _editor.PostJson(json);
                 MonacoSpikeLog.Write("overlay reload: re-read from disk and resent (" + _filePath + ", " + text.Length + " chars)");
@@ -1586,6 +1732,256 @@ namespace ClarionAssistant
             catch { return null; }
         }
 
+        // ── CA Debugger "Run to Cursor" (task 2484592b) ─────────────────────────────────────────────
+        // The page's right-click item posts {action:"runToCursor", line, column}. The debugger's
+        // DebugSessionController.RunToCursor() pulls the position back through
+        // MonacoSourceNavigator.TryGetActiveCursor, which reads the ACTIVE window's _lastCursorLine — so both
+        // must be true before the call: our mirrored cursor is the clicked position, and our tab is active.
+        // Reached via OnUnknownAction (like toggleBreakpoint), so the CA Embeditor host is untouched.
+        //
+        // Menu gating: one static UI-thread poll of DebugSessionController.State (it has no StateChanged event)
+        // pushes {type:"debuggerState"} to every ready page, only when the state changes.
+        //
+        // WHY THE TIMER IS A STATIC MEMBER OF THIS CLASS, and not of ClarionDebuggerBridge: the bridge is a
+        // passive reflection shim — no state, no threading, callable from either host — and a timer living
+        // there would have to own a list of pages to push to, which is precisely what this class already is
+        // (_instances). One timer for all tabs, not one per tab: the state is global to the IDE, so per-tab
+        // timers would poll the same static property N times a tick. It is a WinForms Timer on purpose (it
+        // ticks on the IDE UI thread, where both the reflection call and PostJson must happen), and the last
+        // tab closing stops and disposes it — see PollDebuggerState.
+
+        private static Timer _debugStatePoll;
+        private static bool _debugAvailable, _debugPaused;
+        private static bool _debugBreakOnEntry;   // the debugger build has BreakOnProcEntry (e61e4f92)
+        private const int DebugStatePollMs = 400;
+
+        /// <summary>Lines in the captured native document, or 0 if there isn't one. Only a fallback: it is what
+        /// Monaco was SEEDED from, and Monaco owns the buffer from then on (the page's own mirror is the live
+        /// truth — see Services/DocumentLineGuard).</summary>
+        private int NativeLineCount()
+        {
+            try
+            {
+                if (_hostEditor != null && _hostEditor.Document != null) return _hostEditor.Document.TotalNumberOfLines;
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("NativeLineCount error: " + ex.Message); }
+            return 0;
+        }
+
+        /// <summary>Make THIS tab the IDE's active window and, only once that is verified, mirror
+        /// <paramref name="line"/>/<paramref name="col"/> as its cursor. False, with nothing written, when the tab
+        /// is still not the active window after SelectWindow: the debugger resolves the cursor from the ACTIVE
+        /// window, so it would pull the OTHER tab's and silently act on the wrong place (pipeline run 1). Shared by
+        /// Run to Cursor and Break on Entry (3517fd15 item 6); UI thread.</summary>
+        private bool TryActivateThisTab(int line, int col)
+        {
+            // The right-click normally activates the tab already; make sure.
+            object myWin = _wbWindow;
+            if (myWin == null) { try { myWin = GetType().GetProperty("WorkbenchWindow")?.GetValue(this, null); } catch { } }
+            var wb = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
+            if (myWin != null && !ReferenceEquals(myWin, ReflectProp(wb, "ActiveWorkbenchWindow")))
+            {
+                try { myWin.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(myWin, null); } catch { }
+            }
+
+            // Verify, don't assume: activation can lag or be refused.
+            if (myWin == null || !ReferenceEquals(myWin, ReflectProp(wb, "ActiveWorkbenchWindow")))
+                return false;
+
+            // Only now, with this tab confirmed active, is our mirrored cursor the one the debugger reads.
+            _lastCursorLine = line;
+            _lastCursorCol = col >= 1 ? col : 1;
+            return true;
+        }
+
+        private void RunToCursorFromPage(string rawJson)
+        {
+            try
+            {
+                var data = new JavaScriptSerializer().DeserializeObject(rawJson) as Dictionary<string, object>;
+                int line = (data != null && data.ContainsKey("line")) ? Convert.ToInt32(data["line"]) : 0;
+                int col = (data != null && data.ContainsKey("column")) ? Convert.ToInt32(data["column"]) : 1;
+                if (line < 1 || string.IsNullOrEmpty(_filePath)) return;
+                // Both ends of the range, not just the bottom one: a malformed message must not be able to
+                // write a line that does not exist into the mirrored cursor, which the debugger reads AND
+                // which is persisted as this file's saved cursor position (SaveCursor, on close).
+                string live = _overlayLiveText;
+                int nativeLines = NativeLineCount();
+                if (!Services.DocumentLineGuard.Contains(line, live, nativeLines))
+                {
+                    MonacoSpikeLog.Write("runToCursor: NOT sent - line " + line + " is past the end of "
+                        + Path.GetFileName(_filePath) + " ("
+                        + (live != null ? Services.DocumentLineGuard.CountLines(live) + " lines, mirrored from the page"
+                                        : nativeLines + " lines, from the native document") + ")");
+                    return;
+                }
+
+                Action run = () =>
+                {
+                    try
+                    {
+                        if (!TryActivateThisTab(line, col))
+                        {
+                            MonacoSpikeLog.Write("runToCursor: NOT sent - this tab is not the active window after SelectWindow (" + Path.GetFileName(_filePath) + ", line " + line + ")");
+                            return;
+                        }
+
+                        bool sent = Services.ClarionDebuggerBridge.RunToCursor();
+                        MonacoSpikeLog.Write("runToCursor: line " + line + " (" + Path.GetFileName(_filePath) + ") -> " + (sent ? "sent to CA Debugger" : "not sent (debugger unavailable or not paused)"));
+                        PollDebuggerState();   // reflect Running straight away rather than on the next tick
+                    }
+                    catch (Exception ex) { MonacoSpikeLog.Write("runToCursor error: " + ex.Message); }
+                };
+
+                // The debugger touches its pad's WinForms/WebView2 state unmarshalled — it must run on the UI thread.
+                var form = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
+                if (form != null && form.InvokeRequired) form.BeginInvoke(run);
+                else run();
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("RunToCursorFromPage error: " + ex.Message); }
+        }
+
+        // ── CA Debugger "Break on Entry" (task e61e4f92) ────────────────────────────────────────────
+        // The page's right-click item posts {action:"breakOnProcEntry", line, column}. Unlike Run to Cursor the
+        // position travels WITH the call - DebugSessionController.BreakOnProcEntry(filePath, line, out message)
+        // - but it goes through the same checks first: a line that exists, and THIS tab confirmed as the active
+        // window, so what the user right-clicked is what the debugger is asked about, and the caret the IDE
+        // shows agrees with it. Shown whenever the debugger is loaded with that member, in ANY state (owner
+        // decision 5, 2026-09-24): the debugger stages it while idle. It answers whether anything was set. A
+        // miss is toasted in THIS tab; a hit is not, because the debugger pad reports it.
+
+        /// <summary>A toast in this tab's page: the page's own showToast, red when <paramref name="ok"/> is
+        /// false.</summary>
+        private void ToastInPage(string message, bool ok)
+        {
+            try
+            {
+                if (_editor == null) return;
+                // The message is text from another addin, so it goes LAST: a reader that takes the first
+                // "key": it finds cannot be steered by a member spelled inside it.
+                var d = new Dictionary<string, object>();
+                d["type"] = "toast";
+                d["ok"] = ok;
+                d["message"] = message ?? "";
+                _editor.PostJson(new JavaScriptSerializer().Serialize(d));
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("ToastInPage error: " + ex.Message); }
+        }
+
+        private void BreakOnProcEntryFromPage(string rawJson)
+        {
+            try
+            {
+                var data = new JavaScriptSerializer().DeserializeObject(rawJson) as Dictionary<string, object>;
+                int line = (data != null && data.ContainsKey("line")) ? Convert.ToInt32(data["line"]) : 0;
+                int col = (data != null && data.ContainsKey("column")) ? Convert.ToInt32(data["column"]) : 1;
+                if (line < 1) return;
+                // The debugger is asked by file path, so a tab with none (never saved) has nothing to ask
+                // about; say so rather than let the click do nothing (3517fd15 item 5).
+                if (string.IsNullOrEmpty(_filePath))
+                {
+                    MonacoSpikeLog.Write("breakOnProcEntry: NOT sent - this tab has no file path");
+                    ToastInPage("Break on entry: this tab has no file on disk - save it first.", false);
+                    return;
+                }
+                // Run to Cursor's range guard: a line that cannot exist is refused before it can reach the
+                // mirrored cursor (persisted as this file's saved cursor on close) or the debugger.
+                string live = _overlayLiveText;
+                int nativeLines = NativeLineCount();
+                if (!Services.DocumentLineGuard.Contains(line, live, nativeLines))
+                {
+                    MonacoSpikeLog.Write("breakOnProcEntry: NOT sent - line " + line + " is past the end of "
+                        + Path.GetFileName(_filePath));
+                    ToastInPage("Break on entry: line " + line + " is past the end of this file - nothing was set.", false);
+                    return;
+                }
+                string filePath = _filePath;
+
+                Action run = () =>
+                {
+                    try
+                    {
+                        // The same activation, verification and caret as Run to Cursor.
+                        if (!TryActivateThisTab(line, col))
+                        {
+                            MonacoSpikeLog.Write("breakOnProcEntry: NOT sent - this tab is not the active window after SelectWindow (" + Path.GetFileName(filePath) + ", line " + line + ")");
+                            ToastInPage("Break on entry: this tab could not be made the active editor - nothing was set. Click in it and try again.", false);
+                            return;
+                        }
+
+                        string message;
+                        bool ok = Services.ClarionDebuggerBridge.BreakOnProcEntry(filePath, line, out message);
+                        MonacoSpikeLog.Write("breakOnProcEntry: line " + line + " (" + Path.GetFileName(filePath) + ") -> " + (ok ? "set" : "not set") + ": " + message);
+                        if (!ok)
+                            ToastInPage(string.IsNullOrEmpty(message) ? Services.ClarionDebuggerBridge.BreakOnEntryNoAnswer : message, false);
+                    }
+                    catch (Exception ex)
+                    {
+                        MonacoSpikeLog.Write("breakOnProcEntry error: " + ex.Message);
+                        ToastInPage(Services.ClarionDebuggerBridge.BreakOnEntryNoAnswer, false);
+                    }
+                };
+
+                // The debugger touches its pad's WinForms/WebView2 state; call it on the UI thread.
+                var form = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
+                if (form != null && form.InvokeRequired) form.BeginInvoke(run);
+                else run();
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("BreakOnProcEntryFromPage error: " + ex.Message); }
+        }
+
+        /// <summary>Start the shared debugger-state poll (idempotent; UI thread) and give THIS page the current
+        /// state, so a tab opened mid-session shows the item without waiting for a change.</summary>
+        private void EnsureDebuggerStatePoll()
+        {
+            try
+            {
+                if (_debugStatePoll == null)
+                {
+                    Services.ClarionDebuggerBridge.GetState(out _debugAvailable, out _debugPaused, out _debugBreakOnEntry);
+                    _debugStatePoll = new Timer { Interval = DebugStatePollMs };
+                    _debugStatePoll.Tick += (s, e) => PollDebuggerState();
+                    _debugStatePoll.Start();
+                }
+                if (_editor != null) _editor.PostJson(DebuggerStateJson(_debugAvailable, _debugPaused, _debugBreakOnEntry));
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("EnsureDebuggerStatePoll error: " + ex.Message); }
+        }
+
+        private static string DebuggerStateJson(bool available, bool paused, bool breakOnEntry)
+        {
+            return "{\"type\":\"debuggerState\",\"available\":" + (available ? "true" : "false")
+                + ",\"paused\":" + (available && paused ? "true" : "false")
+                + ",\"breakOnEntry\":" + (available && breakOnEntry ? "true" : "false") + "}";
+        }
+
+        private static void PollDebuggerState()
+        {
+            try
+            {
+                List<MonacoClarionEditor> snapshot;
+                lock (_instances) { snapshot = new List<MonacoClarionEditor>(_instances); }
+                if (snapshot.Count == 0)
+                {
+                    // No CA Editor tabs left: stop polling. The next page ready restarts it.
+                    if (_debugStatePoll != null) { _debugStatePoll.Stop(); _debugStatePoll.Dispose(); _debugStatePoll = null; }
+                    return;
+                }
+
+                bool available, paused, breakOnEntry;
+                Services.ClarionDebuggerBridge.GetState(out available, out paused, out breakOnEntry);
+                if (available == _debugAvailable && paused == _debugPaused && breakOnEntry == _debugBreakOnEntry) return;
+                _debugAvailable = available; _debugPaused = paused; _debugBreakOnEntry = breakOnEntry;
+
+                string json = DebuggerStateJson(available, paused, breakOnEntry);
+                foreach (var inst in snapshot)
+                {
+                    try { if (inst._editor != null && inst._pageReady) inst._editor.PostJson(json); } catch { }
+                }
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("PollDebuggerState error: " + ex.Message); }
+        }
+
         private static object ReflectProp(object obj, string name)
         {
             if (obj == null) return null;
@@ -1601,6 +1997,8 @@ namespace ClarionAssistant
         {
             if (action == "diffWithDisk") { ShowDiskDiff(rawJson); return; }
             if (action == "closeTab") { CloseWorkbenchTab(); return; }
+            if (action == "runToCursor") { RunToCursorFromPage(rawJson); return; }
+            if (action == "breakOnProcEntry") { BreakOnProcEntryFromPage(rawJson); return; }
             if (action != "toggleBreakpoint") return;
             // Gutter click in Monaco → toggle the IDE breakpoint on the native document. The native + CA
             // debuggers both listen to DebuggerService; the BreakPointAdded/Removed event re-pushes the set.
@@ -2187,6 +2585,12 @@ namespace ClarionAssistant
             try
             {
                 ClarionAssistant.Services.CaFindBroker.NotifyActivity(this);
+                // Debugger execution-line marker (#26): re-assert on activation, BEFORE the focus stand-downs
+                // below return early. The page keeps a still-present marker as-is (reassert), so this only
+                // repairs a marker that went missing while the tab was in the background. With no marker for
+                // this file, ApplyExecutionLine posts nothing at all (its no-marker-to-clear guard) — every
+                // tab switch in a normal, non-debugging session used to send a pointless "clear" from here.
+                try { ApplyExecutionLine(MonacoSourceNavigator.GetExecutionLineFor(_filePath), true); } catch { }
                 // A just-opened CA Find pad is actively fighting for focus right now (its own
                 // FocusAttempt schedule, CaFindPad.cs) — this hook fires repeatedly while that
                 // pad's panel is being docked/laid out for the first time, and stealing focus back

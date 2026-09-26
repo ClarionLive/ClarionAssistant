@@ -147,7 +147,7 @@ After you write code into the embeditor (via `write_embed_content`, `replace_ran
 
 #### Rename via lsp_rename — approval is required
 
-`lsp_rename` returns the list of edits the language server WOULD apply. It does NOT apply them. Per rule #9 (never write code without approval), you must:
+`lsp_rename` returns the list of edits the language server WOULD apply. It does NOT apply them. Per rule #10 (never write code without approval), you must:
 1. Call `lsp_rename` to get the edit list.
 2. Show the list to the developer in chat: files, line numbers, old→new.
 3. Wait for explicit approval ("yes", "apply it", etc.).

@@ -125,6 +125,9 @@ namespace ClarionAssistant.Services
         };
         private static readonly Regex EndRx = new Regex(@"^END\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex IfRx = new Regex(@"^IF\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        // A post-condition LOOP's closing line ('UNTIL expr' / 'WHILE expr'). The lookahead, not \b,
+        // so a prefixed name such as While:Count is never read as the keyword.
+        private static readonly Regex PostCondClose = new Regex(@"^(UNTIL|WHILE)(?![A-Za-z0-9_:])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         // 'DO RoutineName' — DO must start the statement (line start, whitespace, or after ';').
         private static readonly Regex DoStmt = new Regex(
             @"(?:^|\s|;)DO\s+([A-Za-z_][A-Za-z0-9_:]*)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -214,6 +217,11 @@ namespace ClarionAssistant.Services
                     if (trimmed.Length == 0) continue;
                     string u = trimmed.ToUpperInvariant();
 
+                    // Set when THIS line opens a structure (pushed, or self-terminated on the same
+                    // line). Consumed by the trailing-'.' close below: such a line spends the first
+                    // '.' of its run terminating ITSELF, so only the remaining dots close outer ones.
+                    bool lineOpensStructure = false;
+
                     // Close: a line beginning with END..., or a lone '.'
                     if (EndRx.IsMatch(u) || u == ".")
                     {
@@ -224,9 +232,26 @@ namespace ClarionAssistant.Services
                         continue;
                     }
 
+                    // Close (post-condition LOOP): 'LOOP ... UNTIL expr' / 'LOOP ... WHILE expr' ends the
+                    // LOOP with the UNTIL/WHILE line instead of END (GH #222 follow-up — SoftVelocity's own
+                    // libsrc\win\abbrowse.clw uses it). It closes ONLY a LOOP that is the innermost open
+                    // structure; with an IF/CASE/... on top it is not this LOOP's closer and closes nothing.
+                    // The pre-condition form 'LOOP WHILE x' starts with LOOP, so it never reaches here and
+                    // is still pushed as an opener that needs END. With no LOOP on top the line falls
+                    // through and is treated exactly as before (an ordinary statement) — no new warning
+                    // class, so this can only remove false positives (same reasoning as the trailing-'.'
+                    // close below).
+                    if (PostCondClose.IsMatch(u) && open.Count > 0 &&
+                        StructWord(lines[open.Peek()[0] - 1]) == "LOOP")
+                    {
+                        open.Pop();
+                        continue;
+                    }
+
                     // Block IF only — skip one-liners: 'IF .. THEN stmt' or a trailing '.' terminator.
                     if (IfRx.IsMatch(u))
                     {
+                        lineOpensStructure = true;
                         int thenIdx = u.IndexOf(" THEN", StringComparison.Ordinal);
                         string afterThen = thenIdx >= 0 ? trimmed.Substring(thenIdx + 5).Trim() : "";
                         bool oneLiner = afterThen.Length > 0 || TrailingDot.IsMatch(trimmed);
@@ -289,12 +314,45 @@ namespace ClarionAssistant.Services
 
                             if (!usedAsLabel)
                             {
+                                lineOpensStructure = true;
                                 // Skip a self-terminated inline structure (trailing '.' or an END later on the
                                 // same line, e.g. "EXECUTE n; a; b END") — only multi-line openers are tracked.
                                 bool selfTerminated = TrailingDot.IsMatch(trimmed) || InlineEnd.IsMatch(u);
                                 if (!selfTerminated) open.Push(new[] { ln, FirstNonWs(code) + 1 });
                             }
                         }
+                    }
+
+                    // Close (part 2): a trailing '.' is Clarion's END-EQUIVALENT terminator and is legal at
+                    // the END OF AN ORDINARY STATEMENT, not only on a line of its own — "return self.Bind(x).",
+                    // "hr = ok." and "return -1." all close the enclosing IF/LOOP/CASE. The branch above only
+                    // recognised a line STARTING with END or a line that is EXACTLY ".", so every such
+                    // statement-terminator left its opener on the stack; the slot then ran out of closers and
+                    // an enclosing, perfectly legal IF was reported as unterminated (this shape is pervasive —
+                    // 136 occurrences in a single hand-written library source). A line that OPENED a structure
+                    // spends its trailing '.' terminating ITSELF (already handled as the IF one-liner /
+                    // selfTerminated cases above), so it closes nothing further here.
+                    //
+                    // Deliberately closes AT MOST ONE structure per line. Clarion's ".." / "..." close two and
+                    // three respectively, but that shape did not occur anywhere in the surveyed corpus, so
+                    // honouring it would mean shipping untested counting logic to buy a case that may not
+                    // arise; a multi-dot line simply keeps the old under-closing behaviour until a real
+                    // occurrence justifies it.
+                    //
+                    // Guards, matching the discipline of the two existing TrailingDot call sites:
+                    //   * Sanitize() has already blanked '!' comments and string-literal interiors, so a
+                    //     period inside 'All done.' or a trailing comment can never reach here.
+                    //   * A digit before the '.' is NOT a decimal point — Clarion writes "return -1." with the
+                    //     '.' as the terminator (verified against real library source).
+                    //   * '|' line continuation needs no special handling even though this scanner is purely
+                    //     per-line: a continued statement carries its terminating '.' on its LAST physical
+                    //     line, which is the line examined here. (A continued line ends with '|', never '.'.)
+                    //   * When nothing is open this stays SILENT rather than reporting "END has no matching
+                    //     structure" — deliberately no new warning class, so the change can only remove false
+                    //     positives, never add one. The pre-existing lone-'.' branch above keeps its warning.
+                    if (!lineOpensStructure && TrailingDot.IsMatch(trimmed) && open.Count > 0)
+                    {
+                        open.Pop();
                     }
 
                     // Undefined routine: DO <name>

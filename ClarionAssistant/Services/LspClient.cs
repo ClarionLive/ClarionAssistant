@@ -101,11 +101,18 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// Set when the last <see cref="Start"/> failed because the node process could not be
+        /// launched (Process.Start threw); null otherwise, including for a handshake failure.
+        /// </summary>
+        public string LastSpawnError { get; private set; }
+
+        /// <summary>
         /// Start the LSP server and initialize the protocol.
         /// </summary>
         public bool Start(string serverJsPath, string workspaceUri, string workspaceName)
         {
             if (_running) return true;
+            LastSpawnError = null;
 
             if (!File.Exists(serverJsPath))
                 return false;
@@ -118,7 +125,7 @@ namespace ClarionAssistant.Services
                 // 3. System PATH
                 string nodeExe = ResolveNodeExe(serverJsPath);
 
-                System.Diagnostics.Debug.WriteLine("[LSP] Starting: " + nodeExe + " \"" + serverJsPath + "\" --stdio");
+                LspTrace.Write("[LSP] Starting: " + nodeExe + " \"" + serverJsPath + "\" --stdio");
 
                 _process = new Process
                 {
@@ -135,11 +142,53 @@ namespace ClarionAssistant.Services
                     }
                 };
 
+                // A BOM ON THE CHILD'S STDIN IS WHY THE HANDSHAKE COULD NEVER COMPLETE.
+                //
+                // .NET builds the StreamWriter for a redirected stdin from Console.InputEncoding,
+                // and sets AutoFlush = true as it constructs it — which flushes the encoding's
+                // preamble onto the pipe. Where that encoding is UTF-8 WITH BOM (it is, in a
+                // console host), three bytes land ahead of our first header, so the server reads
+                // "EF BB BF Content-Length: ..." and answers "Header must provide a Content-Length
+                // property". The error points at the header, which is byte-perfect; the fault is
+                // the three bytes in front of it. Writing to BaseStream does not help — the
+                // damage is done when the writer is created, not when we use it.
+                //
+                // ProcessStartInfo.StandardInputEncoding would be the clean fix, but it is .NET
+                // Core only; on .NET Framework, Console.InputEncoding is the only lever.
+                //
+                // Guarded three ways: only touched when the current encoding actually HAS a
+                // preamble, so a host that is already fine is left alone; wrapped because the
+                // setter throws when there is no console attached, which is exactly the addin's
+                // situation — and a host with no console has no console preamble to inject, so
+                // there is nothing to fix there anyway.
+                //
+                // Masked in the IDE all this time because SharedLspBridge routes LSP through the
+                // ClarionLsp addin when it is present, leaving this path a rarely-exercised
+                // fallback. It surfaced the moment a standalone host had no shared addin to fall
+                // back FROM (ticket d051fbd1).
+                try
+                {
+                    var consoleIn = Console.InputEncoding;
+                    if (consoleIn != null && consoleIn.GetPreamble().Length > 0)
+                    {
+                        LspTrace.Write("[LSP] Console.InputEncoding "
+                            + consoleIn.WebName + " has a "
+                            + consoleIn.GetPreamble().Length + "-byte preamble; clearing it so the "
+                            + "child's stdin writer cannot inject a BOM ahead of the first header.");
+                        Console.InputEncoding = new UTF8Encoding(false);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // No console attached (the addin). Nothing to inject, nothing to fix.
+                    LspTrace.Write("[LSP] Console.InputEncoding not adjustable: " + ex.Message);
+                }
+
                 // Capture stderr for diagnostics — ring buffer + Debug output
                 _process.ErrorDataReceived += (s, e) =>
                 {
                     if (string.IsNullOrEmpty(e.Data)) return;
-                    System.Diagnostics.Debug.WriteLine("[LSP stderr] " + e.Data);
+                    LspTrace.Write("[LSP stderr] " + e.Data);
                     lock (_debugLock)
                     {
                         _stderrBuffer.Enqueue(e.Data);
@@ -148,11 +197,18 @@ namespace ClarionAssistant.Services
                     }
                 };
 
-                _process.Start();
+                try { _process.Start(); }
+                catch (Exception spawnEx)
+                {
+                    // node.exe could not be launched at all. Recorded separately so the caller can
+                    // say so instead of blaming an initialize handshake that never began (77aceec5).
+                    LastSpawnError = "could not launch '" + nodeExe + "': " + spawnEx.Message;
+                    throw;
+                }
                 _process.BeginErrorReadLine();
                 _running = true;
 
-                System.Diagnostics.Debug.WriteLine("[LSP] Process started, PID=" + _process.Id);
+                LspTrace.Write("[LSP] Process started, PID=" + _process.Id);
 
                 // Start reader thread
                 _readerThread = new Thread(ReadLoop) { IsBackground = true, Name = "LSP-Reader" };
@@ -175,19 +231,19 @@ namespace ClarionAssistant.Services
                     }
                 };
 
-                System.Diagnostics.Debug.WriteLine("[LSP] Sending initialize request...");
+                LspTrace.Write("[LSP] Sending initialize request...");
                 var initResult = SendRequest("initialize", initParams, 15000);
                 if (initResult == null)
                 {
-                    System.Diagnostics.Debug.WriteLine("[LSP] Initialize timed out or returned null");
+                    LspTrace.Write("[LSP] Initialize timed out or returned null");
                     // Check if process crashed
                     if (_process.HasExited)
-                        System.Diagnostics.Debug.WriteLine("[LSP] Process exited with code: " + _process.ExitCode);
+                        LspTrace.Write("[LSP] Process exited with code: " + _process.ExitCode);
                     Stop();
                     return false;
                 }
 
-                System.Diagnostics.Debug.WriteLine("[LSP] Initialize succeeded");
+                LspTrace.Write("[LSP] Initialize succeeded");
 
                 // Send initialized notification
                 SendNotification("initialized", new Dictionary<string, object>());
@@ -195,7 +251,7 @@ namespace ClarionAssistant.Services
                 // Send clarion/updatePaths if provided — required for cross-file LSP features
                 if (_pendingUpdatePaths != null)
                 {
-                    System.Diagnostics.Debug.WriteLine("[LSP] Sending clarion/updatePaths...");
+                    LspTrace.Write("[LSP] Sending clarion/updatePaths...");
                     SendNotification("clarion/updatePaths", _pendingUpdatePaths);
                     _pendingUpdatePaths = null;
                 }
@@ -203,14 +259,14 @@ namespace ClarionAssistant.Services
                 // Give the server a moment to finish initialization
                 Thread.Sleep(1000);
 
-                System.Diagnostics.Debug.WriteLine("[LSP] Ready");
+                LspTrace.Write("[LSP] Ready");
                 Active = this;
                 return true;
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[LSP] Start failed: " + ex.GetType().Name + ": " + ex.Message);
-                System.Diagnostics.Debug.WriteLine("[LSP] Stack: " + ex.StackTrace);
+                LspTrace.Write("[LSP] Start failed: " + ex.GetType().Name + ": " + ex.Message);
+                LspTrace.Write("[LSP] Stack: " + ex.StackTrace);
                 Stop();
                 return false;
             }
@@ -231,6 +287,19 @@ namespace ClarionAssistant.Services
         /// (5) "node" on the system PATH (last resort — Process.Start will fail with a
         ///     clear error if no node is installed at all).
         /// </summary>
+        /// <summary>
+        /// Exposed so a caller building a FAILURE DIAGNOSTIC can report the node this class would
+        /// ACTUALLY use. The lsp_start diagnostic used to derive a single candidate of its own -
+        /// the bundled path - and report it as missing. On a machine with Node installed, which
+        /// this resolver finds two fallbacks later, that reads as "node is not installed" and is
+        /// wrong for every LSP failure whatever the real cause. It cost me several probes chasing
+        /// a node problem that did not exist.
+        /// </summary>
+        internal static string ResolveNodeExeForDiagnostics(string serverJsPath)
+        {
+            return ResolveNodeExe(serverJsPath);
+        }
+
         private static string ResolveNodeExe(string serverJsPath)
         {
             try
@@ -238,12 +307,12 @@ namespace ClarionAssistant.Services
                 string lspDir = Path.GetDirectoryName(serverJsPath);
                 string lspRoot = Path.GetFullPath(Path.Combine(lspDir, "..", "..", ".."));
                 string bundled = Path.Combine(lspRoot, "node.exe");
-                System.Diagnostics.Debug.WriteLine("[LSP] Looking for bundled node.exe at: " + bundled);
+                LspTrace.Write("[LSP] Looking for bundled node.exe at: " + bundled);
                 if (File.Exists(bundled)) return bundled;
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[LSP] Bundled node.exe lookup failed: " + ex.Message);
+                LspTrace.Write("[LSP] Bundled node.exe lookup failed: " + ex.Message);
             }
 
             try
@@ -259,17 +328,17 @@ namespace ClarionAssistant.Services
                 {
                     if (File.Exists(candidate))
                     {
-                        System.Diagnostics.Debug.WriteLine("[LSP] Using node.exe at: " + candidate);
+                        LspTrace.Write("[LSP] Using node.exe at: " + candidate);
                         return candidate;
                     }
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[LSP] node.exe fallback search failed: " + ex.Message);
+                LspTrace.Write("[LSP] node.exe fallback search failed: " + ex.Message);
             }
 
-            System.Diagnostics.Debug.WriteLine("[LSP] No bundled node.exe found, falling back to PATH");
+            LspTrace.Write("[LSP] No bundled node.exe found, falling back to PATH");
             return "node";
         }
 
@@ -324,14 +393,14 @@ namespace ClarionAssistant.Services
                     try
                     {
                         if (!p.HasExited)
-                            System.Diagnostics.Debug.WriteLine("[Shutdown] LSP kill UNCONFIRMED — node pid " + pid + " may survive");
+                            LspTrace.Write("[Shutdown] LSP kill UNCONFIRMED — node pid " + pid + " may survive");
                     }
                     catch { }
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[Shutdown] LSP KillForShutdown: " + ex.Message);
+                LspTrace.Write("[Shutdown] LSP KillForShutdown: " + ex.Message);
             }
 
             // Deliberately skip the diagnostics ManualResetEvent cleanup that Stop() does — the process is
@@ -356,7 +425,7 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[LSP] Stop failed: " + ex.Message);
+                LspTrace.Write("[LSP] Stop failed: " + ex.Message);
             }
 
             _process = null;
@@ -406,6 +475,11 @@ namespace ClarionAssistant.Services
         public Dictionary<string, object> GetReferences(string filePath, int line, int character)
         {
             TrackRequest("references", filePath);
+            // Open the document first, as definition/hover/implementation do (SendTextDocumentPositionRequest).
+            // Without it the server answers null for any file it has not opened, and the caller then fell
+            // back to CodeGraph and reported a wrong answer as the result (77aceec5): measured, the same
+            // server returns the MAP line, the implementation and the call site once the file is open.
+            EnsureDocumentOpen(filePath);
             var parms = BuildTextDocumentPosition(filePath, line, character);
             parms["context"] = new Dictionary<string, object> { { "includeDeclaration", true } };
             return SendRequest("textDocument/references", parms);
@@ -473,6 +547,35 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// textDocument/foldingRange — collapsible regions computed by the language server's own
+        /// structure analysis (the same stack that answers hover/F12), rather than by the editor's
+        /// line-oriented regex pass in clarion-language.js.
+        ///
+        /// Buffer-aware for the same reason documentSymbol is: folding must follow what is on screen,
+        /// not what was last written to disk, so an unsaved edit that opens or closes a structure has
+        /// to reach the server before the ranges are asked for.
+        ///
+        /// Timeout is deliberately short. Monaco re-asks for folding constantly and treats a null
+        /// answer as "no ranges", so a slow reply is worse than no reply — the caller falls back to
+        /// the local pass instead of leaving the gutter empty.
+        /// </summary>
+        public Dictionary<string, object> GetFoldingRanges(string filePath, string bufferText)
+        {
+            TrackRequest("folding", filePath);
+            try
+            {
+                if (!string.IsNullOrEmpty(bufferText)) EnsureDocumentOpenWithText(filePath, bufferText);
+                else EnsureDocumentOpen(filePath);
+            }
+            catch { }
+            var parms = new Dictionary<string, object>
+            {
+                { "textDocument", new Dictionary<string, object> { { "uri", FilePathToUri(filePath) } } }
+            };
+            return SendRequest("textDocument/foldingRange", parms, 2000);
+        }
+
+        /// <summary>
         /// workspace/symbol - search for symbols across the workspace.
         /// </summary>
         public Dictionary<string, object> FindWorkspaceSymbol(string query)
@@ -486,7 +589,7 @@ namespace ClarionAssistant.Services
         /// textDocument/rename - asks the server for a workspace edit that would
         /// rename the symbol at the given position. Returns the raw LSP WorkspaceEdit
         /// result — the caller is responsible for applying the edits (and MUST seek
-        /// developer approval first per CLAUDE.md rule #9).
+        /// developer approval first per CLAUDE.md rule #10 — #9 is the embeditor workflow).
         /// </summary>
         public Dictionary<string, object> Rename(string filePath, int line, int character, string newName)
         {
@@ -713,11 +816,14 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[LSP] GetDiagnostics trigger failed: " + ex.Message);
+                LspTrace.Write("[LSP] GetDiagnostics trigger failed: " + ex.Message);
                 return result;
             }
 
-            return WaitForDiagnostics(filePath, timeoutMs, forceRefresh: true);
+            // waitForSemanticPass: this is the one-shot tool answer (lsp_diagnostics). It gets no
+            // second frame in which to correct itself, so it must not settle for the server's
+            // partial first publish — see ticket b7505691 and the overload's remarks.
+            return WaitForDiagnostics(filePath, timeoutMs, forceRefresh: true, waitForSemanticPass: true);
         }
 
         /// <summary>
@@ -803,6 +909,22 @@ namespace ClarionAssistant.Services
         /// </summary>
         public DiagnosticWaitResult WaitForDiagnostics(string filePath, int timeoutMs, bool forceRefresh)
         {
+            return WaitForDiagnostics(filePath, timeoutMs, forceRefresh, waitForSemanticPass: false);
+        }
+
+        /// <summary>
+        /// As above, but <paramref name="waitForSemanticPass"/> additionally refuses to accept the
+        /// server's PARTIAL first publish as the answer. See ticket b7505691.
+        ///
+        /// WHY THIS IS OPT-IN RATHER THAN THE ONLY BEHAVIOUR. The live embeditor drives the plain
+        /// overload on a 600ms debounce to paint squiggles: there, showing the sync pass's findings
+        /// immediately and refining them a beat later is the RIGHT trade — the user is watching the
+        /// glyphs settle, and ModernEmbeditorDiagnostics already re-queries. A one-shot tool answer
+        /// has no second frame to correct itself in, so it must wait. Same wait, two honest answers.
+        /// </summary>
+        public DiagnosticWaitResult WaitForDiagnostics(string filePath, int timeoutMs, bool forceRefresh,
+                                                       bool waitForSemanticPass)
+        {
             var result = new DiagnosticWaitResult { Entries = new List<DiagnosticEntry>(), Pending = true };
             if (string.IsNullOrEmpty(filePath)) return result;
 
@@ -825,7 +947,7 @@ namespace ClarionAssistant.Services
                     // changed must not satisfy the wait.
                     try { set.Ready.Reset(); } catch { }
                 }
-                else if (set.WasPublished)
+                else if (set.WasPublished && !waitForSemanticPass)
                 {
                     // Non-force path with an already-cached publish — return immediately.
                     result.Entries = new List<DiagnosticEntry>(set.Entries);
@@ -834,30 +956,116 @@ namespace ClarionAssistant.Services
                 }
             }
 
-            // Wait outside the lock so publish handlers aren't blocked.
-            bool signaled;
-            try
+            if (!waitForSemanticPass)
             {
-                signaled = set.Ready.Wait(timeoutMs);
-            }
-            catch (ObjectDisposedException)
-            {
-                // Set was evicted between registration and wait — report as pending so the caller can retry.
+                // Wait outside the lock so publish handlers aren't blocked.
+                try
+                {
+                    set.Ready.Wait(timeoutMs);
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Set was evicted between registration and wait — report as pending so the caller can retry.
+                    return result;
+                }
+
+                // Always check the cache — even on timeout. The publish may have arrived
+                // before our forceRefresh Reset() cleared the event (race between the
+                // initial didOpen publish and the re-trigger). Returning pending:true when
+                // the cache has 44 valid entries is the bug this fixes.
+                lock (_diagnosticsLock)
+                {
+                    if (_diagnostics.TryGetValue(key, out set) && set.WasPublished)
+                    {
+                        result.Entries = new List<DiagnosticEntry>(set.Entries);
+                        result.Pending = false;
+                    }
+                }
+
                 return result;
             }
 
-            // Always check the cache — even on timeout. The publish may have arrived
-            // before our forceRefresh Reset() cleared the event (race between the
-            // initial didOpen publish and the re-trigger). Returning pending:true when
-            // the cache has 44 valid entries is the bug this fixes.
+            // ── Semantic-pass wait ────────────────────────────────────────────────────────────
+            // Loop over publishes until one of three things is true, whichever comes first:
+            //
+            //   1. SemanticPassPublished — a publish landed after clarion/symbolsRefreshed. This
+            //      is the server's own boundary marker, so it is the exact answer and we take it.
+            //   2. The stream went QUIET for SettleMs with at least one publish already banked.
+            //      This is the safety net for a server that does NOT send symbolsRefreshed — an
+            //      older build, or the shared ClarionLsp client. Without it, gating purely on a
+            //      notification we cannot guarantee would turn every fast clean file into a full
+            //      timeout and a pending:true, trading a wrong answer for a slow useless one.
+            //   3. The caller's budget runs out.
+            //
+            // On (3) with only the partial publish seen, the result is Pending=TRUE even though
+            // entries were cached. That is the whole point of the ticket: "still analysing" is a
+            // true statement the caller is documented to handle, and "0 problems" is not.
+            const int SettleMs = 400;
+
+            var startedTicks = DateTime.UtcNow.Ticks;
+            long budgetTicks = (long)timeoutMs * TimeSpan.TicksPerMillisecond;
+            int lastPublishSeqSeen = -1;
+            bool sawSemantic = false;
+            bool streamSettled = false;
+
+            while (true)
+            {
+                long elapsed = DateTime.UtcNow.Ticks - startedTicks;
+                int remainingMs = (int)((budgetTicks - elapsed) / TimeSpan.TicksPerMillisecond);
+                if (remainingMs <= 0) break;
+
+                try
+                {
+                    set.Ready.Wait(remainingMs < SettleMs ? remainingMs : SettleMs);
+                }
+                catch (ObjectDisposedException)
+                {
+                    return result; // evicted mid-wait — pending, caller may retry
+                }
+
+                int publishSeq;
+                lock (_diagnosticsLock)
+                {
+                    if (!_diagnostics.TryGetValue(key, out set)) return result;
+
+                    publishSeq = set.PublishSeq;
+                    sawSemantic = set.SemanticPassPublished;
+
+                    if (set.WasPublished)
+                        result.Entries = new List<DiagnosticEntry>(set.Entries);
+
+                    // Re-arm so the next iteration's Wait detects the NEXT publish rather than
+                    // returning instantly on this one's still-set event.
+                    try { set.Ready.Reset(); } catch { }
+                }
+
+                if (sawSemantic) break;
+
+                // No new publish across a whole settle window, and something is already banked:
+                // treat the stream as finished (case 2 above).
+                if (publishSeq > 0 && publishSeq == lastPublishSeqSeen) { streamSettled = true; break; }
+
+                lastPublishSeqSeen = publishSeq;
+            }
+
+            // Exactly one of three exits got us here, and each has its own honest answer:
+            //   sawSemantic    -> the semantic pass reported. Complete.
+            //   streamSettled  -> the server stopped publishing. Complete as far as it is concerned.
+            //   neither        -> the budget expired mid-analysis. NOT complete, and saying "clean"
+            //                     here is the defect this method exists to prevent.
             lock (_diagnosticsLock)
             {
                 if (_diagnostics.TryGetValue(key, out set) && set.WasPublished)
                 {
                     result.Entries = new List<DiagnosticEntry>(set.Entries);
-                    result.Pending = false;
+                    sawSemantic = sawSemantic || set.SemanticPassPublished;
                 }
             }
+            result.Pending = !(sawSemantic || streamSettled);
+
+            if (result.Pending)
+                LspTrace.Write("[LSP] WaitForDiagnostics: " + timeoutMs + "ms budget expired for "
+                    + key + " with only the partial (pre-semantic) publish — reporting pending, NOT clean.");
 
             return result;
         }
@@ -1099,6 +1307,8 @@ namespace ClarionAssistant.Services
             WriteMessage(_serializer.Serialize(notification));
         }
 
+        private bool _loggedFirstWrite;
+
         private void WriteMessage(string json)
         {
             lock (_writeLock)
@@ -1109,13 +1319,30 @@ namespace ClarionAssistant.Services
                     string header = "Content-Length: " + content.Length + "\r\n\r\n";
                     byte[] headerBytes = Encoding.ASCII.GetBytes(header);
 
+                    // Log the FIRST bytes actually written, as hex. A server rejecting our header
+                    // ("Header must provide a Content-Length property") looks identical whether we
+                    // sent the wrong header, sent it in the wrong encoding, or had something
+                    // prepended to the stream ahead of it — and only the bytes tell those apart.
+                    if (!_loggedFirstWrite)
+                    {
+                        _loggedFirstWrite = true;
+                        var hex = new StringBuilder();
+                        for (int i = 0; i < Math.Min(headerBytes.Length, 24); i++)
+                            hex.Append(headerBytes[i].ToString("X2")).Append(' ');
+                        LspTrace.Write("[LSP] first header bytes: " + hex
+                            + " | as text: " + header.Replace("\r", "\\r").Replace("\n", "\\n"));
+                        LspTrace.Write("[LSP] stdin encoding: "
+                            + _process.StandardInput.Encoding.WebName
+                            + ", preamble length: " + _process.StandardInput.Encoding.GetPreamble().Length);
+                    }
+
                     _process.StandardInput.BaseStream.Write(headerBytes, 0, headerBytes.Length);
                     _process.StandardInput.BaseStream.Write(content, 0, content.Length);
                     _process.StandardInput.BaseStream.Flush();
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine("[LSP] WriteMessage failed: " + ex.Message);
+                    LspTrace.Write("[LSP] WriteMessage failed: " + ex.Message);
                 }
             }
         }
@@ -1157,13 +1384,13 @@ namespace ClarionAssistant.Services
                     }
                     catch (Exception ex)
                     {
-                        System.Diagnostics.Debug.WriteLine("[LSP] ReadLoop message parse failed: " + ex.Message);
+                        LspTrace.Write("[LSP] ReadLoop message parse failed: " + ex.Message);
                     }
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[LSP] ReadLoop terminated: " + ex.Message);
+                LspTrace.Write("[LSP] ReadLoop terminated: " + ex.Message);
             }
         }
 
@@ -1193,11 +1420,70 @@ namespace ClarionAssistant.Services
                 case "textDocument/publishDiagnostics":
                     HandlePublishDiagnostics(msg["params"] as Dictionary<string, object>);
                     break;
+                case "clarion/symbolsRefreshed":
+                    // Handled, not ignored (ticket b7505691). This notification is the server
+                    // telling us it has finished refreshing symbols for a URI, and it lands
+                    // BETWEEN the two publishes of a two-phase analysis. We used to discard it
+                    // and print "Ignored notification: clarion/symbolsRefreshed" — while the
+                    // partial first publish it separates from the real one was being returned to
+                    // callers as an authoritative "clean file". The signal we needed was already
+                    // arriving; nothing was listening.
+                    HandleSymbolsRefreshed(msg["params"] as Dictionary<string, object>);
+                    break;
                 default:
-                    System.Diagnostics.Debug.WriteLine("[LSP] Ignored notification: " + method);
+                    // THE METHOD NAME ALONE IS NOT A DIAGNOSTIC. This line used to say only
+                    // "Ignored notification: clarion/graphStatus" — telling us the language
+                    // server was reporting something, and nothing whatsoever about what. The
+                    // payload it was discarding carried the build status and file count, so a
+                    // graph reporting status:'built' with fileCount:0 stayed an inference we
+                    // could never confirm, while the number sat in a string we already had.
+                    //
+                    // The params are added only when a sink is listening. This is the hot call
+                    // site LspTrace.Enabled was put there for: serialising every ignored
+                    // notification in a shipped build with nobody reading it is pure cost. The
+                    // unguarded branch keeps the bare line, so the addin's Debug Output window
+                    // behaves exactly as before.
+                    LspTrace.Write(LspTrace.Enabled
+                        ? "[LSP] Ignored notification: " + method + "  params=" + PreviewNotificationParams(msg)
+                        : "[LSP] Ignored notification: " + method);
                     break;
             }
         }
+
+        /// <summary>
+        /// A bounded, single-line JSON preview of a notification's params, for the trace.
+        ///
+        /// Capped rather than complete: some servers push large payloads, and stderr on a stdio
+        /// host is a log a human reads, not a transport. The cap reports the true length so a
+        /// truncated preview cannot be mistaken for a small payload. Never throws — a diagnostic
+        /// that can take down the read loop it is observing is worse than no diagnostic.
+        /// </summary>
+        private string PreviewNotificationParams(Dictionary<string, object> msg)
+        {
+            try
+            {
+                object parms;
+                if (msg == null || !msg.TryGetValue("params", out parms) || parms == null)
+                    return "(none)";
+
+                string json;
+                // JavaScriptSerializer is not thread-safe and _serializer is shared with the
+                // telemetry block above, which already guards it with this lock.
+                lock (_debugLock) { json = _serializer.Serialize(parms); }
+
+                if (json.Length > MaxNotificationPreviewChars)
+                    json = json.Substring(0, MaxNotificationPreviewChars)
+                         + "...(truncated, " + json.Length + " chars total)";
+                return json;
+            }
+            catch (Exception ex)
+            {
+                return "(preview failed: " + ex.Message + ")";
+            }
+        }
+
+        /// <summary>How much of an ignored notification's params reaches the trace.</summary>
+        private const int MaxNotificationPreviewChars = 600;
 
         private void HandlePublishDiagnostics(Dictionary<string, object> parms)
         {
@@ -1255,13 +1541,51 @@ namespace ClarionAssistant.Services
 
                 set.Entries = entries;
                 set.WasPublished = true;
+                set.PublishSeq++;
                 set.LastUpdateTicks = DateTime.UtcNow.Ticks;
                 // Signal any waiter that new diagnostics have arrived.
                 set.Ready.Set();
             }
 
-            System.Diagnostics.Debug.WriteLine(string.Format(
+            LspTrace.Write(string.Format(
                 "[LSP] publishDiagnostics: {0} entries for {1}", entries.Count, canonical));
+        }
+
+        /// <summary>
+        /// Records that the server finished refreshing symbols for a URI. Carries no diagnostics
+        /// of its own — it exists here purely as the boundary marker between the synchronous and
+        /// the async semantic publish, so WaitForDiagnostics can tell a partial first result from
+        /// a complete one. See DiagnosticSet.SemanticPassPublished.
+        /// </summary>
+        private void HandleSymbolsRefreshed(Dictionary<string, object> parms)
+        {
+            if (parms == null) return;
+
+            string uri = parms.ContainsKey("uri") ? parms["uri"] as string : null;
+            if (string.IsNullOrEmpty(uri)) return;
+
+            string canonical = CanonicalizeUri(uri);
+
+            lock (_diagnosticsLock)
+            {
+                DiagnosticSet set;
+                if (!_diagnostics.TryGetValue(canonical, out set))
+                {
+                    // A refresh can arrive before we have ever cached a publish for this URI —
+                    // create the entry so the counter is not lost, or the very first document's
+                    // semantic boundary would go unrecorded.
+                    set = new DiagnosticSet();
+                    _diagnostics[canonical] = set;
+                    EvictOldestIfFull_NoLock();
+                }
+
+                set.SymbolsRefreshedSeq++;
+                set.PublishSeqAtLastSymbols = set.PublishSeq;
+                set.LastUpdateTicks = DateTime.UtcNow.Ticks;
+            }
+
+            LspTrace.Write("[LSP] symbolsRefreshed for " + canonical
+                + " — awaiting the semantic-pass publish.");
         }
 
         private void EvictOldestIfFull_NoLock()
@@ -1284,7 +1608,7 @@ namespace ClarionAssistant.Services
                 var victim = _diagnostics[oldestKey];
                 _diagnostics.Remove(oldestKey);
                 try { victim.Ready.Dispose(); } catch { }
-                System.Diagnostics.Debug.WriteLine("[LSP] Evicted oldest diagnostics cache entry: " + oldestKey);
+                LspTrace.Write("[LSP] Evicted oldest diagnostics cache entry: " + oldestKey);
             }
         }
 
@@ -1422,6 +1746,36 @@ namespace ClarionAssistant.Services
             // True once a publishDiagnostics has ever arrived for this URI — distinguishes
             // an authoritative "clean file" (Entries=[]) from "we haven't heard anything yet".
             public bool WasPublished;
+
+            // ── Two-phase publish tracking (ticket b7505691) ──────────────────────────────────
+            // The server analyses a document in TWO passes and publishes after EACH: a
+            // synchronous pass, then an async semantic pass. Measured on the shipping server
+            // (vscode-stable v1.0.2), the sequence for one didOpen is:
+            //     publishDiagnostics: 0 entries
+            //     clarion/symbolsRefreshed
+            //     publishDiagnostics: 3 entries
+            // The undeclared-variable diagnostic lives in the async pass only — upstream declares
+            // it `static async validateUndeclaredVariables` under the comment "Async pass:
+            // undeclared-variable diagnostic with full canonical-scope-chain resolution". So the
+            // FIRST publish for a freshly-opened document is a partial result that can be empty
+            // for a file that is not clean, and a waiter satisfied by it reports a false "clean".
+            //
+            // These are counters, not timestamps, because the two publishes can land inside one
+            // DateTime tick and "did a publish arrive after the refresh" must not depend on clock
+            // resolution. All three are read and written under _diagnosticsLock.
+            public int PublishSeq;              // ++ on every publishDiagnostics for this URI
+            public int SymbolsRefreshedSeq;     // ++ on every clarion/symbolsRefreshed for this URI
+            public int PublishSeqAtLastSymbols; // PublishSeq as it stood when that refresh arrived
+
+            /// <summary>
+            /// True when a publish has arrived AFTER the most recent clarion/symbolsRefreshed —
+            /// i.e. the async semantic pass has reported. False both before any refresh and in
+            /// the window between a refresh and the publish that follows it.
+            /// </summary>
+            public bool SemanticPassPublished
+            {
+                get { return SymbolsRefreshedSeq > 0 && PublishSeq > PublishSeqAtLastSymbols; }
+            }
         }
 
         /// <summary>

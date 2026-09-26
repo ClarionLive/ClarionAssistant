@@ -173,7 +173,7 @@ namespace ClarionAssistant.Terminal
 
                 // Write diff to temp file for virtual host serving
                 string diffFile = Path.Combine(_tempDir, "diff.txt");
-                File.WriteAllText(diffFile, diffText, Encoding.UTF8);
+                File.WriteAllText(diffFile, diffText, Services.EncodingHelper.Utf8NoBom);
 
                 // Send metadata — JavaScript fetches the diff via virtual host URL
                 string json = "{\"type\":\"setDiff\"," +

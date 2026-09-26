@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
@@ -34,6 +34,21 @@ namespace ClarionAssistant.Services
         public int UiTimeoutSeconds { get; set; }
 
         /// <summary>
+        /// This tool's handler drives the IDE itself, so it is registered ONLY in a host that has
+        /// one. Set on 57 of the 118 tools (ticket d051fbd1; get_app_dictionary added for GitHub #210;
+        /// supersede_knowledge + remove_knowledge added standalone by PR #199 -
+        /// the mcp-server --selftest asserts the split stays a partition, so update this when it moves).
+        ///
+        /// DELIBERATELY SEPARATE FROM RequiresUiThread, which is NOT a safe proxy - measured, and
+        /// it disagrees in BOTH directions. Five tools are UI-thread-bound yet touch no IDE
+        /// service (execute_command, export_dctx, import_dctx, get_solution_info, index_solution);
+        /// seven touch one while not being UI-bound (append_to_file, get_diff_result,
+        /// get_diff_content, build_app, generate_source, search_content, get_ca_project_info).
+        /// Gating on RequiresUiThread would have dropped working tools AND shipped crashing ones.
+        /// </summary>
+        public bool IdeOnly { get; set; }
+
+        /// <summary>
         /// Optional long-running variant used when the MCP client supplied a
         /// progressToken (ticket 0d788f8b). Second argument is a progress callback
         /// (percent 0..100, message). ALWAYS invoked on a worker thread — even when
@@ -67,10 +82,17 @@ namespace ClarionAssistant.Services
         private const int EmbedRoundTripTimeoutSeconds = 180;
 
         private readonly Dictionary<string, McpTool> _tools = new Dictionary<string, McpTool>(StringComparer.OrdinalIgnoreCase);
-        private readonly EditorService _editorService;
+        // Interfaces, not concrete types (ticket d051fbd1). This file has no IDE imports of
+        // its own; depending on the seam is what lets it compile in the standalone MCP server.
+        private readonly IEditorService _editorService;
         private readonly ClarionClassParser _parser;
-        private readonly AppTreeService _appTree;
-        private AssistantChatControl _chatControl;
+        private readonly IAppTreeService _appTree;
+        private readonly IIdeProbeService _ideProbe;
+        // Was AssistantChatControl. Split in two because the control served two unrelated
+        // roles: it answered "which solution am I on" AND it was the UI thread to marshal to.
+        // Null in a standalone host, where the tools needing them are not registered.
+        private IWorkspaceContext _workspace;
+        private IUiDispatcher _ui;
         private LspClient _lspClient;
 
         /// <summary>
@@ -79,28 +101,78 @@ namespace ClarionAssistant.Services
         /// for the header diagnostics pill. May be null if LSP hasn't started yet.
         /// </summary>
         public LspClient LspClientInstance { get { return _lspClient; } }
-        private DiffService _diffService;
+        private IDiffService _diffService;
         private DocGraphService _docGraph;
         private ClarionTraceService _traceService;
         private KnowledgeService _knowledgeService;
         private InstanceCoordinationService _instanceCoord;
 
-        public McpToolRegistry(EditorService editorService, ClarionClassParser parser)
+        /// <summary>
+        /// Set by the addin at startup so this file never names the IDE-coupled AppTreeService.
+        /// Left null by a standalone host, where the app-tree and embeditor tools are not
+        /// registered at all - a factory returning a stub would be worse, because the server
+        /// would then advertise embeditor tools it cannot possibly perform.
+        /// </summary>
+        public static Func<IAppTreeService> AppTreeFactory;
+
+        /// <summary>
+        /// Same pattern as AppTreeFactory: supplied by the addin, left null by a standalone
+        /// host. Backs the IDE introspection and native-probe tools, which have nothing to
+        /// reflect over in a process with no IDE in it.
+        /// </summary>
+        public static Func<IIdeProbeService> IdeProbeFactory;
+
+        /// <summary>
+        /// Host-supplied diagnostic sink. The addin points this at MonacoSpikeLog.Write so the
+        /// line still lands in monaco-spike.log, which is a channel that gets read; a standalone
+        /// host can point it at stderr or leave it null. Routed through a hook rather than swapped
+        /// for Debug.WriteLine, because that would have silently moved an existing diagnostic to a
+        /// place nobody looks (MonacoSpikeLog lives in MonacoClarionSourceEditor.cs, which is
+        /// IDE-coupled and cannot be linked into the standalone build).
+        /// </summary>
+        public static Action<string> DiagnosticLog;
+
+        /// <summary>
+        /// True when the editor-agnostic tools are served by a SEPARATE process and this registry
+        /// must not also offer them (ticket d051fbd1). Set by the addin once clarion-mcp-server.exe
+        /// is installed beside it; the two then partition the tool set instead of duplicating it.
+        /// Read during registration, hence a constructor argument rather than a property.
+        /// </summary>
+        private readonly bool _ideToolsOnly;
+
+        public McpToolRegistry(IEditorService editorService, ClarionClassParser parser)
+            : this(editorService, parser, false) { }
+
+        /// <param name="ideToolsOnly">
+        /// Register ONLY the tools that drive the IDE, because something else is serving the rest.
+        ///
+        /// DEFAULTS FALSE, and every existing call site keeps today's behaviour. The addin opts in
+        /// only when it can see clarion-mcp-server.exe next to itself: without that check an
+        /// upgrade that had not yet placed the exe would leave a developer with 56 tools and no
+        /// indication where the other 59 went. Nobody should ever end up with fewer tools than
+        /// they had before.
+        /// </param>
+        public McpToolRegistry(IEditorService editorService, ClarionClassParser parser, bool ideToolsOnly)
         {
+            _ideToolsOnly = ideToolsOnly;
             _editorService = editorService;
             _parser = parser;
-            _appTree = new AppTreeService();
+            _appTree = AppTreeFactory != null ? AppTreeFactory() : null;
+            _ideProbe = IdeProbeFactory != null ? IdeProbeFactory() : null;
             _docGraph = new DocGraphService();
             _traceService = new ClarionTraceService();
             RegisterAllTools();
         }
 
         /// <summary>
-        /// Set reference to chat control for solution context and indexing.
+        /// Supply the workspace ("which solution am I on") and the UI thread to marshal to.
+        /// Was SetChatControl(AssistantChatControl); the control implements both interfaces, so
+        /// the addin passes itself twice and nothing about its behaviour changes.
         /// </summary>
-        public void SetChatControl(AssistantChatControl control)
+        public void SetWorkspace(IWorkspaceContext workspace, IUiDispatcher ui)
         {
-            _chatControl = control;
+            _workspace = workspace;
+            _ui = ui;
             // Wire the CodeGraph LSP fallback (#40) to resolve the same .codegraph.db that
             // query_codegraph uses (selected solution → active-document walk-up). Lets
             // SharedLspBridge answer cross-project definition/references/workspace-symbol in C#
@@ -111,7 +183,7 @@ namespace ClarionAssistant.Services
             SharedLspBridge.SchemaGraphDbPathProvider = () => FindSchemaGraphDb();
         }
 
-        public void SetDiffService(DiffService diffService)
+        public void SetDiffService(IDiffService diffService)
         {
             _diffService = diffService;
         }
@@ -127,7 +199,7 @@ namespace ClarionAssistant.Services
         }
 
         public int GetToolCount() { return _tools.Count; }
-        public AppTreeService GetAppTreeService() { return _appTree; }
+        public IAppTreeService GetAppTreeService() { return _appTree; }
 
         public bool RequiresUiThread(string toolName)
         {
@@ -193,6 +265,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "get_active_file",
+IdeOnly = true,
                 Description = "Get the path and full content of the file currently open in the Clarion IDE editor",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -211,6 +284,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "get_selected_text",
+IdeOnly = true,
                 Description = "Get the currently selected text in the Clarion IDE editor. Returns null if nothing selected.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -223,12 +297,13 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "embeditor_get_selection",
+IdeOnly = true,
                 Description = "Get the text currently highlighted in the CA Embeditor (the Modern Monaco/WebView2 editor), with its 1-based line/column range. This is SEPARATE from get_selected_text, which reads only the NATIVE Clarion editor. Use this to see what the developer has selected in the CA Embeditor. The result includes a 'truncated' flag — when true, the selection was clipped (very large) and 'text' is only the first ~10K chars.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
                 Handler = args =>
                 {
-                    var sel = ClarionAssistant.Terminal.ModernEmbeditorViewContent.GetFocusedSelection();
+                    var sel = _ideProbe.GetFocusedEmbeditorSelection();
                     if (sel == null)
                         return "(no CA Embeditor open or focused)";
                     bool has = sel.ContainsKey("hasSelection") && sel["hasSelection"] is bool && (bool)sel["hasSelection"];
@@ -246,6 +321,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "get_word_under_cursor",
+IdeOnly = true,
                 Description = "Get the word at the current cursor position in the editor. Useful for identifying what symbol the developer is looking at.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -258,6 +334,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "get_cursor_position",
+IdeOnly = true,
                 Description = "Get the current cursor position (line and column, 1-based) and total line count in the active editor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -281,6 +358,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "go_to_line",
+IdeOnly = true,
                 Description = "Navigate to a specific line number in the currently open file in the Clarion IDE editor. Scrolls the view to show the line.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "line", "Line number to go to (1-based)" } },
@@ -298,6 +376,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "insert_text_at_cursor",
+IdeOnly = true,
                 Description = "Insert text at the current cursor position in the Clarion IDE editor",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "text", "The text to insert" } },
@@ -316,6 +395,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "replace_text",
+IdeOnly = true,
                 Description = "Find and replace text in the active editor. Replaces ALL occurrences of old_text with new_text.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -339,6 +419,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "replace_range",
+IdeOnly = true,
                 Description = "Replace text between two positions (line/column, 1-based) in the active editor. Use to replace a specific region of code.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -366,6 +447,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "select_range",
+IdeOnly = true,
                 Description = "Select a range of text in the active editor (line/column, 1-based). The selected text will be highlighted.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -391,6 +473,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "delete_range",
+IdeOnly = true,
                 Description = "Delete text between two positions (line/column, 1-based) in the active editor.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -416,6 +499,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "undo",
+IdeOnly = true,
                 Description = "Undo the last edit in the active editor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -425,6 +509,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "redo",
+IdeOnly = true,
                 Description = "Redo the last undone edit in the active editor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -434,6 +519,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "save_file",
+IdeOnly = true,
                 Description = "Save the currently active file in the Clarion IDE editor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -443,6 +529,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "close_file",
+IdeOnly = true,
                 Description = "Close the currently active editor tab.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -452,6 +539,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "get_open_files",
+IdeOnly = true,
                 Description = "List all files currently open in the Clarion IDE editor tabs.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -465,6 +553,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "get_line_text",
+IdeOnly = true,
                 Description = "Get the text of a specific line (1-based) from the active editor buffer. Reflects unsaved changes.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "line", "Line number (1-based)" } },
@@ -481,6 +570,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "get_lines_range",
+IdeOnly = true,
                 Description = "Get text of multiple lines (1-based) from the active editor buffer in one call. Returns lines prefixed with line numbers. Much faster than calling get_line_text repeatedly.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -502,6 +592,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "find_in_file",
+IdeOnly = true,
                 Description = "Search for text in the active editor buffer (includes unsaved changes). Returns matching line numbers and columns.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -532,6 +623,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "is_modified",
+IdeOnly = true,
                 Description = "Check if the active file has unsaved changes.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -541,6 +633,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "toggle_comment",
+IdeOnly = true,
                 Description = "Toggle Clarion line comments (!) on the specified line range (1-based). If all lines are commented, uncomments them; otherwise comments them.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -564,6 +657,7 @@ namespace ClarionAssistant.Services
             Register(new McpTool
             {
                 Name = "inspect_ide",
+IdeOnly = true,
                 Description = @"Inspect the Clarion IDE state using reflection. Available commands:
 - 'active_view' - Full inspection of the active workbench window (type, properties, methods, control tree, text editor, secondary views, application object)
 - 'editor_text' - Read the full text content of the active editor (text editor or embeditor, includes unsaved changes)
@@ -589,27 +683,27 @@ Use this tool to discover IDE APIs and understand what's available for automatio
 
                     switch (command.ToLower())
                     {
-                        case "active_view": return IdeReflectionService.InspectActiveView();
-                        case "editor_text": return IdeReflectionService.ReadActiveEditorText();
-                        case "all_windows": return IdeReflectionService.ListAllWindows();
-                        case "all_pads": return IdeReflectionService.ListAllPads();
-                        case "app_details": return IdeReflectionService.InspectApplicationDetails();
-                        case "embed_details": return IdeReflectionService.InspectEmbedDetails();
-                        case "types": return IdeReflectionService.DiscoverAutomationTypes();
-                        case "assemblies": return IdeReflectionService.ListLoadedAssemblies();
+                        case "active_view": return _ideProbe.InspectActiveView();
+                        case "editor_text": return _ideProbe.ReadActiveEditorText();
+                        case "all_windows": return _ideProbe.ListAllWindows();
+                        case "all_pads": return _ideProbe.ListAllPads();
+                        case "app_details": return _ideProbe.InspectApplicationDetails();
+                        case "embed_details": return _ideProbe.InspectEmbedDetails();
+                        case "types": return _ideProbe.DiscoverAutomationTypes();
+                        case "assemblies": return _ideProbe.ListLoadedAssemblies();
                         // --- TRANSIENT diagnostic (ticket 4b82f1de, right-click hook spike, phase 1 / 1.5) ---
-                        case "probe_native_chain":     return NativeProbeService.DumpNativeChain();
-                        case "probe_clalist_read":     return NativeProbeService.ProbeClaListRead();
-                        case "probe_enum_lists":       return NativeProbeService.EnumClaLists();
-                        case "probe_popup_arm":        return NativeProbeService.PopupArm();
-                        case "probe_popup_arm_inject": return NativeProbeService.PopupArmInject();
-                        case "probe_popup_report":     return NativeProbeService.PopupReport();
+                        case "probe_native_chain":     return _ideProbe.DumpNativeChain();
+                        case "probe_clalist_read":     return _ideProbe.ProbeClaListRead();
+                        case "probe_enum_lists":       return _ideProbe.EnumClaLists();
+                        case "probe_popup_arm":        return _ideProbe.PopupArm();
+                        case "probe_popup_arm_inject": return _ideProbe.PopupArmInject();
+                        case "probe_popup_report":     return _ideProbe.PopupReport();
                         default:
                             // probe_mark[:label] — Tier-0 trace separator between right-clicks (ticket 4b82f1de).
                             if (command.StartsWith("probe_mark"))
-                                return NativeProbeService.PopupMark(command.Length > 11 && command[10] == ':' ? command.Substring(11) : "");
+                                return _ideProbe.PopupMark(command.Length > 11 && command[10] == ':' ? command.Substring(11) : "");
                             if (command.StartsWith("path:"))
-                                return IdeReflectionService.InspectPath(command.Substring(5));
+                                return _ideProbe.InspectPath(command.Substring(5));
                             return "Unknown command: " + command + ". Use: active_view, editor_text, all_windows, all_pads, app_details, embed_details, path:<dotpath>, types, assemblies";
                     }
                 }
@@ -623,19 +717,130 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "get_app_info",
-                Description = "Get info about the currently open Clarion application (.app) - name, filename, target type, language.",
+IdeOnly = true,
+                Description = "Get info about the currently open Clarion application (.app) - name, filename, target type, language, and dictionaryPath/dictionaryName: the dictionary the app is bound to (its Global Properties 'Dictionary File'). Use dictionaryPath - never a .dctx found on disk - when the developer asks about the current project's dictionary; for its tables and columns call get_app_dictionary.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
                 Handler = args =>
                 {
                     var info = _appTree.GetAppInfo();
-                    return info != null ? (object)info : "No .app file is currently open";
+                    if (info == null) { ForgetDictionaryPath(); return "No .app file is currently open"; }
+                    bool ambiguous = AnnotateAppAmbiguity(info);
+                    if (!ambiguous) RememberDictionaryPath(info);
+                    return info;
+                }
+            });
+
+            // GitHub #210: "compare the table definition for item and itemservice" sent the assistant
+            // through old SQL DDL and then a stale .dctx from another project, because nothing exposed
+            // the dictionary the OPEN APP is bound to. AppTreeService.ReadLiveDictionaryTables() has
+            // read exactly that off the live App.FileSchema since the Modern Data pad - this just
+            // registers it. Live object, so always current: no ingest, no export, nothing to go stale.
+            Register(new McpTool
+            {
+                Name = "get_app_dictionary",
+                IdeOnly = true,
+                Description = "Read the open app's OWN dictionary live from the IDE (the Global Properties 'Dictionary File') - tables with prefix, driver and file, and per table its fields, keys and relationships. Always current; needs no .dctx export and no ingest. USE THIS FIRST for any question about the current project's tables or columns ('what fields does ITEM have', 'compare ITEM and ITEMSERVICE', 'which table has prefix CUS'); use the SchemaGraph tools (search_tables, get_table, query_schema) when you need SQL over an ingested schema or a dictionary that is not the open app's. Default is a one-row-per-table summary, or a names-only index on dictionaries over 200 tables; pass table= (name or prefix) for full detail of one table, or detail='full' for everything (large on big dictionaries).",
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
+                {
+                    { "table?", "Table name or PRE() prefix, case-insensitive (e.g. 'Customer' or 'CUS'). The response's 'match' says how it resolved: 'exact' or 'prefix' (full detail for that table), 'contains' (tables whose name contains the text, listed as summary rows - re-query with the exact name), or 'none' (with a hint)." },
+                    { "detail?", "'names' - name/prefix/driver per table (the DEFAULT on dictionaries over 200 tables, so the first call stays readable). 'summary' - adds file, description and field/key/relation counts (the default on smaller dictionaries). 'full' - every table with its fields, keys and relations (large). An explicit value is always honoured, including summary with table=." }
+                }),
+                RequiresUiThread = true,
+                Handler = args =>
+                {
+                    var info = _appTree.GetAppInfo();
+                    if (info == null) { ForgetDictionaryPath(); return "No .app file is currently open"; }
+                    string ambiguity = AppAmbiguityError();
+                    if (ambiguity != null) return ambiguity;      // fail closed: never the first app the IDE happened to list
+                    RememberDictionaryPath(info);
+
+                    string filter = McpJsonRpc.GetString(args, "table", "").Trim();
+                    string detailArg = McpJsonRpc.GetString(args, "detail", "").Trim();
+                    bool full = string.Equals(detailArg, "full", StringComparison.OrdinalIgnoreCase);
+                    bool names = string.Equals(detailArg, "names", StringComparison.OrdinalIgnoreCase);
+                    // Only a RECOGNISED value counts as explicit; "ful" must not silently mean summary.
+                    bool detailExplicit = full || names || string.Equals(detailArg, "summary", StringComparison.OrdinalIgnoreCase);
+                    string detailHint = detailArg.Length > 0 && !detailExplicit
+                        ? "detail='" + detailArg + "' is not recognised (accepted: names, summary, full) - the default was used"
+                        : null;
+
+                    var clock = System.Diagnostics.Stopwatch.StartNew();
+                    var tables = _appTree.ReadLiveDictionaryTables() ?? new List<ClarionAppDataReader.TableDef>();
+                    long readMs = clock.ElapsedMilliseconds;
+                    var result = new Dictionary<string, object>
+                    {
+                        { "app", info.ContainsKey("fileName") ? info["fileName"] : null },
+                        { "dictionaryPath", info.ContainsKey("dictionaryPath") ? info["dictionaryPath"] : null },
+                        { "dictionaryName", info.ContainsKey("dictionaryName") ? info["dictionaryName"] : null },
+                        { "tableCount", tables.Count },
+                        // Field names are the dictionary LABELS (unprefixed); relation mappings are
+                        // written the way code writes them (PREFIX:Field). Said once so a caller
+                        // matching the two does not conclude they are different columns.
+                        { "fieldNames", "unprefixed labels - in code a field is <prefix>:<name>; relation mappings use that prefixed form" }
+                    };
+
+                    var selected = tables;
+                    if (filter.Length > 0)
+                    {
+                        // Exact name or exact prefix wins; otherwise a contains-match on the name so
+                        // "item" still surfaces ITEM and ITEMSERVICE side by side for the comparison
+                        // question that raised this ticket.
+                        selected = tables.FindAll(t => string.Equals(t.Name, filter, StringComparison.OrdinalIgnoreCase));
+                        string match = "exact";
+                        if (selected.Count == 0)
+                        {
+                            selected = tables.FindAll(t => string.Equals(t.Prefix, filter, StringComparison.OrdinalIgnoreCase));
+                            if (selected.Count > 0) match = "prefix";
+                        }
+                        if (selected.Count == 0)
+                        {
+                            selected = tables.FindAll(t =>
+                                t.Name != null && t.Name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0);
+                            match = selected.Count > 0 ? "contains" : "none";
+                        }
+                        // An exact hit is the one-table question ("what fields does ITEM have") - full
+                        // detail unless the caller said summary. A contains hit is a LISTING, as the
+                        // description promises: "item" matches ITEM and ITEMSERVICE, "a" matches dozens,
+                        // and full detail for every one of them is unbounded on a 217-table dictionary
+                        // (pipeline run 1). Summary rows plus a hint to re-query the one that was meant.
+                        if (!detailExplicit) full = match == "exact" || match == "prefix";
+                        result["filter"] = filter;
+                        result["match"] = match;
+                        if (match == "none")
+                            result["hint"] = "No table named or prefixed '" + filter + "'. Call without table= for the full list.";
+                        else if (match == "contains" && !full)
+                            result["hint"] = "Listing only (name contains '" + filter + "'). Re-query with table=<exact name> for its fields, keys and relations.";
+                    }
+                    // ADAPTIVE DEFAULT. The no-argument call - the one the description tells the
+                    // model to make FIRST - returned 84 KB on one line for a 547-table dictionary and
+                    // the harness rejected it outright, so the model got nothing for its 992 ms
+                    // (CA-POSitiveAnywhere-CC, round 4). Kevin's 217 tables squeaked through at ~33 KB.
+                    // Above the threshold, and with no filter and no explicit detail, answer with a
+                    // names-only index (~40 chars per table) and say how to get more.
+                    const int BigDictionaryTables = 200;
+                    if (!detailExplicit && filter.Length == 0 && tables.Count > BigDictionaryTables)
+                    {
+                        names = true;
+                        result["hint"] = tables.Count + " tables - showing name/prefix/driver only. Pass table=<name or prefix> for one table's fields, keys and relations, or detail='summary' for per-table counts (large).";
+                    }
+                    result["detail"] = names ? "names" : full ? "full" : "summary";
+                    if (detailHint != null) result["detailHint"] = detailHint;
+
+                    var rows = new List<Dictionary<string, object>>();
+                    foreach (var t in selected) rows.Add(names ? ShapeLiveTableName(t) : ShapeLiveTable(t, full));
+                    result["tables"] = rows;
+                    // Server-side cost, so a tester's turn latency does not hide it (reviewer: cache the
+                    // live read if it exceeds ~200 ms on a big dictionary).
+                    result["elapsedMs"] = new Dictionary<string, object> { { "readDictionary", readMs }, { "total", clock.ElapsedMilliseconds } };
+                    return result;
                 }
             });
 
             Register(new McpTool
             {
                 Name = "list_procedures",
+IdeOnly = true,
                 Description = "List all procedure names in the currently open Clarion application.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -650,6 +855,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "get_procedure_details",
+IdeOnly = true,
                 Description = "Get detailed info about all procedures in the open app - name, prototype, module, parent, template.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -664,6 +870,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "open_procedure_embed",
+IdeOnly = true,
                 Description = "Open the embeditor for a specific procedure in the currently open Clarion app. The app must be loaded first. Automatically checks for conflicts with other IDE instances.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "procedure_name", "Name of the procedure to open" } },
@@ -697,7 +904,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                                 // OpenProcedureEmbed no longer sleeps after BM_CLICK (the embed open is async);
                                 // wait for the embed to actually open before returning, else the tool reports
                                 // success before the editor is ready.
-                                ModernEmbeditorLauncher.WaitForEmbedOpen(_appTree, 45000);
+                                _appTree.WaitForEmbedOpen(45000);
                                 return warning + "\n\n" + result;
                             }
                         }
@@ -707,7 +914,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                     string openResult = _appTree.OpenProcedureEmbed(name);
                     // OpenProcedureEmbed no longer sleeps after BM_CLICK (async open); wait for the embed to
                     // actually open before returning so this tool doesn't report success prematurely.
-                    ModernEmbeditorLauncher.WaitForEmbedOpen(_appTree, 45000);
+                    _appTree.WaitForEmbedOpen(45000);
                     return openResult;
                 }
             });
@@ -715,6 +922,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "select_procedure",
+IdeOnly = true,
                 Description = "Select a procedure in the ClaList without opening the embeditor. For testing procedure selection.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "procedure_name", "Name of the procedure to select" } },
@@ -731,6 +939,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "get_embed_info",
+IdeOnly = true,
                 Description = "Get info about the currently active embeditor - app name, file, embed position.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -744,6 +953,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "save_and_close_embeditor",
+IdeOnly = true,
                 Description = "Save changes and close the currently open embeditor. Use this when done editing embed code.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -756,6 +966,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "cancel_embeditor",
+IdeOnly = true,
                 Description = "Discard changes and close the currently open embeditor. Use this to abandon edits without saving.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -765,6 +976,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "open_embeditor_source",
+IdeOnly = true,
                 Description = "Open the module .clw source file for the procedure currently displayed in the embeditor. " +
                     "Parses the module filename from the embeditor header and opens it in the text editor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
@@ -773,22 +985,16 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                 {
                     try
                     {
-                        var workbench = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
-                        if (workbench == null)
-                            return new Dictionary<string, object> { { "error", "No workbench" } };
+                        // Was an inline walk of WorkbenchSingleton.Workbench -> ActiveWorkbenchWindow
+                        // -> ViewContent -> reflected "HeaderTitle" (ticket d051fbd1). Behind
+                        // IIdeProbeService now, so this file names no IDE type. The three distinct
+                        // "no workbench / no active window / no view content" errors collapse into
+                        // one: they were never separately actionable, and the probe returns null for
+                        // all three. HeaderTitle looks like "ProcName - Embeditor - (module001.clw)".
+                        if (_ideProbe == null)
+                            return new Dictionary<string, object> { { "error", "IDE introspection unavailable in this host" } };
 
-                        var activeWindow = workbench.ActiveWorkbenchWindow;
-                        if (activeWindow == null)
-                            return new Dictionary<string, object> { { "error", "No active window" } };
-
-                        var viewContent = activeWindow.ViewContent;
-                        if (viewContent == null)
-                            return new Dictionary<string, object> { { "error", "No view content" } };
-
-                        // Get HeaderTitle: "ProcName - Embeditor - (module001.clw)"
-                        var headerProp = viewContent.GetType().GetProperty("HeaderTitle",
-                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-                        string headerTitle = headerProp?.GetValue(viewContent, null) as string;
+                        string headerTitle = _ideProbe.GetActiveViewHeaderTitle();
                         if (string.IsNullOrEmpty(headerTitle))
                             return new Dictionary<string, object> { { "error", "Not in an embeditor window" } };
 
@@ -801,7 +1007,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                         string clwFileName = match.Groups[1].Value;
 
                         // Get app directory from ViewContent.FileName
-                        string appFilePath = viewContent.FileName;
+                        string appFilePath = _ideProbe.GetActiveViewFileName();
                         if (string.IsNullOrEmpty(appFilePath))
                             return new Dictionary<string, object> { { "error", "Could not determine app file path" } };
 
@@ -839,6 +1045,15 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "execute_command",
+                // IDE-only, and it escaped the gate the same way the knowledge service did: the
+                // gate recognises references to four IDE-service FIELDS, and this tool's
+                // dependency is a reflection scan over AppDomain.CurrentDomain.GetAssemblies()
+                // looking for a SharpDevelop command class. No field to see, so no flag raised.
+                // In a host with no addin assemblies loaded it can only ever answer "Class not
+                // found", which is the definition of a tool that belongs behind this flag.
+                // Caught by CC reading the tool's own description against its host, not by any
+                // scan of mine.
+                IdeOnly = true,
                 Description = "Execute a registered SharpDevelop/Clarion IDE addin command by class name. " +
                     "Instantiates the command and calls Run(). Use to invoke toolbar buttons, menu commands, " +
                     "or any AbstractMenuCommand/AbstractCommand class loaded by an addin. " +
@@ -899,6 +1114,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "next_embed",
+IdeOnly = true,
                 Description = "Navigate to the next embed point in the embeditor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -908,6 +1124,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "prev_embed",
+IdeOnly = true,
                 Description = "Navigate to the previous embed point in the embeditor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -917,6 +1134,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "next_filled_embed",
+IdeOnly = true,
                 Description = "Navigate to the next filled embed point (one that contains user code) in the embeditor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -926,6 +1144,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "prev_filled_embed",
+IdeOnly = true,
                 Description = "Navigate to the previous filled embed point (one that contains user code) in the embeditor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -935,6 +1154,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "list_embeds",
+IdeOnly = true,
                 Description = "List all embed sections in the active embeditor with their names and filled status. Use this to see what embed points are available before navigating.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -958,6 +1178,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "find_embed",
+IdeOnly = true,
                 Description = "Find an embed section by name and navigate the cursor there. Use a partial name like 'Local Proc' or 'Init' — matches case-insensitively.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -977,6 +1198,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "get_embeditor_source",
+IdeOnly = true,
                 Description = "Returns the full annotated PWEE embeditor source. " +
                     "Editable embed slots are marked «E:N/» (empty) or «E:N»...«/E:N» (filled). " +
                     "N is the 1-based line number — use it directly as line_number in write_embed_content. " +
@@ -994,6 +1216,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "search_embeditor_source",
+IdeOnly = true,
                 Description = "Search the annotated PWEE embeditor source for lines matching a regex pattern. " +
                     "Returns only the matching lines and surrounding context — much faster than get_embeditor_source " +
                     "for finding a specific embed point. Use SPECIFIC patterns (e.g. 'AddCard', 'OPEN.Window') — " +
@@ -1018,6 +1241,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "get_embed_content",
+IdeOnly = true,
                 Description = "Read the current Clarion code inside a specific embed point identified by its " +
                     "1-based line number from get_embeditor_source or search_embeditor_source «E:N» tokens. " +
                     "Use this before write_embed_content when you need to see existing code before rewriting it. " +
@@ -1038,6 +1262,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "write_embed_content",
+IdeOnly = true,
                 Description = "Write Clarion code into an embed point identified by its 1-based line number " +
                     "from get_embeditor_source or search_embeditor_source «E:N» tokens. " +
                     "Pass the complete replacement code — existing content is overwritten. " +
@@ -1066,6 +1291,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "apply_embed_edits",
+IdeOnly = true,
                 Description = "Apply one or more embed-slot edits to a procedure in a SINGLE transient " +
                     "open->write->save->close round-trip — NO interactive embeditor session stays open. " +
                     "Prefer this over open_procedure_embed + write_embed_content for LARGE procedures where the " +
@@ -1118,7 +1344,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                     catch (Exception ex) { return "Error parsing edits JSON: " + ex.Message; }
 
                     bool ok;
-                    return ModernEmbeditorSaver.ApplyLineEdits(proc, parsed, out ok);
+                    return _appTree.ApplyEmbedLineEdits(proc, parsed, out ok);
                 }
             });
 
@@ -1127,6 +1353,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "export_txa",
+IdeOnly = true,
                 Description = "Export the ENTIRE current Clarion app to a TXA (Text Application) file. This always exports all procedures. To work with individual procedure code, use open_procedure_embed instead.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -1148,6 +1375,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "import_txa",
+IdeOnly = true,
                 Description = "Import a TXA (Text Application) file into the currently open Clarion app. Use clash_mode to control what happens when procedure names conflict.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -1171,6 +1399,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "dump_object_api",
+IdeOnly = true,
                 Description = "DIAGNOSTIC (pure managed reflection, no IDE mutation): navigate the IDE object graph from the " +
                               "App object by a dot-path and dump the target's type, properties (with simple values), fields, and " +
                               "methods. Used to discover the in-memory dictionary object model. Examples: path=\"\" (App itself), " +
@@ -1187,6 +1416,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "dump_appmain_api",
+IdeOnly = true,
                 Description = "DIAGNOSTIC (read-only reflection): dump the native ApplicationMainWindowControl's managed methods " +
                               "plus the enum values behind GlobalRequest/GlobalResponse. Used to hunt for a clean managed way to " +
                               "switch the app's in-window tab to 'Global Embeds' (which triggers the ABC class read).",
@@ -1198,6 +1428,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "warmup_abc",
+IdeOnly = true,
                 Description = "Force the IDE's lazy ABC class load NOW so the user's first Modern Embeditor open doesn't pay it " +
                               "concurrently with the WebView2 open (the conflict that freezes Clarion). Opens the first procedure's " +
                               "native embeditor (its source generation loads ABC), then cancels + waits for it to fully tear down " +
@@ -1208,7 +1439,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                 // The cold ABC load is the slowest open of the session — see
                 // EmbedRoundTripTimeoutSeconds.
                 UiTimeoutSeconds = EmbedRoundTripTimeoutSeconds,
-                Handler = args => ModernEmbeditorLauncher.WarmupAbc()
+                Handler = args => _appTree.WarmupAbc()
             });
 
             // === File System Tools ===
@@ -1216,6 +1447,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "open_file",
+IdeOnly = true,
                 Description = "Open a file in the Clarion IDE editor and optionally navigate to a specific line number. " +
                               "If 'line' is omitted entirely, the file opens at whatever position the IDE last remembered for it " +
                               "(its own memento/reopen behavior) instead of being forced to line 1.",
@@ -1255,6 +1487,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "export_dctx",
+IdeOnly = true,
                 Description = "Export the currently open Clarion data dictionary to a .dctx text file. The dictionary must be open in the IDE (use open_dictionary first). The .dctx format is a human-readable text representation of the dictionary.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -1299,6 +1532,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "import_dctx",
+IdeOnly = true,
                 Description = "Import a .dctx text file into the currently open Clarion data dictionary. The dictionary must be open in the IDE (use open_dictionary first). WARNING: This modifies the dictionary — changes must be saved manually.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -1383,7 +1617,10 @@ Use this tool to discover IDE APIs and understand what's available for automatio
             Register(new McpTool
             {
                 Name = "write_file",
-                Description = "Write content to a file on disk. Creates the file if it doesn't exist, overwrites if it does.",
+                Description = "Write content to a file on disk. Creates the file if it doesn't exist, overwrites if it does. " +
+                              "Clarion source (.clw/.inc/.equ/.int/.trn/.tpw/.tpl) is written with CRLF, no BOM, and in the file's " +
+                              "existing encoding (the ANSI code page for a new or all-ASCII file); a character that encoding cannot " +
+                              "hold is refused rather than written as '?'.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
@@ -1399,11 +1636,13 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                     string dir = Path.GetDirectoryName(path);
                     if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                         Directory.CreateDirectory(dir);
-                    // Clarion source (.clw/.inc/.equ/.tpw/.tpl) is forced to CRLF +
-                    // UTF-8-no-BOM here so LF-only / BOM content can't reach the
-                    // Clarion compiler regardless of what the caller passed (issue #34).
-                    ClarionSourceText.WriteFile(path, content);
-                    string crlfNote = ClarionSourceText.IsClarionSource(path) ? ", CRLF/no-BOM" : "";
+                    // Clarion source (.clw/.inc/.equ/.int/.trn/.tpw/.tpl) is forced to CRLF, no
+                    // BOM, and the file's own encoding, so LF-only / BOM content can't reach the
+                    // Clarion compiler (issue #34) and an ANSI file stays ANSI (GH #203).
+                    Encoding written;
+                    try { written = ClarionSourceText.WriteFile(path, content); }
+                    catch (ClarionEncodingException ex) { return "Error: " + ex.Message; }
+                    string crlfNote = written != null ? ", CRLF/no-BOM, " + written.WebName : "";
                     return "File written: " + path + " (" + content.Length + " chars" + crlfNote + ")";
                 }
             });
@@ -1426,11 +1665,27 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                     string text = McpJsonRpc.GetString(args, "text", "");
                     if (!File.Exists(path))
                         return "Error: file not found: " + path;
-                    // Normalize appended Clarion source to CRLF (issue #34). The
-                    // existing file's encoding is left untouched on append.
-                    text = ClarionSourceText.NormalizeIfClarion(path, text);
-                    var result = _editorService.AppendTextToFile(path, text);
-                    return result.Success ? "Text appended to " + path : "Error: " + result.ErrorMessage;
+                    // Appends DIRECTLY rather than through IEditorService. That indirection made
+                    // this tool look IDE-coupled and it was withheld from the standalone server
+                    // for a whole release cycle — but EditorService.AppendTextToFile is a bare
+                    // file append (now ClarionSourceText.AppendFile, the same call as below) that
+                    // never consults the editor, the open buffer, or
+                    // anything else in the IDE. It was filed on the editor service, not dependent
+                    // on it. Same bytes, same behaviour in the addin, minus a coupling that was
+                    // never real. (EditorService keeps the method; ClassHelperControl uses it.)
+                    //
+                    // Appended Clarion source is CRLF-normalized (issue #34) and encoded in the
+                    // file's own encoding (GH #203): UTF-8 appended onto an ANSI file leaves one
+                    // file in two encodings. Other files are appended exactly as before.
+                    try
+                    {
+                        ClarionSourceText.AppendFile(path, text);
+                        return "Text appended to " + path;
+                    }
+                    catch (Exception ex)
+                    {
+                        return "Error: " + ex.Message;
+                    }
                 }
             });
 
@@ -1467,7 +1722,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    string slnPath = _chatControl?.CurrentSolutionPath;
+                    string slnPath = _workspace?.CurrentSolutionPath;
                     if (string.IsNullOrEmpty(slnPath) || !File.Exists(slnPath))
                         return "Error: No solution loaded.";
 
@@ -1478,7 +1733,7 @@ Use this tool to discover IDE APIs and understand what's available for automatio
 
                     // Build RED search paths for external file resolution
                     var redSearchPaths = new List<string>();
-                    var redFile = _chatControl.RedFile;
+                    var redFile = _workspace.RedFile;
                     if (redFile != null)
                     {
                         var clwPaths = redFile.GetSearchPaths(".clw");
@@ -1747,8 +2002,21 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                 Name = "query_codegraph",
                 Description = @"Run a read-only SQL query against the Clarion CodeGraph database. The database indexes an entire Clarion solution with these tables:
 
+SYMBOL IDs ARE NOT STABLE ACROSS A RE-INDEX. Do not cache an id, or any from_id/to_id, across an
+index_solution or index_codegraph call. A re-index deletes every row and re-inserts; the id column
+is AUTOINCREMENT, so ids never restart - a measured re-index of an unchanged solution produced
+byte-identical rows whose ids had all shifted by exactly +16631. Resolve by NAME and file_path if
+anything may re-index between your queries. (This is the safer of the two possible behaviours and
+is deliberate: a stale id now matches NOTHING, which you can detect, instead of silently matching
+whatever unrelated symbol inherited that number.)
+
 TABLES:
 - projects (id, name, guid, cwproj_path, output_type, sln_path)
+  - CONTAINS A SYNTHETIC ROW: '__Libraries__' (output_type 'Library', empty cwproj_path) owns the
+    headers pulled in through the .red redirection paths. index_solution reports the real project
+    count and excludes it, so 'SELECT COUNT(*) FROM projects' will exceed that number by one, and
+    any per-project aggregate silently includes it. Filter it out unless you mean to count library
+    symbols as a project's own.
 - symbols (id, name, type, file_path, line_number, project_id, params, return_type, parent_name, member_of, scope, source_preview, decl_kind)
   - type values: 'procedure', 'function', 'class', 'interface', 'routine', 'variable', 'include', 'module', 'program'
   - scope values: 'global' (PROGRAM-file data + MAP declarations), 'module', 'local', 'class', 'parameter'
@@ -1813,9 +2081,9 @@ COMMON QUERIES:
                 {
                     var results = new List<string>();
                     // Search from the current solution directory (if one is open)
-                    if (_chatControl != null)
+                    if (_workspace != null)
                     {
-                        string slnPath = _chatControl.CurrentSolutionPath;
+                        string slnPath = _workspace.CurrentSolutionPath;
                         if (!string.IsNullOrEmpty(slnPath))
                         {
                             string slnDir = Path.GetDirectoryName(slnPath);
@@ -1848,12 +2116,12 @@ COMMON QUERIES:
                 RequiresUiThread = true,
                 Handler = args =>
                 {
-                    if (_chatControl == null)
+                    if (_workspace == null)
                         return "Error: chat control not initialized";
 
                     // Check the live IDE state first — the cached path may be stale
-                    string ideSlnPath = EditorService.GetOpenSolutionPath();
-                    string slnPath = !string.IsNullOrEmpty(ideSlnPath) ? ideSlnPath : _chatControl.CurrentSolutionPath;
+                    string ideSlnPath = _workspace.GetHostOpenSolutionPath();
+                    string slnPath = !string.IsNullOrEmpty(ideSlnPath) ? ideSlnPath : _workspace.CurrentSolutionPath;
 
                     // If nothing is open in the IDE and we only have a cached path, report no solution
                     if (string.IsNullOrEmpty(ideSlnPath) && !string.IsNullOrEmpty(slnPath))
@@ -1868,9 +2136,9 @@ COMMON QUERIES:
                         };
                     }
 
-                    string dbPath = _chatControl.CurrentDbPath;
+                    string dbPath = _workspace.CurrentDbPath;
                     bool hasDb = !string.IsNullOrEmpty(dbPath) && File.Exists(dbPath);
-                    var vConfig = _chatControl.CurrentVersionConfig;
+                    var vConfig = _workspace.CurrentVersionConfig;
 
                     var result = new Dictionary<string, object>
                     {
@@ -1891,7 +2159,7 @@ COMMON QUERIES:
                             result["macros"] = vConfig.Macros;
                     }
 
-                    var red = _chatControl.RedFile;
+                    var red = _workspace.RedFile;
                     if (red != null && red.RedFilePath != null)
                     {
                         result["activeRedFile"] = red.RedFilePath;
@@ -1919,7 +2187,7 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    if (_chatControl == null)
+                    if (_workspace == null)
                         return "Error: chat control not initialized";
 
                     string fileName = McpJsonRpc.GetString(args, "filename", "");
@@ -1955,7 +2223,7 @@ COMMON QUERIES:
                     }
 
                     // Fallback: local RedFileService (Common section only).
-                    var red = _chatControl.RedFile;
+                    var red = _workspace.RedFile;
                     if (red == null || red.RedFilePath == null)
                         return "Error: no .red file loaded and LSP unavailable. Select a version and solution first.";
 
@@ -2001,7 +2269,7 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    if (_chatControl == null)
+                    if (_workspace == null)
                         return "Error: chat control not initialized";
 
                     string ext = McpJsonRpc.GetString(args, "extension", "");
@@ -2030,7 +2298,7 @@ COMMON QUERIES:
                     }
 
                     // Fallback: local RedFileService (single section, default Common).
-                    var red = _chatControl.RedFile;
+                    var red = _workspace.RedFile;
                     if (red == null || red.RedFilePath == null)
                         return "Error: no .red file loaded and LSP unavailable. Select a version and solution first.";
 
@@ -2049,7 +2317,7 @@ COMMON QUERIES:
             Register(new McpTool
             {
                 Name = "index_solution",
-                Description = "Index or re-index the currently selected Clarion solution. Creates/updates the CodeGraph database for cross-project code intelligence. With a progress-capable client this call streams live progress (weighted % + current file) and returns the completion stats — a full index of a large solution can run for many minutes; the IDE progress window shows the same run. Without progress support it just starts the run and returns immediately.",
+                Description = "Index or re-index the currently selected Clarion solution. Creates/updates the CodeGraph database for cross-project code intelligence. With a progress-capable client this call streams live progress (weighted % + current file) and returns the completion stats — a full index of a large solution can run for many minutes, and in the IDE the progress window shows the same run. Without progress support the call returns as soon as the run is under way — in the IDE that is immediately, while a standalone host runs it to completion first so a following query cannot read a half-built database.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
@@ -2058,16 +2326,26 @@ COMMON QUERIES:
                 RequiresUiThread = true,
                 Handler = args =>
                 {
-                    if (_chatControl == null)
+                    if (_workspace == null)
                         return "Error: chat control not initialized";
 
                     string incremental = McpJsonRpc.GetString(args, "incremental", "false");
                     bool isIncremental = incremental.Equals("true", StringComparison.OrdinalIgnoreCase);
 
-                    _chatControl.RunIndex(isIncremental);
+                    // Checked BEFORE claiming a run started. This branch used to fall through to
+                    // RunIndex and then report "Full index started for: (none)" — a success
+                    // message with the failure printed inside it. In the IDE a modal at least
+                    // appeared; in a standalone host (ticket d051fbd1) there is no modal, so the
+                    // caller was told a run had begun when nothing had. RunIndex makes the same
+                    // check against the same value, so this cannot disagree with it.
+                    string slnForIndex = _workspace.CurrentSolutionPath;
+                    if (string.IsNullOrEmpty(slnForIndex) || !File.Exists(slnForIndex))
+                        return "Error: no solution is selected, so there is nothing to index.";
+
+                    _workspace.RunIndex(isIncremental);
                     return isIncremental
-                        ? "Incremental index started for: " + (_chatControl.CurrentSolutionPath ?? "(none)")
-                        : "Full index started for: " + (_chatControl.CurrentSolutionPath ?? "(none)");
+                        ? "Incremental index started for: " + slnForIndex
+                        : "Full index started for: " + slnForIndex;
                 },
                 // Streaming variant (ticket 0d788f8b): runs on a worker thread, marshals the
                 // RunIndex START to the UI thread, then relays the run's structured events
@@ -2075,7 +2353,7 @@ COMMON QUERIES:
                 // (the fire-and-forget Handler above never learns when the run ends).
                 StreamingHandler = (args, onProgress) =>
                 {
-                    if (_chatControl == null)
+                    if (_workspace == null)
                         return "Error: chat control not initialized";
 
                     string incremental = McpJsonRpc.GetString(args, "incremental", "false");
@@ -2091,11 +2369,11 @@ COMMON QUERIES:
                         StreamEventQueueCapacity);
                     string summary = null;
 
-                    _chatControl.BeginInvoke((Action)(() =>
+                    _ui.BeginInvokeOnUi((Action)(() =>
                     {
                         try
                         {
-                            _chatControl.RunIndex(isIncremental,
+                            _workspace.RunIndex(isIncremental,
                                 // InvalidOperationException also covers ObjectDisposedException
                                 // (its subclass) — thrown once the consumer abandons the queue.
                                 ev => { try { events.TryAdd(ev); } catch (InvalidOperationException) { } },
@@ -2158,61 +2436,104 @@ COMMON QUERIES:
             Register(new McpTool
             {
                 Name = "lsp_start",
-                Description = "Start the Clarion Language Server for advanced code intelligence. Must be called before using other lsp_ tools. Provide the workspace folder path (the directory containing the .sln file).",
+                Description = "Start the Clarion Language Server for advanced code intelligence. Must be called before using other lsp_ tools. Optionally name the solution with workspace_path (the .sln file, or the folder holding exactly one .sln); without it the current solution is used. On failure the error says why (no solution, no server.js, or a failed start).",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
-                        { "workspace_path", "Path to the workspace folder (directory containing .sln file). Optional - auto-detected from current solution." }
+                        { "workspace_path", "The .sln file, or the folder holding exactly one .sln, to start the server on. Optional - defaults to the current solution. A folder with several .sln files, or none, is refused rather than guessed." }
                     }),
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    string wsPath = McpJsonRpc.GetString(args, "workspace_path");
-                    if (string.IsNullOrEmpty(wsPath) && _chatControl != null)
+                    // workspace_path, when given, is now actually USED for the start (77aceec5). It
+                    // used to be resolved, checked for existence, and then dropped: EnsureRunning()
+                    // took no argument and read only the host's hook, so a plain Chat tab with no
+                    // solution selected got "failed to start ... client handshake" for a .sln
+                    // directory it had been handed explicitly.
+                    string explicitSln = null;
+                    string wsArg = McpJsonRpc.GetString(args, "workspace_path");
+                    if (!string.IsNullOrEmpty(wsArg) && wsArg.Trim().Length > 0)
                     {
-                        string slnPath = _chatControl.CurrentSolutionPath;
-                        if (!string.IsNullOrEmpty(slnPath))
-                            wsPath = Path.GetDirectoryName(slnPath);
+                        string resolveError;
+                        explicitSln = LspStartResult.ResolveSolutionArgument(wsArg, out resolveError);
+                        if (explicitSln == null)
+                            return "Error: " + resolveError;
                     }
 
-                    if (string.IsNullOrEmpty(wsPath) || !Directory.Exists(wsPath))
-                        return "Error: workspace_path required (directory containing .sln)";
-
-                    // Single-process (#17): if the shared ClarionLsp addin is the active server, we
-                    // don't start (or need) our bundled server — all LSP calls route through it.
-                    if (SharedLspBridge.IsSharedActive)
-                        return "LSP ready via the shared ClarionLsp addin (resolver=shared). "
-                            + "The bundled server is not started while ClarionLsp is active.";
-
-                    // Resolve up front for a precise error if nothing is installed.
-                    string resolveSource;
-                    string serverJs = LspService.ResolveServerPath(out resolveSource);
-                    if (serverJs == null)
-                    {
-                        // resolveSource may contain a descriptive error from the VS Code scan
-                        // (e.g., "extension found but layout was X").
-                        string extra = !string.IsNullOrEmpty(resolveSource) ? "\n  " + resolveSource : "";
-                        return "Error: LSP server not found. Install the Clarion extension for VS Code, "
-                            + "place server.js in the lsp-server subfolder next to the addin DLL, or set "
-                            + "the 'Lsp.ServerPath' setting to the full path." + extra;
-                    }
-
-                    // Delegate to the single owner — no second construct site / start race.
-                    LspService.EnsureRunning();
+                    // Delegate to the single owner — no second construct site / start race. It
+                    // reports WHAT happened, so each branch below says why rather than guessing.
+                    var start = LspService.EnsureRunning(explicitSln);
                     _lspClient = LspClient.Active;
 
-                    if (_lspClient != null && _lspClient.IsRunning)
-                        return "LSP server started for workspace: " + wsPath + "\n  Source: " + resolveSource + "\n  Server: " + serverJs;
+                    switch (start.Outcome)
+                    {
+                        case LspStartOutcome.SharedActive:
+                            return "LSP ready via the shared ClarionLsp addin (resolver=shared). "
+                                + "The bundled server is not started while ClarionLsp is active.";
 
-                    // Provide diagnostic info on failure
+                        case LspStartOutcome.AlreadyRunning:
+                        {
+                            string running = start.SolutionPath;
+                            if (explicitSln != null && running != null
+                                && !string.Equals(Path.GetFullPath(running), explicitSln, StringComparison.OrdinalIgnoreCase))
+                                return "LSP already running for a different solution: " + running
+                                    + "\n  It was NOT restarted for " + explicitSln + " - lsp_* answers still come "
+                                    + "from the solution above.";
+                            return "LSP already running" + (running != null ? " for solution: " + running : ".");
+                        }
+
+                        case LspStartOutcome.Started:
+                            return "LSP server started for solution: " + start.SolutionPath
+                                + " (from " + start.SolutionSource + ")"
+                                + "\n  Source: " + start.ServerSource + "\n  Server: " + start.ServerJs;
+
+                        case LspStartOutcome.NoSolution:
+                            return "Error: " + (start.Detail ?? LspStartResult.NoSolutionMessage);
+
+                        case LspStartOutcome.NoServer:
+                        {
+                            // Detail may contain a descriptive error from the VS Code scan
+                            // (e.g., "extension found but layout was X").
+                            string extra = !string.IsNullOrEmpty(start.Detail) ? "\n  " + start.Detail : "";
+                            return "Error: LSP server not found, so nothing was started for "
+                                + (start.SolutionPath ?? "the solution") + ". Install the Clarion extension for VS Code, "
+                                + "place server.js in the lsp-server subfolder next to the addin DLL, or set "
+                                + "the 'Lsp.ServerPath' setting to the full path." + extra;
+                        }
+
+                        case LspStartOutcome.Error:
+                            return "Error: LSP start failed before a server was spawned: " + start.Detail;
+
+                        case LspStartOutcome.SpawnFailed:
+                            return "Error: " + start.DescribeWhyNotRunning()
+                                + "\n  server.js: " + start.ServerJs
+                                + "\n  solution: " + start.SolutionPath;
+                    }
+
+                    // StartFailed: a solution and server.js were both in hand and the start was
+                    // really attempted. This is the ONLY branch where the handshake can be to blame.
+                    string serverJs = start.ServerJs;
+                    string resolveSource = start.ServerSource;
+                    string wsPath = Path.GetDirectoryName(start.SolutionPath);
                     string wsUri = "file:///" + wsPath.Replace("\\", "/");
-                    string lspRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(serverJs), "..", "..", ".."));
-                    string nodeExe = Path.Combine(lspRoot, "node.exe");
+
+                    // Ask the resolver what node it would ACTUALLY use, rather than re-deriving
+                    // one candidate here. This line used to compute only the bundled path and
+                    // print "(exists: False)" for it — on a machine with Node installed, which
+                    // the resolver finds two fallbacks later. The diagnostic therefore blamed a
+                    // missing node.exe for every LSP failure, whatever the real cause; it cost me
+                    // several probes chasing a node problem that did not exist.
+                    string nodeExe = LspClient.ResolveNodeExeForDiagnostics(serverJs)
+                                     ?? "(no node.exe found: looked next to the LSP distribution, "
+                                        + "Program Files\\nodejs, Program Files (x86)\\nodejs, "
+                                        + "and %USERPROFILE%\\.claude\\local)";
                     string diag = "Error: LSP server failed to start.\n"
                         + "  source: " + resolveSource + "\n"
                         + "  server.js: " + serverJs + " (exists: " + File.Exists(serverJs) + ")\n"
-                        + "  node.exe: " + nodeExe + " (exists: " + File.Exists(nodeExe) + ")\n"
+                        + "  node.exe: " + nodeExe + "\n"
                         + "  workspace: " + wsUri + "\n"
+                        + "  server.js and node above are BOTH resolved — if they look right, the\n"
+                        + "  failure is in the client handshake, not in locating them.\n"
                         + "  Check the IDE Debug Output for [LSP] messages for more detail.";
                     return diag;
                 }
@@ -2233,9 +2554,9 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    EnsureLspRunning();
+                    var lspStart = EnsureLspRunning();
                     if (!SharedLspBridge.IsRunning)
-                        return "Error: LSP not running. Call lsp_start first or set a solution.";
+                        return LspNotRunningError(lspStart);
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     int line = McpJsonRpc.GetInt(args, "line");
@@ -2261,9 +2582,9 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    EnsureLspRunning();
+                    var lspStart = EnsureLspRunning();
                     if (!SharedLspBridge.IsRunning)
-                        return "Error: LSP not running.";
+                        return LspNotRunningError(lspStart);
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     int line = McpJsonRpc.GetInt(args, "line");
@@ -2289,9 +2610,9 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    EnsureLspRunning();
+                    var lspStart = EnsureLspRunning();
                     if (!SharedLspBridge.IsRunning)
-                        return "Error: LSP not running.";
+                        return LspNotRunningError(lspStart);
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     int line = McpJsonRpc.GetInt(args, "line");
@@ -2315,9 +2636,9 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    EnsureLspRunning();
+                    var lspStart = EnsureLspRunning();
                     if (!SharedLspBridge.IsRunning)
-                        return "Error: LSP not running.";
+                        return LspNotRunningError(lspStart);
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     var result = SharedLspBridge.GetDocumentSymbols(filePath);
@@ -2338,9 +2659,9 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    EnsureLspRunning();
+                    var lspStart = EnsureLspRunning();
                     if (!SharedLspBridge.IsRunning)
-                        return "Error: LSP not running.";
+                        return LspNotRunningError(lspStart);
 
                     string query = McpJsonRpc.GetString(args, "query");
                     var result = SharedLspBridge.FindWorkspaceSymbol(query);
@@ -2367,9 +2688,9 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    EnsureLspRunning();
+                    var lspStart = EnsureLspRunning();
                     if (!SharedLspBridge.IsRunning)
-                        return "Error: LSP not running. Start it with lsp_start or check Lsp.ServerPath.";
+                        return LspNotRunningError(lspStart);
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     if (string.IsNullOrEmpty(filePath))
@@ -2421,7 +2742,7 @@ COMMON QUERIES:
                 Name = "lsp_rename",
                 Description = "Propose a rename of the symbol at the given file/line/character position. " +
                     "IMPORTANT: This tool returns a list of edits that WOULD be applied — it does NOT apply them. " +
-                    "You MUST present the edit list to the developer for approval (per CLAUDE.md rule #9) before " +
+                    "You MUST present the edit list to the developer for approval before " +
                     "applying any of the edits via write_embed_content, replace_range, or write_file.\n" +
                     "Returns: { edits: [{file, line, character, endLine, endCharacter, newText}, ...], count: N }. " +
                     "If the server doesn't support rename for this symbol (keyword, built-in, or unsupported scope) " +
@@ -2438,9 +2759,9 @@ COMMON QUERIES:
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    EnsureLspRunning();
+                    var lspStart = EnsureLspRunning();
                     if (!SharedLspBridge.IsRunning)
-                        return "Error: LSP not running. Start it with lsp_start or check Lsp.ServerPath.";
+                        return LspNotRunningError(lspStart);
 
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     int line = McpJsonRpc.GetInt(args, "line", -1);
@@ -2516,10 +2837,21 @@ COMMON QUERIES:
                         });
 
                     if (_lspClient == null)
-                        return new JavaScriptSerializer().Serialize(new Dictionary<string, object>
+                    {
+                        // Carry the last start attempt's outcome, if there was one: "never
+                        // started" alone does not say whether anything was ever TRIED (77aceec5).
+                        var last = LspService.LastResult;
+                        var notStarted = new Dictionary<string, object>
                         {
                             { "error", "LSP client has never been started. Call lsp_start first." }
-                        });
+                        };
+                        if (last != null)
+                        {
+                            notStarted["lastStartOutcome"] = last.Outcome.ToString();
+                            notStarted["lastStartReason"] = last.DescribeWhyNotRunning();
+                        }
+                        return new JavaScriptSerializer().Serialize(notStarted);
+                    }
 
                     var status = _lspClient.GetDebugStatus();
                     return new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(status);
@@ -2530,6 +2862,7 @@ COMMON QUERIES:
             Register(new McpTool
             {
                 Name = "show_diff",
+IdeOnly = true,
                 Description = "Open a unified diff viewer in the IDE editor panel. Shows color-coded additions/removals with a changes sidebar and inline code review notes. " +
                     "The developer can add severity-tagged notes (BLOCKER/SUGGESTION/NITPICK/QUESTION) on any line. " +
                     "You can provide text directly via original_text/modified_text, OR provide file paths via original_file/modified_file to load from disk (avoids encoding issues with large files), " +
@@ -2625,6 +2958,7 @@ COMMON QUERIES:
             Register(new McpTool
             {
                 Name = "get_diff_result",
+IdeOnly = true,
                 Description = "Check the result of the diff viewer. Returns: 'pending' if the developer hasn't acted yet, " +
                     "'approved' with the modified text if they clicked Approve, " +
                     "'notes' with an array of review notes [{line, lineContent, severity, comment}] if they submitted feedback, " +
@@ -2645,6 +2979,7 @@ COMMON QUERIES:
             Register(new McpTool
             {
                 Name = "get_diff_content",
+IdeOnly = true,
                 Description = "Return the unified diff for the diff currently/most recently shown via show_diff, " +
                     "computed server-side (git diff --no-index, LCS fallback) from the exact text passed to show_diff — " +
                     "not read back from the Monaco/WebView2 buffer. Response size scales with the size of the changes, " +
@@ -2894,12 +3229,12 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     int timeout = McpJsonRpc.GetInt(args, "timeout", 120);
 
                     if (string.IsNullOrEmpty(slnPath))
-                        slnPath = EditorService.GetOpenSolutionPath();
+                        slnPath = _workspace.GetHostOpenSolutionPath();
 
                     if (string.IsNullOrEmpty(slnPath) || !File.Exists(slnPath))
                         return "Error: No solution path provided and no solution is currently loaded in the IDE.";
 
-                    string clarionRoot = EditorService.GetClarionInstallPath();
+                    string clarionRoot = _workspace.GetClarionInstallPath();
                     if (string.IsNullOrEmpty(clarionRoot))
                         return "Error: Could not detect Clarion installation path.";
 
@@ -2917,6 +3252,7 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             Register(new McpTool
             {
                 Name = "build_app",
+IdeOnly = true,
                 Description = "Build a single Clarion .app file using ClarionCL.exe. Ideal for multi-DLL solutions where you only need to rebuild one target. Defaults to the currently active app in the IDE.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -2940,7 +3276,7 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     if (string.IsNullOrEmpty(appPath) || !File.Exists(appPath))
                         return "Error: No app path provided and no .app file is currently open in the IDE.";
 
-                    string clarionRoot = EditorService.GetClarionInstallPath();
+                    string clarionRoot = _workspace.GetClarionInstallPath();
                     if (string.IsNullOrEmpty(clarionRoot))
                         return "Error: Could not detect Clarion installation path.";
 
@@ -2957,6 +3293,7 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             Register(new McpTool
             {
                 Name = "generate_source",
+IdeOnly = true,
                 Description = "Generate Clarion source code (.clw/.inc files) from an .app file using ClarionCL.exe without a full build. Runs template code generation to produce the source files. Defaults to the currently active app.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -2984,7 +3321,7 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     if (string.IsNullOrEmpty(appPath) || !File.Exists(appPath))
                         return "Error: No app path provided and no .app file is currently open in the IDE.";
 
-                    string clarionRoot = EditorService.GetClarionInstallPath();
+                    string clarionRoot = _workspace.GetClarionInstallPath();
                     if (string.IsNullOrEmpty(clarionRoot))
                         return "Error: Could not detect Clarion installation path.";
 
@@ -3128,7 +3465,7 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             Register(new McpTool
             {
                 Name = "add_knowledge",
-                Description = "Save a reusable insight to the Clarion Assistant's knowledge base. Categories: decision, pattern, gotcha, anti_pattern, debug_insight, preference. Knowledge persists across sessions and is auto-injected at startup ranked by usage.",
+                Description = "Save a reusable insight to the Clarion Assistant's knowledge base. Categories: decision, pattern, gotcha, anti_pattern, debug_insight, preference. Knowledge persists across sessions and is auto-injected at startup ranked by usage. Returns the new entry's id; if this entry corrects an earlier one, pass that id to supersede_knowledge so the wrong one stops being injected.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
@@ -3157,7 +3494,9 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             Register(new McpTool
             {
                 Name = "query_knowledge",
-                Description = "Search the Clarion Assistant's knowledge base for decisions, patterns, gotchas, and insights. Uses full-text search. Returns matching entries ranked by relevance.",
+                Description = "Search the Clarion Assistant's knowledge base for decisions, patterns, gotchas, and insights. " +
+                              "Uses full-text search. Returns matching entries ranked by relevance, each prefixed with its " +
+                              "id — pass that id to supersede_knowledge or remove_knowledge when an entry turns out to be wrong.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
@@ -3183,12 +3522,100 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     {
                         string preview = e.Content != null && e.Content.Length > 300
                             ? e.Content.Substring(0, 300) + "..." : e.Content ?? "";
-                        sb.AppendLine(string.Format("- [{0}] {1}", e.Category, e.Title));
+                        // The id leads the line because it is the only handle the retract/supersede
+                        // tools accept — without it a caller can read that an entry is wrong and
+                        // still have no way to name it.
+                        sb.AppendLine(string.Format("- #{0} [{1}] {2}", e.Id, e.Category, e.Title));
                         sb.AppendLine("  " + preview);
                         if (e.Tags != null) sb.AppendLine("  Tags: " + e.Tags);
                         sb.AppendLine();
                     }
                     return sb.ToString().TrimEnd();
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "supersede_knowledge",
+                Description = "Retire a knowledge entry that turned out to be WRONG so it stops surfacing in " +
+                              "query_knowledge and in the startup injection. Get the id from query_knowledge. " +
+                              "Pass superseded_by with the id of the entry that replaces it (add_knowledge returns " +
+                              "the new id) to record the correction, or omit it for a plain retraction. The row is " +
+                              "kept, not deleted, so the record of what was once believed survives — prefer this " +
+                              "over remove_knowledge. Without it a wrong entry can only be contradicted by a newer " +
+                              "one and both keep being injected, leaving the reader to work out which is current.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "id", "Id of the entry to retire, as shown by query_knowledge (required)" },
+                        { "superseded_by", "Id of the entry that replaces it (optional; omit for a plain retraction)" }
+                    },
+                    new[] { "id" }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    if (_knowledgeService == null) return "Knowledge service not initialized.";
+                    int id = McpJsonRpc.GetInt(args, "id", 0);
+                    if (id <= 0) return "Error: id is required and must be > 0.";
+
+                    var entry = _knowledgeService.GetEntry(id);
+                    if (entry == null) return string.Format("No knowledge entry with id {0}.", id);
+
+                    int by = McpJsonRpc.GetInt(args, "superseded_by", KnowledgeService.RetractedNoReplacement);
+                    if (by == id)
+                        return "Error: an entry cannot supersede itself. Omit superseded_by to retract it outright.";
+                    if (by != KnowledgeService.RetractedNoReplacement)
+                    {
+                        // Validate the replacement exists: pointing at a missing id would hide the old
+                        // entry behind a reference that leads nowhere, which is worse than leaving it.
+                        var replacement = _knowledgeService.GetEntry(by);
+                        if (replacement == null)
+                            return string.Format(
+                                "No knowledge entry with id {0} to supersede #{1} with. Add the corrected entry " +
+                                "first, then pass its id.", by, id);
+                    }
+
+                    if (!_knowledgeService.SupersedeEntry(id, by))
+                        return string.Format("Could not retire entry #{0}.", id);
+
+                    return by == KnowledgeService.RetractedNoReplacement
+                        ? string.Format("Retired #{0} [{1}] {2} — it will no longer be returned or injected.",
+                            id, entry.Category, entry.Title)
+                        : string.Format("Retired #{0} [{1}] {2}, superseded by #{3}.",
+                            id, entry.Category, entry.Title, by);
+                }
+            });
+
+            Register(new McpTool
+            {
+                Name = "remove_knowledge",
+                Description = "PERMANENTLY delete a knowledge entry and its search-index row. Get the id from " +
+                              "query_knowledge. Use this only for entries that should leave no trace (a duplicate, " +
+                              "something saved by mistake, anything that shouldn't have been recorded); to retire an " +
+                              "entry that was simply wrong, use supersede_knowledge instead so the correction stays " +
+                              "on the record. Cannot be undone.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "id", "Id of the entry to delete, as shown by query_knowledge (required)" }
+                    },
+                    new[] { "id" }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    if (_knowledgeService == null) return "Knowledge service not initialized.";
+                    int id = McpJsonRpc.GetInt(args, "id", 0);
+                    if (id <= 0) return "Error: id is required and must be > 0.";
+
+                    // Read it first so the response can name what was destroyed — a deletion the caller
+                    // can't see the title of is a deletion they can't tell was the wrong one.
+                    var entry = _knowledgeService.GetEntry(id);
+                    if (entry == null) return string.Format("No knowledge entry with id {0}.", id);
+
+                    if (!_knowledgeService.DeleteEntry(id))
+                        return string.Format("Could not delete entry #{0}.", id);
+
+                    return string.Format("Deleted #{0} [{1}] {2}.", id, entry.Category, entry.Title);
                 }
             });
 
@@ -3221,7 +3648,10 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             Register(new McpTool
             {
                 Name = "list_instances",
-                Description = "List all running Clarion IDE instances with their open apps, active files, and what they're working on. Use this to see the full picture across a multi-app solution.",
+                // "Clarion Assistant instances", not "Clarion IDE instances": since d051fbd1 a
+                // standalone clarion-mcp-server registers here too, and a developer told these
+                // are all IDEs will go looking for a window that does not exist.
+                Description = "List all running Clarion Assistant instances - Clarion IDEs and standalone MCP servers - with the solution they are on, their open apps, active files, and what they're working on. Use this to see the full picture across a multi-app solution.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 Handler = args =>
                 {
@@ -3230,12 +3660,19 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     if (instances.Count == 0) return "No instances registered.";
 
                     var sb = new System.Text.StringBuilder();
-                    sb.AppendLine("Running Clarion IDE instances:");
+                    sb.AppendLine("Running Clarion Assistant instances:");
                     sb.AppendLine();
                     foreach (var inst in instances)
                     {
                         string label = inst.IsSelf ? " (this instance)" : "";
                         sb.AppendLine(string.Format("PID {0}{1}", inst.Pid, label));
+                        // The solution was recorded from the start and read back into InstanceInfo,
+                        // but no caller ever showed it — so "who else is on this solution?", the
+                        // question the whole feature exists to answer, came back without the
+                        // solution in it. Printed first because it is what decides whether a peer
+                        // is relevant to you at all (d051fbd1 item 1).
+                        if (!string.IsNullOrEmpty(inst.SolutionPath))
+                            sb.AppendLine("  Solution: " + inst.SolutionPath);
                         if (!string.IsNullOrEmpty(inst.AppFile))
                             sb.AppendLine("  App: " + Path.GetFileName(inst.AppFile));
                         if (!string.IsNullOrEmpty(inst.ActiveFile))
@@ -3541,24 +3978,458 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
 
         // ── SchemaGraph Tools ─────────────────────────────────────────
 
-        private SchemaGraphService GetSchemaGraph(Dictionary<string, object> args)
+        /// <summary>
+        /// A resolved schema database: the service plus WHERE it came from. GitHub #210: the
+        /// assistant answered from a stale dictionary of another project and nothing in the response
+        /// said so - tiers 2/3 of FindSchemaGraphDb are "first file the filesystem lists", and a
+        /// silent lottery is indistinguishable from a right answer. Every schema read stamps the
+        /// path and the tier on its output.
+        ///
+        /// Path and tier travel with the CALL, never through instance fields. FindSchemaGraphDb is
+        /// also invoked by SharedLspBridge.SchemaGraphDbPathProvider on every completion keystroke,
+        /// off-thread, and McpServer runs each request on a ThreadPool thread with no lock - the
+        /// first cut kept these in instance fields read after the SQLite call returned, and typing
+        /// in the embeditor during a search_tables re-stamped a tier-3 lottery result as "open
+        /// app's dictionary" (pipeline run 1: debugger, code-reviewer and verifier all traced it).
+        /// A provenance line that can lie is worse than none.
+        /// </summary>
+        private sealed class SchemaDb
         {
-            string dbPath = McpJsonRpc.GetString(args, "db_path");
-            if (string.IsNullOrEmpty(dbPath))
-                dbPath = FindSchemaGraphDb();
-            if (string.IsNullOrEmpty(dbPath))
-                return null;
-            return new SchemaGraphService(dbPath);
+            public SchemaGraphService Service;
+            public string Path;
+            public string Tier;
+            public string Stamp(string result)
+            {
+                return "SchemaGraph db: " + Path + "  [chosen by: " + Tier + "]\n" + result;
+            }
+            /// <summary>The not-found reply. Service is null; Tier then carries the miss note (which
+            /// .dctx to ingest), if FindSchemaGraphDb had one.</summary>
+            public string NotFoundMessage()
+            {
+                return "Error: SchemaGraph database not found"
+                     + (string.IsNullOrEmpty(Tier) ? "" : " - " + Tier)
+                     + ". Run ingest_schema first or provide db_path.";
+            }
         }
 
-        private string FindSchemaGraphDb()
+        // Never null: when no database is found, Service is null and Tier carries the reason.
+        private SchemaDb GetSchemaGraph(Dictionary<string, object> args)
         {
+            string tier;
+            string dbPath = McpJsonRpc.GetString(args, "db_path");
+            if (!string.IsNullOrEmpty(dbPath))
+                tier = "db_path argument";
+            else
+                dbPath = FindSchemaGraphDb(out tier);
+            if (string.IsNullOrEmpty(dbPath))
+                return new SchemaDb { Service = null, Path = null, Tier = tier };
+            return new SchemaDb { Service = new SchemaGraphService(dbPath), Path = dbPath, Tier = tier };
+        }
+
+        /// <summary>
+        /// The dictionary path most recently read off the LIVE app by a UI-thread tool (get_app_info,
+        /// get_app_dictionary), for readers that are NOT on the UI thread. FindSchemaGraphDb is one:
+        /// it is reached from SharedLspBridge.SchemaGraphDbPathProvider on worker threads, and
+        /// IUiDispatcher offers only a fire-and-forget BeginInvoke - a synchronous hop to the UI
+        /// thread from there has stalled the IDE for 57 seconds before (SharedLspBridge
+        /// sync-over-async). So the live object is never touched off-thread: UI-thread tools refresh
+        /// this, off-thread code reads it. Lives here rather than on AppTreeService because this file
+        /// is compiled into the standalone server too, and that build has no AppTreeService.
+        ///
+        /// Bound to the .app it was read from (LastKnownDictionaryApp), CLEARED when a UI-thread
+        /// tool finds no app or a dictionary-less app, and never written while the open app is
+        /// ambiguous. Off-thread readers still cannot know whether that app is STILL open, so tier 0
+        /// labels its pick "last inspected app's dictionary" and names the app - it does not claim
+        /// "open app". Pipeline run 1: the first cut wrote only on a non-empty path, never cleared,
+        /// and stamped "open app's dictionary" - close app A, open B, and B's schema questions were
+        /// answered from A with a confident provenance line. The exact class of lie this ticket exists to remove.
+        /// </summary>
+        // ONE immutable snapshot behind ONE reference. Path and app were two statics assigned one
+        // after the other; an off-thread reader between the two writes paired A's dictionary with
+        // B's app name in the label - a binding that never existed, and "call get_app_info to
+        // confirm" would then confirm B (pipeline run 2, adversary + debugger). A reference write
+        // is atomic; readers take the snapshot once.
+        private sealed class KnownDictionary
+        {
+            public readonly string Path;
+            public readonly string App;
+            public readonly string Detail;   // extra provenance for the label, e.g. "inspected 10:50 by IDE pid 100800"
+            public KnownDictionary(string path, string app, string detail) { Path = path; App = app; Detail = detail; }
+        }
+        private static KnownDictionary _knownDictionary;
+
+        public static string LastKnownDictionaryPath { get { var k = _knownDictionary; return k == null ? null : k.Path; } }
+        public static string LastKnownDictionaryApp  { get { var k = _knownDictionary; return k == null ? null : k.App; } }
+
+        private void RememberDictionaryPath(Dictionary<string, object> appInfo)
+        {
+            object p, a;
+            string path = appInfo != null && appInfo.TryGetValue("dictionaryPath", out p) ? p as string : null;
+            string app = appInfo != null && appInfo.TryGetValue("fileName", out a) ? a as string : null;
+            // A dictionary-less app clears the snapshot rather than preserving its predecessor's.
+            _knownDictionary = string.IsNullOrEmpty(path) ? null
+                : new KnownDictionary(path, string.IsNullOrEmpty(app) ? null : app, null);
+            OpenAppRecord.Write(_workspace == null ? null : _workspace.CurrentSolutionPath, path, app);
+        }
+
+        private void ForgetDictionaryPath()
+        {
+            _knownDictionary = null;
+            OpenAppRecord.Write(_workspace == null ? null : _workspace.CurrentSolutionPath, null, null);
+        }
+
+        /// <summary>
+        /// THE CACHE CROSSES A PROCESS BOUNDARY. After the d051fbd1 split, get_app_info and
+        /// get_app_dictionary run IN the IDE (clarion-assistant) while every schema tool runs in
+        /// the standalone clarion-tools PROCESS - so a static set in the addin is never seen by
+        /// the process that needs it. Found live by CA-demoleg-CC (5.9.0.1190): a valid
+        /// invoice.schemagraph.db beside the open app's .dct was found by nothing; all ten
+        /// pipeline gates had reasoned in-process. The addin therefore also writes a tiny record
+        /// keyed on the SOLUTION PATH - the one thing both processes know (the IDE injects
+        /// --solution per pane) - and the standalone's tier 0 reads it. The record names the
+        /// writing IDE's pid so a reader can drop it once that IDE is gone, and the inspection
+        /// time so the label can say how old "last inspected" is.
+        /// </summary>
+        /// <summary>
+        /// The Clarion IDE process that launched THIS standalone server (--ide-pid, passed by the
+        /// addin's McpServer.GenerateMcpConfig). Null in the addin itself and in a terminal-launched
+        /// server. With it set, the open-app record is read by IDE pid - a key that cannot drift.
+        /// </summary>
+        public static int? IdeProcessId;
+
+        private static class OpenAppRecord
+        {
+            private static string Dir()
+            {
+                return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                    "ClarionAssistant", "open-app");
+            }
+
+            // The IDE-pid-keyed file: the primary handover. The solution-keyed file below was the
+            // first cut, and the two processes disagreed about "the solution" as soon as the
+            // developer loaded a different one in the IDE (this pane's --solution is fixed at
+            // launch, the addin's workspace follows the IDE) - the addin wrote positive.dct into
+            // one slot while the standalone read invoice.dct from another (CA-demoleg-CC, build of
+            // 11:26). A process id is the same number on both sides for as long as it matters.
+            private static string PathForPid(int pid) { return Path.Combine(Dir(), "ide-" + pid + ".json"); }
+
+            private static string PathFor(string solution)
+            {
+                // Canonicalise BEFORE hashing, on both sides. The writer (addin) and the reader
+                // (standalone) receive the solution path through different routes, and
+                // Path.GetFullPath expands 8.3 names ("JOHNHI~1") to their long form - the
+                // cross-process test hashed the short form on one side and the long on the other,
+                // and the record was never found. Same key derivation, same file, or no handover.
+                string key = "no-solution";
+                if (!string.IsNullOrEmpty(solution))
+                {
+                    try { key = Path.GetFullPath(solution); } catch { key = solution; }
+                    key = key.Replace('/', '\\').TrimEnd('\\').ToLowerInvariant();
+                }
+                string hash;
+                using (var sha = System.Security.Cryptography.SHA1.Create())
+                    hash = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(key))).Replace("-", "").Substring(0, 16).ToLowerInvariant();
+                return Path.Combine(Dir(), hash + ".json");
+            }
+
+            // The solution-keyed file this process last wrote. The addin's solution key DRIFTS (its
+            // workspace follows the IDE), so a later write or a close-all lands under a different
+            // key and the earlier file is orphaned - CA-POSitiveAnywhere-CC watched a 13:09 record
+            // for POSitiveAnywhere.sln outlive a demoleg inspection AND a close-all, then get served
+            // as current by a standalone whose pid file had (correctly) been deleted. Track it and
+            // remove it whenever the key moves or the app goes away.
+            private static string _lastSolutionFile;
+
+            /// <summary>Writer side (the addin): the IDE-pid file always, the solution file too so a
+            /// terminal-launched server on the same solution can still benefit.</summary>
+            public static void Write(string solution, string dictionaryPath, string appFile)
+            {
+                int ownPid = System.Diagnostics.Process.GetCurrentProcess().Id;
+                WriteOne(PathForPid(ownPid), solution, dictionaryPath, appFile, ownPid);
+
+                string solFile = PathFor(solution);
+                string previous = _lastSolutionFile;
+                if (previous != null && !string.Equals(previous, solFile, StringComparison.OrdinalIgnoreCase))
+                {
+                    try { if (File.Exists(previous)) File.Delete(previous); } catch { }
+                }
+                WriteOne(solFile, solution, dictionaryPath, appFile, ownPid);
+                _lastSolutionFile = string.IsNullOrEmpty(dictionaryPath) ? null : solFile;
+            }
+
+            private static void WriteOne(string file, string solution, string dictionaryPath, string appFile, int pid)
+            {
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(file));
+                    if (string.IsNullOrEmpty(dictionaryPath))
+                    {
+                        if (File.Exists(file)) File.Delete(file);   // no app / dictionary-less app: nothing to hand over
+                        return;
+                    }
+                    var rec = new Dictionary<string, object>
+                    {
+                        { "solution", solution },
+                        { "dictionaryPath", dictionaryPath },
+                        { "app", appFile },
+                        { "pid", pid },
+                        { "inspectedAt", DateTime.Now.ToString("o") }
+                    };
+                    string tmp = file + ".tmp";
+                    File.WriteAllText(tmp, new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(rec), new UTF8Encoding(false));
+                    File.Copy(tmp, file, true);
+                    File.Delete(tmp);
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[McpToolRegistry] OpenAppRecord.Write: " + ex.Message); }
+            }
+
+            /// <summary>Reader side (the standalone): the launching IDE's pid file when --ide-pid was
+            /// given - and ONLY that file; its absence means "that IDE has nothing to hand over"
+            /// (no app, or a dictionary-less one), never "try the solution file instead". The
+            /// solution file is for a server launched with no IDE at all. Falling through from a
+            /// deleted pid file to a solution file is how a closed app's dictionary came back
+            /// from the dead with a fresh-looking timestamp (round 4, test 4c).</summary>
+            public static KnownDictionary Read(string solution)
+            {
+                if (IdeProcessId.HasValue)
+                    return ReadOne(PathForPid(IdeProcessId.Value));
+                return ReadOne(PathFor(solution));
+            }
+
+            private static KnownDictionary ReadOne(string file)
+            {
+                try
+                {
+                    if (!File.Exists(file)) return null;
+                    var rec = new System.Web.Script.Serialization.JavaScriptSerializer()
+                        .Deserialize<Dictionary<string, object>>(File.ReadAllText(file));
+                    object v;
+                    string dict = rec.TryGetValue("dictionaryPath", out v) ? v as string : null;
+                    if (string.IsNullOrEmpty(dict)) return null;
+                    string app = rec.TryGetValue("app", out v) ? v as string : null;
+                    int pid = rec.TryGetValue("pid", out v) ? Convert.ToInt32(v) : 0;
+                    string when = rec.TryGetValue("inspectedAt", out v) ? v as string : null;
+
+                    // The IDE that wrote it must still be running - otherwise this is a record of a
+                    // session that is over, and "last inspected" would describe a closed IDE.
+                    if (pid > 0)
+                    {
+                        try { System.Diagnostics.Process.GetProcessById(pid); }
+                        catch { return null; }
+                    }
+                    string detail = "inspected ";
+                    DateTime t;
+                    detail += (when != null && DateTime.TryParse(when, null, System.Globalization.DateTimeStyles.RoundtripKind, out t))
+                        ? t.ToString("HH:mm") : "earlier";
+                    if (pid > 0) detail += " by IDE pid " + pid;
+                    return new KnownDictionary(dict, app, detail);
+                }
+                catch { return null; }
+            }
+        }
+
+        // "The open app" has no answer when two or more apps are open and the focused tab is not an
+        // app view: FindAppViewContent then returns the FIRST app-bearing item of whichever workbench
+        // collection it tries, and AppTreeService already fails closed on exactly this for tree
+        // selections (CountOpenAppViews, see GetAppTreeSelectedProcedureName). get_app_dictionary
+        // fails closed the same way; get_app_info (pre-existing, callers expect an answer) annotates
+        // instead, and neither seeds the dictionary cache from a guess. (Pipeline run 1, adversary +
+        // debugger.)
+        private string AppAmbiguityError()
+        {
+            try
+            {
+                if (_appTree.CountOpenAppViews() <= 1 || _appTree.IsActiveWindowAppView()) return null;
+                var names = _appTree.GetOpenAppFileNames();
+                return "Error: " + names.Count + " apps are open and none of them has focus, so \"the open app\" is ambiguous: "
+                     + string.Join(" | ", names) + ". Click the tab of the app you mean and call again.";
+            }
+            catch { return null; }
+        }
+
+        private bool AnnotateAppAmbiguity(Dictionary<string, object> info)
+        {
+            try
+            {
+                int n = _appTree.CountOpenAppViews();
+                info["openAppCount"] = n;
+                if (n <= 1 || _appTree.IsActiveWindowAppView()) return false;
+                info["ambiguous"] = true;
+                info["openApps"] = _appTree.GetOpenAppFileNames();
+                info["warning"] = "More than one app is open and none has focus; this answer is whichever app the IDE listed first. "
+                                + "Click the tab of the app you mean and call again before relying on it.";
+                return true;
+            }
+            catch { return false; }
+        }
+
+        // --- get_app_dictionary response shaping (GitHub #210) ---
+        // The live TableDef DTOs carry the Modern Data pad's full column-detail-panel payload (validity
+        // summaries, flag chips, row pictures...). Shaping to plain dictionaries keeps a 217-table
+        // dictionary readable in a tool response and pins the JSON field names independently of the DTOs.
+        // KNOW THAT A SIBLING EXISTS: the Modern Data pad shapes the same DTOs differently in
+        // ModernEmbeditorViewContent.ColToDict / KeysToDicts / RelationsToDicts / BuildTableAttributes.
+        // That file is addin-only; this one compiles into both builds, which is why the shaper is not shared.
+
+        // The names-only index: what a big dictionary answers by default (see the handler).
+        private static Dictionary<string, object> ShapeLiveTableName(ClarionAppDataReader.TableDef t)
+        {
+            return new Dictionary<string, object>
+            {
+                { "name", t.Name },
+                { "prefix", t.Prefix },
+                { "driver", t.Driver }
+            };
+        }
+
+        private static Dictionary<string, object> ShapeLiveTable(ClarionAppDataReader.TableDef t, bool full)
+        {
+            var row = new Dictionary<string, object>
+            {
+                { "name", t.Name },
+                { "prefix", t.Prefix },
+                { "driver", t.Driver },
+                { "file", t.FullName },
+                { "description", string.IsNullOrEmpty(t.Description) ? null : t.Description },
+                { "fieldCount", t.Fields.Count },
+                { "keyCount", t.KeyDefs.Count },
+                { "relationCount", t.Relations.Count }
+            };
+            if (!full) return row;
+
+            var fields = new List<Dictionary<string, object>>();
+            foreach (var f in t.Fields) fields.Add(ShapeLiveField(f));
+            row["fields"] = fields;
+
+            var keys = new List<Dictionary<string, object>>();
+            foreach (var k in t.KeyDefs)
+            {
+                var comps = new List<string>();
+                foreach (var c in k.Components) comps.Add(c.Name);
+                keys.Add(new Dictionary<string, object>
+                {
+                    { "name", k.Name },
+                    { "type", k.KeyType },
+                    { "primary", k.Primary },
+                    { "unique", k.Unique },
+                    { "autoNumber", k.AutoNumber },
+                    { "components", comps }
+                });
+            }
+            row["keys"] = keys;
+
+            var rels = new List<Dictionary<string, object>>();
+            foreach (var r in t.Relations)
+            {
+                var maps = new List<string>();
+                foreach (var m in r.Mappings) maps.Add(m.From + " -> " + m.To);
+                rels.Add(new Dictionary<string, object>
+                {
+                    { "table", r.Name },
+                    { "type", r.Type },
+                    { "primaryKey", r.PrimaryKey },
+                    { "foreignKey", r.ForeignKey },
+                    { "mappings", maps }
+                });
+            }
+            row["relations"] = rels;
+            return row;
+        }
+
+        private static Dictionary<string, object> ShapeLiveField(ClarionAppDataReader.FieldDef f)
+        {
+            var row = new Dictionary<string, object>
+            {
+                { "name", f.Name },
+                { "type", f.Type }
+            };
+            // Only the attributes a schema comparison cares about; nulls are omitted so a plain
+            // "Name LONG" field is two keys, not twelve.
+            if (!string.IsNullOrEmpty(f.Picture)) row["picture"] = f.Picture;
+            if (!string.IsNullOrEmpty(f.ExternalName)) row["externalName"] = f.ExternalName;
+            if (!string.IsNullOrEmpty(f.Description)) row["description"] = f.Description;
+            if (!string.IsNullOrEmpty(f.Dimensions)) row["dim"] = f.Dimensions;
+            if (!string.IsNullOrEmpty(f.InitialValue)) row["initialValue"] = f.InitialValue;
+            if (f.Flags != null && f.Flags.Count > 0) row["flags"] = f.Flags;
+            if (f.Children != null && f.Children.Count > 0)
+            {
+                var kids = new List<Dictionary<string, object>>();
+                foreach (var c in f.Children) kids.Add(ShapeLiveField(c));
+                row["children"] = kids;   // GROUP members
+            }
+            return row;
+        }
+
+        // Path-only form for SharedLspBridge.SchemaGraphDbPathProvider, which has no use for the tier.
+        private string FindSchemaGraphDb() { string t; return FindSchemaGraphDb(out t); }
+
+        private string FindSchemaGraphDb(out string tier)
+        {
+            tier = null;
+            // 0. The dictionary of the app a UI-thread tool LAST INSPECTED (GitHub #210). Read from
+            //    the cache, never from the live object - this runs on worker threads too (see
+            //    LastKnownDictionaryPath). ingest_schema writes <dict>.schemagraph.db beside the
+            //    .dctx, and a .dctx exported from Global Properties sits beside its .dct under the
+            //    same base name, so the app's .dct path resolves to the same file. The label names
+            //    the app and says "last inspected": from here nobody can tell whether that app is
+            //    still the open one, so it does not claim to be. A .dctx exported elsewhere is NOT
+            //    found by this tier - it falls through, and the later tiers' labels say so.
+            string noDbNote = null;
+            try
+            {
+                // One read: path and app from the same snapshot. In the IDE host (the addin, where
+                // _appTree exists) the in-process snapshot is THE authority - it is what the UI-thread
+                // tools just set or cleared - and the on-disk record is never consulted: it exists
+                // for OTHER processes, and reading our own copy back would only ever be staler
+                // (round 4, 4c). A host with no IDE reads the record the IDE wrote for it.
+                var known = _knownDictionary
+                         ?? (_appTree != null ? null
+                             : OpenAppRecord.Read(_workspace == null ? null : _workspace.CurrentSolutionPath));
+                string dict = known == null ? null : known.Path;
+                if (!string.IsNullOrEmpty(dict))
+                {
+                    string dbPath = SchemaGraphService.GetDbPathForDictionary(dict);
+                    if (File.Exists(dbPath))
+                    {
+                        // RIGHT DICTIONARY, WRONG VINTAGE. The db is built from a .dctx EXPORT; the
+                        // app binds the .dct. On CC's machine the export was three months older than
+                        // the .dct and 9 tables adrift, and this label named the correct dictionary
+                        // with full confidence. The vintage that matters is the .dctx's write time
+                        // (the db's own time is merely when it was ingested - a db built today from
+                        // an April export would look fresh). Compare the .dct against the .dctx
+                        // beside it when there is one, else against the db. A stat, not a query.
+                        string vintage = "";
+                        try
+                        {
+                            DateTime dctTime = File.GetLastWriteTime(dict);
+                            string dctx = Path.ChangeExtension(dict, ".dctx");
+                            bool haveDctx = File.Exists(dctx);
+                            DateTime sourceTime = haveDctx ? File.GetLastWriteTime(dctx) : File.GetLastWriteTime(dbPath);
+                            if (dctTime > sourceTime.AddMinutes(1))
+                                vintage = " - WARNING: " + Path.GetFileName(dict) + " changed " + dctTime.ToString("yyyy-MM-dd")
+                                        + " but " + (haveDctx ? "the .dctx it was ingested from is " : "this db was built ")
+                                        + sourceTime.ToString("yyyy-MM-dd")
+                                        + "; export a fresh .dctx and re-run ingest_schema, or the answer may be out of date";
+                        }
+                        catch { }
+                        tier = "last inspected app's dictionary " + Path.GetFileName(dict)
+                             + " (app " + Path.GetFileName(known.App ?? "?")
+                             + (known.Detail != null ? ", " + known.Detail : "")
+                             + " - call get_app_info to confirm it is still the open app)" + vintage;
+                        return dbPath;
+                    }
+                    noDbNote = "; NOTE the last inspected app's dictionary " + Path.GetFileName(dict)
+                             + " has no .schemagraph.db beside it - ingest_schema its .dctx to bind it, or this may be the wrong dictionary";
+                }
+            }
+            catch { }
+
             // 1. Check Schema Sources registry for the current solution
-            if (_chatControl != null)
+            if (_workspace != null)
             {
                 // Try both the .sln path and the working directory — source may be linked with either
                 var pathsToTry = new List<string>();
-                string slnPath = _chatControl.CurrentSolutionPath;
+                string slnPath = _workspace.CurrentSolutionPath;
                 if (!string.IsNullOrEmpty(slnPath)) pathsToTry.Add(slnPath);
                 // Also try the solution directory (in case source was linked with folder path)
                 if (!string.IsNullOrEmpty(slnPath))
@@ -3580,7 +4451,10 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                             string connInfo = (string)src["connectionInfo"];
                             string dbPath = SchemaGraphService.GetDbPathForSource(id, type, connInfo);
                             if (File.Exists(dbPath))
+                            {
+                                tier = "Schema Source '" + (src.ContainsKey("name") ? src["name"] : id) + "' linked to the solution" + (noDbNote ?? "");
                                 return dbPath;
+                            }
                         }
                     }
                     catch { }
@@ -3590,14 +4464,26 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             // 2. Check near the currently open file or solution (legacy .dctx path)
             try
             {
-                string activePath = _editorService.GetActiveDocumentPath();
+                // Explicit null check, not a swallowed NullReferenceException. This fallback
+                // only exists to walk up from the OPEN DOCUMENT, which a host with no editor
+                // does not have (ticket d051fbd1). It used to RETURN here - which also skipped
+                // tier 3 and the miss note for every editor-less host, i.e. the standalone
+                // process where all the schema tools now live. CA-demoleg-CC planted a valid
+                // .schemagraph.db in the solution folder and nothing found it. Skip the walk,
+                // do not leave (GitHub #210).
+                string activePath = _editorService == null ? null : _editorService.GetActiveDocumentPath();
                 if (!string.IsNullOrEmpty(activePath))
                 {
                     string dir = Path.GetDirectoryName(activePath);
                     while (!string.IsNullOrEmpty(dir))
                     {
                         var dbFiles = Directory.GetFiles(dir, "*.schemagraph.db");
-                        if (dbFiles.Length > 0) return dbFiles[0];
+                        if (dbFiles.Length > 0)
+                        {
+                            tier = "first .schemagraph.db found walking up from the active document"
+                                + (dbFiles.Length > 1 ? " (" + dbFiles.Length + " candidates in " + dir + ", unordered)" : "") + (noDbNote ?? "");
+                            return dbFiles[0];
+                        }
                         var parent = Directory.GetParent(dir);
                         if (parent == null) break;
                         dir = parent.FullName;
@@ -3607,21 +4493,29 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             catch { }
 
             // 3. Try solution directory
-            if (_chatControl != null)
+            if (_workspace != null)
             {
-                string slnPath = _chatControl.CurrentSolutionPath;
+                string slnPath = _workspace.CurrentSolutionPath;
                 if (!string.IsNullOrEmpty(slnPath))
                 {
                     string slnDir = Path.GetDirectoryName(slnPath);
                     try
                     {
                         var dbFiles = Directory.GetFiles(slnDir, "*.schemagraph.db", SearchOption.AllDirectories);
-                        if (dbFiles.Length > 0) return dbFiles[0];
+                        if (dbFiles.Length > 0)
+                        {
+                            tier = "first .schemagraph.db found scanning the solution tree"
+                                + (dbFiles.Length > 1 ? " (" + dbFiles.Length + " candidates, unordered - may be the wrong dictionary; call get_app_info for the app's own)" : "") + (noDbNote ?? "");
+                            return dbFiles[0];
+                        }
                     }
                     catch { }
                 }
             }
 
+            // Every tier missed. The one thing the caller can act on is WHICH .dctx to ingest - carry
+            // the note out on the tier so the not-found message can name it (pipeline run 2, debugger).
+            tier = noDbNote == null ? null : noDbNote.TrimStart(';', ' ');
             return null;
         }
 
@@ -3705,11 +4599,12 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     if (string.IsNullOrEmpty(sql))
                         return "Error: sql parameter is required";
 
-                    var service = GetSchemaGraph(args);
+                    var db = GetSchemaGraph(args);
+                    var service = db.Service;
                     if (service == null)
-                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+                        return db.NotFoundMessage();
 
-                    return service.ExecuteQuery(sql);
+                    return db.Stamp(service.ExecuteQuery(sql));
                 }
             });
 
@@ -3730,12 +4625,13 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     if (string.IsNullOrEmpty(pattern))
                         return "Error: pattern is required";
 
-                    var service = GetSchemaGraph(args);
+                    var db = GetSchemaGraph(args);
+                    var service = db.Service;
                     if (service == null)
-                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+                        return db.NotFoundMessage();
 
                     int limit = McpJsonRpc.GetInt(args, "limit", 50);
-                    return service.SearchTables(pattern, limit);
+                    return db.Stamp(service.SearchTables(pattern, limit));
                 }
             });
 
@@ -3755,11 +4651,12 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     if (string.IsNullOrEmpty(name))
                         return "Error: name is required";
 
-                    var service = GetSchemaGraph(args);
+                    var db = GetSchemaGraph(args);
+                    var service = db.Service;
                     if (service == null)
-                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+                        return db.NotFoundMessage();
 
-                    return service.GetTable(name);
+                    return db.Stamp(service.GetTable(name));
                 }
             });
 
@@ -3780,12 +4677,13 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     if (string.IsNullOrEmpty(pattern))
                         return "Error: pattern is required";
 
-                    var service = GetSchemaGraph(args);
+                    var db = GetSchemaGraph(args);
+                    var service = db.Service;
                     if (service == null)
-                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+                        return db.NotFoundMessage();
 
                     int limit = McpJsonRpc.GetInt(args, "limit", 100);
-                    return service.SearchColumns(pattern, limit);
+                    return db.Stamp(service.SearchColumns(pattern, limit));
                 }
             });
 
@@ -3805,11 +4703,12 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     if (string.IsNullOrEmpty(table))
                         return "Error: table is required";
 
-                    var service = GetSchemaGraph(args);
+                    var db = GetSchemaGraph(args);
+                    var service = db.Service;
                     if (service == null)
-                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+                        return db.NotFoundMessage();
 
-                    return service.GetRelationships(table);
+                    return db.Stamp(service.GetRelationships(table));
                 }
             });
 
@@ -3829,11 +4728,12 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     if (string.IsNullOrEmpty(names))
                         return "Error: names is required";
 
-                    var service = GetSchemaGraph(args);
+                    var db = GetSchemaGraph(args);
+                    var service = db.Service;
                     if (service == null)
-                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+                        return db.NotFoundMessage();
 
-                    return service.ValidateNames(names);
+                    return db.Stamp(service.ValidateNames(names));
                 }
             });
 
@@ -3848,11 +4748,12 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    var service = GetSchemaGraph(args);
+                    var db = GetSchemaGraph(args);
+                    var service = db.Service;
                     if (service == null)
-                        return "Error: SchemaGraph database not found. Run ingest_schema first or provide db_path.";
+                        return db.NotFoundMessage();
 
-                    return service.GetStats();
+                    return db.Stamp(service.GetStats());
                 }
             });
 
@@ -4113,12 +5014,26 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             LspService.EnsureRunningInBackground();
         }
 
-        private void EnsureLspRunning()
+        private LspStartResult EnsureLspRunning()
         {
             // LspService is the single owner of the one LspClient. After this returns,
             // _lspClient == LspClient.Active == the one running client (when startable).
-            LspService.EnsureRunning();
+            var result = LspService.EnsureRunning();
             _lspClient = LspClient.Active;
+            return result;
+        }
+
+        /// <summary>
+        /// The "not running" error for the lsp_* tools that auto-start, carrying the REASON the
+        /// start did not happen (77aceec5). It used to be a bare "LSP not running", which sent the
+        /// caller to lsp_start - which then blamed the handshake - when the answer was simply that
+        /// no solution was known.
+        /// </summary>
+        private static string LspNotRunningError(LspStartResult start)
+        {
+            if (start == null || start.IsRunning)
+                return "Error: LSP not running. Call lsp_start for a diagnostic.";
+            return "Error: LSP not running - " + start.DescribeWhyNotRunning();
         }
 
         private string FormatLspResult(Dictionary<string, object> response)
@@ -4149,33 +5064,16 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
         /// Find an open DDDataDictionary object by iterating open ViewContents.
         /// Returns the DCT property of the first DataDictionaryViewContent found.
         /// </summary>
+        /// <summary>
+        /// The dictionary open in the IDE, or null. The reflection walk that used to live here
+        /// (WorkbenchSingleton -> ViewContentCollection -> DataDictionaryViewContent -> private
+        /// "DCT") moved to IIdeProbeService (ticket d051fbd1) so this file names no IDE type.
+        /// Returns null in a host without an IDE, which every caller already handles - it is the
+        /// same answer they got when no dictionary was open.
+        /// </summary>
         private object FindOpenDictionary()
         {
-            try
-            {
-                var workbench = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
-                if (workbench == null) return null;
-
-                var vcProp = workbench.GetType().GetProperty("ViewContentCollection",
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-                if (vcProp == null) return null;
-
-                var viewContents = vcProp.GetValue(workbench, null) as System.Collections.IEnumerable;
-                if (viewContents == null) return null;
-
-                foreach (var vc in viewContents)
-                {
-                    if (vc.GetType().Name == "DataDictionaryViewContent")
-                    {
-                        var dctProp = vc.GetType().GetProperty("DCT",
-                            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                        if (dctProp != null)
-                            return dctProp.GetValue(vc, null);
-                    }
-                }
-            }
-            catch { }
-            return null;
+            return _ideProbe != null ? _ideProbe.FindOpenDictionary() : null;
         }
 
         #endregion
@@ -4192,8 +5090,8 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
         private object ExecuteIndexCodeGraph(Dictionary<string, object> args, Action<double, string> onProgress)
         {
             string slnPath = McpJsonRpc.GetString(args, "sln_path");
-            if (string.IsNullOrEmpty(slnPath) && _chatControl != null)
-                slnPath = _chatControl.CurrentSolutionPath;
+            if (string.IsNullOrEmpty(slnPath) && _workspace != null)
+                slnPath = _workspace.CurrentSolutionPath;
             if (string.IsNullOrEmpty(slnPath))
                 return "Error: no solution path provided and no solution is open in the IDE.";
             if (!File.Exists(slnPath))
@@ -4208,9 +5106,11 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             // Cross-entry-point gate: RunIndex (header buttons / index_solution) may already
             // be writing this database. Refuse BEFORE opening the run log so this call can't
             // rotate the active run's transcript out from under it.
-            if (!IndexRunGate.TryEnter(dbPath))
+            string indexHolder;
+            if (!IndexRunGate.TryEnter(dbPath, out indexHolder))
                 return "Error: an index run is already in progress for this solution's database ("
-                    + dbPath + ") — wait for it to finish before starting another.";
+                    + dbPath + ") — held by " + indexHolder
+                    + ". Wait for it to finish before starting another.";
 
             var runLog = new IndexRunLog(Path.GetFileNameWithoutExtension(slnPath));
             try
@@ -4223,9 +5123,9 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     // PARITY with RunIndex/index_solution: same active .red, same library
                     // paths. This handler used to pass neither, so the same db was more or
                     // less complete depending on which tool indexed last (ticket d1a0aea6).
-                    if (_chatControl != null)
+                    if (_workspace != null)
                     {
-                        indexer.RedService = _chatControl.ActiveRedFileService;
+                        indexer.RedService = _workspace.ActiveRedFileService;
                     }
                     indexer.OnProgress += msg => runLog.WriteLine(msg);
                     if (onProgress != null)
@@ -4236,7 +5136,7 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     }
 
                     var result = indexer.IndexSolution(slnPath, incremental,
-                        _chatControl != null ? _chatControl.BuildIndexLibraryPaths() : null);
+                        _workspace != null ? _workspace.BuildIndexLibraryPaths() : null);
 
                     return string.Format(
                         "CodeGraph indexed successfully:\n" +
@@ -4296,9 +5196,9 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
         private string FindCodeGraphDb()
         {
             // First: check the solution selected in the solution bar
-            if (_chatControl != null)
+            if (_workspace != null)
             {
-                string dbPath = _chatControl.CurrentDbPath;
+                string dbPath = _workspace.CurrentDbPath;
                 if (!string.IsNullOrEmpty(dbPath) && File.Exists(dbPath))
                     return dbPath;
             }
@@ -4306,6 +5206,12 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             // Fallback: find .codegraph.db near the currently open file
             try
             {
+                // Explicit null check, not a swallowed NullReferenceException. This fallback
+                // only exists to walk up from the OPEN DOCUMENT, which a host with no editor
+                // does not have; the _workspace path above is the one that answers there.
+                // It worked by accident before - the catch below ate the NRE - and an
+                // accident is not a contract (ticket d051fbd1).
+                if (_editorService == null) return null;
                 string activePath = _editorService.GetActiveDocumentPath();
                 if (!string.IsNullOrEmpty(activePath))
                 {
@@ -4411,8 +5317,8 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             // failure here must never block the build the user actually asked for.
             if (toolName != null && ClarionSourceBuildTools.Contains(toolName))
             {
-                try { MonacoClarionEditor.SaveAllDirtyBeforeBuild(); }
-                catch (Exception ex) { MonacoSpikeLog.Write("[save-before-build] " + toolName + " pre-flush failed: " + ex.Message); }
+                try { if (_ideProbe != null) _ideProbe.SaveAllDirtyEditors(); }
+                catch (Exception ex) { if (DiagnosticLog != null) DiagnosticLog("[save-before-build] " + toolName + " pre-flush failed: " + ex.Message); }
             }
 
             try
@@ -4486,6 +5392,13 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     result.AppendLine(success ? "BUILD SUCCEEDED" : "BUILD FAILED");
                     result.AppendLine(string.Format("Exit code: {0} | Errors: {1} | Warnings: {2}", process.ExitCode, errorCount, warningCount));
                     result.AppendLine(string.Format("Command: {0} {1}", fileName, arguments));
+                    // A locked .app (GH #204) fails exactly like a real generation error; say which it is
+                    // up front, where a caller reads first, rather than leaving it buried in the output.
+                    // Deliberately NOT gated on the exit code: nobody has confirmed ClarionCL exits
+                    // non-zero on GENE000 "(status 32)", and the signature only ever appears on a
+                    // failure anyway, so gating it could only hide the message.
+                    string lockDiagnosis = ClarionClDiagnosis.DescribeAppLock(output.ToString() + errors.ToString());
+                    if (lockDiagnosis != null) result.AppendLine(lockDiagnosis);
                     result.AppendLine();
 
                     if (output.Length > 0)
@@ -4595,8 +5508,28 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
 
         #endregion
 
+        /// <summary>
+        /// True when this host can actually drive the Clarion IDE. False in the standalone MCP
+        /// server, where AppTreeFactory / IdeProbeFactory are left unset and no IEditorService is
+        /// injected.
+        /// </summary>
+        private bool HasIde { get { return _editorService != null || _appTree != null || _ideProbe != null; } }
+
         private void Register(McpTool tool)
         {
+            // Do not advertise what this host cannot do. An MCP client reads the tool list as a
+            // contract: registering get_active_file in a process with no editor means a caller asks
+            // for the open document and gets a NullReferenceException, which is strictly worse than
+            // the tool being absent - absent is a fact the client can plan around.
+            if (tool != null && tool.IdeOnly && !HasIde) return;
+
+            // The mirror image: something else is serving the editor-agnostic tools, so offering
+            // them here too would advertise the SAME 59 tools under two prefixes. That is not
+            // merely wasteful - it doubles the tool list a model must choose from, and the two
+            // copies can disagree, because one reads the IDE's live solution and the other reads
+            // whatever solution its own process was pointed at. One owner per tool.
+            if (tool != null && _ideToolsOnly && !tool.IdeOnly) return;
+
             _tools[tool.Name] = tool;
         }
 

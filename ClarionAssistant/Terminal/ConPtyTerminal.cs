@@ -28,6 +28,7 @@ namespace ClarionAssistant.Terminal
         private volatile bool _isDisposed;
         private volatile bool _isRunning;
         private int _cleanupStarted;   // CAS guard: teardown (CleanupCore worker) runs at most once across Stop/Dispose/ForceKill
+        private int _exitedRaised;     // CAS guard: ProcessExited fires at most once, whichever path reaches it first
 
         // Static registry of LIVE terminals so the addin shutdown hook can fast-kill every child-process
         // tree (pwsh -> claude/node -> conhost) BEFORE native IDE teardown — the prime cause of Clarion
@@ -250,12 +251,33 @@ namespace ClarionAssistant.Terminal
             catch (ObjectDisposedException) { }
             finally
             {
-                if (_isRunning)
-                {
-                    _isRunning = false;
-                    try { ProcessExited?.Invoke(this, EventArgs.Empty); } catch { }
-                }
+                _isRunning = false;
+                RaiseProcessExitedOnce("readloop");
             }
+        }
+
+        /// <summary>
+        /// Raise ProcessExited exactly once, from whichever teardown path reaches it first
+        /// (ticket 9a0ce0de).
+        ///
+        /// WHY THIS EXISTS. ReadLoop's finally used to be the only raise site, and it was guarded
+        /// by `if (_isRunning)`. That made the event fire only when the child died SPONTANEOUSLY
+        /// (user typed exit, claude crashed). A DELIBERATE close goes Stop()/Dispose() -> Cleanup(),
+        /// which clears _isRunning BEFORE KillProcessTree() — so by the time ReadLoop unwound, the
+        /// guard was already false and the event was silently dropped. Not a race: ReadLoop blocks
+        /// in _outputReader.Read and can only return AFTER the kill closes the pipe, so the
+        /// suppression was deterministic, not intermittent.
+        ///
+        /// The consumers that never ran because of it: the MultiTerminal roster disconnect (a CA
+        /// terminal stayed listed with no process behind it) and KnowledgeService.EndSession —
+        /// across CA's whole history only 4 of 446 recorded sessions ever got an ended_at, and
+        /// those 4 came from the MCP path, not from here.
+        /// </summary>
+        private void RaiseProcessExitedOnce(string origin)
+        {
+            if (Interlocked.Exchange(ref _exitedRaised, 1) != 0) return;
+            Services.ShutdownLog.Log("ConPty ProcessExited raised (origin=" + origin + ")");
+            try { ProcessExited?.Invoke(this, EventArgs.Empty); } catch { }
         }
 
         private void FlushOutputQueue(object state)
@@ -329,6 +351,12 @@ namespace ClarionAssistant.Terminal
             try { _outputTimer?.Dispose(); } catch { }
 
             KillProcessTree();   // kill FIRST so nothing below can block waiting on live children
+
+            // The child really is dead now, so tell the subscribers — ReadLoop can no longer do it
+            // for us on this path (see RaiseProcessExitedOnce). Raised AFTER the kill so a handler
+            // never observes a half-dead terminal, and before the bounded worker below so it isn't
+            // subject to that Join budget.
+            RaiseProcessExitedOnce("cleanup");
 
             var worker = new Thread(CleanupCore) { IsBackground = true, Name = "ConPTY-Cleanup" };
             worker.Start();
@@ -407,6 +435,15 @@ namespace ClarionAssistant.Terminal
         /// Skipping ClosePseudoConsole / pipe disposes is deliberate — they can block, and the OS reclaims
         /// those handles when Clarion exits. Getting the processes dead is what lets the IDE close.
         /// </summary>
+        /// <remarks>
+        /// DELIBERATELY does NOT RaiseProcessExitedOnce (ticket 9a0ce0de). Handlers do real work —
+        /// an HTTP round-trip and a SQLite write — and this runs on the IDE's shutdown path, which
+        /// is the one path that must never grow slower or more fragile. Roster cleanup at shutdown
+        /// is done explicitly and inline by AssistantChatControl.DisconnectAllForShutdown, called
+        /// from ShutdownService BEFORE this kill, while everything is still alive.
+        /// Note this also sets _cleanupStarted, so a later Cleanup() short-circuits and will not
+        /// raise the event either — which is the intent, not an oversight.
+        /// </remarks>
         public void ForceKillForShutdown()
         {
             _isDisposed = true;

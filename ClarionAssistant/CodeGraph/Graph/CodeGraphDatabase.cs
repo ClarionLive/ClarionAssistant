@@ -155,6 +155,23 @@ namespace ClarionCodeGraph.Graph
             }
         }
 
+        /// <summary>
+        /// Wipe every indexed row ahead of a full re-index.
+        ///
+        /// DELIBERATELY DOES NOT RESET sqlite_sequence, and it would be a mistake to "tidy that
+        /// up". The id columns are AUTOINCREMENT, so after this the next symbol id continues from
+        /// the old high-water mark rather than restarting at 1 — a re-index of an unchanged
+        /// solution produces byte-identical rows carrying entirely different ids (measured: all
+        /// 16,631 shifted by exactly +16,631).
+        ///
+        /// That looks untidy and is the SAFE behaviour. Anything holding an id across a re-index —
+        /// a cached from_id/to_id, a multi-step agent workflow that queries ids, re-indexes, then
+        /// uses them — now matches NOTHING, which the caller can see. Reset the sequence and the
+        /// same stale id silently matches whichever unrelated symbol inherited that number, and
+        /// the wrong answer looks exactly like a right one.
+        ///
+        /// Documented in query_codegraph's tool description, because callers are the ones exposed.
+        /// </summary>
         public void ClearAll()
         {
             string sql = @"

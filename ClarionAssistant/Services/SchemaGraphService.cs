@@ -954,16 +954,10 @@ namespace ClarionAssistant.Services
             if (string.IsNullOrEmpty(connectionString))
                 return "Error: connection string is required";
 
-            // Load Npgsql dynamically to avoid hard dependency
-            System.Reflection.Assembly npgsqlAsm;
-            try
-            {
-                npgsqlAsm = System.Reflection.Assembly.Load("Npgsql");
-            }
-            catch
-            {
-                return "Error: Npgsql.dll not found. Place Npgsql.dll in the ClarionAssistant folder to enable PostgreSQL support.";
-            }
+            string loadError;
+            System.Reflection.Assembly npgsqlAsm = NpgsqlLoader.TryLoad(out loadError);
+            if (npgsqlAsm == null)
+                return "Error: " + loadError;
 
             Type connType = npgsqlAsm.GetType("Npgsql.NpgsqlConnection");
             System.Data.Common.DbConnection pgConn;
@@ -1144,6 +1138,7 @@ namespace ClarionAssistant.Services
                                 FROM pg_proc p
                                 JOIN pg_namespace n ON p.pronamespace = n.oid
                                 WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+                                  AND p.prokind <> 'a'
                                 ORDER BY n.nspname, p.proname";
                             using (var reader = cmd.ExecuteReader())
                             {
