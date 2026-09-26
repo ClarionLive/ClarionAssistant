@@ -322,7 +322,7 @@ namespace ClarionAssistant.Services
         /// The timeout error, truthful about what the abandoned call may still do. <paramref name="found"/>
         /// is the state McpCallToken.Abandon saw: NotStarted = it never ran and never will; Running = it
         /// was cancelled - tool-specific, because the tools that honour the token react differently:
-        /// apply_embed_edits rolls its writes back, save_and_close_embeditor skips the save and leaves the
+        /// apply_embed_edits discards its writes at its save step (after this reply, so unconfirmed), save_and_close_embeditor skips the save and leaves the
         /// edits unsaved in the open embeditor, and work other tools already did cannot be interrupted;
         /// Committed = it was already saving and may still complete.
         /// </summary>
@@ -336,8 +336,9 @@ namespace ClarionAssistant.Services
             else if (found == McpCallToken.Committed)
                 what = "The call was already SAVING when the wait ended, so it may still complete. ";
             else if (string.Equals(toolName, "apply_embed_edits", StringComparison.OrdinalIgnoreCase))
-                what = "The call was cancelled: the embed edits it had not saved yet are rolled back instead of "
-                    + "saved (the result says so if the rollback itself fails). ";
+                what = "The call was cancelled: when the IDE reaches its save step it discards the embed edits "
+                    + "instead of saving them. That rollback happens after this reply and is NOT confirmed here - "
+                    + "if it fails, the embeditor stays open with unsaved agent edits (close it without saving). ";
             else if (string.Equals(toolName, "save_and_close_embeditor", StringComparison.OrdinalIgnoreCase))
                 what = "The call was cancelled before saving: nothing was saved, and the edits remain UNSAVED in the "
                     + "open embeditor. ";

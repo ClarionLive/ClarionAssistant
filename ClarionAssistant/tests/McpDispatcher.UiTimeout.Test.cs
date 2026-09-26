@@ -105,7 +105,8 @@ static class UiTimeoutTest
         Ok("cancelled save_and_close_embeditor: nothing saved, edits remain unsaved, no rollback claimed",
             mSave.Contains("nothing was saved") && mSave.Contains("remain UNSAVED") && !mSave.Contains("rolled back"), mSave);
         string mApply = McpDispatcher.BuildTimeoutMessage("apply_embed_edits", 180, McpCallToken.Running);
-        Ok("cancelled apply_embed_edits: rolled back", mApply.Contains("rolled back"), mApply);
+        Ok("cancelled apply_embed_edits: discards at its save step, rollback not claimed as confirmed",
+            mApply.Contains("discards the embed edits") && mApply.Contains("NOT confirmed") && !mApply.Contains("rolled back"), mApply);
         string mOther = McpDispatcher.BuildTimeoutMessage("open_procedure_embed", 180, McpCallToken.Running);
         Ok("cancelled other tool: may stand, no rollback claimed",
             mOther.Contains("may stand") && !mOther.Contains("rolled back"), mOther);
