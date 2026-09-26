@@ -310,13 +310,6 @@ function Invoke-GitQuiet([string[]]$GitArgs) {
     }
 }
 
-# Returns $true when the LSP may ship, $false when it must not. It does NOT exit: an LSP-copy
-# problem is not a reason to abandon the Clarion builds. This used to `exit 7`, which aborted all
-# four Clarion targets AND the C# addin before a single one was built -- cutting straight across
-# the "a build failure for ONE Clarion release must not block shipping to the others" rule the
-# final summary below is built around. The caller skips just the LSP copy instead, so every version
-# still deploys and keeps whatever server it already had, and the run ends non-zero so nobody reads
-# it as clean.
 # Lowercase hex sha256 of a file's BYTES — see the matching helper in Sync-LspServer.ps1. Read the
 # bytes explicitly: this hash identifies the exact artifact that ships, so nothing about it may
 # depend on an encoding or line-ending interpretation.
@@ -328,6 +321,13 @@ function Get-FileSha256($path) {
     } finally { $sha.Dispose() }
 }
 
+# Returns $true when the LSP may ship, $false when it must not. It does NOT exit: an LSP-copy
+# problem is not a reason to abandon the Clarion builds. This used to `exit 7`, which aborted all
+# four Clarion targets AND the C# addin before a single one was built -- cutting straight across
+# the "a build failure for ONE Clarion release must not block shipping to the others" rule the
+# final summary below is built around. The caller skips just the LSP copy instead, so every version
+# still deploys and keeps whatever server it already had, and the run ends non-zero so nobody reads
+# it as clean.
 function Test-LspPin($sourceDir) {
     $manifest = Get-Content (Join-Path $ProjectDir "lsp-server-sync\lsp-snapshot.json") -Raw | ConvertFrom-Json
 

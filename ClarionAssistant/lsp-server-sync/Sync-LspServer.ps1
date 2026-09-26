@@ -135,6 +135,48 @@ function Get-FileSha256($path) {
         return -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
     } finally { $sha.Dispose() }
 }
+
+# Build identity for a pure tree that is NOT a git checkout (the supported "Using existing (non-git)
+# pure tree as-is" case), where there is no HEAD to stamp the build with. Without a fallback the
+# stamp check could never match there, so -Pure rebuilt on every run. Fingerprint the inputs the
+# server build is compiled from instead: the root package/tsconfig/esbuild files plus every file
+# under server\ and common\ (node_modules and out excluded). Any edit to those sources changes the
+# fingerprint and forces a rebuild, exactly as a moved HEAD does for a git tree. Returns
+# "tree:<sha256>", or $null when nothing fingerprintable is there.
+function Get-SourceFingerprint($root) {
+    $files = @()
+    foreach ($name in @('package.json', 'package-lock.json', 'tsconfig.json', 'tsconfig.base.json', 'esbuild.mjs')) {
+        $p = Join-Path $root $name
+        if (Test-Path -LiteralPath $p -PathType Leaf) { $files += (Get-Item -LiteralPath $p) }
+    }
+    foreach ($dir in @('server', 'common')) {
+        $d = Join-Path $root $dir
+        if (Test-Path -LiteralPath $d -PathType Container) {
+            $files += Get-ChildItem -LiteralPath $d -Recurse -File -Force |
+                Where-Object { $_.FullName -notmatch '[\\/](node_modules|out)[\\/]' }
+        }
+    }
+    if (-not $files) { return $null }
+    $rootFull = (Resolve-Path -LiteralPath $root).ProviderPath.TrimEnd('\', '/')
+    $lines = foreach ($f in $files) {
+        $rel = $f.FullName.Substring($rootFull.Length).TrimStart('\', '/').Replace('\', '/')
+        "$rel`t$(Get-FileSha256 $f.FullName)"
+    }
+    $lines = [string[]]$lines
+    [Array]::Sort($lines, [StringComparer]::Ordinal)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))
+        return 'tree:' + (-join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') }))
+    } finally { $sha.Dispose() }
+}
+
+# Short display form of a build id: 8 chars of a commit, or "tree:" + 8 chars of a fingerprint.
+function Format-BuildId($id) {
+    if (-not $id) { return '(none)' }
+    if ($id.StartsWith('tree:')) { return 'tree:' + $id.Substring(5, [Math]::Min(8, $id.Length - 5)) }
+    return $id.Substring(0, [Math]::Min(8, $id.Length))
+}
 # The unescape has to be backslash-aware. A blanket `-replace '\\u0026', '&'` over the SERIALIZED
 # TEXT cannot tell an escape ConvertTo-Json just emitted from characters that belong to a value.
 # Put a backslash followed by the characters u0026 into a note as ordinary prose, and
@@ -278,27 +320,42 @@ if ($Pure) {
     # inside out/ deliberately: delete out/ to force a rebuild (as the message below advertises) and
     # the stamp goes with it, so a stale stamp can never outlive the build it describes.
     $buildStamp = Join-Path $PureRoot 'out\.pure-build-stamp.json'
-    $stampedCommit = $null
+    $stampedId = $null
     if (Test-Path -LiteralPath $buildStamp) {
-        try { $stampedCommit = (Get-Content -LiteralPath $buildStamp -Raw -Encoding UTF8 | ConvertFrom-Json).commit }
-        catch { $stampedCommit = $null }   # unreadable stamp == no stamp, so we rebuild
+        try {
+            $stampObj  = Get-Content -LiteralPath $buildStamp -Raw -Encoding UTF8 | ConvertFrom-Json
+            # buildId is the comparison key; a stamp from before it existed carried only a commit.
+            $stampedId = if ($stampObj.buildId) { $stampObj.buildId } else { $stampObj.commit }
+        } catch { $stampedId = $null }   # unreadable stamp == no stamp, so we rebuild
     }
     $headNow = Invoke-GitQuiet @('-C', $PureRoot, 'rev-parse', 'HEAD')
+    # The build identity: the commit for a git tree. A non-git tree has no HEAD, and with a null id
+    # the stamp could never match, so -Pure rebuilt on EVERY run there. Fall back to a fingerprint
+    # of the build's source inputs, and say which identity is in use so the choice is visible.
+    $buildId = $headNow
+    if (-not $buildId) {
+        $buildId = Get-SourceFingerprint $PureRoot
+        if ($buildId) {
+            Info "not a git tree — identifying the build by source fingerprint $(Format-BuildId $buildId)"
+        } else {
+            Warn "not a git tree and no build sources found to fingerprint — cannot tell which source built out/; rebuilding"
+        }
+    }
 
-    # Build (idempotent: skip if a pure build is already present FOR THIS COMMIT)
+    # Build (idempotent: skip if a pure build is already present FOR THIS COMMIT / SOURCE)
     if ($SkipBuild) {
         Warn "Skipping build (-SkipBuild)."
     } elseif ((Test-Path $builtServer) -and ((Get-Content $builtServer -Raw) -notmatch 'codegraph|CodeGraph') `
-              -and $headNow -and $stampedCommit -and ($stampedCommit -eq $headNow)) {
-        OK "pure build already present for $($headNow.Substring(0,8)) (skipping rebuild; delete out/ to force)"
+              -and $buildId -and $stampedId -and ($stampedId -eq $buildId)) {
+        OK "pure build already present for $(Format-BuildId $buildId) (skipping rebuild; delete out/ to force)"
     } else {
         # Rebuild when the stamp is missing or names a different commit. Without this, a re-pointed
         # upstream tag was invisible: the refresh moved HEAD, out/ was already there so the rebuild
         # was skipped, and the manifest was then rewritten with the NEW commit describing an OLD
         # artifact -- a manifest that agreed with itself and was wrong.
-        if ((Test-Path $builtServer) -and $headNow -and $stampedCommit -and ($stampedCommit -ne $headNow)) {
-            Info "existing out/ was built from $($stampedCommit.Substring(0,8)) but HEAD is now $($headNow.Substring(0,8)) — rebuilding"
-        } elseif ((Test-Path $builtServer) -and -not $stampedCommit) {
+        if ((Test-Path $builtServer) -and $buildId -and $stampedId -and ($stampedId -ne $buildId)) {
+            Info "existing out/ was built from $(Format-BuildId $stampedId) but the source is now $(Format-BuildId $buildId) — rebuilding"
+        } elseif ((Test-Path $builtServer) -and -not $stampedId) {
             Info "existing out/ has no build stamp — rebuilding so the manifest can describe it honestly"
         }
         Info "Building (npm ci && npm run compile) — can take a minute..."
@@ -329,15 +386,22 @@ if ($Pure) {
     if (Test-Path $builtServer) {
         $serverHash = Get-FileSha256 $builtServer
         OK "server.js sha256: $($serverHash.Substring(0,16))..."
-        # Stamp the build so a later run can tell WHICH commit produced this out/ (see $buildStamp).
-        $stamp = [pscustomobject]@{
-            commit = $headNow
-            tag    = $Tag
-            sha256 = $serverHash
-            builtAt = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssK')
+        # Stamp the build so a later run can tell WHICH commit/source produced this out/ (see
+        # $buildStamp). Not under -SkipBuild: nothing was built this run, so stamping would certify an
+        # out/ of unknown origin as belonging to the current source, and the next run would trust it.
+        if ($SkipBuild -and ($stampedId -ne $buildId)) {
+            Warn "-SkipBuild: out/ not stamped (this run did not build it) — the next run without -SkipBuild will rebuild"
+        } else {
+            $stamp = [pscustomobject]@{
+                buildId = $buildId
+                commit  = $headNow
+                tag     = $Tag
+                sha256  = $serverHash
+                builtAt = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssK')
+            }
+            [System.IO.File]::WriteAllText($buildStamp, ($stamp | ConvertTo-Json),
+                                           (New-Object System.Text.UTF8Encoding($false)))
         }
-        [System.IO.File]::WriteAllText($buildStamp, ($stamp | ConvertTo-Json),
-                                       (New-Object System.Text.UTF8Encoding($false)))
     }
 
     # Record the pure pin (targetPin/currentPin included -- see Update-PinFields)
