@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data.SQLite;
 using System.Diagnostics;
@@ -21,6 +21,17 @@ namespace ClarionAssistant.Services
         // Stale threshold — instances that haven't heartbeated in this many seconds are considered dead
         private const int StaleSeconds = 30;
         private const int HeartbeatIntervalMs = 10000; // 10 seconds
+
+        // Set by Stop() so a heartbeat already in flight neither re-arms the timer nor re-inserts the
+        // row Deregister() just removed.
+        private volatile bool _stopping;
+
+        // Test seams (tests\InstanceCoordination.ReRegister.Test.cs). Production uses the defaults.
+        /// <summary>Is THIS process's UI alive? Gates re-registering a row a peer's sweep deleted.</summary>
+        internal Func<bool> SelfResponsive = CurrentProcessResponding;
+        /// <summary>The per-peer liveness check the sweep uses (existence AND a responding UI).</summary>
+        internal Func<int, bool> PeerAliveAndResponding = IsAliveAndResponding;
+        internal int HeartbeatInterval = HeartbeatIntervalMs;
 
         // Current state — updated by the host before each heartbeat
         public string SolutionPath { get; set; }
@@ -98,13 +109,32 @@ namespace ClarionAssistant.Services
         /// </summary>
         public void Start()
         {
+            _stopping = false;
             CleanupStale();
             Register();
 
-            _heartbeatTimer = new Timer(HeartbeatIntervalMs);
-            _heartbeatTimer.Elapsed += (s, e) => Heartbeat();
-            _heartbeatTimer.AutoReset = true;
+            // AutoReset=false, re-armed at the END of each beat: beats never overlap. The sweep calls
+            // Process.Responding on every peer, and each call can wait up to ~5s on a hung one; with
+            // AutoReset=true a slow sweep let the next Elapsed start on another threadpool thread while
+            // the last was still running, and they piled up. Now a slow beat only delays the next one.
+            _heartbeatTimer = new Timer(HeartbeatInterval);
+            _heartbeatTimer.Elapsed += OnHeartbeatElapsed;
+            _heartbeatTimer.AutoReset = false;
             _heartbeatTimer.Start();
+        }
+
+        private void OnHeartbeatElapsed(object sender, ElapsedEventArgs e)
+        {
+            try { Heartbeat(); }
+            finally
+            {
+                var t = sender as Timer;
+                if (!_stopping && t != null)
+                {
+                    try { t.Start(); }
+                    catch (ObjectDisposedException) { /* Stop() disposed it while this beat ran */ }
+                }
+            }
         }
 
         /// <summary>
@@ -112,6 +142,7 @@ namespace ClarionAssistant.Services
         /// </summary>
         public void Stop()
         {
+            _stopping = true;
             if (_heartbeatTimer != null)
             {
                 _heartbeatTimer.Stop();
@@ -152,7 +183,7 @@ namespace ClarionAssistant.Services
             catch { /* best-effort on shutdown */ }
         }
 
-        private void Heartbeat()
+        internal void Heartbeat()
         {
             try
             {
@@ -180,10 +211,24 @@ namespace ClarionAssistant.Services
                 // was cleared out from under us. Before this, an UPDATE-only heartbeat left that instance
                 // invisible to every peer until it was restarted; re-registering costs one INSERT on a
                 // path that already runs every 10s. (PR #208 review.)
-                if (rows == 0)
+                //
+                // ...but ONLY when our own UI is alive. This heartbeat runs on a threadpool timer, so a HUNG
+                // Clarion keeps beating too: without this gate a zombie that a peer's sweep just deleted
+                // put itself straight back within one interval, and the sweep never won. The check is the
+                // same predicate the peers' sweep deletes us by (Process.Responding on this process), so
+                // we re-register exactly when a sweep would keep us: a busy IDE comes back on the first
+                // beat after its UI frees up, a hung one stays deleted.
+                if (rows == 0 && !_stopping)
                 {
-                    Debug.WriteLine("[InstanceCoord] heartbeat found no row for pid " + _pid + " — re-registering");
-                    Register();
+                    if (SelfResponsive())
+                    {
+                        Debug.WriteLine("[InstanceCoord] heartbeat found no row for pid " + _pid + " — re-registering");
+                        Register();
+                    }
+                    else
+                    {
+                        Debug.WriteLine("[InstanceCoord] heartbeat found no row for pid " + _pid + ", UI not responding — staying deregistered");
+                    }
                 }
 
                 CleanupStale();
@@ -214,7 +259,7 @@ namespace ClarionAssistant.Services
                     }
 
                     foreach (int pid in stalePids)
-                        if (!IsAliveAndResponding(pid)) DeleteInstance(conn, pid);
+                        if (!PeerAliveAndResponding(pid)) DeleteInstance(conn, pid);
 
                     // PASS 2 — GH #179 (2026-08-29 report): the heartbeat is a System.Timers.Timer, so it
                     // fires on a threadpool thread and is completely unaffected by a blocked UI thread. A
@@ -236,7 +281,7 @@ namespace ClarionAssistant.Services
                     }
 
                     foreach (int pid in freshPids)
-                        if (!IsAliveAndResponding(pid)) DeleteInstance(conn, pid);
+                        if (!PeerAliveAndResponding(pid)) DeleteInstance(conn, pid);
                 }
             }
             catch (Exception ex)
@@ -255,6 +300,27 @@ namespace ClarionAssistant.Services
                     return p.Responding;
             }
             catch { return false; }
+        }
+
+        /// <summary>
+        /// Is THIS process's UI answering? Process.Responding on ourselves: SendMessageTimeout(WM_NULL,
+        /// SMTO_ABORTIFHUNG) to our own main window, sent from the heartbeat's threadpool thread, so it can
+        /// never deadlock against the UI thread it is asking about. Chosen over a UI-thread timestamp
+        /// because (1) it is exactly the predicate a peer's sweep deletes our row by, so the two sides
+        /// cannot disagree and ping-pong the row; (2) it is the OS's own "Not Responding" test, not a
+        /// threshold we tune; (3) this file is also linked into the headless clarion-mcp-server, which has
+        /// no UI thread and must not reference WinForms: with no main window Responding is true, and a
+        /// peer's sweep never deletes such a row either. A Process object caches MainWindowHandle, so
+        /// take a fresh one each time. Can't tell -> true: re-registering is the pre-#208 behaviour.
+        /// </summary>
+        private static bool CurrentProcessResponding()
+        {
+            try
+            {
+                using (var p = Process.GetCurrentProcess())
+                    return p.Responding;
+            }
+            catch { return true; }
         }
 
         private static void DeleteInstance(SQLiteConnection conn, int pid)
