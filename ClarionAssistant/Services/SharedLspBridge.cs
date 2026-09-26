@@ -537,6 +537,11 @@ namespace ClarionAssistant.Services
             }
             if (primary == null) primary = new List<LspClient.CompletionItemInfo>();
 
+            // GH #187: the server's own list can name the same member twice. Every merge below dedupes
+            // what IT adds against this list, but nothing deduped the list against itself, so both copies
+            // reached Monaco as identical rows. Collapse them first; the merges are unchanged.
+            RemoveDuplicateServerItems(primary);
+
             // CodeGraph prefix-completion augmentation (task a47a6cac Phase 1). Mark's pure upstream
             // server does MEMBER-ACCESS-ONLY completion; for a BARE PREFIX (line not ending in '.') it
             // returns nothing. We merge in global symbols (procedures/functions/classes/vars) from the
@@ -629,6 +634,42 @@ namespace ClarionAssistant.Services
             catch (Exception ex) { LspTrace.Write("[SharedLspBridge] colon-qualifier completion failed: " + ex.Message); }
 
             return primary;
+        }
+
+        /// <summary>GH #187: drop repeats from the language server's own completion list, in place. Two
+        /// items are candidates when kind, label and inserted text all match (case-insensitive, like
+        /// every other completion dedup here); a later candidate is dropped only when its detail is empty,
+        /// equals a kept copy's detail, or the kept copy has none (it then inherits this one's detail/
+        /// documentation). A declaration/implementation pair that differs only by a MISSING detail still
+        /// collapses, while overloads survive whether the server puts the signature in the label
+        /// ("Trace(Queue pQueue)" vs "Trace(&lt;string errMsg&gt;)") or only in the detail (two bare
+        /// "Trace" rows with different details). Never throws.</summary>
+        private static void RemoveDuplicateServerItems(List<LspClient.CompletionItemInfo> items)
+        {
+            if (items == null || items.Count < 2) return;
+            try
+            {
+                var kept = new Dictionary<string, List<LspClient.CompletionItemInfo>>(StringComparer.OrdinalIgnoreCase);
+                items.RemoveAll(it =>
+                {
+                    if (it == null) return false;
+                    string key = it.Kind + "\u0001" + (it.Label ?? "") + "\u0001" + (it.InsertText ?? it.Label ?? "");
+                    List<LspClient.CompletionItemInfo> same;
+                    if (!kept.TryGetValue(key, out same)) { kept[key] = new List<LspClient.CompletionItemInfo> { it }; return false; }
+                    foreach (var k in same)
+                    {
+                        bool dup = string.IsNullOrEmpty(it.Detail) || string.IsNullOrEmpty(k.Detail) ||
+                                   string.Equals(k.Detail, it.Detail, StringComparison.OrdinalIgnoreCase);
+                        if (!dup) continue;
+                        if (string.IsNullOrEmpty(k.Detail)) k.Detail = it.Detail;
+                        if (string.IsNullOrEmpty(k.Documentation)) k.Documentation = it.Documentation;
+                        return true;
+                    }
+                    same.Add(it);   // same label, different detail: a distinct row (e.g. a bare-label overload)
+                    return false;
+                });
+            }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] completion dedupe failed: " + ex.Message); }
         }
 
         // Matches an "IDENT:" qualifier (with the trailing ':') immediately left of the cursor, allowing a
@@ -1123,7 +1164,18 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>Shared diagnostics. <paramref name="liveBuffer"/> true → use the last synced embeditor
-        /// buffer; false → read the file from disk (MCP tool). Single request/response (no publish/wait).</summary>
+        /// buffer; false → read the file from disk (MCP tool). Single request/response (no publish/wait).
+        ///
+        /// GH #216 (clarion/diagnosticsStatus): nothing to gate on THIS side. IClarionLanguageClient
+        /// exposes no notification stream, no status and no pending flag — only GetDiagnosticsAsync's
+        /// final array and a DiagnosticsPublished event without version or state — so the readiness
+        /// wait can only live inside the ClarionLsp addin, which owns the connection. clarion-lsp
+        /// v1.4.3 does exactly that (waits for `complete` on the version it synced, keeps waiting on
+        /// `deferred`, falls back to its DiagnosticsSettleMs on older servers). An older addin
+        /// answers after its settle window, and we cannot tell the two apart from here. The bundled
+        /// fallback branch (LspClient.GetDiagnostics) carries the #216 gate itself.
+        /// This call runs on the caller's thread through Block (bounded), never the UI thread:
+        /// lsp_diagnostics is an MCP tool call, and AssistantChatControl dispatches it via Task.Run.</summary>
         private static LspClient.DiagnosticWaitResult SharedGetDiagnostics(IClarionLanguageClient c, string filePath, int timeoutMs, bool liveBuffer)
         {
             string buffer = null;
@@ -1996,10 +2048,27 @@ namespace ClarionAssistant.Services
                 using (var p = new CodeGraphProvider())
                 {
                     if (!p.Open(db)) return null;
-                    var refs = p.GetReferences(word);
+                    // The request position scopes the answer: the requester's own local, or its own
+                    // project's declarations - never every same-named row in the db (pipeline run 1).
+                    var refs = p.GetReferences(word, filePath, line + 1);
                     if (refs == null || refs.Count == 0) return null;
                     var list = new System.Collections.ArrayList();
-                    foreach (var r in refs) list.Add(CgLocation(r.FilePath, r.LineNumber));
+                    // The symbol's real width where the provider found it on the line (77aceec5);
+                    // CgLocation's zero-width column-0 range otherwise.
+                    foreach (var r in refs)
+                    {
+                        var loc = CgLocation(r.FilePath, r.LineNumber);
+                        if (r.Length > 0)
+                        {
+                            int l = r.LineNumber > 0 ? r.LineNumber - 1 : 0;
+                            loc["range"] = new Dictionary<string, object>
+                            {
+                                { "start", new Dictionary<string, object> { { "line", l }, { "character", r.Character } } },
+                                { "end",   new Dictionary<string, object> { { "line", l }, { "character", r.Character + r.Length } } }
+                            };
+                        }
+                        list.Add(loc);
+                    }
                     return WrapResult(list);
                 }
             }

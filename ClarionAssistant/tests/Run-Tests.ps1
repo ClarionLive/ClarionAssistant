@@ -99,6 +99,23 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "NpgsqlLoader.SmokeTest"
                Sources = @("tests\NpgsqlLoader.SmokeTest.cs", "Services\NpgsqlLoader.cs")
                Refs = @("System.dll") }
+            # 77aceec5: the addin -> standalone "IDE's open solution" handover the plain-Chat LSP
+            # fallback reads. Record dir redirected to temp; never touches %LOCALAPPDATA%.
+            @{ Name = "IdeSolutionRecord.Test"
+               Sources = @("tests\IdeSolutionRecord.Test.cs", "Services\IdeSolutionRecord.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Web.Extensions.dll") }
+            # GH #209: the running Clarion.exe matched the FIRST version entry on its bin folder (a
+            # Clarion.NET compiler, not the IDE). Fixture = the reporter's own ClarionProperties.xml.
+            @{ Name = "ClarionVersionService.ExeMatchTest"
+               Sources = @("tests\ClarionVersionService.ExeMatchTest.cs", "Services\ClarionVersionService.cs", "Services\ClarionConfigDirectory.cs")
+               Refs = @("System.dll", "System.Xml.dll")
+               Args = @((Join-Path $TestDir "fixtures\gh209\ClarionProperties.xml")) }
+            # GH #187 follow-up: the CA Embeditor's Monaco <-> LSP line mapping agrees with what
+            # WrapBuffer actually prepended (0 lines for a buffer opening with MEMBER/PROGRAM).
+            @{ Name = "EmbedLspContext.LineMapping"
+               Sources = @("tests\EmbedLspContext.LineMapping.cs", "tests\EmbedLspContext.LineMapping.Stubs.cs",
+                           "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll") }
             @{ Name = "ClarionClDiagnosis.Test"
                Sources = @("tests\ClarionClDiagnosis.Test.cs", "Services\ClarionClDiagnosis.cs")
                Refs = @("System.dll") }
@@ -107,6 +124,14 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\EmbedLspContext.RedResolve.Test.cs", "tests\EmbedLspContext.RedResolve.Stubs.cs",
                            "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll") }
+            # Per-embed-slot structure balance (Passes 2 & 3), LSP pass stubbed. Reuses the
+            # StructureScan stubs so the REAL ClarionAppDataReader supplies the routine set.
+            @{ Name = "ModernEmbeditorDiagnostics.SlotBalance"
+               Sources = @("tests\ModernEmbeditorDiagnostics.SlotBalance.cs", "tests\ModernEmbeditorDiagnostics.SlotBalance.Stubs.cs",
+                           "tests\ClarionAppDataReader.StructureScan.Stubs.cs",
+                           "Services\ModernEmbeditorDiagnostics.cs",
+                           "Services\ClarionAppDataReader.cs", "Services\ClarionAppDataReader.Model.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Xml.dll") }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"

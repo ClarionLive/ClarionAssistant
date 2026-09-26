@@ -22,6 +22,12 @@
     }
 
     html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', Tahoma, sans-serif; background: var(--bg); color: var(--fg); }
+    /* GH #195: Windows High Contrast — before Monaco paints, the backdrop is the contrast theme's own window
+       colour, not the light/dark pref's (a near-white flash for a dark contrast theme). !important beats the
+       early inline background the boot script sets. */
+    @media (forced-colors: active) {
+        html, body { background: Canvas !important; color: CanvasText; }
+    }
 
     #toolbar {
         display: flex; align-items: center; gap: 8px;
@@ -120,7 +126,7 @@
     body.has-embheader #navBackBtn.nav-split-main:hover,
     body.has-embheader #navListBtn.nav-split-caret:hover { background: rgba(127,127,127,0.22); }
 
-    #toast {
+    #toast, #toastAux {
         position: absolute; right: 14px; bottom: 14px; z-index: 20;
         max-width: 60%; padding: 8px 14px; border-radius: 6px;
         background: #313244; color: #cdd6f4; font-size: 12px;
@@ -128,8 +134,10 @@
         opacity: 0; transform: translateY(8px); transition: opacity .15s, transform .15s;
         pointer-events: none; white-space: pre-wrap;
     }
-    #toast.show { opacity: 1; transform: translateY(0); }
-    #toast.err { background: #f38ba8; color: #1e1e2e; }
+    /* #toastAux: a plain toast raised while an actionable toast holds #toast (see showToast). */
+    #toastAux { z-index: 21; }
+    #toast.show, #toastAux.show { opacity: 1; transform: translateY(0); }
+    #toast.err, #toastAux.err { background: #f38ba8; color: #1e1e2e; }
     /* Actionable toast (external-change notice): has real buttons, so it must accept pointer events —
        unlike the plain message toast above, which is deliberately click-through. */
     #toast.actionable { pointer-events: auto; display: flex; align-items: center; gap: 10px; white-space: normal; }
@@ -917,6 +925,7 @@
     <div id="ftabMenu" class="hidden"></div>
     <div id="loading">Loading editor…</div>
     <div id="toast"></div>
+    <div id="toastAux"></div>
 
 <!-- Shared Clarion language registration (grammar + monarch). Cache-busted via Date.now()
      so iterative IDE testing never sees a stale copy; document.write keeps it synchronous
@@ -1008,6 +1017,7 @@
         try { postToHost({ action: 'embedState', dirty: isDirty, slots: gatherSlots() }); } catch (e) { }
     }
     var toastTimer = null;
+    var toastAuxTimer = null;     // #toastAux's own timer — see showToast
     var saveSafetyTimer = null;   // ensures the "Saving…" toast can never hang forever
     var pendingRequests = {};     // reqId -> resolver, for async LSP completion/hover round-trips
     var reqSeq = 0;
@@ -1207,7 +1217,17 @@
         // Apply the persisted theme to the document IMMEDIATELY — before Monaco initializes — so the page never
         // shows its default-dark body for the ~1s Monaco takes to load (that was the on-load "black flash",
         // most visible on a light theme). setTheme() still re-applies once Monaco is live.
-        try { document.documentElement.style.background = themePrefDark ? '#1e1e2e' : '#eff1f5'; } catch (e) { }
+        // GH #195: high contrast gets its own backdrop. Windows High Contrast (forced colors) -> the system
+        // window colour, which is what Monaco's auto-detected hc theme paints; Monaco's own persisted HC toggle
+        // -> hc-black (from dark) / hc-light (from light), pure black / white. Otherwise the pref's colour.
+        try {
+            var forcedColors = !!(window.matchMedia && window.matchMedia('(forced-colors: active)').matches);
+            var monacoHc = false;
+            try { monacoHc = localStorage.getItem('modernEmbeditor.themeHC') === '1'; } catch (e) { }
+            document.documentElement.style.background = forcedColors ? 'Canvas'
+                : monacoHc ? (themePrefDark ? '#000000' : '#ffffff')
+                : (themePrefDark ? '#1e1e2e' : '#eff1f5');
+        } catch (e) { }
         function applyEarlyTheme() { try { document.body.classList.toggle('light', !themePrefDark); } catch (e) { } }
         if (document.body) applyEarlyTheme(); else document.addEventListener('DOMContentLoaded', applyEarlyTheme);
         // Mirror the effective pref to the host (settings.txt) so the NEXT open's pre-paint surfaces —
@@ -1376,6 +1396,7 @@
                 installGlyphBookmarkClick();   // far-left margin click toggles a bookmark (#16)
                 addFormatAction(editor);       // right-click → Format Selection (Ctrl+I dispatched via keybindings)
                 addRunToCursorAction(editor);  // right-click → Run to Cursor (CA Debugger, only while paused; 2484592b)
+                addBreakOnEntryAction(editor); // right-click → Break on Entry (CA Debugger, any state; e61e4f92)
                 installAutoCase(editor);        // as-you-type keyword casing (of → OF on word boundary)
                 installFormatOnEnter(editor);   // format the completed line on Enter (Clarion-style)
                 installCaretBehindEol(editor);  // Clarion "Can move caret behind EOL" (inert until settings arm it)
@@ -1411,6 +1432,7 @@
                     var toastEl = document.getElementById('toast');
                     if (toastEl) toastEl.className = '';
                     if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+                    hideToastAux();   // where that toast went if a change notice was up (showToast)
                     postToHost({ action: 'reload' });
                 });
                 var splitBtn = document.getElementById('splitBtn');
@@ -1895,19 +1917,40 @@
         showToast(msg, false);
     }
 
+    // A plain toast never replaces an actionable one (3517fd15 item 5): while showActionToast's notice is up
+    // in #toast, the message goes to #toastAux, raised just above it, so the notice and its buttons survive
+    // (e.g. a Break on Entry miss arriving while "File changed on disk" is unresolved). Only one plain toast
+    // is ever visible, the newest: a plain toast in #toast hides a leftover in #toastAux.
     function showToast(message, ok, persist) {
         var t = document.getElementById('toast');
         if (!t) return;
+        var aux = document.getElementById('toastAux');
+        if (aux && t.classList.contains('actionable') && t.classList.contains('show')) {
+            aux.textContent = message;
+            aux.style.bottom = (14 + t.offsetHeight + 8) + 'px';
+            aux.className = 'show' + (ok === false ? ' err' : '');
+            if (toastAuxTimer) { clearTimeout(toastAuxTimer); toastAuxTimer = null; }
+            if (!persist)
+                toastAuxTimer = setTimeout(function () { aux.className = ''; }, ok === false ? 8000 : 6000);
+            return;
+        }
+        hideToastAux();
         t.textContent = message;
         t.className = 'show' + (ok === false ? ' err' : '');
         if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
         if (!persist)
             toastTimer = setTimeout(function () { t.className = ''; }, ok === false ? 8000 : 6000);
     }
+    function hideToastAux() {
+        var aux = document.getElementById('toastAux');
+        if (aux) aux.className = '';
+        if (toastAuxTimer) { clearTimeout(toastAuxTimer); toastAuxTimer = null; }
+    }
 
     // A toast with real, clickable buttons (external-change notice: Reload / Show diff / Close tab). Unlike
     // showToast, this never auto-dismisses on a timer — it stays up until the developer resolves it (or
-    // explicitly dismisses it) or another toast replaces it, since silently discarding the notice would leave
+    // explicitly dismisses it) or another action toast replaces it (a plain showToast cannot: it goes to
+    // #toastAux instead), since silently discarding the notice would leave
     // a stale-content tab with no indication the file actually diverged from disk.
     // Each action may set `dismiss: false` to opt out of auto-closing the toast on click — used by "Show
     // diff", which is just a peek: the notice is still unresolved after looking, so Reload/Close tab must
@@ -2084,6 +2127,7 @@
         { id: 'upperCase',         label: 'Uppercase Selection',  def: 'Ctrl+Shift+U', run: cmdUpperCase },
         { id: 'lowerCase',         label: 'Lowercase Selection',  def: 'Ctrl+Shift+L', run: cmdLowerCase },
         { id: 'invertCase',        label: 'Invert Case',          def: 'Ctrl+\\',      run: cmdInvertCase },
+        { id: 'markWord',          label: 'Mark Word',            def: 'Ctrl+W',       run: cmdMarkWord },
         { id: 'structureDesigner', label: 'Structure Designer',   def: 'Ctrl+D',       run: cmdStructureDesigner },
         { id: 'toggleBookmark',    label: 'Toggle Bookmark',      def: 'Ctrl+F2',      run: cmdToggleBookmark },
         { id: 'nextBookmark',      label: 'Next Bookmark',        def: 'F2',           run: cmdNextBookmark },
@@ -2360,7 +2404,7 @@
     // KEPT (PM decision, ticket f022fb4e): "Run to Cursor" means the cursor, VS and VS Code behave the same
     // way, and moving the caret ourselves would destroy the user's selection as a side effect of a menu
     // click. So: ed.getPosition() on purpose — do not "fix" this to the clicked line.
-    var debuggerState = { available: false, paused: false };
+    var debuggerState = { available: false, paused: false, breakOnEntry: false };
     function addRunToCursorAction(ed) {
         if (!ed || ed.__runToCursorKeys) return;
         try {
@@ -2389,11 +2433,46 @@
     function setDebuggerState(msg) {
         debuggerState.available = !!msg.available;
         debuggerState.paused = !!msg.available && !!msg.paused;
+        debuggerState.breakOnEntry = !!msg.available && !!msg.breakOnEntry;
         [editor, editor2].forEach(function (ed) {
             var k = ed && ed.__runToCursorKeys;
             if (!k) return;
             try { k.available.set(debuggerState.available); k.paused.set(debuggerState.paused); } catch (e) { }
         });
+        [editor, editor2].forEach(function (ed) {
+            var k = ed && ed.__breakOnEntryKey;
+            if (!k) return;
+            try { k.set(debuggerState.breakOnEntry); } catch (e) { }
+        });
+    }
+
+    // ----- Debugger "Break on Entry" (task e61e4f92) -----
+    // Right-click -> "Break on Entry" asks the CA Debugger for a breakpoint on the entry of the procedure that
+    // contains the caret line. Unlike Run to Cursor it is shown in EVERY debugger state (owner decision 5,
+    // 2026-09-24: idle stages it for the next Start), whenever the host says the loaded debugger has the
+    // member (debuggerState.breakOnEntry). Hidden, not greyed, for the reason given above. The caret is the
+    // position for the same reason too. The host answers a miss with {type:'toast'}; a hit shows in the pad.
+    function addBreakOnEntryAction(ed) {
+        if (!ed || ed.__breakOnEntryKey) return;
+        try {
+            ed.__breakOnEntryKey = ed.createContextKey('caDebuggerBreakOnEntry', debuggerState.breakOnEntry);
+            ed.addAction({
+                id: 'ca-debugger-break-on-entry',
+                label: 'Break on Entry',
+                contextMenuGroupId: 'navigation',
+                contextMenuOrder: 0.6,
+                precondition: 'caDebuggerBreakOnEntry',
+                run: function (e) { requestBreakOnEntry(e || ed); }
+            });
+        } catch (e) { }
+    }
+    function requestBreakOnEntry(ed) {
+        try {
+            if (!debuggerState.breakOnEntry) return;
+            var p = ed && ed.getPosition();
+            if (!p) return;
+            postToHost({ action: 'breakOnProcEntry', line: p.lineNumber, column: p.column });
+        } catch (e) { }
     }
 
     // ----- As-you-type keyword casing -----
@@ -3099,6 +3178,60 @@
     function cmdNextBookmark() { navBookmark(1); }
     function cmdPrevBookmark() { navBookmark(-1); }
 
+    // ===================== Mark Word (Ctrl+W, GH #229) =====================
+    // Select the word the caret is in, at every cursor. A word is a run of [A-Za-z0-9_] -- the colon is
+    // deliberately NOT part of one. The Clarion wordPattern (clarion-language.js) keeps `LOC:Name` whole,
+    // so double-click already takes the full prefixed name; Mark Word is how to take just `LOC` or just
+    // `Name`. Pressed again while that part is still exactly what is selected, it widens to the whole
+    // word the editor sees (getWordAtPosition under that wordPattern, i.e. the double-click word), so
+    // Ctrl+W Ctrl+W takes `LOC:Name`. Selection only, no edit, so like the bookmark commands it works
+    // anywhere, not only in the editable slots.
+    var MARK_WORD_CHAR = /[A-Za-z0-9_]/;
+
+    // The word touching Monaco column `column` (1-based; the caret sits before character column-1) as
+    // { startColumn, endColumn } with endColumn exclusive, or null when the caret touches no word. The
+    // character before the caret is tried first, so a caret just after a word (`Name| = 1`) marks it.
+    function markWordRange(text, column) {
+        var i = Math.max(0, Math.min(column - 1, text.length));   // 0-based index of the char after the caret
+        var anchor;
+        if (i > 0 && MARK_WORD_CHAR.test(text.charAt(i - 1))) anchor = i - 1;
+        else if (i < text.length && MARK_WORD_CHAR.test(text.charAt(i))) anchor = i;
+        else return null;
+        var start = anchor, end = anchor + 1;
+        while (start > 0 && MARK_WORD_CHAR.test(text.charAt(start - 1))) start--;
+        while (end < text.length && MARK_WORD_CHAR.test(text.charAt(end))) end++;
+        return { startColumn: start + 1, endColumn: end + 1 };
+    }
+
+    // Each selection is judged at its caret end (its position, not its anchor). A selection that is exactly
+    // the part there widens to the editor's word, when that is wider; one that already IS that wider word
+    // stays (so a third press is a no-op); anything else becomes the part. A cursor touching no word keeps
+    // what it had. One setSelections call, and none when nothing changed.
+    function cmdMarkWord() {
+        var ed = activeEd(); if (!ed) return;
+        var model = ed.getModel(); if (!model) return;
+        var sels = ed.getSelections(); if (!sels || !sels.length) return;
+        var changed = false;
+        var next = sels.map(function (s) {
+            var ln = s.positionLineNumber;
+            var r = markWordRange(model.getLineContent(ln), s.positionColumn);
+            if (!r) return s;
+            var from = Math.min(s.selectionStartColumn, s.positionColumn), to = Math.max(s.selectionStartColumn, s.positionColumn);
+            var oneLine = s.selectionStartLineNumber === ln;
+            var w = model.getWordAtPosition({ lineNumber: ln, column: r.startColumn });
+            var wider = w && w.startColumn <= r.startColumn && w.endColumn >= r.endColumn
+                && (w.startColumn < r.startColumn || w.endColumn > r.endColumn);
+            if (oneLine && wider && from === w.startColumn && to === w.endColumn) return s;      // already the whole word
+            if (oneLine && from === r.startColumn && to === r.endColumn) {
+                if (!wider) return s;                                                             // nothing wider
+                r = { startColumn: w.startColumn, endColumn: w.endColumn };
+            }
+            changed = true;
+            return new monaco.Selection(ln, r.startColumn, ln, r.endColumn);
+        });
+        if (changed) ed.setSelections(next);
+    }
+
     // ===================== Split view (#15) =====================
     // Two Monaco editors over ONE shared ITextModel. Model edits, decorations (read-only / embed /
     // bookmark / find highlights) and the language's LSP providers are model/language-level, so they show
@@ -3160,6 +3293,7 @@
         installCommandPalette(editor2); // F1 / Ctrl+Shift+P in the split pane too
         addFormatAction(editor2);       // right-click → Format Selection in the split pane too
         addRunToCursorAction(editor2);  // ...and Run to Cursor (keys seeded from the current debuggerState)
+        addBreakOnEntryAction(editor2); // ...and Break on Entry
         installAutoCase(editor2);       // as-you-type keyword casing in the split pane too
         installFormatOnEnter(editor2);  // format the completed line on Enter in the split pane too
         installCaretBehindEol(editor2); // caret-behind-EOL in the split pane too (shared model, one padded line)
@@ -4013,11 +4147,31 @@
     // longer clearing markers (below), overshooting costs nothing but a late no-op.
     var DIAG_TIMEOUT_MS = 10000;
 
+    // GH #176: ordering guard. requestFromHost correlates each reply to its own request, but nothing said
+    // whether that reply is still the NEWEST one — setModelMarkers replaces the whole set, so whichever
+    // .then ran last won, even an older request's, and painted line numbers from another buffer version
+    // (squiggles a few lines off until the next round-trip). Each request is stamped with a sequence
+    // number and the model's version id at dispatch; a reply renders only if no newer request has been
+    // sent AND the buffer it was computed for is still the buffer on screen.
+    var diagReqSeq = 0;
+
     function refreshDiagnostics() {
         if (!editor) return;
         var model = editor.getModel();
+        var mySeq = ++diagReqSeq;
+        var myVersion = model.getVersionId();
         requestFromHost('diagnostics', { buffer: model.getValue(), ranges: liveEditableRanges() }, DIAG_TIMEOUT_MS)
             .then(function (resp) {
+                // Superseded: a newer request is in flight (or already rendered) — its answer owns the markers.
+                if (mySeq !== diagReqSeq) return;
+                // The buffer moved on since dispatch (or the model was swapped): these line numbers belong to
+                // text that is no longer on screen. Ask again for the current buffer rather than paint them —
+                // a programmatic edit may not have scheduled a pass of its own. Only when no pass is pending:
+                // typing already armed one, and re-arming would just push it back.
+                if (!editor || editor.getModel() !== model || model.getVersionId() !== myVersion) {
+                    if (editor && editor.getModel() === model && !diagTimer) scheduleDiagnostics();
+                    return;
+                }
                 // null = the host never replied in time: NO INFORMATION, which is not the same claim as
                 // "this file has zero diagnostics". setModelMarkers REPLACES the whole set, so treating a
                 // timeout as an empty list actively wipes every squiggle AND its gutter/overview-ruler
@@ -4043,7 +4197,7 @@
 
     function scheduleDiagnostics() {
         if (diagTimer) clearTimeout(diagTimer);
-        diagTimer = setTimeout(refreshDiagnostics, 600);
+        diagTimer = setTimeout(function () { diagTimer = null; refreshDiagnostics(); }, 600);   // null = no pass pending
     }
 
     // registerClarionFolding() now lives in the shared clarion-language.js (loaded above) so the
@@ -4806,7 +4960,7 @@
         }
         if ((el = document.getElementById('setFontFamily'))) {
             var followingFontFamily = (s.followIdeIndentation !== false) && _ideOpts && typeof _ideOpts.fontFamily === 'string' && _ideOpts.fontFamily !== '';
-            el.value = followingFontFamily ? _ideOpts.fontFamily : ((typeof s.fontFamily === 'string') ? s.fontFamily : '');
+            setFontFamilyBox(el, followingFontFamily ? _ideOpts.fontFamily : ((typeof s.fontFamily === 'string') ? s.fontFamily : ''));
         }
         if ((el = document.getElementById('setOccurrenceHighlight'))) el.checked = (s.occurrenceHighlight !== false);   // default ON (#62)
         if ((el = document.getElementById('setHorizontalScrollbar'))) el.value = s.horizontalScrollbar || 'auto';
@@ -4892,7 +5046,7 @@
             minimap: chk('setMinimap'),
             completeOnInsertKey: chk('setCompleteOnInsertKey'),
             fontSize: storedPref('fontSize', num('setFontSize', 13, 6, 48)),
-            fontFamily: storedPref('fontFamily', (function () { var e = document.getElementById('setFontFamily'); return e ? e.value.trim().slice(0, 64) : ''; })()),
+            fontFamily: storedPref('fontFamily', (function () { var e = document.getElementById('setFontFamily'); return e ? fontFamilyFieldValue(e).trim().slice(0, 64) : ''; })()),
             occurrenceHighlight: (function () { var e = document.getElementById('setOccurrenceHighlight'); return e ? !!e.checked : true; })(),
             horizontalScrollbar: sel('setHorizontalScrollbar', 'auto'),
             // ----- Smart Formatter -----
@@ -4980,7 +5134,7 @@
         if (!e) return;
         // Set the control ONLY — deliberately no 'change' dispatch. The import commits once via
         // onSettingChanged(); firing per-control events would post one saveSettings per imported key.
-        if (m.kind === 'chk') e.checked = !!v; else e.value = String(v);
+        if (m.kind === 'chk') e.checked = !!v; else if (e.id === 'setFontFamily') setFontFamilyBox(e, String(v)); else e.value = String(v);
         // An import IS a deliberate new stored pref, so update _storedPrefs for the follow-owned keys as well.
         // Without this, importing a font while follow-mode owns the field would write the value into a control
         // that storedPref() then overrides on the commit below, and the imported font would vanish silently.
@@ -5422,6 +5576,56 @@
         ov.remove();
     }
 
+    // ===================== Font family picker (GH #184)
+    // A native <input list> filters its <datalist> by the text already in the box, so once a font was set,
+    // opening the list showed only that one font. While the box has focus it is blanked (the full list shows;
+    // the current font stays readable as the placeholder), and on the way out the old value is put back
+    // unless the developer picked or typed something. Deliberately erasing it still means "default": the
+    // erase is an input event, so it counts as an edit. fontFamilyFieldValue() reads through the blanking,
+    // so anything that saves settings while the box is focused never mistakes it for "default".
+    var _ffStash = null;         // the value the box held when it was blanked; null = not blanked
+    var _ffEdited = false;       // an input event since blanking (a pick from the list is one)
+    var _ffPlaceholder = null;
+    function fontFamilyFieldValue(e) {
+        if (!e) return '';
+        if (e.value === '' && _ffStash !== null && !_ffEdited) return _ffStash;
+        return e.value;
+    }
+    function ffBlank(e) {
+        if (_ffStash !== null || e.disabled || e.value === '') return;
+        _ffStash = e.value;
+        _ffEdited = false;
+        _ffPlaceholder = e.placeholder;
+        e.placeholder = _ffStash;
+        e.value = '';
+    }
+    // Every page write to the box goes through here (settings from the host, follow-IDE, VS Code import): the
+    // written value is the new truth, so drop any blanking state — blur must not put the old font back over it.
+    function setFontFamilyBox(e, v) {
+        if (_ffStash !== null) { e.placeholder = _ffPlaceholder; _ffStash = null; _ffEdited = false; }
+        e.value = v;
+    }
+    function ffRestore(e) {
+        if (_ffStash === null) return;
+        if (e.value === '' && !_ffEdited) e.value = _ffStash;
+        e.placeholder = _ffPlaceholder;
+        _ffStash = null;
+        _ffEdited = false;
+    }
+    function wireFontFamilyPicker() {
+        var e = document.getElementById('setFontFamily');
+        if (!e) return;
+        // Only on the way IN. A click inside the already-focused box (to edit the name in place, say to add a
+        // fallback font) leaves the text alone; the full list comes back on the next focus.
+        e.addEventListener('focus', function () { ffBlank(e); });
+        e.addEventListener('input', function () { if (_ffStash !== null) _ffEdited = true; });
+        // Must be registered BEFORE the generic change -> onSettingChanged listener: a change that fires on the
+        // way out while the box is still blank then sees the restored value, not a false "default".
+        e.addEventListener('change', function () { ffRestore(e); });
+        e.addEventListener('blur', function () { ffRestore(e); });
+    }
+    // ===================== end Font family picker
+
     function wireSettingsPanel() {
         var btn = document.getElementById('settingsBtn');
         if (btn) btn.addEventListener('click', function () {
@@ -5432,6 +5636,7 @@
             // reopening later must not offer a stale "current → imported" the developer has since changed.
             if (p.classList.contains('hidden')) vscHide();
         });
+        wireFontFamilyPicker();   // GH #184 — before the change listeners below (see its comment)
         var ids = ['setCursorBehindEol', 'setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setFontFamily', 'setOccurrenceHighlight', 'setHorizontalScrollbar',
             // Smart Formatter controls
             'setPreferredColumn', 'setContLineMultiplier', 'setIndentComments', 'setDontIndentCol1Comments', 'setFormatLineOnEnter',
@@ -5458,7 +5663,7 @@
                 var s = _storedPrefs || lastSettings || {};   // _storedPrefs is null until the first host payload
                 var el;
                 if ((el = document.getElementById('setFontSize')) && typeof s.fontSize === 'number') el.value = s.fontSize;
-                if ((el = document.getElementById('setFontFamily'))) el.value = (typeof s.fontFamily === 'string') ? s.fontFamily : '';
+                if ((el = document.getElementById('setFontFamily'))) setFontFamilyBox(el, (typeof s.fontFamily === 'string') ? s.fontFamily : '');
                 if ((el = document.getElementById('setCursorBehindEol'))) el.checked = !!s.cursorBehindEOL;
             }
             syncFollowIdeUi();
@@ -5586,7 +5791,10 @@
                     recordNavAt(ipos.lineNumber, ipos.column);   // seed origin so Navigate Back returns here (#40)
                     requestFromHost('implementation', { line: ipos.lineNumber, column: ipos.column, buffer: editor.getModel().getValue() });
                 }
-            } else if (ev.keyCode === 123 || ev.key === 'F12') {                            // F12 → go to definition (#40)
+            } else if (!ev.shiftKey && (ev.keyCode === 123 || ev.key === 'F12')) {          // F12 → go to definition (#40)
+                // NOT Shift+F12: that is Find All References elsewhere, and this editor has no references UI.
+                // It used to match here and silently go to definition (77aceec5); now it falls through to
+                // Monaco, whose references action is inert without a reference provider.
                 ev.preventDefault(); ev.stopImmediatePropagation();
                 var dpos = editor && editor.getPosition();
                 if (dpos) {
@@ -7305,6 +7513,8 @@
                 setBreakpointLines(msg.lines);
             } else if (msg.type === 'debuggerState') {
                 setDebuggerState(msg);
+            } else if (msg.type === 'toast') {
+                showToast(String(msg.message || ''), msg.ok !== false);   // host notice, e.g. a Break on Entry miss (e61e4f92)
             } else if (msg.type === 'setExecutionLine') {
                 setExecutionLine(msg.line, !!msg.reassert);
             } else if (msg.type === 'revealLine') {

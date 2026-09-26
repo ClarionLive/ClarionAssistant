@@ -295,6 +295,66 @@ try {
     Assert-That $r.IsError "append_to_file accepted a char cp1252 cannot hold instead of refusing: $($r.Text)"
     Assert-That ((Hex $got) -eq (Hex $before)) "a refused append_to_file still changed the file: $(Hex $got)"
     Report-Block $b "append_to_file refuses a char the file's code page can't hold, file untouched"
+
+    # ------------------------------------------------------------ 10. append_to_file, leading break (GH #232)
+    # The reporter's case: a cp1252 .clw that already ends in CRLF. The appended text goes on the
+    # next line with NO extra CRLF in front - the old unconditional CRLF made a blank line here.
+    $b = $failures.Count
+    $f = Join-Path $work 'EndsCrlf.clw'
+    [IO.File]::WriteAllBytes($f, (Bytes "  MEMBER()`r`n"))
+    $r = Invoke-Tool 'append_to_file' @{ path = $f; text = "! Sm${oSlash}rrebr${oSlash}d`n" }
+    $got = [IO.File]::ReadAllBytes($f)
+    Assert-That (-not $r.IsError) "append_to_file on a CRLF-terminated .clw reported an error: $($r.Text)"
+    Assert-That ((Hex $got) -eq (Hex (Join-Bytes (Bytes "  MEMBER()`r`n! Sm") $oSlash1252 (Bytes 'rrebr') $oSlash1252 (Bytes "d`r`n")))) `
+        "append_to_file put a blank line after a .clw that already ends in CRLF (GH #232). bytes: $(Hex $got)"
+    Report-Block $b "append_to_file adds no CRLF to a .clw that already ends in one"
+
+    # An LF-only (or lone-CR) ending is a line break too: no second break in front.
+    $b = $failures.Count
+    $f = Join-Path $work 'EndsLf.inc'
+    [IO.File]::WriteAllBytes($f, (Bytes "! x`n"))
+    $null = Invoke-Tool 'append_to_file' @{ path = $f; text = "! y" }
+    $got = [IO.File]::ReadAllBytes($f)
+    Assert-That ((Hex $got) -eq (Hex (Bytes "! x`n! y"))) "append_to_file added a break after an LF-terminated .inc. bytes: $(Hex $got)"
+    $f = Join-Path $work 'EndsCr.inc'
+    [IO.File]::WriteAllBytes($f, (Bytes "! x`r"))
+    $null = Invoke-Tool 'append_to_file' @{ path = $f; text = "! y" }
+    $got = [IO.File]::ReadAllBytes($f)
+    Assert-That ((Hex $got) -eq (Hex (Bytes "! x`r! y"))) "append_to_file added a break after a CR-terminated .inc. bytes: $(Hex $got)"
+    Report-Block $b "append_to_file treats LF and lone-CR endings as line breaks"
+
+    # An empty file, or one holding only a BOM, has no line to break from.
+    $b = $failures.Count
+    $f = Join-Path $work 'Empty.clw'
+    [IO.File]::WriteAllBytes($f, [byte[]]@())
+    $null = Invoke-Tool 'append_to_file' @{ path = $f; text = "! y" }
+    $got = [IO.File]::ReadAllBytes($f)
+    Assert-That ((Hex $got) -eq (Hex (Bytes "! y"))) "append_to_file put a leading CRLF into an empty .clw. bytes: $(Hex $got)"
+    $f = Join-Path $work 'BomOnly.inc'
+    [IO.File]::WriteAllBytes($f, $bom)
+    $null = Invoke-Tool 'append_to_file' @{ path = $f; text = "! y" }
+    $got = [IO.File]::ReadAllBytes($f)
+    Assert-That ((Hex $got) -eq (Hex (Join-Bytes $bom (Bytes "! y")))) "append_to_file put a leading CRLF after a lone BOM. bytes: $(Hex $got)"
+    Report-Block $b "append_to_file adds no leading CRLF to an empty or BOM-only Clarion file"
+
+    # Non-Clarion files follow the same rule on their own (UTF-8) path.
+    $b = $failures.Count
+    $f = Join-Path $work 'EndsCrlf.txt'
+    [IO.File]::WriteAllBytes($f, (Bytes "a`r`n"))
+    $null = Invoke-Tool 'append_to_file' @{ path = $f; text = "b" }
+    $got = [IO.File]::ReadAllBytes($f)
+    Assert-That ((Hex $got) -eq (Hex (Bytes "a`r`nb"))) "append_to_file added a blank line to a CRLF-terminated .txt. bytes: $(Hex $got)"
+    $f = Join-Path $work 'NoEol.txt'
+    [IO.File]::WriteAllBytes($f, (Bytes "a"))
+    $null = Invoke-Tool 'append_to_file' @{ path = $f; text = "b" }
+    $got = [IO.File]::ReadAllBytes($f)
+    Assert-That ((Hex $got) -eq (Hex (Bytes "a`r`nb"))) "append_to_file did not break the line of an unterminated .txt. bytes: $(Hex $got)"
+    $f = Join-Path $work 'Empty.txt'
+    [IO.File]::WriteAllBytes($f, [byte[]]@())
+    $null = Invoke-Tool 'append_to_file' @{ path = $f; text = "b" }
+    $got = [IO.File]::ReadAllBytes($f)
+    Assert-That ((Hex $got) -eq (Hex (Bytes "b"))) "append_to_file put a leading CRLF into an empty .txt. bytes: $(Hex $got)"
+    Report-Block $b "append_to_file on a non-Clarion file breaks the line only when it lacks one"
 }
 finally {
     Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue

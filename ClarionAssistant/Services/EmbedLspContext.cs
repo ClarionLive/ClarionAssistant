@@ -23,7 +23,7 @@ namespace ClarionAssistant.Services
     ///      exact argument form matches — to every LSP-bound copy of the buffer. MEMBER→parent resolution
     ///      then lands on the real PROGRAM .clw and pulls in global scope.
     ///
-    /// The prepend happens ONLY in the LSP-facing buffer (requests carry <see cref="LineOffset"/>);
+    /// The prepend happens ONLY in the LSP-facing buffer (requests carry <see cref="LineOffsetFor"/>);
     /// the Monaco model, editable ranges, caret mirror, and save/write-back all keep their existing
     /// 1:1 line mapping with the native document.
     ///
@@ -45,9 +45,14 @@ namespace ClarionAssistant.Services
         /// .app name when the read fails). Prepended to every LSP-bound buffer.</summary>
         public string HeaderLine { get; private set; }
 
-        /// <summary>Lines prepended to the LSP-facing buffer (the MEMBER header). Add to a Monaco line
-        /// to get the LSP line; subtract from an LSP line to get back to Monaco.</summary>
-        public int LineOffset { get { return 1; } }
+        /// <summary>Lines <see cref="WrapBuffer"/> prepends to THIS buffer: 1 for the MEMBER header, 0 when
+        /// the buffer already opens with MEMBER/PROGRAM and is passed through untouched. Add to a Monaco
+        /// line to get the LSP line; subtract from an LSP line to get back to Monaco. Per buffer, because
+        /// a constant 1 put every position one line LOW for a pass-through buffer.</summary>
+        public int LineOffsetFor(string buffer)
+        {
+            return OpensWithModuleHeader(buffer) ? 0 : 1;
+        }
 
         private EmbedLspContext(string realPath, string headerLine)
         {
@@ -136,20 +141,27 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>The LSP-facing copy of a Monaco buffer: the MEMBER header + the buffer. The embed
-        /// buffer is a procedure slice, so it never carries its own MEMBER/PROGRAM — but guard anyway
-        /// (a buffer that already opens with one is passed through untouched, offset stays harmless-safe
-        /// only because such a buffer never occurs in embed mode).</summary>
+        /// buffer is a procedure slice that normally opens with blank lines before its own MEMBER — but a
+        /// buffer whose FIRST line is MEMBER/PROGRAM is passed through untouched, and
+        /// <see cref="LineOffsetFor"/> then reports 0 for it.</summary>
         public string WrapBuffer(string buffer)
+        {
+            string b = buffer ?? "";
+            return OpensWithModuleHeader(b) ? b : HeaderLine + "\r\n" + b;
+        }
+
+        /// <summary>True when the buffer's first line is a MEMBER/PROGRAM statement — the one test that
+        /// decides both whether <see cref="WrapBuffer"/> prepends and what <see cref="LineOffsetFor"/>
+        /// reports, so the two can never disagree.</summary>
+        private static bool OpensWithModuleHeader(string buffer)
         {
             string b = buffer ?? "";
             string firstLine = b;
             int nl = b.IndexOf('\n');
             if (nl >= 0) firstLine = b.Substring(0, nl);
             string t = firstLine.TrimStart();
-            if (t.StartsWith("MEMBER", StringComparison.OrdinalIgnoreCase) ||
-                t.StartsWith("PROGRAM", StringComparison.OrdinalIgnoreCase))
-                return b;
-            return HeaderLine + "\r\n" + b;
+            return t.StartsWith("MEMBER", StringComparison.OrdinalIgnoreCase) ||
+                   t.StartsWith("PROGRAM", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
