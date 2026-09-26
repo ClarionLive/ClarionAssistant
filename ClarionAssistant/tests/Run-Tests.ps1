@@ -104,6 +104,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "IdeSolutionRecord.Test"
                Sources = @("tests\IdeSolutionRecord.Test.cs", "Services\IdeSolutionRecord.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Web.Extensions.dll") }
+            # GH #187 follow-up: the CA Embeditor's Monaco <-> LSP line mapping agrees with what
+            # WrapBuffer actually prepended (0 lines for a buffer opening with MEMBER/PROGRAM).
+            @{ Name = "EmbedLspContext.LineMapping"
+               Sources = @("tests\EmbedLspContext.LineMapping.cs", "tests\EmbedLspContext.LineMapping.Stubs.cs",
+                           "Services\EmbedLspContext.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll") }
             @{ Name = "ClarionClDiagnosis.Test"
                Sources = @("tests\ClarionClDiagnosis.Test.cs", "Services\ClarionClDiagnosis.cs")
                Refs = @("System.dll") }

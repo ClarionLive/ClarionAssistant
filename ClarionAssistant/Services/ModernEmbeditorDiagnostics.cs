@@ -162,8 +162,9 @@ namespace ClarionAssistant.Services
                 if (SharedLspBridge.IsRunning && !string.IsNullOrEmpty(lspFileName))
                 {
                     // #56: with a real-module context the LSP sees the MEMBER-wrapped buffer, so its line
-                    // numbers run one AHEAD of Monaco's — subtract the offset before clamping to slots.
-                    int off = (lspContext != null) ? lspContext.LineOffset : 0;
+                    // numbers run AHEAD of Monaco's by what WrapBuffer prepended to THIS buffer (0 when it
+                    // passed it through) — subtract that before clamping to slots.
+                    int off = (lspContext != null) ? lspContext.LineOffsetFor(buffer) : 0;
                     SharedLspBridge.EnsureBufferSynced(lspFileName,
                         (lspContext != null) ? lspContext.WrapBuffer(buffer) : buffer);
                     List<LspClient.DiagnosticEntry> entries =
