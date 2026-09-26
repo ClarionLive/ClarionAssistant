@@ -1123,7 +1123,18 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>Shared diagnostics. <paramref name="liveBuffer"/> true → use the last synced embeditor
-        /// buffer; false → read the file from disk (MCP tool). Single request/response (no publish/wait).</summary>
+        /// buffer; false → read the file from disk (MCP tool). Single request/response (no publish/wait).
+        ///
+        /// GH #216 (clarion/diagnosticsStatus): nothing to gate on THIS side. IClarionLanguageClient
+        /// exposes no notification stream, no status and no pending flag — only GetDiagnosticsAsync's
+        /// final array and a DiagnosticsPublished event without version or state — so the readiness
+        /// wait can only live inside the ClarionLsp addin, which owns the connection. clarion-lsp
+        /// v1.4.3 does exactly that (waits for `complete` on the version it synced, keeps waiting on
+        /// `deferred`, falls back to its DiagnosticsSettleMs on older servers). An older addin
+        /// answers after its settle window, and we cannot tell the two apart from here. The bundled
+        /// fallback branch (LspClient.GetDiagnostics) carries the #216 gate itself.
+        /// This call runs on the caller's thread through Block (bounded), never the UI thread:
+        /// lsp_diagnostics is an MCP tool call, and AssistantChatControl dispatches it via Task.Run.</summary>
         private static LspClient.DiagnosticWaitResult SharedGetDiagnostics(IClarionLanguageClient c, string filePath, int timeoutMs, bool liveBuffer)
         {
             string buffer = null;

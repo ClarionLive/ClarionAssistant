@@ -80,6 +80,44 @@ $sln    = Join-Path $work 'ctrl.sln'
 $second = Join-Path $work 'second.clw'   # two undeclared names + four cross-file globals
 $clean  = Join-Path $work 'ctrl.clw'     # the clean control
 
+# ---------------------------------------------------------------- the server to test against
+# GH #216. The PINNED bundled server (lsp-server-sync\lsp-snapshot.json currentPin) is what the addin
+# ships and resolves first in production. A dev tree has no lsp-server beside the exe, so without this
+# the run resolves whatever VS Code extension is installed - and one older than 1.0.4 never sends
+# clarion/diagnosticsStatus, the only signal that can answer this fixture's first query honestly (the
+# server DEFERS the semantic pass while the solution index builds, and nothing else marks its end).
+# So: use the pinned build from .lsp-build\<tag> (Sync-LspServer.ps1 output, shared by every worktree
+# of this repo) through the VSCODE_EXTENSIONS discovery root, set for the CHILD only. If it is not
+# built on this machine, fall back to whatever resolves, and say so.
+$serverExtRoot = $null
+$junction      = $null
+try {
+    $snapshot = Get-Content (Join-Path $PSScriptRoot '..\lsp-server-sync\lsp-snapshot.json') -Raw | ConvertFrom-Json
+    # The same field, and fallback, deploy.ps1's Resolve-LspBuild uses to pick what ships.
+    $tag = if ($snapshot.resolvedTag) { $snapshot.resolvedTag } else { $snapshot.targetPin.tag }
+    $candidates = @([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.lsp-build\$tag")))
+    # A worktree shares .git with the main checkout, whose ClarionAssistant\.lsp-build holds the build.
+    $common = (& git -C $PSScriptRoot rev-parse --path-format=absolute --git-common-dir 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $common) {
+        $candidates += Join-Path (Split-Path -Parent $common) "ClarionAssistant\.lsp-build\$tag"
+    }
+    $pinned = $candidates | Where-Object { Test-Path (Join-Path $_ 'out\server\src\server.js') } | Select-Object -First 1
+    if ($pinned) {
+        $ver = $tag.TrimStart('v')
+        $serverExtRoot = Join-Path $env:TEMP ("ca-lspdiag-ext-" + [System.Guid]::NewGuid().ToString("N").Substring(0, 8))
+        New-Item -ItemType Directory -Force $serverExtRoot | Out-Null
+        $junction = Join-Path $serverExtRoot "msarson.clarion-extensions-$ver"
+        New-Item -ItemType Junction -Path $junction -Target $pinned | Out-Null
+        Write-Host "  server: pinned bundled build $tag ($pinned)"
+    }
+    else {
+        Write-Host "  note: pinned bundled server $tag is not built here (.lsp-build); testing whatever server resolves." -ForegroundColor Yellow
+    }
+}
+catch {
+    Write-Host "  note: could not stage the pinned bundled server ($($_.Exception.Message)); testing whatever resolves." -ForegroundColor Yellow
+}
+
 try {
     # ------------------------------------------------------------ drive the server over stdio
     # MCP stdio framing is NEWLINE-DELIMITED JSON, NOT the LSP's Content-Length headers. The two
@@ -107,6 +145,7 @@ try {
     $psi.RedirectStandardError  = $true
     $psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)
     $psi.StandardErrorEncoding  = New-Object System.Text.UTF8Encoding($false)
+    if ($serverExtRoot) { $psi.EnvironmentVariables['VSCODE_EXTENSIONS'] = $serverExtRoot }
 
     $p = [System.Diagnostics.Process]::Start($psi)
     # Read both streams before writing: a server answering while we are still writing would
@@ -220,9 +259,17 @@ try {
     # has been undone even if the timing happens to make the assertions above pass on this run.
     Assert-That ($stderr -notmatch 'Ignored notification: clarion/symbolsRefreshed') `
         "clarion/symbolsRefreshed is being ignored again - the semantic-pass boundary signal is unhandled"
+
+    # -- 6. GH #216: the end-of-analysis signal is handled, not dropped ---------------------
+    Assert-That ($stderr -notmatch 'Ignored notification: clarion/diagnosticsStatus') `
+        "clarion/diagnosticsStatus is being ignored - the GH #216 readiness gate is unhandled"
 }
 finally {
     try { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+    # Remove the JUNCTION ONLY - never recurse through it, or the pinned build it points at goes too.
+    # Directory.Delete without recursion deletes the reparse point itself.
+    if ($junction -and (Test-Path $junction)) { try { [System.IO.Directory]::Delete($junction) } catch { } }
+    if ($serverExtRoot -and (Test-Path $serverExtRoot)) { try { [System.IO.Directory]::Delete($serverExtRoot) } catch { } }
 }
 
 # ---------------------------------------------------------------- summary
