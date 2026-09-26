@@ -120,7 +120,7 @@
     body.has-embheader #navBackBtn.nav-split-main:hover,
     body.has-embheader #navListBtn.nav-split-caret:hover { background: rgba(127,127,127,0.22); }
 
-    #toast {
+    #toast, #toastAux {
         position: absolute; right: 14px; bottom: 14px; z-index: 20;
         max-width: 60%; padding: 8px 14px; border-radius: 6px;
         background: #313244; color: #cdd6f4; font-size: 12px;
@@ -128,8 +128,10 @@
         opacity: 0; transform: translateY(8px); transition: opacity .15s, transform .15s;
         pointer-events: none; white-space: pre-wrap;
     }
-    #toast.show { opacity: 1; transform: translateY(0); }
-    #toast.err { background: #f38ba8; color: #1e1e2e; }
+    /* #toastAux: a plain toast raised while an actionable toast holds #toast (see showToast). */
+    #toastAux { z-index: 21; }
+    #toast.show, #toastAux.show { opacity: 1; transform: translateY(0); }
+    #toast.err, #toastAux.err { background: #f38ba8; color: #1e1e2e; }
     /* Actionable toast (external-change notice): has real buttons, so it must accept pointer events —
        unlike the plain message toast above, which is deliberately click-through. */
     #toast.actionable { pointer-events: auto; display: flex; align-items: center; gap: 10px; white-space: normal; }
@@ -310,6 +312,12 @@
     /* Breakpoint glyph (gutter click; overlay/file mode only) — solid red dot, VS-style. */
     .breakpoint-glyph { background: #e51400; border-radius: 50%;
         width: 11px !important; height: 11px !important; margin-left: 3px; margin-top: 4px; box-shadow: 0 0 0 1px rgba(255,255,255,0.5); cursor: pointer; }
+    /* Debugger execution line (CA-Debugger #26): reversed line NUMBER only — white bold on green — never a
+       full-line background (that reads as a selection). Fixed colours, so it is the same in light and dark
+       (#1e7e34 vs white = 5.1:1). !important + the extra class out-rank Monaco's active-line-number colour, so
+       the marker stays readable when the caret sits on the execution line. */
+    .monaco-editor .margin-view-overlays .line-numbers.exec-line-number {
+        background: #1e7e34 !important; color: #ffffff !important; font-weight: 700 !important; border-radius: 2px; }
 
     /* Status-bar height: SINGLE SOURCE OF TRUTH. The editors/Find panel reserve it as their resting bottom. */
     :root { --status-bar-h: 22px; }
@@ -911,6 +919,7 @@
     <div id="ftabMenu" class="hidden"></div>
     <div id="loading">Loading editor…</div>
     <div id="toast"></div>
+    <div id="toastAux"></div>
 
 <!-- Shared Clarion language registration (grammar + monarch). Cache-busted via Date.now()
      so iterative IDE testing never sees a stale copy; document.write keeps it synchronous
@@ -1002,9 +1011,15 @@
         try { postToHost({ action: 'embedState', dirty: isDirty, slots: gatherSlots() }); } catch (e) { }
     }
     var toastTimer = null;
+    var toastAuxTimer = null;     // #toastAux's own timer — see showToast
     var saveSafetyTimer = null;   // ensures the "Saving…" toast can never hang forever
     var pendingRequests = {};     // reqId -> resolver, for async LSP completion/hover round-trips
     var reqSeq = 0;
+    // Folding is re-asked constantly as you type, so its budget is tighter than the interactive
+    // default (4s) and far tighter than DIAG_TIMEOUT_MS. A late answer is worse than none: the local
+    // pass has already drawn a correct-enough gutter, and swapping it out seconds later would make
+    // folds jump under the cursor. Give up quickly and keep what is on screen.
+    var FOLD_TIMEOUT_MS = 1500;
     var lastSettings = null;      // latest editor settings applied (for the gear panel + re-apply)
     // When true, the suggest widget's highlighted item is accepted (and the typed char inserted) on an
     // "insert key" — space, '.', '(' — the way the native Clarion editor does it. Read fresh by
@@ -1041,6 +1056,106 @@
     function postToHost(obj) {
         try { window.chrome.webview.postMessage(JSON.stringify(obj)); } catch (e) { /* not in webview */ }
     }
+
+    // GH #192: shortcuts this page hands to the IDE rather than to Monaco. `key` is matched
+    // case-insensitively against e.key, so 'o' covers a Caps Lock'd 'O' without claiming Ctrl+Shift+O.
+    // `combo` is what the host parses, so it must use the host's spelling ("Ctrl+", "Alt+", "Shift+").
+    //   Ctrl+F4  CloseFile  — the spike key: unambiguous and visibly verifiable (the tab closes or it
+    //                        does not). Proven live 2026-08-22.
+    //   Ctrl+O   Open       — the last of the three keys Mike reported. Dispatch is by ShortcutKeys,
+    //                        not by codon, so this works whatever the fork binds Ctrl+O to; the host
+    //                        logs the matched item's text, which is what says WHICH Open it found.
+    // closesSurface: this key makes the IDE close the thing we are editing, so the native editor must be
+    // told the truth about its dirty state BEFORE the key is dispatched (bcba6efb). Ctrl+O opens a file and
+    // closes nothing, so it does not carry the flag.
+    var IDE_SHORTCUTS = [
+        { ctrl: true, alt: false, shift: false, key: 'F4', combo: 'Ctrl+F4', closesSurface: true },
+        { ctrl: true, alt: false, shift: false, key: 'o',  combo: 'Ctrl+O'  }
+    ];
+
+    // Capture phase, so a claimed key is taken before Monaco's own handlers see it. Bare modifier
+    // presses return early — nothing here is interested in Alt being held down on its own.
+    //
+    // The diagnostic key probe that used to sit at the top of this handler is GONE (89ab4e4c). It
+    // logged EVERY keystroke to monaco-spike.log to find where each reported key died; key routing is
+    // settled, so it has no reason to keep writing a developer's typing to disk.
+    document.addEventListener('keydown', function (e) {
+        try {
+            if (e.key === 'Control' || e.key === 'Alt' || e.key === 'Shift' || e.key === 'Meta') return;
+
+            // ----- GH #192: forward IDE-owned SHORTCUTS to the host -----
+            // An explicit short list, NOT yet the table-driven version. The spike proved the mechanism
+            // with one key (Ctrl+F4, live 2026-08-22); this adds the second one Mike reported. Reading
+            // the IDE's whole shortcut table is a separate step and stays a separate step — a list of
+            // two is honest about what has actually been verified, where a table would silently claim
+            // ~104 keys nobody has pressed.
+            //
+            // The host side is already generic: it parses the combo, finds the menu item whose
+            // ShortcutKeys match, and PerformClick()s it. So a new entry here needs no host change —
+            // which is exactly why the list, not the mechanism, is the thing to grow.
+            //
+            // MONACO-FIRST RULE: only keys Monaco and this page leave unclaimed may appear here.
+            // Checked at the time of writing — the page binds Ctrl+S, F1, Ctrl+Shift+P, Tab/Shift+Tab,
+            // and (in installFindKeyInterceptor) Ctrl+F, Ctrl+H, Ctrl+Shift+F, Ctrl+Shift+H, F3,
+            // Ctrl+F12. Neither Monaco nor the page binds Ctrl+O.
+            //
+            // preventDefault + stopPropagation: we are CLAIMING these keys. Without it Monaco still
+            // sees the keydown, and a key that both closes the tab and does something in the editor is
+            // worse than one that does nothing. The cost is that an unmatched key goes DEAD rather than
+            // falling through — acceptable only because these are keys Monaco does not use anyway, and
+            // the host logs a FAIL line naming the combo when no menu item carries it.
+            //
+            // capturingKey/snippetPickerOpen: while the gear panel's "press a key" rebind input is armed
+            // (or the snippet picker is open) the keyboard belongs to THAT widget, and a key forwarded
+            // to the IDE would fire a command instead of being recorded as the new binding. The Find
+            // interceptor further down already takes this guard; this block did not, so Ctrl+F4 during a
+            // rebind capture has always closed the tab. Adding Ctrl+O made that reachable by a much more
+            // ordinary key, so the guard is applied here and to the Alt+<letter> block below.
+            if (!capturingKey && !snippetPickerOpen) {
+                for (var si = 0; si < IDE_SHORTCUTS.length; si++) {
+                    var sc = IDE_SHORTCUTS[si];
+                    if (e.ctrlKey === sc.ctrl && e.altKey === sc.alt && e.shiftKey === sc.shift
+                        && e.key.toLowerCase() === sc.key.toLowerCase()) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        // bcba6efb: Ctrl+F4 asks the IDE to close this embed, and Clarion decides whether to
+                        // prompt by reading the NATIVE editor's dirty flag — which our overlay otherwise never
+                        // sets, so it closes silently and the edits go unremarked.
+                        //
+                        // Post the sync FIRST. The host processes messages in order on the UI thread, so our
+                        // slots are written into the native embed and its IsDirty is set before File>Close>File
+                        // runs. Then Clarion raises its own dialog, and its Yes saves the right content.
+                        //
+                        // ORDER IS THE MECHANISM. Do not move this after the ideKey post, and do not make it
+                        // await anything — by the time the close is dispatched it is far too late: Clarion's own
+                        // ClosingEvent handler runs before ours and has already decided.
+                        if (sc.closesSurface && isDirty && !fileMode) {
+                            postToHost({ action: 'syncNativeForClose' });
+                        }
+                        postToHost({ action: 'ideKey', combo: sc.combo });
+                        break;
+                    }
+                }
+            }
+
+            // ----- GH #192: Alt+<letter> opens the matching IDE menu (Alt+F -> File) -----
+            // Restricted to a SINGLE LETTER on purpose. Monaco owns Alt+Left and Alt+Right (navigate
+            // back/forward), and those arrive as 'ArrowLeft'/'ArrowRight', so the /^[a-z]$/ test leaves
+            // them alone — the whole Alt+letter space is otherwise unclaimed by Monaco, so this honours
+            // the Monaco-first rule without needing a special case.
+            //
+            // A mnemonic is not a shortcut: it has no CodonId and never appears in the shortcut table,
+            // so the host handles it by opening the menu item directly rather than dispatching a command.
+            //
+            // Guarded by capturingKey/snippetPickerOpen for the same reason as the shortcut list above.
+            if (!capturingKey && !snippetPickerOpen
+                && e.altKey && !e.ctrlKey && !e.shiftKey && /^[a-zA-Z]$/.test(e.key)) {
+                e.preventDefault();
+                e.stopPropagation();
+                postToHost({ action: 'ideMenu', mnemonic: e.key });
+            }
+        } catch (ex) { /* diagnostic only */ }
+    }, true);
 
     function setTheme(isDark) {
         document.body.classList.toggle('light', !isDark);
@@ -1181,6 +1296,16 @@
                 if (!monaco.languages.getLanguages().some(function (l) { return l.id === 'clarion'; })) {
                     monaco.languages.register({ id: 'clarion' });
                     registerClarionLanguage();
+                    // Fold from the language server when it can answer (#222: the local pass cannot
+                    // close a LOOP terminated by UNTIL/WHILE — that is a structure-stack question, not
+                    // a pattern one). Installed BEFORE registerClarionFolding so the provider sees it.
+                    // Returning null on any failure keeps the local pass as the fallback.
+                    if (typeof setClarionLspFolding === 'function') {
+                        setClarionLspFolding(function (model) {
+                            return requestFromHost('foldingRanges', { buffer: model.getValue() }, FOLD_TIMEOUT_MS)
+                                .then(function (resp) { return (resp && resp.ranges) ? resp.ranges : null; });
+                        });
+                    }
                     registerClarionFolding();
                     registerClarionProviders();
                 }
@@ -1254,12 +1379,14 @@
                 installKeyBindings();          // capture-phase dispatcher for all rebindable Clarion editor keys
                 installGlyphBookmarkClick();   // far-left margin click toggles a bookmark (#16)
                 addFormatAction(editor);       // right-click → Format Selection (Ctrl+I dispatched via keybindings)
+                addRunToCursorAction(editor);  // right-click → Run to Cursor (CA Debugger, only while paused; 2484592b)
+                addBreakOnEntryAction(editor); // right-click → Break on Entry (CA Debugger, any state; e61e4f92)
                 installAutoCase(editor);        // as-you-type keyword casing (of → OF on word boundary)
                 installFormatOnEnter(editor);   // format the completed line on Enter (Clarion-style)
                 installCaretBehindEol(editor);  // Clarion "Can move caret behind EOL" (inert until settings arm it)
                 document.getElementById('saveBtn').addEventListener('click', doSave);
                 var _cancelBtn = document.getElementById('cancelBtn');
-                if (_cancelBtn) _cancelBtn.addEventListener('click', doCancel);
+                if (_cancelBtn) _cancelBtn.addEventListener('click', cmdCancel);   // confirms first (bcba6efb)
                 var _undoBtn = document.getElementById('undoBtn');
                 if (_undoBtn) _undoBtn.addEventListener('click', function () { var e = activeEd(); e.focus(); e.trigger('toolbar', 'undo', null); updateUndoRedo(); });
                 var _redoBtn = document.getElementById('redoBtn');
@@ -1289,6 +1416,7 @@
                     var toastEl = document.getElementById('toast');
                     if (toastEl) toastEl.className = '';
                     if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+                    hideToastAux();   // where that toast went if a change notice was up (showToast)
                     postToHost({ action: 'reload' });
                 });
                 var splitBtn = document.getElementById('splitBtn');
@@ -1442,6 +1570,7 @@
                 guarding = false;
                 restoreEmbedState(msg);     // bookmarks + cursor (once per tab); else reveal line 1
                 if (msg.breakpoints) setBreakpointLines(msg.breakpoints);   // debugger red dots, painted after the content is in (cold-open safe)
+                paintExecutionLine();       // debugger execution-line marker (#26) over the fresh content
                 // Re-apply unsaved edits stashed by the host from an externally torn-down overlay
                 // (d19c036d) — deferred here because the restoreSlots message can arrive before this
                 // async source fetch has populated the model/embedRanges.
@@ -1540,13 +1669,37 @@
         }
     }
 
-    function toMonacoCompletion(it, range) {
+    // `colonRun` (optional) is the identifier run before the caret WITH ':' kept in it — a Clarion label
+    // may contain colons (My:Test, TGLO:Var1, PROP:Bevel), but the replace-range the caller computed
+    // deliberately breaks at ':' (see provideCompletionItems). For a colon-qualified run the server's
+    // insertText cannot rebuild the qualifier, because the two server paths disagree on what it means:
+    // PROP:/PROPPRINT:/EVENT: send the WHOLE suffix ("Bevel" for a typed "PROP:Be"), while group-PRE
+    // qualifier completion sends only what is still UNTYPED ("r1" for "TGLO:Va", and "" once the name is
+    // complete). Against one range those conventions can't both hold: "" fell through '||' to the full
+    // label and re-inserted the qualifier ("My:" + "My:Test" -> "My:My:Test"), and "r1" replacing "Va"
+    // gave "TGLO:r1". So when the run is colon-qualified AND the label is the name being typed, ignore
+    // insertText and replace the WHOLE run with the label — acceptance then yields exactly the label,
+    // with the typed qualifier neither duplicated nor lost, whichever path produced the item. Deciding
+    // this from the label also makes it immune to whether a bridge delivers that "" as "" or as null.
+    // Colon-free runs (plain words, SELF.Member, ?Ctrl) are left on the original path untouched: a
+    // method's label carries its signature ("Init(LONG pId)"), so there the label is NOT insertable.
+    function toMonacoCompletion(it, range, colonRun) {
+        var label = String(it.label == null ? '' : it.label);
+        // '' is a MEANINGFUL insertText ("nothing left to insert"), so test for absence, not falsiness.
+        var text = (it.insertText != null) ? it.insertText : it.label;
+        var r = range;
+        if (colonRun && colonRun.indexOf(':') !== -1 &&
+            label.toUpperCase().indexOf(colonRun.toUpperCase()) === 0) {
+            text = label;
+            r = new monaco.Range(range.endLineNumber, range.endColumn - colonRun.length,
+                                 range.endLineNumber, range.endColumn);
+        }
         return {
             label: it.label,
             kind: lspKindToMonaco(it.kind),
             detail: it.detail || undefined,
             documentation: it.documentation ? { value: it.documentation } : undefined,
-            insertText: it.insertText || it.label,
+            insertText: text,
             // Rank AFTER the injected Clarion keywords ('0kw_*') — keywords first, like the native
             // Clarion completion list (END above EndKey/ENDPAGE). Tie-break only; fuzzy score still
             // orders within the group. (8933fa05)
@@ -1557,7 +1710,7 @@
             // handler normalizes it to " = " (tes= -> "TestVar = "); '{' starts Clarion property syntax
             // (win{PROP:...}). Gated by the gear toggle.
             commitCharacters: commitKeysEnabled ? ['.', '(', ' ', '=', '{'] : undefined,
-            range: range
+            range: r
         };
     }
 
@@ -1620,9 +1773,52 @@
 
     // ----- Cancel / Discard (live/overlay mode) -----
     // Replaces the hidden native red-X. The host discards the native embed (nothing written back) and closes
-    // the surface. No confirm here — matches the native embeditor's cancel, which discards without prompting.
+    // the surface.
+    //
+    // The comment here used to claim the native embeditor "discards without prompting". IT DOES NOT — John
+    // supplied a screenshot of Clarion's own dialog: title "Exit from embed editor?", message "Are you sure
+    // you want to cancel?", Yes/No, Question icon. That wrong assumption is why cancelling discarded work
+    // silently. The confirm now lives in cmdCancel below; doCancel itself stays bare on purpose, because
+    // three of its callers have ALREADY asked (see cmdCancel).
     function doCancel() {
         postToHost({ action: 'cancel' });
+    }
+
+    // The red-X gesture: confirm BEFORE discarding, matching Clarion.
+    //
+    // Deliberately NOT folded into doCancel. Of doCancel's callers only this one is an unanswered user
+    // gesture — cmdSaveAndExit's clean-buffer shortcut has nothing to lose, onConfirmSaveExitResult('no') has
+    // just been answered ("Don't save" would ask twice), and the post-save close is programmatic. Putting the
+    // prompt here keeps each path asking exactly once.
+    //
+    // Clean buffer discards immediately: there is nothing to lose, and a confirm would be pure friction.
+    // ASSUMPTION worth checking against Clarion: whether the native dialog also appears on a CLEAN cancel.
+    function cmdCancel() {
+        if (!isDirty) { doCancel(); return; }
+        if (document.getElementById('sxShield')) return;   // a round-trip is already in flight
+
+        // Same shield as Ctrl+Q, same reason: the dialog is host-side, so there is an async gap in which a
+        // keystroke would land in the buffer. Cheap, and it keeps the two confirm paths behaving alike.
+        var shield = document.createElement('div');
+        shield.id = 'sxShield';
+        shield.tabIndex = -1;
+        shield.style.cssText = 'position:fixed;inset:0;z-index:1001;background:transparent;outline:none;';
+        shield.addEventListener('keydown', function (e) { e.preventDefault(); e.stopPropagation(); }, true);
+        shield.addEventListener('keypress', function (e) { e.preventDefault(); e.stopPropagation(); }, true);
+        shield.addEventListener('keyup', function (e) { e.preventDefault(); e.stopPropagation(); }, true);
+        document.body.appendChild(shield);
+        shield.focus();
+
+        postToHost({ action: 'confirmCancel' });
+    }
+
+    // Host's answer to confirmCancel. Anything but an explicit yes keeps the user editing — a misread answer
+    // must never be the one that discards their work.
+    function onConfirmCancelResult(result) {
+        var shield = document.getElementById('sxShield');
+        if (shield) shield.remove();
+        try { activeEd().focus(); } catch (e) { }
+        if (result === 'yes') doCancel();
     }
 
     // ----- Ctrl+Q: native-embeditor-style save-and-exit (GH #137) -----
@@ -1633,39 +1829,57 @@
     // a stray newline in whatever surface takes focus next.
     var _exitAfterSave = false;   // Ctrl+Q Yes on a path whose save does NOT close the surface itself
     function cmdSaveAndExit() {
-        if (document.getElementById('sxConfirm')) return;              // confirm already up
-        if (!isDirty || !saveEnabled) { doCancel(); return; }          // nothing to save (or can't) — just exit
-        var ov = document.createElement('div');
-        ov.id = 'sxConfirm';
-        ov.tabIndex = -1;
-        ov.style.cssText = 'position:fixed;inset:0;z-index:1001;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;outline:none;';
-        ov.innerHTML =
-            '<div style="background:#2d2d30;color:#eee;padding:18px 26px;border-radius:8px;font-family:Segoe UI,sans-serif;font-size:13px;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.5);">' +
-            '<div style="font-size:14px;margin-bottom:10px;">Save changes?</div>' +
-            '<div style="opacity:.8;margin-bottom:14px;">Enter = save and exit &middot; N = exit without saving &middot; Esc = keep editing</div>' +
-            '<button id="sxYes" style="margin-right:8px;padding:5px 14px;cursor:pointer;">Save and exit</button>' +
-            '<button id="sxNo" style="margin-right:8px;padding:5px 14px;cursor:pointer;">Don&#39;t save</button>' +
-            '<button id="sxStay" style="padding:5px 14px;cursor:pointer;">Cancel</button></div>';
-        document.body.appendChild(ov);
-        function close() { ov.remove(); try { activeEd().focus(); } catch (e) { } }
-        function yes() {
-            close();
+        // EMBEDITOR ONLY (GH #192, BoxSoft): "we added support for Ctrl+Q to close the embeditor.
+        // That should have been only when it was used as an Embeditor. When editing normal files,
+        // Ctrl+F4 should close the window." He asked for Ctrl+Q originally, so he gets to scope it.
+        //
+        // The binding table agrees with him: in Clarion, Ctrl+Q is CancelEditorMenuItem — an EDITOR
+        // menu command, not a general close. A plain source tab is not an embeditor, so the gesture
+        // does not belong there. Ctrl+F4 (CodonId CloseFile) is what closes a file tab, and wiring
+        // that up is #192's job, not this function's.
+        if (fileMode) return;
+        if (document.getElementById('sxShield')) return;                // round-trip already in flight
+        if (!isDirty || !saveEnabled) { doCancel(); return; }           // nothing to save (or can't) — just exit
+
+        // THE SHIELD IS LOAD-BEARING — do not remove it as "an invisible div that does nothing".
+        //
+        // The dialog now lives host-side (GH #193), so there is an async gap between this keystroke and
+        // the MessageBox actually appearing. Ctrl+Q then Enter is muscle memory from the native
+        // embeditor — people type it as one gesture — and in that gap the Enter would land in Monaco as
+        // a NEWLINE IN THE USER'S SOURCE. It would then be saved, silently, by the very Yes they just
+        // pressed. The old in-page confirm absorbed that Enter by existing; this replaces that property
+        // rather than dropping it.
+        //
+        // Transparent and focused: it swallows every key until the host answers.
+        var shield = document.createElement('div');
+        shield.id = 'sxShield';
+        shield.tabIndex = -1;
+        shield.style.cssText = 'position:fixed;inset:0;z-index:1001;background:transparent;outline:none;';
+        shield.addEventListener('keydown', function (e) { e.preventDefault(); e.stopPropagation(); }, true);
+        shield.addEventListener('keypress', function (e) { e.preventDefault(); e.stopPropagation(); }, true);
+        shield.addEventListener('keyup', function (e) { e.preventDefault(); e.stopPropagation(); }, true);
+        document.body.appendChild(shield);
+        shield.focus();
+
+        postToHost({ action: 'confirmSaveExit' });
+    }
+
+    // Host's answer to confirmSaveExit. Same three outcomes the in-page confirm had; the host owns only
+    // how the question LOOKS, the page still owns what each answer does.
+    function onConfirmSaveExitResult(result) {
+        var shield = document.getElementById('sxShield');
+        if (shield) shield.remove();
+        // Refocus first so a "cancel" leaves the caret exactly where it was.
+        try { activeEd().focus(); } catch (e) { }
+        if (result === 'yes') {
             // Live-linked saves close the surface host-side (SaveLive save-and-exit); every other path
             // (snapshot tab, file mode) needs the page to close itself once the saveResult confirms.
             _exitAfterSave = !liveLinked;
             doSave();
+        } else if (result === 'no') {
+            doCancel();
         }
-        function no() { close(); doCancel(); }
-        document.getElementById('sxYes').onclick = yes;
-        document.getElementById('sxNo').onclick = no;
-        document.getElementById('sxStay').onclick = function () { close(); };
-        ov.addEventListener('keydown', function (e) {
-            e.preventDefault(); e.stopPropagation();
-            if (e.key === 'Enter' || e.key === 'y' || e.key === 'Y') yes();
-            else if (e.key === 'n' || e.key === 'N') no();
-            else if (e.key === 'Escape') close();
-        }, true);
-        ov.focus();
+        // 'cancel' (and any unrecognised answer) = keep editing.
     }
 
     // Surface the language-server state when completion comes back empty, so a down/starting LSP is
@@ -1687,19 +1901,40 @@
         showToast(msg, false);
     }
 
+    // A plain toast never replaces an actionable one (3517fd15 item 5): while showActionToast's notice is up
+    // in #toast, the message goes to #toastAux, raised just above it, so the notice and its buttons survive
+    // (e.g. a Break on Entry miss arriving while "File changed on disk" is unresolved). Only one plain toast
+    // is ever visible, the newest: a plain toast in #toast hides a leftover in #toastAux.
     function showToast(message, ok, persist) {
         var t = document.getElementById('toast');
         if (!t) return;
+        var aux = document.getElementById('toastAux');
+        if (aux && t.classList.contains('actionable') && t.classList.contains('show')) {
+            aux.textContent = message;
+            aux.style.bottom = (14 + t.offsetHeight + 8) + 'px';
+            aux.className = 'show' + (ok === false ? ' err' : '');
+            if (toastAuxTimer) { clearTimeout(toastAuxTimer); toastAuxTimer = null; }
+            if (!persist)
+                toastAuxTimer = setTimeout(function () { aux.className = ''; }, ok === false ? 8000 : 6000);
+            return;
+        }
+        hideToastAux();
         t.textContent = message;
         t.className = 'show' + (ok === false ? ' err' : '');
         if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
         if (!persist)
             toastTimer = setTimeout(function () { t.className = ''; }, ok === false ? 8000 : 6000);
     }
+    function hideToastAux() {
+        var aux = document.getElementById('toastAux');
+        if (aux) aux.className = '';
+        if (toastAuxTimer) { clearTimeout(toastAuxTimer); toastAuxTimer = null; }
+    }
 
     // A toast with real, clickable buttons (external-change notice: Reload / Show diff / Close tab). Unlike
     // showToast, this never auto-dismisses on a timer — it stays up until the developer resolves it (or
-    // explicitly dismisses it) or another toast replaces it, since silently discarding the notice would leave
+    // explicitly dismisses it) or another action toast replaces it (a plain showToast cannot: it goes to
+    // #toastAux instead), since silently discarding the notice would leave
     // a stale-content tab with no indication the file actually diverged from disk.
     // Each action may set `dismiss: false` to opt out of auto-closing the toast on click — used by "Show
     // diff", which is just a peek: the notice is still unresolved after looking, so Reload/Close tab must
@@ -1876,6 +2111,7 @@
         { id: 'upperCase',         label: 'Uppercase Selection',  def: 'Ctrl+Shift+U', run: cmdUpperCase },
         { id: 'lowerCase',         label: 'Lowercase Selection',  def: 'Ctrl+Shift+L', run: cmdLowerCase },
         { id: 'invertCase',        label: 'Invert Case',          def: 'Ctrl+\\',      run: cmdInvertCase },
+        { id: 'markWord',          label: 'Mark Word',            def: 'Ctrl+W',       run: cmdMarkWord },
         { id: 'structureDesigner', label: 'Structure Designer',   def: 'Ctrl+D',       run: cmdStructureDesigner },
         { id: 'toggleBookmark',    label: 'Toggle Bookmark',      def: 'Ctrl+F2',      run: cmdToggleBookmark },
         { id: 'nextBookmark',      label: 'Next Bookmark',        def: 'F2',           run: cmdNextBookmark },
@@ -2129,6 +2365,97 @@
                 contextMenuOrder: 1.6,
                 run: function () { cmdFormat(); }
             });
+        } catch (e) { }
+    }
+
+    // ----- Debugger "Run to Cursor" (task 2484592b; CA Editor source overlay) -----
+    // Right-click → "Run to Cursor" asks the CA Debugger to run to the caret line. The C# host owns everything
+    // debugger-side (reflection into ClarionDebugger.DebugSessionController) and pushes the session state as
+    // {type:'debuggerState', available, paused}. A host that never sends it (the CA Embeditor) leaves both keys
+    // false, so the item never appears there.
+    //
+    // WHY HIDDEN, NOT GREYED: in Monaco 0.52.2 the public addAction() uses `precondition` as the context-menu
+    // item's `when` (visibility) — the command itself carries no precondition, so the standalone API cannot
+    // render a disabled item, and the internal MenuRegistry is not addressable from the min bundle. Showing it
+    // only while paused is the closest honest equivalent: it never appears as a live item that silently no-ops.
+    //
+    // The caret: Monaco's context-menu controller already moves the caret to a right-click in the text (unless
+    // the click is inside a selection), and run() sends that exact position, so the host updates its mirrored
+    // cursor BEFORE the debugger pulls it via TryGetActiveCursor — no race with the selectionChanged mirror.
+    //
+    // RIGHT-CLICK INSIDE A MULTI-LINE SELECTION runs to the CARET (the selection's active end), not to the
+    // line under the pointer, because that is the one case where Monaco leaves the caret alone. Reviewed and
+    // KEPT (PM decision, ticket f022fb4e): "Run to Cursor" means the cursor, VS and VS Code behave the same
+    // way, and moving the caret ourselves would destroy the user's selection as a side effect of a menu
+    // click. So: ed.getPosition() on purpose — do not "fix" this to the clicked line.
+    var debuggerState = { available: false, paused: false, breakOnEntry: false };
+    function addRunToCursorAction(ed) {
+        if (!ed || ed.__runToCursorKeys) return;
+        try {
+            ed.__runToCursorKeys = {
+                available: ed.createContextKey('caDebuggerAvailable', debuggerState.available),
+                paused: ed.createContextKey('caDebuggerPaused', debuggerState.paused)
+            };
+            ed.addAction({
+                id: 'ca-debugger-run-to-cursor',
+                label: 'Run to Cursor',
+                contextMenuGroupId: 'navigation',
+                contextMenuOrder: 0.5,
+                precondition: 'caDebuggerAvailable && caDebuggerPaused',
+                run: function (e) { requestRunToCursor(e || ed); }
+            });
+        } catch (e) { }
+    }
+    function requestRunToCursor(ed) {
+        try {
+            if (!debuggerState.available || !debuggerState.paused) return;
+            var p = ed && ed.getPosition();
+            if (!p) return;
+            postToHost({ action: 'runToCursor', line: p.lineNumber, column: p.column });
+        } catch (e) { }
+    }
+    function setDebuggerState(msg) {
+        debuggerState.available = !!msg.available;
+        debuggerState.paused = !!msg.available && !!msg.paused;
+        debuggerState.breakOnEntry = !!msg.available && !!msg.breakOnEntry;
+        [editor, editor2].forEach(function (ed) {
+            var k = ed && ed.__runToCursorKeys;
+            if (!k) return;
+            try { k.available.set(debuggerState.available); k.paused.set(debuggerState.paused); } catch (e) { }
+        });
+        [editor, editor2].forEach(function (ed) {
+            var k = ed && ed.__breakOnEntryKey;
+            if (!k) return;
+            try { k.set(debuggerState.breakOnEntry); } catch (e) { }
+        });
+    }
+
+    // ----- Debugger "Break on Entry" (task e61e4f92) -----
+    // Right-click -> "Break on Entry" asks the CA Debugger for a breakpoint on the entry of the procedure that
+    // contains the caret line. Unlike Run to Cursor it is shown in EVERY debugger state (owner decision 5,
+    // 2026-09-24: idle stages it for the next Start), whenever the host says the loaded debugger has the
+    // member (debuggerState.breakOnEntry). Hidden, not greyed, for the reason given above. The caret is the
+    // position for the same reason too. The host answers a miss with {type:'toast'}; a hit shows in the pad.
+    function addBreakOnEntryAction(ed) {
+        if (!ed || ed.__breakOnEntryKey) return;
+        try {
+            ed.__breakOnEntryKey = ed.createContextKey('caDebuggerBreakOnEntry', debuggerState.breakOnEntry);
+            ed.addAction({
+                id: 'ca-debugger-break-on-entry',
+                label: 'Break on Entry',
+                contextMenuGroupId: 'navigation',
+                contextMenuOrder: 0.6,
+                precondition: 'caDebuggerBreakOnEntry',
+                run: function (e) { requestBreakOnEntry(e || ed); }
+            });
+        } catch (e) { }
+    }
+    function requestBreakOnEntry(ed) {
+        try {
+            if (!debuggerState.breakOnEntry) return;
+            var p = ed && ed.getPosition();
+            if (!p) return;
+            postToHost({ action: 'breakOnProcEntry', line: p.lineNumber, column: p.column });
         } catch (e) { }
     }
 
@@ -2677,6 +3004,40 @@
         (lines || []).forEach(function (ln) { if (ln >= 1 && ln <= lc) decos.push(breakpointDecoOption(ln)); });
         breakpointDecos = model.deltaDecorations(breakpointDecos, decos);   // model-level → both panes
     }
+
+    // ----- Debugger execution line (CA-Debugger #26; overlay/file mode) -----
+    // The host owns the truth (MonacoSourceNavigator's one global marker) and sends 'setExecutionLine'
+    // {line, reassert?}; setSource carries it as executionLine so a cold open / reload paints it once the
+    // content is in. execLineWanted is recorded when a message ARRIVES (not when setSource is applied), so a
+    // marker change that lands while the async source fetch is still running is not overwritten by the older
+    // value setSource carried.
+    var execLineWanted = 0;
+    var execLineDecos = [];
+    // The one place a host-supplied marker line is normalised: anything not a positive number means "no
+    // marker" (0). Both entry points must agree — 'setExecutionLine' and the executionLine that setSource
+    // carries — or a cold open and a live set would disagree about what, say, null or "3" means.
+    function normExecLine(line) { return line > 0 ? (line | 0) : 0; }
+    function paintExecutionLine() {
+        if (!editor) return;
+        var model = editor.getModel();
+        if (!model) return;
+        var ln = execLineWanted, decos = [];
+        if (ln >= 1 && ln <= model.getLineCount()) {
+            decos.push({ range: new monaco.Range(ln, 1, ln, 1),
+                options: { lineNumberClassName: 'exec-line-number', stickiness: 1,
+                    overviewRuler: { color: '#1e7e34', position: monaco.editor.OverviewRulerLane.Left } } });
+        }
+        execLineDecos = model.deltaDecorations(execLineDecos, decos);   // model-level → both split panes
+    }
+    function setExecutionLine(line, reassert) {
+        line = normExecLine(line);
+        // Tab re-activation: a marker that still exists stays where Monaco's tracking moved it (edits above).
+        if (reassert && line === execLineWanted && line >= 1 && execLineDecos.length && editor) {
+            try { if (editor.getModel().getDecorationRange(execLineDecos[0])) return; } catch (e) { }
+        }
+        execLineWanted = line;
+        paintExecutionLine();
+    }
     function requestToggleBreakpoint(ln) {
         if (!ln || ln < 1) return;
         postToHost({ action: 'toggleBreakpoint', line: ln });   // host toggles via DebuggerService, pushes setBreakpoints back
@@ -2801,6 +3162,60 @@
     function cmdNextBookmark() { navBookmark(1); }
     function cmdPrevBookmark() { navBookmark(-1); }
 
+    // ===================== Mark Word (Ctrl+W, GH #229) =====================
+    // Select the word the caret is in, at every cursor. A word is a run of [A-Za-z0-9_] -- the colon is
+    // deliberately NOT part of one. The Clarion wordPattern (clarion-language.js) keeps `LOC:Name` whole,
+    // so double-click already takes the full prefixed name; Mark Word is how to take just `LOC` or just
+    // `Name`. Pressed again while that part is still exactly what is selected, it widens to the whole
+    // word the editor sees (getWordAtPosition under that wordPattern, i.e. the double-click word), so
+    // Ctrl+W Ctrl+W takes `LOC:Name`. Selection only, no edit, so like the bookmark commands it works
+    // anywhere, not only in the editable slots.
+    var MARK_WORD_CHAR = /[A-Za-z0-9_]/;
+
+    // The word touching Monaco column `column` (1-based; the caret sits before character column-1) as
+    // { startColumn, endColumn } with endColumn exclusive, or null when the caret touches no word. The
+    // character before the caret is tried first, so a caret just after a word (`Name| = 1`) marks it.
+    function markWordRange(text, column) {
+        var i = Math.max(0, Math.min(column - 1, text.length));   // 0-based index of the char after the caret
+        var anchor;
+        if (i > 0 && MARK_WORD_CHAR.test(text.charAt(i - 1))) anchor = i - 1;
+        else if (i < text.length && MARK_WORD_CHAR.test(text.charAt(i))) anchor = i;
+        else return null;
+        var start = anchor, end = anchor + 1;
+        while (start > 0 && MARK_WORD_CHAR.test(text.charAt(start - 1))) start--;
+        while (end < text.length && MARK_WORD_CHAR.test(text.charAt(end))) end++;
+        return { startColumn: start + 1, endColumn: end + 1 };
+    }
+
+    // Each selection is judged at its caret end (its position, not its anchor). A selection that is exactly
+    // the part there widens to the editor's word, when that is wider; one that already IS that wider word
+    // stays (so a third press is a no-op); anything else becomes the part. A cursor touching no word keeps
+    // what it had. One setSelections call, and none when nothing changed.
+    function cmdMarkWord() {
+        var ed = activeEd(); if (!ed) return;
+        var model = ed.getModel(); if (!model) return;
+        var sels = ed.getSelections(); if (!sels || !sels.length) return;
+        var changed = false;
+        var next = sels.map(function (s) {
+            var ln = s.positionLineNumber;
+            var r = markWordRange(model.getLineContent(ln), s.positionColumn);
+            if (!r) return s;
+            var from = Math.min(s.selectionStartColumn, s.positionColumn), to = Math.max(s.selectionStartColumn, s.positionColumn);
+            var oneLine = s.selectionStartLineNumber === ln;
+            var w = model.getWordAtPosition({ lineNumber: ln, column: r.startColumn });
+            var wider = w && w.startColumn <= r.startColumn && w.endColumn >= r.endColumn
+                && (w.startColumn < r.startColumn || w.endColumn > r.endColumn);
+            if (oneLine && wider && from === w.startColumn && to === w.endColumn) return s;      // already the whole word
+            if (oneLine && from === r.startColumn && to === r.endColumn) {
+                if (!wider) return s;                                                             // nothing wider
+                r = { startColumn: w.startColumn, endColumn: w.endColumn };
+            }
+            changed = true;
+            return new monaco.Selection(ln, r.startColumn, ln, r.endColumn);
+        });
+        if (changed) ed.setSelections(next);
+    }
+
     // ===================== Split view (#15) =====================
     // Two Monaco editors over ONE shared ITextModel. Model edits, decorations (read-only / embed /
     // bookmark / find highlights) and the language's LSP providers are model/language-level, so they show
@@ -2861,6 +3276,8 @@
         editor2.onDidFocusEditorText(function () { activeEditor = editor2; });
         installCommandPalette(editor2); // F1 / Ctrl+Shift+P in the split pane too
         addFormatAction(editor2);       // right-click → Format Selection in the split pane too
+        addRunToCursorAction(editor2);  // ...and Run to Cursor (keys seeded from the current debuggerState)
+        addBreakOnEntryAction(editor2); // ...and Break on Entry
         installAutoCase(editor2);       // as-you-type keyword casing in the split pane too
         installFormatOnEnter(editor2);  // format the completed line on Enter in the split pane too
         installCaretBehindEol(editor2); // caret-behind-EOL in the split pane too (shared model, one padded line)
@@ -3875,6 +4292,12 @@
                 var pfx = /[A-Za-z0-9_]*$/.exec(before);
                 var startCol = position.column - (pfx ? pfx[0].length : 0);
                 var range = new monaco.Range(position.lineNumber, startCol, position.lineNumber, position.column);
+                // The same run WITH ':' kept in it. toMonacoCompletion uses this to widen the range back
+                // over a colon-qualified name it can prove the label is completing, so neither server
+                // insertText convention can duplicate or eat the typed qualifier. Colon-free typing is
+                // unaffected — the run is then identical to `pfx` and the widening never triggers.
+                var colonPfx = /[A-Za-z0-9_:]*$/.exec(before);
+                var colonRun = colonPfx ? colonPfx[0] : '';
                 return requestFromHost('completion', { line: position.lineNumber, column: position.column, buffer: model.getValue() })
                     .then(function (resp) {
                         var items = (resp && resp.items) || [];
@@ -3884,7 +4307,7 @@
                         // host-side CodeGraph prefix merge (task a47a6cac) runs live as-you-type — without
                         // it, globals only appear on a forced Ctrl+Space (min-prefix guard suppresses the
                         // 1-char query, then the stale list is filtered and never re-fetched).
-                        var sugg = items.map(function (it) { return toMonacoCompletion(it, range); });
+                        var sugg = items.map(function (it) { return toMonacoCompletion(it, range, colonRun); });
                         // Keywords rank first + exact-typed keyword gets selected. The server ALSO returns
                         // some keywords (e.g. PROCEDURE) — those dedupe our injected copy away, so the
                         // promotion must happen on the HOST item too, or ProcedureReturn outscores it and
@@ -4702,13 +5125,41 @@
         return String(v);
     }
 
-    // GH #126: with "Follow Clarion's editor options" ticked the IDE's indentation wins at apply time, so
-    // an imported tabSize/insertSpaces is stored but has no visible effect. Say so on the row rather than
-    // letting the developer import it and conclude the feature is broken.
+    // GH #126: with "Follow Clarion's editor options" ticked the IDE's value wins at apply time, so an
+    // imported setting is stored but has no visible effect. Say so on the row rather than letting the
+    // developer import it and conclude the feature is broken.
+    //
+    // FOUR fields are follow-owned, not two. This listed only tabSize/insertSpaces because #126 was
+    // about indentation; the font pair was brought under follow-mode later in syncFollowIdeUi and this
+    // function was never extended to match. The two then disagreed, and the preview promised a font
+    // change it could not deliver — reported by John, who imported fontSize 13 -> 17, saw the box still
+    // reading 13, and had to untick follow-mode to find the 17 had been stored correctly all along.
+    // Precisely the outcome the caveat exists to prevent.
+    //
+    // The font pair is CONDITIONAL, and mirroring that condition matters as much as the caveat itself:
+    // the host omits ideFontSize/ideFontFamily when the IDE's font descriptor did not parse, and the
+    // stored pref then genuinely does win. An unconditional warning would be wrong in exactly the case
+    // where the import DOES take effect. Keep this in step with syncFollowIdeUi — the two predicates
+    // are the same fact stated twice, which is how they drifted apart in the first place.
     function vscCaveat(key) {
-        if (key !== 'tabSize' && key !== 'insertSpaces') return '';
         var f = document.getElementById('setFollowIdeIndent');
         if (!f || !f.checked) return '';
+
+        // typeof guard, not a bare reference: _ideOpts is declared far above this block, and the
+        // page-import test harness evaluates only a SLICE of this file (the VS Code import section)
+        // in a scope that does not contain the declaration. A bare `_ideOpts` throws ReferenceError
+        // there the moment a font row is built, which takes the whole preview down with it — no
+        // rows, no Import button, and failures that look nothing like their cause. Production is
+        // unaffected either way; this simply refuses to depend on a binding it cannot see.
+        var ide = (typeof _ideOpts !== 'undefined') ? _ideOpts : null;
+
+        var owned =
+            (key === 'tabSize' || key === 'insertSpaces') ? true :
+            (key === 'fontSize')   ? (!!ide && typeof ide.fontSize === 'number') :
+            (key === 'fontFamily') ? (!!ide && typeof ide.fontFamily === 'string' && ide.fontFamily !== '') :
+            false;
+
+        if (!owned) return '';
         return 'stored, but “Follow Clarion’s editor options” is on — the IDE’s value wins';
     }
 
@@ -5253,7 +5704,10 @@
                     recordNavAt(ipos.lineNumber, ipos.column);   // seed origin so Navigate Back returns here (#40)
                     requestFromHost('implementation', { line: ipos.lineNumber, column: ipos.column, buffer: editor.getModel().getValue() });
                 }
-            } else if (ev.keyCode === 123 || ev.key === 'F12') {                            // F12 → go to definition (#40)
+            } else if (!ev.shiftKey && (ev.keyCode === 123 || ev.key === 'F12')) {          // F12 → go to definition (#40)
+                // NOT Shift+F12: that is Find All References elsewhere, and this editor has no references UI.
+                // It used to match here and silently go to definition (77aceec5); now it falls through to
+                // Monaco, whose references action is inert without a reference provider.
                 ev.preventDefault(); ev.stopImmediatePropagation();
                 var dpos = editor && editor.getPosition();
                 if (dpos) {
@@ -6918,9 +7372,19 @@
                 try { msg = JSON.parse(msg); } catch (ex) { return; }
             }
             if (msg.type === 'setSource') {
+                if (msg.executionLine != null) execLineWanted = normExecLine(msg.executionLine);   // #26: record on arrival
                 if (ready) applySource(msg); else pending = msg;
             } else if (msg.type === 'applyTheme') {
                 setTheme(themePrefDark);   // user preference wins over IDE theme changes
+            } else if (msg.type === 'confirmSaveExitResult') {
+                onConfirmSaveExitResult(msg.result);   // GH #193: host's native Ctrl+Q dialog answered
+            } else if (msg.type === 'confirmCancelResult') {
+                onConfirmCancelResult(msg.result);     // bcba6efb: host's native red-X dialog answered
+                // NOTE (bcba6efb): a 'requestSaveExit' branch lived here, for a host-side veto that turned out
+                // to be powerless — Clarion's own handler runs first, vetoes the window close itself, and
+                // tears the embed down regardless. Removed rather than left inert. Ctrl+F4 is now handled by
+                // telling the NATIVE editor it is dirty before the key is dispatched (see IDE_SHORTCUTS
+                // closesSurface), so Clarion raises its own prompt.
             } else if (msg.type === 'saveResult') {
                 if (saveSafetyTimer) { clearTimeout(saveSafetyTimer); saveSafetyTimer = null; }
                 if (msg.ok) {
@@ -6960,6 +7424,12 @@
                 onDesignerClosed(msg);
             } else if (msg.type === 'setBreakpoints') {
                 setBreakpointLines(msg.lines);
+            } else if (msg.type === 'debuggerState') {
+                setDebuggerState(msg);
+            } else if (msg.type === 'toast') {
+                showToast(String(msg.message || ''), msg.ok !== false);   // host notice, e.g. a Break on Entry miss (e61e4f92)
+            } else if (msg.type === 'setExecutionLine') {
+                setExecutionLine(msg.line, !!msg.reassert);
             } else if (msg.type === 'revealLine') {
                 revealLineFromHost(msg);
             } else if (msg.type === 'focusEditor') {

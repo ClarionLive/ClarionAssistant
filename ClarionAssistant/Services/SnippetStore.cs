@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
 using System.Web.Script.Serialization;
 
 namespace ClarionAssistant.Services
@@ -95,7 +94,7 @@ namespace ClarionAssistant.Services
                 var payload = new List<object>();
                 foreach (var s in clean) payload.Add(s.ToDict());
                 File.WriteAllText(Path.Combine(dir, "snippets.json"),
-                    new JavaScriptSerializer().Serialize(payload), Encoding.UTF8);
+                    new JavaScriptSerializer().Serialize(payload), EncodingHelper.Utf8NoBom);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[SnippetStore] Save: " + ex.Message); }
         }

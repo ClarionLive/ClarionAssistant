@@ -48,6 +48,31 @@ namespace ClarionAssistant.Terminal
         /// mode closes the workbench tab. (a5bbf005 — our toolbar's Cancel, replacing the hidden native red-X.)</summary>
         void OnCancel(MonacoEditorControl editor);
 
+        /// <summary>{action:"confirmSaveExit"} — Ctrl+Q on a dirty buffer. The host raises a NATIVE
+        /// Windows dialog and posts the answer back as {action:"confirmSaveExitResult", result:"yes"|
+        /// "no"|"cancel"}; the page keeps ownership of what those answers DO.
+        ///
+        /// GH #193 (BoxSoft): this used to be an in-page dark overlay, which the native embeditor's
+        /// stock MessageBox made look conspicuously foreign — "its strange appearance causes one to
+        /// pause, which disrupts mental flow". The dialog is deliberately the host's job because only
+        /// the host can produce real Windows chrome, theming, DPI and mnemonics.
+        ///
+        /// ON THE INTERFACE, not bolted to one host, ON PURPOSE: monaco-embeditor.html is shared by
+        /// BOTH IMonacoEditorHost implementations (MonacoClarionEditor and ModernEmbeditorViewContent),
+        /// so a handler added to only one would silently no-op in the other. Declaring it here makes
+        /// the compiler insist. The two hosts SHOULD differ in wording — only the embeditor is the
+        /// "Embed Editor" the native dialog names.</summary>
+        void OnConfirmSaveExit(MonacoEditorControl editor);
+        /// <summary>Page is about to hand a close gesture to the IDE and the buffer is dirty. On the interface,
+        /// not bolted to one host, so the compiler forces BOTH to answer it — monaco-embeditor.html is shared,
+        /// and a one-host handler would silently no-op in the other (the GH #193 lesson). Only the embeditor
+        /// has anything to do here; the CA Editor already prompts via its own ClosingEvent hook. (bcba6efb)</summary>
+        void OnSyncNativeForClose(MonacoEditorControl editor);
+        /// <summary>{action:"confirmCancel"} — the red-X was clicked on a dirty buffer. Host owns the DIALOG;
+        /// the page still owns what the answer does. Replies {type:"confirmCancelResult", result:"yes"|"no"}.
+        /// On the interface so both hosts must answer it, per the GH #193 lesson. (bcba6efb)</summary>
+        void OnConfirmCancel(MonacoEditorControl editor);
+
         /// <summary>{action:"openSource"} — clicking our header strip opens the generated source (runs the native
         /// OpenSourceButton.OpenSourceCommand). Overlay mode only; other hosts no-op. (b1e05287)</summary>
         void OnOpenSource(MonacoEditorControl editor);
@@ -145,6 +170,24 @@ namespace ClarionAssistant.Terminal
 
         /// <summary>Any inbound action not matched above. Forward-compat / diagnostics.</summary>
         void OnUnknownAction(MonacoEditorControl editor, string action, string rawJson);
+    }
+
+    /// <summary>
+    /// OPTIONAL companion to <see cref="IMonacoEditorHost"/>: a host that can answer
+    /// {action:"foldingRanges"} from the language server.
+    ///
+    /// Kept off IMonacoEditorHost on purpose. That interface is implemented by every Monaco surface,
+    /// and only the ones with a real file + a running LSP can answer this — a surface that cannot
+    /// simply doesn't implement it, the request times out on the page (4s), and the editor falls back
+    /// to the line-oriented fold pass in clarion-language.js. Adding it to the main interface would
+    /// force a no-op on every other surface for no gain, and the fallback has to exist regardless
+    /// because the LSP may not be running at all.
+    /// </summary>
+    public interface IMonacoFoldingHost
+    {
+        /// <summary>{action:"foldingRanges", buffer} — host replies via PostResponse with
+        /// {ranges:[{start,end,kind}]} (1-based, inclusive) or {ranges:null} when unavailable.</summary>
+        void OnFoldingRanges(MonacoEditorControl editor, string rawJson);
     }
 
     /// <summary>
@@ -332,6 +375,16 @@ namespace ClarionAssistant.Terminal
                     case "ready":             h.OnReady(this); break;
                     case "save":              h.OnSave(this, json); break;
                     case "cancel":            h.OnCancel(this); break;
+                    case "confirmSaveExit":   h.OnConfirmSaveExit(this); break;
+                    // bcba6efb: MUST be handled synchronously here — the page posts this immediately before the
+                    // close key, and the ordering of the two is the entire mechanism.
+                    case "syncNativeForClose": h.OnSyncNativeForClose(this); break;
+                    case "confirmCancel":     h.OnConfirmCancel(this); break;
+                    // GH #192 key probe (temporary diagnostic) — the page's half of the trace.
+                    // GH #192: a key the page decided belongs to the IDE, not to Monaco.
+                    case "ideKey":            HandleIdeKey(ExtractJsonString(json, "combo")); break;
+                    // GH #192: Alt+<letter> — a menu MNEMONIC, which has no codon and no shortcut entry.
+                    case "ideMenu":           HandleIdeMenu(ExtractJsonString(json, "mnemonic")); break;
                     case "openSource":        h.OnOpenSource(this); break;
                     case "clipboard":         h.OnClipboard(this, json); break;
                     case "completion":        h.OnCompletion(this, json); break;
@@ -341,6 +394,14 @@ namespace ClarionAssistant.Terminal
                     case "signatureHelp":     h.OnSignatureHelp(this, json); break;
                     case "implementation":    h.OnImplementation(this, json); break;
                     case "documentStructure": h.OnDocumentStructure(this, json); break;
+                    case "foldingRanges":
+                        // Optional capability (IMonacoFoldingHost) — a surface that can't answer leaves
+                        // the page's request to time out, and it falls back to the local fold pass.
+                        {
+                            var foldHost = h as IMonacoFoldingHost;
+                            if (foldHost != null) foldHost.OnFoldingRanges(this, json);
+                        }
+                        break;
                     case "saveSettings":      h.OnSaveSettings(this, json); break;
                     case "readVsCodeSettings": h.OnReadVsCodeSettings(this, json); break;
                     case "saveHistory":       h.OnSaveHistory(this, json); break;
@@ -545,8 +606,258 @@ namespace ClarionAssistant.Terminal
         // This control sits BELOW the workbench form in the parent chain, so returning true here consumes
         // the forwarded key before the form can dispatch. The DOM keydown already reached the page, so we
         // only swallow the host-side leak; we don't re-trigger the find here.
+        /// <summary>Pull a top-level string field out of a small page message without paying for a full
+        /// JSON deserialise on every keystroke.</summary>
+        private static string ExtractJsonString(string json, string field)
+        {
+            if (string.IsNullOrEmpty(json)) return null;
+            string tag = "\"" + field + "\":\"";
+            int i = json.IndexOf(tag, StringComparison.Ordinal);
+            if (i < 0) return null;
+            i += tag.Length;
+            int j = json.IndexOf('"', i);
+            return j > i ? json.Substring(i, j - i) : null;
+        }
+
+        /// <summary>Turn "Ctrl+Shift+F4" into a WinForms <see cref="Keys"/>. Returns Keys.None if any
+        /// token is unrecognised — callers must treat None as "could not parse", never as a real key.</summary>
+        private static Keys ParseCombo(string combo)
+        {
+            if (string.IsNullOrEmpty(combo)) return Keys.None;
+            Keys mods = Keys.None;
+            string keyName = null;
+            foreach (var raw in combo.Split('+'))
+            {
+                var p = raw.Trim();
+                if (p.Length == 0) continue;
+                if (string.Equals(p, "Ctrl", StringComparison.OrdinalIgnoreCase)) mods |= Keys.Control;
+                else if (string.Equals(p, "Alt", StringComparison.OrdinalIgnoreCase)) mods |= Keys.Alt;
+                else if (string.Equals(p, "Shift", StringComparison.OrdinalIgnoreCase)) mods |= Keys.Shift;
+                else keyName = p;
+            }
+            if (string.IsNullOrEmpty(keyName)) return Keys.None;
+            // Single letters arrive lowercase from the DOM ("o"); the Keys enum is uppercase.
+            if (keyName.Length == 1) keyName = keyName.ToUpperInvariant();
+            try { return (Keys)Enum.Parse(typeof(Keys), keyName, true) | mods; }
+            catch { return Keys.None; }
+        }
+
+        /// <summary>GH #192 SPIKE: run an IDE command for a key the page decided Monaco does not own.
+        ///
+        /// Established by measurement first (see the ticket): keys typed into the editor NEVER reach the
+        /// host's WinForms key pipeline — WebView2 handles them in its own child window — so ProcessCmdKey
+        /// cannot be the route. The page->host channel is the one that demonstrably works.
+        ///
+        /// Dispatch goes through the IDE's OWN main MenuStrip: find the item whose ShortcutKeys match and
+        /// PerformClick() it, so we invoke exactly the object the menu invokes, with its enablement and
+        /// its handlers. That also means user-customised shortcuts work for free — SharpDevelop already
+        /// applied them to these items via MenuShortcutService.
+        ///
+        /// EVERY STEP LOGS. This is an SD fork whose object surface has burned us before by returning
+        /// null SILENTLY rather than throwing, so a failure must say WHICH step failed rather than
+        /// producing the same "nothing happened" the bug already produces.</summary>
+        private void HandleIdeKey(string combo)
+        {
+            Action work = () =>
+            {
+                try
+                {
+                    Keys k = ParseCombo(combo);
+                    MonacoSpikeLog.Write("[IDEKEY] combo='" + combo + "' -> Keys=" + k);
+                    if (k == Keys.None) { MonacoSpikeLog.Write("[IDEKEY] FAIL: could not parse combo"); return; }
+
+                    // Cross-check against the IDE's own shortcut table. NOT used for dispatch — dispatch
+                    // matches on ShortcutKeys, which is why a combo with no known codon still works.
+                    //
+                    // This lookup used to be hardcoded to "CloseFile" regardless of the combo, which was
+                    // fine while Ctrl+F4 was the only forwarded key and actively misleading the moment it
+                    // was not: pressing Ctrl+O would have logged a confident line about CloseFile. Keyed
+                    // off the combo now, and silent about combos whose codon we do not know rather than
+                    // guessing one — a wrong codon in the log is worse than no codon, because the next
+                    // person debugging this will believe it.
+                    string codon = CodonForCombo(combo);
+                    if (codon != null)
+                    {
+                        try
+                        {
+                            var owner = ICSharpCode.Core.MenuShortcutService.GetShortcutKey(codon);
+                            MonacoSpikeLog.Write("[IDEKEY] MenuShortcutService.GetShortcutKey(\"" + codon + "\") = " + owner);
+                        }
+                        catch (Exception ex) { MonacoSpikeLog.Write("[IDEKEY] MenuShortcutService threw: " + ex.Message); }
+                    }
+                    else
+                    {
+                        MonacoSpikeLog.Write("[IDEKEY] no codon id known for '" + combo
+                            + "'; dispatch does not need one (matches on ShortcutKeys)");
+                    }
+
+                    Form host;
+                    var strip = FindWorkbenchMenuStrip("[IDEKEY]", out host);
+                    if (strip == null) return;
+
+                    var item = FindItemByShortcut(strip.Items, k);
+                    if (item == null) { MonacoSpikeLog.Write("[IDEKEY] FAIL: no menu item carries ShortcutKeys=" + k); return; }
+
+                    // DIAGNOSTIC (bcba6efb): item.Text alone is ambiguous and it misled a diagnosis. Both the
+                    // top-level File menu and a nested "File..." under File>Open are captioned '&File', and the
+                    // difference matters completely: PerformClick on a CONTAINER just drops its menu open, it
+                    // does not run a command. Log the full path and whether it owns a dropdown, so the next
+                    // reader gets an answer instead of two equally plausible readings.
+                    MonacoSpikeLog.Write("[IDEKEY] MATCH path='" + MenuPath(item) + "' enabled=" + item.Enabled
+                        + " isContainer=" + item.HasDropDownItems
+                        + (item.HasDropDownItems ? " (PerformClick will OPEN THIS MENU, not run a command)" : "")
+                        + " -> PerformClick()");
+                    item.PerformClick();
+                    MonacoSpikeLog.Write("[IDEKEY] PerformClick returned");
+                }
+                catch (Exception ex) { MonacoSpikeLog.Write("[IDEKEY] EXCEPTION: " + ex); }
+            };
+            if (InvokeRequired) BeginInvoke(work); else work();
+        }
+
+        /// <summary>SharpDevelop CodonId for a forwarded combo, or null if we do not know one.
+        ///
+        /// Diagnostic only — dispatch matches on ShortcutKeys and never consults this. The point of
+        /// returning null rather than a best guess is that this string goes straight into the log, and a
+        /// plausible-but-wrong codon there would send the next reader hunting the wrong command.
+        ///
+        /// Ctrl+O is deliberately absent: the Clarion fork's codon for Open has not been confirmed in a
+        /// live IDE, and the key works without it. Add it here once the [IDEKEY] MATCH line names the
+        /// item it actually resolved to.</summary>
+        private static string CodonForCombo(string combo)
+        {
+            if (string.Equals(combo, "Ctrl+F4", StringComparison.OrdinalIgnoreCase)) return "CloseFile";
+            return null;
+        }
+
+        /// <summary>The IDE main menu, found across ALL open forms.
+        ///
+        /// FindForm() is not enough and this was measured, not guessed: from inside the editor it returns
+        /// SdiWorkspaceWindow — the per-DOCUMENT window, whose Text is the filename — and the main menu is
+        /// not under it. DefaultWorkbench OWNS that window rather than parenting it, so the menu lives in
+        /// a different tree entirely.
+        ///
+        /// Logs every form and whether it carries a MenuStrip, so a failure here reports the inventory
+        /// instead of a bare "not found". In this fork the hit is DefaultWorkbench, 20 top-level items.</summary>
+        private static MenuStrip FindWorkbenchMenuStrip(string tag, out Form host)
+        {
+            MenuStrip strip = null;
+            host = null;
+            foreach (Form f in Application.OpenForms)
+            {
+                var candidate = FindMenuStrip(f);
+                MonacoSpikeLog.Write(tag + "   form " + f.GetType().Name + " text='" + f.Text
+                    + "' menuStrip=" + (candidate != null));
+                if (candidate != null && strip == null) { strip = candidate; host = f; }
+            }
+            if (strip == null) { MonacoSpikeLog.Write(tag + " FAIL: no MenuStrip on any open form"); return null; }
+            MonacoSpikeLog.Write(tag + " using menustrip on " + host.GetType().Name
+                + " topLevelItems=" + strip.Items.Count);
+            return strip;
+        }
+
+        /// <summary>GH #192: open a top-level IDE menu by its mnemonic letter (Alt+F -> File).
+        ///
+        /// A mnemonic is NOT a shortcut. It has no CodonId and never appears in MenuShortcutService, so
+        /// the codon route that serves Ctrl+F4 cannot serve this — it comes from the '&' in the menu
+        /// label. Once the workbench MenuStrip is reachable, though, the item is right there to open.
+        ///
+        /// Focus has to move off the WebView2 first, or the menu opens without keyboard ownership and
+        /// arrow keys keep going to Monaco — a menu you cannot drive is barely better than no menu.</summary>
+        private void HandleIdeMenu(string mnemonic)
+        {
+            Action work = () =>
+            {
+                try
+                {
+                    MonacoSpikeLog.Write("[IDEMENU] mnemonic='" + mnemonic + "'");
+                    if (string.IsNullOrEmpty(mnemonic) || mnemonic.Length != 1) { MonacoSpikeLog.Write("[IDEMENU] FAIL: bad mnemonic"); return; }
+                    char want = char.ToUpperInvariant(mnemonic[0]);
+
+                    Form host;
+                    var strip = FindWorkbenchMenuStrip("[IDEMENU]", out host);
+                    if (strip == null) return;
+
+                    ToolStripMenuItem target = null;
+                    foreach (ToolStripItem it in strip.Items)
+                    {
+                        var mi = it as ToolStripMenuItem;
+                        if (mi == null || string.IsNullOrEmpty(mi.Text)) continue;
+                        int amp = mi.Text.IndexOf('&');
+                        if (amp >= 0 && amp + 1 < mi.Text.Length && char.ToUpperInvariant(mi.Text[amp + 1]) == want)
+                        { target = mi; break; }
+                    }
+                    if (target == null) { MonacoSpikeLog.Write("[IDEMENU] FAIL: no top-level menu with mnemonic '" + want + "'"); return; }
+
+                    MonacoSpikeLog.Write("[IDEMENU] MATCH '" + target.Text + "' enabled=" + target.Enabled);
+                    host.Activate();                 // take the foreground off the editor
+                    strip.Focus();                   // give the strip keyboard ownership
+                    strip.Select();
+                    target.Select();
+                    target.ShowDropDown();
+                    MonacoSpikeLog.Write("[IDEMENU] ShowDropDown returned; dropDownVisible=" + target.DropDown.Visible);
+                }
+                catch (Exception ex) { MonacoSpikeLog.Write("[IDEMENU] EXCEPTION: " + ex); }
+            };
+            if (InvokeRequired) BeginInvoke(work); else work();
+        }
+
+        /// <summary>First MenuStrip anywhere under <paramref name="c"/>. The workbench's main menu is not
+        /// necessarily a direct child, so this walks the whole control tree.</summary>
+        private static MenuStrip FindMenuStrip(Control c)
+        {
+            var ms = c as MenuStrip;
+            if (ms != null) return ms;
+            foreach (Control child in c.Controls)
+            {
+                var found = FindMenuStrip(child);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        /// <summary>"File &gt; Open &gt; &amp;File..." for a menu item, walking OwnerItem up to the strip. A bare
+        /// caption cannot distinguish a top-level menu from a same-named leaf buried under it, and that
+        /// ambiguity is exactly what made an [IDEKEY] MATCH line unreadable. (bcba6efb)</summary>
+        private static string MenuPath(ToolStripItem item)
+        {
+            try
+            {
+                var parts = new List<string>();
+                var cur = item;
+                while (cur != null) { parts.Insert(0, cur.Text); cur = cur.OwnerItem; }
+                return string.Join(" > ", parts);
+            }
+            catch { return item?.Text ?? "(null)"; }
+        }
+
+        /// <summary>Depth-first search for a menu item bound to <paramref name="k"/>. Recurses into
+        /// submenus, because almost nothing with a shortcut sits at the top level.</summary>
+        private static ToolStripMenuItem FindItemByShortcut(ToolStripItemCollection items, Keys k)
+        {
+            foreach (ToolStripItem it in items)
+            {
+                var mi = it as ToolStripMenuItem;
+                if (mi == null) continue;
+                if (mi.ShortcutKeys == k) return mi;
+                if (mi.HasDropDownItems)
+                {
+                    var found = FindItemByShortcut(mi.DropDownItems, k);
+                    if (found != null) return found;
+                }
+            }
+            return null;
+        }
+
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
+            // The GH #192 key probe that logged EVERY key reaching the host is REMOVED (89ab4e4c).
+            //
+            // If key routing is ever in question again, bring it back UNCONDITIONAL — the first attempt
+            // gated it on ContainsFocus, exactly like the swallow-list below, and produced 24 PAGE lines
+            // with zero CMDKEY lines. "ProcessCmdKey was never called" and "it was called while
+            // ContainsFocus read false" are the same silence and need different fixes; logging the focus
+            // flag as DATA rather than using it as a filter is what tells them apart.
             if (_webView != null && _webView.ContainsFocus)
             {
                 switch (keyData)

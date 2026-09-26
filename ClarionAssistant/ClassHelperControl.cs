@@ -403,7 +403,9 @@ namespace ClarionAssistant
 
                 if (confirmResult == DialogResult.OK)
                 {
-                    File.WriteAllText(clwPath, content);
+                    // Clarion source rules (GH #203): CRLF, no BOM, and an overwritten .clw keeps its
+                    // own encoding; a new one is ANSI.
+                    ClarionSourceText.WriteFile(clwPath, content);
                     AppendOutput($"Generated: {clwPath}", Color.LightGreen);
                     AppendOutput($"  CLASS: {classDef.ClassName}", Color.White);
                     AppendOutput($"  Methods: {classDef.Methods.Count}", Color.White);

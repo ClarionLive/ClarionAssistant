@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -22,6 +22,26 @@ namespace ClarionAssistant.Services
     /// </summary>
     public static class LspService
     {
+        /// <summary>
+        /// Supplies the active solution path. Set by the host at startup: the addin points it
+        /// at EditorService.GetOpenSolutionPath(); a standalone host points it at whatever it
+        /// was told on the command line. Null means "no solution", and StartIfNeeded already
+        /// treats that as "cannot start" - so an unset hook degrades to not starting the LSP
+        /// rather than throwing.
+        /// </summary>
+        public static System.Func<string> SolutionPathProvider;
+
+        /// <summary>
+        /// Supplies the Clarion version this host has settled on, or null to let this service
+        /// resolve one itself. Same host-hook pattern as <see cref="SolutionPathProvider"/>.
+        ///
+        /// Set by the standalone server, which has tiers the IDE does not — an explicit
+        /// --clarion-version and the solution's committed clarion-assistant.json — and whose
+        /// answer must reach the language server's redirection and library paths. Left unset by
+        /// the addin, where the IDE's own version selection is already authoritative.
+        /// </summary>
+        public static System.Func<ClarionVersionConfig> VersionConfigProvider;
+
         private static readonly object _lock = new object();
         private static int _lspStarting; // 0 = idle, 1 = a background start is in flight
         private static LspClient _client;
@@ -30,11 +50,101 @@ namespace ClarionAssistant.Services
         public static LspClient Client { get { return _client; } }
 
         /// <summary>
+        /// The .sln the client currently running was started for, or null. Lets a caller that
+        /// names a DIFFERENT solution be told the truth ("already running for X") instead of
+        /// "started for Y" while X keeps serving.
+        /// </summary>
+        private static string _runningSolutionPath;
+
+        /// <summary>
+        /// The last solution named explicitly (lsp_start workspace_path). Used as a fallback when
+        /// the host hook has nothing, so a later auto-start - lsp_diagnostics after the server
+        /// died, say - restarts on the solution the user chose instead of failing "no solution".
+        /// </summary>
+        private static string _lastExplicitSolutionPath;
+
+        /// <summary>The .sln the running client was started for, or null when none is running.</summary>
+        public static string RunningSolutionPath
+        {
+            get
+            {
+                var c = LspClient.Active;
+                return (c != null && c.IsRunning) ? _runningSolutionPath : null;
+            }
+        }
+
+        /// <summary>The outcome of the most recent start attempt (null before the first call).</summary>
+        public static LspStartResult LastResult { get; private set; }
+
+        /// <summary>Starts on the host's solution. See <see cref="EnsureRunning(string)"/>.</summary>
+        public static LspStartResult EnsureRunning()
+        {
+            return EnsureRunning(null);
+        }
+
+        /// <summary>
         /// Starts the LSP synchronously if it isn't already running. Resolves the solution,
         /// server.js, version config and redirection file UP FRONT and starts ONCE — there
         /// is no live post-start path update. Never throws to callers.
+        ///
+        /// <paramref name="explicitSolutionPath"/>, when given, is the .sln to start on, and wins
+        /// over <see cref="SolutionPathProvider"/>. It used to be impossible to pass one: lsp_start
+        /// resolved its workspace_path argument and then called a parameterless EnsureRunning that
+        /// read only the host hook, so the argument was silently discarded (ticket 77aceec5).
+        /// It does NOT restart a server already running on another solution - the addin shares one
+        /// client with the embeditor, and swapping its workspace under it is not this call's to do.
+        /// The result says which solution is actually being served.
+        ///
+        /// RETURNS WHAT HAPPENED rather than only tracing it, so callers can say why the server is
+        /// not running instead of guessing (see <see cref="LspStartResult"/>).
         /// </summary>
-        public static void EnsureRunning()
+        public static LspStartResult EnsureRunning(string explicitSolutionPath)
+        {
+            // EnsureRunningCore catches everything itself and returns Error, so no wrapper catch.
+            var result = EnsureRunningCore(explicitSolutionPath);
+            LastResult = result;
+            return result;
+        }
+
+        /// <summary>
+        /// A solution source that can CHANGE under a running server, and is followed: when the
+        /// running server was started from it, every EnsureRunning re-asks it, restarts the server
+        /// on a new answer and stops it on none. Consulted after <see cref="SolutionPathProvider"/>.
+        ///
+        /// Set by the standalone server launched by the IDE with no --solution: it returns the
+        /// solution the IDE publishes (IdeSolutionRecord). Without following, a Chat tab's LSP kept
+        /// serving solution A after the developer switched the IDE to B, or closed A (77aceec5,
+        /// pipeline run 1). Must be cheap - it is called on every lsp_* auto-start while following.
+        /// The addin leaves it unset.
+        /// </summary>
+        public static System.Func<string> FollowedSolutionProvider;
+
+        /// <summary>True when the running server's solution came from <see cref="FollowedSolutionProvider"/>.</summary>
+        private static bool _runningFromFollowed;
+
+        private static bool SamePath(string a, string b)
+        {
+            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return string.IsNullOrEmpty(a) && string.IsNullOrEmpty(b);
+            try { a = Path.GetFullPath(a); b = Path.GetFullPath(b); } catch { }
+            return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>Stops the running client and clears what it was serving. Caller holds _lock.</summary>
+        private static void StopClientLocked()
+        {
+            try { if (_client != null) _client.Dispose(); } catch { }
+            _client = null;
+            _runningSolutionPath = null;
+            _runningFromFollowed = false;
+        }
+
+        private static LspStartResult AlreadyRunning()
+        {
+            return new LspStartResult(LspStartOutcome.AlreadyRunning, "already running",
+                _runningSolutionPath, null, null, null);
+        }
+
+        private static LspStartResult EnsureRunningCore(string explicitSolutionPath)
         {
             try
             {
@@ -45,33 +155,135 @@ namespace ClarionAssistant.Services
                 // self-heal LspStarter), so gating here covers them all.
                 if (SharedLspBridge.IsSharedActive)
                 {
-                    Debug.WriteLine("[LspService] Shared ClarionLsp addin active — not starting the bundled LSP server.");
-                    return;
+                    LspTrace.Write("[LspService] Shared ClarionLsp addin active — not starting the bundled LSP server.");
+                    return LspStartResult.Of(LspStartOutcome.SharedActive,
+                        "the shared ClarionLsp addin is active; the bundled server is not started while it is.");
                 }
 
-                // Fast pre-check against the process-wide Active client (set by LspClient.Start).
-                if (LspClient.Active != null && LspClient.Active.IsRunning) return;
+                // Fast pre-check against the process-wide Active client (set by LspClient.Start) -
+                // but NOT while following a solution that may have changed, and not for an explicit
+                // request: both must reach the comparison below.
+                if (string.IsNullOrEmpty(explicitSolutionPath) && !_runningFromFollowed
+                    && LspClient.Active != null && LspClient.Active.IsRunning) return AlreadyRunning();
 
                 lock (_lock)
                 {
-                    // Re-check inside the lock — another thread may have started it.
-                    if (_client != null && _client.IsRunning) return;
+                    string slnPath = null;
+                    string slnSource = null;
+                    bool fromFollowed = false;
 
-                    string slnPath = EditorService.GetOpenSolutionPath();
-                    if (string.IsNullOrEmpty(slnPath)) return; // can't start without a solution
+                    if (_client != null && _client.IsRunning)
+                    {
+                        // FOLLOWING: resolve the desired solution BEFORE declaring "already running",
+                        // and act on a change (77aceec5, pipeline run 1).
+                        if (string.IsNullOrEmpty(explicitSolutionPath) && _runningFromFollowed
+                            && FollowedSolutionProvider != null)
+                        {
+                            string now = FollowedSolutionProvider();
+                            if (SamePath(now, _runningSolutionPath)) return AlreadyRunning();
+
+                            string was = _runningSolutionPath;
+                            LspTrace.Write("[LspService] followed solution changed: " + was + " -> "
+                                + (now ?? "(none)") + "; stopping the server.");
+                            StopClientLocked();
+                            if (string.IsNullOrEmpty(now))
+                                return LspStartResult.Of(LspStartOutcome.NoSolution,
+                                    "The IDE no longer has a solution open (was " + was + "), so the language "
+                                    + "server was stopped. " + LspStartResult.NoSolutionMessage);
+                            slnPath = now;
+                            slnSource = "the IDE's open solution";
+                            fromFollowed = true;
+                        }
+                        else
+                        {
+                            // Re-check inside the lock — another thread may have started it.
+                            return AlreadyRunning();
+                        }
+                    }
+
+                    // Was EditorService.GetOpenSolutionPath() - a static call into an
+                    // IDE-coupled class, and the one thing stopping this otherwise IDE-free
+                    // file compiling in the standalone MCP server (ticket d051fbd1). Routed
+                    // through a host-supplied hook, the same pattern SharedLspBridge already
+                    // uses for CodeGraphDbPathProvider / SchemaGraphDbPathProvider.
+                    //
+                    // An EXPLICIT solution (lsp_start workspace_path) wins over the hook; the
+                    // last explicit one is the fallback when the hook has nothing (77aceec5).
+                    if (string.IsNullOrEmpty(slnPath) && !string.IsNullOrEmpty(explicitSolutionPath))
+                    {
+                        slnPath = explicitSolutionPath;
+                        slnSource = "workspace_path";
+                        _lastExplicitSolutionPath = explicitSolutionPath;
+                    }
+                    if (string.IsNullOrEmpty(slnPath) && SolutionPathProvider != null)
+                    {
+                        slnPath = SolutionPathProvider();
+                        slnSource = "current solution";
+                    }
+                    if (string.IsNullOrEmpty(slnPath) && FollowedSolutionProvider != null)
+                    {
+                        slnPath = FollowedSolutionProvider();
+                        slnSource = "the IDE's open solution";
+                        fromFollowed = !string.IsNullOrEmpty(slnPath);
+                    }
+                    if (string.IsNullOrEmpty(slnPath) && !string.IsNullOrEmpty(_lastExplicitSolutionPath))
+                    {
+                        slnPath = _lastExplicitSolutionPath;
+                        slnSource = "earlier workspace_path";
+                    }
+                    if (string.IsNullOrEmpty(slnPath))
+                    {
+                        // Traced, not silent. This is the standalone server's MOST LIKELY exit —
+                        // launched without --solution, or in a directory holding no single .sln —
+                        // and it used to return without a word. The caller then reported "LSP
+                        // server failed to start" alongside a resolved server.js and node.exe and
+                        // the line "the failure is in the client handshake", which is exactly
+                        // wrong: no handshake was ever attempted. Measured against the real .exe
+                        // (d051fbd1 item 0) — that misdiagnosis was the ENTIRE observable output.
+                        LspTrace.Write("[LspService] no solution - nothing to start. "
+                            + (SolutionPathProvider == null
+                                ? "The host installed no SolutionPathProvider."
+                                : "SolutionPathProvider returned nothing; pass --solution <path.sln> "
+                                  + "or run where exactly one .sln is discoverable."));
+                        return LspStartResult.Of(LspStartOutcome.NoSolution, LspStartResult.NoSolutionMessage);
+                    }
 
                     string wsPath = Path.GetDirectoryName(slnPath);
 
-                    string ignoredSource;
-                    string serverJs = ResolveServerPath(out ignoredSource);
-                    if (serverJs == null) return;
+                    // resolveSource carries the resolver's OWN account of where it looked, and is
+                    // worth more on the failure branch than on the success one — so it is traced
+                    // either way rather than discarded (it used to be named "ignoredSource").
+                    string resolveSource;
+                    string serverJs = ResolveServerPath(out resolveSource);
+                    if (serverJs == null)
+                    {
+                        LspTrace.Write("[LspService] no server.js - nothing to start. "
+                            + (string.IsNullOrEmpty(resolveSource) ? "(resolver gave no detail)" : resolveSource));
+                        return new LspStartResult(LspStartOutcome.NoServer, resolveSource,
+                            slnPath, slnSource, null, resolveSource);
+                    }
+                    LspTrace.Write("[LspService] server.js: " + serverJs + "  (source: " + resolveSource + ")");
 
                     // Resolve version config + redirection file ourselves (pane-independent).
                     // Either may be null — the LSP still starts; only cross-file features degrade.
                     ClarionVersionConfig versionConfig = null;
                     try
                     {
-                        var versionInfo = ClarionVersionService.Detect();
+                        // ASK THE HOST FIRST, if it has an opinion. Without this hook the LSP ran
+                        // its OWN ClarionVersionService.Detect() and reached its own conclusion, so
+                        // a standalone server told which Clarion to use — by --clarion-version or by
+                        // the solution's committed clarion-assistant.json — still handed the language
+                        // server a DIFFERENT one's redirection file and library paths. Measured on a
+                        // machine with 27 configured versions, where the two disagreed by two major
+                        // releases (d051fbd1 item 5). The addin leaves this unset and keeps resolving
+                        // for itself, which is right: there the IDE's own selection is authoritative.
+                        if (VersionConfigProvider != null)
+                        {
+                            versionConfig = VersionConfigProvider();
+                            LspTrace.Write("[LspService] version from host: "
+                                + (versionConfig != null ? versionConfig.Name : "none - cross-file features will degrade"));
+                        }
+                        var versionInfo = versionConfig != null ? null : ClarionVersionService.Detect();
                         if (versionInfo != null)
                         {
                             versionConfig = versionInfo.GetCurrentConfig();
@@ -91,7 +303,7 @@ namespace ClarionAssistant.Services
                     }
                     catch (Exception ex)
                     {
-                        Debug.WriteLine("[LspService] version/redfile resolution failed: " + ex.Message);
+                        LspTrace.Write("[LspService] version/redfile resolution failed: " + ex.Message);
                     }
 
                     if (_client != null) _client.Dispose();
@@ -152,17 +364,38 @@ namespace ClarionAssistant.Services
                     }
                     catch (Exception ex)
                     {
-                        Debug.WriteLine("[LspService] Failed to build LSP updatePaths: " + ex.Message);
+                        LspTrace.Write("[LspService] Failed to build LSP updatePaths: " + ex.Message);
                     }
 
                     string wsUri = "file:///" + wsPath.Replace("\\", "/");
                     string wsName = Path.GetFileName(wsPath);
-                    _client.Start(serverJs, wsUri, wsName); // Start sets LspClient.Active itself
+                    // Recorded BEFORE Start, which publishes LspClient.Active: a reader that sees the new
+                    // Active must never pair it with the previous solution (pipeline run 1).
+                    _runningSolutionPath = slnPath;
+                    _runningFromFollowed = fromFollowed;
+                    bool started = _client.Start(serverJs, wsUri, wsName); // Start sets LspClient.Active itself
+                    if (started && _client.IsRunning)
+                    {
+                        return new LspStartResult(LspStartOutcome.Started, "started",
+                            slnPath, slnSource, serverJs, resolveSource);
+                    }
+                    _runningSolutionPath = null;
+                    _runningFromFollowed = false;
+                    if (_client.LastSpawnError != null)
+                    {
+                        // node.exe itself could not be launched - nothing to shake hands with.
+                        return new LspStartResult(LspStartOutcome.SpawnFailed, _client.LastSpawnError,
+                            slnPath, slnSource, serverJs, resolveSource);
+                    }
+                    return new LspStartResult(LspStartOutcome.StartFailed,
+                        "LspClient.Start returned false (process launch or initialize handshake failed)",
+                        slnPath, slnSource, serverJs, resolveSource);
                 }
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[LspService] EnsureRunning failed: " + ex.Message);
+                LspTrace.Write("[LspService] EnsureRunning failed: " + ex.Message);
+                return LspStartResult.Of(LspStartOutcome.Error, ex.Message);
             }
         }
 
@@ -185,7 +418,7 @@ namespace ClarionAssistant.Services
                 try { EnsureRunning(); }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine("[LspService] background EnsureRunning failed: " + ex.Message);
+                    LspTrace.Write("[LspService] background EnsureRunning failed: " + ex.Message);
                 }
                 finally { Interlocked.Exchange(ref _lspStarting, 0); }
             });
@@ -358,7 +591,7 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[LspService] Failed to read .obsolete at " + extensionsRoot + ": " + ex.Message);
+                LspTrace.Write("[LspService] Failed to read .obsolete at " + extensionsRoot + ": " + ex.Message);
             }
             return set;
         }

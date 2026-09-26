@@ -247,9 +247,83 @@ Tracked separately; not fixed by this change.
 ### Program symbol (#81)
 
 - `Worker` (`type='program'`) has `calls` rows to every procedure invoked from the global
-  CODE section (13 rows — 12 before Bug Q's `UnreachableLocalRefTest()` call was added), and
-  **zero** incoming `calls` — the local variable named `worker` must never resolve to the program
-  symbol despite the case-insensitive name collision.
+  CODE section (**21 rows** — was 13 before global-data indexing, 12 before Bug Q's
+  `UnreachableLocalRefTest()` call was added), and **zero** incoming `calls` — the local variable
+  named `worker` must never resolve to the program symbol despite the case-insensitive name
+  collision. The 8 rows added by ticket d1a0aea6 are the dotted calls through the global class
+  instances (`owner.CallViaMember()` at line 40 → `OwnerClass.CallViaMember`, and likewise for
+  `groupBug`/`periodBug`/`afterBug`/`likeMemberBug`/`multiLineGroupBug`/`derivedWorker`): before
+  globals were indexed, those instance variables had no symbol, so the dotted-call resolver could
+  not type them and the calls were silently absent. If this count drops back to 13, global-data
+  indexing has regressed.
+
+### Global data (ticket d1a0aea6)
+
+- Exactly **7** `type='variable', scope='global'` symbols — the class instances declared between
+  `Worker.clw`'s MAP and its global CODE: `owner`, `groupBug`, `periodBug`, `afterBug`,
+  `likeMemberBug`, `multiLineGroupBug`, `derivedWorker`, each with `params` naming its class type.
+  Before d1a0aea6 this count was **0**: the PROGRAM file's declaration section was never scanned.
+- Total symbols: **119** (was 112) — the +7 is exactly these globals.
+- **Zero** phantom `procedure` symbols in `Worker.clw` for the MAP prototypes
+  (`TestSignatureFlow`/`ParameterTest`/...). This fixture's MAP writes prototypes at COLUMN 0,
+  which is legal and compiles — the full-file parse must skip the MAP block wholesale (explicit
+  MAP depth tracking in ParseMemberFile), or each column-0 prototype is minted as a phantom
+  procedure definition and the state machine derails. If phantom `TestSignatureFlow` (etc.) rows
+  appear in `Worker.clw`, that tracking has regressed.
+- Class symbol count is **11**, not the 10 the list above says — `OverloadBugClass` (Bug P) was
+  never added to that list's count when it was introduced; 11 was already the correct pinned
+  value before d1a0aea6 (verified against the pre-d1a0aea6 build).
+
+### Scope-ordered call resolution + DO + decl_kind (ticket b7553893)
+
+A SECOND project, `proj2\ReproProject2`, exists purely for these pins. Its `MainHelperProc`
+deliberately shares its name with ReproProject's. No pre-existing fixture file was changed, so
+every line pin above survives. Totals become **127 symbols / 4 files / 2 projects**.
+
+- `MainHelperProc` has **2** `decl_kind='implementation'` rows (one per project) — and each
+  project's call resolves to ITS OWN copy: ReproProject's program-CODE call (line 39) to
+  `Worker.clw`'s, `Caller2`'s call to `proj2\Worker2Lib.clw`'s, both `ambiguous=0`. Before
+  scope-ordered resolution, both landed on whichever row was inserted last. If either row
+  flips file, resolution has regressed.
+- Exactly **1** `type='do'` edge: `Caller2 -> Tidy:Up2`, whose routine symbol carries
+  `parent_name='Caller2'`. The label deliberately contains a colon — the old `\w+` DO regex
+  missed every template-style routine name. If this count is 0, DO capture regressed.
+- Exactly **2** `decl_kind='prototype'` rows: `Worker2.clw`'s MAP prototypes at lines 14–15,
+  written in the KEYWORD form (`Name PROCEDURE, LONG`) that `MapProcDeclRegex` never matched
+  before b7553893. (`Worker.clw`'s own MAP prototypes remain uncaptured — its column-0 style
+  fails the regex's leading-whitespace requirement; pre-existing, documented above.)
+- **Zero** `calls` rows target a `decl_kind='prototype'` symbol — implementations always win.
+- **6** `ambiguous=1` edges, all genuine same-name overload collisions (`WorkerClass.Ask` ×3
+  callers can't be type-matched across its 3 overloads; `OverloadBugClass.Dispatch` likewise) —
+  the documented Bug-P callee-side limitation, now FLAGGED instead of silent. If this count
+  grows, scope resolution is leaking; if it drops to 0 without type-aware overload resolution
+  having been built, the flag is broken.
+
+### Colon-labelled procedures (CC's round-2 battery find, b7553893)
+
+The `[\w.]+` PROCEDURE/FUNCTION definition regexes (parser AND relationship scanner) matched
+dots but not colons, so ANY colon-bearing label — 18,877 declarations in v61, the entire
+template-generated RI layer — yielded ZERO procedure symbols, zero relationship rows from its
+files, and orphaned every routine inside them. `Worker2Lib.clw` now ends with the two field
+repro shapes: `RIDelete:Fixture FUNCTION` and `Preview:SelectFixture PROCEDURE(*LONG,*LONG)`,
+prototyped in `Worker2.clw`'s MAP (which also pins the colon fix in `MapProcDeclRegex`).
+Totals become **133 symbols**; prototype count becomes **4**.
+
+- Exactly **4** colon-named `procedure`/`function` symbols: each repro shape twice — MAP
+  `prototype` + body `implementation`. If this hits 0, the colon fix regressed.
+- The program's bare call `r# = RIDelete:Fixture()` resolves to the IMPLEMENTATION row
+  (1 `calls` edge) — colon names survive the whole pipeline, not just symbol capture.
+- `source_preview` is non-null for **11/11** classes (was absent for the whole category).
+
+**Definitional pin — "cross-project calls %"**: quoted over edges whose TARGET is
+`decl_kind='implementation'`. Edges landing on prototypes (bodiless WinAPI/external
+declarations resolve to a prototype INSIDE the calling project by design) are excluded from
+both numerator and denominator. Agreed with CA-v61POSitive-CC 2026-08-11 so the number
+doesn't get re-litigated per round. The DEFINITION is the pin; the VALUE is not: round 3
+measured 17.05% (14,256/83,600; all-edges cut 18.0%), but that graph is missing every call
+issued from inside a ROUTINE body (ticket 9a73aa5d — routine bodies are never scanned at
+all), and cross-DLL calls disproportionately live in exactly those routines. Expect the
+percentage to MOVE when routine scanning lands — that will be the repair, not a regression.
 
 ## Verify queries
 
@@ -296,3 +370,128 @@ SELECT id, name, type, scope, parent_name FROM symbols WHERE LOWER(name)=LOWER('
 -- CgHoverFromDb/CgDefinitionFromDb; it's Clarion-Extension's own resolver.
 SELECT * FROM symbols WHERE name='TestQtype'; -- expect 0 rows
 ```
+
+### Round 4 — routine bodies scanned, scanner wipeout fixed (ticket 9a73aa5d)
+
+- `Tidy:Up2` emits a `references` edge to `R2` — the fixture's first routine-sourced edge of
+  any kind. If routine-sourced edges drop to zero, the ROUTINE-label scanning regressed.
+- The `\b` after `(PROCEDURE|FUNCTION)` in the scanner's procDefRegex is LOAD-BEARING: without
+  it, an indented `DO ProcedureReturn` prefix-matches PROCEDURE (IgnoreCase, trimmed line),
+  the scanner believes a procedure named "DO" was defined, and every edge for the rest of the
+  body dies until the next literal CODE line. v61 evidence: DateRanger (PRMBase002.clw) edges
+  stopped at :327 (the line before its first DO ProcedureReturn) and resumed at :1128; after
+  the fix the file scans to :1594 and the canaries (WindowInitialized 4 refs, FilesOpened 2,
+  Lcl:TempDate 19) all resolve. Same bug caused the attribution spillover (Defect 4).
+- Class data members receive `references` edges via dotted member access (fixture: 12, was 0).
+- v61 round-4 scale: 1,106,910 relationships (was 478,427); routine-sourced = 33,983 calls +
+  66,706 do + 446,373 references; zero-incoming locals 64%->37%, class 100%->92%, routines
+  without incoming DO 60%->9%. Cross-project calls (impl-target definition) = 23.9% — the
+  post-repair floor the b7553893 pin anticipated. KNOWN residual: globals stay ~84%
+  zero-incoming — the reference scan is per-file and globals are declared in the main file but
+  used in member files (cross-file global references = follow-up).
+
+### Round 5 — external rows re-pointed, routine-DATA declarations, dual-MAP member files (ticket 7e44c54c)
+
+Three new fixture files in ReproProject (`ExternalRef.clw`, `RoutineData.clw`,
+`DualMapLib.clw` + `DualMapProtos.inc`) and one appended owner declaration in
+`proj2\Worker2.clw` (inserted AFTER the MAP's END — the line-14–15 prototype pins are
+untouched). No pre-existing fixture line moved. Totals become **147 symbols / 7 files /
+2 projects** (+14 symbols over the 133 pinned above). Supersessions of earlier absolute
+counts, both from the new files: `type='do'` edges are now **2** (b7553893's "exactly 1"
+plus `RoutineDataTest -> TS::MakeCalendar:8`), and `scope='global'` variables are now **8**
+(d1a0aea6's "exactly 7" plus the `PTS::ProgPath` owner). Every other pinned count above
+(22/5 callers, 21 program calls, 4 prototypes, 6 ambiguous, 11 classes, 0 calls-to-prototype)
+re-verified unchanged 2026-08-11.
+
+- **Externals re-pointed to owners** (`ExternalRef.clw` + `proj2\Worker2.clw`):
+  `PTS::ProgPath` exists twice — the OWNER (`Worker2.clw`, `scope='global'`,
+  `decl_kind` NULL) and the import (`ExternalRef.clw`, `,EXTERNAL` →
+  `decl_kind='external'`). The owner has exactly **2** incoming `references`
+  (`ExternalRefTest` — a CROSS-PROJECT re-point — and program `Worker2`'s own
+  assignment); the external row has exactly **0**. Before round 5 the co-located
+  external absorbed the reference and the owner starved (v61: externals held 2,863
+  incoming refs vs owners' 1,031). Like Bug Q's file, `ExternalRef.clw` is
+  parse-territory only: the fixture never links proj1, so the EXTERNAL is deliberately
+  unresolved by any real export.
+- **Routine-DATA declarations** (`RoutineData.clw`, the PRMBase002.clw:1119-1126 shape):
+  `r:Count BYTE(1)`, `r:Multiplier DECIMAL(14,4)`, `r:Copy LIKE(loc:Total)` are
+  `type='variable'`, `scope='local'`, `parent_name='TS::MakeCalendar:8'` — the ROUTINE,
+  not the enclosing procedure (parent chain: procedure → routine → variable; the
+  enclosing procedure is recoverable via the routine symbol's own `parent_name`). The
+  routine's body emits `references` to all three (v61 scale: 9,261 such declarations
+  across 890 generated files were invisible, and their references emitted nothing).
+  Known accepted limitation, documented at the scanner's scope check: two same-named
+  routines in the SAME file each declaring a same-named DATA local would cross-match.
+- **Dual-MAP member file scanned** (`DualMapLib.clw`, the NYSCommon.CLW shape): a
+  MEMBER() library file with TWO sibling top-level MAP blocks before the first
+  implementation, the second holding an INCLUDE plus a nested `MODULE('Win32API')`
+  with its own END. The pre-scan used to take the first MAP prototype as the file's
+  parent procedure, fail the by-line symbol lookup, and skip the ENTIRE file (v61: 4
+  NYS library files with zero body edges). Pinned: `DualMapProcA` has `calls` edges to
+  `DualMapHelper` and `DualMapIncProc` (both implementation rows) and 4 `references`
+  to `loc:Ticks`. Top-level member-MAP prototypes are deliberately NOT collected into
+  `localMapNames` — calls must resolve to the same-file implementations.
+
+```sql
+-- Round 5 pin: owner vs external. Expect the scope='global' row (Worker2.clw) with 2
+-- incoming references, and the decl_kind='external' row (ExternalRef.clw) with 0.
+SELECT s.file_path, s.scope, s.decl_kind,
+  (SELECT COUNT(*) FROM relationships r WHERE r.to_id=s.id AND r.type='references') AS incoming
+FROM symbols s WHERE s.name='PTS::ProgPath';
+
+-- Round 5 pin: routine-DATA symbols + their references. Expect 3 rows, all
+-- parent_name='TS::MakeCalendar:8', and 6 references edges from the routine to them.
+SELECT name, scope, parent_name, params FROM symbols WHERE name IN ('r:Count','r:Multiplier','r:Copy');
+SELECT COUNT(*) FROM relationships r JOIN symbols v ON r.to_id=v.id
+JOIN symbols f ON r.from_id=f.id
+WHERE v.name IN ('r:Count','r:Multiplier','r:Copy') AND f.name='TS::MakeCalendar:8' AND r.type='references';
+
+-- Round 5 pin: dual-MAP file has body edges at all (was 0 rows total). Expect 2 calls + 4 references.
+SELECT r.type, COUNT(*) FROM relationships r WHERE r.file_path LIKE '%DualMapLib.clw' GROUP BY r.type;
+```
+
+**Pipeline run-1 hardening (same ticket, post-review):** the review pipeline's debugger
+gate found five latent defects in the round-5 code before it shipped to testing; all
+fixed in-place. (1) A ROUTINE attached to a PROGRAM's own global CODE section emitted
+its DATA locals as `scope='global'` — pinned: `Worker2.clw`'s `Main:Tally` routine,
+whose `r:MainCount` must be `scope='local'`, `parent_name='Main:Tally'`, with 1
+`references` edge from the routine (and the program gains a third `do` edge —
+`type='do'` count is now **3**). Totals become **149 symbols**. (2) A multi-owner
+external re-point now writes `ambiguous=1` (deterministic lowest-id pick, flagged as
+the guess it is — no fixture shape; single-owner pins stay `ambiguous=0`). (3) The
+pre-scan runs the same unconditional-OMIT skip as the body loop, and a
+procedure-shaped line that RESOLVES to a by-line symbol is authoritative regardless of
+MAP depth (self-heals any depth desync — member-file MAP prototypes never carry
+symbols, real definitions always do). (4) Only depth-1 prototypes of a
+procedure-local MAP are collected into `localMapNames`; nested `MODULE('...')`
+prototypes name procedures implemented elsewhere and no longer suppress their calls
+edges. (5) The indexer's routine DATA-block peek now uses the exact
+`DataStatementRegex` shape the parser uses (no line cap, no `DATA <token>` false
+positive). Plus: files skipped for want of a parent procedure are now counted and
+reported at end of run (`WARNING: N file(s) skipped by the body scan`).
+
+- **Hardened build re-verified on v61** (2026-08-11): a fresh index with the post-hardening
+  build is BYTE-IDENTICAL on every headline number to the pre-hardening round-5 run —
+  422,971 symbols / 1,191,410 relationships, routine-parented locals 9,021,
+  refs-to-externals 0, `ambiguous=1` references 0. All five hardened defect shapes are
+  absent from v61 (CC battery, same date, confirmed independently: zero PROGRAM-global
+  routines with DATA; 749 multi-owner global names exist but their intersection with
+  `,EXTERNAL`-imported names is exactly 0, so the re-point provably never sees one — the
+  964 references landing on them are direct same-file matches, not re-points). Battery
+  assertion for the ambiguous flag is therefore DOUBLE-SIDED (per CC): (a) references to
+  multi-owner names carry ambiguous=0 AND (b) multi-owner ∩ external-imported = 0. If a
+  future codebase makes (b) non-zero while (a) stays 0, THAT is the defect — a
+  single-sided (a) cannot tell "never armed" from "armed and silent". The hardening is
+  pure safety margin on this corpus; the numbers below stand for the shipped build.
+
+- v61 round-5 scale (measured 2026-08-11, round-4 db vs round-5 db, same source): 422,971
+  symbols (was 414,240 — the +8,731 is EXACTLY the new routine-parented locals, 290 → 9,021;
+  CC's 9,261 text-level estimate included shapes the parser correctly excludes);
+  1,191,410 relationships (was 1,106,910). References landing on `decl_kind='external'`
+  rows: 2,863 → **0** — the re-point is total. Owner-globals zero-incoming: 6,051/6,446
+  (93.9%) → 5,545/6,446 (**86.0%**); `PTS::ProgPath`'s owner 0 → **140** incoming with all
+  its external rows at 0. The four NYS library files: 26 relationship rows (uses_type
+  only) → **19,808** (2,376 calls + 17,406 references). Remaining owner-global
+  zero-incoming is dominated by the documented round-4 residual (cross-file global
+  references — declared in the main file, used in member files — are still a follow-up),
+  not by external absorption, which is now structurally impossible.

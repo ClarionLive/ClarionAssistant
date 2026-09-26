@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
 using System.Web.Script.Serialization;
 
 namespace ClarionAssistant.Services
@@ -204,7 +203,7 @@ namespace ClarionAssistant.Services
                           ?? new Dictionary<string, object>();
                 mutate(rec);
                 root[procKey] = rec;
-                File.WriteAllText(path, new JavaScriptSerializer().Serialize(root), Encoding.UTF8);
+                File.WriteAllText(path, new JavaScriptSerializer().Serialize(root), EncodingHelper.Utf8NoBom);
             }
             catch (Exception ex)
             {

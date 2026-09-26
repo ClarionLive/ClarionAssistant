@@ -71,7 +71,8 @@ namespace ClarionCodeGraph.Graph
                     parent_name TEXT,
                     member_of TEXT,
                     scope TEXT,
-                    source_preview TEXT
+                    source_preview TEXT,
+                    decl_kind TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS relationships (
@@ -80,13 +81,31 @@ namespace ClarionCodeGraph.Graph
                     to_id INTEGER REFERENCES symbols(id),
                     type TEXT NOT NULL,
                     file_path TEXT,
-                    line_number INTEGER
+                    line_number INTEGER,
+                    ambiguous INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS index_metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT
                 );
+
+                -- Per-file indexing outcome, written every run (ticket d1a0aea6). Makes gaps
+                -- AUDITABLE: without it, a .cwproj-listed file that failed to resolve and one
+                -- that parsed to zero symbols are indistinguishable — both just leave no rows.
+                -- outcome: resolved_parsed | resolved_no_symbols | unresolved | skipped_outside_solution
+                CREATE TABLE IF NOT EXISTS indexed_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER REFERENCES projects(id),
+                    file_name TEXT NOT NULL,
+                    resolved_path TEXT,
+                    outcome TEXT NOT NULL,
+                    symbol_count INTEGER NOT NULL DEFAULT 0,
+                    pass TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_ixf_outcome ON indexed_files(outcome);
+                CREATE INDEX IF NOT EXISTS idx_ixf_project ON indexed_files(project_id);
 
                 CREATE INDEX IF NOT EXISTS idx_sym_name ON symbols(name);
                 CREATE INDEX IF NOT EXISTS idx_sym_type ON symbols(type);
@@ -101,8 +120,58 @@ namespace ClarionCodeGraph.Graph
             {
                 cmd.ExecuteNonQuery();
             }
+
+            // Databases created before these columns existed: CREATE TABLE IF NOT EXISTS
+            // does NOT add columns to an existing table, so migrate explicitly (d1a0aea6's
+            // indexed_files rode IF NOT EXISTS because it was a whole new table; these are not).
+            EnsureColumn("symbols", "decl_kind", "TEXT");
+            EnsureColumn("relationships", "ambiguous", "INTEGER NOT NULL DEFAULT 0");
         }
 
+        /// <summary>Add a column to an existing table when absent — the SQLite migration path
+        /// for schema additions to tables that already exist in older databases.</summary>
+        private void EnsureColumn(string table, string column, string ddl)
+        {
+            bool present = false;
+            using (var cmd = new SQLiteCommand("PRAGMA table_info(" + table + ")", _connection))
+            using (var reader = cmd.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    if (string.Equals(Convert.ToString(reader["name"]), column, StringComparison.OrdinalIgnoreCase))
+                    {
+                        present = true;
+                        break;
+                    }
+                }
+            }
+            if (!present)
+            {
+                using (var cmd = new SQLiteCommand(
+                    "ALTER TABLE " + table + " ADD COLUMN " + column + " " + ddl, _connection))
+                {
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Wipe every indexed row ahead of a full re-index.
+        ///
+        /// DELIBERATELY DOES NOT RESET sqlite_sequence, and it would be a mistake to "tidy that
+        /// up". The id columns are AUTOINCREMENT, so after this the next symbol id continues from
+        /// the old high-water mark rather than restarting at 1 — a re-index of an unchanged
+        /// solution produces byte-identical rows carrying entirely different ids (measured: all
+        /// 16,631 shifted by exactly +16,631).
+        ///
+        /// That looks untidy and is the SAFE behaviour. Anything holding an id across a re-index —
+        /// a cached from_id/to_id, a multi-step agent workflow that queries ids, re-indexes, then
+        /// uses them — now matches NOTHING, which the caller can see. Reset the sequence and the
+        /// same stale id silently matches whichever unrelated symbol inherited that number, and
+        /// the wrong answer looks exactly like a right one.
+        ///
+        /// Documented in query_codegraph's tool description, because callers are the ones exposed.
+        /// </summary>
         public void ClearAll()
         {
             string sql = @"
@@ -111,9 +180,37 @@ namespace ClarionCodeGraph.Graph
                 DELETE FROM project_dependencies;
                 DELETE FROM projects;
                 DELETE FROM index_metadata;
+                DELETE FROM indexed_files;
             ";
             using (var cmd = new SQLiteCommand(sql, _connection))
             {
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        /// <summary>Record one file's indexing outcome (ticket d1a0aea6). Call per file, per run.</summary>
+        public void InsertIndexedFile(int projectId, string fileName, string resolvedPath, string outcome, int symbolCount, string pass)
+        {
+            string sql = @"INSERT INTO indexed_files (project_id, file_name, resolved_path, outcome, symbol_count, pass)
+                           VALUES (@proj, @name, @path, @outcome, @syms, @pass)";
+            using (var cmd = new SQLiteCommand(sql, _connection))
+            {
+                cmd.Parameters.AddWithValue("@proj", projectId);
+                cmd.Parameters.AddWithValue("@name", fileName);
+                cmd.Parameters.AddWithValue("@path", (object)resolvedPath ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("@outcome", outcome);
+                cmd.Parameters.AddWithValue("@syms", symbolCount);
+                cmd.Parameters.AddWithValue("@pass", (object)pass ?? DBNull.Value);
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        /// <summary>Clear one project's per-file outcomes before re-recording them (incremental runs).</summary>
+        public void ClearIndexedFiles(int projectId)
+        {
+            using (var cmd = new SQLiteCommand("DELETE FROM indexed_files WHERE project_id = @proj", _connection))
+            {
+                cmd.Parameters.AddWithValue("@proj", projectId);
                 cmd.ExecuteNonQuery();
             }
         }
@@ -157,8 +254,8 @@ namespace ClarionCodeGraph.Graph
 
         public long InsertSymbol(ClarionSymbol symbol)
         {
-            string sql = @"INSERT INTO symbols (name, type, file_path, line_number, project_id, params, return_type, parent_name, member_of, scope, source_preview)
-                           VALUES (@name, @type, @file, @line, @proj, @params, @ret, @parent, @member, @scope, @preview);
+            string sql = @"INSERT INTO symbols (name, type, file_path, line_number, project_id, params, return_type, parent_name, member_of, scope, source_preview, decl_kind)
+                           VALUES (@name, @type, @file, @line, @proj, @params, @ret, @parent, @member, @scope, @preview, @declkind);
                            SELECT last_insert_rowid();";
 
             using (var cmd = new SQLiteCommand(sql, _connection))
@@ -174,6 +271,7 @@ namespace ClarionCodeGraph.Graph
                 cmd.Parameters.AddWithValue("@member", (object)symbol.MemberOf ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("@scope", (object)symbol.Scope ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("@preview", (object)symbol.SourcePreview ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("@declkind", (object)symbol.DeclKind ?? DBNull.Value);
                 return Convert.ToInt64(cmd.ExecuteScalar());
             }
         }
@@ -212,8 +310,8 @@ namespace ClarionCodeGraph.Graph
 
         public void InsertRelationship(ClarionRelationship rel)
         {
-            string sql = @"INSERT INTO relationships (from_id, to_id, type, file_path, line_number)
-                           VALUES (@from, @to, @type, @file, @line)";
+            string sql = @"INSERT INTO relationships (from_id, to_id, type, file_path, line_number, ambiguous)
+                           VALUES (@from, @to, @type, @file, @line, @ambiguous)";
 
             using (var cmd = new SQLiteCommand(sql, _connection))
             {
@@ -222,8 +320,22 @@ namespace ClarionCodeGraph.Graph
                 cmd.Parameters.AddWithValue("@type", rel.Type);
                 cmd.Parameters.AddWithValue("@file", (object)rel.FilePath ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("@line", rel.LineNumber);
+                cmd.Parameters.AddWithValue("@ambiguous", rel.Ambiguous ? 1 : 0);
                 cmd.ExecuteNonQuery();
             }
+        }
+
+        /// <summary>All (project_id, depends_on_id) pairs — the .sln-declared project graph.</summary>
+        public List<KeyValuePair<int, int>> GetProjectDependencies()
+        {
+            var result = new List<KeyValuePair<int, int>>();
+            using (var cmd = new SQLiteCommand("SELECT project_id, depends_on_id FROM project_dependencies", _connection))
+            using (var reader = cmd.ExecuteReader())
+            {
+                while (reader.Read())
+                    result.Add(new KeyValuePair<int, int>(Convert.ToInt32(reader["project_id"]), Convert.ToInt32(reader["depends_on_id"])));
+            }
+            return result;
         }
 
         /// <summary>

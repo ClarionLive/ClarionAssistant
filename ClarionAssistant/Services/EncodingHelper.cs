@@ -23,6 +23,53 @@ namespace ClarionAssistant.Services
     public static class EncodingHelper
     {
         /// <summary>
+        /// UTF-8 that writes NO byte-order mark. Use this for every file we write that something
+        /// other than .NET will read.
+        ///
+        /// WHY THIS EXISTS AS A NAMED CONSTANT. <c>System.Text.Encoding.UTF8</c> EMITS a BOM, and
+        /// the two spellings look interchangeable at a call site, so the wrong one gets picked by
+        /// default. It is invisible in .NET — <c>File.ReadAllText</c> detects and strips a BOM, so
+        /// our own write/read round-trips never notice — and that is exactly what let it ship:
+        /// nothing in this codebase could see the bug it was causing in someone else's parser.
+        ///
+        /// WHO STRIPS A BOM AND WHO DOES NOT, measured 2026-09-06 rather than assumed:
+        ///     File.ReadAllText / ReadAllLines .... strips it. Our own state files are unaffected.
+        ///     TextDecoder / fetch().text() ....... strips it. The WebView reads (source.txt,
+        ///                                          diff.txt) are unaffected.
+        ///     node fs.readFileSync + JSON.parse .. DOES NOT. "Unexpected token '﻿'".
+        ///     the Clarion compiler ............... does not; a BOM in a .clw is a known breaker.
+        /// The last two are the ones that bite, and the first two are why nobody noticed for so
+        /// long. Ticket 9b9dbc7d: we wrote .claude\settings.local.json with a BOM, Claude Code
+        /// silently ignored the file, and the Clarion Assistant status line therefore never worked
+        /// for anyone. Copilot printing the parse error is what finally surfaced it.
+        ///
+        /// So the rule is about the READER, not the file type: if a non-.NET parser will open it,
+        /// write it with this.
+        /// </summary>
+        public static readonly UTF8Encoding Utf8NoBom = new UTF8Encoding(false);
+
+        /// <summary>
+        /// The system ANSI code page: what a no-BOM file that is not UTF-8 is decoded as, and what
+        /// Clarion source is written in when there is no evidence for anything else.
+        ///
+        /// WHY THE ACP AND NOT A HARD 1252 (GH #203). Clarion is an ANSI toolchain: its editor saves
+        /// in the machine's ANSI code page and its compiler bakes string literals in as those bytes.
+        /// On a Western machine that IS 1252 — which is why pinning 1252 looks like the obvious fix
+        /// for a Norwegian report. On a Central European (1250) or Cyrillic (1251) machine it is not,
+        /// and a pinned 1252 would decode every accented byte as the wrong letter and encode the
+        /// user's own alphabet to '?'. The file was written in the ACP, so it is read and written in
+        /// the ACP.
+        ///
+        /// Spelled GetEncoding(ACP) rather than Encoding.Default so the intent is readable at the
+        /// call site. On .NET Framework they name the same code page; on .NET Core Encoding.Default is
+        /// UTF-8, and a future port must not silently inherit that.
+        /// </summary>
+        public static readonly Encoding Ansi = Encoding.GetEncoding((int)GetACP());
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+        private static extern uint GetACP();
+
+        /// <summary>
         /// Read a file and report the encoding it was decoded with, opening and decoding it ONCE.
         /// Observationally identical to <c>File.ReadAllText(path, DetectFileEncoding(path))</c> —
         /// same text, same reported encoding, same exceptions, same FileShare — but without the
@@ -78,7 +125,7 @@ namespace ClarionAssistant.Services
             }
             catch (DecoderFallbackException)
             {
-                encoding = Encoding.Default;
+                encoding = Ansi;
                 return encoding.GetString(bytes);
             }
         }
@@ -193,7 +240,7 @@ namespace ClarionAssistant.Services
         /// Detect a file's encoding without keeping the text. Use only where the text is genuinely
         /// not wanted — otherwise <see cref="ReadAllText(string, out Encoding)"/> or
         /// <see cref="ReadAllLines(string, out Encoding)"/> gets both for the price of one read.
-        /// Returns <c>Encoding.Default</c> if the file can't be read.
+        /// Returns <see cref="Ansi"/> if the file can't be read.
         /// </summary>
         public static Encoding DetectFileEncoding(string path)
         {
@@ -202,7 +249,7 @@ namespace ClarionAssistant.Services
                 return DetectFromBytes(ReadAllBytes(path, FileShare.ReadWrite));
             }
             catch { }
-            return Encoding.Default;
+            return Ansi;
         }
 
         /// <summary>
@@ -232,7 +279,7 @@ namespace ClarionAssistant.Services
             }
             catch (DecoderFallbackException)
             {
-                return Encoding.Default;
+                return Ansi;
             }
         }
 

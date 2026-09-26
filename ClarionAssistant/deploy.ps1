@@ -1,12 +1,14 @@
 ﻿# ClarionAssistant Deploy Script
 # Builds and deploys the addin for Clarion 10, 11, 11.1, 12, or all.
-# Usage: .\deploy.ps1 [-Version 10|11|11.1|12|all] [-NoBuild] [-Kill]
+# Usage: .\deploy.ps1 [-Version 10|11|11.1|12|all] [-NoBuild] [-Kill] [-SkipBomGuard] [-AllowRunning]
 
 param(
     [ValidateSet("10","11","11.1","12","all")]
     [string]$Version = "all",  # Which Clarion version(s) to build/deploy
     [switch]$NoBuild,          # Skip build, just copy
-    [switch]$Kill              # Kill Clarion IDE before deploying
+    [switch]$Kill,             # Kill Clarion IDE before deploying
+    [switch]$SkipBomGuard,     # Ship without the BOM check (loud, deliberate; see the gate below)
+    [switch]$AllowRunning      # Deploy even though something holds the target files (see Get-DeployBlockers)
 )
 
 $ErrorActionPreference = "Stop"
@@ -42,6 +44,11 @@ $MSBuild     = Resolve-MSBuild
 # no longer built from the external H:\DevLaptop\ClarionLSP\indexer tree. Override with
 # $env:CLARIONINDEXER_DIR only if you keep the indexer somewhere else.
 $IndexerDir    = if ($env:CLARIONINDEXER_DIR) { $env:CLARIONINDEXER_DIR } else { Join-Path $ProjectDir "indexer" }
+# Standalone MCP server (ticket d051fbd1) - the editor-agnostic half of the tools as its own
+# stdio process. Deployed INTO the addin folder rather than beside it, because the server
+# resolves lsp-server\ relative to its own directory; from anywhere else it loses the bundled
+# language server and node.exe.
+$McpServerDir  = Join-Path $ProjectDir "mcp-server"
 $IndexerFile   = "$IndexerDir\ClarionIndexer.csproj"
 $IndexerOutput = "$IndexerDir\bin\Debug"
 
@@ -58,10 +65,27 @@ $Versions = @{
     "10"   = @{ RegistryKeys = @("Clarion10");              Fallbacks = @("C:\Clarion10", "C:\Clarion10v8");        GlobPatterns = @("Clarion10*");            Output = "bin\Debug-C10" }
 }
 
-# Resolve the install root for a Clarion version: registry (authoritative, modern Clarion
-# versions register a "root" value under SoftVelocity\Clarion<key>) -> known fallback paths
-# (other dev machines) -> drive-root glob scan (machines where neither of the above hit).
-function Resolve-ClarionRoot {
+# Resolve ALL install roots for a Clarion version: registry (authoritative, modern Clarion
+# versions register a "root" value under SoftVelocity\Clarion<key>) + known fallback paths
+# (other dev machines) + drive-root glob scan. Returns EVERY existing install, deduped,
+# registry hit first (the build binds against the first root's DLLs).
+#
+# Returning only the FIRST hit shipped a real incident (2026-08-13): the registry resolved
+# Clarion 11 to C:\Clarion11, so the ALSO-LIVE C:\Clarion11-13372 silently kept a stale
+# addin — the developer ran the old indexer for a day while every verification pass showed
+# the new build "deployed and hash-verified" (in the four folders the script chose). A
+# machine with two installs of one version must get the addin in BOTH.
+#
+# The drive-root glob scan is the slow part. It used to walk every mounted filesystem drive
+# (network shares included) for every glob pattern, which turned every `-Version all` deploy
+# into a full-machine scan per version before any output appeared. It still has to run even
+# when registry+fallbacks already found a root: the 2026-08-13 incident's second install
+# happened to be in Fallbacks, but the same shape at a path that ISN'T listed there is only
+# caught by this scan. What the scan doesn't need is network shares, so it is restricted to
+# fixed local drives — that keeps the speedup without losing any realistic coverage.
+# Removable, optical and RAM drives are left out on purpose too (external USB hard disks
+# report Fixed, so they are still scanned).
+function Resolve-ClarionRoots {
     param(
         [string[]]$RegistryKeys,
         [string[]]$Fallbacks,
@@ -73,6 +97,14 @@ function Resolve-ClarionRoot {
         return Test-Path (Join-Path $path "bin\ICSharpCode.Core.dll")
     }
 
+    $found = New-Object System.Collections.Generic.List[string]
+    $seen  = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    function Add-Root([string]$path) {
+        if (-not $path) { return }
+        $norm = $path.TrimEnd('\')
+        if ((Test-ClarionRoot $norm) -and $seen.Add($norm)) { $found.Add($norm) }
+    }
+
     $regHives = @(
         "HKLM:\SOFTWARE\WOW6432Node\SoftVelocity",
         "HKLM:\SOFTWARE\SoftVelocity",
@@ -80,30 +112,31 @@ function Resolve-ClarionRoot {
     )
     foreach ($hive in $regHives) {
         foreach ($key in $RegistryKeys) {
-            $val = (Get-ItemProperty -Path "$hive\$key" -Name root -ErrorAction SilentlyContinue).root
-            if ($val) {
-                $val = $val.TrimEnd('\')
-                if (Test-ClarionRoot $val) { return $val }
-            }
+            Add-Root (Get-ItemProperty -Path "$hive\$key" -Name root -ErrorAction SilentlyContinue).root
         }
     }
 
-    foreach ($p in $Fallbacks) {
-        if (Test-ClarionRoot $p) { return $p }
-    }
+    foreach ($p in $Fallbacks) { Add-Root $p }
 
-    $drives = (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
-                Where-Object { Test-Path $_.Root }).Root
+    # Fixed local drives only. A Clarion install that's neither registered (registry) nor
+    # at a known path (Fallbacks) and lives ONLY on a network share isn't a realistic case —
+    # COM registration and templates need a local, registered install to actually work — and
+    # network shares are what makes this scan slow (SMB round-trips per drive per pattern).
+    # GetDrives() can throw (IOException/UnauthorizedAccessException) and this script runs
+    # with ErrorActionPreference=Stop; the old Get-PSDrive call had SilentlyContinue, so keep
+    # a failure here a skipped scan rather than an aborted deploy.
+    $allDrives = try { [System.IO.DriveInfo]::GetDrives() } catch { @() }
+    $drives = $allDrives |
+                Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady } |
+                ForEach-Object { $_.RootDirectory.FullName }
     foreach ($drive in $drives) {
         foreach ($pattern in $GlobPatterns) {
-            $hit = Get-ChildItem -Path $drive -Directory -Filter $pattern -ErrorAction SilentlyContinue |
-                    Where-Object { Test-ClarionRoot $_.FullName } |
-                    Select-Object -First 1
-            if ($hit) { return $hit.FullName }
+            Get-ChildItem -Path $drive -Directory -Filter $pattern -ErrorAction SilentlyContinue |
+                ForEach-Object { Add-Root $_.FullName }
         }
     }
 
-    return $null
+    return ,$found.ToArray()
 }
 
 function Resolve-BuildOutputDir {
@@ -134,11 +167,11 @@ if ($Version -eq "all") {
 # ClarionRoot default in Directory.Build.props errored out mid-build.
 $ResolvedRoots = @{}
 foreach ($ver in $TargetVersions) {
-    $cfg  = $Versions[$ver]
-    $root = Resolve-ClarionRoot -RegistryKeys $cfg.RegistryKeys -Fallbacks $cfg.Fallbacks -GlobPatterns $cfg.GlobPatterns
-    if ($root) {
-        $ResolvedRoots[$ver] = $root
-        Write-Host "Clarion ${ver}: $root" -ForegroundColor DarkGray
+    $cfg   = $Versions[$ver]
+    $roots = Resolve-ClarionRoots -RegistryKeys $cfg.RegistryKeys -Fallbacks $cfg.Fallbacks -GlobPatterns $cfg.GlobPatterns
+    if ($roots -and $roots.Count -gt 0) {
+        $ResolvedRoots[$ver] = $roots
+        Write-Host "Clarion ${ver}: $($roots -join ', ')" -ForegroundColor DarkGray
     } else {
         Write-Host "Clarion ${ver}: no install found (registry / known paths / drive scan) - will skip" -ForegroundColor DarkGray
     }
@@ -385,6 +418,151 @@ $SqliteFts5Dir = Join-Path $ProjectDir "lib\sqlite-fts5"
 # so "built but NOT deployed" is never silently indistinguishable from "deployed".
 $FailedBuilds = @()
 
+# Roots whose COPY was incomplete. Tracked separately from $FailedBuilds because the two failures
+# are not the same shape: a failed build ships nothing, while a failed copy leaves a HALF-WRITTEN
+# live install - some files new, some stale - which is the worse of the two and used to exit 0.
+$PartialRoots = @()
+
+# --- BOM guard (ticket 9b9dbc7d) ---
+# Runs BEFORE the build, so a failure costs seconds instead of four MSBuild passes, and runs even
+# under -NoBuild, because shipping pre-built binaries from source that can emit a BOM is still
+# shipping the bug.
+#
+# WHY A DEPLOY GATE AND NOT A HABIT. 14 call sites now depend on writing through
+# EncodingHelper.Utf8NoBom rather than System.Text.Encoding.UTF8. The wrong spelling is SHORTER and
+# reads like a clarification, and its damage is invisible from inside .NET - File.ReadAllText strips
+# the BOM on the way back in, so our own round-trips keep working while node's JSON.parse and the
+# Clarion compiler choke. That combination shipped 9b9dbc7d and the status line never worked for
+# anyone, for the entire life of the feature. Nothing else in this repo would catch a regression.
+#
+# -SelfTest RUNS FIRST, and that ordering is the point. It asserts the scanner still discriminates
+# against ~43 known shapes. A scanner that has gone blind reports PASS forever, which is precisely
+# the failure mode this guard exists to prevent - so "the guard passed" is only evidence once the
+# guard has been shown it can still fail. Costs about a second.
+#
+# The deeper check - that the FIXTURE SET would notice a broken scanner - is
+# Check-BomFreeWrites.Mutations.ps1. It is deliberately NOT wired in here: it only needs re-running
+# when the scanner or its fixtures change, not on every deploy.
+if (-not $SkipBomGuard) {
+    $BomGuard = Join-Path $ProjectDir "Check-BomFreeWrites.ps1"
+    if (-not (Test-Path $BomGuard)) {
+        Write-Host ""
+        Write-Host "BOM guard NOT FOUND: $BomGuard" -ForegroundColor Red
+        Write-Host "  Refusing to deploy. A guard that has been deleted or renamed is not a guard that passed." -ForegroundColor Yellow
+        exit 1
+    }
+
+    Write-Host ""
+    Write-Host "Checking BOM-free writes..." -ForegroundColor Cyan
+
+    # Out-Host, not bare invocation: an uncaptured & writes objects into this script's own output
+    # stream, and this repo has shipped a release where that turned a caller's variable into an
+    # array. $LASTEXITCODE still carries the child's exit code (verified).
+    & $BomGuard -SelfTest | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "BOM guard SELF-TEST failed - the scanner itself is broken, so its verdict means nothing." -ForegroundColor Red
+        Write-Host "  Fix Check-BomFreeWrites.ps1 before deploying. Override with -SkipBomGuard only if you" -ForegroundColor Yellow
+        Write-Host "  have decided, deliberately, to ship without this check." -ForegroundColor Yellow
+        exit 1
+    }
+
+    & $BomGuard | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "BOM guard FAILED - a file we write can be given a byte-order mark. NOT deploying." -ForegroundColor Red
+        Write-Host "  This will not show up in any .NET test. See the guard output above and ticket 9b9dbc7d." -ForegroundColor Yellow
+        exit 1
+    }
+}
+else {
+    Write-Host ""
+    Write-Host "!! BOM GUARD SKIPPED (-SkipBomGuard) - deploying WITHOUT the BOM check !!" -ForegroundColor Red
+    Write-Host "   A BOM in a file read by node or the Clarion compiler fails SILENTLY. See 9b9dbc7d." -ForegroundColor Yellow
+}
+
+# --- Target must be idle (ticket 8aa391ba) ---
+# Deploying over a live install produces a PARTIAL copy, and a partial copy is the dangerous
+# outcome, not merely an annoying one: ClarionAssistant.dll is the first item copied and the least
+# likely to be locked, so the one file anybody checks to confirm a deploy is exactly the file that
+# lies. It happened twice, sessions apart, and cost a diagnosis both times.
+#
+# Checked BEFORE the build so a refusal costs seconds, not four MSBuild passes. -Kill is handled
+# here too (moved up from just-before-the-deploy-loop) so "make the target idle" is one step rather
+# than two, and so the build does not run against a target we are about to refuse.
+function Get-DeployBlockers {
+    <#
+      Anything holding files inside an addin folder WE ARE ABOUT TO WRITE. Scoped to $Roots on
+      purpose: a Clarion 12 IDE does not lock Clarion 11.1's addin folder, and a gate that refuses
+      safe work teaches people to pass -AllowRunning reflexively, which is the same as having no
+      gate. Only report what would actually collide.
+
+      Two categories, because a name list alone misses the ones that matter:
+        - Clarion.exe: lives in <root>\bin\ but LOADS the addin, locking ClarionAssistant.dll.
+        - ANY process whose own image sits under <root>\accessory\addins\ClarionAssistant\ - that
+          is clarion-mcp-server.exe, clarion-indexer.exe and the bundled lsp-server\node.exe. These
+          run with Clarion CLOSED (an external MCP client starts one), which is precisely how a
+          deploy with the IDE shut down still comes out half-written. That happened today.
+
+      Path access throws for processes we cannot open; those are skipped rather than guessed at.
+      A process we cannot see is a gap in this check, not a clean result - which is why the copy
+      loop still reports FAIL per file and the run still exits non-zero on a partial.
+    #>
+    param([string[]] $Roots)
+
+    $blockers = @()
+    if (-not $Roots -or $Roots.Count -eq 0) { return $blockers }
+
+    foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) {
+        $path = $null
+        try { $path = $p.Path } catch { continue }
+        if (-not $path) { continue }
+        foreach ($r in $Roots) {
+            $rr = $r.TrimEnd('\')
+            if ($path -like "$rr\accessory\addins\ClarionAssistant\*") {
+                $blockers += [PSCustomObject]@{ Name = $p.ProcessName; Id = $p.Id; Why = $path }
+                break
+            }
+            if ($p.ProcessName -eq "Clarion" -and $path -like "$rr\*") {
+                $blockers += [PSCustomObject]@{ Name = $p.ProcessName; Id = $p.Id; Why = "$path (loads the addin)" }
+                break
+            }
+        }
+    }
+    return $blockers
+}
+
+if ($Kill) {
+    $proc = Get-Process -Name "Clarion" -ErrorAction SilentlyContinue
+    if ($proc) {
+        Write-Host ""
+        Write-Host "Stopping Clarion IDE..." -ForegroundColor Yellow
+        $proc | Stop-Process -Force
+        Start-Sleep -Seconds 2
+    }
+}
+
+$TargetRoots = @()
+foreach ($ver in $TargetVersions) { if ($ResolvedRoots.ContainsKey($ver)) { $TargetRoots += $ResolvedRoots[$ver] } }
+$Blockers = @(Get-DeployBlockers -Roots $TargetRoots)
+if ($Blockers.Count -gt 0) {
+    Write-Host ""
+    if ($AllowRunning) {
+        Write-Host "!! DEPLOYING OVER A LIVE INSTALL (-AllowRunning) - expect a PARTIAL copy !!" -ForegroundColor Red
+        foreach ($b in $Blockers) { Write-Host "   holding files: $($b.Name) (pid $($b.Id)) - $($b.Why)" -ForegroundColor Yellow }
+        Write-Host "   Locked files will be reported FAIL and this run will exit non-zero." -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "REFUSING TO DEPLOY - something is holding the target files:" -ForegroundColor Red
+        foreach ($b in $Blockers) { Write-Host "   $($b.Name) (pid $($b.Id)) - $($b.Why)" -ForegroundColor Red }
+        Write-Host ""
+        Write-Host "  Close Clarion by hand and stop the helper processes, then re-run:" -ForegroundColor Yellow
+        Write-Host "      Get-Process clarion-mcp-server,clarion-indexer -ErrorAction SilentlyContinue | Stop-Process -Force" -ForegroundColor Cyan
+        Write-Host "  Prefer that over -Kill: per gotcha_deploy_kill_wedges_clarion, killing the IDE can" -ForegroundColor Yellow
+        Write-Host "  wedge it. -AllowRunning overrides this check if you have decided a partial copy is" -ForegroundColor Yellow
+        Write-Host "  acceptable, but a half-written install reads as a code regression later. See 8aa391ba." -ForegroundColor Yellow
+        exit 1
+    }
+}
+
 # --- Build ---
 if (-not $NoBuild) {
     Write-Host "Restoring packages..." -ForegroundColor Cyan
@@ -404,8 +582,11 @@ if (-not $NoBuild) {
             Write-Host "SKIP  build for Clarion $ver (no install found)" -ForegroundColor DarkGray
             continue
         }
-        Write-Host "Building for Clarion $ver ($($ResolvedRoots[$ver]))..." -ForegroundColor Cyan
-        & $MSBuild $ProjectFile /p:Configuration=Debug /p:ClarionVersion=$ver /p:ClarionRoot="$($ResolvedRoots[$ver])" /v:minimal
+        # Build binds against the FIRST root's DLLs (registry-preferred); additional roots
+        # of the same version receive the same build (proven pattern — the strong-name
+        # version lock is handled by the AssemblyResolve shim).
+        Write-Host "Building for Clarion $ver ($($ResolvedRoots[$ver][0]))..." -ForegroundColor Cyan
+        & $MSBuild $ProjectFile /p:Configuration=Debug /p:ClarionVersion=$ver /p:ClarionRoot="$($ResolvedRoots[$ver][0])" /v:minimal
         if ($LASTEXITCODE -ne 0) {
             Write-Host "Build FAILED for Clarion $ver — it will NOT be deployed." -ForegroundColor Red
             $FailedBuilds += $ver
@@ -432,17 +613,25 @@ if (-not $NoBuild) {
         Write-Host ""
         Write-Host "Skipping indexer build (project not found: $IndexerFile)" -ForegroundColor Yellow
     }
+
+    # Platform=x86 is REQUIRED here, unlike the indexer: this project references the vendored
+    # 32-bit System.Data.SQLite and its x86 native interop.
+    $McpServerFile = Join-Path $McpServerDir "ClarionMcpServer.csproj"
+    if (Test-Path $McpServerFile) {
+        Write-Host ""
+        Write-Host "Building standalone MCP server..." -ForegroundColor Cyan
+        & $MSBuild $McpServerFile /p:Configuration=Debug /p:Platform=x86 /v:minimal
+        if ($LASTEXITCODE -ne 0) { Write-Host "MCP server build failed." -ForegroundColor Red; exit 1 }
+        Write-Host "MCP server build succeeded." -ForegroundColor Green
+    } else {
+        Write-Host ""
+        Write-Host "Skipping MCP server build (project not found: $McpServerFile)" -ForegroundColor Yellow
+    }
 }
 
 # --- Kill Clarion IDE if requested ---
-if ($Kill) {
-    $proc = Get-Process -Name "Clarion" -ErrorAction SilentlyContinue
-    if ($proc) {
-        Write-Host "Stopping Clarion IDE..." -ForegroundColor Yellow
-        $proc | Stop-Process -Force
-        Start-Sleep -Seconds 2
-    }
-}
+# (-Kill and the idle check moved UP to just before the build - see "Target must be idle".
+#  Doing it there means a refusal costs seconds instead of four MSBuild passes.)
 
 # --- Deploy each version ---
 foreach ($ver in $TargetVersions) {
@@ -458,7 +647,8 @@ foreach ($ver in $TargetVersions) {
     }
     $cfg         = $Versions[$ver]
     $BuildOutput = Resolve-BuildOutputDir -ProjectDir $ProjectDir -PreferredOutput $cfg.Output
-    $Roots       = @($ResolvedRoots[$ver])
+    # ALL live installs of this version — not just the registry pick (2026-08-13 incident).
+    $Roots       = $ResolvedRoots[$ver]
 
     # Same no-guessing principle as Resolve-BuildOutputDir: a config that was never built
     # (-NoBuild, or a fresh checkout) must be a clean skip — otherwise the item loop below
@@ -511,6 +701,29 @@ foreach ($ver in $TargetVersions) {
             catch {
                 Write-Host "  FAIL  $item - $($_.Exception.Message)" -ForegroundColor Red
                 $failed++
+            }
+        }
+
+        # --- Deploy the standalone MCP server ---
+        # Only the exe and pdb: every DLL it needs is already in this folder from the addin's own
+        # deployment, at the same versions, so copying them again would be pure duplication.
+        #
+        # ITS PRESENCE IS A SWITCH, not just a file. The addin checks for it at startup and, when
+        # it is there, stops serving the 59 editor-agnostic tools itself and declares clarion-tools
+        # in mcp-config.json instead. Miss this step and the addin silently falls back to serving
+        # all 115 - which looks exactly like the split not working.
+        $McpServerOutput = Join-Path $McpServerDir "bin\Debug"
+        foreach ($item in @("clarion-mcp-server.exe", "clarion-mcp-server.pdb")) {
+            $src = Join-Path $McpServerOutput $item
+            if (-not (Test-Path $src)) {
+                Write-Host "  SKIP  $item (not found in mcp-server output)" -ForegroundColor DarkGray
+                continue
+            }
+            try {
+                Copy-Item $src (Join-Path $DeployDir $item) -Force -ErrorAction Stop
+                Write-Host "  OK    $item" -ForegroundColor Green
+            } catch {
+                Write-Host "  FAIL  $item - $($_.Exception.Message)" -ForegroundColor Red
             }
         }
 
@@ -586,11 +799,21 @@ foreach ($ver in $TargetVersions) {
                 $LspOutSrc = "$LspSourceDir\$outDir"
                 if (Test-Path $LspOutSrc) {
                     $LspOutDst = Join-Path $LspDestDir $outDir
-                    if (Test-Path $LspOutDst) { Remove-Item $LspOutDst -Recurse -Force }
-                    New-Item -Path $LspOutDst -ItemType Directory -Force | Out-Null
-                    Copy-Item "$LspOutSrc\*" $LspOutDst -Recurse -Force
-                    Write-Host "  OK    lsp-server\$outDir" -ForegroundColor Green
-                    $copied++
+                    # DELETE-THEN-COPY. If the copy fails after the delete, the destination is not
+                    # stale - it is GONE, which is worse. The catch says so explicitly rather than
+                    # letting "FAIL" imply the old files survived. (Making this atomic - stage to a
+                    # sibling and swap - is the real fix and is filed on 8aa391ba, not done here.)
+                    try {
+                        if (Test-Path $LspOutDst) { Remove-Item $LspOutDst -Recurse -Force }
+                        New-Item -Path $LspOutDst -ItemType Directory -Force | Out-Null
+                        Copy-Item "$LspOutSrc\*" $LspOutDst -Recurse -Force
+                        Write-Host "  OK    lsp-server\$outDir" -ForegroundColor Green
+                        $copied++
+                    } catch {
+                        Write-Host "  FAIL  lsp-server\$outDir - $($_.Exception.Message)" -ForegroundColor Red
+                        Write-Host "        ^ this directory was CLEARED before the copy - it may now be EMPTY, not stale." -ForegroundColor Red
+                        $failed++
+                    }
                 }
             }
 
@@ -608,10 +831,19 @@ foreach ($ver in $TargetVersions) {
             if (Test-Path $NodeExeSrc) {
                 # $LspDestDir is only created by the server-output copy above; when that was SKIPped
                 # (no LSP build output) a fresh target has no lsp-server dir and this copy would die.
-                New-Item -Path $LspDestDir -ItemType Directory -Force | Out-Null
-                Copy-Item $NodeExeSrc (Join-Path $LspDestDir "node.exe") -Force
-                Write-Host "  OK    lsp-server\node.exe" -ForegroundColor Green
-                $copied++
+                # This copy used to be UNGUARDED while its four neighbours all caught, counted and
+                # continued. With $ErrorActionPreference='Stop' a lock on node.exe therefore threw
+                # and killed the whole remaining run - so under -Version all, every LATER Clarion
+                # root was left untouched while earlier ones sat half-written. Measured 2026-09-10.
+                try {
+                    New-Item -Path $LspDestDir -ItemType Directory -Force | Out-Null
+                    Copy-Item $NodeExeSrc (Join-Path $LspDestDir "node.exe") -Force
+                    Write-Host "  OK    lsp-server\node.exe" -ForegroundColor Green
+                    $copied++
+                } catch {
+                    Write-Host "  FAIL  lsp-server\node.exe - $($_.Exception.Message)" -ForegroundColor Red
+                    $failed++
+                }
             } else {
                 Write-Host "  SKIP  node.exe (not found at $NodeExeSrc)" -ForegroundColor DarkGray
             }
@@ -621,10 +853,17 @@ foreach ($ver in $TargetVersions) {
                 $modSrc = "$LspSourceDir\node_modules\$mod"
                 $modDst = Join-Path $LspDestDir "node_modules\$mod"
                 if (Test-Path $modSrc) {
-                    if (Test-Path $modDst) { Remove-Item $modDst -Recurse -Force }
-                    Copy-Item $modSrc $modDst -Recurse -Force
-                    Write-Host "  OK    lsp-server\node_modules\$mod" -ForegroundColor Green
-                    $copied++
+                    # Delete-then-copy again: on failure this module is missing, not stale.
+                    try {
+                        if (Test-Path $modDst) { Remove-Item $modDst -Recurse -Force }
+                        Copy-Item $modSrc $modDst -Recurse -Force
+                        Write-Host "  OK    lsp-server\node_modules\$mod" -ForegroundColor Green
+                        $copied++
+                    } catch {
+                        Write-Host "  FAIL  lsp-server\node_modules\$mod - $($_.Exception.Message)" -ForegroundColor Red
+                        Write-Host "        ^ this module was CLEARED before the copy - it may now be MISSING." -ForegroundColor Red
+                        $failed++
+                    }
                 }
             }
 
@@ -677,30 +916,68 @@ foreach ($ver in $TargetVersions) {
             Write-Host "  SKIP  lsp-server (ClarionLSP not found)" -ForegroundColor DarkGray
         }
 
+        # --- Post-copy verification of the one file that lies ---
+        # ClarionAssistant.dll is the first item copied and the least likely to be locked, so it is
+        # the file everybody checks to confirm a deploy - and on both recorded partial deploys it
+        # copied FINE while later files did not. Hash it against the build rather than trusting the
+        # copy's return: this is the check that actually proved an install undamaged on 2026-09-10.
+        $DeployedDll = Join-Path $DeployDir "ClarionAssistant.dll"
+        $BuiltDll    = Join-Path $BuildOutput "ClarionAssistant.dll"
+        if ((Test-Path $DeployedDll) -and (Test-Path $BuiltDll)) {
+            try {
+                if ((Get-FileHash $DeployedDll -Algorithm SHA256).Hash -ne (Get-FileHash $BuiltDll -Algorithm SHA256).Hash) {
+                    Write-Host "  FAIL  ClarionAssistant.dll does NOT match the build it came from." -ForegroundColor Red
+                    Write-Host "        deployed: $DeployedDll" -ForegroundColor Red
+                    Write-Host "        built:    $BuiltDll" -ForegroundColor Red
+                    $failed++
+                }
+            } catch {
+                Write-Host "  FAIL  could not verify ClarionAssistant.dll - $($_.Exception.Message)" -ForegroundColor Red
+                $failed++
+            }
+        }
+        elseif (-not (Test-Path $DeployedDll)) {
+            Write-Host "  FAIL  ClarionAssistant.dll is MISSING from the deployed folder." -ForegroundColor Red
+            $failed++
+        }
+
         # --- Version summary ---
         if ($failed -eq 0) {
             Write-Host "  $root deploy complete: $copied items." -ForegroundColor Green
         } else {
-            Write-Host "  $root deploy: $copied copied, $failed failed." -ForegroundColor Yellow
+            Write-Host "  $root deploy: $copied copied, $failed FAILED - this install is PARTIAL." -ForegroundColor Red
+            $PartialRoots += $root
         }
     }
 }
 
 # --- Final summary ---
+# The rule stated here for BUILD failures applied to builds only, and copy failures - the ones that
+# actually leave a stale install - were exempt from it: a run could print "42 copied, 8 failed" in
+# yellow and then "All done." in green and exit 0. Both halves are covered now (8aa391ba).
 Write-Host ""
-if ($FailedBuilds.Count -gt 0 -or -not $LspPinOK) {
+if ($FailedBuilds.Count -gt 0 -or $PartialRoots.Count -gt 0 -or -not $LspPinOK) {
     # Never let a partial run exit 0 with a bare "All done." — that is what made a stale deployed DLL
-    # look like a successful deploy. Name what did NOT ship, and fail the exit code so a caller (CI,
-    # the installer, another script) can't read this run as clean.
+    # look like a successful deploy. Name what did NOT ship, and fail the exit code so a caller
+    # (CI, the installer, another script) can't read this run as clean.
     Write-Host "Done, WITH FAILURES." -ForegroundColor Yellow
     if ($FailedBuilds.Count -gt 0) {
         Write-Host "  NOT deployed (build failed): $($FailedBuilds -join ', ')" -ForegroundColor Red
+    }
+    if ($PartialRoots.Count -gt 0) {
+        Write-Host "  PARTIALLY deployed - these installs are half-written and must NOT be trusted:" -ForegroundColor Red
+        foreach ($r in $PartialRoots) { Write-Host "      $r" -ForegroundColor Red }
+        Write-Host "  A partial install is worse than an untouched one: some files are new, some stale," -ForegroundColor Yellow
+        Write-Host "  and the symptom later reads as a code regression. Close everything holding the" -ForegroundColor Yellow
+        Write-Host "  target files and re-run before using these." -ForegroundColor Yellow
     }
     if (-not $LspPinOK) {
         Write-Host "  NOT deployed (pin mismatch): lsp-server — every version kept the LSP it already had." -ForegroundColor Red
         Write-Host "  Re-run lsp-server-sync\Sync-LspServer.ps1 -Pure, or bump the pin, then re-run this script." -ForegroundColor Red
     }
-    Write-Host "  Everything else deployed normally." -ForegroundColor Yellow
+    if ($PartialRoots.Count -eq 0) {
+        Write-Host "  Everything else deployed normally." -ForegroundColor Yellow
+    }
     exit 1
 }
 Write-Host "All done." -ForegroundColor Green

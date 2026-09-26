@@ -42,7 +42,11 @@ namespace ClarionCodeGraph.Parsing
                     var includeAttr = node.Attributes["Include"];
                     if (includeAttr != null)
                     {
-                        string fileName = includeAttr.Value;
+                        // MSBuild %-escapes special characters in Include attributes — a Clarion
+                        // file named PRMB$TAG.CLW is stored as PRMB%24TAG.CLW. Unescape, or the
+                        // name never matches anything on disk and the file is silently dropped
+                        // (found by the indexed_files audit on v61POSitive, ticket d1a0aea6).
+                        string fileName = Uri.UnescapeDataString(includeAttr.Value);
                         if (fileName.EndsWith(".clw", StringComparison.OrdinalIgnoreCase) ||
                             fileName.EndsWith(".inc", StringComparison.OrdinalIgnoreCase))
                         {

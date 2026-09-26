@@ -43,6 +43,21 @@ namespace ClarionAssistant.Services
                 if (h == IntPtr.Zero) return false;                  // nobody focused — claim freely
                 var focused = Control.FromChildHandle(h);
                 if (focused == null) return false;                   // pure-native hwnd — cannot classify
+
+                // Focus in a different top-level window entirely (an owned modeless dialog such
+                // as IndexProgressForm, or any future one) is unambiguously foreign — stealing it
+                // back breaks that window's own controls the same way a docked pad used to go
+                // deaf (GH #140). The type-name walk below only ever recognized DockPanel pads,
+                // so a plain owned Form fell through to "unclassified — claim anyway" and lost
+                // every click to this hook re-firing on WindowSelected.
+                var oursForm = ours.FindForm();
+                var focusedForm = focused.FindForm();
+                if (oursForm != null && focusedForm != null && !ReferenceEquals(oursForm, focusedForm))
+                {
+                    MonacoSpikeLog.Write("focus-guard: stand down — focus in foreign top-level window " + focusedForm.GetType().FullName);
+                    return true;
+                }
+
                 string chain = null;
                 for (var node = focused; node != null; node = node.Parent)
                 {

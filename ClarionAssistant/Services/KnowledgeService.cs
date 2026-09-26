@@ -160,6 +160,85 @@ namespace ClarionAssistant.Services
             return results;
         }
 
+        /// <summary>
+        /// Fetch one entry by id REGARDLESS of its superseded state, or null when there is no such
+        /// row. Deliberately unfiltered: the retract/supersede tools need to name an entry they are
+        /// about to hide, and to re-point one that is already hidden.
+        /// </summary>
+        public KnowledgeEntry GetEntry(int id)
+        {
+            const string sql = @"SELECT id, category, title, content, tags, confidence, last_referenced, reference_count, created_at
+                                 FROM knowledge_entries WHERE id = @id";
+            using (var cmd = new SQLiteCommand(sql, _conn))
+            {
+                cmd.Parameters.AddWithValue("@id", id);
+                using (var reader = cmd.ExecuteReader())
+                    return reader.Read() ? ReadEntry(reader) : null;
+            }
+        }
+
+        /// <summary>
+        /// Hide an entry that turned out to be wrong, so it stops surfacing in query_knowledge and in
+        /// the startup injection, without destroying the record of what was once believed.
+        ///
+        /// Both read paths already filter <c>superseded_by IS NULL</c> (see <see cref="Search"/> and
+        /// <see cref="GetDecayRanked"/>), so writing ANY non-null value is enough to retire a row —
+        /// this method just gives that column a way to be set. <paramref name="supersededBy"/> is the
+        /// id of the entry that replaces it, or <see cref="RetractedNoReplacement"/> (0) for a plain
+        /// retraction: 0 is never a valid rowid, so it reads unambiguously as "retired, nothing took
+        /// its place".
+        ///
+        /// The FTS row is left in place — the join filters it out — so an entry can be un-retired
+        /// later by clearing the column, and the id keeps meaning what it always meant.
+        /// Returns false when there is no such entry.
+        /// </summary>
+        public bool SupersedeEntry(int id, int supersededBy)
+        {
+            const string sql = "UPDATE knowledge_entries SET superseded_by = @by, updated_at = datetime('now') WHERE id = @id";
+            using (var cmd = new SQLiteCommand(sql, _conn))
+            {
+                cmd.Parameters.AddWithValue("@by", supersededBy);
+                cmd.Parameters.AddWithValue("@id", id);
+                return cmd.ExecuteNonQuery() > 0;
+            }
+        }
+
+        /// <summary>Value written to <c>superseded_by</c> for a retraction with no replacement entry.</summary>
+        public const int RetractedNoReplacement = 0;
+
+        /// <summary>
+        /// Permanently delete an entry and its FTS row. The FTS table is standalone (no content-sync
+        /// triggers), so both halves must be removed here or the search index keeps matching a row
+        /// the join can no longer resolve. Prefer <see cref="SupersedeEntry"/> unless the entry should
+        /// leave no trace. Returns false when there is no such entry.
+        /// </summary>
+        public bool DeleteEntry(int id)
+        {
+            using (var tx = _conn.BeginTransaction())
+            {
+                try
+                {
+                    int rows;
+                    using (var cmd = new SQLiteCommand("DELETE FROM knowledge_entries WHERE id = @id", _conn))
+                    {
+                        cmd.Parameters.AddWithValue("@id", id);
+                        rows = cmd.ExecuteNonQuery();
+                    }
+
+                    using (var cmd = new SQLiteCommand("DELETE FROM knowledge_fts WHERE entry_id = @id", _conn))
+                    {
+                        // entry_id is TEXT in the FTS table (see CreateTables) — match how AddEntry wrote it.
+                        cmd.Parameters.AddWithValue("@id", id.ToString());
+                        cmd.ExecuteNonQuery();
+                    }
+
+                    tx.Commit();
+                    return rows > 0;
+                }
+                catch { tx.Rollback(); throw; }
+            }
+        }
+
         // ── Attention Decay ─────────────────────────────────
 
         public List<KnowledgeEntry> GetDecayRanked(int limit = 15)
@@ -213,6 +292,8 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// Returns pre-formatted markdown for context injection.
         /// Top 10 get full content preview, next 5 get title-only.
+        /// Each line carries its entry id: this is the surface where a stale or wrong entry is
+        /// actually noticed, so it is also where the id needed to retire it has to be visible.
         /// </summary>
         public string GetInjectionMarkdown(int limit = 15)
         {
@@ -232,7 +313,7 @@ namespace ClarionAssistant.Services
                 string preview = e.Content != null && e.Content.Length > 200
                     ? e.Content.Substring(0, 200) + "..."
                     : e.Content ?? "";
-                sb.AppendLine("- **[" + e.Category + "] " + e.Title + "**: " + preview);
+                sb.AppendLine("- **#" + e.Id + " [" + e.Category + "] " + e.Title + "**: " + preview);
             }
 
             if (entries.Count > fullCount)
@@ -240,7 +321,7 @@ namespace ClarionAssistant.Services
                 sb.AppendLine();
                 sb.AppendLine("_Also available (use query_knowledge for details):_");
                 for (int i = fullCount; i < entries.Count; i++)
-                    sb.AppendLine("- [" + entries[i].Category + "] " + entries[i].Title);
+                    sb.AppendLine("- #" + entries[i].Id + " [" + entries[i].Category + "] " + entries[i].Title);
             }
 
             return sb.ToString();

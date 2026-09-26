@@ -19,7 +19,56 @@ namespace ClarionCodeGraph.Graph
         private SourceResolver _resolver;
         private readonly ClarionParser _clarionParser;
 
+        /// <summary>
+        /// The ACTIVE redirection service to resolve source files with, supplied by the host
+        /// (the IDE's loaded .red — version-level file plus any local project override). When
+        /// null, IndexSolution falls back to probing the solution directory for a *.red, which
+        /// only works for solutions that keep their .red beside the .sln — many keep it in the
+        /// Clarion bin folder instead (e.g. C:\Clarion10v8\bin\Clarion10v61.red), where the
+        /// probe never looks. Hosts that know the real .red MUST inject it here.
+        /// </summary>
+        public ClarionAssistant.Services.RedFileService RedService { get; set; }
+
         public event Action<string> OnProgress;
+
+        /// <summary>
+        /// Structured progress (ticket 0d788f8b) alongside the string channel — phase, current
+        /// file, per-phase done/total — for UI consumers that need more than log lines. The
+        /// string channel is NOT going away: the console exe and the header log live on it.
+        /// </summary>
+        public event Action<IndexProgressEvent> OnProgressEvent;
+
+        /// <summary>
+        /// Cooperative cancellation probe, polled between files. When it returns true the run
+        /// stops at the next file boundary and IndexSolution returns with Cancelled=true. A
+        /// cancelled FULL index leaves a partial database (the run cleared it up front) — the
+        /// caller decides whether to delete it; it must never be presented as a complete index.
+        /// </summary>
+        public Func<bool> CancelRequested { get; set; }
+
+        private void EmitProgress(string phase, string projectName, string currentFile, int filesDone, int filesTotal, int symbolCount, int relCount, string message = null)
+        {
+            var handler = OnProgressEvent;
+            if (handler == null) return;
+            handler(new IndexProgressEvent
+            {
+                Phase = phase,
+                ProjectName = projectName,
+                CurrentFile = currentFile,
+                FilesDone = filesDone,
+                FilesTotal = filesTotal,
+                SymbolCount = symbolCount,
+                RelationshipCount = relCount,
+                Message = message
+            });
+        }
+
+        private void ThrowIfCancelled()
+        {
+            var probe = CancelRequested;
+            if (probe != null && probe())
+                throw new OperationCanceledException("Index cancelled by user.");
+        }
 
         public CodeGraphIndexer(CodeGraphDatabase db)
         {
@@ -52,9 +101,18 @@ namespace ClarionCodeGraph.Graph
             var projects = _slnParser.Parse(slnPath);
             result.ProjectCount = projects.Count;
 
-            // Load redirection file so SourceResolver can find files in Compile\, Classes\, etc.
+            // Redirection for SourceResolver (files in Compile\, Classes\, SharedLibsrc etc.):
+            // prefer the host-injected ACTIVE .red; fall back to probing the solution dir.
             string slnDir = Path.GetDirectoryName(slnPath);
-            _resolver = new SourceResolver(TryLoadRedFile(slnDir));
+            var red = RedService;
+            if (red != null)
+                ReportProgress(string.Format("Using redirection file: {0} (host-supplied)",
+                    string.IsNullOrEmpty(red.RedFilePath) ? "(in-memory)" : Path.GetFileName(red.RedFilePath)));
+            else
+                red = TryLoadRedFile(slnDir);
+            if (red == null)
+                ReportProgress("No redirection file in effect — resolution limited to .\\source, project root, and explicit search paths.");
+            _resolver = new SourceResolver(red);
 
             // For full re-index, wipe everything and start fresh
             if (!incremental)
@@ -127,6 +185,9 @@ namespace ClarionCodeGraph.Graph
             var changedProjects = new HashSet<int>(); // projects that need re-parsing
             var projectDirs = new Dictionary<int, string>();
             var discoveredIncludeNames = new Dictionary<int, HashSet<string>>();
+            var allResolved = new Dictionary<int, List<ResolvedFile>>(); // per-file outcome audit
+            var mainMapSymCount = new Dictionary<int, int>(); // Pass 1 MAP symbol count per main file
+            int unresolvedCount = 0;
 
             foreach (var proj in projects)
             {
@@ -139,7 +200,7 @@ namespace ClarionCodeGraph.Graph
                 string projectDir = Path.GetDirectoryName(proj.CwprojPath);
                 projectDirs[proj.Id] = projectDir;
                 var projResult = _projParser.Parse(proj.CwprojPath);
-                var resolved = _resolver.Resolve(projectDir, projResult.SourceFiles);
+                var resolved = _resolver.Resolve(projectDir, projResult.SourceFiles, libraryPaths);
 
                 var members = new List<ResolvedFile>();
                 var includes = new List<ResolvedFile>();
@@ -163,6 +224,7 @@ namespace ClarionCodeGraph.Graph
 
                 memberFiles[proj.Id] = members;
                 incFiles[proj.Id] = includes;
+                allResolved[proj.Id] = resolved;
 
                 // Check if this project has changed since last index
                 if (incremental)
@@ -215,6 +277,28 @@ namespace ClarionCodeGraph.Graph
                 }
             }
 
+            // Per-file outcome audit (ticket d1a0aea6): reset the changed projects' rows and
+            // record every .cwproj-listed file that failed to resolve — previously those files
+            // simply left no trace, indistinguishable from files that parsed to zero symbols.
+            // Parsed outcomes are recorded at each parse site below. Unchanged incremental
+            // projects keep their previous rows (their files were not re-examined).
+            using (var txn = _db.BeginTransaction())
+            {
+                foreach (int pid in changedProjects)
+                {
+                    _db.ClearIndexedFiles(pid);
+                    List<ResolvedFile> resolvedList;
+                    if (!allResolved.TryGetValue(pid, out resolvedList)) continue;
+                    foreach (var file in resolvedList)
+                    {
+                        if (file.Found) continue;
+                        _db.InsertIndexedFile(pid, file.FileName, null, "unresolved", 0, "resolve");
+                        unresolvedCount++;
+                    }
+                }
+                txn.Commit();
+            }
+
             // Pass 1: Parse main files and .inc files for changed projects
             ReportProgress("Pass 1: Parsing MAP declarations...");
             using (var txn = _db.BeginTransaction())
@@ -224,6 +308,7 @@ namespace ClarionCodeGraph.Graph
                     int projectId = kvp.Key;
                     if (!changedProjects.Contains(projectId)) continue;
 
+                    ThrowIfCancelled();
                     string mainFile = kvp.Value;
                     ReportProgress(string.Format("  Parsing MAP: {0}", Path.GetFileName(mainFile)));
                     var parseResult = _clarionParser.ParseMainFile(mainFile, projectId);
@@ -245,6 +330,7 @@ namespace ClarionCodeGraph.Graph
                         }
                     }
                     result.SymbolCount += parseResult.Symbols.Count;
+                    mainMapSymCount[projectId] = parseResult.Symbols.Count;
                 }
 
                 foreach (var proj in projects)
@@ -263,6 +349,9 @@ namespace ClarionCodeGraph.Graph
                             sym.Id = symId;
                         }
                         result.SymbolCount += parseResult.Symbols.Count;
+                        _db.InsertIndexedFile(proj.Id, file.FileName, file.FullPath,
+                            parseResult.Symbols.Count > 0 ? "resolved_parsed" : "resolved_no_symbols",
+                            parseResult.Symbols.Count, "pass1-inc");
                     }
                 }
 
@@ -330,6 +419,7 @@ namespace ClarionCodeGraph.Graph
 
                     using (var txn = _db.BeginTransaction())
                     {
+                        _db.ClearIndexedFiles(libProjectId);
                         foreach (string libDir in libraryPaths)
                         {
                             if (!Directory.Exists(libDir))
@@ -352,6 +442,7 @@ namespace ClarionCodeGraph.Graph
 
                             foreach (string libIncPath in libIncFiles)
                             {
+                                ThrowIfCancelled();
                                 string fullPath = Path.GetFullPath(libIncPath);
                                 if (!indexedIncPaths.Add(fullPath))
                                     continue; // already indexed (from project or duplicate lib path casing)
@@ -367,6 +458,9 @@ namespace ClarionCodeGraph.Graph
                                     libSymCount += parseResult.Symbols.Count;
                                 }
                                 libFileCount++;
+                                _db.InsertIndexedFile(libProjectId, Path.GetFileName(fullPath), fullPath,
+                                    parseResult.Symbols.Count > 0 ? "resolved_parsed" : "resolved_no_symbols",
+                                    parseResult.Symbols.Count, "pass1b-library");
                             }
                         }
 
@@ -386,6 +480,17 @@ namespace ClarionCodeGraph.Graph
 
             // Pass 2: Parse member files for changed projects
             ReportProgress("Pass 2: Parsing member files...");
+            // Per-phase progress denominator (ticket 0d788f8b): only projects this run will
+            // actually parse count toward the total, so incremental runs report an honest %.
+            int parseFilesTotal = 0;
+            int parseFilesDone = 0;
+            foreach (var proj in projects)
+            {
+                if (!changedProjects.Contains(proj.Id)) continue;
+                List<ResolvedFile> countMembers;
+                if (memberFiles.TryGetValue(proj.Id, out countMembers)) parseFilesTotal += countMembers.Count;
+                if (mainFiles.ContainsKey(proj.Id)) parseFilesTotal++;
+            }
             using (var txn = _db.BeginTransaction())
             {
                 foreach (var proj in projects)
@@ -395,8 +500,14 @@ namespace ClarionCodeGraph.Graph
                     List<ResolvedFile> members;
                     if (!memberFiles.TryGetValue(proj.Id, out members)) continue;
 
+                    // Per-project symbol delta for the progress UI (the solution-wide running
+                    // total on a per-project row would be silently wrong — review finding).
+                    int projStartSymbols = result.SymbolCount;
+                    EmitProgress(IndexProgressEvent.PhaseParsing, proj.Name, null, parseFilesDone, parseFilesTotal, 0, 0);
+
                     foreach (var file in members)
                     {
+                        ThrowIfCancelled();
                         var parseResult = _clarionParser.ParseMemberFile(file.FullPath, proj.Id, null);
                         foreach (var sym in parseResult.Symbols)
                         {
@@ -415,21 +526,30 @@ namespace ClarionCodeGraph.Graph
                             }
                         }
                         result.SymbolCount += parseResult.Symbols.Count;
+                        _db.InsertIndexedFile(proj.Id, file.FileName, file.FullPath,
+                            parseResult.Symbols.Count > 0 ? "resolved_parsed" : "resolved_no_symbols",
+                            parseResult.Symbols.Count, "pass2-member");
+                        parseFilesDone++;
+                        EmitProgress(IndexProgressEvent.PhaseParsing, proj.Name, file.FileName, parseFilesDone, parseFilesTotal, result.SymbolCount - projStartSymbols, 0);
                     }
 
-                    // The main PROGRAM file's tail (global CODE + hand-written procedure
-                    // implementations after it) is MEMBER-shaped source that Pass 1 never
-                    // scans — run it through the member-file parser from the boundary.
+                    // The main PROGRAM file: run the WHOLE file through the member-file parser
+                    // (startLine 0), not just the post-CODE tail. The parser's PROGRAM handler
+                    // opens the DATA machinery over the declaration section, capturing the app's
+                    // GLOBAL data as scope='global' symbols — previously that entire section
+                    // (~6,000 lines in a large app main) was never scanned and every global was
+                    // invisible (ticket d1a0aea6). The MAP block is depth-skipped, so Pass 1's
+                    // procedure declarations don't repeat; INCLUDE symbols DO repeat (Pass 1
+                    // already captured them for this same file), so they're filtered here —
+                    // they still feed discoveredIncludeNames, which is a set.
                     string tailMainPath;
                     if (mainFiles.TryGetValue(proj.Id, out tailMainPath))
                     {
-                        int tailStart = _clarionParser.FindMainTailStart(tailMainPath);
-                        var tailResult = _clarionParser.ParseMemberFile(tailMainPath, proj.Id, null, tailStart);
+                        ThrowIfCancelled();
+                        var tailResult = _clarionParser.ParseMemberFile(tailMainPath, proj.Id, null, 0);
+                        int inserted = 0;
                         foreach (var sym in tailResult.Symbols)
                         {
-                            long symId = _db.InsertSymbol(sym);
-                            sym.Id = symId;
-
                             if (sym.Type == "include")
                             {
                                 HashSet<string> names;
@@ -439,9 +559,25 @@ namespace ClarionCodeGraph.Graph
                                     discoveredIncludeNames[proj.Id] = names;
                                 }
                                 names.Add(sym.Name);
+                                continue; // Pass 1 already inserted this file's include symbols
                             }
+
+                            long symId = _db.InsertSymbol(sym);
+                            sym.Id = symId;
+                            inserted++;
                         }
-                        result.SymbolCount += tailResult.Symbols.Count;
+                        result.SymbolCount += inserted;
+
+                        // The main file's audit row combines Pass 1 (MAP declarations) and this
+                        // full parse (global data + tail procedures).
+                        int mapCount;
+                        mainMapSymCount.TryGetValue(proj.Id, out mapCount);
+                        int mainTotal = mapCount + inserted;
+                        _db.InsertIndexedFile(proj.Id, Path.GetFileName(tailMainPath), tailMainPath,
+                            mainTotal > 0 ? "resolved_parsed" : "resolved_no_symbols",
+                            mainTotal, "main");
+                        parseFilesDone++;
+                        EmitProgress(IndexProgressEvent.PhaseParsing, proj.Name, Path.GetFileName(tailMainPath), parseFilesDone, parseFilesTotal, result.SymbolCount - projStartSymbols, 0);
                     }
                 }
 
@@ -465,6 +601,7 @@ namespace ClarionCodeGraph.Graph
                     int projectId = kvp.Key;
                     if (!changedProjects.Contains(projectId)) continue;
 
+                    ThrowIfCancelled();
                     string projectDir;
                     if (!projectDirs.TryGetValue(projectId, out projectDir)) continue;
 
@@ -475,20 +612,56 @@ namespace ClarionCodeGraph.Graph
                         foreach (var f in knownIncs)
                             alreadyKnown.Add(f.FileName);
 
-                    foreach (string includeName in kvp.Value)
-                    {
-                        if (!includeName.EndsWith(".inc", StringComparison.OrdinalIgnoreCase)) continue;
-                        if (alreadyKnown.Contains(includeName)) continue;
+                    // RECURSIVE work-list (ticket d1a0aea6, Phase 3): an .inc swept in here is
+                    // parsed, and the INCLUDE() targets IT declares are queued in turn — real
+                    // class .inc files routinely include their base class's .inc. alreadyKnown
+                    // is the cycle guard; the depth cap is belt-and-braces against pathological
+                    // chains. INCLUDE of a .clw is a source FRAGMENT (can be arbitrary code out
+                    // of any context, not MEMBER-shaped) — parsing one here would mis-attribute
+                    // its content, so it is recorded and skipped rather than silently dropped.
+                    const int MaxIncludeDepth = 5;
+                    var includeWork = new Queue<KeyValuePair<string, int>>();
+                    foreach (string seedName in kvp.Value)
+                        includeWork.Enqueue(new KeyValuePair<string, int>(seedName, 0));
 
-                        var resolvedList = _resolver.Resolve(projectDir, new List<string> { includeName });
+                    while (includeWork.Count > 0)
+                    {
+                        var workItem = includeWork.Dequeue();
+                        string includeName = workItem.Key;
+                        int depth = workItem.Value;
+
+                        if (alreadyKnown.Contains(includeName)) continue;
+                        if (!includeName.EndsWith(".inc", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (includeName.EndsWith(".clw", StringComparison.OrdinalIgnoreCase))
+                            {
+                                _db.InsertIndexedFile(projectId, includeName, null, "skipped_clw_include", 0, "pass2b-include");
+                                alreadyKnown.Add(includeName);
+                            }
+                            continue; // .equ/.def/etc: equate soup, nothing symbol-shaped to gain
+                        }
+
+                        var resolvedList = _resolver.Resolve(projectDir, new List<string> { includeName }, libraryPaths);
                         var resolved = resolvedList.Count > 0 ? resolvedList[0] : null;
-                        if (resolved == null || !resolved.Found) continue; // unresolvable -- leave alone
+                        if (resolved == null || !resolved.Found)
+                        {
+                            // Unresolvable — leave alone, but leave a trace (audit, d1a0aea6)
+                            _db.InsertIndexedFile(projectId, includeName, null, "unresolved", 0, "pass2b-include");
+                            alreadyKnown.Add(includeName); // one audit row per name, not per referencing file
+                            continue;
+                        }
 
                         string fullPath = Path.GetFullPath(resolved.FullPath);
                         bool insideSolution =
                             fullPath.StartsWith(slnRootFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
                             fullPath.StartsWith(slnRootFull + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
-                        if (!insideSolution) continue; // vendor/template path -- leave to --lib-paths
+                        if (!insideSolution)
+                        {
+                            // Vendor/template path — deliberately left to --lib-paths; record why
+                            _db.InsertIndexedFile(projectId, includeName, fullPath, "skipped_outside_solution", 0, "pass2b-include");
+                            alreadyKnown.Add(includeName);
+                            continue;
+                        }
 
                         var parseResult = _clarionParser.ParseIncFile(fullPath, projectId);
                         foreach (var sym in parseResult.Symbols)
@@ -497,7 +670,20 @@ namespace ClarionCodeGraph.Graph
                             sym.Id = symId;
                         }
                         result.SymbolCount += parseResult.Symbols.Count;
+                        _db.InsertIndexedFile(projectId, includeName, fullPath,
+                            parseResult.Symbols.Count > 0 ? "resolved_parsed" : "resolved_no_symbols",
+                            parseResult.Symbols.Count, "pass2b-include");
                         alreadyKnown.Add(includeName); // avoid double-parse if INCLUDE()'d from multiple files
+
+                        // Follow THIS file's own INCLUDE() targets
+                        if (depth < MaxIncludeDepth)
+                        {
+                            foreach (var sym in parseResult.Symbols)
+                            {
+                                if (sym.Type == "include" && !alreadyKnown.Contains(sym.Name))
+                                    includeWork.Enqueue(new KeyValuePair<string, int>(sym.Name, depth + 1));
+                            }
+                        }
                     }
                 }
 
@@ -509,7 +695,7 @@ namespace ClarionCodeGraph.Graph
             using (var txn = _db.BeginTransaction())
             {
                 _db.ClearRelationships();
-                ResolveRelationships(projects, memberFiles, mainFiles);
+                result.RelationshipCount = ResolveRelationships(projects, memberFiles, mainFiles);
                 txn.Commit();
             }
 
@@ -533,6 +719,14 @@ namespace ClarionCodeGraph.Graph
             string mode = incremental ? "Incremental" : "Full";
             ReportProgress(string.Format("{0} indexing complete: {1} projects, {2} files, {3} symbols in {4}ms",
                 mode, result.ProjectCount, result.FileCount, result.SymbolCount, result.DurationMs));
+            // No silent gaps (ticket d1a0aea6): say when cwproj-listed files did not resolve,
+            // and where the per-file audit lives either way.
+            if (unresolvedCount > 0)
+                ReportProgress(string.Format(
+                    "WARNING: {0} cwproj-listed file(s) did not resolve — SELECT * FROM indexed_files WHERE outcome='unresolved'",
+                    unresolvedCount));
+            else
+                ReportProgress("All cwproj-listed files resolved. Per-file audit: indexed_files table.");
 
             return result;
         }
@@ -556,8 +750,26 @@ namespace ClarionCodeGraph.Graph
             return false;
         }
 
-        private void ResolveRelationships(List<SolutionProject> projects, Dictionary<int, List<ResolvedFile>> memberFiles, Dictionary<int, string> mainFiles)
+        /// <summary>Returns the number of relationships inserted (surfaced on IndexResult for
+        /// the progress UI's completion summary — ticket 0d788f8b).</summary>
+        private int ResolveRelationships(List<SolutionProject> projects, Dictionary<int, List<ResolvedFile>> memberFiles, Dictionary<int, string> mainFiles)
         {
+            // Per-phase progress denominator (ticket 0d788f8b): one scan target per member
+            // file plus one per main-file tail — known before the walk starts, so the
+            // relationship phase can report an honest done/total.
+            int scanTargetsTotal = 0;
+            foreach (var projCount in projects)
+            {
+                List<ResolvedFile> countMembers;
+                if (memberFiles.TryGetValue(projCount.Id, out countMembers)) scanTargetsTotal += countMembers.Count;
+                if (mainFiles != null && mainFiles.ContainsKey(projCount.Id)) scanTargetsTotal++;
+            }
+            // Progress numerator counts every CONSIDERED target (including missing files the
+            // scan skips) so the bar reaches the phase boundary; fileCount below stays the
+            // scanned-files count the log lines have always reported.
+            int scanTargetsConsidered = 0;
+            EmitProgress(IndexProgressEvent.PhaseResolving, null, null, 0, scanTargetsTotal, 0, 0);
+
             // Load ALL symbols into memory once — eliminates per-line DB queries
             var symbolNameToId = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
             var procNames = new List<string>(); // ordered list for matching
@@ -573,8 +785,20 @@ namespace ClarionCodeGraph.Graph
             // should track while scanning that overload's own body.
             var symbolLineByFile = new Dictionary<string, Dictionary<int, long>>(StringComparer.OrdinalIgnoreCase);
 
+            // Scope-ordered call resolution (b7553893 #1): every callable name maps to ALL of
+            // its candidates, each carrying its project, file, params, and whether it is a mere
+            // prototype. The old flat symbolNameToId (kept below for non-call-target uses)
+            // collapsed same-named procedures across the whole solution onto whichever loaded
+            // last — measured on v61POSitive, EVERY StandardWarning call in 12+ apps resolved
+            // to one arbitrary app's copy.
+            var callTargetsByName = new Dictionary<string, List<CallTarget>>(StringComparer.OrdinalIgnoreCase);
+            // Routines keyed (file, owning procedure, routine name) for DO resolution (#4).
+            var routinesByFileProc = new Dictionary<string, Dictionary<string, Dictionary<string, long>>>(StringComparer.OrdinalIgnoreCase);
+            // File-level routine fallback: name -> id, or -1 when the name is ambiguous in that file.
+            var routinesByFileOnly = new Dictionary<string, Dictionary<string, long>>(StringComparer.OrdinalIgnoreCase);
+
             var allSymDt = _db.ExecuteQuery(
-                "SELECT id, name, type, file_path, line_number FROM symbols WHERE type IN ('procedure','function','routine')");
+                "SELECT id, name, type, file_path, line_number, project_id, params, parent_name, decl_kind FROM symbols WHERE type IN ('procedure','function','routine')");
 
             foreach (System.Data.DataRow row in allSymDt.Rows)
             {
@@ -582,10 +806,63 @@ namespace ClarionCodeGraph.Graph
                 long id = Convert.ToInt64(row["id"]);
                 string filePath = row["file_path"].ToString();
                 int lineNumber = row["line_number"] != DBNull.Value ? Convert.ToInt32(row["line_number"]) : -1;
+                int symProjectId = row["project_id"] != DBNull.Value ? Convert.ToInt32(row["project_id"]) : -1;
+                string symParams = row["params"] != DBNull.Value ? row["params"].ToString() : null;
+                string symParent = row["parent_name"] != DBNull.Value ? row["parent_name"].ToString() : null;
+                string declKind = row["decl_kind"] != DBNull.Value ? row["decl_kind"].ToString() : null;
+                bool isRoutine = row["type"].ToString() == "routine";
+
+                if (isRoutine)
+                {
+                    // (file, proc, routine) exact map
+                    Dictionary<string, Dictionary<string, long>> byProc;
+                    if (!routinesByFileProc.TryGetValue(filePath, out byProc))
+                    {
+                        byProc = new Dictionary<string, Dictionary<string, long>>(StringComparer.OrdinalIgnoreCase);
+                        routinesByFileProc[filePath] = byProc;
+                    }
+                    string procKey = symParent ?? "";
+                    Dictionary<string, long> byName;
+                    if (!byProc.TryGetValue(procKey, out byName))
+                    {
+                        byName = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+                        byProc[procKey] = byName;
+                    }
+                    byName[name] = id;
+
+                    // file-level fallback: unique -> id, duplicate -> -1 (refuse to guess)
+                    Dictionary<string, long> fileRoutines;
+                    if (!routinesByFileOnly.TryGetValue(filePath, out fileRoutines))
+                    {
+                        fileRoutines = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+                        routinesByFileOnly[filePath] = fileRoutines;
+                    }
+                    fileRoutines[name] = fileRoutines.ContainsKey(name) ? -1 : id;
+                }
+                else
+                {
+                    List<CallTarget> targets;
+                    if (!callTargetsByName.TryGetValue(name, out targets))
+                    {
+                        targets = new List<CallTarget>();
+                        callTargetsByName[name] = targets;
+                    }
+                    targets.Add(new CallTarget
+                    {
+                        Id = id,
+                        ProjectId = symProjectId,
+                        FilePath = filePath,
+                        Params = symParams,
+                        IsPrototype = string.Equals(declKind, "prototype", StringComparison.OrdinalIgnoreCase)
+                    });
+                }
+
                 // Last wins — implementation in member file overwrites MAP declaration. Also the
                 // known limitation this fix works around: for genuine overloads sharing a name,
                 // only the last-loaded one survives here. symbolLineByFile above is the
                 // disambiguated path for anything that needs the correct per-overload id.
+                // KEPT for the non-call-target lookups below; every call-target site now goes
+                // through ResolveCallTarget instead.
                 symbolNameToId[name] = id;
 
                 // Build per-file symbol lookup
@@ -624,6 +901,138 @@ namespace ClarionCodeGraph.Graph
 
             ReportProgress(string.Format("  Loaded {0} symbols into memory for matching ({1} callable procedures)", symbolNameToId.Count, procNames.Count));
 
+            // Transitive project-dependency closure from the .sln-declared graph, for rank 3 of
+            // scope-ordered resolution: a caller may legitimately call into projects it depends
+            // on (DLL exports), but never into arbitrary sibling apps.
+            var depDirect = new Dictionary<int, HashSet<int>>();
+            foreach (var dep in _db.GetProjectDependencies())
+            {
+                HashSet<int> set;
+                if (!depDirect.TryGetValue(dep.Key, out set))
+                {
+                    set = new HashSet<int>();
+                    depDirect[dep.Key] = set;
+                }
+                set.Add(dep.Value);
+            }
+            var depClosure = new Dictionary<int, HashSet<int>>();
+            foreach (var kv in depDirect)
+            {
+                var closure = new HashSet<int>();
+                var work = new Queue<int>(kv.Value);
+                while (work.Count > 0)
+                {
+                    int p = work.Dequeue();
+                    if (!closure.Add(p)) continue;
+                    HashSet<int> next;
+                    if (depDirect.TryGetValue(p, out next))
+                        foreach (int n in next) work.Enqueue(n);
+                }
+                depClosure[kv.Key] = closure;
+            }
+
+            // Count top-level parameters in a stored "(LONG A, STRING B)" params value.
+            // -1 = unknown (null/unparseable), never a filter.
+            Func<string, int> paramArity = delegate(string p)
+            {
+                if (string.IsNullOrEmpty(p)) return 0;
+                string t = p.Trim();
+                if (t.StartsWith("(")) t = t.Substring(1);
+                if (t.EndsWith(")")) t = t.Substring(0, t.Length - 1);
+                t = t.Trim();
+                if (t.Length == 0) return 0;
+                int depth = 0, count = 1;
+                foreach (char c in t)
+                {
+                    if (c == '(') depth++;
+                    else if (c == ')') depth--;
+                    else if (c == ',' && depth == 0) count++;
+                }
+                return count;
+            };
+
+            // Argument count at a call site: find "name(" in the line and count top-level commas
+            // to the matching ')'. -1 = unknown (no parens — legal bare call — or malformed).
+            Func<string, string, int> callArity = delegate(string codeLine, string procName)
+            {
+                int idx = codeLine.IndexOf(procName, StringComparison.OrdinalIgnoreCase);
+                while (idx >= 0)
+                {
+                    int after = idx + procName.Length;
+                    int paren = after;
+                    while (paren < codeLine.Length && codeLine[paren] == ' ') paren++;
+                    if (paren < codeLine.Length && codeLine[paren] == '(')
+                    {
+                        int depth = 0, count = 0; bool any = false, inStr = false;
+                        for (int c = paren; c < codeLine.Length; c++)
+                        {
+                            char ch = codeLine[c];
+                            if (ch == '\'') inStr = !inStr;
+                            if (inStr) continue;
+                            if (ch == '(') { depth++; if (depth == 1) continue; }
+                            else if (ch == ')') { depth--; if (depth == 0) return any ? count + 1 : 0; }
+                            else if (depth >= 1 && !char.IsWhiteSpace(ch)) any = true;
+                            if (ch == ',' && depth == 1) count++;
+                        }
+                        return -1; // unbalanced (continuation line) — unknown
+                    }
+                    idx = codeLine.IndexOf(procName, after, StringComparison.OrdinalIgnoreCase);
+                }
+                return -1;
+            };
+
+            // Scope-ordered call-target resolution (b7553893 #1/#2):
+            //   implementations before prototypes; within that, same file -> same project ->
+            //   dependency-closure projects -> anywhere; arity tie-break when the call site's
+            //   argument count is known; still-tied -> lowest id, flagged ambiguous.
+            // A prototype-only name (e.g. a DLL export whose body is outside the solution)
+            // resolves to its prototype so the edge exists rather than dangling.
+            ResolveCallDelegate resolveCallTarget = delegate(string name, int callerProjectId, string callerFile, string codeLine, out bool ambiguous)
+            {
+                ambiguous = false;
+                List<CallTarget> cands;
+                if (!callTargetsByName.TryGetValue(name, out cands) || cands.Count == 0) return -1;
+                if (cands.Count == 1) return cands[0].Id;
+
+                var pool = new List<CallTarget>();
+                foreach (var c in cands) if (!c.IsPrototype) pool.Add(c);
+                if (pool.Count == 0) pool.AddRange(cands); // prototype-only name
+
+                if (pool.Count > 1)
+                {
+                    var narrowed = new List<CallTarget>();
+                    foreach (var c in pool)
+                        if (string.Equals(c.FilePath, callerFile, StringComparison.OrdinalIgnoreCase)) narrowed.Add(c);
+                    if (narrowed.Count == 0 && callerProjectId >= 0)
+                    {
+                        foreach (var c in pool) if (c.ProjectId == callerProjectId) narrowed.Add(c);
+                    }
+                    if (narrowed.Count == 0 && callerProjectId >= 0)
+                    {
+                        HashSet<int> deps;
+                        if (depClosure.TryGetValue(callerProjectId, out deps))
+                            foreach (var c in pool) if (deps.Contains(c.ProjectId)) narrowed.Add(c);
+                    }
+                    if (narrowed.Count > 0) pool = narrowed;
+                }
+
+                if (pool.Count > 1 && codeLine != null)
+                {
+                    int arity = callArity(codeLine, name);
+                    if (arity >= 0)
+                    {
+                        var arityMatch = new List<CallTarget>();
+                        foreach (var c in pool) if (paramArity(c.Params) == arity) arityMatch.Add(c);
+                        if (arityMatch.Count > 0) pool = arityMatch;
+                    }
+                }
+
+                long best = long.MaxValue;
+                foreach (var c in pool) if (c.Id < best) best = c.Id;
+                ambiguous = pool.Count > 1;
+                return best;
+            };
+
             // Load variable symbols for reference tracking
             // Build per-file variable lookup: filePath → list of (name, id, parentName/scope)
             var variablesByFile = new Dictionary<string, List<VariableInfo>>(StringComparer.OrdinalIgnoreCase);
@@ -633,8 +1042,28 @@ namespace ClarionCodeGraph.Graph
             // class-member resolution gap). Last-wins on duplicate names, consistent with
             // symbolNameToId's existing behavior elsewhere in this method.
             var variablesByName = new Dictionary<string, VariableInfo>(StringComparer.OrdinalIgnoreCase);
+            // Owning declarations for names that also appear as EXTERNAL rows: a reference
+            // matched against a decl_kind='external' row is re-pointed to the owner (same
+            // name, scope='global', decl_kind not 'external'). The EXTERNAL row is an import
+            // statement, not a thing that is "used" — before this, the co-located external
+            // absorbed every reference edge and the owner starved (round 5: externals held
+            // 2,863 incoming refs vs owners' 1,031; owners alone were 93.9% zero-incoming).
+            // Multiple owners of the same name (unrelated apps reusing a global name) resolve
+            // to the lowest id — deterministic, mirroring resolveCallTarget's tie-break — and
+            // the emitted edge is FLAGGED ambiguous (pipeline run-1: an unmarked cross-app
+            // guess is the same "asserting certainty the index doesn't have" problem the
+            // ambiguous column exists for; project-aware ranking is round-6 territory).
+            var globalOwnerByName = new Dictionary<string, VariableInfo>(StringComparer.OrdinalIgnoreCase);
+            var globalOwnerCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            // Every owning global declaration, keyed by name and keeping ALL same-named
+            // owners (54058d98). The EXTERNAL re-point above only fires when the USING file
+            // carries its own decl_kind='external' row -- the multi-DLL shape. A single-EXE
+            // Legacy app re-declares nothing: MEMBER modules just see the PROGRAM's global
+            // data, so demoleg.sln has zero external rows and every cross-module use of a
+            // global went unedged. This map is what the reference scan falls back to.
+            var globalVarsByName = new Dictionary<string, List<VariableInfo>>(StringComparer.OrdinalIgnoreCase);
             var allVarDt = _db.ExecuteQuery(
-                "SELECT id, name, file_path, parent_name, scope, params FROM symbols WHERE type = 'variable'");
+                "SELECT id, name, file_path, parent_name, scope, params, decl_kind, project_id FROM symbols WHERE type = 'variable'");
 
             foreach (System.Data.DataRow row in allVarDt.Rows)
             {
@@ -644,8 +1073,12 @@ namespace ClarionCodeGraph.Graph
                 string parentName = row["parent_name"] != DBNull.Value ? row["parent_name"].ToString() : null;
                 string scope = row["scope"] != DBNull.Value ? row["scope"].ToString() : "local";
                 string varParams = row["params"] != DBNull.Value ? row["params"].ToString() : null;
+                string varDeclKind = row["decl_kind"] != DBNull.Value ? row["decl_kind"].ToString() : null;
+                // -1 = "no project", matching resolveCallTarget's callerProjectId contract: a
+                // negative id disables project narrowing rather than matching project 0.
+                int varProjectId = row["project_id"] != DBNull.Value ? Convert.ToInt32(row["project_id"]) : -1;
 
-                var varInfo = new VariableInfo { Name = name, Id = id, ParentName = parentName, Scope = scope, Params = varParams };
+                var varInfo = new VariableInfo { Name = name, Id = id, ParentName = parentName, Scope = scope, Params = varParams, DeclKind = varDeclKind, ProjectId = varProjectId };
 
                 List<VariableInfo> fileVars;
                 if (!variablesByFile.TryGetValue(fp, out fileVars))
@@ -656,10 +1089,92 @@ namespace ClarionCodeGraph.Graph
                 fileVars.Add(varInfo);
 
                 variablesByName[name] = varInfo;
+
+                if (string.Equals(scope, "global", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(varDeclKind, "external", StringComparison.OrdinalIgnoreCase))
+                {
+                    VariableInfo existingOwner;
+                    if (!globalOwnerByName.TryGetValue(name, out existingOwner) || id < existingOwner.Id)
+                        globalOwnerByName[name] = varInfo;
+                    int ownerCount;
+                    globalOwnerCounts.TryGetValue(name, out ownerCount);
+                    globalOwnerCounts[name] = ownerCount + 1;
+
+                    // ALL owners, not just the lowest-id one (54058d98). globalOwnerByName
+                    // pre-picks a winner, which is fine for the EXTERNAL re-point -- that
+                    // path already knows which app it is in. The cross-module fallback below
+                    // has to choose by PROJECT first, so it needs the candidates intact.
+                    List<VariableInfo> sameNameGlobals;
+                    if (!globalVarsByName.TryGetValue(name, out sameNameGlobals))
+                    {
+                        sameNameGlobals = new List<VariableInfo>();
+                        globalVarsByName[name] = sameNameGlobals;
+                    }
+                    sameNameGlobals.Add(varInfo);
+                }
             }
 
             int totalVarCount = allVarDt.Rows.Count;
             ReportProgress(string.Format("  Loaded {0} variable symbols for reference tracking", totalVarCount));
+
+            // Cross-module global resolution (54058d98). Deliberately mirrors
+            // resolveCallTarget's narrowing rather than doing a flat lowest-id pick: on a
+            // multi-app solution GlobalRequest/GlobalResponse are template-generated into
+            // EVERY app, so a flat map would flag thousands of references ambiguous and
+            // attribute all of them to one arbitrary copy -- the same "confidently wrong"
+            // failure round 4 removed from call resolution. Same-file narrowing is omitted
+            // on purpose: a global declared in the scanned file is already in that file's
+            // per-file bucket and never reaches this fallback.
+            ResolveGlobalVarDelegate resolveGlobalVar = delegate(string name, int refProjectId, out bool ambiguous)
+            {
+                ambiguous = false;
+
+                // Language keywords and built-ins are NEVER resolved through this fallback,
+                // even when some app genuinely declares a global with that name. Measured on a
+                // 36-project solution: without this, a global named TYPE collected 39,479
+                // edges, because TYPE is a Clarion keyword (QUEUE,TYPE / GROUP,TYPE) and the
+                // fallback matched every keyword occurrence solution-wide. The per-file path
+                // deliberately keeps its existing behaviour -- being confined to the declaring
+                // file WAS its precision guard, and this fallback removes exactly that guard,
+                // so it has to replace it with something.
+                if (ClarionBuiltins.IsBuiltInOrKeyword(name)) return null;
+
+                List<VariableInfo> cands;
+                if (!globalVarsByName.TryGetValue(name, out cands) || cands.Count == 0) return null;
+                if (cands.Count == 1) return cands[0];
+
+                var pool = cands;
+                if (refProjectId >= 0)
+                {
+                    var narrowed = new List<VariableInfo>();
+                    foreach (var c in pool) if (c.ProjectId == refProjectId) narrowed.Add(c);
+                    if (narrowed.Count == 0)
+                    {
+                        HashSet<int> deps;
+                        if (depClosure.TryGetValue(refProjectId, out deps))
+                            foreach (var c in pool) if (deps.Contains(c.ProjectId)) narrowed.Add(c);
+                    }
+                    if (narrowed.Count > 0) pool = narrowed;
+                }
+
+                VariableInfo best = null;
+                foreach (var c in pool) if (best == null || c.Id < best.Id) best = c;
+                // Still more than one equal-rank owner after narrowing: the pick is
+                // deterministic but NOT certain, which is exactly what `ambiguous` records.
+                ambiguous = pool.Count > 1;
+                return best;
+            };
+
+            // Globals whose names the tokenizer cannot represent, for the slow path's copy of
+            // the fallback. Usually empty -- ':' and '.' ARE identifier chars, so ordinary
+            // Clarion labels like BGL:Visible and Customer::Used tokenize fine and take the
+            // fast path. Built once here rather than per file.
+            var slowGlobalVars = new List<VariableInfo>();
+            foreach (var kv in globalVarsByName)
+                if (!IsTokenizableName(kv.Key)) slowGlobalVars.AddRange(kv.Value);
+            // Names the slow path resolved in-file on the current line; reused and cleared
+            // per line so the fallback can tell "unresolved" from "already owned here".
+            var slowResolvedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             // Class name -> immediate parent class name (from parent_name on the class's own
             // symbol row), used below to walk the inheritance chain when a class data member
@@ -688,7 +1203,12 @@ namespace ClarionCodeGraph.Graph
 
             // Compiled regex patterns (reuse across all files)
             var procDefRegex = new System.Text.RegularExpressions.Regex(
-                @"^([\w.]+)\s+(PROCEDURE|FUNCTION)\s*(\([^)]*\))?",
+                // \b after the keyword is LOAD-BEARING (ticket 9a73aa5d): without it, an indented
+                // "DO ProcedureReturn" prefix-matches PROCEDURE (IgnoreCase, matched on the
+                // TRIMMED line), the scanner believes a procedure named "DO" was just defined,
+                // sets inCode=false, and every edge for the rest of the body dies until the next
+                // literal CODE line — CC's DateRanger truncation AND the attribution spillover.
+                @"^([\w.:]+)\s+(PROCEDURE|FUNCTION)\b\s*(\([^)]*\))?",
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             var codeRegex = new System.Text.RegularExpressions.Regex(
                 @"^\s*CODE\s*([!].*)?$",
@@ -696,9 +1216,16 @@ namespace ClarionCodeGraph.Graph
             var routineRegex = new System.Text.RegularExpressions.Regex(
                 @"^([\w:]+)\s+ROUTINE\s*([!].*)?$",
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            // Routine labels routinely carry colons (BRW10::ProcessScroll) — \w+ alone missed
+            // every template-generated routine name (b7553893 #4).
             var doRegex = new System.Text.RegularExpressions.Regex(
-                @"\bDO\s+(\w+)",
+                @"\bDO\s+([\w:]+)",
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            // Dotted MEMBER access (no call parens required): owner.Member — for class data-member
+            // reference edges (9a73aa5d #3). Owner is SELF/PARENT or a typed variable.
+            var memberRefRegex = new System.Text.RegularExpressions.Regex(
+                @"\b([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
             var startCallRegex = new System.Text.RegularExpressions.Regex(
                 @"\bSTART\s*\(\s*(\w+)",
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
@@ -724,9 +1251,24 @@ namespace ClarionCodeGraph.Graph
             var endOrPeriodRegex = new System.Text.RegularExpressions.Regex(
                 @"^\s*(END\s*([!].*)?|\.)\s*$",
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            // Pre-scan MAP tracking (round 5). Hoisted here with the rest of the compiled set —
+            // static Regex.IsMatch inside the per-line pre-scan pays a locked cache lookup per line.
+            var mapStartRegex = new System.Text.RegularExpressions.Regex(
+                @"^MAP\s*([!].*)?$",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            var moduleStartRegex = new System.Text.RegularExpressions.Regex(
+                @"^MODULE\s*\(",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            // Routine DATA-block opener — kept IDENTICAL to ClarionParser.DataStatementRegex; the
+            // two sides deciding "does this routine have a DATA block" differently is exactly how
+            // declaration lines end up scanned as code (pipeline run-1 debugger finding).
+            var dataStatementRegex = new System.Text.RegularExpressions.Regex(
+                @"^\s*DATA\s*([!].*)?$",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
             int fileCount = 0;
             int relCount = 0;
+            int skippedNoParent = 0;
             // Track inserted relationships to avoid duplicates. For "calls"/"references" the key
             // includes the line number ("fromId|toId|type|line") so distinct call/reference sites
             // in the same procedure are each kept — dedup only collapses the same site being
@@ -734,6 +1276,30 @@ namespace ClarionCodeGraph.Graph
             // "uses_type"/"includes" the key stays "fromId|toId|type": those relationships are
             // per-pair facts (does A inherit from B at all?), not per-occurrence.
             var insertedRels = new HashSet<string>();
+
+            // PERF EXPERIMENT (ticket 64cdae5d): chunked transactions around the whole
+            // relationship phase. Without this, every InsertRelationship runs as its own
+            // implicit SQLite transaction — a journal write + fsync per edge, times three
+            // relationship indexes. Chunks commit at file boundaries / heartbeat points so
+            // cancellation still rolls back at most one chunk. On an exceptional exit the
+            // open chunk rolls back with the connection (full-index cancel deletes the db,
+            // incremental cancel is marked do-not-trust — both already tolerate that).
+            var bulkTxn = _db.BeginTransaction();
+
+            // Inverted call-name index (ticket 64cdae5d): hash-set of every callable
+            // name so line tokens can be tested O(1); names the tokenizer can't see
+            // (chars outside the alphabet) keep the original per-line scan.
+            var procNameSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var slowProcNames = new List<string>();
+            foreach (string pn in procNames)
+            {
+                if (IsTokenizableName(pn)) procNameSet.Add(pn);
+                else slowProcNames.Add(pn);
+            }
+            // Reused per line — one tokenization of `line` (calls) and one of
+            // `trimmed` (variables) per code line, no per-line allocations.
+            var lineTokens = new List<TokenSpan>();
+            var trimmedTokens = new List<TokenSpan>();
 
             foreach (var proj in projects)
             {
@@ -747,7 +1313,7 @@ namespace ClarionCodeGraph.Graph
                 // symbol until the first procedure implementation takes over.
                 var scanTargets = new List<RelScanTarget>();
                 foreach (var file in members)
-                    scanTargets.Add(new RelScanTarget { Path = file.FullPath, StartLine = 0, ForcedParentId = -1 });
+                    scanTargets.Add(new RelScanTarget { Path = file.FullPath, StartLine = 0, ForcedParentId = -1, ProjectId = proj.Id });
 
                 string mainPath;
                 if (mainFiles != null && mainFiles.TryGetValue(proj.Id, out mainPath))
@@ -759,18 +1325,31 @@ namespace ClarionCodeGraph.Graph
                         {
                             Path = mainPath,
                             StartLine = _clarionParser.FindMainTailStart(mainPath),
-                            ForcedParentId = programId
+                            ForcedParentId = programId,
+                            ProjectId = proj.Id
                         });
                     }
                 }
 
                 foreach (var target in scanTargets)
                 {
+                    scanTargetsConsidered++;
                     if (!File.Exists(target.Path)) continue;
+                    ThrowIfCancelled();
                     fileCount++;
+
+                    if (fileCount % 20 == 0)
+                    {
+                        bulkTxn.Commit();
+                        bulkTxn.Dispose();
+                        bulkTxn = _db.BeginTransaction();
+                    }
 
                     if (fileCount % 50 == 0)
                         ReportProgress(string.Format("  Resolving calls: {0} files, {1} relationships...", fileCount, relCount));
+                    // Per-file structured event (0d788f8b): this phase averages seconds per
+                    // file on large solutions, so per-file emission is low-frequency here.
+                    EmitProgress(IndexProgressEvent.PhaseResolving, null, Path.GetFileName(target.Path), scanTargetsConsidered, scanTargetsTotal, 0, relCount);
 
                     var lines = ClarionAssistant.Services.EncodingHelper.ReadAllLines(target.Path, out _);
                     bool inCode = false;
@@ -799,45 +1378,152 @@ namespace ClarionCodeGraph.Graph
                     if (!variablesByFile.TryGetValue(target.Path, out currentFileVars))
                         currentFileVars = null;
 
-                    // Pre-scan: find parent procedure and collect local MAP names
+                    // Per-file inverted variable index (ticket 64cdae5d): name → vars in
+                    // list order, so token hits recover exactly the candidates the old
+                    // per-line sweep iterated. Exotic names stay on the slow path.
+                    Dictionary<string, List<VariableInfo>> currentFileVarsByName = null;
+                    List<VariableInfo> slowFileVars = null;
+                    if (currentFileVars != null)
+                    {
+                        currentFileVarsByName = new Dictionary<string, List<VariableInfo>>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var vi in currentFileVars)
+                        {
+                            if (!IsTokenizableName(vi.Name))
+                            {
+                                if (slowFileVars == null) slowFileVars = new List<VariableInfo>();
+                                slowFileVars.Add(vi);
+                                continue;
+                            }
+                            List<VariableInfo> sameName;
+                            if (!currentFileVarsByName.TryGetValue(vi.Name, out sameName))
+                            {
+                                sameName = new List<VariableInfo>();
+                                currentFileVarsByName[vi.Name] = sameName;
+                            }
+                            sameName.Add(vi);
+                        }
+                    }
+
+                    // Pre-scan: find parent procedure and collect local MAP names.
+                    // MAP-aware BEFORE the first procedure too (round 5): a MEMBER library
+                    // file's own top-level MAP(s) contain prototype lines shaped exactly like
+                    // procedure definitions ("Name PROCEDURE(...)"). Taking one of those as the
+                    // parent procedure fails the by-line symbol lookup (ParseMemberFile skips
+                    // MAPs wholesale, so no symbol exists at that line), parentProcId stayed -1,
+                    // and the ENTIRE file's body scan was skipped — zero calls/do/references
+                    // (round 5: 4 NYS library files, each with a second sibling top-level MAP
+                    // holding INCLUDE + nested MODULE blocks, had zero body edges). Top-level
+                    // MAP prototypes are deliberately NOT collected into localMapNames: their
+                    // implementations are real same-file symbols and calls must resolve to them.
                     bool foundFirstProc = false;
                     bool inLocalMap = false;
+                    int preScanMapDepth = 0;  // >0 = inside a top-level MAP before the first procedure
+                    int localMapDepth = 0;
                     for (int p = target.StartLine; p < lines.Length; p++)
                     {
+                        // Unconditional OMIT blocks are dead code in every build — skip them
+                        // here exactly as the body loop below does. Without this, a stray END
+                        // inside an OMIT'd fragment of a top-level MAP desyncs preScanMapDepth
+                        // and the whole file silently scans zero (pipeline run-1 debugger
+                        // finding — the same wipeout class round 5 set out to remove).
+                        var preOmitMatch = omitRegex.Match(lines[p]);
+                        if (preOmitMatch.Success)
+                        {
+                            if (preOmitMatch.Groups[1].Value.ToUpperInvariant() == "OMIT" && !preOmitMatch.Groups[3].Success)
+                            {
+                                string preTerminator = preOmitMatch.Groups[2].Value;
+                                p++;
+                                while (p < lines.Length && !lines[p].Contains(preTerminator))
+                                    p++;
+                            }
+                            continue;
+                        }
                         string scanLine = lines[p].TrimStart();
                         if (!foundFirstProc)
                         {
                             var firstMatch = procDefRegex.Match(scanLine);
                             if (firstMatch.Success)
                             {
-                                foundFirstProc = true;
-                                string matchName = firstMatch.Groups[1].Value;
                                 // Resolve by (file, definition line), not name alone -- see the
                                 // overload note where currentProcId is updated the same way below.
+                                // A line that RESOLVES to a symbol is authoritative regardless of
+                                // MAP depth: member-file MAP prototypes never carry a by-line
+                                // symbol (ParseMemberFile skips MAPs wholesale) while real
+                                // definitions always do — so this also self-heals any depth
+                                // desync from a MAP shape the tracking above didn't model.
                                 long id;
                                 if (currentFileSymbolsByLine.TryGetValue(p + 1, out id))
                                 {
+                                    foundFirstProc = true;
                                     parentProcId = id;
-                                    parentProcName = matchName;
+                                    parentProcName = firstMatch.Groups[1].Value;
+                                    preScanMapDepth = 0;
+                                    continue;
                                 }
+                                if (preScanMapDepth == 0)
+                                {
+                                    // Procedure-shaped line outside any MAP with no symbol —
+                                    // pre-existing behavior: latch, leave parentProcId at -1.
+                                    foundFirstProc = true;
+                                }
+                                // Inside a MAP: an unresolved prototype line — keep scanning.
+                                continue;
+                            }
+                            if (preScanMapDepth > 0)
+                            {
+                                // MODULE('...') sub-blocks carry their own ENDs — track depth so
+                                // they don't end the MAP early (the exact NYSCommon derailment).
+                                if (moduleStartRegex.IsMatch(scanLine))
+                                    preScanMapDepth++;
+                                else if (endOrPeriodRegex.IsMatch(lines[p]))
+                                    preScanMapDepth--;
+                                continue;
+                            }
+                            if (mapStartRegex.IsMatch(scanLine))
+                            {
+                                preScanMapDepth = 1;
+                                continue;
                             }
                             continue;
                         }
                         // After first PROCEDURE, look for MAP...END block
                         if (!inLocalMap)
                         {
-                            if (System.Text.RegularExpressions.Regex.IsMatch(scanLine, @"^MAP\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                            if (mapStartRegex.IsMatch(scanLine))
+                            {
                                 inLocalMap = true;
+                                localMapDepth = 1;
+                            }
                             else if (codeRegex.IsMatch(lines[p]))
                                 break; // Hit CODE section, no more MAP blocks to find
                             continue;
                         }
-                        // Inside local MAP — collect procedure/function names
-                        if (System.Text.RegularExpressions.Regex.IsMatch(scanLine, @"^END\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
-                            break; // End of local MAP
-                        var localMatch = procDefRegex.Match(scanLine);
-                        if (localMatch.Success)
-                            localMapNames.Add(localMatch.Groups[1].Value);
+                        // Inside local MAP — collect procedure/function names. MODULE('...')
+                        // sub-blocks (external DLL declarations) carry their own ENDs; only the
+                        // MAP's own END/period ends the block (previously the first nested END
+                        // ended collection AND the whole pre-scan early). Only depth-1 prototypes
+                        // are collected: localMapNames means "implementation detail of the parent
+                        // procedure", and a nested MODULE('other.clw'/'dll') block names
+                        // procedures implemented OUTSIDE this file — collecting those would
+                        // suppress their real calls edges (pipeline run-1 debugger finding).
+                        if (moduleStartRegex.IsMatch(scanLine))
+                        {
+                            localMapDepth++;
+                            continue;
+                        }
+                        if (endOrPeriodRegex.IsMatch(lines[p]))
+                        {
+                            localMapDepth--;
+                            if (localMapDepth <= 0)
+                                break; // End of local MAP
+                            continue;
+                        }
+                        if (localMapDepth == 1)
+                        {
+                            var localMatch = procDefRegex.Match(scanLine);
+                            if (localMatch.Success)
+                                localMapNames.Add(localMatch.Groups[1].Value);
+                        }
                     }
 
                     // Main-file tail: the global CODE section's calls belong to the program
@@ -845,12 +1531,25 @@ namespace ClarionCodeGraph.Graph
                     if (target.ForcedParentId >= 0)
                         parentProcId = target.ForcedParentId;
 
-                    // Skip files where we couldn't find the parent procedure
-                    if (parentProcId < 0) continue;
+                    // Skip files where we couldn't find the parent procedure. COUNTED and
+                    // surfaced in the end-of-run summary: this silent exit is precisely the
+                    // failure shape that took a field battery to find in round 5 — a skip
+                    // that at least announces itself makes the next one cheap to catch.
+                    if (parentProcId < 0) { skippedNoParent++; continue; }
 
                     long currentProcId = parentProcId;
                     string currentProcName = parentProcName;
+                    // The symbol edges are attributed FROM. Usually the current procedure, but
+                    // inside a ROUTINE body it is the routine's own symbol (9a73aa5d #1 — rolls
+                    // up to the procedure via the routine's parent_name). currentProcId/Name stay
+                    // the ENCLOSING procedure throughout: locals/parameters in a routine body
+                    // belong to the procedure, and DO targets resolve against it.
+                    long currentFromId = parentProcId;
                     bool seenFirstCode = false;
+                    // Name of the ROUTINE whose body is being scanned (null outside routines).
+                    // Routine-DATA declarations carry the ROUTINE's name as parent_name (round
+                    // 5) — this is what lets the local-variable scope check below match them.
+                    string currentRoutineName = null;
 
                     for (int i = target.StartLine; i < lines.Length; i++)
                     {
@@ -958,10 +1657,12 @@ namespace ClarionCodeGraph.Graph
                             // Reset currentProcId to the parent so their calls are
                             // attributed to the parent procedure, not to whatever
                             // non-local proc happened to be defined before them.
+                            currentRoutineName = null; // a new procedure body ends any routine
                             if (localMapNames.Contains(matchedName))
                             {
                                 currentProcId = parentProcId;
                                 currentProcName = parentProcName;
+                                currentFromId = parentProcId;
                                 continue;
                             }
                             // Resolve by (file, exact definition line) rather than name alone --
@@ -983,13 +1684,62 @@ namespace ClarionCodeGraph.Graph
                                 currentProcId = parentProcId;
                                 currentProcName = parentProcName;
                             }
+                            currentFromId = currentProcId;
                             continue;
                         }
 
-                        // ROUTINE definitions toggle scanning off until next CODE
-                        if (routineRegex.IsMatch(trimmed))
+                        // ROUTINE label: scan its body too (9a73aa5d #1 — previously this set
+                        // inCode=false and waited for a CODE line plain routine bodies don't
+                        // have, so ALL 55,318 routines emitted zero calls/do/references). Edges
+                        // from here on are attributed to the ROUTINE's own symbol; the enclosing
+                        // procedure context is kept for local/parameter scope matching and DO
+                        // resolution. A routine with an explicit DATA block defers to its CODE
+                        // line, exactly like a procedure's declaration section.
+                        var routineDefM = routineRegex.Match(trimmed);
+                        if (routineDefM.Success && seenFirstCode)
                         {
-                            inCode = false;
+                            string rn = routineDefM.Groups[1].Value;
+                            currentRoutineName = rn;
+                            long rId = -1;
+                            Dictionary<string, Dictionary<string, long>> rByProc;
+                            if (routinesByFileProc.TryGetValue(target.Path, out rByProc))
+                            {
+                                Dictionary<string, long> rByName;
+                                if (currentProcName != null && rByProc.TryGetValue(currentProcName, out rByName))
+                                    rByName.TryGetValue(rn, out rId);
+                                if (rId <= 0)
+                                {
+                                    Dictionary<string, long> fileR;
+                                    long fb;
+                                    if (routinesByFileOnly.TryGetValue(target.Path, out fileR) &&
+                                        fileR.TryGetValue(rn, out fb) && fb > 0)
+                                        rId = fb;
+                                }
+                            }
+                            currentFromId = rId > 0 ? rId : currentProcId;
+
+                            // Peek: DATA block? Then the body starts at its CODE line. The first
+                            // non-blank/non-comment line decides — no line cap (a cap made 5+
+                            // comment lines between ROUTINE and DATA scan the declarations as
+                            // code), and the shape test is dataStatementRegex, kept IDENTICAL to
+                            // the parser's DataStatementRegex so the two sides can't disagree
+                            // about whether a DATA block exists (pipeline run-1 debugger finding:
+                            // the old StartsWith("DATA ") accepted "DATA <token>" lines the
+                            // parser rejects).
+                            bool hasData = false;
+                            for (int p = i + 1; p < lines.Length; p++)
+                            {
+                                string pt = lines[p].TrimStart();
+                                if (pt.Length == 0 || pt.StartsWith("!")) continue;
+                                hasData = dataStatementRegex.IsMatch(lines[p]);
+                                break;
+                            }
+                            inCode = !hasData;
+                            continue;
+                        }
+                        if (routineDefM.Success)
+                        {
+                            inCode = false; // pre-CODE routine-shaped line: declaration territory
                             continue;
                         }
 
@@ -997,28 +1747,77 @@ namespace ClarionCodeGraph.Graph
                         if (currentProcId < 0) continue;
                         if (trimmed.StartsWith("!")) continue;
 
-                        // Skip DO lines — these are routine calls, not procedure calls
+                        // DO lines are routine calls. Resolve against THIS procedure's own
+                        // routines — routines are procedure-local, so (file, owning procedure,
+                        // name) is exact; fall back to a file-unique name for rows indexed
+                        // before parent_name was recorded (b7553893 #4 — the 'do' relationship
+                        // type was documented in the schema forever and had ZERO rows).
                         if (trimmed.StartsWith("DO ", StringComparison.OrdinalIgnoreCase)
-                            || trimmed.StartsWith("DO\t", StringComparison.OrdinalIgnoreCase)) continue;
+                            || trimmed.StartsWith("DO\t", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var doM = doRegex.Match(trimmed);
+                            if (doM.Success)
+                            {
+                                string routineName = doM.Groups[1].Value;
+                                long routineId = -1;
+                                Dictionary<string, Dictionary<string, long>> byProc;
+                                if (routinesByFileProc.TryGetValue(target.Path, out byProc))
+                                {
+                                    Dictionary<string, long> byName;
+                                    if (currentProcName != null && byProc.TryGetValue(currentProcName, out byName))
+                                        byName.TryGetValue(routineName, out routineId);
+                                    if (routineId <= 0)
+                                    {
+                                        Dictionary<string, long> fileRoutines;
+                                        long fallbackId;
+                                        if (routinesByFileOnly.TryGetValue(target.Path, out fileRoutines) &&
+                                            fileRoutines.TryGetValue(routineName, out fallbackId) &&
+                                            fallbackId > 0) // -1 = duplicated in file, refuse to guess
+                                            routineId = fallbackId;
+                                    }
+                                }
+                                if (routineId > 0)
+                                {
+                                    string doKey = string.Format("{0}|{1}|do|{2}", currentFromId, routineId, i + 1);
+                                    if (insertedRels.Add(doKey))
+                                    {
+                                        _db.InsertRelationship(new ClarionRelationship
+                                        {
+                                            FromId = currentFromId,
+                                            ToId = routineId,
+                                            Type = "do",
+                                            FilePath = target.Path,
+                                            LineNumber = i + 1
+                                        });
+                                        relCount++;
+                                    }
+                                }
+                            }
+                            continue;
+                        }
 
                         // Detect START(ProcName, ...) — thread start is a call to the procedure
                         var startMatch = startCallRegex.Match(trimmed);
                         if (startMatch.Success)
                         {
                             string targetProc = startMatch.Groups[1].Value;
-                            long targetId;
-                            if (!localMapNames.Contains(targetProc) && symbolNameToId.TryGetValue(targetProc, out targetId))
+                            bool startAmbiguous = false;
+                            long targetId = -1;
+                            if (!localMapNames.Contains(targetProc))
+                                targetId = resolveCallTarget(targetProc, target.ProjectId, target.Path, trimmed, out startAmbiguous);
+                            if (targetId >= 0)
                             {
-                                string relKey = string.Format("{0}|{1}|calls|{2}", currentProcId, targetId, i + 1);
+                                string relKey = string.Format("{0}|{1}|calls|{2}", currentFromId, targetId, i + 1);
                                 if (insertedRels.Add(relKey))
                                 {
                                     _db.InsertRelationship(new ClarionRelationship
                                     {
-                                        FromId = currentProcId,
+                                        FromId = currentFromId,
                                         ToId = targetId,
                                         Type = "calls",
                                         FilePath = target.Path,
-                                        LineNumber = i + 1
+                                        LineNumber = i + 1,
+                                        Ambiguous = startAmbiguous
                                     });
                                     relCount++;
                                 }
@@ -1053,19 +1852,21 @@ namespace ClarionCodeGraph.Graph
                             {
                                 string className = callerName.Substring(0, callerName.LastIndexOf('.'));
                                 string fullMethodName = className + "." + methodName;
-                                long targetId;
-                                if (symbolNameToId.TryGetValue(fullMethodName, out targetId))
+                                bool selfAmbiguous;
+                                long targetId = resolveCallTarget(fullMethodName, target.ProjectId, target.Path, trimmed, out selfAmbiguous);
+                                if (targetId >= 0)
                                 {
-                                    string relKey = string.Format("{0}|{1}|calls|{2}", currentProcId, targetId, i + 1);
+                                    string relKey = string.Format("{0}|{1}|calls|{2}", currentFromId, targetId, i + 1);
                                     if (insertedRels.Add(relKey))
                                     {
                                         _db.InsertRelationship(new ClarionRelationship
                                         {
-                                            FromId = currentProcId,
+                                            FromId = currentFromId,
                                             ToId = targetId,
                                             Type = "calls",
                                             FilePath = target.Path,
-                                            LineNumber = i + 1
+                                            LineNumber = i + 1,
+                                            Ambiguous = selfAmbiguous
                                         });
                                         relCount++;
                                     }
@@ -1171,84 +1972,378 @@ namespace ClarionCodeGraph.Graph
                             }
 
                             string fullName = lookupOwner + "." + methodName;
-                            long targetId;
-                            if (symbolNameToId.TryGetValue(fullName, out targetId))
+                            bool dottedAmbiguous;
+                            long targetId = resolveCallTarget(fullName, target.ProjectId, target.Path, trimmed, out dottedAmbiguous);
+                            if (targetId >= 0)
                             {
-                                string relKey = string.Format("{0}|{1}|calls|{2}", currentProcId, targetId, i + 1);
+                                string relKey = string.Format("{0}|{1}|calls|{2}", currentFromId, targetId, i + 1);
                                 if (insertedRels.Add(relKey))
                                 {
                                     _db.InsertRelationship(new ClarionRelationship
                                     {
-                                        FromId = currentProcId,
+                                        FromId = currentFromId,
                                         ToId = targetId,
                                         Type = "calls",
                                         FilePath = target.Path,
-                                        LineNumber = i + 1
+                                        LineNumber = i + 1,
+                                        Ambiguous = dottedAmbiguous
                                     });
                                     relCount++;
                                 }
                             }
                         }
 
-                        // Procedure calls: attributed to the current procedure
-                        foreach (string procName in procNames)
+                        // Procedure calls: attributed to the current procedure.
+                        // Inverted (64cdae5d): tokenize the line once and hash-hit tokens
+                        // against the callable-name set, instead of substring-scanning
+                        // every callable name (6,001 on v61POSitive) through every line.
+                        TokenizeIdentifiers(line, lineTokens);
+                        for (int ti = 0; ti < lineTokens.Count; ti++)
                         {
+                            var tok = lineTokens[ti];
+                            string tokenText = line.Substring(tok.Start, tok.Length);
+                            if (!procNameSet.Contains(tokenText)) continue;
                             // Skip local MAP procedures
+                            if (localMapNames.Contains(tokenText)) continue;
+                            if (!TokenIsCallOccurrence(line, tok.Start, tok.Length)) continue;
+
+                            // The heart of b7553893 #1: previously symbolNameToId[procName]
+                            // sent EVERY same-named call solution-wide to one arbitrary
+                            // (last-inserted) target — measured: all StandardWarning calls
+                            // in 12+ apps landed on one app's copy.
+                            bool bareAmbiguous;
+                            long bareTargetId = resolveCallTarget(tokenText, target.ProjectId, target.Path, trimmed, out bareAmbiguous);
+                            if (bareTargetId < 0) continue;
+
+                            string relKey = string.Format("{0}|{1}|calls|{2}", currentFromId, bareTargetId, i + 1);
+                            if (!insertedRels.Add(relKey)) continue;
+
+                            _db.InsertRelationship(new ClarionRelationship
+                            {
+                                FromId = currentFromId,
+                                ToId = bareTargetId,
+                                Type = "calls",
+                                FilePath = target.Path,
+                                LineNumber = i + 1,
+                                Ambiguous = bareAmbiguous
+                            });
+                            relCount++;
+                        }
+                        // Slow path: callable names the tokenizer can't represent.
+                        foreach (string procName in slowProcNames)
+                        {
                             if (localMapNames.Contains(procName))
                                 continue;
-
                             if (LineContainsCall(line, procName))
                             {
-                                string relKey = string.Format("{0}|{1}|calls|{2}", currentProcId, symbolNameToId[procName], i + 1);
+                                bool bareAmbiguous;
+                                long bareTargetId = resolveCallTarget(procName, target.ProjectId, target.Path, trimmed, out bareAmbiguous);
+                                if (bareTargetId < 0) continue;
+
+                                string relKey = string.Format("{0}|{1}|calls|{2}", currentFromId, bareTargetId, i + 1);
                                 if (!insertedRels.Add(relKey)) continue;
 
                                 _db.InsertRelationship(new ClarionRelationship
                                 {
-                                    FromId = currentProcId,
-                                    ToId = symbolNameToId[procName],
+                                    FromId = currentFromId,
+                                    ToId = bareTargetId,
                                     Type = "calls",
                                     FilePath = target.Path,
-                                    LineNumber = i + 1
+                                    LineNumber = i + 1,
+                                    Ambiguous = bareAmbiguous
                                 });
                                 relCount++;
                             }
                         }
 
-                        // Variable references: scan for variable names in this code line
-                        if (currentFileVars != null)
+                        // Variable references: scan for variable names in this code line.
+                        // Inverted (64cdae5d): tokenize once and hash-hit each token's
+                        // valid sub-spans (starts at 0 / after '.' or ':', ends at token
+                        // end / before '.' — the original boundary rules) instead of
+                        // substring-scanning every file variable through every line.
+                        // Runs when this file has variables of its own OR when any global
+                        // exists to fall back to (54058d98). The old `!= null` guard alone
+                        // skipped the whole scan for a module that declares nothing, so its
+                        // uses of a PROGRAM-file global produced no edges no matter what the
+                        // fallback did -- a hole the demoleg fixture could not show, because
+                        // every module there happens to declare something of its own.
+                        if (currentFileVarsByName != null || globalVarsByName.Count > 0)
                         {
-                            foreach (var varInfo in currentFileVars)
+                            TokenizeIdentifiers(trimmed, trimmedTokens);
+                            for (int ti = 0; ti < trimmedTokens.Count; ti++)
                             {
-                                // Only match variables that are in scope:
-                                // - module-level vars are visible to all procedures in this file
-                                // - local vars and parameters are only visible to their owning procedure
+                                var tok = trimmedTokens[ti];
+                                for (int s = 0; s < tok.Length; s++)
+                                {
+                                    if (s > 0)
+                                    {
+                                        char sep = trimmed[tok.Start + s - 1];
+                                        if (sep != '.' && sep != ':') continue;
+                                    }
+                                    for (int e = tok.Length; e > s; e--)
+                                    {
+                                        if (e < tok.Length && trimmed[tok.Start + e] != '.') continue;
+                                        string candName = trimmed.Substring(tok.Start + s, e - s);
+                                        List<VariableInfo> sameName;
+                                        // Tracks whether THIS file supplied an in-scope owner for the
+                                        // name. Both a miss and an all-filtered result mean the name is
+                                        // unresolved here, and both must reach the global fallback below.
+                                        bool resolvedInFile = false;
+                                        // Null when the file declares no variables at all --
+                                        // legitimate now that the scan no longer requires it.
+                                        if (currentFileVarsByName != null &&
+                                            currentFileVarsByName.TryGetValue(candName, out sameName))
+                                        {
+                                        foreach (var varInfo in sameName)
+                                        {
+                                            // Only match variables that are in scope:
+                                            // - module-level vars are visible to all procedures in this file
+                                            // - local vars and parameters are only visible to their owning
+                                            //   procedure (routine-DATA locals to their routine — round 5)
+                                            if ((varInfo.Scope == "local" || varInfo.Scope == "parameter") && varInfo.ParentName != null)
+                                            {
+                                                bool ownedByProc = currentProcName != null &&
+                                                    string.Equals(varInfo.ParentName, currentProcName, StringComparison.OrdinalIgnoreCase);
+                                                bool ownedByRoutine = currentRoutineName != null &&
+                                                    string.Equals(varInfo.ParentName, currentRoutineName, StringComparison.OrdinalIgnoreCase);
+                                                if (!ownedByProc && !ownedByRoutine)
+                                                    continue;
+                                            }
+
+                                            // Past the scope gate: this file owns the name here, so the
+                                            // global fallback must NOT also fire. Set before the dedup
+                                            // check, not after -- an edge suppressed as a duplicate was
+                                            // still resolved in-file, and treating it as unresolved would
+                                            // hand the reference to a same-named global instead.
+                                            resolvedInFile = true;
+
+                                            // A decl_kind='external' row is this file's IMPORT of a global
+                                            // owned elsewhere — re-point the edge to the owning declaration
+                                            // (lowest-id pick on multiple owners = deterministic GUESS,
+                                            // flagged ambiguous — same contract as call resolution).
+                                            long refTargetId = varInfo.Id;
+                                            bool refAmbiguous = false;
+                                            if (string.Equals(varInfo.DeclKind, "external", StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                VariableInfo owner;
+                                                if (globalOwnerByName.TryGetValue(varInfo.Name, out owner))
+                                                {
+                                                    refTargetId = owner.Id;
+                                                    int ownerCount;
+                                                    globalOwnerCounts.TryGetValue(varInfo.Name, out ownerCount);
+                                                    refAmbiguous = ownerCount > 1;
+                                                }
+                                            }
+                                            string relKey = string.Format("{0}|{1}|references|{2}", currentFromId, refTargetId, i + 1);
+                                            if (insertedRels.Add(relKey))
+                                            {
+                                                _db.InsertRelationship(new ClarionRelationship
+                                                {
+                                                    FromId = currentFromId,
+                                                    ToId = refTargetId,
+                                                    Type = "references",
+                                                    FilePath = target.Path,
+                                                    LineNumber = i + 1,
+                                                    Ambiguous = refAmbiguous
+                                                });
+                                                relCount++;
+                                            }
+                                        }
+                                        }
+
+                                        // Cross-module global fallback (54058d98). Reached on
+                                        // EITHER trigger:
+                                        //   (a) this file declares nothing by that name, or
+                                        //   (b) it does, but every candidate was filtered out as
+                                        //       belonging to a different procedure or routine.
+                                        // (b) is the shadowing case: a local X in procedure Q must
+                                        // bind to the local inside Q, while the SAME name in
+                                        // procedure P -- where no local X exists -- refers to the
+                                        // global. A miss-only fallback would silently drop P's
+                                        // references, which is the same class of bug as the one
+                                        // being fixed here, only quieter.
+                                        if (!resolvedInFile)
+                                        {
+                                            bool globalAmbiguous;
+                                            VariableInfo globalVar = resolveGlobalVar(candName, target.ProjectId, out globalAmbiguous);
+                                            if (globalVar != null)
+                                            {
+                                                string globalRelKey = string.Format("{0}|{1}|references|{2}", currentFromId, globalVar.Id, i + 1);
+                                                if (insertedRels.Add(globalRelKey))
+                                                {
+                                                    _db.InsertRelationship(new ClarionRelationship
+                                                    {
+                                                        FromId = currentFromId,
+                                                        ToId = globalVar.Id,
+                                                        Type = "references",
+                                                        FilePath = target.Path,
+                                                        LineNumber = i + 1,
+                                                        Ambiguous = globalAmbiguous
+                                                    });
+                                                    relCount++;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Slow path: variable names the tokenizer can't represent.
+                        if (slowGlobalVars.Count > 0) slowResolvedNames.Clear();
+                        if (slowFileVars != null)
+                        {
+                            foreach (var varInfo in slowFileVars)
+                            {
                                 if ((varInfo.Scope == "local" || varInfo.Scope == "parameter") && varInfo.ParentName != null)
                                 {
-                                    // Check if this var belongs to the current procedure.
-                                    // currentProcName is tracked directly alongside currentProcId
-                                    // (overload-safe -- see the update above), not reverse-scanned
-                                    // from a name-keyed symbol lookup.
-                                    if (currentProcName == null ||
-                                        !string.Equals(varInfo.ParentName, currentProcName, StringComparison.OrdinalIgnoreCase))
+                                    bool ownedByProc = currentProcName != null &&
+                                        string.Equals(varInfo.ParentName, currentProcName, StringComparison.OrdinalIgnoreCase);
+                                    bool ownedByRoutine = currentRoutineName != null &&
+                                        string.Equals(varInfo.ParentName, currentRoutineName, StringComparison.OrdinalIgnoreCase);
+                                    if (!ownedByProc && !ownedByRoutine)
                                         continue;
                                 }
 
                                 if (LineContainsVariable(trimmed, varInfo.Name))
                                 {
-                                    string relKey = string.Format("{0}|{1}|references|{2}", currentProcId, varInfo.Id, i + 1);
+                                    // In-scope owner in this file — same meaning as the fast
+                                    // path's resolvedInFile, so the fallback below stands down.
+                                    if (slowGlobalVars.Count > 0) slowResolvedNames.Add(varInfo.Name);
+
+                                    long refTargetId = varInfo.Id;
+                                    bool refAmbiguous = false;
+                                    if (string.Equals(varInfo.DeclKind, "external", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        VariableInfo owner;
+                                        if (globalOwnerByName.TryGetValue(varInfo.Name, out owner))
+                                        {
+                                            refTargetId = owner.Id;
+                                            int ownerCount;
+                                            globalOwnerCounts.TryGetValue(varInfo.Name, out ownerCount);
+                                            refAmbiguous = ownerCount > 1;
+                                        }
+                                    }
+                                    string relKey = string.Format("{0}|{1}|references|{2}", currentFromId, refTargetId, i + 1);
                                     if (insertedRels.Add(relKey))
                                     {
                                         _db.InsertRelationship(new ClarionRelationship
                                         {
-                                            FromId = currentProcId,
-                                            ToId = varInfo.Id,
+                                            FromId = currentFromId,
+                                            ToId = refTargetId,
                                             Type = "references",
                                             FilePath = target.Path,
-                                            LineNumber = i + 1
+                                            LineNumber = i + 1,
+                                            Ambiguous = refAmbiguous
                                         });
                                         relCount++;
                                     }
                                 }
+                            }
+                        }
+
+                        // Slow-path counterpart of the fast path's cross-module global
+                        // fallback (54058d98). Same two triggers, expressed differently
+                        // because the slow path tests names against the line rather than
+                        // looking them up: a name absent from slowResolvedNames was either
+                        // never declared in this file or was declared out of scope here.
+                        if (slowGlobalVars.Count > 0)
+                        {
+                            foreach (var globalVar in slowGlobalVars)
+                            {
+                                if (slowResolvedNames.Contains(globalVar.Name)) continue;
+                                if (!LineContainsVariable(trimmed, globalVar.Name)) continue;
+
+                                bool slowGlobalAmbiguous;
+                                VariableInfo owner = resolveGlobalVar(globalVar.Name, target.ProjectId, out slowGlobalAmbiguous);
+                                if (owner == null) continue;
+
+                                string slowGlobalRelKey = string.Format("{0}|{1}|references|{2}", currentFromId, owner.Id, i + 1);
+                                if (insertedRels.Add(slowGlobalRelKey))
+                                {
+                                    _db.InsertRelationship(new ClarionRelationship
+                                    {
+                                        FromId = currentFromId,
+                                        ToId = owner.Id,
+                                        Type = "references",
+                                        FilePath = target.Path,
+                                        LineNumber = i + 1,
+                                        Ambiguous = slowGlobalAmbiguous
+                                    });
+                                    relCount++;
+                                }
+                            }
+                        }
+
+                        // Class data-member references (9a73aa5d #3 — scope='class' was
+                        // 13,385/13,385 zero-incoming). Dotted MEMBER access: SELF.X / PARENT.X
+                        // via the current method's class (+ inheritance walk), Object.X via the
+                        // object's declared class type. Only an exact Class.Member hit in
+                        // variablesByName emits — method names aren't in that map, so calls
+                        // don't double-count, and unresolvable owners emit nothing.
+                        int memBang = trimmed.IndexOf('!');
+                        string memScan = memBang >= 0 ? trimmed.Substring(0, memBang) : trimmed;
+                        foreach (System.Text.RegularExpressions.Match mm in memberRefRegex.Matches(memScan))
+                        {
+                            string ownerTok = mm.Groups[1].Value;
+                            string memberTok = mm.Groups[2].Value;
+                            string ownerClass = null;
+                            if (string.Equals(ownerTok, "SELF", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(ownerTok, "PARENT", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (currentProcName != null && currentProcName.Contains("."))
+                                    ownerClass = currentProcName.Substring(0, currentProcName.LastIndexOf('.'));
+                            }
+                            else if (currentFileVarsByName != null)
+                            {
+                                // Inverted (64cdae5d): name-keyed lookup replaces the linear
+                                // sweep; the per-name list preserves file order, so the
+                                // first-match-then-break semantics are unchanged. Falls back
+                                // to the slow list only when the name isn't tokenizable.
+                                List<VariableInfo> ownerCandidates;
+                                if (!currentFileVarsByName.TryGetValue(ownerTok, out ownerCandidates))
+                                    ownerCandidates = slowFileVars;
+                                if (ownerCandidates != null)
+                                {
+                                    foreach (var vi in ownerCandidates)
+                                    {
+                                        if (!string.Equals(vi.Name, ownerTok, StringComparison.OrdinalIgnoreCase)) continue;
+                                        if (string.Equals(vi.Scope, "parameter", StringComparison.OrdinalIgnoreCase) &&
+                                            (currentProcName == null || !string.Equals(vi.ParentName, currentProcName, StringComparison.OrdinalIgnoreCase)))
+                                            continue;
+                                        string tn;
+                                        if (TryResolveVariableClassType(vi.Params, out tn)) ownerClass = tn;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (ownerClass == null) continue;
+
+                            VariableInfo memberVar = null;
+                            string sc = ownerClass;
+                            int hop = 0;
+                            while (sc != null && hop < 25)
+                            {
+                                if (variablesByName.TryGetValue(sc + "." + memberTok, out memberVar)) break;
+                                memberVar = null;
+                                string pc;
+                                if (!classParentByName.TryGetValue(sc, out pc) ||
+                                    string.Equals(pc, sc, StringComparison.OrdinalIgnoreCase)) break;
+                                sc = pc; hop++;
+                            }
+                            if (memberVar == null) continue;
+
+                            string mrKey = string.Format("{0}|{1}|references|{2}", currentFromId, memberVar.Id, i + 1);
+                            if (insertedRels.Add(mrKey))
+                            {
+                                _db.InsertRelationship(new ClarionRelationship
+                                {
+                                    FromId = currentFromId,
+                                    ToId = memberVar.Id,
+                                    Type = "references",
+                                    FilePath = target.Path,
+                                    LineNumber = i + 1
+                                });
+                                relCount++;
                             }
                         }
                     }
@@ -1256,6 +2351,7 @@ namespace ClarionCodeGraph.Graph
             }
 
             // Build class/interface lookup dictionary for inheritance + uses_type
+            EmitProgress(IndexProgressEvent.PhaseFinishing, null, null, fileCount, fileCount, 0, relCount);
             var classNameToId = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
             var classIfaceDt = _db.ExecuteQuery(
                 "SELECT id, name FROM symbols WHERE type IN ('class','interface')");
@@ -1268,11 +2364,28 @@ namespace ClarionCodeGraph.Graph
 
             ReportProgress(string.Format("  Loaded {0} class/interface symbols for type resolution", classNameToId.Count));
 
+            // Heartbeat cadence for the finishing tail (pipeline debugger, run 1): these
+            // loops used to emit NOTHING after the single PhaseFinishing event above, so a
+            // large solution went dead-silent at 98% for the whole tail — long enough to trip
+            // the MCP streaming watchdog and progress-reset client timeouts on a HEALTHY run.
+            // Percent stays pinned (done==total); the message carries the activity.
+            const int FinishingHeartbeatRows = 2000;
+
             // Insert inheritance relationships for classes (fixed: uses classNameToId, not symbolNameToId)
             var classDt = _db.ExecuteQuery(
                 "SELECT id, name, parent_name FROM symbols WHERE type = 'class' AND parent_name IS NOT NULL");
+            int inheritRowsSeen = 0;
             foreach (System.Data.DataRow row in classDt.Rows)
             {
+                ThrowIfCancelled();
+                inheritRowsSeen++;
+                if (inheritRowsSeen % FinishingHeartbeatRows == 0)
+                {
+                    bulkTxn.Commit(); bulkTxn.Dispose(); bulkTxn = _db.BeginTransaction();
+                    EmitProgress(IndexProgressEvent.PhaseFinishing, null, null,
+                        fileCount, fileCount, 0, relCount,
+                        string.Format("Finalizing: inheritance edges {0}/{1}", inheritRowsSeen, classDt.Rows.Count));
+                }
                 long childId = Convert.ToInt64(row["id"]);
                 string parentName = row["parent_name"].ToString();
                 long parentId;
@@ -1298,8 +2411,18 @@ namespace ClarionCodeGraph.Graph
             var typedVarDt = _db.ExecuteQuery(
                 "SELECT id, name, params, parent_name, file_path FROM symbols WHERE type = 'variable' AND params IS NOT NULL");
             int usesTypeCount = 0;
+            int usesTypeRowsSeen = 0;
             foreach (System.Data.DataRow row in typedVarDt.Rows)
             {
+                ThrowIfCancelled();
+                usesTypeRowsSeen++;
+                if (usesTypeRowsSeen % FinishingHeartbeatRows == 0)
+                {
+                    bulkTxn.Commit(); bulkTxn.Dispose(); bulkTxn = _db.BeginTransaction();
+                    EmitProgress(IndexProgressEvent.PhaseFinishing, null, null,
+                        fileCount, fileCount, 0, relCount,
+                        string.Format("Finalizing: uses_type scan {0}/{1}", usesTypeRowsSeen, typedVarDt.Rows.Count));
+                }
                 long varId = Convert.ToInt64(row["id"]);
                 string varParams = row["params"].ToString();
                 string ownerName = row["parent_name"] != DBNull.Value ? row["parent_name"].ToString() : null;
@@ -1391,8 +2514,18 @@ namespace ClarionCodeGraph.Graph
             var includeDt = _db.ExecuteQuery(
                 "SELECT id, name, file_path, line_number FROM symbols WHERE type = 'include'");
 
+            int includeRowsSeen = 0;
             foreach (System.Data.DataRow row in includeDt.Rows)
             {
+                ThrowIfCancelled();
+                includeRowsSeen++;
+                if (includeRowsSeen % FinishingHeartbeatRows == 0)
+                {
+                    bulkTxn.Commit(); bulkTxn.Dispose(); bulkTxn = _db.BeginTransaction();
+                    EmitProgress(IndexProgressEvent.PhaseFinishing, null, null,
+                        fileCount, fileCount, 0, relCount,
+                        string.Format("Finalizing: includes scan {0}/{1}", includeRowsSeen, includeDt.Rows.Count));
+                }
                 long includeSymId = Convert.ToInt64(row["id"]);
                 string includedFile = row["name"].ToString(); // e.g. "mo.Inc" or "oifunctionsmap.clw"
                 string sourceFilePath = row["file_path"].ToString(); // file that contains the INCLUDE
@@ -1430,8 +2563,14 @@ namespace ClarionCodeGraph.Graph
                 }
             }
 
+            bulkTxn.Commit();
+            bulkTxn.Dispose();
+
             ReportProgress(string.Format("  Created {0} includes relationships", includesCount));
             ReportProgress(string.Format("  Resolved {0} relationships across {1} files", relCount, fileCount));
+            if (skippedNoParent > 0)
+                ReportProgress(string.Format("  WARNING: {0} file(s) skipped by the body scan — no parent procedure found (their symbols exist but they contributed zero call/do/references edges)", skippedNoParent));
+            return relCount;
         }
 
         // Resolve a variable's declared class type from its raw params string, mirroring the
@@ -1562,6 +2701,81 @@ namespace ClarionCodeGraph.Graph
             return false;
         }
 
+        // ---- Inverted-index line matching (ticket 64cdae5d) -------------------------
+        // The body scan used to test EVERY candidate name against EVERY code line
+        // (LineContainsCall/LineContainsVariable are substring scans): O(lines × names)
+        // with 6,001 callable names and per-file variable lists in the thousands — the
+        // dominant cost of the resolve phase. Instead, tokenize each line once into
+        // identifier runs and dictionary-hit the tokens. The boundary rules of the
+        // original matchers are reproduced structurally:
+        //  - token alphabet = [A-Za-z0-9_:.] — exactly the chars the matchers treat as
+        //    word-interior on either side, so a token boundary IS the matchers' word
+        //    boundary;
+        //  - single-quoted regions are skipped with the same naive quote toggle as
+        //    IsInsideQuotedString (comments are NOT skipped — the original matched
+        //    inside ! comments too, and identical output is the correctness gate);
+        //  - calls must match the full token (before-rule bans . : ? and after-rule
+        //    bans . :) plus the '?' pre-check and the same context checks;
+        //  - variables may start after '.' or ':' (dot/colon before allowed) and may
+        //    end before '.' (dot after allowed, colon after banned), so each token
+        //    offers its separator-delimited sub-spans for lookup.
+        // Candidate names containing characters OUTSIDE the token alphabet can never
+        // match a token; callers keep the original per-line scan for those (expected
+        // none in practice — Clarion labels stay inside the alphabet).
+
+        private struct TokenSpan
+        {
+            public int Start;
+            public int Length;
+        }
+
+        private static bool IsIdentTokenChar(char c)
+        {
+            return char.IsLetterOrDigit(c) || c == '_' || c == ':' || c == '.';
+        }
+
+        /// <summary>True when every char of the name can appear inside a token — i.e.
+        /// the inverted index can find it. Names failing this take the slow path.</summary>
+        private static bool IsTokenizableName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            for (int i = 0; i < name.Length; i++)
+                if (!IsIdentTokenChar(name[i])) return false;
+            return true;
+        }
+
+        /// <summary>Collect maximal identifier-run tokens outside single-quoted regions.
+        /// Reuses the caller's list to avoid per-line allocations.</summary>
+        private static void TokenizeIdentifiers(string s, List<TokenSpan> spans)
+        {
+            spans.Clear();
+            bool inString = false;
+            int i = 0;
+            while (i < s.Length)
+            {
+                char c = s[i];
+                if (c == '\'') { inString = !inString; i++; continue; }
+                if (inString || !IsIdentTokenChar(c)) { i++; continue; }
+                int start = i;
+                while (i < s.Length && s[i] != '\'' && IsIdentTokenChar(s[i])) i++;
+                spans.Add(new TokenSpan { Start = start, Length = i - start });
+            }
+        }
+
+        /// <summary>The call-context checks LineContainsCall applied at a matched
+        /// occurrence (word boundaries + quote exclusion already guaranteed by the
+        /// tokenizer; the before-rule's '?' is the one char outside the token
+        /// alphabet that still bans a call match).</summary>
+        private static bool TokenIsCallOccurrence(string line, int start, int len)
+        {
+            if (start > 0 && line[start - 1] == '?') return false;
+            int afterIdx = start + len;
+            if (IsAssignmentTarget(line, afterIdx)) return false;
+            if (IsInConcatenation(line, start, afterIdx)) return false;
+            if (IsValueContext(line, start, afterIdx)) return false;
+            return true;
+        }
+
         private static bool IsInsideQuotedString(string line, int position)
         {
             bool inString = false;
@@ -1687,6 +2901,7 @@ namespace ClarionCodeGraph.Graph
         public int ProjectCount { get; set; }
         public int FileCount { get; set; }
         public int SymbolCount { get; set; }
+        public int RelationshipCount { get; set; }
         public long DurationMs { get; set; }
     }
 
@@ -1697,6 +2912,13 @@ namespace ClarionCodeGraph.Graph
         public string ParentName { get; set; }
         public string Scope { get; set; }
         public string Params { get; set; }
+        // 'external' = declared here with the EXTERNAL attribute but OWNED elsewhere.
+        // References matched against such a row are re-pointed to the owning declaration.
+        public string DeclKind { get; set; }
+        // Owning project, or -1 when the row has no project_id. Used to rank same-named
+        // globals across apps the way resolveCallTarget ranks same-named procedures --
+        // without it a cross-file global reference could only make a flat lowest-id guess.
+        public int ProjectId { get; set; }
     }
 
     /// <summary>
@@ -1704,10 +2926,32 @@ namespace ClarionCodeGraph.Graph
     /// ForcedParentId -1 (parent procedure auto-detected). The main PROGRAM file's tail uses
     /// the global CODE line as StartLine and the file's "program" symbol as ForcedParentId.
     /// </summary>
+    /// <summary>Scope-ordered call-target resolution — Func can't carry an out param.</summary>
+    internal delegate long ResolveCallDelegate(string name, int callerProjectId, string callerFile, string codeLine, out bool ambiguous);
+
+    /// <summary>Resolve a variable name to an owning global declaration when the scanned
+    /// file has no in-scope candidate of its own. Returns null when no global owns the
+    /// name. <paramref name="ambiguous"/> is set when several equal-rank owners survive
+    /// narrowing, mirroring ResolveCallDelegate's contract.</summary>
+    internal delegate VariableInfo ResolveGlobalVarDelegate(string name, int refProjectId, out bool ambiguous);
+
     internal class RelScanTarget
     {
         public string Path { get; set; }
         public int StartLine { get; set; }
         public long ForcedParentId { get; set; }
+        // The project this file is scanned FOR — the caller side of scope-ordered call
+        // resolution (same file -> same project -> dependency projects -> global).
+        public int ProjectId { get; set; }
+    }
+
+    /// <summary>A callable symbol as loaded for scope-ordered call resolution (b7553893 #1/#2).</summary>
+    internal class CallTarget
+    {
+        public long Id;
+        public int ProjectId;
+        public string FilePath;
+        public string Params;
+        public bool IsPrototype;
     }
 }

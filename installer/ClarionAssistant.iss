@@ -1,14 +1,27 @@
-﻿; Clarion Assistant v5.3 Installer
+; Clarion Assistant v5.3 Installer
 ; Inno Setup 6 Script
 ; Supports Clarion 10, 11, 12 — user picks which version(s) to install
 
 #define MyAppName "Clarion Assistant"
-; NOTE: this is a MANUAL step at every release cut — Bump-Version.ps1 writes Version.props and
-; regenerates AssemblyVersion.cs / ClarionAssistant.addin, but it does not reach into this file.
-; Left stale it is silent: the freshness gate passes (it compares per-config BINARY stamps), the
-; build succeeds, and the only symptoms are an installer named for the previous version and an
-; Add/Remove Programs entry that disagrees with every DLL it just installed.
-#define MyAppVersion "5.7"
+
+; MyAppVersion is NOT defined here. It is supplied on the ISCC command line by
+; installer\build-installer.ps1, which reads <FullVersion> from ClarionAssistant\Version.props and
+; passes /DMyAppVersion=<value>.
+;
+; It used to be a hardcoded #define, and the comment that sat here admitted it was "a MANUAL step
+; at every release cut" that was "silent" when left stale - which is exactly what happened: the
+; file said 5.8.1 while Version.props said 5.8.1165. Nothing caught it, because the freshness gate
+; compares per-config BINARY stamps and never looks at this file. The symptoms were an installer
+; named for the wrong version and an Add/Remove Programs entry disagreeing with every DLL it had
+; just installed.
+;
+; Erroring out is deliberate. A default would restore the silent-drift failure in a new costume:
+; the build would succeed and ship the wrong number. Compiling this script by hand (rather than
+; through build-installer.ps1) is now an explicit choice you have to make:
+;     ISCC.exe /DMyAppVersion=5.8.2 ClarionAssistant.iss
+#ifndef MyAppVersion
+  #error MyAppVersion not supplied. Build via installer\build-installer.ps1, which passes it from Version.props.
+#endif
 #define MyAppPublisher "ClarionLive"
 #define MyAppURL "https://clarionlive.com"
 
@@ -33,6 +46,7 @@
 #define SrcC12 SrcBase + "\bin\Debug-C12"
 ; Indexer is VENDORED into the repo (GitHub #30) — source from ClarionAssistant\indexer, not the old external H:\DevLaptop\ClarionLSP tree.
 #define SrcClarionIndexer SrcBase + "\indexer\bin\Debug"
+#define SrcMcpServer SrcBase + "\mcp-server\bin\Debug"
 ; ClarionCOMBrowser (COM for Clarion IDE addin) lives in a separate repo. Override: CLARIONCOMBROWSER_DIR
 #define SrcComForClarion GetEnv("CLARIONCOMBROWSER_DIR") != "" ? GetEnv("CLARIONCOMBROWSER_DIR") : "H:\DevLaptop\ClarionIdeCOMPane\ClarionCOMBrowser\bin\Debug"
 ; Plugin marketplace is no longer bundled by the installer — configure.ps1
@@ -55,19 +69,19 @@
 ; Bundled LSP is now PURE/stock upstream (GitHub #40) — source from the pinned pure build under
 ; .lsp-build\<tag>, NOT the old codegraph-overlay clone. Tag tracks lsp-server-sync\lsp-snapshot.json
 ; "resolvedTag"; bump this path when the pin bumps (Sync-LspServer.ps1 -Pure -Tag <tag>).
-#define SrcLsp SrcBase + "\.lsp-build\v1.0.0"
+#define SrcLsp SrcBase + "\.lsp-build\v1.0.5"
 ; Bundled node.exe (so end users don't need Node.js installed). Override: CLARIONLSP_NODE
 #define SrcNodeExe GetEnv("CLARIONLSP_NODE") != "" ? GetEnv("CLARIONLSP_NODE") : "C:\Program Files\nodejs\node.exe"
 ; Bundled Markdown Editor — msarson/ClarionMarkdownEditor, redistributed under MIT. Upstream ships a
 ; PREBUILT release zip, so unlike the LSP there is nothing to compile: Sync-MarkdownEditor.ps1 just
 ; downloads, verifies and extracts it. Tag tracks markdown-editor-sync\markdown-snapshot.json
 ; "resolvedTag"; bump BOTH defines below when the pin bumps (Sync-MarkdownEditor.ps1 -Tag <tag>).
-#define SrcMarkdown SrcBase + "\.markdown-build\v1.2.0"
+#define SrcMarkdown SrcBase + "\.markdown-build\v1.3.0"
 ; The version the only-if-newer check compares against a user's existing install. MUST equal
 ; markdown-snapshot.json "resolvedIdentityVersion" — which is the <Identity version> from the .addin,
 ; NOT the DLL's FileVersion. Upstream freezes FileVersion at 1.0.2.0 across every release, so Inno's
 ; built-in newer-file comparison cannot tell v1.0.2 from v1.2.0 and must not be relied on here.
-#define MarkdownPinVersion "1.2.0"
+#define MarkdownPinVersion "1.3.0"
 ; The directory containing this .iss file itself (SourcePath already ends in "\").
 #define SrcInstaller Copy(SourcePath, 1, Len(SourcePath)-1)
 ; Repo root — for THIRD-PARTY-NOTICES.md, which must ship wherever the addin does.
@@ -243,6 +257,13 @@ Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC10Path}\accessory\addins\Clarion
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
+; clarion-mcp-server.exe - the editor-agnostic MCP tools as a standalone stdio server,
+; for Clarion developers working in Sublime/VS Code rather than the IDE. MUST land in
+; this folder rather than a subfolder: it resolves lsp-server\ relative to its own
+; directory, so from here it finds the bundled language server AND node.exe that the
+; blocks below already install.
+Source: "{#SrcMcpServer}\clarion-mcp-server.exe"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
+Source: "{#SrcMcpServer}\clarion-mcp-server.pdb"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
 ; Third-party license notices — ships wherever the addin does; the obligation travels with the binaries.
 Source: "{#SrcRepoRoot}\THIRD-PARTY-NOTICES.md"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion10 and docs; Flags: ignoreversion
@@ -299,6 +320,13 @@ Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC11Path}\accessory\addins\Clarion
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
+; clarion-mcp-server.exe - the editor-agnostic MCP tools as a standalone stdio server,
+; for Clarion developers working in Sublime/VS Code rather than the IDE. MUST land in
+; this folder rather than a subfolder: it resolves lsp-server\ relative to its own
+; directory, so from here it finds the bundled language server AND node.exe that the
+; blocks below already install.
+Source: "{#SrcMcpServer}\clarion-mcp-server.exe"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
+Source: "{#SrcMcpServer}\clarion-mcp-server.pdb"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 ; Third-party license notices — ships wherever the addin does; the obligation travels with the binaries.
 Source: "{#SrcRepoRoot}\THIRD-PARTY-NOTICES.md"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion11 and docs; Flags: ignoreversion
@@ -359,6 +387,13 @@ Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC111Path}\accessory\addins\Clario
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
+; clarion-mcp-server.exe - the editor-agnostic MCP tools as a standalone stdio server,
+; for Clarion developers working in Sublime/VS Code rather than the IDE. MUST land in
+; this folder rather than a subfolder: it resolves lsp-server\ relative to its own
+; directory, so from here it finds the bundled language server AND node.exe that the
+; blocks below already install.
+Source: "{#SrcMcpServer}\clarion-mcp-server.exe"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
+Source: "{#SrcMcpServer}\clarion-mcp-server.pdb"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 ; Third-party license notices — ships wherever the addin does; the obligation travels with the binaries.
 Source: "{#SrcRepoRoot}\THIRD-PARTY-NOTICES.md"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion111 and docs; Flags: ignoreversion
@@ -416,6 +451,13 @@ Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC12Path}\accessory\addins\Clarion
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.exe"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcClarionIndexer}\clarion-indexer.pdb"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
+; clarion-mcp-server.exe - the editor-agnostic MCP tools as a standalone stdio server,
+; for Clarion developers working in Sublime/VS Code rather than the IDE. MUST land in
+; this folder rather than a subfolder: it resolves lsp-server\ relative to its own
+; directory, so from here it finds the bundled language server AND node.exe that the
+; blocks below already install.
+Source: "{#SrcMcpServer}\clarion-mcp-server.exe"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
+Source: "{#SrcMcpServer}\clarion-mcp-server.pdb"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 ; Third-party license notices — ships wherever the addin does; the obligation travels with the binaries.
 Source: "{#SrcRepoRoot}\THIRD-PARTY-NOTICES.md"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcDocs}\ClarionAssistant-Guide.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\docs"; Components: clarion12 and docs; Flags: ignoreversion
@@ -644,6 +686,12 @@ var
   C10Extra, C11Extra, C111Extra, C12Extra: string;
   ClarionPathPage: TInputQueryWizardPage;
   AddBtn0, AddBtn1, AddBtn2, AddBtn3: TNewButton;
+  // Markdown Editor install verdict, computed once per Clarion release and then frozen.
+  // Indexed by MarkdownIndexFor: 0=C10, 1=C11, 2=C11.1, 3=C12. Declared up here rather than
+  // beside the functions so the scope is unambiguous. See ShouldInstallMarkdown for why the
+  // freezing is load-bearing and not merely an optimisation.
+  MarkdownDecided: array[0..3] of Boolean;
+  MarkdownVerdict: array[0..3] of Boolean;
 
 function GetC10Path(Param: string): string; begin Result := C10Path; end;
 function GetC11Path(Param: string): string; begin Result := C11Path; end;
@@ -742,12 +790,19 @@ begin
   else Result := C12Path;
 end;
 
-// [Files] Check function. Param is the Clarion release discriminator ('10','11','111','12') rather
-// than a path, so the decision reads the same globals the wizard populated and does not depend on
-// constant expansion inside a Check parameter.
-function ShouldInstallMarkdown(Param: String): Boolean;
+function MarkdownIndexFor(Which: String): Integer;
+begin
+  if Which = '10' then Result := 0
+  else if Which = '11' then Result := 1
+  else if Which = '111' then Result := 2
+  else Result := 3;
+end;
+
+// The actual decision. Do NOT wire this to a [Files] Check directly -- go through
+// ShouldInstallMarkdown, which freezes the answer. See the comment there.
+function DecideInstallMarkdown(Param: String): Boolean;
 var
-  Root, AddinPath, Installed: String;
+  Root, Dir, AddinPath, Installed: String;
 begin
   Root := MarkdownRootFor(Param);
   if Root = '' then
@@ -756,11 +811,28 @@ begin
     Exit;
   end;
 
-  AddinPath := Root + '\accessory\addins\MarkdownEditor\ClarionMarkdownEditor.addin';
+  Dir := Root + '\accessory\addins\MarkdownEditor';
+  AddinPath := Dir + '\ClarionMarkdownEditor.addin';
 
   if not FileExists(AddinPath) then
   begin
     Log('Markdown[' + Param + ']: no existing install -> installing pinned {#MarkdownPinVersion}');
+    Result := True;
+    Exit;
+  end;
+
+  // A manifest with no assembly beside it is not an install, it is wreckage. The IDE parses the
+  // .addin, tries to LoadFrom the DLL next to it, and fails startup outright with "Could not load
+  // file or assembly 'ClarionMarkdownEditor.dll'". Version comparison is meaningless in that state
+  // because there is nothing to downgrade, so repair unconditionally.
+  //
+  // This branch is ALSO the recovery path for machines already broken by the 5.8 wildcard defect
+  // described in ShouldInstallMarkdown: their lone .addin reports the pinned version, so without
+  // this check the version comparison below would read them as up to date and skip the payload on
+  // every future install, leaving them broken permanently.
+  if not FileExists(Dir + '\ClarionMarkdownEditor.dll') then
+  begin
+    Log('Markdown[' + Param + ']: .addin present but ClarionMarkdownEditor.dll is MISSING (broken install) -> repairing with pinned {#MarkdownPinVersion}');
     Result := True;
     Exit;
   end;
@@ -785,6 +857,36 @@ begin
     Log('Markdown[' + Param + ']: installed ' + Installed + ' is >= pinned {#MarkdownPinVersion} -> leaving the user''s copy alone');
     Result := False;
   end;
+end;
+
+// [Files] Check function. Param is the Clarion release discriminator ('10','11','111','12') rather
+// than a path, so the decision reads the same globals the wizard populated and does not depend on
+// constant expansion inside a Check parameter.
+//
+// FREEZING THE VERDICT IS LOAD-BEARING, NOT AN OPTIMISATION (5.8.1 hotfix).
+// A [Files] entry whose Source is a wildcard evaluates its Check function ONCE PER EXPANDED FILE,
+// at install time. ClarionMarkdownEditor.addin sorts alphabetically FIRST within {#SrcMarkdown}\*,
+// so on a clean root 5.8 installed the manifest, and then every remaining file of the SAME wildcard
+// re-ran this decision, found the .addin that had just been written reporting the pinned version,
+// took the "installed >= pinned -> leave the user's copy alone" branch, and was SKIPPED. The user
+// was left with a folder holding exactly one file -- the manifest -- and a Clarion IDE that would
+// not start. Reported on Discord against 5.8 and reproduced locally: empty the folder, run the
+// installer, exactly one file lands.
+//
+// Caching the first answer fixes it because the first call necessarily happens BEFORE this run has
+// written anything, so the verdict reflects the state the user actually arrived with. Re-reading
+// the destination mid-wildcard is what made the gate destroy its own precondition.
+function ShouldInstallMarkdown(Param: String): Boolean;
+var
+  Idx: Integer;
+begin
+  Idx := MarkdownIndexFor(Param);
+  if not MarkdownDecided[Idx] then
+  begin
+    MarkdownVerdict[Idx] := DecideInstallMarkdown(Param);
+    MarkdownDecided[Idx] := True;
+  end;
+  Result := MarkdownVerdict[Idx];
 end;
 
 // Where we remember the paths a previous run actually installed to. See SavedClarionPath.
@@ -1439,10 +1541,44 @@ begin
   end;
 end;
 
+// Stop any running standalone MCP servers before touching the addin folder.
+//
+// WHY THIS IS NOT OPTIONAL. clarion-mcp-server.exe is spawned on demand by whatever MCP client a
+// developer is using - Claude Code in a terminal, in Sublime, in VS Code - and it runs FROM the
+// addin folder. A running executable is locked by Windows, so it blocks not merely the file copy
+// but the DelTree below, which would then half-remove the addin directory.
+//
+// AND CLOSING CLARION DOES NOT HELP, which is what makes this different from the DLL lock the
+// installer already lives with. The holder is a Claude session in some unrelated terminal, in
+// some unrelated folder; the user has no reason to connect it to a Clarion Assistant upgrade,
+// and no obvious way to find it. Measured, not assumed: with a server running from the addin
+// folder, overwriting its exe fails outright.
+//
+// Killing them is cheap and safe. They hold no state - every tool call is served from disk or a
+// database - and the client respawns one on its next request. The cost is that an in-flight tool
+// call fails once; the alternative is a failed or half-applied upgrade.
+//
+// /F because there is no graceful stop available: the server exits when its stdin closes, and
+// that pipe belongs to the client, not to us. taskkill reports 128 when nothing matched, which is
+// the normal case and not an error - so the result is logged, never surfaced.
+procedure StopMcpServers;
+var
+  ResultCode: Integer;
+begin
+  Log('Stopping any running clarion-mcp-server.exe before install...');
+  if Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM clarion-mcp-server.exe',
+          '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Log('  taskkill returned ' + IntToStr(ResultCode) + ' (128 = none were running)')
+  else
+    Log('  taskkill could not be launched; a running server may block the install');
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
   NeedsRestart := False;
+
+  StopMcpServers;
 
   Log('PrepareToInstall: C10Path=' + C10Path);
   Log('PrepareToInstall: C11Path=' + C11Path);

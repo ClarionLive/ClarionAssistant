@@ -105,7 +105,7 @@ namespace ClarionAssistant.Services
                 _probedClient = c;
                 _probedOk = ok;
                 if (!ok)
-                    Debug.WriteLine("[SharedLspBridge] The installed ClarionLsp addin's client lacks the "
+                    LspTrace.Write("[SharedLspBridge] The installed ClarionLsp addin's client lacks the "
                         + "v1.1.0 methods (GetCompletionAsync/GetDiagnosticsAsync/NotifyBufferChangedAsync) — "
                         + "treating shared LSP as unavailable and using the bundled LspClient. "
                         + "Install ClarionLsp >= 1.1.0 for the shared single-process path.");
@@ -192,7 +192,7 @@ namespace ClarionAssistant.Services
                 try { m = c.GetType().GetMethod("GetSignatureHelpAsync"); } catch { }
                 if (m == null)
                 {
-                    Debug.WriteLine("[SharedLspBridge] shared client lacks GetSignatureHelpAsync — install ClarionLsp >= 1.4.0 for parameter hints.");
+                    LspTrace.Write("[SharedLspBridge] shared client lacks GetSignatureHelpAsync — install ClarionLsp >= 1.4.0 for parameter hints.");
                     return null;
                 }
                 return SharedSignatureHelpViaReflection(c, m, filePath, line, character, bufferText);
@@ -200,7 +200,7 @@ namespace ClarionAssistant.Services
             var lsp = LspClient.Active;
             if (lsp == null) return null;
             try { return ParseLspSignatureHelp(lsp.GetSignatureHelp(filePath, line, character, bufferText)); }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] signatureHelp (bundled) failed: " + ex.Message); return null; }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] signatureHelp (bundled) failed: " + ex.Message); return null; }
         }
 
         // Invoke the v1.4.0 GetSignatureHelpAsync(string, int, int, string, int) purely reflectively and
@@ -250,7 +250,7 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[SharedLspBridge] signatureHelp (shared) failed: " + ex.Message);
+                LspTrace.Write("[SharedLspBridge] signatureHelp (shared) failed: " + ex.Message);
                 return null;
             }
         }
@@ -391,7 +391,7 @@ namespace ClarionAssistant.Services
                 try { m = c.GetType().GetMethod("GetImplementationAsync"); } catch { }
                 if (m == null)
                 {
-                    Debug.WriteLine("[SharedLspBridge] shared client lacks GetImplementationAsync — update the ClarionLsp addin for go-to-implementation.");
+                    LspTrace.Write("[SharedLspBridge] shared client lacks GetImplementationAsync — update the ClarionLsp addin for go-to-implementation.");
                     return null;
                 }
                 if (!string.IsNullOrEmpty(bufferText)) EnsureBufferSynced(filePath, bufferText);
@@ -400,7 +400,7 @@ namespace ClarionAssistant.Services
             var lsp = LspClient.Active;
             if (lsp == null) return null;
             try { return lsp.GetImplementation(filePath, line, character, bufferText); }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] implementation (bundled) failed: " + ex.Message); return null; }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] implementation (bundled) failed: " + ex.Message); return null; }
         }
 
         // Invoke GetImplementationAsync(string, int, int) reflectively and flatten the LocationResult[]
@@ -450,7 +450,7 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[SharedLspBridge] implementation (shared) failed: " + ex.Message);
+                LspTrace.Write("[SharedLspBridge] implementation (shared) failed: " + ex.Message);
                 return null;
             }
         }
@@ -472,6 +472,29 @@ namespace ClarionAssistant.Services
             var c = Shared;
             if (c == null) { var lsp = LspClient.Active; return lsp != null ? lsp.GetDocumentSymbols(filePath, bufferText) : null; }
             return SharedGetDocumentSymbols(c, filePath, bufferText);
+        }
+
+        /// <summary>
+        /// textDocument/foldingRange (syncing the live buffer) → raw LSP dict, or null when no
+        /// buffer-aware client is available.
+        ///
+        /// Deliberately LOCAL-ONLY, unlike every other dispatcher here. The shared contract's
+        /// <c>GetFoldingRangesAsync(string filePath)</c> takes no bufferText — unlike its completion,
+        /// diagnostics and documentSymbol counterparts — so it can only fold the file AS SAVED ON
+        /// DISK. For folding that is not a degraded answer, it is a wrong one: the gutter would stop
+        /// matching the screen the moment an unsaved edit opened or closed a structure, which is
+        /// exactly when a developer looks at it. Returning null instead lets the caller fall back to
+        /// the editor's own line-oriented pass, which is at least consistent with the buffer.
+        ///
+        /// Wiring the shared path needs a bufferText overload on IClarionLanguageClient
+        /// (msarson/clarion-lsp); until then this covers the default configuration, since
+        /// Lsp.ForceLocal defaults to true and the bundled client is what serves requests.
+        /// </summary>
+        public static Dictionary<string, object> GetFoldingRanges(string filePath, string bufferText = null)
+        {
+            var lsp = LspClient.Active;
+            if (lsp == null || !lsp.IsRunning) return null;
+            return lsp.GetFoldingRanges(filePath, bufferText);
         }
 
         /// <summary>workspace/symbol → raw LSP dict. CodeGraph fallback (cross-project) when empty.</summary>
@@ -521,13 +544,13 @@ namespace ClarionAssistant.Services
             // Member-access stays LSP-only — the server resolves type-scoped members, CodeGraph can't.
             // Defensive: never throws (completion must not break), never overrides a real LSP item.
             try { MergeBarePrefixCompletions(primary, filePath, line, character, bufferText); }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] bare-prefix completion merge failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] bare-prefix completion merge failed: " + ex.Message); }
 
             // Qualified group/queue FIELD completion (task a47a6cac Phase 2 refinement): PRE: prefix
             // ("Cus:" → fields of GROUP,PRE(Cus)) and dotted access ("Group." → its fields). Separate from
             // the bare path (which returns early in a qualified context). Never overrides a real LSP item.
             try { MergeQualifiedFieldCompletions(primary, filePath, line, character, bufferText); }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] qualified field completion merge failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] qualified field completion merge failed: " + ex.Message); }
 
             // Dictionary table FIELD/KEY completion ("Cus:" → columns + keys of the dictionary table whose
             // PRE is "Cus", from the ingested .schemagraph.db). Same "<ident>:partial" qualifier context as
@@ -537,7 +560,7 @@ namespace ClarionAssistant.Services
             // added; both are shown, distinguished by Detail ("... field, dictionary" vs "... (field)").
             // Never throws, never overrides.
             try { MergeDictionaryFieldCompletions(primary, filePath, line, character, bufferText); }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] dictionary field completion merge failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] dictionary field completion merge failed: " + ex.Message); }
 
             // Class member-access (ticket 6e8f2439, item 5b): "oInstance." → that instance's ABC/library
             // methods from ClarionGraph (+ project CodeGraph), resolved by the instance's declared class
@@ -546,7 +569,7 @@ namespace ClarionAssistant.Services
             // scoping pass below). Additive + deduped + never blanks the LSP's members.
             HashSet<string> memberScope = null;
             try { memberScope = MergeMemberAccessCompletions(primary, filePath, line, character, bufferText); }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] member-access completion merge failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] member-access completion merge failed: " + ex.Message); }
 
             // Member/field-access scoping (mirror of the colon-qualifier fix). When '.' doesn't resolve to a
             // class server-side, Mark's LSP falls back to a global keyword/builtin dump (ABS, ACCEPT, END,
@@ -573,7 +596,7 @@ namespace ClarionAssistant.Services
                     if (scoped.Count > 0) primary = scoped;
                 }
             }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] member-access scoping failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] member-access scoping failed: " + ex.Message); }
 
             // Colon-qualifier scoping. When the cursor sits right after an "IDENT:" qualifier (PROP:/EVENT:/
             // PROPLIST:/group-PRE like Cus:...), the Monaco replace-range breaks on the ':' and is EMPTY, so
@@ -603,7 +626,7 @@ namespace ClarionAssistant.Services
                     }
                 }
             }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] colon-qualifier completion failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] colon-qualifier completion failed: " + ex.Message); }
 
             return primary;
         }
@@ -784,14 +807,14 @@ namespace ClarionAssistant.Services
                 }
                 if (dropped == 0) return result;
 
-                Debug.WriteLine("[SharedLspBridge] suppressed " + dropped
+                LspTrace.Write("[SharedLspBridge] suppressed " + dropped
                     + " 'not declared in this file' diagnostic(s) CodeGraph resolves non-locally in '" + filePath + "'.");
                 return new LspClient.DiagnosticWaitResult { Entries = kept, Pending = result.Pending };
             }
             catch (Exception ex)
             {
                 // A filter must never cost the caller its diagnostics.
-                Debug.WriteLine("[SharedLspBridge] DropUndeclaredWeCanResolve: " + ex.Message);
+                LspTrace.Write("[SharedLspBridge] DropUndeclaredWeCanResolve: " + ex.Message);
                 return result;
             }
         }
@@ -868,7 +891,7 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[SharedLspBridge] ResolveNamesFromProgramGlobals('" + modulePath + "'): " + ex.Message);
+                LspTrace.Write("[SharedLspBridge] ResolveNamesFromProgramGlobals('" + modulePath + "'): " + ex.Message);
             }
         }
 
@@ -888,7 +911,7 @@ namespace ClarionAssistant.Services
                         if (IsDeclaredNonLocally(p, name)) names[name] = true;
                 }
             }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] ResolveNonLocalNames('" + db + "'): " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] ResolveNonLocalNames('" + db + "'): " + ex.Message); }
         }
 
         /// <summary>True when this DB has a declaration of <paramref name="name"/> that another file could
@@ -1087,7 +1110,7 @@ namespace ClarionAssistant.Services
                     }
                 }
             }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] completion (shared) failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] completion (shared) failed: " + ex.Message); }
             return items;
         }
 
@@ -1096,7 +1119,7 @@ namespace ClarionAssistant.Services
             if (string.IsNullOrEmpty(filePath) || bufferText == null) return;
             lock (_sharedBufLock) { _sharedBuffers[filePath] = bufferText; }
             try { Block(() => c.NotifyBufferChangedAsync(filePath, bufferText), "notifyBufferChanged"); }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] NotifyBufferChanged failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] NotifyBufferChanged failed: " + ex.Message); }
         }
 
         /// <summary>Shared diagnostics. <paramref name="liveBuffer"/> true → use the last synced embeditor
@@ -1119,7 +1142,7 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[SharedLspBridge] GetDiagnostics (shared) failed: " + ex.Message);
+                LspTrace.Write("[SharedLspBridge] GetDiagnostics (shared) failed: " + ex.Message);
             }
             return result;
         }
@@ -1144,7 +1167,7 @@ namespace ClarionAssistant.Services
 
         private static Dictionary<string, object> SharedError(string op, Exception ex)
         {
-            Debug.WriteLine("[SharedLspBridge] " + op + " (shared) failed: " + ex.Message);
+            LspTrace.Write("[SharedLspBridge] " + op + " (shared) failed: " + ex.Message);
             return new Dictionary<string, object>
             {
                 { "error", new Dictionary<string, object> { { "message", "shared LSP " + op + " failed: " + ex.Message } } }
@@ -1265,7 +1288,7 @@ namespace ClarionAssistant.Services
                 default:
                     // Mark's server defaults null/unknown to "Error" on its side, so this is belt-and-
                     // suspenders — but log so a future non-spec severity string is visible, not silent.
-                    Debug.WriteLine("[SharedLspBridge] unmapped diagnostic severity '" + severity + "' -> Error(1)");
+                    LspTrace.Write("[SharedLspBridge] unmapped diagnostic severity '" + severity + "' -> Error(1)");
                     return 1;
             }
         }
@@ -1305,7 +1328,7 @@ namespace ClarionAssistant.Services
                 case "operator": return 24;
                 case "typeparameter": return 25;
                 default:
-                    Debug.WriteLine("[SharedLspBridge] unmapped completion kind '" + kind + "' -> 0 (Monaco default icon)");
+                    LspTrace.Write("[SharedLspBridge] unmapped completion kind '" + kind + "' -> 0 (Monaco default icon)");
                     return 0;
             }
         }
@@ -1351,7 +1374,7 @@ namespace ClarionAssistant.Services
                 case "operator": return 25;
                 case "typeparameter": return 26;
                 default:
-                    Debug.WriteLine("[SharedLspBridge] unmapped symbol kind '" + kind + "' -> 0");
+                    LspTrace.Write("[SharedLspBridge] unmapped symbol kind '" + kind + "' -> 0");
                     return 0;
             }
         }
@@ -1973,10 +1996,27 @@ namespace ClarionAssistant.Services
                 using (var p = new CodeGraphProvider())
                 {
                     if (!p.Open(db)) return null;
-                    var refs = p.GetReferences(word);
+                    // The request position scopes the answer: the requester's own local, or its own
+                    // project's declarations - never every same-named row in the db (pipeline run 1).
+                    var refs = p.GetReferences(word, filePath, line + 1);
                     if (refs == null || refs.Count == 0) return null;
                     var list = new System.Collections.ArrayList();
-                    foreach (var r in refs) list.Add(CgLocation(r.FilePath, r.LineNumber));
+                    // The symbol's real width where the provider found it on the line (77aceec5);
+                    // CgLocation's zero-width column-0 range otherwise.
+                    foreach (var r in refs)
+                    {
+                        var loc = CgLocation(r.FilePath, r.LineNumber);
+                        if (r.Length > 0)
+                        {
+                            int l = r.LineNumber > 0 ? r.LineNumber - 1 : 0;
+                            loc["range"] = new Dictionary<string, object>
+                            {
+                                { "start", new Dictionary<string, object> { { "line", l }, { "character", r.Character } } },
+                                { "end",   new Dictionary<string, object> { { "line", l }, { "character", r.Character + r.Length } } }
+                            };
+                        }
+                        list.Add(loc);
+                    }
                     return WrapResult(list);
                 }
             }
@@ -2175,7 +2215,7 @@ namespace ClarionAssistant.Services
                     if (tables != null) primary.AddRange(tables);
                 }
             }
-            catch (Exception ex) { Debug.WriteLine("[SharedLspBridge] dictionary table-name completion merge failed: " + ex.Message); }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] dictionary table-name completion merge failed: " + ex.Message); }
         }
 
         /// <summary>
@@ -2462,8 +2502,18 @@ namespace ClarionAssistant.Services
         // cross-file global fields remain a follow-up → ClarionGraph task 6e8f2439).
 
         private static readonly Regex CgGroupQueueOpen = new Regex(@"^([A-Za-z_][A-Za-z0-9_:]*)\s+(GROUP|QUEUE)\b(.*)$", RegexOptions.IgnoreCase);
+        // The type argument immediately after GROUP/QUEUE — "(SomeType)" in "Q QUEUE(SomeType),PRE(q)".
+        // Anchored so a later attribute's parentheses (PRE(q), NAME('x')) can't be read as the base type.
+        // ':' is allowed: a prefixed type name (PREFIX:SomeType) is a normal Clarion type reference.
+        private static readonly Regex CgBaseTypeArg = new Regex(@"^\s*\(\s*([A-Za-z_][A-Za-z0-9_:]*)\s*\)", RegexOptions.IgnoreCase);
         private static readonly Regex CgEndLine   = new Regex(@"^\s*END\b", RegexOptions.IgnoreCase);
         private static readonly Regex CgPeriodEnd = new Regex(@"^\s*\.\s*$");
+        // CgEndLine/CgPeriodEnd are both anchored at the START of a line, so neither can see a
+        // declaration that closes itself — "Settings GROUP(SomeType) END" — whose terminator sits at
+        // the END of the line, inside CgGroupQueueOpen's own group-3 capture. These spot that form.
+        private static readonly Regex CgStructLiteral         = new Regex(@"'(?:[^']|'')*'");
+        private static readonly Regex CgLineComment           = new Regex(@"!.*$");
+        private static readonly Regex CgSelfClosingStructure  = new Regex(@"(?:\bEND\b|\.)\s*$", RegexOptions.IgnoreCase);
         // MAP prototype block (module-scope). Its own END (and any nested MODULE(...)...END) is tracked so
         // GetModuleDataRanges can SKIP prototypes — they are procedure declarations (item #4), not data.
         private static readonly Regex CgMapOpen       = new Regex(@"^\s*MAP\b", RegexOptions.IgnoreCase);
@@ -2480,7 +2530,11 @@ namespace ClarionAssistant.Services
         private static readonly Regex CgQualifier = new Regex(@"([A-Za-z_][A-Za-z0-9_:]*)([:.])([A-Za-z0-9_]*)$");
 
         private sealed class CgStructField { public string Name; public string Type; }
-        private sealed class CgStruct { public string Name; public string Pre; public readonly List<CgStructField> Fields = new List<CgStructField>(); }
+        /// <summary>BaseType is the type argument of a "Name QUEUE(SomeType)" / "Name GROUP(SomeType)"
+        /// declaration. Such a structure has the named type's fields PLUS any declared inline, and the
+        /// type lives in another file we do NOT scan here — so when BaseType is set, Fields is known to
+        /// be INCOMPLETE and must never be used as an authoritative member scope.</summary>
+        private sealed class CgStruct { public string Name; public string Pre; public string BaseType; public readonly List<CgStructField> Fields = new List<CgStructField>(); }
 
         /// <summary>Full buffer (live text preferred, else disk) split into lines, or null.</summary>
         private static string[] CgGetLines(string bufferText, string filePath)
@@ -2701,11 +2755,17 @@ namespace ClarionAssistant.Services
                     {
                         string pre = CgExtractPre(gq.Groups[3].Value)
                                      ?? (stack.Count > 0 ? stack[stack.Count - 1].Pre : null);
-                        var s = new CgStruct { Name = gq.Groups[1].Value, Pre = pre };
+                        var s = new CgStruct { Name = gq.Groups[1].Value, Pre = pre, BaseType = CgExtractBaseType(gq.Groups[3].Value) };
                         if (stack.Count > 0)   // a nested group is also a field of its parent
                             stack[stack.Count - 1].Fields.Add(new CgStructField { Name = s.Name, Type = gq.Groups[2].Value });
                         all.Add(s);
-                        stack.Add(s);
+                        // A declaration that closes on its own line ("Settings GROUP(SomeType) END")
+                        // declares no inline fields. Pushing it left it open for the rest of the scope,
+                        // so every following declaration was collected as one of ITS fields — and
+                        // MergeMemberAccessCompletions then returned those as the member scope, filtering
+                        // the LSP's real members out of the completion list and leaving the surrounding
+                        // locals in their place.
+                        if (!CgClosesOnSameLine(gq.Groups[3].Value)) stack.Add(s);
                         continue;
                     }
                     if (stack.Count > 0 && (CgEndLine.IsMatch(ln) || CgPeriodEnd.IsMatch(ln)))
@@ -2732,6 +2792,38 @@ namespace ClarionAssistant.Services
         {
             var m = CgPreAttr.Match(attrs ?? "");
             return (m.Success && m.Groups[1].Success && m.Groups[1].Value.Length > 0) ? m.Groups[1].Value : null;
+        }
+
+        /// <summary>The type argument of "Name QUEUE(SomeType)" / "Name GROUP(SomeType)", or null when the
+        /// declaration names no base type. <paramref name="afterKeyword"/> is everything following the
+        /// GROUP/QUEUE keyword, so the argument (when present) is the FIRST thing on it — anything later is
+        /// an attribute list (",PRE(x),NAME('y')") and must not be mistaken for one. Never throws.</summary>
+        private static string CgExtractBaseType(string afterKeyword)
+        {
+            if (string.IsNullOrEmpty(afterKeyword)) return null;
+            try
+            {
+                var m = CgBaseTypeArg.Match(afterKeyword);
+                return (m.Success && m.Groups[1].Value.Length > 0) ? m.Groups[1].Value : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>True when a GROUP/QUEUE declaration terminates on its OWN line — a trailing END, or
+        /// the '.' shorthand — and therefore declares no inline fields. <paramref name="afterKeyword"/> is
+        /// everything following the GROUP/QUEUE keyword. String literals and any trailing comment are
+        /// removed first, so neither NAME('APPEND') nor "! ... end" can be misread as a terminator.
+        /// Never throws.</summary>
+        private static bool CgClosesOnSameLine(string afterKeyword)
+        {
+            if (string.IsNullOrEmpty(afterKeyword)) return false;
+            try
+            {
+                string tail = CgStructLiteral.Replace(afterKeyword, "''");   // keep tokens apart
+                tail = CgLineComment.Replace(tail, "");
+                return CgSelfClosingStructure.IsMatch(tail);
+            }
+            catch { return false; }
         }
 
         /// <summary>Group/queue FIELD completion for qualified contexts: PRE prefix ("Cus:partial" → fields
@@ -2863,6 +2955,20 @@ namespace ClarionAssistant.Services
                 foreach (var s in ParseScopeStructures(lines, GetScopeDataRanges(lines, line)))
                     if (string.Equals(s.Name, instance, StringComparison.OrdinalIgnoreCase))
                     {
+                        // "Q QUEUE(SomeType)" carries SomeType's fields PLUS any declared inline, and
+                        // SomeType lives in another file this buffer scan never reads. Scoping to the
+                        // inline-only set therefore DROPS every field the LSP correctly resolved from
+                        // the type — the same trap the CLASS path below documents and gates against.
+                        // Leave a typed structure to the LSP (our inline fields are still ADDED by
+                        // MergeQualifiedFieldCompletions; only the scope-filter is declined).
+                        //
+                        // Observed: "Q." listed just the 2 inline fields while the LSP had returned 13
+                        // from the type, yet "Q.L" listed the type's L* fields correctly — because a
+                        // partial filters our inline additions out, the scope matches nothing, and the
+                        // caller's "only scope when matches remain" guard then leaves the list alone.
+                        // Same request, opposite outcome, purely from whether our own additions survived.
+                        if (!string.IsNullOrEmpty(s.BaseType)) return null;
+
                         var fset = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                         foreach (var f in s.Fields)
                             if (f != null && !string.IsNullOrEmpty(f.Name)) fset.Add(f.Name);
@@ -2916,6 +3022,15 @@ namespace ClarionAssistant.Services
         private static string ResolveInstanceType(string[] lines, int line, string instance, string filePath, out bool isInlineClass)
         {
             isInlineClass = false;
+            // Resolving SELF/PARENT by NAME is not merely unhelpful, it is actively wrong (see
+            // IsPositionalClassKeyword). Neither is ever declared, so the buffer scan below always misses and
+            // the lookup falls through to FindSymbolByName — a solution-wide, scope-blind name search that
+            // matches ANY declaration that happens to be called SELF. ABC ships one: ABPOPUP.CLW's
+            // "GetUniqueName PROCEDURE(PopupClass SELF,STRING ThisItem)", a legal explicit-SELF parameter.
+            // Being the only such row in the DB it won every lookup, so EVERY "SELF." in the solution
+            // resolved to PopupClass — injecting its members into the completion list, and (via the caller's
+            // scoping pass) dropping the real ones the LSP had already resolved correctly.
+            if (IsPositionalClassKeyword(instance)) return null;
             try
             {
                 if (lines != null && lines.Length > 0)
@@ -2953,6 +3068,17 @@ namespace ClarionAssistant.Services
             }
             catch { }
             return null;
+        }
+
+        /// <summary>True for SELF / PARENT, which name no instance: they mean "the class of the enclosing
+        /// method" (and its parent) — a POSITIONAL fact about where the cursor sits, not a lexical one about
+        /// some declaration. Everything in this file resolves instances by NAME, so it cannot answer either,
+        /// and a name-based lookup can only ever match an unrelated coincidence. The LSP tracks the enclosing
+        /// scope and already resolves both correctly, so declining here leaves its answer intact.</summary>
+        private static bool IsPositionalClassKeyword(string instance)
+        {
+            return string.Equals(instance, "SELF", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(instance, "PARENT", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>If <paramref name="lineText"/> is a column-1 declaration of <paramref name="instance"/>,

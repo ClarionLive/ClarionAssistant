@@ -112,7 +112,7 @@ The LSP provides real-time analysis of the actual source code. Use it for:
 
 **Self-correcting edits**: after writing code into an embeditor, call `lsp_diagnostics` to verify the edit is syntactically valid. If new errors appear, fix them before calling `save_and_close_embeditor`. `lsp_diagnostics` returns `{pending, count, diagnostics}` — if `pending: true`, treat as "still analyzing", not "no errors".
 
-**Rename approval**: `lsp_rename` returns the edit list but does NOT apply it. Per rule #9, you must show the list to the developer in chat, wait for explicit approval, then apply using `write_embed_content` / `replace_range` / `write_file`. If rename returns `{error: ...}`, the symbol can't be renamed — explain to the user.
+**Rename approval**: `lsp_rename` returns the edit list but does NOT apply it. Per rule #10, you must show the list to the developer in chat, wait for explicit approval, then apply using `write_embed_content` / `replace_range` / `write_file`. If rename returns `{error: ...}`, the symbol can't be renamed — explain to the user.
 
 After getting a result with file path and line, use `open_file` to navigate the developer there.
 

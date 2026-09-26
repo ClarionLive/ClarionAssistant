@@ -21,9 +21,12 @@ This skill generates deployment artifacts for WebView2-based COM controls, with 
 - Testing is the user's responsibility
 - Batch files stay in project folder for debugging (not copied to Clarion)
 
-## NEVER Generate Clarion Code
-- Do NOT write Clarion code examples in README
+## NEVER Hand-Write Per-Control Clarion Code
+- Do NOT improvise Clarion code examples in README
 - Only document COM interface (ProgID, methods, properties, events)
+- EXCEPTION: GenerateReadmeHTML.ps1 emits a fixed, reviewed "Calling from Clarion" block into
+  every generated readme (OLE call syntax, parameter rules, base64 for JSON payloads). Leave it
+  in place; do not duplicate or override it.
 
 ## Deployment Artifacts to Generate
 
@@ -155,7 +158,7 @@ pause
 
 ### 3. CheckDotNetVersion.bat
 
-Same as standard COM, checks for .NET Framework 4.8+
+Same as standard COM, checks for .NET Framework 4.7.2+
 
 ### 4. TestManifests.bat
 

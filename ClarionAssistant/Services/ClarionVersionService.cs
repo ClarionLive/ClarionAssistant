@@ -145,6 +145,20 @@ namespace ClarionAssistant.Services
         {
             try
             {
+                // ASK THE IDE FIRST (GitHub #197). Clarion.exe accepts /ConfigDir=<path>, which moves this
+                // whole tree; reconstructing the default path from the exe's version stamp reads a
+                // DIFFERENT environment's file whenever the switch is in play. It is not a rare mismatch
+                // either — Clarion 11 and 11.1 both stamp major.minor as "11.0", so two such installs
+                // collapse onto one ClarionProperties.xml, which is what merged their app histories.
+                string configDir = ClarionConfigDirectory.Resolve();
+                if (!string.IsNullOrEmpty(configDir))
+                {
+                    string direct = Path.Combine(configDir, "ClarionProperties.xml");
+                    if (File.Exists(direct)) return direct;
+                    // Resolved but no file there: fall through rather than fail. A custom ConfigDir that
+                    // has not been written yet is a legitimate first-run state.
+                }
+
                 string appDataDir = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                     "SoftVelocity", "Clarion");

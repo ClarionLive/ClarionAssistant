@@ -112,28 +112,98 @@ if (-not (Test-Path $claudeDir)) {
     New-Item -ItemType Directory -Path $claudeDir -Force | Out-Null
 }
 
+# Recursively convert whatever ConvertFrom-Json produced into plain hashtables.
+#
+# GH #190: this used to be `ConvertFrom-Json -AsHashtable`. That switch is PowerShell 6.0+, and
+# the installer runs this script with powershell.exe — which on Windows is ALWAYS Windows
+# PowerShell 5.1, never pwsh. So it threw ParameterBindingException on EVERY machine, the catch
+# below mistook its own unsupported API call for a corrupt user file, and settings.json was
+# rebuilt from an empty hashtable — destroying hooks, model, statusLine, tui, enabledPlugins and
+# the user's own permission entries. Converting by hand behaves identically on 5.1 and 7.x.
+#
+# The `,` before each array is load-bearing: PowerShell unrolls a returned array, so a
+# single-element list would come back as a scalar and an empty one as $null. Either would be
+# re-serialised with the WRONG SHAPE — a one-entry hooks array silently becoming an object is
+# exactly the sort of quiet mangling this function exists to prevent.
+function ConvertTo-HashtableDeep {
+    param($InputObject)
+
+    if ($null -eq $InputObject) { return $null }
+
+    # [ordered] rather than @{}: a plain hashtable has no defined order, so round-tripping
+    # someone's settings.json would silently shuffle every key. Not data loss, but it turns any
+    # diff of the file into noise — and diffing against a known-good copy is exactly how the
+    # reporter of GH #190 was recovering. Insertion order here is the file's own order.
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        $h = [ordered]@{}
+        foreach ($k in @($InputObject.Keys)) { $h[$k] = ConvertTo-HashtableDeep $InputObject[$k] }
+        return $h
+    }
+
+    if ($InputObject -is [System.Management.Automation.PSCustomObject]) {
+        $h = [ordered]@{}
+        foreach ($p in $InputObject.PSObject.Properties) { $h[$p.Name] = ConvertTo-HashtableDeep $p.Value }
+        return $h
+    }
+
+    if ($InputObject -is [string]) { return $InputObject }
+
+    if ($InputObject -is [System.Collections.IEnumerable]) {
+        $list = @(foreach ($item in $InputObject) { ConvertTo-HashtableDeep $item })
+        return ,$list
+    }
+
+    return $InputObject
+}
+
 # ── 1. Merge settings.json (non-destructive) ──
 $settingsPath = Join-Path $claudeDir 'settings.json'
 $settings = @{}
+$originalTopLevelKeys = @()
+$skipSettingsWrite = $false
 
 if (Test-Path $settingsPath) {
     try {
-        $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json -AsHashtable
-        Write-Host "Loaded existing settings.json"
+        # GH #200: read through .NET, NOT Get-Content. Under Windows PowerShell 5.1 - which is what
+        # powershell.exe always is, and what the installer runs this script with - Get-Content with
+        # no -Encoding decodes using the system ANSI codepage. A BOM-less UTF-8 settings.json
+        # therefore has every non-ASCII character mangled on the way IN, and the mangled form is
+        # what gets written back out. Measured on 5.1.26100: U+2019 (bytes e2 80 99) came back as
+        # c3 a2 e2 82 ac e2 84 a2, the classic mojibake triple.
+        #
+        # ReadAllText honours a BOM when one is present and otherwise decodes UTF-8, and does so
+        # identically on 5.1 and 7.x. Deliberately NOT Get-Content -Encoding UTF8: that happens to
+        # be correct on both hosts today, but it is the same "one token, two meanings depending on
+        # the host" trap that produced the BOM defect on the write side below.
+        $parsed = [System.IO.File]::ReadAllText($settingsPath) | ConvertFrom-Json
+        $settings = ConvertTo-HashtableDeep $parsed
+        if ($null -eq $settings) { $settings = @{} }
+        $originalTopLevelKeys = @($settings.Keys)
+        Write-Host "Loaded existing settings.json ($($originalTopLevelKeys.Count) top-level keys)"
     } catch {
-        # Backup corrupted file
+        # The file genuinely did not parse. DO NOT rebuild it from an empty hashtable and write
+        # that back — that is precisely what destroyed users' configs in GH #190. Back it up,
+        # say so loudly, and leave the user's file exactly where it is. Not configuring is a
+        # recoverable outcome; silently replacing someone's global Claude Code settings is not.
         $backupPath = Join-Path $claudeDir "settings.json.backup.$(Get-Date -Format 'yyyyMMdd-HHmmss')"
         Copy-Item $settingsPath $backupPath -Force
-        Write-Host "Backed up corrupted settings.json"
-        $settings = @{}
+        Write-Host "WARNING: could not parse $settingsPath - $($_.Exception.Message)"
+        Write-Host "  A copy was saved as $backupPath and your settings.json was LEFT UNCHANGED."
+        Write-Host "  Clarion Assistant permissions were NOT added. Fix the JSON and re-run this script,"
+        Write-Host "  or add them from the Clarion Assistant settings screen."
+        $skipSettingsWrite = $true
     }
 }
 
 # Ensure permissions.allow exists as an array
-if (-not $settings.ContainsKey('permissions')) {
+# .Contains, not .ContainsKey: $settings may be an OrderedDictionary (see ConvertTo-HashtableDeep),
+# which implements IDictionary.Contains but has no ContainsKey. Hashtable supports both, so
+# .Contains is the form that is correct for either. Getting this wrong throws at run time while
+# still producing a plausible-looking settings.json, so it does not announce itself.
+if (-not $settings.Contains('permissions')) {
     $settings['permissions'] = @{}
 }
-if (-not $settings['permissions'].ContainsKey('allow')) {
+if (-not $settings['permissions'].Contains('allow')) {
     $settings['permissions']['allow'] = @()
 }
 
@@ -212,23 +282,73 @@ foreach ($perm in $requiredPermissions) {
 }
 
 $settings['permissions']['allow'] = @($existingPerms)
-Write-Host "Added $addedCount new permissions ($($requiredPermissions.Count) total Clarion tools)"
+# Don't claim to have added anything when the write is going to be skipped — on the
+# unparseable-file path these mutations are made against an empty hashtable and then discarded,
+# and "Added 60 new permissions" immediately above "Skipped writing settings.json" reads as
+# though they landed.
+if (-not $skipSettingsWrite) {
+    Write-Host "Added $addedCount new permissions ($($requiredPermissions.Count) total Clarion tools)"
+}
 
 # Ensure env vars
-if (-not $settings.ContainsKey('env')) {
+if (-not $settings.Contains('env')) {
     $settings['env'] = @{}
 }
-if (-not $settings['env'].ContainsKey('CLAUDE_CODE_USE_POWERSHELL_TOOL')) {
+if (-not $settings['env'].Contains('CLAUDE_CODE_USE_POWERSHELL_TOOL')) {
     $settings['env']['CLAUDE_CODE_USE_POWERSHELL_TOOL'] = '1'
 }
-if (-not $settings['env'].ContainsKey('CLAUDE_CODE_NO_FLICKER')) {
+if (-not $settings['env'].Contains('CLAUDE_CODE_NO_FLICKER')) {
     $settings['env']['CLAUDE_CODE_NO_FLICKER'] = '1'
 }
 
 # Write settings.json
-$settingsJson = $settings | ConvertTo-Json -Depth 10
-Set-Content -Path $settingsPath -Value $settingsJson -Encoding UTF8
-Write-Host "Updated settings.json"
+if ($skipSettingsWrite) {
+    Write-Host "Skipped writing settings.json (see the warning above) - your file was left untouched."
+} else {
+    # POST-MERGE GUARD (GH #190). Everything above only ever ADDS keys, so any top-level key that
+    # went in must still be here. If one is missing, something upstream lost user data and we must
+    # not commit it to disk. This check is deliberately not specific to the -AsHashtable bug that
+    # prompted it: it catches the whole class, including whatever the next refactor of this script
+    # gets wrong. A settings.json we failed to update is a nuisance; one we silently truncated is
+    # the user's entire Claude Code configuration.
+    $finalKeys = @($settings.Keys)
+    $missingKeys = @($originalTopLevelKeys | Where-Object { $finalKeys -notcontains $_ })
+
+    if ($missingKeys.Count -gt 0) {
+        $backupPath = Join-Path $claudeDir "settings.json.backup.$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+        Copy-Item $settingsPath $backupPath -Force
+        Write-Host "ERROR: refusing to write settings.json - the merge would have dropped $($missingKeys.Count) existing top-level key(s):"
+        Write-Host "  $($missingKeys -join ', ')"
+        Write-Host "  Your settings.json was LEFT UNCHANGED (a copy is at $backupPath)."
+        Write-Host "  This is a bug in the installer - please report it with the key names above."
+    } else {
+        # GH #200: back up on the SUCCESS path too. Until now a copy was kept only when we REFUSED
+        # to write - a parse failure, or the dropped-key guard above - so the COMMON case, a merge
+        # that succeeds, overwrote the user's file with no backup at all. The 5.8 release notes told
+        # affected users to look for settings.json.backup.<timestamp>, a file the success path never
+        # produced. Test-Path guards the fresh-machine case where there is nothing to copy yet.
+        $backupPath = $null
+        if (Test-Path $settingsPath) {
+            $backupPath = Join-Path $claudeDir "settings.json.backup.$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+            Copy-Item $settingsPath $backupPath -Force
+        }
+
+        $settingsJson = $settings | ConvertTo-Json -Depth 10
+
+        # GH #200: write BOM-less UTF-8 explicitly. Set-Content -Encoding UTF8 means UTF-8 WITH BOM
+        # under Windows PowerShell 5.1, and BOM-less under PowerShell 7 - the two hosts disagree
+        # about what the token "UTF8" names, so the old call silently added a BOM to a file that
+        # belongs to Claude Code rather than to us. UTF8Encoding($false) means the same thing on
+        # every host, and also strips a BOM left behind by an earlier 5.8 / 5.8.1 install.
+        [System.IO.File]::WriteAllText($settingsPath, $settingsJson, (New-Object System.Text.UTF8Encoding $false))
+
+        if ($backupPath) {
+            Write-Host "Updated settings.json ($($finalKeys.Count) top-level keys preserved; backup at $backupPath)"
+        } else {
+            Write-Host "Created settings.json ($($finalKeys.Count) top-level keys)"
+        }
+    }
+}
 
 # ── 3. Set DocGraph DB path via environment variable ──
 if ($DocGraphDb -and (Test-Path $DocGraphDb)) {
@@ -255,7 +375,10 @@ if ($ClarionRoot) {
 # Merge with existing file if present
 if (Test-Path $clarionComEnv) {
     $existing = @{}
-    Get-Content $clarionComEnv | ForEach-Object {
+    # GH #200, same defect class as settings.json above: Get-Content with no -Encoding decodes as
+    # ANSI on Windows PowerShell 5.1. CLARIONCOM_HOME is built from %APPDATA%, so a Windows account
+    # whose name contains a non-ASCII character would have its path mangled here on every re-run.
+    [System.IO.File]::ReadAllLines($clarionComEnv) | ForEach-Object {
         if ($_ -match '^([^=]+)=(.*)$') {
             $existing[$matches[1]] = $matches[2]
         }
@@ -265,7 +388,11 @@ if (Test-Path $clarionComEnv) {
     if ($ClarionRoot) { $existing['CLARION_PATH'] = $ClarionRoot }
     $envLines = $existing.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }
 }
-$envLines | Out-File -FilePath $clarionComEnv -Encoding UTF8
+# GH #200: BOM-less UTF-8, for the same reason as settings.json. Out-File -Encoding UTF8 emits a BOM
+# under Windows PowerShell 5.1, and a BOM on line 1 makes the leading key parse as
+# "<U+FEFF>CLARIONCOM_HOME" for any consumer that does not strip it - which the regex above would
+# then fail to match. PowerShell's own Get-Content hid this by stripping the BOM on read.
+[System.IO.File]::WriteAllLines($clarionComEnv, [string[]]@($envLines), (New-Object System.Text.UTF8Encoding $false))
 Write-Host "Updated $clarionComEnv"
 
 Write-Host "`nClarion Assistant configuration complete."

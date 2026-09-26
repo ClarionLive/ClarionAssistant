@@ -156,6 +156,7 @@ function foldKindRegion() {
 function clarionFoldingRanges(model) {
             var ranges = [];
             var stack = [];
+            var loopOpeners = {};   // stack entries (line numbers) that opened a LOOP
             var n = model.getLineCount();
             var lastProc = -1, lastRoutine = -1;
             var omit = null;    // active OMIT/COMPILE region: {start, term} (GH #133)
@@ -218,6 +219,19 @@ function clarionFoldingRanges(model) {
                     }
                     continue;
                 }
+                // UNTIL/WHILE at the start of a line terminates a LOOP just as END does (#222) — the
+                // form the Language Reference's own example uses. It closes only a LOOP on top of the
+                // stack: anywhere else it is not a terminator this pass understands, and popping some
+                // other structure would cut that structure's fold short. (LOOP WHILE x / LOOP UNTIL x
+                // on the OPENING line starts with LOOP, so it never reaches this test.) Not \b: ':' is
+                // part of a Clarion name, so `While:Count += 1` is an assignment, not a terminator.
+                if (/^(UNTIL|WHILE)(?![\w:])/.test(u)) {
+                    if (stack.length && loopOpeners[stack[stack.length - 1]]) {
+                        var loopOpen = stack.pop();
+                        if (i > loopOpen) ranges.push({ start: loopOpen, end: i });
+                    }
+                    continue;
+                }
                 if (/(^|\s)PROCEDURE\b/.test(u)) {              // procedure boundary
                     if (lastRoutine !== -1) { if (i - 1 > lastRoutine) ranges.push({ start: lastRoutine, end: i - 1 }); lastRoutine = -1; }
                     if (lastProc !== -1 && i - 1 > lastProc) ranges.push({ start: lastProc, end: i - 1 });
@@ -229,7 +243,12 @@ function clarionFoldingRanges(model) {
                     lastRoutine = i;
                     continue;
                 }
-                if (STRUCT.test(u) || TOOLBAR_OPEN.test(u)) { stack.push(i); continue; } // GROUP/QUEUE/LOOP/CASE/...
+                var st = STRUCT.exec(u);
+                if (st || TOOLBAR_OPEN.test(u)) {                // GROUP/QUEUE/LOOP/CASE/...
+                    if (st && st[1] === 'LOOP') loopOpeners[i] = true;   // UNTIL/WHILE may close it (#222)
+                    stack.push(i);
+                    continue;
+                }
                 if (/^IF\b/.test(u)) {                          // block IF only (skip one-liners)
                     // Index into `safe`, NOT `code` — blanking a literal changes the line's length,
                     // so an offset taken from `u` only lines up with `safe`. Using `code` here would
@@ -252,12 +271,45 @@ function clarionFoldingRanges(model) {
             return ranges;
 }
 
+// Optional hook a host page installs to fetch folding from the LANGUAGE SERVER instead of the
+// line-oriented pass above. Signature: function(model) -> Promise<[{start,end,kind?}] | null>.
+//
+// The server knows the full grammar; the local pass is line-oriented. #222 was a LOOP terminated by
+// UNTIL or WHILE — valid Clarion, and the form the Language Reference's own example uses — which
+// the local pass used to leave open, swallowing everything after it. The local pass now closes a
+// LOOP on UNTIL/WHILE too, so the fallback is right for that case, but the server stays the
+// preferred answer whenever a page can reach it.
+//
+// Deliberately a HOOK rather than a direct call: this file is shared with monaco-diff.html, which
+// has no host bridge, and folding must keep working when the LSP is absent, still starting, or slow.
+// A page that installs nothing behaves exactly as before.
+var clarionLspFolding = null;
+function setClarionLspFolding(fn) { clarionLspFolding = fn; }
+
 function registerClarionFolding() {
-    monaco.languages.registerFoldingRangeProvider('clarion', { provideFoldingRanges: clarionFoldingRanges });
+    monaco.languages.registerFoldingRangeProvider('clarion', {
+        provideFoldingRanges: function (model) {
+            if (!clarionLspFolding) return clarionFoldingRanges(model);
+            var local = clarionFoldingRanges(model);
+            try {
+                return Promise.resolve(clarionLspFolding(model)).then(function (server) {
+                    // Null/empty means no answer, not "no folds" — an empty gutter on a file that
+                    // plainly has structures reads as a bug, so fall back rather than trust it.
+                    return (server && server.length) ? server : local;
+                }, function () { return local; });
+            } catch (e) {
+                return local;
+            }
+        }
+    });
 }
 
 // Node-visible surface for Terminal/test/clarion-folding.test.js. Guarded exactly like
 // clarion-formatter.js — `module` is undefined in the WebView2 pages, so this is inert there.
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { splitClarionLine: splitClarionLine, clarionFoldingRanges: clarionFoldingRanges };
+    module.exports = {
+        splitClarionLine: splitClarionLine,
+        clarionFoldingRanges: clarionFoldingRanges,
+        setClarionLspFolding: setClarionLspFolding
+    };
 }

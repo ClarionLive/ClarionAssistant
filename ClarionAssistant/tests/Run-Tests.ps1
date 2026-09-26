@@ -1,9 +1,10 @@
 # Run-Tests.ps1 — single entry point for ClarionAssistant's standalone test harnesses.
 #
-#   .\tests\Run-Tests.ps1              # everything runnable on this machine
-#   .\tests\Run-Tests.ps1 -Probe       # also run the read-only live VS Code probe (diagnostic)
-#   .\tests\Run-Tests.ps1 -CSharpOnly  # skip the node tests
-#   .\tests\Run-Tests.ps1 -NodeOnly    # skip the C# harnesses
+#   .\tests\Run-Tests.ps1                 # everything runnable on this machine
+#   .\tests\Run-Tests.ps1 -Probe          # also run the read-only live VS Code probe (diagnostic)
+#   .\tests\Run-Tests.ps1 -CSharpOnly     # only the C# harnesses
+#   .\tests\Run-Tests.ps1 -NodeOnly       # only the node harnesses
+#   .\tests\Run-Tests.ps1 -InstallerOnly  # only the installer script harnesses
 #
 # There are two families here and they are deliberately different things:
 #
@@ -15,6 +16,13 @@
 #   Terminal\test\*.test.js  node harnesses over the WebView2 pages. Mostly zero-dependency; the one
 #                          exception (vscode-import-ui.test.js) needs jsdom and says so.
 #
+#   ..\installer\tests\*.ps1  PowerShell harnesses over the INSTALLER scripts. These live outside
+#                          this folder because they belong next to what they test, and they run the
+#                          real script under the real powershell.exe 5.1 the installer uses. Two
+#                          releases have shipped a configure.ps1 that destroyed users' settings.json
+#                          (GH #190, GH #200), both from 5.1-only defaults that look correct in a
+#                          7.x terminal. Nothing else in the repo exercises that script.
+#
 # NEITHER family is wired into the MSBuild build. That is intentional — these harnesses exist to be
 # run by a developer who just changed something, and a test that only runs in CI would not have caught
 # the bugs these were written for. Run this before you deploy.
@@ -25,11 +33,13 @@
 param(
     [switch]$Probe,        # also run the live VS Code probe (reads the developer's own settings.json)
     [switch]$CSharpOnly,
-    [switch]$NodeOnly
+    [switch]$NodeOnly,
+    [switch]$InstallerOnly
 )
 
 $ErrorActionPreference = "Stop"
 $RepoDir = Split-Path -Parent $PSScriptRoot          # ...\ClarionAssistant
+$RootDir = Split-Path -Parent $RepoDir              # repository root (holds installer\)
 $TestDir = $PSScriptRoot
 $OutDir  = Join-Path $env:TEMP ("ca-tests-" + [System.Guid]::NewGuid().ToString("N").Substring(0, 8))
 
@@ -39,11 +49,25 @@ $ran = 0
 function Section($t) { Write-Host ""; Write-Host "=== $t ===" -ForegroundColor Cyan }
 
 # --------------------------------------------------------------------------- C# harnesses
-if (-not $NodeOnly) {
+if (-not $NodeOnly -and -not $InstallerOnly) {
 
-    # Resolve csc. The .NET Framework compiler is enough — these harnesses target the same
-    # net48 surface the addin does (System.Web.Extensions for JavaScriptSerializer).
-    $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+    # Resolve csc. Prefer the VS2022 Roslyn compiler — ClarionAppDataReader.cs (and its
+    # StructureScan harness) use C# 6 syntax (expression-bodied members) the old .NET Framework
+    # compiler (v4.0.30319, C# 5) rejects outright. Roslyn is a superset, so it still covers the
+    # net48-targeted harnesses (System.Web.Extensions for JavaScriptSerializer) that motivated the
+    # original choice. Fall back to the Framework compiler if VS2022 isn't installed — every
+    # harness present at that point predates the C# 6 requirement.
+    $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+    $vswhere = Join-Path $programFilesX86 "Microsoft Visual Studio\Installer\vswhere.exe"
+    $csc = $null
+    if (Test-Path $vswhere) {
+        $vsRoot = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
+        if ($vsRoot) {
+            $roslynCsc = Join-Path $vsRoot "MSBuild\Current\Bin\Roslyn\csc.exe"
+            if (Test-Path $roslynCsc) { $csc = $roslynCsc }
+        }
+    }
+    if (-not $csc) { $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe" }
     if (-not (Test-Path $csc)) { $csc = Join-Path $env:WINDIR "Microsoft.NET\Framework\v4.0.30319\csc.exe" }
 
     if (-not (Test-Path $csc)) {
@@ -62,6 +86,35 @@ if (-not $NodeOnly) {
             @{ Name = "VsCodeSettingsImporter.PayloadCheck"
                Sources = @("tests\VsCodeSettingsImporter.PayloadCheck.cs", "Services\VsCodeSettingsImporter.cs")
                Refs = @("System.dll", "System.Web.Extensions.dll") }
+            @{ Name = "ClarionAppDataReader.StructureScan"
+               Sources = @("tests\ClarionAppDataReader.StructureScan.cs", "tests\ClarionAppDataReader.StructureScan.Stubs.cs",
+                           "Services\ClarionAppDataReader.cs", "Services\ClarionAppDataReader.Model.cs")
+               Refs = @("System.dll", "System.Xml.dll") }
+            # GH #227: New Chat overwrote the user's global ~\.claude\CLAUDE.md. Gets the project dir
+            # so it can check the real shipped prompt still opens with the ownership signature.
+            @{ Name = "ClaudeMdDeployer.Test"
+               Sources = @("tests\ClaudeMdDeployer.Test.cs", "Services\ClaudeMdDeployer.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll")
+               Args = @($RepoDir) }
+            @{ Name = "NpgsqlLoader.SmokeTest"
+               Sources = @("tests\NpgsqlLoader.SmokeTest.cs", "Services\NpgsqlLoader.cs")
+               Refs = @("System.dll") }
+            # 77aceec5: the addin -> standalone "IDE's open solution" handover the plain-Chat LSP
+            # fallback reads. Record dir redirected to temp; never touches %LOCALAPPDATA%.
+            @{ Name = "IdeSolutionRecord.Test"
+               Sources = @("tests\IdeSolutionRecord.Test.cs", "Services\IdeSolutionRecord.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Web.Extensions.dll") }
+            @{ Name = "ClarionClDiagnosis.Test"
+               Sources = @("tests\ClarionClDiagnosis.Test.cs", "Services\ClarionClDiagnosis.cs")
+               Refs = @("System.dll") }
+            # Per-embed-slot structure balance (Passes 2 & 3), LSP pass stubbed. Reuses the
+            # StructureScan stubs so the REAL ClarionAppDataReader supplies the routine set.
+            @{ Name = "ModernEmbeditorDiagnostics.SlotBalance"
+               Sources = @("tests\ModernEmbeditorDiagnostics.SlotBalance.cs", "tests\ModernEmbeditorDiagnostics.SlotBalance.Stubs.cs",
+                           "tests\ClarionAppDataReader.StructureScan.Stubs.cs",
+                           "Services\ModernEmbeditorDiagnostics.cs",
+                           "Services\ClarionAppDataReader.cs", "Services\ClarionAppDataReader.Model.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Xml.dll") }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"
@@ -89,7 +142,10 @@ if (-not $NodeOnly) {
                 continue
             }
 
-            & $exe
+            # @() around the whole thing: an if-expression unrolls a one-element array to a bare
+            # string, and splatting a string passes its FIRST CHARACTER ("H" for H:\...).
+            $exeArgs = @(if ($h.Args) { $h.Args })
+            & $exe @exeArgs
             $ran++
             if ($LASTEXITCODE -ne 0) { $failures += $h.Name }
         }
@@ -99,7 +155,7 @@ if (-not $NodeOnly) {
 }
 
 # --------------------------------------------------------------------------- node harnesses
-if (-not $CSharpOnly) {
+if (-not $CSharpOnly -and -not $InstallerOnly) {
 
     $node = (Get-Command node -ErrorAction SilentlyContinue).Source
     if (-not $node) {
@@ -108,7 +164,52 @@ if (-not $CSharpOnly) {
         $failures += "node harnesses (no node.exe)"
     }
     else {
-        $jsTests = Get-ChildItem (Join-Path $RepoDir "Terminal\test") -Filter *.test.js -ErrorAction SilentlyContinue |
+        # Install the dev-only test dependencies if they are not there yet.
+        #
+        # Terminal\test\package.json has declared jsdom for a long time and is committed — what was
+        # missing was anyone ever installing it. So on a fresh clone, or in any git worktree, the one
+        # harness that needs it exited 2 and this script reported "dependency missing", which reads as
+        # a problem with your machine rather than with the code. vscode-import-ui.test.js was failing
+        # 8 assertions from at least v5.8.1 until 2026-08-31 and nobody saw it, because it only ever
+        # turned red on a checkout that happened to have node_modules populated.
+        #
+        # npm install, not npm ci: there is no package-lock.json in that folder.
+        #
+        # --loglevel=error, NOT --silent. Measured with an unreachable registry: --silent gives
+        # exit=1 with ZERO bytes on both streams, because loglevel=silent suppresses `npm error`
+        # too. That would print nothing at all and leave the run reporting only "SKIPPED —
+        # dependency missing" — which is precisely the reads-as-a-machine-problem failure this
+        # whole change exists to remove, reintroduced one layer down.
+        #
+        # The catch is load-bearing and must stay with the loglevel change. $ErrorActionPreference
+        # is "Stop" at the top of this script, and under Windows PowerShell a native command's
+        # stderr redirected with 2>&1 into a pipeline becomes a terminating RemoteException. With
+        # no catch, one `npm WARN` would abort the ENTIRE suite — including the installer harnesses
+        # that guard configure.ps1. --silent was hiding that; naming the exit code arms it.
+        $testDir = Join-Path $RepoDir "Terminal\test"
+        if ((Test-Path (Join-Path $testDir "package.json")) -and
+            -not (Test-Path (Join-Path $testDir "node_modules\jsdom"))) {
+            $npm = (Get-Command npm -ErrorAction SilentlyContinue)
+            if ($npm) {
+                Write-Host ""
+                Write-Host "Installing dev-only test dependencies (Terminal\test)..." -ForegroundColor Cyan
+                Push-Location $testDir
+                try {
+                    & npm install --no-audit --no-fund --loglevel=error 2>&1 |
+                        ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Host "npm install failed (exit $LASTEXITCODE) — the jsdom harnesses will report 'could not run'." -ForegroundColor Yellow
+                    }
+                }
+                catch { Write-Host "npm install failed: $_" -ForegroundColor Yellow }
+                finally { Pop-Location }
+            }
+            else {
+                Write-Host "npm not found — cannot install the node test dependencies." -ForegroundColor Yellow
+            }
+        }
+
+        $jsTests = Get-ChildItem $testDir -Filter *.test.js -ErrorAction SilentlyContinue |
                    Sort-Object Name
         foreach ($t in $jsTests) {
             Section $t.Name
@@ -124,6 +225,60 @@ if (-not $CSharpOnly) {
             }
             elseif ($code -ne 0) { $failures += $t.Name }
         }
+    }
+}
+
+# --------------------------------------------------------------------- ClarionAssistant harnesses
+if (-not $CSharpOnly -and -not $NodeOnly) {
+
+    # Auto-discovered, like the installer family below, so a new harness is picked up by being
+    # written rather than by also remembering to edit this file. Run-Tests.ps1 EXCLUDES ITSELF —
+    # it lives in this directory and would otherwise recurse.
+    $caTests = Get-ChildItem $PSScriptRoot -Filter *.ps1 -ErrorAction SilentlyContinue |
+               Where-Object { $_.Name -ne 'Run-Tests.ps1' } |
+               Sort-Object Name
+    foreach ($t in $caTests) {
+        Section $t.Name
+        & (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy Bypass -File $t.FullName
+        $code = $LASTEXITCODE
+        $ran++
+        # Exit 2 is the shared "could not run" signal. A harness that skips because its subject
+        # was never built has proven nothing, and must not read as green.
+        if ($code -eq 2) {
+            Write-Host "  SKIPPED — could not run (see message above)" -ForegroundColor Yellow
+            $failures += $t.Name + " (could not run)"
+        }
+        elseif ($code -ne 0) { $failures += $t.Name }
+    }
+}
+
+# --------------------------------------------------------------------------- installer harnesses
+if (-not $CSharpOnly -and -not $NodeOnly) {
+
+    $installerTests = Get-ChildItem (Join-Path $RootDir "installer\tests") -Filter *.ps1 -ErrorAction SilentlyContinue |
+                      Sort-Object Name
+    if (-not $installerTests) {
+        Write-Host ""
+        Write-Host "no installer harnesses found under installer\tests — expected at least one." -ForegroundColor Red
+        $failures += "installer harnesses (none found)"
+    }
+    foreach ($t in $installerTests) {
+        Section $t.Name
+        # Run each in its own powershell so a harness cannot leak $ErrorActionPreference, cwd, or a
+        # sandboxed $env:USERPROFILE into the next one. These harnesses reassign USERPROFILE/APPDATA
+        # while the script under test runs; a leak would point a later test at the real profile.
+        & (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy Bypass -File $t.FullName
+        $code = $LASTEXITCODE
+        $ran++
+        # Exit 2 is the shared "could not run" signal (see the node family above). For these it also
+        # covers "the defect cannot reproduce on this machine" — e.g. the system ANSI codepage is
+        # UTF-8, so an encoding assertion could not fail and therefore proves nothing. That must not
+        # read as green.
+        if ($code -eq 2) {
+            Write-Host "  SKIPPED — could not run (see message above)" -ForegroundColor Yellow
+            $failures += $t.Name + " (could not run)"
+        }
+        elseif ($code -ne 0) { $failures += $t.Name }
     }
 }
 

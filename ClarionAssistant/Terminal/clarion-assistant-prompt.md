@@ -34,7 +34,8 @@ You have MCP tools that directly control the IDE the developer is using. ALWAYS 
 
 ### Application Tree (Clarion .app files)
 - **To open a .app file, use `open_file` with the .app path** — it loads the app into the IDE app tree (same underlying call). There is no separate `open_app` tool; it was removed deliberately, and closing apps stays manual. An app must be loaded before listing procedures.
-- `get_app_info` -Get info about the currently open app (name, file, target type).
+- `get_app_info` -Get info about the currently open app (name, file, target type, and `dictionaryPath`/`dictionaryName` — the dictionary the app is bound to, from its Global Properties). This is THE answer to "which dictionary does this project use"; never guess it from .dct/.dctx files found on disk.
+- `get_app_dictionary` -Read the open app's dictionary LIVE from the IDE: tables (name, prefix, driver, file) and per table its fields, keys and relationships. Always current — no .dctx export, no ingest. USE THIS FIRST for any question about the current project's tables or columns ("what fields does ITEM have", "compare ITEM and ITEMSERVICE", "which table has prefix CUS"). `table=` (name or prefix) returns full detail for one table; `detail='full'` returns everything (large on big dictionaries); on dictionaries over 200 tables the no-argument call returns a names-only index — use `table=` from there. With two or more apps open and none of them focused it refuses rather than guessing — ask the developer to click the app's tab and call again.
 - `list_procedures` -List all procedure names in the open app.
 - `get_procedure_details` -Get detailed procedure info (name, prototype, module, parent, template).
 - `open_procedure_embed` -Open the embeditor for a specific procedure.
@@ -112,22 +113,26 @@ All of these take a `timeout` in seconds (default 120) and kill the process on e
 - `index_codegraph` - Index a Clarion solution into a CodeGraph database (parses all .clw/.inc). Run on first opening a solution or after code changes.
 
 The CodeGraph database schema:
-- **symbols** table: name, type (procedure/function/class/interface/routine/variable), file_path, line_number, params, return_type, parent_name, scope
-- **relationships** table: from_id, to_id, type (calls/do/inherits/implements/references), file_path, line_number
+- **symbols** table: name, type (procedure/function/class/interface/routine/variable/module/include), file_path, line_number, params, return_type, parent_name, scope (global/module/local/class/parameter — variables at scope='global' are the PROGRAM file's global data section; 'module' is MEMBER-file data before the first procedure; a scope='local' variable's parent_name is its procedure, or its ROUTINE for a routine's DATA-block declarations — the routine symbol's own parent_name names the enclosing procedure), source_preview (the declaration line itself), decl_kind ('prototype' = MAP/CLASS-body declaration, 'implementation' = parsed body, 'external' = variable with EXTERNAL declared here but owned elsewhere, NULL = plain)
+- **relationships** table: from_id, to_id, type (calls/do/inherits/implements/references/uses_type), file_path, line_number, ambiguous (1 = multiple equal-rank candidates — same-name call overloads, or a references edge re-pointed to one of several same-named global owners — the pick was deterministic, not certain)
 - **projects** table: name, cwproj_path, sln_path
+- **indexed_files** table: project_id, file_name, resolved_path, outcome (resolved_parsed/resolved_no_symbols/unresolved/skipped_outside_solution/skipped_clw_include), symbol_count, pass — the per-file audit of what the last index run did. Query it when a symbol seems missing: it tells you whether the file was even indexed, and why not.
 
 Use `query_codegraph` when the developer asks:
-- "Who calls X?" or "Where is X used?" - query relationships where to_id matches the symbol
-- "What does X call?" - query relationships where from_id matches
-- "Find all procedures named..." - query symbols table
+- "Where is this global declared?" - symbols where scope='global' AND (decl_kind IS NULL OR decl_kind <> 'external') — the external rows are that global's imports in OTHER apps, not the owner. "Who uses this global?" targets the OWNING row: references matched against an external re-point to the owner at index time, so the external rows carry zero incoming references by design
+- "Was this file indexed at all?" - query indexed_files by file_name
+- "Who calls X?" or "Where is X used?" - query relationships where to_id matches the symbol — target the decl_kind='implementation' row, not the MAP prototype (prototypes never receive edges)
+- "What does X call?" - query relationships where from_id matches; type='do' rows are its routine calls
+- "Find all procedures named..." - query symbols table (include source_preview — results self-explain)
 - "What classes are in this project?" - query symbols by type and project
-- "Show me dead code" - find symbols with no incoming call relationships
+- "Show me dead code" - a REVIEW QUEUE, never a delete list. Base query: decl_kind='implementation' AND id NOT IN (SELECT to_id FROM relationships WHERE type IN ('calls','do')) — then apply ALL of these caveats (each measured on a 27-app production solution, where the raw query returned 30,520 rows of which at least a third were live): (1) DUPLICATE COPIES — template generation duplicates same-named implementations per app, and calls correctly resolve to the caller's own copy; a copy with zero incoming is NOT dead when ANY same-named implementation has edges (33% of raw rows). Group by name and exclude names where any copy is called. (2) AMBIGUOUS CONTAMINATION — if any call edge targeting that NAME carries ambiguous=1, a zero on one copy is not evidence: the indexer itself flagged the attribution as a guess. Report those as 'uncertain', never as dead. (3) ONE SOLUTION PER DB — a procedure exported to other apps/solutions (separate .codegraph.db files) shows zero incoming here with no warning; 'unused' can mean 'about to break another app'. Ask which other solutions link this code before recommending removal. (4) GENERATED .clw REGENERATES — deleting code from a template-generated .clw is a no-op; removal happens in the .app procedure tree. Also: NEVER filter on scope='global' — those are MAP prototypes; a prototype WITH a body never receives edges (98.7% false positives). Prototypes WITHOUT a body in the solution (WinAPI/external DLL declarations) DO receive their callers' edges — deliberate, so those calls aren't lost
 - "What's the class hierarchy?" - query inherits relationships
 - "If I change X, what breaks?" - recursive CTE on relationships for impact analysis
 
 IMPORTANT: Use `query_codegraph` for cross-file and cross-project questions. Use `analyze_class` for detailed single-file CLASS parsing. After finding a symbol with query_codegraph, use `open_file` with the file_path and line_number to navigate the developer there.
 
 ### SchemaGraph - Database Schema Intelligence
+SchemaGraph is the INGESTED copy of a schema (a .dctx or a SQL database), queryable with SQL. For the CURRENT project's dictionary, `get_app_dictionary` is live and needs no ingest — reach for SchemaGraph when you need SQL over the schema, a SQL Server schema, or a dictionary that is not the open app's. Every schema read prefixes its result with `SchemaGraph db: <path> [chosen by: <tier>]` — read that line: a db "chosen by: first .schemagraph.db found scanning the solution tree" may be ANOTHER project's dictionary. If it is not the open app's (`get_app_info` → `dictionaryPath`), say so and ingest the right one rather than answering from it.
 - `ingest_schema` -Ingest a Clarion dictionary (.dctx) into a SchemaGraph database (.schemagraph.db alongside the dictionary).
 - `ingest_sql_database` -Ingest schema from a SQL Server database (tables, columns, keys, relationships, procs, functions, views). Merges with existing .dctx data by default.
 - `query_schema` -Read-only SQL against a SchemaGraph database. Tables: tables, columns, keys, key_columns, relationships, relationship_mappings, procedures, procedure_params, views, view_references, schema_fts, schema_metadata.
@@ -202,7 +207,7 @@ After you write code into the embeditor (via `write_embed_content`, `replace_ran
 
 #### Rename via lsp_rename — approval is required
 
-`lsp_rename` returns the list of edits the language server WOULD apply. It does NOT apply them. Per rule #9 (never write code without approval), you must:
+`lsp_rename` returns the list of edits the language server WOULD apply. It does NOT apply them. Per rule #10 (never write code without approval), you must:
 1. Call `lsp_rename` to get the edit list.
 2. Show the list to the developer in chat: files, line numbers, old→new.
 3. Wait for explicit approval ("yes", "apply it", etc.).

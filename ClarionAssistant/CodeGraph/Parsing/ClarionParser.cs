@@ -20,16 +20,20 @@ namespace ClarionCodeGraph.Parsing
             @"^\s*MAP\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex ModuleRegex = new Regex(
             @"MODULE\s*\(\s*'([^']+)'\s*\)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // MAP prototypes come in TWO legal spellings: the bare form template generators emit
+        // ("fe_ClassVersion(byte Flag=0),string,...") and the keyword form hand-written MAPs
+        // use ("MainHelperProc PROCEDURE, LONG"). The optional (?i:PROCEDURE|FUNCTION) group
+        // accepts the keyword form, which was previously invisible (b7553893).
         private static readonly Regex MapProcDeclRegex = new Regex(
-            @"^\s{2,}(\w+)\s*(\([^)]*\))?\s*(,.*)?$", RegexOptions.Compiled);
+            @"^\s{2,}([\w:]+)(?:\s+(?i:PROCEDURE|FUNCTION))?\s*(\([^)]*\))?\s*(,.*)?$", RegexOptions.Compiled);
         private static readonly Regex MemberRegex = new Regex(
             @"MEMBER\s*\(\s*'([^']+)'\s*\)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex MemberEmptyRegex = new Regex(
             @"^\s*MEMBER\s*(\(\s*\))?\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex ProcedureDefRegex = new Regex(
-            @"^([\w.]+)\s+PROCEDURE\s*(\([^)]*\))?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            @"^([\w.:]+)\s+PROCEDURE\b\s*(\([^)]*\))?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex FunctionDefRegex = new Regex(
-            @"^([\w.]+)\s+FUNCTION\s*(\([^)]*\))?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            @"^([\w.:]+)\s+FUNCTION\b\s*(\([^)]*\))?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex RoutineDefRegex = new Regex(
             @"^([\w:]+)\s+ROUTINE\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex ClassDefRegex = new Regex(
@@ -46,14 +50,21 @@ namespace ClarionCodeGraph.Parsing
             @"^\s*\.\s*$", RegexOptions.Compiled);
         private static readonly Regex CodeRegex = new Regex(
             @"^\s*CODE\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // A ROUTINE's explicit DATA statement — opens the routine's own declaration section,
+        // terminated by its CODE line (round 5: routine-DATA declarations were never scanned).
+        private static readonly Regex DataStatementRegex = new Regex(
+            @"^\s*DATA\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex OmitCompileRegex = new Regex(
             @"^\s*(OMIT|COMPILE)\s*\(\s*'([^']+)'\s*(?:,\s*([^)]+?)\s*)?\)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // Variable declaration: VarName TYPE[(size)] [,attributes]
-        // Matches names with colons (Loc:Name) and standard Clarion data types
+        // Matches names with colons (Loc:Name) and standard Clarion data types.
+        // The size group tolerates ONE level of nested parens — "CSTRING(CHR(10))",
+        // "STRING(SIZE(SomeGroup))" — which the old \([^)]*\) form stopped at the first ')',
+        // silently dropping the whole declaration (ticket d1a0aea6, found via PRM001's LF/FF/CR).
         private static readonly Regex VariableDeclRegex = new Regex(
-            @"^([\w:]+)\s+(BYTE|SHORT|USHORT|LONG|ULONG|SIGNED|UNSIGNED|SREAL|REAL|BFLOAT4|BFLOAT8|DECIMAL|PDECIMAL|STRING|ASTRING|CSTRING|PSTRING|DATE|TIME|BOOL|ANY)\s*(\([^)]*\))?\s*(,.*)?$",
+            @"^([\w:]+)\s+(BYTE|SHORT|USHORT|LONG|ULONG|SIGNED|UNSIGNED|SREAL|REAL|BFLOAT4|BFLOAT8|DECIMAL|PDECIMAL|STRING|ASTRING|CSTRING|PSTRING|DATE|TIME|BOOL|ANY)\s*(\((?:[^()]|\([^)]*\))*\))?\s*(,.*)?$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // Reference variable: VarName &TYPE
@@ -129,6 +140,29 @@ namespace ClarionCodeGraph.Parsing
         private static readonly Regex ClassInstanceDeclRegex = new Regex(
             @"^([\w:]+)\s+(\w+)\s*(,[^!]*)?\s*(!.*)?$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        // EXTERNAL attribute on a data declaration: the symbol is declared here but OWNED by
+        // another module/DLL. Answers "which of the N same-named globals is the real one" —
+        // the one WITHOUT this (ticket b7553893).
+        private static readonly Regex ExternalAttrRegex = new Regex(
+            @",\s*EXTERNAL\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        /// <summary>The declaration/definition line as a self-explaining preview, trimmed and
+        /// capped — so query results identify themselves without a file read (b7553893).</summary>
+        private static string Preview(string line)
+        {
+            if (line == null) return null;
+            string t = line.Trim();
+            if (t.Length == 0) return null;
+            return t.Length > 200 ? t.Substring(0, 200) : t;
+        }
+
+        /// <summary>'external' when the declaration carries the EXTERNAL attribute, else the
+        /// supplied default (normally null for plain data declarations).</summary>
+        private static string VarDeclKind(string declLine)
+        {
+            return declLine != null && ExternalAttrRegex.IsMatch(declLine) ? "external" : null;
+        }
 
         /// <summary>
         /// Pass 1: Parse a main .clw file (the one with PROGRAM keyword) for MAP declarations.
@@ -253,7 +287,9 @@ namespace ClarionCodeGraph.Parsing
                             Params = procParams,
                             ReturnType = isFunction ? ExtractReturnType(attributes) : null,
                             MemberOf = currentModuleFile,
-                            Scope = "global"
+                            Scope = "global",
+                            DeclKind = "prototype", // MAP declaration — the body lives in the module
+                            SourcePreview = Preview(line)
                         });
                     }
                 }
@@ -353,6 +389,11 @@ namespace ClarionCodeGraph.Parsing
             var lines = ClarionAssistant.Services.EncodingHelper.ReadAllLines(filePath, out _);
             string memberOf = null;
             string currentProcedure = null;
+            // The ROUTINE whose body/DATA section the parser is inside (null outside routines).
+            // A routine's DATA-block declarations are emitted with the ROUTINE's name as
+            // ParentName (scope='local') — parent chain: procedure → routine → variable. The
+            // enclosing procedure is recoverable via the routine symbol's own ParentName.
+            string currentRoutine = null;
             bool inCode = false;
             bool inData = false; // True when between PROCEDURE def and CODE keyword
             int dataGroupDepth = 0; // Track nested GROUP/QUEUE/RECORD in DATA sections
@@ -361,6 +402,17 @@ namespace ClarionCodeGraph.Parsing
             string currentClassName = null;
             bool inClassBody = false;
             int classEndDepth = 0;
+            // PROGRAM (main) file: pre-procedure data is the app's GLOBAL data section
+            bool isProgramFile = false;
+            // Explicit MAP tracking. Pass 1 (ParseMainFile) owns MAP contents; here a MAP must be
+            // skipped WHOLESALE, because prototypes inside it may legally start at column 0
+            // ("TestSignatureFlow PROCEDURE, LONG" — the codegraph-repro fixture compiles) and
+            // would otherwise hit the column-0-anchored PROCEDURE-definition check below, minting
+            // phantom procedure symbols and clobbering currentProcedure/inData state. The old
+            // implicit skip (dataGroupDepth++ on MAP inside the DATA branch) was defeated by
+            // exactly that shape, and by nested MODULE(...)...END decrementing the depth early.
+            bool inMap = false;
+            int mapDepth = 0;
 
             for (int i = startLine; i < lines.Length; i++)
             {
@@ -378,6 +430,28 @@ namespace ClarionCodeGraph.Parsing
                 int newI = SkipConditionalBlock(lines, i, line);
                 if (newI > i) { i = newI; continue; }
 
+                // Inside a MAP: consume until its own END, tracking nested MODULE(...)/MAP blocks.
+                // Everything in here is prototype territory — no symbols, no state changes.
+                if (inMap)
+                {
+                    if (MapStartRegex.IsMatch(line) || ModuleRegex.Match(line).Success)
+                    {
+                        mapDepth++;
+                    }
+                    else if (EndRegex.IsMatch(line) || PeriodTermRegex.IsMatch(line))
+                    {
+                        mapDepth--;
+                        if (mapDepth <= 0) inMap = false;
+                    }
+                    continue;
+                }
+                if (MapStartRegex.IsMatch(line))
+                {
+                    inMap = true;
+                    mapDepth = 1;
+                    continue;
+                }
+
                 // Detect MEMBER('parent.clw') or MEMBER()
                 var memberMatch = MemberRegex.Match(line);
                 if (memberMatch.Success)
@@ -390,6 +464,21 @@ namespace ClarionCodeGraph.Parsing
                 if (MemberEmptyRegex.IsMatch(line) && memberOf == null)
                 {
                     memberOf = ""; // universal member
+                    inData = true;
+                    dataGroupDepth = 0;
+                    continue;
+                }
+
+                // PROGRAM main file: everything between PROGRAM and the global CODE statement is
+                // the app's GLOBAL data section. Open the same DATA machinery MEMBER does, but
+                // flag the file so those declarations get scope='global' instead of 'module' —
+                // before this, the indexer never scanned the section at all and every global in
+                // an .app was invisible (ticket d1a0aea6; the PRM001 main file alone carries
+                // ~6,000 declaration lines). memberOf is deliberately left untouched: tail
+                // procedures keep their existing member_of value.
+                if (ProgramRegex.IsMatch(line))
+                {
+                    isProgramFile = true;
                     inData = true;
                     dataGroupDepth = 0;
                     continue;
@@ -436,7 +525,9 @@ namespace ClarionCodeGraph.Parsing
                                 ReturnType = ExtractReturnType(attributes),
                                 MemberOf = memberOf,
                                 ParentName = currentClassName,
-                                Scope = isVirtual || isDerived ? "virtual" : "class"
+                                Scope = isVirtual || isDerived ? "virtual" : "class",
+                                DeclKind = "prototype", // CLASS-body declaration — body is elsewhere
+                                SourcePreview = Preview(line)
                             });
                         }
                     }
@@ -448,6 +539,7 @@ namespace ClarionCodeGraph.Parsing
                 if (procMatch.Success)
                 {
                     currentProcedure = procMatch.Groups[1].Value;
+                    currentRoutine = null;
                     inCode = false;
                     inData = true;
                     dataGroupDepth = 0;
@@ -463,7 +555,9 @@ namespace ClarionCodeGraph.Parsing
                         ProjectId = projectId,
                         Params = procParams,
                         MemberOf = memberOf,
-                        Scope = "module"
+                        Scope = "module",
+                        DeclKind = "implementation",
+                        SourcePreview = Preview(line)
                     });
                     ExtractNamedParameters(procParams, currentProcedure, filePath, lineNum, projectId, result);
                     continue;
@@ -474,6 +568,7 @@ namespace ClarionCodeGraph.Parsing
                 if (funcMatch.Success)
                 {
                     currentProcedure = funcMatch.Groups[1].Value;
+                    currentRoutine = null;
                     inCode = false;
                     inData = true;
                     dataGroupDepth = 0;
@@ -489,7 +584,9 @@ namespace ClarionCodeGraph.Parsing
                         ProjectId = projectId,
                         Params = funcParams,
                         MemberOf = memberOf,
-                        Scope = "module"
+                        Scope = "module",
+                        DeclKind = "implementation",
+                        SourcePreview = Preview(line)
                     });
                     ExtractNamedParameters(funcParams, currentProcedure, filePath, lineNum, projectId, result);
                     continue;
@@ -501,6 +598,7 @@ namespace ClarionCodeGraph.Parsing
                 {
                     string routineName = routineMatch.Groups[1].Value;
                     localRoutines.Add(routineName);
+                    currentRoutine = routineName;
                     inCode = false;
 
                     result.Symbols.Add(new ClarionSymbol
@@ -511,7 +609,14 @@ namespace ClarionCodeGraph.Parsing
                         LineNumber = lineNum,
                         ProjectId = projectId,
                         MemberOf = memberOf,
-                        Scope = "local"
+                        // Routines are procedure-local: record WHICH procedure, or "DO X" can
+                        // never be resolved among the dozens of same-named template routines
+                        // (BRW10::ProcessScroll ...) across a solution. Locals always carried
+                        // ParentName; routines just didn't (b7553893 #4).
+                        ParentName = currentProcedure,
+                        Scope = "local",
+                        DeclKind = "implementation",
+                        SourcePreview = Preview(line)
                     });
                     continue;
                 }
@@ -584,7 +689,8 @@ namespace ClarionCodeGraph.Parsing
                         LineNumber = lineNum,
                         ProjectId = projectId,
                         ParentName = parentClass,
-                        Scope = "global"
+                        Scope = "global",
+                        SourcePreview = Preview(line)
                     });
 
                     // Enter CLASS body to extract method prototypes
@@ -606,7 +712,8 @@ namespace ClarionCodeGraph.Parsing
                         FilePath = filePath,
                         LineNumber = lineNum,
                         ProjectId = projectId,
-                        Scope = "global"
+                        Scope = "global",
+                        SourcePreview = Preview(line)
                     });
 
                     // Enter INTERFACE body to extract method prototypes
@@ -621,6 +728,19 @@ namespace ClarionCodeGraph.Parsing
                 {
                     inCode = true;
                     inData = false;
+                    dataGroupDepth = 0;
+                    continue;
+                }
+
+                // A ROUTINE's explicit DATA block (round 5): the ROUTINE handler above closes
+                // inCode but nothing ever re-opened declaration scanning, so every routine-DATA
+                // declaration was silently invisible (v61: 9,261 across 890 generated files —
+                // and their references then emitted nothing either). Only fires between a
+                // ROUTINE label and its CODE line; a procedure's own declaration section opens
+                // via the PROCEDURE handler and never passes through here.
+                if (currentRoutine != null && !inCode && !inData && DataStatementRegex.IsMatch(line))
+                {
+                    inData = true;
                     dataGroupDepth = 0;
                     continue;
                 }
@@ -663,9 +783,19 @@ namespace ClarionCodeGraph.Parsing
                         continue;
                     }
 
-                    // Determine scope: module-level (before first PROCEDURE) vs local
-                    string varScope = currentProcedure != null ? "local" : "module";
-                    string varOwner = currentProcedure;
+                    // Determine scope: local (inside a procedure), global (PROGRAM file's
+                    // declaration section), or module-level (before first PROCEDURE in a MEMBER).
+                    // Inside a ROUTINE's DATA block the owner is the ROUTINE itself (round 5):
+                    // parent chain procedure → routine → variable, and the relationship
+                    // scanner's scope check accepts the routine's name while inside its body.
+                    // currentRoutine counts as "inside a procedure" here: a ROUTINE in a PROGRAM
+                    // file's global CODE section (legal, hand-written mains) has
+                    // currentProcedure == null but its DATA locals are still routine-local —
+                    // without this they'd be emitted scope='global' and even become candidate
+                    // re-point owners (pipeline run-1 debugger finding).
+                    string varScope = (currentProcedure != null || currentRoutine != null) ? "local"
+                        : (isProgramFile ? "global" : "module");
+                    string varOwner = currentRoutine ?? currentProcedure;
 
                     // Strip a trailing inline comment before type-matching -- a declaration like
                     // "PrivKey &SomeClass !some comment" would otherwise never match any of the
@@ -697,7 +827,9 @@ namespace ClarionCodeGraph.Parsing
                             ProjectId = projectId,
                             Params = gqType + gqNamedType + (prefix != null ? ",PRE(" + prefix + ")" : ""),
                             ParentName = varOwner,
-                            Scope = varScope
+                            Scope = varScope,
+                            DeclKind = VarDeclKind(dataForTypeMatch),
+                            SourcePreview = Preview(line)
                         });
 
                         // A named-type form (e.g. "PersonData GROUP(PTJ_PersonDataGroupType)") can be
@@ -738,7 +870,9 @@ namespace ClarionCodeGraph.Parsing
                             ProjectId = projectId,
                             Params = varType + varSize,
                             ParentName = varOwner,
-                            Scope = varScope
+                            Scope = varScope,
+                            DeclKind = VarDeclKind(dataForTypeMatch),
+                            SourcePreview = Preview(line)
                         });
                         continue;
                     }
@@ -759,7 +893,9 @@ namespace ClarionCodeGraph.Parsing
                             ProjectId = projectId,
                             Params = "&" + refType.ToUpperInvariant(),
                             ParentName = varOwner,
-                            Scope = varScope
+                            Scope = varScope,
+                            DeclKind = VarDeclKind(dataForTypeMatch),
+                            SourcePreview = Preview(line)
                         });
                         continue;
                     }
@@ -779,7 +915,9 @@ namespace ClarionCodeGraph.Parsing
                             ProjectId = projectId,
                             Params = "EQUATE",
                             ParentName = varOwner,
-                            Scope = varScope
+                            Scope = varScope,
+                            DeclKind = VarDeclKind(dataForTypeMatch),
+                            SourcePreview = Preview(line)
                         });
                         continue;
                     }
@@ -800,7 +938,9 @@ namespace ClarionCodeGraph.Parsing
                             ProjectId = projectId,
                             Params = "LIKE(" + likeTarget + ")",
                             ParentName = varOwner,
-                            Scope = varScope
+                            Scope = varScope,
+                            DeclKind = VarDeclKind(dataForTypeMatch),
+                            SourcePreview = Preview(line)
                         });
                         continue;
                     }
@@ -826,7 +966,9 @@ namespace ClarionCodeGraph.Parsing
                                 ProjectId = projectId,
                                 Params = ciType.ToUpperInvariant(),
                                 ParentName = varOwner,
-                                Scope = varScope
+                                Scope = varScope,
+                                DeclKind = VarDeclKind(dataForTypeMatch),
+                                SourcePreview = Preview(line)
                             });
                         }
                         continue;
@@ -995,7 +1137,9 @@ namespace ClarionCodeGraph.Parsing
                                 Params = methodParams,
                                 ReturnType = ExtractReturnType(attributes),
                                 ParentName = currentClassName,
-                                Scope = isVirtual || isDerived ? "virtual" : "class"
+                                Scope = isVirtual || isDerived ? "virtual" : "class",
+                                DeclKind = "prototype", // .inc CLASS-body declaration — body is in the .clw
+                                SourcePreview = Preview(line)
                             });
                         }
                     }
@@ -1118,7 +1262,8 @@ namespace ClarionCodeGraph.Parsing
                         LineNumber = lineNum,
                         ProjectId = projectId,
                         ParentName = parentClass,
-                        Scope = "global"
+                        Scope = "global",
+                        SourcePreview = Preview(line)
                     });
 
                     currentClassName = className;
@@ -1138,7 +1283,8 @@ namespace ClarionCodeGraph.Parsing
                         FilePath = filePath,
                         LineNumber = lineNum,
                         ProjectId = projectId,
-                        Scope = "global"
+                        Scope = "global",
+                        SourcePreview = Preview(line)
                     });
 
                     currentClassName = ifaceName;
