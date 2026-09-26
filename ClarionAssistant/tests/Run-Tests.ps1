@@ -99,9 +99,22 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "NpgsqlLoader.SmokeTest"
                Sources = @("tests\NpgsqlLoader.SmokeTest.cs", "Services\NpgsqlLoader.cs")
                Refs = @("System.dll") }
+            # 77aceec5: the addin -> standalone "IDE's open solution" handover the plain-Chat LSP
+            # fallback reads. Record dir redirected to temp; never touches %LOCALAPPDATA%.
+            @{ Name = "IdeSolutionRecord.Test"
+               Sources = @("tests\IdeSolutionRecord.Test.cs", "Services\IdeSolutionRecord.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Web.Extensions.dll") }
             @{ Name = "ClarionClDiagnosis.Test"
                Sources = @("tests\ClarionClDiagnosis.Test.cs", "Services\ClarionClDiagnosis.cs")
                Refs = @("System.dll") }
+            # Per-embed-slot structure balance (Passes 2 & 3), LSP pass stubbed. Reuses the
+            # StructureScan stubs so the REAL ClarionAppDataReader supplies the routine set.
+            @{ Name = "ModernEmbeditorDiagnostics.SlotBalance"
+               Sources = @("tests\ModernEmbeditorDiagnostics.SlotBalance.cs", "tests\ModernEmbeditorDiagnostics.SlotBalance.Stubs.cs",
+                           "tests\ClarionAppDataReader.StructureScan.Stubs.cs",
+                           "Services\ModernEmbeditorDiagnostics.cs",
+                           "Services\ClarionAppDataReader.cs", "Services\ClarionAppDataReader.Model.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Xml.dll") }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"

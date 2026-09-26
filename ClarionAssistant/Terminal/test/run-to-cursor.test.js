@@ -18,6 +18,7 @@
 //   * state pushes reach both split panes
 //   * host: the mirrored cursor is updated BEFORE the debugger is called, on the UI thread, and only for a
 //     line that exists in the document (f022fb4e item 2)
+//   * host: activation, its re-check and the cursor write are the shared TryActivateThisTab (3517fd15 item 6)
 //   * host: the bridge binds by assembly identity, and refuses two candidates (f022fb4e item 1)
 
 const fs = require('fs');
@@ -183,26 +184,41 @@ check('added to the split editor', /^[ \t]*addRunToCursorAction\(editor2\);/m.te
 // ---------- host ----------
 section('host (C#)');
 check('OnUnknownAction routes runToCursor', /action == "runToCursor"\)\s*\{\s*RunToCursorFromPage\(rawJson\); return; \}/.test(editorCs));
+// Not-active path (pipeline run 1): if SelectWindow did not make this tab active, the debugger would pull
+// ANOTHER tab's cursor. The host must re-read the active window AFTER SelectWindow and bail out — before
+// touching the mirrored cursor and before calling the bridge. Since 3517fd15 item 6 the activation, that
+// re-check and the cursor write are ONE helper, TryActivateThisTab, shared with Break on Entry: its
+// guarantees are pinned here, and each caller's use of it below (and in break-on-entry.test.js).
 {
-    const body = slice(editorCs, 'private void RunToCursorFromPage(string rawJson)', 'private void EnsureDebuggerStatePoll()', 'RunToCursorFromPage');
-    const iCursor = body.indexOf('_lastCursorLine = line;');
-    const iCall = body.indexOf('ClarionDebuggerBridge.RunToCursor()');
-    check('mirrored cursor updated BEFORE the debugger pulls it', iCursor >= 0 && iCall > iCursor);
-    check('marshals onto the UI thread when needed', /InvokeRequired\) form\.BeginInvoke\(run\)/.test(body));
-    check('activates this tab if it is not the active window', /SelectWindow/.test(body));
-
-    // Not-active path (pipeline run 1): if SelectWindow did not make this tab active, the debugger would pull
-    // ANOTHER tab's cursor. The host must re-read the active window AFTER SelectWindow and bail out — before
-    // touching the mirrored cursor and before calling the bridge.
-    const iSelect = body.indexOf('GetMethod("SelectWindow"');
-    const guard = /if \(myWin == null \|\| !ReferenceEquals\(myWin, ReflectProp\(wb, "ActiveWorkbenchWindow"\)\)\)\s*\{[^}]*return;\s*\}/.exec(body);
+    const helper = slice(editorCs, 'private bool TryActivateThisTab(int line, int col)', 'private void RunToCursorFromPage(string rawJson)', 'TryActivateThisTab');
+    const iSelect = helper.indexOf('GetMethod("SelectWindow"');
+    const guard = /if \(myWin == null \|\| !ReferenceEquals\(myWin, ReflectProp\(wb, "ActiveWorkbenchWindow"\)\)\)\s*return false;/.exec(helper);
     const iGuard = guard ? guard.index : -1;
-    check('re-checks the active window AFTER SelectWindow', iSelect >= 0 && iGuard > iSelect);
-    check('not active (or window unknown): returns without running', !!guard);
-    check('not active: logs why', !!guard && /MonacoSpikeLog\.Write\("runToCursor: NOT sent/.test(guard[0]));
-    check('mirrored cursor is set only AFTER the active check', iGuard >= 0 && iCursor > iGuard);
-    check('bridge is called only AFTER the active check', iGuard >= 0 && iCall > iGuard);
-    check('reuses the hooked _wbWindow before reflection (like OnFocusEditor)', /object myWin = _wbWindow;\s*if \(myWin == null\)/.test(body));
+    const iCursor = helper.indexOf('_lastCursorLine = line;');
+    const iTrue = helper.indexOf('return true;');
+    check('helper: activates this tab if it is not the active window', iSelect >= 0);
+    check('helper: reuses the hooked _wbWindow before reflection (like OnFocusEditor)', /object myWin = _wbWindow;\s*if \(myWin == null\)/.test(helper));
+    check('helper: re-checks the active window AFTER SelectWindow', iSelect >= 0 && iGuard > iSelect);
+    check('helper: not active (or window unknown): returns false', !!guard);
+    check('helper: the mirrored cursor is set only AFTER the active check', iGuard >= 0 && iCursor > iGuard);
+    check('helper: ...line and column, a column below 1 read as 1', /_lastCursorCol = col >= 1 \? col : 1;/.test(helper));
+    check('helper: answers true once, and only after the cursor is written',
+        (helper.match(/return true;/g) || []).length === 1 && iCursor >= 0 && iTrue > iCursor);
+}
+{
+    const body = slice(editorCs, 'private void RunToCursorFromPage(string rawJson)', '// ── CA Debugger "Break on Entry"', 'RunToCursorFromPage');
+    const iRun = body.indexOf('Action run = () =>');
+    const act = /if \(!TryActivateThisTab\(line, col\)\)\s*\{[^}]*return;\s*\}/.exec(body);
+    const iAct = act ? act.index : -1;
+    const iCall = body.indexOf('ClarionDebuggerBridge.RunToCursor()');
+    check('marshals onto the UI thread when needed', /InvokeRequired\) form\.BeginInvoke\(run\)/.test(body));
+    check('activates, verifies and sets the cursor through TryActivateThisTab, on the UI-thread action', iRun >= 0 && iAct > iRun);
+    check('not active (or window unknown): returns without running', !!act);
+    check('not active: logs why', !!act && /MonacoSpikeLog\.Write\("runToCursor: NOT sent/.test(act[0]));
+    check('mirrored cursor updated (by the helper) BEFORE the debugger pulls it, so the bridge is called only AFTER the active check',
+        iAct >= 0 && iCall > iAct);
+    check('writes no cursor of its own, outside the helper\'s check', body.indexOf('_lastCursor') < 0);
+    const iCursor = iAct;   // the helper call is where the mirrored cursor is written
 
     // f022fb4e item 2: the page supplies the line, so a line that cannot exist must not reach the mirrored
     // cursor (which the debugger reads back, and which is persisted as this file's saved cursor position).

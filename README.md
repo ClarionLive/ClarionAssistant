@@ -141,6 +141,21 @@ The server that ships with Clarion Assistant moves from v1.0.2 to **v1.0.5**, sy
 
 A `LOOP` terminated by `UNTIL` or `WHILE` &mdash; valid Clarion, and the Language Reference's own example &mdash; never closed its fold, so it swallowed everything after it. The CA Editor and Embeditor now ask the language server for fold ranges ([PR #223](https://github.com/ClarionLive/ClarionAssistant/pull/223)), and the editor's own fallback, used while the server is starting or slow, closes a LOOP on `UNTIL` / `WHILE` too. A name like `While:Count` is not mistaken for a terminator.
 
+<!-- release-docs: covered=formatter,embeditor -->
+### A LOOP closed by UNTIL or WHILE is no longer an error, and Ctrl+I keeps it level
+
+Folding was not the only part of the editor that thought a `LOOP` needed an `END`. In an embed slot, the structure check underlined `LOOP ... UNTIL x` with *"LOOP is not terminated with END or '.'"*, and **Ctrl+I** indented the `UNTIL` line as part of the loop body &mdash; and everything after it one level too deep. Both now treat `UNTIL` / `WHILE` as closing the innermost `LOOP`, and only a `LOOP`: with an `IF` on top it is still an ordinary line, and the pre-condition form `LOOP WHILE x ... END` still needs its `END`.
+
+<!-- release-docs: covered=formatter -->
+### Ctrl+I no longer moves a loop's label off column 1
+
+A labelled structure such as `MyLoop LOOP` &mdash; the label that `BREAK MyLoop` and `CYCLE MyLoop` name &mdash; had its label indented into the code column by **Ctrl+I**, and a Clarion label that isn't in column 1 no longer compiles. The formatter also never opened the structure, so its body stayed flush and its `END` closed the wrong block. A labelled `LOOP`, `IF`, `CASE`, `ACCEPT`, `EXECUTE` or `BEGIN` now keeps its label in column 1 and lays out exactly as the unlabelled form would.
+
+<!-- release-docs: covered=lsp,mcp,editor -->
+### The language-server tools work from a plain Chat, and say why when they can't
+
+Started with the **Chat** button rather than **Work With Open Solution**, the assistant's `lsp_*` tools had no solution even with one open in the IDE, so every call answered *"LSP not running"* &mdash; and `lsp_start` ignored the folder it was given, then blamed a *"client handshake"* that had never been attempted. The tools now follow the solution open in the IDE (and restart on it when you switch), `lsp_start` uses the folder or `.sln` you name, and a start that doesn't happen says which reason applies. **Find All References** also opens the file in the server before asking; without that, a request from the MAP line came back as a single zero-width hit, where the server finds the prototype, the implementation and a `START()` call. **Shift+F12** in the CA Editor no longer silently does Go to Definition.
+
 <!-- release-docs: covered=schema -->
 ### PostgreSQL: ingest no longer aborts on aggregates, and errors say what happened ([#201](https://github.com/ClarionLive/ClarionAssistant/issues/201), [#188](https://github.com/ClarionLive/ClarionAssistant/issues/188))
 

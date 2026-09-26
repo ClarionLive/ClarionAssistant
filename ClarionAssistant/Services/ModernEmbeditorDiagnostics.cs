@@ -125,6 +125,9 @@ namespace ClarionAssistant.Services
         };
         private static readonly Regex EndRx = new Regex(@"^END\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex IfRx = new Regex(@"^IF\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        // A post-condition LOOP's closing line ('UNTIL expr' / 'WHILE expr'). The lookahead, not \b,
+        // so a prefixed name such as While:Count is never read as the keyword.
+        private static readonly Regex PostCondClose = new Regex(@"^(UNTIL|WHILE)(?![A-Za-z0-9_:])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         // 'DO RoutineName' — DO must start the statement (line start, whitespace, or after ';').
         private static readonly Regex DoStmt = new Regex(
             @"(?:^|\s|;)DO\s+([A-Za-z_][A-Za-z0-9_:]*)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -226,6 +229,22 @@ namespace ClarionAssistant.Services
                         else
                             markers.Add(Marker(ln, FirstNonWs(code) + 1, ln, code.Length + 1,
                                 "END has no matching structure in this embed slot.", SevWarning));
+                        continue;
+                    }
+
+                    // Close (post-condition LOOP): 'LOOP ... UNTIL expr' / 'LOOP ... WHILE expr' ends the
+                    // LOOP with the UNTIL/WHILE line instead of END (GH #222 follow-up — SoftVelocity's own
+                    // libsrc\win\abbrowse.clw uses it). It closes ONLY a LOOP that is the innermost open
+                    // structure; with an IF/CASE/... on top it is not this LOOP's closer and closes nothing.
+                    // The pre-condition form 'LOOP WHILE x' starts with LOOP, so it never reaches here and
+                    // is still pushed as an opener that needs END. With no LOOP on top the line falls
+                    // through and is treated exactly as before (an ordinary statement) — no new warning
+                    // class, so this can only remove false positives (same reasoning as the trailing-'.'
+                    // close below).
+                    if (PostCondClose.IsMatch(u) && open.Count > 0 &&
+                        StructWord(lines[open.Peek()[0] - 1]) == "LOOP")
+                    {
+                        open.Pop();
                         continue;
                     }
 
