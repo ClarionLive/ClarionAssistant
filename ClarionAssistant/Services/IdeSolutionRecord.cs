@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
 using System.Web.Script.Serialization;
 
 namespace ClarionAssistant.Services
@@ -87,7 +86,7 @@ namespace ClarionAssistant.Services
                         };
                         // Write-then-copy so a reader never sees a half-written file.
                         string tmp = file + ".tmp";
-                        File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(rec), new UTF8Encoding(false));
+                        File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(rec), EncodingHelper.Utf8NoBom);
                         File.Copy(tmp, file, true);
                         File.Delete(tmp);
                     }
@@ -122,14 +121,17 @@ namespace ClarionAssistant.Services
                 string sln = rec != null && rec.TryGetValue("solution", out v) ? v as string : null;
                 int pid = rec != null && rec.TryGetValue("pid", out v) && v != null ? Convert.ToInt32(v) : 0;
 
-                if (pid > 0)
+                // The record must be the one THAT IDE wrote about itself: a payload naming another
+                // pid (a copied or planted file) is refused, not trusted (pipeline run 1).
+                if (pid != idePid)
                 {
-                    try { System.Diagnostics.Process.GetProcessById(pid); }
-                    catch
-                    {
-                        note = "the IDE that published the record (pid " + pid + ") is no longer running";
-                        return null;
-                    }
+                    note = "the record for pid " + idePid + " names pid " + pid + " - ignored";
+                    return null;
+                }
+                if (!IsAlive(pid))
+                {
+                    note = "the IDE that published the record (pid " + pid + ") is no longer running";
+                    return null;
                 }
                 if (string.IsNullOrEmpty(sln) || !File.Exists(sln))
                 {
@@ -146,6 +148,53 @@ namespace ClarionAssistant.Services
             }
         }
 
+        private static bool IsAlive(int pid)
+        {
+            try
+            {
+                using (var p = System.Diagnostics.Process.GetProcessById(pid))
+                    return !p.HasExited;
+            }
+            catch { return false; }
+        }
+
+        private static readonly object _cacheLock = new object();
+        private static int _cachePid;
+        private static long _cacheStamp = -1;      // mtime ticks ^ length of the file last parsed; 0 = absent
+        private static DateTime _cacheCheckedAt;
+        private static string _cacheValue, _cacheNote;
+
+        /// <summary>
+        /// <see cref="Read"/> for a caller that asks on EVERY lsp_* call (LspService's followed
+        /// solution). Costs one file stat per call; the record is re-parsed only when its mtime or
+        /// size changes (or it appears/disappears), and the IDE's liveness is re-checked at most every
+        /// few seconds. Returns the same answer Read would, modulo that liveness window.
+        /// </summary>
+        public static string ReadCached(int idePid, out string note)
+        {
+            long stamp = 0;
+            try
+            {
+                var fi = new FileInfo(PathForPid(idePid));
+                if (fi.Exists) stamp = fi.LastWriteTimeUtc.Ticks ^ (fi.Length << 1) ^ 1;
+            }
+            catch { stamp = -2; }
+
+            lock (_cacheLock)
+            {
+                bool fresh = _cachePid == idePid && _cacheStamp == stamp && stamp != -2
+                    && (DateTime.UtcNow - _cacheCheckedAt).TotalSeconds < 3;
+                if (!fresh)
+                {
+                    _cacheValue = Read(idePid, out _cacheNote);
+                    _cachePid = idePid;
+                    _cacheStamp = stamp;
+                    _cacheCheckedAt = DateTime.UtcNow;
+                }
+                note = _cacheNote;
+                return _cacheValue;
+            }
+        }
         /// <summary>Test hook: forget what this process last wrote, so Publish writes again.</summary>
         internal static void ResetForTest()
         {

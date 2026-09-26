@@ -78,6 +78,36 @@ static class IdeSolutionRecordTest
                 new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "solution", deadSln }, { "pid", dead } }));
             Check(IdeSolutionRecord.Read(dead, out note) == null, "dead IDE pid -> null (" + note + ")");
 
+            // -- a record under THIS pid's name whose payload names another (live) pid: refused.
+            // The other pid is a live process, so only the pid-match rule can reject this one.
+            int other = 0;
+            try
+            {
+                foreach (var pr in System.Diagnostics.Process.GetProcesses())
+                {
+                    using (pr) { if (pr.Id != self && pr.Id > 4 && other == 0) other = pr.Id; }
+                }
+            }
+            catch { }
+            File.WriteAllText(sln, "");
+            File.WriteAllText(IdeSolutionRecord.PathForPid(self),
+                new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "solution", sln }, { "pid", other } }));
+            Check(other != 0 && IdeSolutionRecord.Read(self, out note) == null,
+                "payload pid != the IDE pid being read -> null (" + note + ")");
+
+            // -- ReadCached follows a change to the file (A -> B -> gone)
+            string sln2 = Path.Combine(root, "c.sln");
+            File.WriteAllText(sln2, "");
+            IdeSolutionRecord.ResetForTest();
+            IdeSolutionRecord.Publish(sln);
+            Check(string.Equals(IdeSolutionRecord.ReadCached(self, out note), sln, StringComparison.OrdinalIgnoreCase),
+                "ReadCached returns A");
+            IdeSolutionRecord.Publish(sln2);
+            Check(string.Equals(IdeSolutionRecord.ReadCached(self, out note), sln2, StringComparison.OrdinalIgnoreCase),
+                "ReadCached sees the change to B at once (mtime/size)");
+            IdeSolutionRecord.Publish(null);
+            Check(IdeSolutionRecord.ReadCached(self, out note) == null, "ReadCached sees the record removed");
+
             // -- publishing a path that does not exist is "nothing open", not a stale write
             IdeSolutionRecord.ResetForTest();
             IdeSolutionRecord.Publish(Path.Combine(root, "missing.sln"));

@@ -102,7 +102,7 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             # 77aceec5: the addin -> standalone "IDE's open solution" handover the plain-Chat LSP
             # fallback reads. Record dir redirected to temp; never touches %LOCALAPPDATA%.
             @{ Name = "IdeSolutionRecord.Test"
-               Sources = @("tests\IdeSolutionRecord.Test.cs", "Services\IdeSolutionRecord.cs")
+               Sources = @("tests\IdeSolutionRecord.Test.cs", "Services\IdeSolutionRecord.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Web.Extensions.dll") }
             @{ Name = "ClarionClDiagnosis.Test"
                Sources = @("tests\ClarionClDiagnosis.Test.cs", "Services\ClarionClDiagnosis.cs")

@@ -853,8 +853,8 @@ namespace ClarionAssistant
                 if (!string.IsNullOrEmpty(_currentSlnPath))
                     _toolRegistry?.EnsureLspRunningInBackground();
                 // NOTE: the ClarionGraph build heartbeat is driven from _statusLineTimer (always started),
-                // NOT here — this poll runs off _instanceStateTimer, which only starts when instance
-                // coordination initializes, so it can't be the sole trigger.
+                // NOT here (it was placed there when this poll's timer only started with instance
+                // coordination; that timer now always starts, but the heartbeat stays where it is).
             }
             catch { }
         }
@@ -3085,13 +3085,17 @@ namespace ClarionAssistant
                 UpdateStatus("MCP failed to start");
             }
 
-            // Periodic UI-thread timer to refresh instance state (app, procedure, peers)
-            if (_instanceCoord != null)
+            // Periodic UI-thread timer: solution-change poll (which also publishes the IDE's open
+            // solution for the standalone server, 77aceec5) ALWAYS; instance state only when
+            // coordination came up. It used to be created only with coordination, so a failed
+            // instances.db also silently stopped the solution poll.
+            _instanceStateTimer = new System.Windows.Forms.Timer { Interval = 10000 };
+            _instanceStateTimer.Tick += (s, ev) =>
             {
-                _instanceStateTimer = new System.Windows.Forms.Timer { Interval = 10000 };
-                _instanceStateTimer.Tick += (s, ev) => { PollForSolutionChange(); UpdateInstanceState(); };
-                _instanceStateTimer.Start();
-            }
+                PollForSolutionChange();
+                if (_instanceCoord != null) UpdateInstanceState();
+            };
+            _instanceStateTimer.Start();
 
             // Poll for Claude Code status line data (model, context, rate limits, git)
             _statusLineTimer = new System.Windows.Forms.Timer { Interval = 3000 };
@@ -3099,8 +3103,7 @@ namespace ClarionAssistant
             {
                 PollStatusLine();
                 // Always-on heartbeat for the version-keyed, solution-INDEPENDENT ClarionGraph build. This
-                // timer starts unconditionally (unlike _instanceStateTimer, which is gated on instance
-                // coordination), so the library DB still builds in embeditor / no-solution / coordination-
+                // timer starts unconditionally (as, since 77aceec5, does _instanceStateTimer), so the library DB still builds in embeditor / no-solution / coordination-
                 // failed sessions. Self-guarded: a cheap no-op once ensured / building / in failure-cooldown.
                 Services.ClarionGraphService.EnsureBuiltInBackground();
             };

@@ -16,10 +16,11 @@ namespace ClarionAssistant.Services
         NoSolution,
         /// <summary>No server.js could be resolved. Nothing was spawned.</summary>
         NoServer,
-        /// <summary>server.js and a solution were in hand and the start was attempted, but it failed
-        /// (process spawn or the initialize handshake). The ONLY outcome where blaming the
-        /// handshake can be right.</summary>
+        /// <summary>server.js and a solution were in hand, node.exe was launched, and the start still
+        /// failed - the initialize handshake. The ONLY outcome where blaming the handshake can be right.</summary>
         StartFailed,
+        /// <summary>node.exe itself could not be launched (Process.Start threw). Nothing to shake hands with.</summary>
+        SpawnFailed,
         /// <summary>An unexpected exception escaped the start sequence.</summary>
         Error
     }
@@ -45,7 +46,12 @@ namespace ClarionAssistant.Services
         /// <summary>The .sln the start used or would have used. Null when none was known.</summary>
         public string SolutionPath { get; private set; }
 
-        /// <summary>Where <see cref="SolutionPath"/> came from ("workspace_path", "host", ...).</summary>
+        /// <summary>
+        /// Where <see cref="SolutionPath"/> came from: "workspace_path" (this call's argument),
+        /// "current solution" (the host's SolutionPathProvider), "the IDE's open solution"
+        /// (FollowedSolutionProvider) or "earlier workspace_path" (the last explicit one). Null when
+        /// no solution was resolved.
+        /// </summary>
         public string SolutionSource { get; private set; }
 
         public string ServerJs { get; private set; }
@@ -86,12 +92,16 @@ namespace ClarionAssistant.Services
             switch (Outcome)
             {
                 case LspStartOutcome.NoSolution:
-                    return NoSolutionMessage;
+                    return Detail ?? NoSolutionMessage;
                 case LspStartOutcome.NoServer:
                     return "no language server (server.js) could be found"
                         + (string.IsNullOrEmpty(Detail) ? "." : ": " + Detail)
                         + " Install the Clarion extension for VS Code, place server.js in the lsp-server "
                         + "subfolder next to the addin, or set the 'Lsp.ServerPath' setting.";
+                case LspStartOutcome.SpawnFailed:
+                    return "node.exe could not be launched for the language server"
+                        + (string.IsNullOrEmpty(Detail) ? "." : ": " + Detail)
+                        + " Install Node.js, or check that the node beside the language server runs.";
                 case LspStartOutcome.StartFailed:
                     return "the language server was spawned for " + (SolutionPath ?? "(unknown solution)")
                         + " but did not complete its start (process launch or initialize handshake). "

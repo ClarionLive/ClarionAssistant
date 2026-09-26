@@ -103,9 +103,16 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// Start the LSP server and initialize the protocol.
         /// </summary>
+        /// <summary>
+        /// Set when the last <see cref="Start"/> failed because the node process could not be
+        /// launched (Process.Start threw); null otherwise, including for a handshake failure.
+        /// </summary>
+        public string LastSpawnError { get; private set; }
+
         public bool Start(string serverJsPath, string workspaceUri, string workspaceName)
         {
             if (_running) return true;
+            LastSpawnError = null;
 
             if (!File.Exists(serverJsPath))
                 return false;
@@ -190,7 +197,14 @@ namespace ClarionAssistant.Services
                     }
                 };
 
-                _process.Start();
+                try { _process.Start(); }
+                catch (Exception spawnEx)
+                {
+                    // node.exe could not be launched at all. Recorded separately so the caller can
+                    // say so instead of blaming an initialize handshake that never began (77aceec5).
+                    LastSpawnError = "could not launch '" + nodeExe + "': " + spawnEx.Message;
+                    throw;
+                }
                 _process.BeginErrorReadLine();
                 _running = true;
 

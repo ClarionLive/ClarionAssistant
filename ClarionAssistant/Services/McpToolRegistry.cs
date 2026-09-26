@@ -2416,12 +2416,6 @@ COMMON QUERIES:
                             return "Error: " + resolveError;
                     }
 
-                    // Single-process (#17): if the shared ClarionLsp addin is the active server, we
-                    // don't start (or need) our bundled server — all LSP calls route through it.
-                    if (SharedLspBridge.IsSharedActive)
-                        return "LSP ready via the shared ClarionLsp addin (resolver=shared). "
-                            + "The bundled server is not started while ClarionLsp is active.";
-
                     // Delegate to the single owner — no second construct site / start race. It
                     // reports WHAT happened, so each branch below says why rather than guessing.
                     var start = LspService.EnsureRunning(explicitSln);
@@ -2450,7 +2444,7 @@ COMMON QUERIES:
                                 + "\n  Source: " + start.ServerSource + "\n  Server: " + start.ServerJs;
 
                         case LspStartOutcome.NoSolution:
-                            return "Error: " + LspStartResult.NoSolutionMessage;
+                            return "Error: " + (start.Detail ?? LspStartResult.NoSolutionMessage);
 
                         case LspStartOutcome.NoServer:
                         {
@@ -2465,6 +2459,11 @@ COMMON QUERIES:
 
                         case LspStartOutcome.Error:
                             return "Error: LSP start failed before a server was spawned: " + start.Detail;
+
+                        case LspStartOutcome.SpawnFailed:
+                            return "Error: " + start.DescribeWhyNotRunning()
+                                + "\n  server.js: " + start.ServerJs
+                                + "\n  solution: " + start.SolutionPath;
                     }
 
                     // StartFailed: a solution and server.js were both in hand and the start was
