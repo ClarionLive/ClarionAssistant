@@ -148,6 +148,19 @@
         var r = sp.rest.charAt(0);
         return r !== '=' && r !== '(';
     }
+    // A column-1 statement label followed by an executable structure keyword ("MyLoop LOOP",
+    // "Scan:Loop LOOP i = 1 TO 3", "Retry IF x"). Returns { label, rest } (rest keeps any trailing
+    // comment) or null. The WHOLE column-1 token must be a non-keyword, so an unlabelled "LOOP WHILE x"
+    // or "IF x" in column 1 is not a label, while "Loop:Top LOOP" (prefix-style label) is.
+    function labelledControl(raw) {
+        if (!startsInCol1(raw)) return null;
+        var sp = splitLabel(rtrim(stripComment(raw)));
+        if (!sp || KEYWORD_SET[sp.label.toUpperCase()] || !CONTROL_SET[leadingKeyword(sp.rest)]) return null;
+        // The keyword must be a whole word: "Lbl LOOP:Count = 1" is not a LOOP.
+        if (/^[A-Za-z_][A-Za-z0-9_]*:/.test(sp.rest)) return null;
+        var rsp = splitLabel(rtrim(raw));
+        return { label: sp.label, rest: rsp ? rsp.rest : sp.rest };
+    }
     function isOneLineStructure(code) { return /\.\s*$/.test(code) && /\bTHEN\b/i.test(code); }
     function endsWithContinuation(code) { return /[|&]\s*$/.test(rtrim(code)); }
 
@@ -466,6 +479,21 @@
                 rec.cat = 'stmt'; rec.col = 0;
                 finish(rec, code); continue;
             }
+            // A LABELLED executable structure ("MyLoop LOOP", "Scan:Loop LOOP", "Retry IF x"): the label
+            // is a statement label (BREAK/CYCLE/GOTO target) and MUST stay in column 1 or the code no
+            // longer compiles. `first` is the label here, so the keyword comes from the rest of the line.
+            // The keyword sits at the column the unlabelled form would use (label padded out to it, like
+            // a data declaration / procedure header; one space if the label is longer), and the structure
+            // opens at that same nominal column, so its body, END, '.' or UNTIL/WHILE lay out exactly as
+            // the unlabelled form. (eb0f0c6d)
+            var lsp = labelledControl(raw);
+            if (lsp) {
+                rec.cat = 'labelstmt'; rec.label = lsp.label; rec.rest = lsp.rest;
+                rec.col = codeBodyCol();
+                var lkw = leadingKeyword(lsp.rest);
+                if (!isOneLineStructure(code)) openStruct(rec, 'code', rec.col, lkw);
+                finish(rec, code); continue;
+            }
             rec.cat = 'stmt';
             rec.col = codeBodyCol();
             if (CONTROL_SET[first] && !isOneLineStructure(code)) openStruct(rec, 'code', rec.col, first);
@@ -575,6 +603,8 @@
                 }
                 case 'header':
                     out.push(label(r.label) + gap(r.label.length, r.col) + nc(r.rest, true)); lastCol = r.col; break;
+                case 'labelstmt':   // labelled structure: label in column 1, keyword at the statement column
+                    out.push(label(r.label) + gap(r.label.length, r.col) + nc(r.rest, false)); lastCol = r.col; break;
                 case 'decl': {
                     var dc = r.dataCol != null ? r.dataCol : r.col || 0;
                     out.push(label(r.label) + gap(r.label.length, dc) + nc(r.rest, true)); lastCol = dc; break;
@@ -634,6 +664,7 @@
         if (t === '' || isFullComment(t)) return null;
         var code = stripComment(line);
         if (KEYWORD_SET[leadingKeyword(code)]) return null;   // IF/CASE/RETURN/DO/… are not assignments
+        if (labelledControl(line)) return null;               // nor is a labelled "Lbl LOOP i = 1 TO 3" (eb0f0c6d)
         var found = findAssignOp(code);
         if (!found) return null;
         var indent = /^\s*/.exec(line)[0];
