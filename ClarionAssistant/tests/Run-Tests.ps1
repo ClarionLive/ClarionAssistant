@@ -110,6 +110,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\ClarionVersionService.ExeMatchTest.cs", "Services\ClarionVersionService.cs", "Services\ClarionConfigDirectory.cs")
                Refs = @("System.dll", "System.Xml.dll")
                Args = @((Join-Path $TestDir "fixtures\gh209\ClarionProperties.xml")) }
+            # GH #187 follow-up: the CA Embeditor's Monaco <-> LSP line mapping agrees with what
+            # WrapBuffer actually prepended (0 lines for a buffer opening with MEMBER/PROGRAM).
+            @{ Name = "EmbedLspContext.LineMapping"
+               Sources = @("tests\EmbedLspContext.LineMapping.cs", "tests\EmbedLspContext.LineMapping.Stubs.cs",
+                           "Services\EmbedLspContext.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll") }
             @{ Name = "ClarionClDiagnosis.Test"
                Sources = @("tests\ClarionClDiagnosis.Test.cs", "Services\ClarionClDiagnosis.cs")
                Refs = @("System.dll") }

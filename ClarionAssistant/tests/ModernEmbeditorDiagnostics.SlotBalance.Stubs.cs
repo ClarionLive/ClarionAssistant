@@ -37,7 +37,7 @@ namespace ClarionAssistant.Services
 
     public sealed class EmbedLspContext
     {
-        public int LineOffset { get { return 1; } }
+        public int LineOffsetFor(string buffer) { return 1; }
         public string WrapBuffer(string buffer) { return buffer; }
     }
 }

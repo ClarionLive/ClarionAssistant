@@ -378,7 +378,7 @@ namespace ClarionAssistant.Terminal
                 {
                     var resp = SharedLspBridge.GetDocumentSymbols(_lspFileName, LspBuffer(buffer));
                     object res = (resp != null && resp.ContainsKey("result")) ? resp["result"] : null;
-                    symbols = DocumentOutlineBuilder.Build(res, MonacoLine1);
+                    symbols = DocumentOutlineBuilder.Build(res, l => MonacoLine1(buffer, l));
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] HandleDocumentStructure: " + ex.Message); }
                 PostResponse(reqId, new Dictionary<string, object> { { "symbols", symbols }, { "fileMode", _fileMode } });
@@ -429,8 +429,8 @@ namespace ClarionAssistant.Terminal
                             }
                             catch { continue; }
 
-                            int start = MonacoLine1(s0);
-                            int end = MonacoLine1(e0);
+                            int start = MonacoLine1(buffer, s0);
+                            int end = MonacoLine1(buffer, e0);
                             // MonacoLine1 clamps at 1, so a range wholly inside the wrapper header
                             // collapses to 1..1 — not a fold, and not the developer's code.
                             if (end <= start) continue;
@@ -3185,13 +3185,15 @@ namespace ClarionAssistant.Terminal
         {
             return (_lspContext != null) ? _lspContext.WrapBuffer(buffer) : buffer;
         }
-        private int LspLine0(int monacoLine1)
+        // The offset is whatever LspBuffer() actually prepended to THIS buffer (0 when it passed the
+        // buffer through), so pass the same buffer that was (or will be) wrapped for the request.
+        private int LspLine0(string buffer, int monacoLine1)
         {
-            return Math.Max(0, monacoLine1 - 1) + ((_lspContext != null) ? _lspContext.LineOffset : 0);
+            return Math.Max(0, monacoLine1 - 1) + ((_lspContext != null) ? _lspContext.LineOffsetFor(buffer) : 0);
         }
-        private int MonacoLine1(int lspLine0)
+        private int MonacoLine1(string buffer, int lspLine0)
         {
-            return Math.Max(1, lspLine0 + 1 - ((_lspContext != null) ? _lspContext.LineOffset : 0));
+            return Math.Max(1, lspLine0 + 1 - ((_lspContext != null) ? _lspContext.LineOffsetFor(buffer) : 0));
         }
 
         private void HandleCompletion(string json)
@@ -3211,7 +3213,7 @@ namespace ClarionAssistant.Terminal
                     {
                         // Pass the LIVE buffer (mirror HandleHover). Passing null made the shared server complete
                         // against an empty document → always "no suggestions" (John's test; root-caused with Bob).
-                        var comps = SharedLspBridge.GetCompletion(_lspFileName, LspLine0(line), Math.Max(0, column - 1), 2500, LspBuffer(buffer));
+                        var comps = SharedLspBridge.GetCompletion(_lspFileName, LspLine0(buffer, line), Math.Max(0, column - 1), 2500, LspBuffer(buffer));
                         if (comps != null)
                             foreach (var c in comps)
                                 items.Add(new Dictionary<string, object>
@@ -3252,7 +3254,7 @@ namespace ClarionAssistant.Terminal
                     EnsureLspStarted();
                     if (SharedLspBridge.IsRunning)
                     {
-                        var def = SharedLspBridge.GetDefinition(_lspFileName, LspLine0(line), Math.Max(0, column - 1), LspBuffer(buffer));
+                        var def = SharedLspBridge.GetDefinition(_lspFileName, LspLine0(buffer, line), Math.Max(0, column - 1), LspBuffer(buffer));
                         string targetPath; int targetLine0, targetChar0;
                         bool got = SharedLspBridge.TryGetFirstLocation(def, out targetPath, out targetLine0, out targetChar0);
                         // The embeditor's LSP document is a SYNTHETIC file (_lspFileName has no file on disk),
@@ -3273,7 +3275,7 @@ namespace ClarionAssistant.Terminal
                             }
                             else if (_panel != null)
                             {
-                                _panel.RevealLine(MonacoLine1(targetLine0), targetChar0 + 1);
+                                _panel.RevealLine(MonacoLine1(buffer, targetLine0), targetChar0 + 1);
                             }
                             navigated = _panel != null;
                         }
@@ -3368,13 +3370,13 @@ namespace ClarionAssistant.Terminal
                     EnsureLspStarted();
                     if (SharedLspBridge.IsRunning)
                     {
-                        var impl = SharedLspBridge.GetImplementation(_lspFileName, LspLine0(line), Math.Max(0, column - 1), LspBuffer(buffer));
+                        var impl = SharedLspBridge.GetImplementation(_lspFileName, LspLine0(buffer, line), Math.Max(0, column - 1), LspBuffer(buffer));
                         string targetPath; int targetLine0, targetChar0;
                         if (SharedLspBridge.TryGetFirstLocation(impl, out targetPath, out targetLine0, out targetChar0))
                         {
                             if (IsSameLspFile(targetPath))
                             {
-                                if (_panel != null) _panel.RevealLine(MonacoLine1(targetLine0), targetChar0 + 1);
+                                if (_panel != null) _panel.RevealLine(MonacoLine1(buffer, targetLine0), targetChar0 + 1);
                                 navigated = _panel != null;
                             }
                             else
@@ -3402,7 +3404,7 @@ namespace ClarionAssistant.Terminal
                 {
                     EnsureLspStarted();
                     if (SharedLspBridge.IsRunning)
-                        help = SharedLspBridge.GetSignatureHelp(_lspFileName, LspLine0(line), Math.Max(0, column - 1), LspBuffer(buffer));
+                        help = SharedLspBridge.GetSignatureHelp(_lspFileName, LspLine0(buffer, line), Math.Max(0, column - 1), LspBuffer(buffer));
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] signatureHelp: " + ex.Message); }
                 PostResponse(reqId, new Dictionary<string, object> { { "signatureHelp", help } });
@@ -3422,7 +3424,7 @@ namespace ClarionAssistant.Terminal
                     EnsureLspStarted();
                     if (SharedLspBridge.IsRunning)
                     {
-                        var resp = SharedLspBridge.GetHover(_lspFileName, LspLine0(line), Math.Max(0, column - 1), LspBuffer(buffer));
+                        var resp = SharedLspBridge.GetHover(_lspFileName, LspLine0(buffer, line), Math.Max(0, column - 1), LspBuffer(buffer));
                         contents = ExtractHoverString(resp);
                     }
                 }
