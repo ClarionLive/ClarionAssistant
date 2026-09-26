@@ -101,27 +101,64 @@ static class EmbedLspContextRedResolveTest
             Ok("a module next to the .app is used first (and the name is trimmed)", SamePath(r6, beside), "got " + (r6 ?? "null"));
 
             // An .app whose own project folder has its own .red is resolved through THAT .red, not the
-            // solution's (Active). Both trees hold a Demo007.clw; only the project's .red is right.
-            string projApp = Path.Combine(Root, "proj2", "Demo.app");
-            Directory.CreateDirectory(Path.GetDirectoryName(projApp));
-            File.WriteAllText(projApp, "");
+            // solution's (Active) — but only under the running version's name (Clarion120.red here); Clarion
+            // ignores any other *.red in the folder. The solution .red is loaded the way the IDE loads it:
+            // LoadForProject(solution folder, version config).
+            string binRed = Path.Combine(Root, "bin", "Clarion120.red");
+            Directory.CreateDirectory(Path.GetDirectoryName(binRed));
+            File.WriteAllText(binRed, "[Common]\r\n*.clw = ..\\common\r\n");
+            string slnDir = Path.Combine(Root, "sln");
+            Directory.CreateDirectory(slnDir);
+            File.WriteAllText(Path.Combine(slnDir, "Other.red"), "[Common]\r\n*.clw = ..\\decoy\r\n");   // not version-named
+            var solutionRed = new RedFileService();
+            bool loaded = solutionRed.LoadForProject(slnDir, new ClarionVersionConfig
+            {
+                RedFileName = "Clarion120.red",
+                RedFilePath = binRed,
+                Macros = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { { "GENROOT", Root } }
+            });
+            Ok("LoadForProject ignores a solution-folder .red that isn't version-named",
+               loaded && SamePath(solutionRed.RedFilePath, binRed), "loaded " + solutionRed.RedFilePath);
+
+            string ProjApp(string name)
+            {
+                string a = Path.Combine(Root, name, "Demo.app");
+                Directory.CreateDirectory(Path.GetDirectoryName(a));
+                File.WriteAllText(a, "");
+                return a;
+            }
             string mine = Touch(@"proj2gen\Demo007.clw");
             Touch(@"common\Demo007.clw");
+            Touch(@"decoy\Demo007.clw");
             string viaMacro = Touch(@"macrogen\Demo008.clw");
-            var solutionRed = LoadRed("solution.red", "[Common]\r\n*.clw = ..\\common\r\n",
-                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { { "GENROOT", Root } });
-            File.WriteAllText(Path.Combine(Root, "proj2", "proj2.red"),
-                "[Debug32]\r\nDemo008.clw = %GENROOT%\\macrogen\r\n[Common]\r\n*.clw = ..\\proj2gen\r\n");
 
-            string r7 = EmbedLspContext.ResolveModulePath(projApp, "Demo007.clw", solutionRed);
-            Ok("an .app with its own project .red resolves through it, not the solution's", SamePath(r7, mine),
+            string proj2 = ProjApp("proj2");
+            File.WriteAllText(Path.Combine(Root, "proj2", "Clarion120.red"),
+                "[Debug32]\r\nDemo008.clw = %GENROOT%\\macrogen\r\n[Common]\r\n*.clw = ..\\proj2gen\r\n");
+            string r7 = EmbedLspContext.ResolveModulePath(proj2, "Demo007.clw", solutionRed);
+            Ok("an .app with its own version-named .red resolves through it, not the solution's", SamePath(r7, mine),
                "got " + (r7 ?? "null"));
             Ok("...without replacing RedFileService.Active", ReferenceEquals(RedFileService.Active, solutionRed));
-            string r8 = EmbedLspContext.ResolveModulePath(projApp, "Demo008.clw", solutionRed);
+            string r8 = EmbedLspContext.ResolveModulePath(proj2, "Demo008.clw", solutionRed);
             Ok("the project .red is expanded with the solution's macros", SamePath(r8, viaMacro), "got " + (r8 ?? "null"));
+
+            // A *.red Clarion would ignore (wrong name) must not be honoured.
+            string proj3 = ProjApp("proj3");
+            File.WriteAllText(Path.Combine(Root, "proj3", "MyApp.red"), "[Common]\r\n*.clw = ..\\decoy\r\n");
+            string r10 = EmbedLspContext.ResolveModulePath(proj3, "Demo007.clw", solutionRed);
+            Ok("an unrelated *.red in the .app folder is ignored (solution .red used)",
+               SamePath(r10, Path.Combine(Root, "common", "Demo007.clw")), "got " + (r10 ?? "null"));
+
+            // Several *.red: only the version-named one counts, whatever order the folder lists them in
+            // ("Aaa.red" sorts first).
+            string proj4 = ProjApp("proj4");
+            File.WriteAllText(Path.Combine(Root, "proj4", "Aaa.red"), "[Common]\r\n*.clw = ..\\decoy\r\n");
+            File.WriteAllText(Path.Combine(Root, "proj4", "Clarion120.red"), "[Common]\r\n*.clw = ..\\proj2gen\r\n");
+            string r11 = EmbedLspContext.ResolveModulePath(proj4, "Demo007.clw", solutionRed);
+            Ok("with several *.red, the version-named one wins", SamePath(r11, mine), "got " + (r11 ?? "null"));
+
             string r9 = EmbedLspContext.ResolveModulePath(app, "Demo003.clw", solutionRed);
             Ok("an .app folder without a .red still uses the solution's", SamePath(r9, common), "got " + (r9 ?? "null"));
-
             // Give-up paths: nowhere on disk, and no .red loaded.
             Ok("a module found nowhere returns null", EmbedLspContext.ResolveModulePath(app, "Nope.clw", red) == null);
             Ok("no .red loaded and not next to the .app returns null",

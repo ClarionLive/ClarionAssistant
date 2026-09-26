@@ -21,6 +21,7 @@ namespace ClarionAssistant.Services
     {
         public string BinPath { get; set; }
         public string RootPath { get; set; }
+        public string RedFileName { get; set; }
         public string RedFilePath { get; set; }
         public Dictionary<string, string> Macros { get; set; }
     }

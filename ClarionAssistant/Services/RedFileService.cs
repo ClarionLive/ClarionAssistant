@@ -73,6 +73,11 @@ namespace ClarionAssistant.Services
         public static RedFileService Active { get; private set; }
 
         public string RedFilePath => _redFilePath;
+
+        /// <summary>The running Clarion version's redirection file NAME (e.g. "Clarion120.red"), when this
+        /// instance was loaded from a <see cref="ClarionVersionConfig"/>; null otherwise. A local .red only
+        /// takes effect under exactly this name (see <see cref="FindLocalRedFile"/>).</summary>
+        public string VersionRedFileName { get; private set; }
         public IReadOnlyDictionary<string, RedSection> Sections => _sections;
         public IReadOnlyDictionary<string, string> Macros => _macros;
 
@@ -148,6 +153,7 @@ namespace ClarionAssistant.Services
             if (!macros.ContainsKey("BIN") && !string.IsNullOrEmpty(config.BinPath))
                 macros["BIN"] = config.BinPath;
 
+            VersionRedFileName = config.RedFileName;
             return Load(config.RedFilePath, macros);
         }
 
@@ -173,10 +179,12 @@ namespace ClarionAssistant.Services
             if (!macros.ContainsKey("BIN") && !string.IsNullOrEmpty(config.BinPath))
                 macros["BIN"] = config.BinPath;
 
+            VersionRedFileName = config.RedFileName;
+
             // Check for a local .red file in the project directory
             if (!string.IsNullOrEmpty(projectDirectory) && Directory.Exists(projectDirectory))
             {
-                string localRed = FindLocalRedFile(projectDirectory);
+                string localRed = FindLocalRedFile(projectDirectory, config.RedFileName);
                 if (localRed != null)
                     return Load(localRed, macros);
             }
@@ -190,8 +198,9 @@ namespace ClarionAssistant.Services
 
         /// <summary>
         /// The redirection file that governs a project living in <paramref name="projectDirectory"/>: the
-        /// directory's own .red when it has one (a local .red completely supersedes the solution/version one,
-        /// the same rule as <see cref="LoadForProject"/>), otherwise <paramref name="fallback"/> — normally
+        /// directory's own version-named .red when it has one (it completely supersedes the solution/version
+        /// one; same rule as <see cref="LoadForProject"/>, see <see cref="FindLocalRedFile"/>), otherwise
+        /// <paramref name="fallback"/> — normally
         /// <see cref="Active"/>, which is loaded for the SOLUTION's directory. Without this, an .app in its own
         /// project folder with its own .red resolves through another project's redirection.
         /// The local file is parsed with the fallback's macros (%ROOT%, %BIN%, ...) and is NOT made
@@ -200,8 +209,13 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static RedFileService ForProjectDirectory(string projectDirectory, RedFileService fallback)
         {
-            if (string.IsNullOrEmpty(projectDirectory)) return fallback;
-            string localRed = FindLocalRedFile(projectDirectory);
+            if (string.IsNullOrEmpty(projectDirectory) || fallback == null) return fallback;
+            // The version's file name: recorded when the fallback came from a version config; otherwise the
+            // fallback's own file name (a version-level .red is named for its version).
+            string versionName = fallback.VersionRedFileName;
+            if (string.IsNullOrEmpty(versionName) && !string.IsNullOrEmpty(fallback.RedFilePath))
+                versionName = Path.GetFileName(fallback.RedFilePath);
+            string localRed = FindLocalRedFile(projectDirectory, versionName);
             if (localRed == null) return fallback;
             if (fallback != null && !string.IsNullOrEmpty(fallback.RedFilePath))
             {
@@ -217,23 +231,28 @@ namespace ClarionAssistant.Services
             var macros = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (fallback != null)
                 foreach (var kv in fallback.Macros) macros[kv.Key] = kv.Value;
-            var local = new RedFileService();
+            var local = new RedFileService { VersionRedFileName = versionName };
             return local.Load(localRed, macros, makeActive: false) ? local : fallback;
         }
 
         /// <summary>
-        /// Look for a .red file in a project directory.
+        /// The local override .red in a project directory, or null. Clarion honours a local .red ONLY under
+        /// the running version's own redirection file name (Clarion120.red for C12, Clarion110.red for C11 —
+        /// ClarionVersionConfig.RedFileName); any other *.red there (MyApp.red, a backup, a second copy) is
+        /// ignored by the IDE and ClarionCL alike (docs\ClarionCL-App-Generation.md, "A local .red overrides
+        /// the global one only if version-named"). This used to take the FIRST *.red in the folder, which
+        /// could be a file Clarion ignores, and with several present was whichever the file system listed
+        /// first. Returns null when the version name is unknown.
         /// </summary>
-        private static string FindLocalRedFile(string directory)
+        private static string FindLocalRedFile(string directory, string versionRedFileName)
         {
+            if (string.IsNullOrEmpty(directory) || string.IsNullOrEmpty(versionRedFileName)) return null;
             try
             {
-                string[] redFiles = Directory.GetFiles(directory, "*.red", SearchOption.TopDirectoryOnly);
-                if (redFiles.Length > 0)
-                    return redFiles[0];
+                string candidate = Path.Combine(directory, Path.GetFileName(versionRedFileName));
+                return File.Exists(candidate) ? candidate : null;
             }
-            catch { }
-            return null;
+            catch { return null; }
         }
 
         private void Parse(string[] lines)
