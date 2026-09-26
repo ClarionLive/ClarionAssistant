@@ -1162,7 +1162,7 @@ namespace ClarionAssistant
 
         // Canonical section search order used by the resolver (ClarionAppDataReader): C12 names first, then the
         // legacy names, then the universal Common fallback. EnumerateFiles/ResolveTrace walk this in priority order.
-        private static readonly string[] RedSectionOrder = { "Debug32", "Release32", "Debug", "Release", "Common" };
+        private static readonly string[] RedSectionOrder = Services.RedFileService.BuildSectionOrder;
 
         /// <summary>
         /// Load the active Clarion redirection (.red) file ourselves — same resolution the chat pad's LoadRedFile

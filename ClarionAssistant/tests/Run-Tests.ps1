@@ -114,10 +114,15 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             # WrapBuffer actually prepended (0 lines for a buffer opening with MEMBER/PROGRAM).
             @{ Name = "EmbedLspContext.LineMapping"
                Sources = @("tests\EmbedLspContext.LineMapping.cs", "tests\EmbedLspContext.LineMapping.Stubs.cs",
-                           "Services\EmbedLspContext.cs", "Services\EncodingHelper.cs")
+                           "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll") }
             @{ Name = "ClarionClDiagnosis.Test"
                Sources = @("tests\ClarionClDiagnosis.Test.cs", "Services\ClarionClDiagnosis.cs")
+               Refs = @("System.dll") }
+            # PR #228: the embeditor finds the generated module through the .red's build sections too.
+            @{ Name = "EmbedLspContext.RedResolve.Test"
+               Sources = @("tests\EmbedLspContext.RedResolve.Test.cs", "tests\EmbedLspContext.RedResolve.Stubs.cs",
+                           "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll") }
             # Per-embed-slot structure balance (Passes 2 & 3), LSP pass stubbed. Reuses the
             # StructureScan stubs so the REAL ClarionAppDataReader supplies the routine set.

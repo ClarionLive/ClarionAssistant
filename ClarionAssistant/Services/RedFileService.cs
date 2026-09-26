@@ -50,6 +50,21 @@ namespace ClarionAssistant.Services
         /// the host reports truncation from the out-param, so the UI hint and the flag never disagree.</summary>
         public const int MaxFiles = 20000;
 
+        /// <summary>
+        /// The section order to search when resolving a file the BUILD produces or consumes — the C12 names
+        /// (Debug32/Release32) first, then the legacy Debug/Release, then the universal Common fallback.
+        /// A redirection for generated sources often lives ONLY under a build-specific section, so a
+        /// Common-only lookup (the <see cref="ResolveFrom"/> default) misses it. Single source of truth:
+        /// pass this rather than spelling the list out at each call site.
+        ///
+        /// The order is FIXED, not the build's active configuration: nothing in this codebase reads which
+        /// configuration (Debug/Release) is current. It is the order ClarionAppDataReader has always used,
+        /// so a .red that maps *.clw differently under [Debug32] and [Release32] resolves the [Debug32] one.
+        ///
+        /// Shared array: DO NOT MUTATE it — every caller passes this same instance.
+        /// </summary>
+        public static readonly string[] BuildSectionOrder = { "Debug32", "Release32", "Debug", "Release", "Common" };
+
         private readonly Dictionary<string, RedSection> _sections;
         private readonly Dictionary<string, string> _macros;
         private string _redFilePath;
@@ -58,6 +73,11 @@ namespace ClarionAssistant.Services
         public static RedFileService Active { get; private set; }
 
         public string RedFilePath => _redFilePath;
+
+        /// <summary>The running Clarion version's redirection file NAME (e.g. "Clarion120.red"), when this
+        /// instance was loaded from a <see cref="ClarionVersionConfig"/>; null otherwise. A local .red only
+        /// takes effect under exactly this name (see <see cref="FindLocalRedFile"/>).</summary>
+        public string VersionRedFileName { get; private set; }
         public IReadOnlyDictionary<string, RedSection> Sections => _sections;
         public IReadOnlyDictionary<string, string> Macros => _macros;
 
@@ -71,6 +91,11 @@ namespace ClarionAssistant.Services
         /// Load and parse a .red file using macros from the version config.
         /// </summary>
         public bool Load(string redFilePath, Dictionary<string, string> macros)
+        {
+            return Load(redFilePath, macros, makeActive: true);
+        }
+
+        private bool Load(string redFilePath, Dictionary<string, string> macros, bool makeActive)
         {
             if (string.IsNullOrEmpty(redFilePath) || !File.Exists(redFilePath))
                 return false;
@@ -98,7 +123,7 @@ namespace ClarionAssistant.Services
             try
             {
                 Parse(EncodingHelper.ReadAllLines(redFilePath, out _));
-                Active = this;
+                if (makeActive) Active = this;
                 return true;
             }
             catch
@@ -128,6 +153,7 @@ namespace ClarionAssistant.Services
             if (!macros.ContainsKey("BIN") && !string.IsNullOrEmpty(config.BinPath))
                 macros["BIN"] = config.BinPath;
 
+            VersionRedFileName = config.RedFileName;
             return Load(config.RedFilePath, macros);
         }
 
@@ -153,10 +179,12 @@ namespace ClarionAssistant.Services
             if (!macros.ContainsKey("BIN") && !string.IsNullOrEmpty(config.BinPath))
                 macros["BIN"] = config.BinPath;
 
+            VersionRedFileName = config.RedFileName;
+
             // Check for a local .red file in the project directory
             if (!string.IsNullOrEmpty(projectDirectory) && Directory.Exists(projectDirectory))
             {
-                string localRed = FindLocalRedFile(projectDirectory);
+                string localRed = FindLocalRedFile(projectDirectory, config.RedFileName);
                 if (localRed != null)
                     return Load(localRed, macros);
             }
@@ -169,18 +197,62 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// Look for a .red file in a project directory.
+        /// The redirection file that governs a project living in <paramref name="projectDirectory"/>: the
+        /// directory's own version-named .red when it has one (it completely supersedes the solution/version
+        /// one; same rule as <see cref="LoadForProject"/>, see <see cref="FindLocalRedFile"/>), otherwise
+        /// <paramref name="fallback"/> — normally
+        /// <see cref="Active"/>, which is loaded for the SOLUTION's directory. Without this, an .app in its own
+        /// project folder with its own .red resolves through another project's redirection.
+        /// The local file is parsed with the fallback's macros (%ROOT%, %BIN%, ...) and is NOT made
+        /// <see cref="Active"/>. Returns <paramref name="fallback"/> when the local .red is the file it already
+        /// holds, or when the local one can't be read.
         /// </summary>
-        private static string FindLocalRedFile(string directory)
+        public static RedFileService ForProjectDirectory(string projectDirectory, RedFileService fallback)
         {
+            if (string.IsNullOrEmpty(projectDirectory) || fallback == null) return fallback;
+            // The version's file name: recorded when the fallback came from a version config; otherwise the
+            // fallback's own file name (a version-level .red is named for its version).
+            string versionName = fallback.VersionRedFileName;
+            if (string.IsNullOrEmpty(versionName) && !string.IsNullOrEmpty(fallback.RedFilePath))
+                versionName = Path.GetFileName(fallback.RedFilePath);
+            string localRed = FindLocalRedFile(projectDirectory, versionName);
+            if (localRed == null) return fallback;
+            if (fallback != null && !string.IsNullOrEmpty(fallback.RedFilePath))
+            {
+                try
+                {
+                    if (string.Equals(Path.GetFullPath(localRed), Path.GetFullPath(fallback.RedFilePath),
+                                      StringComparison.OrdinalIgnoreCase))
+                        return fallback;
+                }
+                catch { }
+            }
+
+            var macros = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (fallback != null)
+                foreach (var kv in fallback.Macros) macros[kv.Key] = kv.Value;
+            var local = new RedFileService { VersionRedFileName = versionName };
+            return local.Load(localRed, macros, makeActive: false) ? local : fallback;
+        }
+
+        /// <summary>
+        /// The local override .red in a project directory, or null. Clarion honours a local .red ONLY under
+        /// the running version's own redirection file name (Clarion120.red for C12, Clarion110.red for C11 —
+        /// ClarionVersionConfig.RedFileName); any other *.red there (MyApp.red, a backup, a second copy) is
+        /// ignored by the IDE and ClarionCL alike (docs\ClarionCL-App-Generation.md, "A local .red overrides
+        /// the global one only if version-named"). This used to take the FIRST *.red in the folder, which
+        /// could be a file Clarion ignores, and with several present was whichever the file system listed
+        /// first. Returns null when the version name is unknown.
+        /// </summary>
+        private static string FindLocalRedFile(string directory, string versionRedFileName)
+        {
+            if (string.IsNullOrEmpty(directory) || string.IsNullOrEmpty(versionRedFileName)) return null;
             try
             {
-                string[] redFiles = Directory.GetFiles(directory, "*.red", SearchOption.TopDirectoryOnly);
-                if (redFiles.Length > 0)
-                    return redFiles[0];
+                string candidate = Path.Combine(directory, Path.GetFileName(versionRedFileName));
+                return File.Exists(candidate) ? candidate : null;
             }
-            catch { }
-            return null;
+            catch { return null; }
         }
 
         private void Parse(string[] lines)
@@ -292,6 +364,16 @@ namespace ClarionAssistant.Services
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Resolve a build-related file (e.g. a generated module .clw) through every section in
+        /// <see cref="BuildSectionOrder"/>, anchoring relative entries at <paramref name="baseDir"/>.
+        /// Returns the first existing match, or null.
+        /// </summary>
+        public string ResolveForBuild(string fileName, string baseDir)
+        {
+            return ResolveFrom(fileName, baseDir, BuildSectionOrder);
         }
 
         /// <summary>
