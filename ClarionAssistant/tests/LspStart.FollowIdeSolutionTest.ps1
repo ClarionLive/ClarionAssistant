@@ -150,6 +150,19 @@ try {
     Show 'record=A  again' $r6
     Assert-That ($r5.Contains($tailA) -and $r5 -match 'started') "re-publishing A did not start the server on A: $r5"
     Assert-That ($r6 -match 'already running' -and $r6.Contains($tailA)) "an unchanged record restarted the server: $r6"
+
+    # -- R4 (pipeline run 2): a record that is LOCKED (Publish mid-copy) is not "gone" --------
+    # Its mtime moves first so the reader must look again, then it is held with no sharing. The
+    # server must keep serving A, not stop as if the IDE had closed the solution.
+    [System.IO.File]::SetLastWriteTimeUtc($recordFile, [DateTime]::UtcNow.AddSeconds(5))
+    $lock = [System.IO.File]::Open($recordFile, 'Open', 'Read', 'None')
+    try {
+        $r7 = Tool 'lsp_start' @{}
+        Show 'record LOCKED' $r7
+        Assert-That ($r7 -match 'already running' -and $r7.Contains($tailA)) `
+            "a locked (unreadable) record stopped or moved the server: $r7"
+    }
+    finally { $lock.Dispose() }
 }
 finally {
     if ($p -and -not $p.HasExited) {

@@ -108,6 +108,27 @@ static class IdeSolutionRecordTest
             IdeSolutionRecord.Publish(null);
             Check(IdeSolutionRecord.ReadCached(self, out note) == null, "ReadCached sees the record removed");
 
+            // -- R4: an UNREADABLE record is transient, not "gone"
+            IdeSolutionRecord.ResetForTest();
+            IdeSolutionRecord.Publish(sln);
+            string rf = IdeSolutionRecord.PathForPid(self);
+            Check(string.Equals(IdeSolutionRecord.ReadCached(self, out note), sln, StringComparison.OrdinalIgnoreCase),
+                "R4: ReadCached returns A before the lock");
+            File.SetLastWriteTimeUtc(rf, DateTime.UtcNow.AddSeconds(5));   // new stamp: forces a re-read
+            using (new FileStream(rf, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                bool transient;
+                string locked = IdeSolutionRecord.Read(self, out note, out transient);
+                Check(locked == null && transient, "R4: a locked record reads as TRANSIENT (" + note + ")");
+                Check(string.Equals(IdeSolutionRecord.ReadCached(self, out note), sln, StringComparison.OrdinalIgnoreCase),
+                    "R4: ReadCached keeps the last definite answer while the record is locked");
+            }
+            File.WriteAllText(rf, "{\"solution\":");                    // half-written copy
+            Check(string.Equals(IdeSolutionRecord.ReadCached(self, out note), sln, StringComparison.OrdinalIgnoreCase),
+                "R4: a half-written record keeps the last definite answer");
+            IdeSolutionRecord.Publish(null);
+            Check(IdeSolutionRecord.ReadCached(self, out note) == null, "R4: a record really removed is definite: null");
+
             // -- publishing a path that does not exist is "nothing open", not a stale write
             IdeSolutionRecord.ResetForTest();
             IdeSolutionRecord.Publish(Path.Combine(root, "missing.sln"));

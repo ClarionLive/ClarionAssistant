@@ -106,7 +106,21 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static string Read(int idePid, out string note)
         {
+            bool transient;
+            return Read(idePid, out note, out transient);
+        }
+
+        /// <summary>
+        /// As <see cref="Read(int, out string)"/>, and says whether a null is only TRANSIENT: the
+        /// record exists but could not be read or parsed right now - a sharing violation or a
+        /// half-copied file while Publish replaces it. A transient null says nothing about whether the
+        /// IDE still has a solution open, so a follower must not act on it (pipeline run 2, R4).
+        /// Every other null (no record, IDE gone, pid mismatch, .sln gone) is DEFINITE.
+        /// </summary>
+        public static string Read(int idePid, out string note, out bool transient)
+        {
             note = null;
+            transient = false;
             try
             {
                 string file = PathForPid(idePid);
@@ -116,10 +130,28 @@ namespace ClarionAssistant.Services
                     return null;
                 }
 
-                var rec = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(file));
+                Dictionary<string, object> rec;
+                try
+                {
+                    rec = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(file));
+                    if (rec == null) throw new InvalidOperationException("empty record");
+                }
+                catch (Exception ex)
+                {
+                    if (!File.Exists(file))
+                    {
+                        note = "the IDE (pid " + idePid + ") has published no open solution";
+                        return null;
+                    }
+                    transient = true;
+                    note = "the IDE's solution record could not be read right now (" + ex.GetType().Name + ": "
+                        + ex.Message + ") - treated as unchanged";
+                    return null;
+                }
+
                 object v;
-                string sln = rec != null && rec.TryGetValue("solution", out v) ? v as string : null;
-                int pid = rec != null && rec.TryGetValue("pid", out v) && v != null ? Convert.ToInt32(v) : 0;
+                string sln = rec.TryGetValue("solution", out v) ? v as string : null;
+                int pid = rec.TryGetValue("pid", out v) && v != null ? Convert.ToInt32(v) : 0;
 
                 // The record must be the one THAT IDE wrote about itself: a payload naming another
                 // pid (a copied or planted file) is refused, not trusted (pipeline run 1).
@@ -143,11 +175,11 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
+                transient = true;
                 note = "could not read the IDE's solution record: " + ex.Message;
                 return null;
             }
         }
-
         private static bool IsAlive(int pid)
         {
             try
@@ -168,7 +200,8 @@ namespace ClarionAssistant.Services
         /// <see cref="Read"/> for a caller that asks on EVERY lsp_* call (LspService's followed
         /// solution). Costs one file stat per call; the record is re-parsed only when its mtime or
         /// size changes (or it appears/disappears), and the IDE's liveness is re-checked at most every
-        /// few seconds. Returns the same answer Read would, modulo that liveness window.
+        /// few seconds. Returns the same answer Read would, modulo that liveness window - except that a
+        /// TRANSIENT failure returns the last definite answer (see Read's transient overload).
         /// </summary>
         public static string ReadCached(int idePid, out string note)
         {
@@ -186,9 +219,23 @@ namespace ClarionAssistant.Services
                     && (DateTime.UtcNow - _cacheCheckedAt).TotalSeconds < 3;
                 if (!fresh)
                 {
-                    _cacheValue = Read(idePid, out _cacheNote);
+                    string readNote = null;
+                    bool transient = false;
+                    string value = stamp == -2 ? null : Read(idePid, out readNote, out transient);
+                    if (stamp == -2) { transient = true; readNote = "the IDE's solution record could not be examined right now"; }
+                    if (transient && _cachePid == idePid)
+                    {
+                        // Unreadable right now: keep the LAST DEFINITE answer, and retry on the next
+                        // call rather than trusting a stamp we could not act on (R4). A follower
+                        // therefore keeps its server instead of stopping on a sharing violation.
+                        _cacheStamp = -3;
+                        note = readNote;
+                        return _cacheValue;
+                    }
+                    _cacheValue = value;
+                    _cacheNote = readNote;
                     _cachePid = idePid;
-                    _cacheStamp = stamp;
+                    _cacheStamp = transient ? -3 : stamp;
                     _cacheCheckedAt = DateTime.UtcNow;
                 }
                 note = _cacheNote;

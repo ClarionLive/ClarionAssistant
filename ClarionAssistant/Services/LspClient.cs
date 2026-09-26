@@ -101,14 +101,14 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// Start the LSP server and initialize the protocol.
-        /// </summary>
-        /// <summary>
         /// Set when the last <see cref="Start"/> failed because the node process could not be
         /// launched (Process.Start threw); null otherwise, including for a handshake failure.
         /// </summary>
         public string LastSpawnError { get; private set; }
 
+        /// <summary>
+        /// Start the LSP server and initialize the protocol.
+        /// </summary>
         public bool Start(string serverJsPath, string workspaceUri, string workspaceName)
         {
             if (_running) return true;
