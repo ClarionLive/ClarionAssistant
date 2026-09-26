@@ -284,7 +284,18 @@ if ($Pure) {
 
     # Ensure a clean tag checkout at $PureRoot, cloned from source.repo.
     if ((Test-Path (Join-Path $PureRoot 'package.json')) -and -not (Test-Path (Join-Path $PureRoot '.git'))) {
-        Info "Using existing (non-git) pure tree as-is"
+        # Refuse the WHOLE non-git path without -TrustNonGitTree, not just its npm step. Such a tree's
+        # origin and commit cannot be verified, and a build stamp inside it proves nothing (anyone can
+        # write one matching the local fingerprint), so an untrusted tree must neither run npm NOR have
+        # its server.js hash recorded as the pin.
+        if (-not $TrustNonGitTree) {
+            Fail "$PureRoot is not a git checkout, so its origin and commit cannot be verified — refusing to build it or record its hash."
+            Write-Host "         Delete it and re-run -Pure to clone $repoUrl at $Tag (verified), or, if you vouch" -ForegroundColor Red
+            Write-Host "         for this tree, re-run with -TrustNonGitTree." -ForegroundColor Red
+            exit 2
+        }
+        Warn "-TrustNonGitTree: using an UNVERIFIED non-git tree at the developer's word — its server.js hash"
+        Warn "will be recorded as resolvedServerSha256. Do not commit that manifest unless you vouch for this tree."
     } else {
         if (Test-Path (Join-Path $PureRoot '.git')) {
             Info "Refreshing existing checkout -> $Tag"

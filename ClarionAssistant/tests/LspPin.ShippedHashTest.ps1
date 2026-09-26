@@ -188,8 +188,14 @@ try {
     Check "2  unchanged tree: NOT rebuilt" (($r2.code -eq 0) -and ((Get-BuildCount) -eq 1))
     Check "2  says the build is already present" ($r2.text -match 'pure build already present for tree:')
     Check "2  skipped build: stamp NOT rewritten" ([System.IO.File]::ReadAllText($stampPath) -eq $stampBytes)
+    # A stamp matching the local fingerprint proves nothing (anyone can write one): without the switch
+    # the tree is refused outright, and the manifest is NOT rewritten from it.
+    # Reset the manifest to one WITHOUT a hash, so "unchanged" cannot pass by rewriting identical bytes.
+    Write-SyncManifest 'https://example.invalid/Clarion-Extension.git' $null
+    $manBefore = [System.IO.File]::ReadAllText($syncManifest)
     $r2b = Invoke-Sync $tree
-    Check "2b stamped build, no -TrustNonGitTree: no npm needed, so allowed (exit 0)" (($r2b.code -eq 0) -and ((Get-BuildCount) -eq 1))
+    Check "2b stamped build, no -TrustNonGitTree: refused (exit 2), no npm" (($r2b.code -eq 2) -and ((Get-BuildCount) -eq 1))
+    Check "2b ... manifest unchanged (no resolvedServerSha256 recorded from the untrusted tree)" ([System.IO.File]::ReadAllText($syncManifest) -eq $manBefore)
 
     'x' | Set-Content (Join-Path $tree 'out\server\src\unrelated.js')
     $null = Invoke-Sync $tree -Trust
