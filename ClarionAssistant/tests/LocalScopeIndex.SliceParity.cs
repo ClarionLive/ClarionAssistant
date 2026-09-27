@@ -63,6 +63,17 @@ static class LocalScopeIndexSliceParity
         // A DO far above its routine: capped, the routine header is outside the window, so only the map's
         // routine list can answer it.
         Parity("two-procs, DO far from its routine, capped", two.Replace("  Loc\r\n", "  Loc\r\n  DO Rt\r\n"), 1, capped: true);
+        // R11b: the DATA pieces travel as their map hash alone, resolved from the cache.
+        Parity("two-procs, capped, hash-only DATA pieces", two, 1, capped: true, hashOnly: true);
+        Parity("two-procs, DO far, capped, hash-only", two.Replace("  Loc\r\n", "  Loc\r\n  DO Rt\r\n"), 1, capped: true, hashOnly: true);
+        var hm = LocalScopeIndex.BuildSpanMap(two);
+        string t1;
+        bool allResolve = hm.Procs.All(p => LocalScopeIndex.TryGetPieceText(p.DataHash, out t1) && t1.StartsWith(p.Name))
+                       && hm.Procs.SelectMany(p => p.RoutineSpans).All(r => LocalScopeIndex.TryGetPieceText(r.DataHash, out t1) && t1.StartsWith(r.Name));
+        Check(allResolve && hm.Procs.SelectMany(p => p.RoutineSpans).Any(), "R11b.cache",
+              "BuildSpanMap cached every proc's and routine's DATA piece under its DataHash (TryGetPieceText resolves them)");
+        Check(LocalScopeIndex.MissingPieces(new[] { new SlicePiece { Start = 1, Hash = "nope:1" } }).SequenceEqual(new[] { "nope:1" }),
+              "R11b.missing", "an unknown hash is reported by MissingPieces (the needPieces reply)");
         ParityEdited(two, edited);
 
         if (real != null && File.Exists(real))
@@ -115,6 +126,7 @@ static class LocalScopeIndexSliceParity
             Parity(Path.GetFileName(real), buf, Math.Max(1, lineCount / 60), capped: false);
             Parity(Path.GetFileName(real) + " capped, 3-line window", buf, Math.Max(1, lineCount / 60) + 7, capped: true);
             Parity(Path.GetFileName(real) + " capped, 400-line window", buf, Math.Max(1, lineCount / 60) + 3, capped: true, window: 200);
+            Parity(Path.GetFileName(real) + " capped, 400-line window, hash-only DATA", buf, Math.Max(1, lineCount / 60) + 5, capped: true, window: 200, hashOnly: true);
         }
 
         Console.WriteLine();
@@ -136,7 +148,7 @@ static class LocalScopeIndexSliceParity
     }
 
     /// <summary>The page's slice for 0-based line <paramref name="line0"/>, from the span map.</summary>
-    static void Slice(SpanMap map, string[] rawLines, int line0, bool capped, int window,
+    static void Slice(SpanMap map, string[] rawLines, int line0, bool capped, int window, bool hashOnly,
                       out List<SlicePiece> pieces, out List<string> routines)
     {
         pieces = new List<SlicePiece>();
@@ -145,21 +157,22 @@ static class LocalScopeIndexSliceParity
         var proc = map.Procs.LastOrDefault(p => p.Start <= line1 && line1 <= p.End);
         if (proc == null) return;
         routines = proc.Routines.ToList();
-        if (proc.Owner.HasValue)
-        {
-            var o = map.Procs[proc.Owner.Value];
-            pieces.Add(new SlicePiece(o.Start, Lines(rawLines, o.Start, o.DataEnd)));
-        }
+        SpanProc owner = proc.Owner.HasValue ? map.Procs[proc.Owner.Value] : null;
         if (!capped || proc.End - proc.DataEnd < 8)
         {
+            if (owner != null) pieces.Add(new SlicePiece(owner.Start, Lines(rawLines, owner.Start, owner.DataEnd)));
             pieces.Add(new SlicePiece(proc.Start, Lines(rawLines, proc.Start, proc.End)));
             return;
         }
-        // Capped: the procedure's own header..DATA, the enclosing routine's header..DATA, plus a window
-        // around the caret.
-        pieces.Add(new SlicePiece(proc.Start, Lines(rawLines, proc.Start, proc.DataEnd)));
+        // Capped, in the R11b wire order: the procedure's DATA, the enclosing routine's DATA, the owner's
+        // DATA, then the window around the caret. With hashOnly, the DATA pieces travel as their map hash.
+        Func<int, int, string, SlicePiece> data = (start, dataEnd, hash) => hashOnly
+            ? new SlicePiece { Start = start, Hash = hash }
+            : new SlicePiece(start, Lines(rawLines, start, dataEnd));
+        pieces.Add(data(proc.Start, proc.DataEnd, proc.DataHash));
         var rt = proc.RoutineSpans.LastOrDefault(r => r.Start <= line1);
-        if (rt != null) pieces.Add(new SlicePiece(rt.Start, Lines(rawLines, rt.Start, rt.DataEnd)));
+        if (rt != null) pieces.Add(data(rt.Start, rt.DataEnd, rt.DataHash));
+        if (owner != null) pieces.Add(data(owner.Start, owner.DataEnd, owner.DataHash));
         int lo = Math.Max(proc.DataEnd + 1, line1 - window), hi = Math.Min(proc.End, line1 + window);
         if (lo <= hi) pieces.Add(new SlicePiece(lo, Lines(rawLines, lo, hi)));
     }
@@ -173,7 +186,7 @@ static class LocalScopeIndexSliceParity
 
     static string Mem(LocalMemberAccess m) { return m == null ? "(null)" : m.Instance + "|" + m.Partial + "|" + m.LocalClass + "|" + m.BaseType; }
 
-    static void Parity(string name, string buf, int step, bool capped, int window = 3)
+    static void Parity(string name, string buf, int step, bool capped, int window = 3, bool hashOnly = false)
     {
         var map = LocalScopeIndex.BuildSpanMap(buf);
         string header;
@@ -186,7 +199,8 @@ static class LocalScopeIndexSliceParity
             string line = raw[l].TrimEnd('\r');
             List<SlicePiece> pieces;
             List<string> routines;
-            Slice(map, raw, l, capped, window, out pieces, out routines);
+            Slice(map, raw, l, capped, window, hashOnly, out pieces, out routines);
+            if (hashOnly && LocalScopeIndex.MissingPieces(pieces).Count > 0) { diffs++; firstDiff = firstDiff ?? "a map hash did not resolve"; }
             var cols = new SortedSet<int> { line.Length };
             for (int c = 1; c < line.Length; c++)
             {
@@ -202,15 +216,17 @@ static class LocalScopeIndexSliceParity
                 string sc = Items(LocalScopeIndex.Complete(header, pieces, routines, l, col, null));
                 string fh = Hov(LocalScopeIndex.Hover(buf, l, col, "m.clw"));
                 string sh = Hov(LocalScopeIndex.Hover(header, pieces, routines, l, col, "m.clw"));
-                SlicePiece owner = pieces.Count > 1 && !capped ? pieces[0] : null;
-                SlicePiece span = pieces.Count > 0 ? pieces[pieces.Count - 1] : null;
                 string fm = Mem(LocalScopeIndex.GetMemberAccess(buf, l, col));
-                string sm = capped ? fm : Mem(LocalScopeIndex.GetMemberAccess(header, owner, span, routines, l, col));
+                string sm = Mem(LocalScopeIndex.GetMemberAccess(header, pieces, routines, l, col));
                 if (!capped && pieces.Count > 0)
                 {
-                    // The contract's two-piece overloads must agree with the list overloads.
+                    // The two-piece overloads must agree with the list overloads.
+                    SlicePiece owner = pieces.Count > 1 ? pieces[0] : null;
+                    SlicePiece span = pieces[pieces.Count - 1];
                     string sc2 = Items(LocalScopeIndex.Complete(header, owner, span, routines, l, col, null));
+                    string sm2 = Mem(LocalScopeIndex.GetMemberAccess(header, owner, span, routines, l, col));
                     if (sc2 != sc) sc = "(two-piece overload differs) " + sc2;
+                    if (sm2 != sm) sm = "(two-piece overload differs) " + sm2;
                 }
                 if (fc != sc || fh != sh || fm != sm)
                 {

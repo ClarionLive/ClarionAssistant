@@ -29,11 +29,14 @@ namespace ClarionAssistant.Services
         public string BaseType;
     }
 
-    /// <summary>A piece of the page's buffer: <see cref="Text"/> starts at 1-based Monaco line <see cref="Start"/>.</summary>
+    /// <summary>A piece of the page's buffer: <see cref="Text"/> starts at 1-based Monaco line <see cref="Start"/>.
+    /// A DATA piece the page has not edited since the span map may travel as <see cref="Hash"/> alone (R11b);
+    /// the overloads resolve its text from the map's cache (<see cref="LocalScopeIndex.TryGetPieceText"/>).</summary>
     public sealed class SlicePiece
     {
         public int Start;
         public string Text;
+        public string Hash;
         public SlicePiece() { }
         public SlicePiece(int start, string text) { Start = start; Text = text; }
     }
@@ -48,6 +51,8 @@ namespace ClarionAssistant.Services
         public string Name;
         public int Start, DataEnd, End;
         public int? Owner;
+        /// <summary>Hash of the Start..DataEnd piece text; the text is cached under it (R11b).</summary>
+        public string DataHash;
         public readonly List<string> Routines = new List<string>();
         /// <summary>Each routine's header line and DATA end (its CODE line, or its header when it has no
         /// DATA section). A page that caps a long span around the caret sends the enclosing routine's
@@ -59,6 +64,8 @@ namespace ClarionAssistant.Services
     {
         public string Name;
         public int Start, DataEnd;
+        /// <summary>Hash of the Start..DataEnd piece text; the text is cached under it (R11b).</summary>
+        public string DataHash;
     }
 
     /// <summary>What the host pushes to the page after each full buffer (R11): the header's hash (its text is
@@ -1564,7 +1571,92 @@ namespace ClarionAssistant.Services
                 }
             }
             if (cur != null) cur.End = line - 1;
+            CachePieces(buffer, map);
             return map;
+        }
+
+        // R11b: every DATA piece (a procedure's or routine's Start..DataEnd text) of the last few maps, by hash,
+        // so the page sends an unedited piece as its hash alone. One dictionary per map, newest last.
+        private static readonly object _pieceLock = new object();
+        private static readonly LinkedList<Dictionary<string, string>> _pieceMaps = new LinkedList<Dictionary<string, string>>();
+        private const int PieceMapCount = 3;
+
+        private static void CachePieces(string buffer, SpanMap map)
+        {
+            // Offsets of every line a piece starts or ends on, in one walk.
+            var wanted = new HashSet<int>();
+            foreach (var p in map.Procs)
+            {
+                wanted.Add(p.Start); wanted.Add(p.DataEnd);
+                foreach (var r in p.RoutineSpans) { wanted.Add(r.Start); wanted.Add(r.DataEnd); }
+            }
+            var offsets = new Dictionary<int, int>();
+            int line = 1;
+            for (int off = Origin(buffer); off >= 0 && offsets.Count < wanted.Count; off = NextLine(buffer, off), line++)
+                if (wanted.Contains(line)) offsets[line] = off;
+
+            var pieces = new Dictionary<string, string>();
+            Func<int, int, string> put = (start, dataEnd) =>
+            {
+                int a, b;
+                if (!offsets.TryGetValue(start, out a) || !offsets.TryGetValue(dataEnd, out b)) return null;
+                string text = buffer.Substring(a, LineEnd(buffer, b) - a);   // what getValueInRange returns
+                string hash = HeaderKey(text, 0, text.Length);
+                pieces[hash] = text;
+                return hash;
+            };
+            foreach (var p in map.Procs)
+            {
+                p.DataHash = put(p.Start, p.DataEnd);
+                foreach (var r in p.RoutineSpans) r.DataHash = put(r.Start, r.DataEnd);
+            }
+            lock (_pieceLock)
+            {
+                _pieceMaps.AddLast(pieces);
+                while (_pieceMaps.Count > PieceMapCount) _pieceMaps.RemoveFirst();
+            }
+        }
+
+        /// <summary>The DATA piece text cached under <paramref name="hash"/> by a recent BuildSpanMap, or false
+        /// - the host then asks the page for it (needPieces).</summary>
+        public static bool TryGetPieceText(string hash, out string text)
+        {
+            text = null;
+            if (string.IsNullOrEmpty(hash)) return false;
+            lock (_pieceLock)
+            {
+                for (var n = _pieceMaps.Last; n != null; n = n.Previous)
+                    if (n.Value.TryGetValue(hash, out text)) return true;
+            }
+            return false;
+        }
+
+        /// <summary>The hashes of hash-only pieces whose text is not cached (the host's needPieces reply).</summary>
+        public static List<string> MissingPieces(IList<SlicePiece> pieces)
+        {
+            var missing = new List<string>();
+            string ignored;
+            if (pieces != null)
+                foreach (var p in pieces)
+                    if (p != null && p.Text == null && !string.IsNullOrEmpty(p.Hash) && !TryGetPieceText(p.Hash, out ignored))
+                        missing.Add(p.Hash);
+            return missing;
+        }
+
+        /// <summary>Hash-only pieces with their cached text filled in (the caller's pieces are not modified).</summary>
+        private static IList<SlicePiece> ResolvePieces(IList<SlicePiece> pieces)
+        {
+            if (pieces == null) return null;
+            List<SlicePiece> resolved = null;
+            for (int i = 0; i < pieces.Count; i++)
+            {
+                var p = pieces[i];
+                if (p == null || p.Text != null || string.IsNullOrEmpty(p.Hash)) continue;
+                if (resolved == null) resolved = new List<SlicePiece>(pieces);
+                string text;
+                resolved[i] = TryGetPieceText(p.Hash, out text) ? new SlicePiece(p.Start, text) : null;
+            }
+            return resolved ?? pieces;
         }
 
         /// <summary>The header text cached under <paramref name="headerHash"/> (by BuildSpanMap or
@@ -1610,6 +1702,13 @@ namespace ClarionAssistant.Services
             return HoverIn(SafeScope(() => SliceScope(headerText, pieces, routines, line0)), col0, fileName);
         }
 
+        /// <summary>GetMemberAccess over any list of slice pieces.</summary>
+        public static LocalMemberAccess GetMemberAccess(
+            string headerText, IList<SlicePiece> pieces, IList<string> routines, int line0, int col0)
+        {
+            return MemberAccessIn(SafeScope(() => SliceScope(headerText, pieces, routines, line0)), col0);
+        }
+
         private static Scope SliceScope(string headerText, SlicePiece ownerData, SlicePiece span, IList<string> routines, int line0)
         {
             var pieces = new List<SlicePiece>(2);
@@ -1620,6 +1719,7 @@ namespace ClarionAssistant.Services
 
         private static Scope SliceScope(string headerText, IList<SlicePiece> pieces, IList<string> routines, int line0)
         {
+            pieces = ResolvePieces(pieces);
             if (headerText == null || line0 < 0) return null;
             var hdr = HeaderFor(HeaderKey(headerText, 0, headerText.Length), () => headerText);
 
