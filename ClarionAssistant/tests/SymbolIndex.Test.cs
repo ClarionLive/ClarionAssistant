@@ -233,6 +233,32 @@ static class SymbolIndexTest
               "2.10", "fallback answers like 2.1-2.5: " + Show(glo));
         Check(noIndexLines == 1, "2.10b", "exactly one noIndex line per open across 101 queries (" + noIndexLines + ")");
         Check(SymbolIndex.MembersOf("MyBrowse", false, old, null).Count == 2, "2.10c", "fallback members query");
+
+        // 2.21 (Coder-B-Host): a local lane's FIRST lookup on an old-schema DB runs no fallback scan.
+        string old3 = Path.Combine(_work, "old3.codegraph.db");
+        BuildOldSchema(old3, ProjectRows());
+        var sw = Stopwatch.StartNew();
+        var i3 = SymbolIndex.For(old3);
+        var fast = i3.ByPrefix("Glo", 100, fastOnly: true);
+        long ms = sw.ElapsedMilliseconds;
+        Check(fast.Count == 0 && SymbolIndex.QueryCountFor(old3) == 0 && ms < 100, "2.21",
+              "first fastOnly ByPrefix on an old DB: " + fast.Count + " rows, " + SymbolIndex.QueryCountFor(old3) + " queries run, " + ms + " ms");
+        var u3 = DateTime.UtcNow.AddSeconds(2);
+        while (!i3.IsOpen && DateTime.UtcNow < u3) Thread.Sleep(5);
+        Check(i3.IsOpen && i3.NoIndex && SymbolIndex.MembersOf("MyBrowse", false, old3, null, fastOnly: true).Count == 0 &&
+              SymbolIndex.QueryCountFor(old3) == 0 && i3.ByPrefix("Glo", 100).Count == 4 && SymbolIndex.QueryCountFor(old3) == 1,
+              "2.21b", "NoIndex is known before any query; fastOnly members also skip; the late path (fastOnly=false) still gets the fallback");
+        SymbolIndex.Release(old3);
+
+        // 2.22: For() opens and probes in the background - the first keystroke does not pay the open.
+        string warmDb = Path.Combine(_work, "warm.codegraph.db");
+        BuildIndexed(warmDb, ProjectRows());
+        var wi = SymbolIndex.For(warmDb);
+        var until = DateTime.UtcNow.AddSeconds(2);
+        while (!wi.IsOpen && DateTime.UtcNow < until) Thread.Sleep(5);
+        Check(wi.IsOpen && !wi.NoIndex && SymbolIndex.QueryCountFor(warmDb) == 0 && SymbolIndex.OpenCountFor(warmDb) == 1, "2.22",
+              "For() alone opened the connection and probed the indexes on a pool thread (no query run)");
+        SymbolIndex.Release(warmDb);
         SymbolIndex.Release(old);
         Check(!IndexNames(old).Contains(SymbolIndex.NameIndex) && !IndexNames(old).Contains(SymbolIndex.ParentIndex), "2.9",
               "the read-only side created no index: [" + string.Join(", ", IndexNames(old)) + "]");

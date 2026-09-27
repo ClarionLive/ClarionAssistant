@@ -85,20 +85,34 @@ namespace ClarionAssistant.Services
         /// <summary>Where the one-per-open "[local-timing] noIndex" line goes. Null: LspTrace.</summary>
         public static Action<string> LogSink;
 
-        /// <summary>The index for <paramref name="dbPath"/>, or null for a null/empty path. The
-        /// connection opens on the first query, not here.</summary>
+        /// <summary>The index for <paramref name="dbPath"/>, or null for a null/empty path. The first
+        /// call for a path opens the connection and probes its indexes on a pool thread, so the first
+        /// keystroke neither pays the open nor - with fastOnly - an old DB's full scan.</summary>
         public static SymbolIndex For(string dbPath)
         {
             if (string.IsNullOrEmpty(dbPath)) return null;
             string key;
             try { key = Path.GetFullPath(dbPath); } catch { return null; }
+            SymbolIndex idx;
             lock (_registryLock)
             {
-                SymbolIndex idx;
-                if (!_registry.TryGetValue(key, out idx)) { idx = new SymbolIndex(key); _registry[key] = idx; }
-                return idx;
+                if (_registry.TryGetValue(key, out idx)) return idx;
+                idx = new SymbolIndex(key);
+                _registry[key] = idx;
             }
+            var warm = idx;
+            ThreadPool.QueueUserWorkItem(_ => warm.Warm());
+            return idx;
         }
+
+        /// <summary>Open the connection and probe its indexes now (idempotent; never throws).</summary>
+        public void Warm()
+        {
+            WithConnection(conn => { }, fastOnly: false, count: false);
+        }
+
+        /// <summary>True once the connection is open and <see cref="NoIndex"/> is known.</summary>
+        public bool IsOpen { get { return _conn != null; } }
 
         /// <summary>Close the held connection to <paramref name="dbPath"/> (if any) so the file can be
         /// deleted or rewritten. Waits for a running query to finish. The next query reopens.</summary>
@@ -123,7 +137,7 @@ namespace ClarionAssistant.Services
         /// <summary>Test hook: how many times a connection to this DB has been opened.</summary>
         public static int OpenCountFor(string dbPath) { var i = For(dbPath); return i == null ? 0 : i._openCount; }
 
-        /// <summary>Test hook: how many queries this DB has served.</summary>
+        /// <summary>Test hook: how many SQL queries this DB has actually run.</summary>
         public static int QueryCountFor(string dbPath) { var i = For(dbPath); return i == null ? 0 : i._queryCount; }
 
         // ================================================================== instance
@@ -146,8 +160,9 @@ namespace ClarionAssistant.Services
         /// <summary>Up to <paramref name="limit"/> symbols whose name starts with <paramref name="prefix"/>
         /// (case-insensitive), excluding procedure-private scopes ('local', 'parameter') and dotted
         /// Class.Member rows, ordered by name. Empty (never null, never throws) when the DB is missing,
-        /// busy, or the prefix is empty.</summary>
-        public List<CodeGraphSymbol> ByPrefix(string prefix, int limit)
+        /// busy, or the prefix is empty - and, with <paramref name="fastOnly"/>, when the DB has no NOCASE
+        /// index (the local lanes pass it: an old DB's fallback scan is ~150 ms on v61POSitive).</summary>
+        public List<CodeGraphSymbol> ByPrefix(string prefix, int limit, bool fastOnly = false)
         {
             var results = new List<CodeGraphSymbol>();
             if (string.IsNullOrEmpty(prefix) || limit <= 0) return results;
@@ -157,12 +172,12 @@ namespace ClarionAssistant.Services
                 cmd.Parameters.AddWithValue("@hi", prefix + "\uFFFF");
                 cmd.Parameters.AddWithValue("@like", EscapeLike(prefix) + "%");
                 cmd.Parameters.AddWithValue("@limit", limit);
-            }, results);
+            }, results, fastOnly);
             return results;
         }
 
         /// <summary>The DIRECT members ("Class.Member" rows) of <paramref name="className"/> in this DB.</summary>
-        public List<CodeGraphSymbol> DirectMembers(string className, int limit)
+        public List<CodeGraphSymbol> DirectMembers(string className, int limit, bool fastOnly = false)
         {
             var results = new List<CodeGraphSymbol>();
             if (string.IsNullOrEmpty(className) || limit <= 0) return results;
@@ -171,22 +186,22 @@ namespace ClarionAssistant.Services
                 cmd.Parameters.AddWithValue("@parent", className);
                 cmd.Parameters.AddWithValue("@parentDot", EscapeLike(className) + ".%");
                 cmd.Parameters.AddWithValue("@limit", limit);
-            }, results);
+            }, results, fastOnly);
             return results;
         }
 
         /// <summary>The first reachable (non-local, non-parameter) symbol named exactly <paramref
         /// name="name"/> (case-insensitive), or null.</summary>
-        public CodeGraphSymbol FindByName(string name)
+        public CodeGraphSymbol FindByName(string name, bool fastOnly = false)
         {
             if (string.IsNullOrEmpty(name)) return null;
             var results = new List<CodeGraphSymbol>();
-            Query(noIndex => noIndex ? ExactSqlNoIndex : ExactSql, cmd => cmd.Parameters.AddWithValue("@name", name), results);
+            Query(noIndex => noIndex ? ExactSqlNoIndex : ExactSql, cmd => cmd.Parameters.AddWithValue("@name", name), results, fastOnly);
             return results.Count > 0 ? results[0] : null;
         }
 
         /// <summary>The base class named on <paramref name="className"/>'s own class row, or null.</summary>
-        public string BaseClassOf(string className)
+        public string BaseClassOf(string className, bool fastOnly = false)
         {
             if (string.IsNullOrEmpty(className)) return null;
             string found = null;
@@ -199,7 +214,7 @@ namespace ClarionAssistant.Services
                     object v = cmd.ExecuteScalar();
                     found = (v == null || v is DBNull) ? null : v.ToString();
                 }
-            });
+            }, fastOnly);
             return found;
         }
 
@@ -210,7 +225,8 @@ namespace ClarionAssistant.Services
         /// guard. A member name is listed once: the most-derived declaration wins. Either path may be
         /// null. Never throws.
         /// </summary>
-        public static List<CodeGraphSymbol> MembersOf(string className, bool includeInherited, string projectDb, string libraryDb)
+        public static List<CodeGraphSymbol> MembersOf(string className, bool includeInherited, string projectDb, string libraryDb,
+                                                      bool fastOnly = false)
         {
             var result = new List<CodeGraphSymbol>();
             if (string.IsNullOrEmpty(className)) return result;
@@ -226,7 +242,7 @@ namespace ClarionAssistant.Services
             for (int depth = 0; cls != null && depth < 32 && seenClasses.Add(cls); depth++)
             {
                 foreach (var idx in dbs)
-                    foreach (var s in idx.DirectMembers(cls, 500))
+                    foreach (var s in idx.DirectMembers(cls, 500, fastOnly))
                     {
                         string member = MemberName(s.Name);
                         if (member != null && seenMembers.Add(member)) result.Add(s);
@@ -235,7 +251,7 @@ namespace ClarionAssistant.Services
                 string next = null;
                 foreach (var idx in dbs)
                 {
-                    next = idx.BaseClassOf(cls);
+                    next = idx.BaseClassOf(cls, fastOnly);
                     if (!string.IsNullOrEmpty(next)) break;
                 }
                 cls = next;
@@ -319,7 +335,7 @@ namespace ClarionAssistant.Services
             return s.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
         }
 
-        private void Query(Func<bool, string> sql, Action<SQLiteCommand> bind, List<CodeGraphSymbol> into)
+        private void Query(Func<bool, string> sql, Action<SQLiteCommand> bind, List<CodeGraphSymbol> into, bool fastOnly)
         {
             WithConnection(conn =>
             {
@@ -330,19 +346,21 @@ namespace ClarionAssistant.Services
                     using (var reader = cmd.ExecuteReader())
                         while (reader.Read()) into.Add(CodeGraphProvider.MapSymbol(reader));
                 }
-            });
+            }, fastOnly);
         }
 
         /// <summary>Runs <paramref name="work"/> on the held connection, (re)opening it first. Gives up
         /// (does nothing) when another query holds the connection past <see cref="LockWaitMs"/>, the DB
-        /// is missing, or SQLite reports an error such as BUSY. Never throws.</summary>
-        private void WithConnection(Action<SQLiteConnection> work)
+        /// is missing, <paramref name="fastOnly"/> meets a DB without the NOCASE indexes, or SQLite
+        /// reports an error such as BUSY. Never throws.</summary>
+        private void WithConnection(Action<SQLiteConnection> work, bool fastOnly, bool count = true)
         {
             if (!Monitor.TryEnter(_lock, LockWaitMs)) return;
             try
             {
                 if (!EnsureOpen()) return;
-                Interlocked.Increment(ref _queryCount);
+                if (fastOnly && _noIndex) return;   // no index: the fallback scan is not keystroke-fast
+                if (count) Interlocked.Increment(ref _queryCount);
                 work(_conn);
             }
             catch (Exception ex)
