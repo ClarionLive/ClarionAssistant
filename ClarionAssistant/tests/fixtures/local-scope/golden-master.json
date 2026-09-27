@@ -1,0 +1,53 @@
+{
+  "completion": {
+    "Loc": [
+      "LocalHelper | kind=3 | detail=LocalHelper PROCEDURE(LONG)  (local procedure) | doc= | insert=LocalHelper"
+    ],
+    "Mo": [
+      "ModCounter | kind=6 | detail=LONG  (global) | doc=module counter | insert=ModCounter",
+      "ModGrp | kind=6 | detail=GROUP,PRE(MG)  (global) | doc= | insert=ModGrp"
+    ],
+    "Gr": [],
+    "PG:": [],
+    "MyGrp.": [],
+    "pI": [],
+    "Pr": [
+      "ProcA | kind=3 | detail=(local procedure) | doc= | insert=ProcA",
+      "ProcB | kind=3 | detail=(local procedure) | doc= | insert=ProcB"
+    ],
+    "MG:": [
+      "MG:MgA | kind=5 | detail=LONG  (field) | doc= | insert=MgA"
+    ],
+    "Rt": [
+      "RtnOnly | kind=6 | detail=LONG  (routine var) | doc= | insert=RtnOnly"
+    ],
+    "LO": [
+      "LocalHelper | kind=3 | detail=LocalHelper PROCEDURE(LONG)  (local procedure) | doc= | insert=LocalHelper"
+    ],
+    "pM": [],
+    "In": [
+      "Init | kind=3 | detail=(local procedure) | doc= | insert=Init",
+      "INIMgr | kind=6 | detail=global INI mgr (ABC) — INIClass | doc= | insert=INIMgr",
+      "InsertRecord | kind=21 | detail=request equate (ABC) = 1 | doc= | insert=InsertRecord"
+    ],
+    "SELF.": [],
+    "Lo": [
+      "LOC:Other | kind=6 | detail=LONG  (local) | doc= | insert=LOC:Other",
+      "LocalHelper | kind=3 | detail=LocalHelper PROCEDURE(LONG)  (local procedure) | doc= | insert=LocalHelper"
+    ],
+    "DO R": [],
+    "DO RtnB": [
+      "RtnB | kind=2 | detail=(routine) | doc= | insert=RtnB"
+    ]
+  },
+  "hover": {
+    "LOC:Count = pId + ModCounter|LOC:Count": null,
+    "LOC:Count = pId + ModCounter|ModCounter": "```clarion\nModCounter  LONG\n```\n\nlocal · two-procs.clw",
+    "LOC:Count = pId + ModCounter|pId": null,
+    "ReturnValue = LocalHelper(pMode)|LocalHelper": "```clarion\nLocalHelper PROCEDURE(LONG)\n```\n\nlocal procedure · two-procs.clw",
+    "ReturnValue = LocalHelper(pMode)|pMode": null,
+    "ReturnValue = LocalHelper(pMode)|ReturnValue": "```clarion\nReturnValue  BYTE,AUTO\n```\n\nlocal · two-procs.clw",
+    "DO RtnB|RtnB": null,
+    "RtnOnly = 1|RtnOnly": "```clarion\nRtnOnly  LONG\n```\n\nlocal · two-procs.clw"
+  }
+}
