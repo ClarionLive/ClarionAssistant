@@ -1158,9 +1158,10 @@ namespace ClarionAssistant
 
         /// <summary>
         /// 16d140e9: the header's APP / VERSION / ROOT values. APP is the open .app's full path, else the
-        /// solution's (labelled SOLUTION); VERSION and ROOT are the IDE's current version entry - the one it
-        /// builds with, which may not be the install the IDE runs from. Remembers the APP and ROOT paths so a
-        /// click can name the line instead of sending a path. UI thread.
+        /// solution's (labelled SOLUTION); VERSION and ROOT are CA's effective version entry (EffectiveClarionVersion:
+        /// the IDE's Build > Set Clarion Version, or CA's saved VERSION choice while it applies) - the one it builds
+        /// with, which may not be the install the IDE runs from. VERSION names the source that chose it, e.g.
+        /// "(IDE)". Remembers the APP and ROOT paths so a click can name the line instead of sending a path. UI thread.
         /// </summary>
         private void AddHeaderFields(Dictionary<string, object> data, string solutionPath)
         {
@@ -1168,8 +1169,13 @@ namespace ClarionAssistant
             try { app = new Services.AppTreeService().GetOpenAppFileName(); } catch { }
             try
             {
-                var cfg = Services.EffectiveClarionVersion.CurrentConfig();
-                if (cfg != null) { versionName = cfg.Name; root = cfg.RootPath; }
+                var sel = Services.EffectiveClarionVersion.Resolve();
+                var cfg = sel.Config;
+                if (cfg != null)
+                {
+                    versionName = cfg.Name + (sel.ShortSource != null ? " (" + sel.ShortSource + ")" : "");
+                    root = cfg.RootPath;
+                }
             }
             catch { }
 
@@ -1672,7 +1678,10 @@ namespace ClarionAssistant
                 string verTag = Services.ModernEmbeditorHistory.VersionTag();
                 var activeRed = Services.RedFileService.Active;
                 string redPath = activeRed != null ? activeRed.RedFilePath : null;
-                envKey = (solTag ?? "") + "|" + (verTag ?? "") + "|" + (redPath ?? "");
+                // + the effective-version generation (16d140e9): a Build > Set Clarion Version switch between
+                // entries sharing one .red changes neither the tag nor the .red path, yet VERSION must re-render.
+                envKey = (solTag ?? "") + "|" + (verTag ?? "") + "|" + (redPath ?? "") + "|"
+                    + Services.EffectiveClarionVersion.Generation;
             }
             catch { envKey = _lastEnvKey; } // on probe failure, don't thrash — leave the key unchanged
             if (!string.Equals(envKey, _lastEnvKey, StringComparison.OrdinalIgnoreCase))

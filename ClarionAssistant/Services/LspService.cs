@@ -43,7 +43,8 @@ namespace ClarionAssistant.Services
         public static System.Func<ClarionVersionConfig> VersionConfigProvider;
 
         private static readonly object _lock = new object();
-        private static int _lspStarting; // 0 = idle, 1 = a background start is in flight
+        // Single-flight background start + a restart request that is never lost (16d140e9).
+        private static readonly LspStartGate _startGate = new LspStartGate();
         private static LspClient _client;
 
         /// <summary>The single shared LSP client owned by this service (may be null).</summary>
@@ -153,7 +154,18 @@ namespace ClarionAssistant.Services
         public static void RestartIfVersionChanged(string versionName)
         {
             if (SharedLspBridge.IsSharedActive) return;
-            System.Threading.Tasks.Task.Run(() =>
+            // Remembered for ONE re-check after the next background start completes: a rapid A->B->C switch
+            // whose C arrives while B's restart is still starting (nothing running yet to compare) would
+            // otherwise leave the server on B.
+            Volatile.Write(ref _wantedVersionName, versionName ?? "");
+            System.Threading.Tasks.Task.Run(() => RestartCore(versionName));
+        }
+
+        /// <summary>The version most recently asked for by RestartIfVersionChanged, pending its post-start re-check.</summary>
+        private static string _wantedVersionName;
+
+        private static void RestartCore(string versionName)
+        {
             {
                 try
                 {
@@ -169,13 +181,15 @@ namespace ClarionAssistant.Services
                             restart = true;
                         }
                     }
-                    if (restart) EnsureRunningInBackground();
+                    // Not EnsureRunningInBackground: its plain guard dropped this request when the start
+                    // that launched the client we just stopped had not yet released it (pipeline run 1).
+                    if (restart && _startGate.RequestRestart()) StartOnPoolHoldingGate();
                 }
                 catch (Exception ex)
                 {
                     LspTrace.Write("[LspService] version-change restart failed: " + ex.Message);
                 }
-            });
+            }
         }
 
         private static LspStartResult AlreadyRunning()
@@ -445,7 +459,14 @@ namespace ClarionAssistant.Services
             if (LspClient.Active != null && LspClient.Active.IsRunning) return;
             // Only one background start at a time — the self-heal path can call this on
             // every completion attempt, and EnsureRunning isn't safe to run concurrently.
-            if (Interlocked.CompareExchange(ref _lspStarting, 1, 0) != 0) return;
+            if (!_startGate.TryBegin()) return;
+            StartOnPoolHoldingGate();
+        }
+
+        /// <summary>Run one start on the thread pool; the caller holds <see cref="_startGate"/>. A restart
+        /// requested while it ran (the gate said so on release) is served by going round again.</summary>
+        private static void StartOnPoolHoldingGate()
+        {
             System.Threading.Tasks.Task.Run(() =>
             {
                 try { EnsureRunning(); }
@@ -453,7 +474,21 @@ namespace ClarionAssistant.Services
                 {
                     LspTrace.Write("[LspService] background EnsureRunning failed: " + ex.Message);
                 }
-                finally { Interlocked.Exchange(ref _lspStarting, 0); }
+                finally
+                {
+                    if (_startGate.End())
+                    {
+                        LspTrace.Write("[LspService] a restart was requested during this start; starting again.");
+                        EnsureRunningInBackground();
+                    }
+                    else
+                    {
+                        // One re-check against the latest requested version (consumed, so a start that can
+                        // never match it — e.g. no version resolvable — does not loop).
+                        string wanted = Interlocked.Exchange(ref _wantedVersionName, null);
+                        if (!string.IsNullOrEmpty(wanted)) RestartCore(wanted);
+                    }
+                }
             });
         }
 

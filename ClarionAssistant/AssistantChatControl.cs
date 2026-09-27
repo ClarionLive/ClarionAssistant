@@ -656,18 +656,32 @@ namespace ClarionAssistant
 
             if (_versionInfo == null || _versionInfo.Versions.Count == 0)
             {
+                // Remember the IDE choice anyway, or SyncVersionWithIde reloads on every 10 s poll.
+                string live;
+                if (ClarionVersionService.TryGetLiveIdeVersionName(out live))
+                    _lastIdeVersionChoice = ClarionVersionSelector.NormalizeIdeChoice(live);
                 _header.SetVersions(new[] { "(not detected)" }, new[] { "" }, 0);
                 return;
             }
 
             // 16d140e9: ONE resolution for the panel, the indexer, the LSP and the library graph. The IDE's
-            // Build > Set Clarion Version decides; CA's saved VERSION choice (Issue #32) holds only while the
-            // IDE's choice is still the one it was saved against — it used to win forever, for every solution.
+            // Build > Set Clarion Version decides; CA's saved VERSION choice (Issue #32, now per solution)
+            // applies only while the IDE's choice is still the one it was saved against.
             var selection = EffectiveClarionVersion.Resolve(_versionInfo);
+            string previousDescribe = _versionSelection != null ? _versionSelection.Describe() : null;
             _currentVersionConfig = selection.Config;
             _lastIdeVersionChoice = selection.IdeChoice;
             _versionSelection = selection;
-            System.Diagnostics.Debug.WriteLine("[AssistantChatControl] " + selection.Describe());
+            string describe = selection.Describe();
+            if (!string.Equals(previousDescribe, describe, StringComparison.Ordinal))
+            {
+                // Changed version or source: say so, drop the library graph's 20 s memo, and bump the signal the
+                // Data pad's environment watcher keys on (its Explorer header shows VERSION too).
+                LspTrace.Write("[AssistantChatControl] " + describe);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] " + describe);
+                ClarionGraphService.InvalidateVersionCache();
+                EffectiveClarionVersion.NotifyChanged();
+            }
 
             var labels = new System.Collections.Generic.List<string>();
             var values = new System.Collections.Generic.List<string>();
@@ -699,6 +713,20 @@ namespace ClarionAssistant
 
         private bool _ideVersionHooked;
 
+        // Kept so Dispose can unhook it: PropertyService.PropertyChanged is static and would root this pad.
+        private ICSharpCode.Core.PropertyChangedEventHandler _ideVersionHandler;
+
+        private void UnhookIdeVersionChanges()
+        {
+            try
+            {
+                if (_ideVersionHandler != null) ICSharpCode.Core.PropertyService.PropertyChanged -= _ideVersionHandler;
+            }
+            catch { }
+            _ideVersionHandler = null;
+            _ideVersionHooked = false;
+        }
+
         /// <summary>
         /// Follow the IDE's Build &gt; Set Clarion Version (16d140e9). Clarion's Versions.SetActiveVersion (the
         /// menu command) and SetActiveVersionFromSolution (solution open) both end in
@@ -709,9 +737,11 @@ namespace ClarionAssistant
         private void HookIdeVersionChanges()
         {
             if (_ideVersionHooked) return;
+            // CA's VERSION override is kept per IDE solution, like the IDE's own choice (16d140e9).
+            EffectiveClarionVersion.SolutionPathProvider = () => EditorService.GetOpenSolutionPath();
             try
             {
-                ICSharpCode.Core.PropertyService.PropertyChanged += (s, e) =>
+                _ideVersionHandler = (s, e) =>
                 {
                     try
                     {
@@ -721,6 +751,7 @@ namespace ClarionAssistant
                     }
                     catch { }
                 };
+                ICSharpCode.Core.PropertyService.PropertyChanged += _ideVersionHandler;
                 _ideVersionHooked = true;
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[AssistantChatControl] Clarion.Version hook: " + ex.Message); }
@@ -4680,6 +4711,7 @@ namespace ClarionAssistant
                 if (_lspUiTimer != null) { _lspUiTimer.Stop(); _lspUiTimer.Dispose(); }
                 if (_diagForm != null) { try { _diagForm.Close(); _diagForm.Dispose(); } catch { } }
                 if (_instanceStateTimer != null) { _instanceStateTimer.Stop(); _instanceStateTimer.Dispose(); }
+                UnhookIdeVersionChanges();
                 if (_statusLineTimer != null) { _statusLineTimer.Stop(); _statusLineTimer.Dispose(); }
                 if (_instanceCoord != null) _instanceCoord.Dispose();
                 if (_homeView != null) _homeView.Dispose();

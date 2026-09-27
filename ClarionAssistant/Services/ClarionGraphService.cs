@@ -93,31 +93,69 @@ namespace ClarionAssistant.Services
         /// few seconds removes that per-call XML-parse/reflection cost; a Clarion version switch is picked up
         /// within the TTL. Failures (null) are not cached, so detection keeps retrying until it succeeds.
         /// </summary>
+        ///
+        /// 16d140e9: the key and the LibSrc root now come from ONE effective version config
+        /// (EffectiveClarionVersion — the IDE's Build > Set Clarion Version, or CA's saved choice), memoized
+        /// TOGETHER. It used to name the DB after the RUNNING IDE's exe while the LibSrc came from the
+        /// selected version, so a DB named for C12 could be filled with C10's library, or a DB holding one
+        /// version's symbols served another. The key is the selected version's own Clarion.exe build plus a
+        /// fingerprint of its root (<see cref="ClarionVersionConfig.LibraryGraphKey"/>), so two configured
+        /// versions under one running IDE get distinct DBs. <see cref="InvalidateVersionCache"/> drops the
+        /// memo at once on a version change instead of waiting out the TTL. NOTE: the key format changed,
+        /// so existing ClarionGraph_&lt;build&gt;.db files are orphaned and rebuilt once.
+        /// </summary>
         public static string ResolveVersionKey()
+        {
+            string root;
+            return ResolveLibraryTarget(out root);
+        }
+
+        /// <summary>Drop the memoized key/root now (the effective Clarion version changed).</summary>
+        public static void InvalidateVersionCache()
+        {
+            lock (_versionCacheLock) { _cachedVersion = null; _cachedRoot = null; _cachedVersionAtTicks = 0; }
+        }
+
+        private static string ResolveLibraryTarget(out string root)
         {
             lock (_versionCacheLock)
             {
                 if (_cachedVersion != null &&
                     (DateTime.UtcNow.Ticks - _cachedVersionAtTicks) < _versionCacheTtl.Ticks)
+                {
+                    root = _cachedRoot;
                     return _cachedVersion;
+                }
             }
-            string v = ResolveVersionKeyUncached();
+            root = null;
+            string v = null;
+            try
+            {
+                var cfg = EffectiveClarionVersion.CurrentConfig();
+                if (cfg != null)
+                {
+                    string exe = string.IsNullOrEmpty(cfg.BinPath) ? null : Path.Combine(cfg.BinPath, "Clarion.exe");
+                    v = cfg.LibraryGraphKey(exe != null && File.Exists(exe) ? ExeVersionKey(exe) : null);
+                    root = cfg.RootPath;
+                }
+            }
+            catch { v = null; root = null; }
             if (v != null)
-                lock (_versionCacheLock) { _cachedVersion = v; _cachedVersionAtTicks = DateTime.UtcNow.Ticks; }
+                lock (_versionCacheLock) { _cachedVersion = v; _cachedRoot = root; _cachedVersionAtTicks = DateTime.UtcNow.Ticks; }
             return v;
         }
 
         private static readonly object _versionCacheLock = new object();
         private static string _cachedVersion;
+        private static string _cachedRoot;
         private static long _cachedVersionAtTicks;
         private static readonly TimeSpan _versionCacheTtl = TimeSpan.FromSeconds(20);
 
-        private static string ResolveVersionKeyUncached()
+        /// <summary>The build key of one Clarion.exe (e.g. "12.0.0.14313"), or null.</summary>
+        private static string ExeVersionKey(string exePath)
         {
             try
             {
-                var info = ClarionVersionService.Detect();
-                string exePath = info?.ClarionExePath;
                 if (string.IsNullOrEmpty(exePath) || !File.Exists(exePath))
                     return null;
 
@@ -172,10 +210,10 @@ namespace ClarionAssistant.Services
         {
             try
             {
-                // The same version the panel, indexer and LSP use (16d140e9) — it used to skip CA's
-                // saved VERSION choice, so the library graph could come from a different install.
-                var cfg = EffectiveClarionVersion.CurrentConfig();
-                string root = cfg?.RootPath;
+                // The same version the panel, indexer and LSP use, from the SAME memo as the DB key
+                // (16d140e9), so a DB is only ever filled from the root its name stands for.
+                string root;
+                ResolveLibraryTarget(out root);
                 if (string.IsNullOrEmpty(root))
                     return null;
 
@@ -237,8 +275,12 @@ namespace ClarionAssistant.Services
                 }
                 result.DbPath = dbPath;
 
-                // Reuse the cached DB unless forced.
-                if (!force && File.Exists(dbPath))
+                // Never resolve silently: record which version (and which source chose it) this DB is for.
+                try { result.VersionSource = EffectiveClarionVersion.Resolve().Describe(); } catch { }
+                LspTrace.Write("[ClarionGraph] " + dbPath + " - " + (result.VersionSource ?? "(version source unknown)"));
+
+                // Reuse the cached DB unless forced — and only if it was built from THIS version's LibSrc.
+                if (!force && File.Exists(dbPath) && !BuiltFromOtherRoot(ReadMetadataValue(dbPath, "libsrc_root")))
                 {
                     result.Built = false;
                     result.SymbolCount = ReadSymbolCount(dbPath);
@@ -512,11 +554,25 @@ namespace ClarionAssistant.Services
 
         /// <summary>Staleness check for an explicit DB path (reads its built_at + libsrc_root metadata and
         /// compares against LibSrc write times). False on any read failure. Never throws.</summary>
+        /// <summary>
+        /// True when a DB's stored libsrc_root is not the effective version's LibSrc (16d140e9): a DB reused
+        /// by name must hold the library its key stands for. Unknown on either side → false (no thrash).
+        /// </summary>
+        private static bool BuiltFromOtherRoot(string storedLibSrcRoot)
+        {
+            if (string.IsNullOrEmpty(storedLibSrcRoot)) return false;
+            string now = ResolveLibSrcRoot();
+            if (string.IsNullOrEmpty(now)) return false;
+            return !string.Equals(storedLibSrcRoot.Trim().TrimEnd('\\', '/'), now.Trim().TrimEnd('\\', '/'),
+                StringComparison.OrdinalIgnoreCase);
+        }
+
         private static bool IsDbStale(string dbPath)
         {
             try
             {
                 string libsrc = ReadMetadataValue(dbPath, "libsrc_root");
+                if (BuiltFromOtherRoot(libsrc)) return true;   // 16d140e9: built from another install's LibSrc
                 string builtAtRaw = ReadMetadataValue(dbPath, "built_at");
                 DateTime builtAt;
                 if (!DateTime.TryParse(builtAtRaw, null,
@@ -674,6 +730,8 @@ namespace ClarionAssistant.Services
         public string Version { get; set; }
         public string DbPath { get; set; }
         public string LibSrcRoot { get; set; }
+        /// <summary>The Clarion version this DB is for and the tier that chose it (16d140e9).</summary>
+        public string VersionSource { get; set; }
         public int SymbolCount { get; set; }
         /// <summary>True if this call built the DB; false if it reused a cached one.</summary>
         public bool Built { get; set; }

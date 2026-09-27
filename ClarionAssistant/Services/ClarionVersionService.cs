@@ -23,6 +23,21 @@ namespace ClarionAssistant.Services
         /// </summary>
         public bool? IsWindowsVersion { get; set; }
 
+        /// <summary>
+        /// The ClarionGraph library-DB key for THIS version (16d140e9): its own Clarion.exe build
+        /// (<paramref name="exeBuildKey"/>, e.g. "12.0.0.14313"; "nobuild" when unknown) plus a stable
+        /// fingerprint of its root, which is where its LibSrc comes from. Entries sharing one root share one
+        /// DB (same library); different installs never do, even under one running IDE.
+        /// </summary>
+        public string LibraryGraphKey(string exeBuildKey)
+        {
+            string basis = !string.IsNullOrEmpty(RootPath) ? RootPath : (BinPath ?? Name ?? "");
+            basis = basis.Trim().TrimEnd('\\', '/').Replace('/', '\\').ToUpperInvariant();
+            uint h = 2166136261;   // FNV-1a 32: stable across processes and runtimes (string.GetHashCode is not)
+            foreach (char c in basis) { h ^= c; h *= 16777619; }
+            return (string.IsNullOrEmpty(exeBuildKey) ? "nobuild" : exeBuildKey) + "_" + h.ToString("x8");
+        }
+
         public string RedFilePath
         {
             get
@@ -440,14 +455,22 @@ namespace ClarionAssistant.Services
         FirstListed
     }
 
-    /// <summary>What the caller should persist about CA's saved VERSION choice after a selection.</summary>
-    public enum SavedOverrideAction
+    /// <summary>
+    /// What became of CA's saved VERSION choice in a selection. Resolution NEVER deletes it (pipeline run 1):
+    /// it is only applied or suspended, so a transient or foreign read — another IDE sharing settings.txt, a
+    /// solution mid-open — cannot destroy a developer's choice. Only the panel's own VERSION change and
+    /// refresh button write it.
+    /// </summary>
+    public enum SavedOverrideState
     {
+        /// <summary>No saved choice for this solution.</summary>
         None,
-        /// <summary>A legacy override (saved before the IDE basis was recorded) is kept: record the basis now.</summary>
-        RecordBasis,
-        /// <summary>The override is obsolete (the IDE's choice moved, or the entry is gone): forget it.</summary>
-        Clear
+        /// <summary>The IDE's choice is still the one it was saved against: it decides.</summary>
+        Applied,
+        /// <summary>The IDE's choice moved since it was saved: the IDE decides; it applies again if the IDE returns.</summary>
+        Suspended,
+        /// <summary>It names a version this IDE does not have configured: the IDE decides.</summary>
+        Unavailable
     }
 
     /// <summary>The outcome of <see cref="ClarionVersionSelector.Select"/>: one version for every CA component.</summary>
@@ -462,12 +485,16 @@ namespace ClarionAssistant.Services
         /// <summary>True when <see cref="IdeChoice"/> was read live from the running IDE, false when from the XML.</summary>
         public bool IdeChoiceLive { get; internal set; }
 
-        public SavedOverrideAction OverrideAction { get; internal set; }
+        /// <summary>The IDE choice as a basis key: the name, or "Current@&lt;running exe dir&gt;" (a C10 IDE and a
+        /// C12 IDE both on "Current" are on different versions).</summary>
+        public string IdeChoiceKey { get; internal set; }
 
-        /// <summary>For <see cref="SavedOverrideAction.RecordBasis"/>: the IDE choice to record as the override's basis.</summary>
-        public string OverrideBasisToRecord { get; internal set; }
+        public SavedOverrideState OverrideState { get; internal set; }
 
-        /// <summary>Why a saved override was ignored or dropped, or null.</summary>
+        /// <summary>The saved choice's version name, when there is one.</summary>
+        public string OverrideName { get; internal set; }
+
+        /// <summary>Why a saved override was not applied, or null.</summary>
         public string Note { get; internal set; }
 
         /// <summary>Short source label for the VERSION dropdown ("saved", "IDE", "running Clarion", "first listed").</summary>
@@ -521,8 +548,9 @@ namespace ClarionAssistant.Services
     /// but an override is recorded together with the IDE choice it was made against (its "basis"), and it
     /// holds only while the IDE's choice is still that basis. When the developer picks a different version in
     /// Build &gt; Set Clarion Version (or opens a solution whose saved choice differs), the IDE wins and the
-    /// override is dropped. Before this, the override was a single global value that won over the IDE forever
-    /// — across every solution, and across every IDE sharing settings.txt.
+    /// override is suspended (kept, not deleted). Overrides are stored per solution. Before this, the override
+    /// was a single global value that won over the IDE forever — across every solution, and across every IDE
+    /// sharing settings.txt.
     ///
     /// A LEGACY override (no basis recorded) is treated as made against "Current": it keeps working while the
     /// IDE is on its own version (the GH #32 case it was invented for), and yields as soon as the IDE names a
@@ -553,36 +581,115 @@ namespace ClarionAssistant.Services
             sel.Config = ideConfig;
             sel.Tier = ideConfig != null ? ideTier : ClarionVersionTier.None;
             sel.IdeChoice = NormalizeIdeChoice(info.CurrentVersionName);
+            sel.IdeChoiceKey = IdeChoiceKey(info);
             sel.IdeChoiceLive = info.CurrentVersionFromLiveIde;
 
             if (string.IsNullOrEmpty(overrideName)) return sel;
+            sel.OverrideName = overrideName;
 
             var ov = info.Versions.Find(v => v.Name == overrideName);
             if (ov == null)
             {
-                sel.OverrideAction = SavedOverrideAction.Clear;
-                sel.Note = "CA's saved VERSION choice '" + overrideName + "' is no longer a configured Clarion version, so it was dropped";
+                sel.OverrideState = SavedOverrideState.Unavailable;
+                sel.Note = "CA's saved VERSION choice '" + overrideName + "' is not a configured Clarion version in this IDE, so the IDE's choice is used";
                 return sel;
             }
 
-            bool legacy = string.IsNullOrEmpty(overrideBasis);
-            string basis = legacy ? CurrentChoice : NormalizeIdeChoice(overrideBasis);
-            if (string.Equals(basis, sel.IdeChoice, StringComparison.OrdinalIgnoreCase))
+            if (BasisMatches(overrideBasis, sel.IdeChoiceKey))
             {
                 sel.Config = ov;
                 sel.Tier = ClarionVersionTier.SavedOverride;
-                if (legacy)
-                {
-                    sel.OverrideAction = SavedOverrideAction.RecordBasis;
-                    sel.OverrideBasisToRecord = sel.IdeChoice;
-                }
+                sel.OverrideState = SavedOverrideState.Applied;
                 return sel;
             }
 
-            sel.OverrideAction = SavedOverrideAction.Clear;
-            sel.Note = "CA's saved VERSION choice '" + overrideName + "' was dropped: it was made while the IDE's Build > Set Clarion Version was '"
-                + basis + "', and the IDE now says '" + sel.IdeChoice + "'";
+            sel.OverrideState = SavedOverrideState.Suspended;
+            sel.Note = "CA's saved VERSION choice '" + overrideName + "' is suspended: it was made while the IDE's Build > Set Clarion Version was '"
+                + NormalizeIdeChoice(overrideBasis) + "', and the IDE now says '" + sel.IdeChoice + "'";
             return sel;
+        }
+
+        /// <summary>
+        /// The IDE's choice as a basis key: the version name, or for "Current" the running exe's folder too
+        /// ("Current@C:\CLARION12\BIN") — "Current" means a different version in each installed IDE.
+        /// </summary>
+        public static string IdeChoiceKey(ClarionVersionInfo info)
+        {
+            string name = info != null ? info.CurrentVersionName : null;
+            if (!IsCurrentChoice(name)) return name.Trim();
+            string dir = null;
+            try { dir = info != null && !string.IsNullOrEmpty(info.ClarionExePath) ? System.IO.Path.GetDirectoryName(info.ClarionExePath) : null; }
+            catch { }
+            return string.IsNullOrEmpty(dir) ? CurrentChoice : CurrentChoice + "@" + dir.TrimEnd('\\').ToUpperInvariant();
+        }
+
+        /// <summary>
+        /// Does a saved basis still describe the IDE's choice? Exact (case-insensitive) match; an unqualified
+        /// "Current" (legacy, or saved where the exe was unknown) matches "Current" in any IDE.
+        /// </summary>
+        public static bool BasisMatches(string savedBasis, string ideChoiceKey)
+        {
+            string b = string.IsNullOrEmpty(savedBasis) ? CurrentChoice : savedBasis.Trim();
+            string k = string.IsNullOrEmpty(ideChoiceKey) ? CurrentChoice : ideChoiceKey;
+            if (IsCurrentChoice(b) && b.IndexOf('@') < 0) return IsCurrentChoice(k);
+            return string.Equals(b, k, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // ---- Per-solution storage (16d140e9, pipeline run 1) ------------------------------------------------
+        // The IDE keeps Build > Set Clarion Version PER SOLUTION, and settings.txt is shared by every IDE the
+        // developer runs, so CA's override is stored per solution too, as ONE record (name + basis) written in
+        // a single Set — never two keys another instance could see half-updated. Resolution only reads it.
+
+        /// <summary>The pre-16d140e9 global override key: still READ, as a fallback made against "Current".</summary>
+        public const string LegacyOverrideKey = "Clarion.Version.Override";
+
+        public const string SolutionOverrideKeyPrefix = "Clarion.Version.Override@";
+
+        /// <summary>The settings key for one solution's override. Case/slash/relative spellings of one .sln agree.</summary>
+        public static string OverrideKeyFor(string slnPath)
+        {
+            string p = slnPath ?? "";
+            if (p.Length > 0)
+            {
+                try { p = System.IO.Path.GetFullPath(p); } catch { }
+                p = p.Replace('/', '\\').ToUpperInvariant();
+            }
+            // settings.txt keys may not hold '=' or line breaks.
+            p = p.Replace("=", "%3D").Replace("\r", "").Replace("\n", "");
+            return SolutionOverrideKeyPrefix + p;
+        }
+
+        /// <summary>One record: "name&lt;TAB&gt;basis key" (see <see cref="IdeChoiceKey"/>). Version names never contain a tab.</summary>
+        public static string EncodeOverride(string name, string ideChoiceKey)
+        {
+            return (name ?? "") + "\t" + (string.IsNullOrEmpty(ideChoiceKey) ? CurrentChoice : ideChoiceKey);
+        }
+
+        public static bool TryDecodeOverride(string record, out string name, out string ideBasis)
+        {
+            name = null; ideBasis = null;
+            if (string.IsNullOrEmpty(record)) return false;
+            int tab = record.IndexOf('\t');
+            name = tab >= 0 ? record.Substring(0, tab) : record;
+            ideBasis = tab >= 0 ? record.Substring(tab + 1) : null;
+            if (string.IsNullOrEmpty(ideBasis)) ideBasis = CurrentChoice;
+            return !string.IsNullOrEmpty(name);
+        }
+
+        /// <summary>
+        /// Select for one solution: its own record when it has one, else the legacy global override (read as
+        /// made against an unqualified "Current": it applies while this IDE is on Current, the GH #32 case, and
+        /// is suspended while the solution names a version). Pure and read-only — nothing is ever cleared here.
+        /// </summary>
+        public static ClarionVersionSelection SelectForSolution(ClarionVersionInfo info,
+            string solutionRecord, string legacyName)
+        {
+            string name, basis;
+            if (TryDecodeOverride(solutionRecord, out name, out basis))
+                return Select(info, name, basis);
+            if (!string.IsNullOrEmpty(legacyName))
+                return Select(info, legacyName, null);
+            return Select(info, null, null);
         }
     }
 }

@@ -165,6 +165,7 @@
     <Compile Include="Services\ClarionConfigDirectory.cs" />
     <Compile Include="Services\ClarionVersionService.cs" />
     <Compile Include="Services\EffectiveClarionVersion.cs" />
+    <Compile Include="Services\LspStartGate.cs" />
     <Compile Include="Services\RedFileService.cs" />
     <Compile Include="Services\LspTrace.cs" />
     <Compile Include="Services\LspClient.cs" />
