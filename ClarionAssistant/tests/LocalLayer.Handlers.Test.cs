@@ -105,6 +105,21 @@ static class LocalLayerHandlersTest
                 ms.Count == 2 && ms.Any(m => (int)m["line"] == 4) && ms.Any(m => (int)m["line"] == 5 && ((string)m["message"]).Contains("NoSuchRoutine")), Json(ms));
             Check("[local-timing] reports sliceChars (the slot text length)",
                 log.Count == 1 && log[0].Contains(" sliceChars=" + "  LOOP\r\n    DO NoSuchRoutine\r\n    x# += 1".Length), log.FirstOrDefault());
+            // The page does not know the procedure: it sends procedureName:null. The routine set comes from the
+            // span map's routines + the slot texts, and the `v` form uses the HOST's name (options), so a null
+            // from the page must give exactly the markers an explicit name does.
+            var nullName = LocalLayerHandlers.Handle("slotDiagnostics", null, Req(req.Replace("\"procedureName\":\"TestProc\"", "\"procedureName\":null")), 1, embed);
+            Check("procedureName:null from the page -> the same markers as the explicit name",
+                Json(Markers(nullName)) == Json(ms) && ms.Count == 2, Json(Markers(nullName)));
+            // The `v` form: a buffer where the name MATTERS - a routine of the same name belongs to an EARLIER
+            // procedure, so only a scan that starts at TestProc's header (the host's name) flags the DO.
+            string twoProcs = "Other PROCEDURE\r\n  CODE\r\nNoSuchRoutine ROUTINE\r\n  x# = 0\r\n" + EmbedBuffer;   // TestProc now starts at line 5
+            var vNull = LocalLayerHandlers.Handle("slotDiagnostics", twoProcs, Req("{\"procedureName\":null,\"ranges\":[[8,10]]}"), 1, embed);
+            var vNamed = LocalLayerHandlers.Handle("slotDiagnostics", twoProcs, Req("{\"procedureName\":\"TestProc\",\"ranges\":[[8,10]]}"), 1, embed);
+            Check("...and in the `v` form: the host's own procedure name is used (the DO is still flagged)",
+                Json(Markers(vNull)) == Json(Markers(vNamed)) && Markers(vNull).Any(m => ((string)m["message"]).Contains("NoSuchRoutine")),
+                Json(Markers(vNull)));
+
             var tab = LocalLayerHandlers.Handle("slotDiagnostics", null, args, 0, fileTab);
             Check("the file-mode tab still answers an empty list for a slice", Markers(tab).Count == 0);
             log.Clear();
