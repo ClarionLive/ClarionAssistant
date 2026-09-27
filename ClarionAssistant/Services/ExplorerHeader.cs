@@ -101,6 +101,47 @@ namespace ClarionAssistant.Services
             return true;
         }
 
+        /// <summary>
+        /// Host-side debounce for the APP / ROOT clicks: a double-click (or a page that posts in a loop - the
+        /// page is untrusted) must not open a stack of Explorer windows. Per line: a request is refused while
+        /// one for the same line is in flight, and for <see cref="CooldownMs"/> after it finished. The clock
+        /// is passed in (milliseconds, any monotonic origin) so the harness can drive it. Thread-safe.
+        /// </summary>
+        public sealed class OpenGate
+        {
+            public const long CooldownMs = 1000;
+            private readonly object _lock = new object();
+            private readonly System.Collections.Generic.HashSet<string> _inFlight =
+                new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
+            private readonly System.Collections.Generic.Dictionary<string, long> _endedAt =
+                new System.Collections.Generic.Dictionary<string, long>(StringComparer.Ordinal);
+
+            /// <summary>True = go ahead (and the line is now in flight; call <see cref="End"/> when done).</summary>
+            public bool TryBegin(string which, long nowMs)
+            {
+                if (which == null) return false;
+                lock (_lock)
+                {
+                    if (_inFlight.Contains(which)) return false;
+                    long ended;
+                    if (_endedAt.TryGetValue(which, out ended) && nowMs - ended < CooldownMs) return false;
+                    _inFlight.Add(which);
+                    return true;
+                }
+            }
+
+            /// <summary>The request for <paramref name="which"/> finished (launched, refused or failed).</summary>
+            public void End(string which, long nowMs)
+            {
+                if (which == null) return;
+                lock (_lock)
+                {
+                    _inFlight.Remove(which);
+                    _endedAt[which] = nowMs;
+                }
+            }
+        }
+
         // ---------------------------------------------------------------- helpers
 
         private static string Clean(string s)

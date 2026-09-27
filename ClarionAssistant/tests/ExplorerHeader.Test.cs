@@ -150,6 +150,19 @@ static class ExplorerHeaderTest
         Check(!ExplorerHeader.TryBuildExplorerArgs(@"C:\Clarion10v8", false, FileExists, null, out outArgs),
               "no existence probe -> refused (fail closed)");
 
+        Console.WriteLine("-- OpenGate (double-click -> one Explorer window)");
+        var g = new ExplorerHeader.OpenGate();
+        Check(g.TryBegin("app", 0), "first APP click goes through");
+        Check(!g.TryBegin("app", 5), "second APP click while the first is in flight is refused");
+        Check(g.TryBegin("root", 5), "ROOT is gated separately from APP");
+        g.End("app", 100);
+        Check(!g.TryBegin("app", 100 + ExplorerHeader.OpenGate.CooldownMs - 1), "APP again inside the cooldown is refused");
+        Check(g.TryBegin("app", 100 + ExplorerHeader.OpenGate.CooldownMs), "APP again after the cooldown goes through");
+        g.End("app", 3000);
+        g.End("root", 3000);
+        Check(g.TryBegin("root", 3000 + ExplorerHeader.OpenGate.CooldownMs), "ROOT after its own cooldown goes through");
+        Check(!g.TryBegin(null, 99999), "a null line is refused");
+
         Console.WriteLine();
         Console.WriteLine(_failures == 0
             ? "PASS  " + _assertions + " assertions"

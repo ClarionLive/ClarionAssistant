@@ -1197,24 +1197,39 @@ namespace ClarionAssistant
             if (!isApp && !isRoot) return;
             string path = isApp ? _hdrAppPath : _hdrRootPath;
             if (string.IsNullOrEmpty(path)) return;
+            // A double-click posts twice; the gate (per line, in flight + 1s after) keeps it to one window.
+            if (!_hdrOpenGate.TryBegin(which, NowMs())) return;
 
             Task.Run(() =>
             {
+                bool reachable = false;
                 try
                 {
                     string args;
                     if (!Services.ExplorerHeader.TryBuildExplorerArgs(path, isApp, File.Exists, Directory.Exists, out args))
                     {
                         System.Diagnostics.Debug.WriteLine("[ModernDataPad] openHeaderPath refused: " + path);
-                        return;
                     }
-                    string explorer = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
-                    var psi = new System.Diagnostics.ProcessStartInfo(explorer, args) { UseShellExecute = false };
-                    using (System.Diagnostics.Process.Start(psi)) { }
+                    else
+                    {
+                        reachable = true;
+                        string explorer = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
+                        var psi = new System.Diagnostics.ProcessStartInfo(explorer, args) { UseShellExecute = false };
+                        using (System.Diagnostics.Process.Start(psi)) { }
+                    }
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] openHeaderPath: " + ex.Message); }
+                finally { _hdrOpenGate.End(which, NowMs()); }
+
+                // Refused (moved, deleted, share offline): say so on that line instead of failing silently.
+                // Post marshals to the UI thread. The next header post restores the line.
+                if (!reachable)
+                    Post(new Dictionary<string, object> { { "type", "envHeaderUnreachable" }, { "which", which }, { "path", path } });
             });
         }
+
+        private readonly Services.ExplorerHeader.OpenGate _hdrOpenGate = new Services.ExplorerHeader.OpenGate();
+        private static long NowMs() { return System.Diagnostics.Stopwatch.GetTimestamp() * 1000 / System.Diagnostics.Stopwatch.Frequency; }
 
         // Supersedes an in-flight redirection enumeration when the index is re-requested (e.g. the solution or
         // selected Clarion version changed, so RedFileService.Active now points at a different .red). The stale

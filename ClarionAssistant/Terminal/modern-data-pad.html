@@ -1234,6 +1234,18 @@
         hdrField('hdrRoot', h.rootPath, true, 'root', 'click to open it in Windows Explorer');
     }
 
+    // The host refused a click because the path is no longer there (moved, deleted, share offline). The line
+    // turns into an inert dash whose tooltip says why; the next header post from the host restores it.
+    function markEnvUnreachable(which, path) {
+        var id = which === 'app' ? 'hdrApp' : which === 'root' ? 'hdrRoot' : null;
+        var el = id && document.getElementById(id);
+        if (!el) return;
+        el.textContent = HDR_DASH;
+        el.title = (path ? path + '\n' : '') + 'Not reachable — it may have been moved or deleted, or the share is offline.';
+        el.className = 'env-val path unknown';
+        el.removeAttribute('data-open');
+    }
+
     function wireEnvHeader() {
         ['hdrApp', 'hdrRoot'].forEach(function (id) {
             var el = document.getElementById(id);
@@ -2712,6 +2724,10 @@
                 // Header under the title: APP / VERSION / ROOT (16d140e9). Recents/pins are saved per version +
                 // solution (ExplorerRecentsStore), so naming them here also makes a version switch obvious.
                 renderEnvHeader(msg);
+                return;
+            }
+            if (msg.type === 'envHeaderUnreachable') {
+                markEnvUnreachable(msg.which, msg.path);
                 return;
             }
             if (msg.type === 'setRedIndex') {

@@ -60,7 +60,7 @@ const els = {};
 const document = { getElementById: id => els[id] || null };
 const postToHost = obj => posted.push(obj);
 const api = new Function('document', 'postToHost',
-    section + '\nreturn { renderEnvHeader: renderEnvHeader, wireEnvHeader: wireEnvHeader };')(document, postToHost);
+    section + '\nreturn { renderEnvHeader: renderEnvHeader, wireEnvHeader: wireEnvHeader, markEnvUnreachable: markEnvUnreachable };')(document, postToHost);
 
 const LRM = '\u200E', DASH = '\u2014';
 const isLink = el => / link\b/.test(el.className);
@@ -87,6 +87,24 @@ els.hdrRoot.click();
 eq(JSON.stringify(posted), JSON.stringify([{ action: 'openHeaderPath', which: 'app' }, { action: 'openHeaderPath', which: 'root' }]),
    'APP -> which:app, ROOT -> which:root');
 check(posted.every(m => !('path' in m)), 'no path in the click message');
+
+console.log('-- host reports the path unreachable');
+api.markEnvUnreachable('app', 'C:\\Apps\\School\\clbrws.app');
+eq(els.hdrApp.textContent, DASH, 'unreachable APP -> dash');
+check(/Not reachable/.test(els.hdrApp.title) && els.hdrApp.title.indexOf('C:\\Apps\\School\\clbrws.app') === 0,
+      'tooltip names the path and says it is not reachable');
+check(!isLink(els.hdrApp), 'unreachable APP is no longer a link');
+check(isLink(els.hdrRoot), 'ROOT untouched');
+posted.length = 0;
+els.hdrApp.click();
+eq(posted.length, 0, 'clicking the unreachable line posts nothing');
+api.markEnvUnreachable('bogus', 'x');
+check(isLink(els.hdrRoot), 'an unknown line name changes nothing');
+check(/msg\.type === 'envHeaderUnreachable'\)\s*\{[\s\S]{0,200}?markEnvUnreachable\(msg\.which, msg\.path\)/.test(html),
+      'page handles envHeaderUnreachable');
+check(/"envHeaderUnreachable"/.test(cs), 'host posts envHeaderUnreachable');
+check(/_hdrOpenGate\.TryBegin\(which/.test(cs) && /finally \{ _hdrOpenGate\.End\(which/.test(cs),
+      'host gates the click and always releases the gate');
 
 console.log('-- render: solution only');
 api.renderEnvHeader({ appLabel: 'SOLUTION', appPath: 'C:\\Apps\\School\\clbrws.sln', versionName: 'Clarion 11', rootPath: 'C:\\Clarion11' });
