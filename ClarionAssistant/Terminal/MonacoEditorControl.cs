@@ -262,18 +262,26 @@ namespace ClarionAssistant.Terminal
         public bool TryResolveRequestBuffer(IDictionary<string, object> data, out string buffer)
         {
             buffer = null;
-            MonacoBufferCache.Lookup how;
-            try { how = _bufferCache.ResolveRequest(data, out buffer); }
-            catch { how = MonacoBufferCache.Lookup.None; }
-            if (how != MonacoBufferCache.Lookup.Missing) return true;
+            MonacoBufferCache.Lookup how = MonacoBufferCache.Lookup.None;
+            bool ok;
+            // Every caller is a buffer-dependent action: only an inline buffer or a cached `v` is servable.
+            // No buffer AND no usable `v` (Lookup.None) is refused like an unknown `v` (Missing) - pipeline
+            // HIGH on a49f411: a null buffer let diagnostics fall back to load-time text and completion/hover
+            // answer from stale LSP/on-disk state.
+            try { ok = _bufferCache.TryResolveForRequest(data, out buffer, out how); }
+            catch { ok = false; buffer = null; }
+            if (ok) return true;
 
             long reqId, v;
             MonacoBufferCache.TryGetLong(data, "reqId", out reqId);
-            MonacoBufferCache.TryGetLong(data, "v", out v);
+            bool hasV = MonacoBufferCache.TryGetLong(data, "v", out v);
+            string action = null;
+            try { object a; if (data != null && data.TryGetValue("action", out a)) action = a as string; } catch { }
             try
             {
-                MonacoSpikeLog.Write("[buffer-sync] request reqId=" + reqId + " names v=" + v +
-                    " but this surface holds v=" + _bufferCache.CurrentBufferVersion + " - null reply + resync");
+                MonacoSpikeLog.Write("[buffer-sync] " + (action ?? "?") + " reqId=" + reqId + " lookup=" + how +
+                    " v=" + (hasV ? v.ToString() : "none") + " surface holds v=" + _bufferCache.CurrentBufferVersion +
+                    " - null reply + resync");
             }
             catch { }
             if (reqId > 0) PostResponse((int)reqId, null);

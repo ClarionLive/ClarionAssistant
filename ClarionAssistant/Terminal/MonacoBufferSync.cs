@@ -86,6 +86,20 @@ namespace ClarionAssistant.Terminal
             return buffer != null ? Lookup.Cached : Lookup.Missing;
         }
 
+        /// <summary>
+        /// The gate every buffer-dependent handler goes through: true ONLY for an inline buffer or a cached
+        /// `v`. A request with neither (a dropped or malformed `v`) is refused exactly like an unknown `v` —
+        /// serving it with a null buffer would let a handler fall back to load-time or on-disk text and
+        /// answer for a document that is not on screen. <paramref name="lookup"/> says why, for the log.
+        /// </summary>
+        public bool TryResolveForRequest(IDictionary<string, object> data, out string buffer, out Lookup lookup)
+        {
+            lookup = ResolveRequest(data, out buffer);
+            if (lookup == Lookup.Inline || lookup == Lookup.Cached) return buffer != null;
+            buffer = null;
+            return false;
+        }
+
         public static bool TryGetLong(IDictionary<string, object> data, string key, out long value)
         {
             value = 0;

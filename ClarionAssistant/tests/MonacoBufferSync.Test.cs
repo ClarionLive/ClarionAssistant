@@ -73,9 +73,41 @@ static class MonacoBufferSyncTest
             how = c.ResolveRequest(Parse("{\"action\":\"hover\",\"reqId\":3,\"buffer\":\"inline\",\"v\":999}"), out buf);
             Check("inline buffer wins over a v", how == MonacoBufferCache.Lookup.Inline && buf == "inline");
             how = c.ResolveRequest(Parse("{\"action\":\"hover\",\"reqId\":3}"), out buf);
-            Check("no buffer and no v -> None (legacy null-buffer path)", how == MonacoBufferCache.Lookup.None && buf == null);
+            Check("no buffer and no v -> classified None (refused by TryResolveForRequest below)", how == MonacoBufferCache.Lookup.None && buf == null);
             how = c.ResolveRequest(null, out buf);
             Check("null data -> None, never throws", how == MonacoBufferCache.Lookup.None);
+        }
+
+        Console.WriteLine("\nTryResolveForRequest: only an inline buffer or a cached v is servable (pipeline HIGH on a49f411)");
+        {
+            var c = new MonacoBufferCache();
+            c.Store(7, "cached text");
+            string buf; MonacoBufferCache.Lookup how;
+            Check("cached v -> served", c.TryResolveForRequest(Parse("{\"action\":\"hover\",\"reqId\":1,\"v\":7}"), out buf, out how)
+                && buf == "cached text" && how == MonacoBufferCache.Lookup.Cached);
+            Check("inline buffer (older page) -> served", c.TryResolveForRequest(Parse("{\"action\":\"hover\",\"reqId\":1,\"buffer\":\"x\"}"), out buf, out how)
+                && buf == "x" && how == MonacoBufferCache.Lookup.Inline);
+            Check("unknown v -> refused (Missing)", !c.TryResolveForRequest(Parse("{\"action\":\"hover\",\"reqId\":1,\"v\":8}"), out buf, out how)
+                && buf == null && how == MonacoBufferCache.Lookup.Missing);
+            Check("no buffer and no v -> REFUSED, not served with a null buffer", !c.TryResolveForRequest(Parse("{\"action\":\"diagnostics\",\"reqId\":1}"), out buf, out how)
+                && buf == null && how == MonacoBufferCache.Lookup.None);
+            Check("an unparseable v -> refused", !c.TryResolveForRequest(Parse("{\"action\":\"completion\",\"reqId\":1,\"v\":\"abc\"}"), out buf, out how) && buf == null);
+            Check("a null v -> refused", !c.TryResolveForRequest(Parse("{\"action\":\"completion\",\"reqId\":1,\"v\":null}"), out buf, out how) && buf == null);
+            Check("buffer:null inline -> refused", !c.TryResolveForRequest(Parse("{\"action\":\"completion\",\"reqId\":1,\"buffer\":null}"), out buf, out how) && buf == null);
+            Check("null data -> refused, never throws", !c.TryResolveForRequest(null, out buf, out how) && buf == null);
+        }
+
+        Console.WriteLine("\nThe hosts route every buffer-dependent request through that gate (source scan)");
+        {
+            string repo = Environment.GetCommandLineArgs().Length > 1 ? Environment.GetCommandLineArgs()[1] : null;
+            if (repo != null && System.IO.Directory.Exists(repo))
+            {
+                string ctl = System.IO.File.ReadAllText(System.IO.Path.Combine(repo, @"Terminal\MonacoEditorControl.cs"));
+                string view = System.IO.File.ReadAllText(System.IO.Path.Combine(repo, @"Terminal\ModernEmbeditorViewContent.cs"));
+                Check("the control's accessor uses TryResolveForRequest (None is refused)", ctl.Contains("_bufferCache.TryResolveForRequest("));
+                Check("the embeditor's diagnostics no longer falls back to load-time _sourceText", !view.Contains("buffer ?? _sourceText"));
+            }
+            else Check("repo dir passed for the source scan", false, "arg: " + (repo ?? "(none)"));
         }
 
         Console.WriteLine("\nTryParseSync: the page's shape, escapes, fallback");

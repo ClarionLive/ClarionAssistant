@@ -3501,7 +3501,9 @@ namespace ClarionAssistant.Terminal
             {
                 var markers = new List<Dictionary<string, object>>();
                 var timing = new ModernEmbeditorDiagnostics.Timing();
-                string text = buffer ?? _sourceText;
+                // Never the load-time _sourceText: ParseDiagnosticsRequest only succeeds with the request's own
+                // buffer (inline from an older page, or cached by `v`), so this is always the text on screen.
+                string text = buffer;
                 try
                 {
                     markers = await ModernEmbeditorDiagnostics.ComputeAsync(
@@ -4039,7 +4041,7 @@ namespace ClarionAssistant.Terminal
             var panel = _panel;
             if (panel != null) return panel.TryResolveRequestBuffer(data, out buffer);
             if (data.ContainsKey("buffer")) buffer = data["buffer"] as string;
-            return true;
+            return buffer != null;   // no control to resync through: refuse rather than serve a null buffer
         }
 
         /// <summary>Posts a {type:"response", reqId, data} message back to Monaco (marshaled by the control).</summary>
