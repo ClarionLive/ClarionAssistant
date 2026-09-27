@@ -10,160 +10,159 @@ namespace ClarionCodeGraph.Parsing
     /// </summary>
     public static class ClarionBuiltins
     {
-        private static readonly HashSet<string> _builtins = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        // Grouped by category (each group's first element). The category is the detail line a
+        // keyword/built-in completion item and hover card show (1c685f2e); membership is unchanged.
+        private static readonly string[][] _builtinGroups =
         {
             // Math
-            "ABS", "ACOS", "ASIN", "ATAN", "COS", "INT", "LOG10", "LOGE",
-            "MAXIMUM", "ROUND", "SIN", "SQRT", "TAN",
-
+            new[] { "Math", "ABS", "ACOS", "ASIN", "ATAN", "COS", "INT", "LOG10", "LOGE", "MAXIMUM", "ROUND",
+                    "SIN", "SQRT", "TAN" },
             // String
-            "CENTER", "CHR", "CLIP", "CLIPBOARD", "DEFORMAT", "FORMAT",
-            "INSTRING", "LEFT", "LEN", "LOWER", "MATCH", "NUMERIC",
-            "SUB", "STRPOS", "UPPER", "VAL", "RIGHT",
-
+            new[] { "String", "CENTER", "CHR", "CLIP", "CLIPBOARD", "DEFORMAT", "FORMAT", "INSTRING", "LEFT",
+                    "LEN", "LOWER", "MATCH", "NUMERIC", "SUB", "STRPOS", "UPPER", "VAL", "RIGHT" },
             // Date/Time
-            "CLOCK", "DATE", "DAY", "MONTH", "SETCLOCK", "SETTODAY", "TODAY", "YEAR",
-
+            new[] { "Date/Time", "CLOCK", "DATE", "DAY", "MONTH", "SETCLOCK", "SETTODAY", "TODAY", "YEAR" },
             // File I/O
-            "ADD", "BUILD", "BUFFER", "CALLBACK", "CLOSE", "COMMIT", "COPY",
-            "CREATE", "DELETE", "DUPLICATE", "EMPTY", "EOF", "EXISTS",
-            "FIXFORMAT", "FLUSH", "FREE", "GET", "GETSTATE", "HOLD",
-            "LOCK", "LOGOUT", "NAME", "NEXT", "NOMEMO", "OPEN", "PACK",
-            "PREVIOUS", "PUT", "RECORDS", "REGET", "RELEASE", "REMOVE",
-            "RENAME", "RESET", "RESTORESTATE", "ROLLBACK", "SEND", "SET",
-            "SHARE", "STATUS", "STREAM", "UNFIXFORMAT", "UNLOCK", "WATCH",
-
+            new[] { "File I/O", "ADD", "BUILD", "BUFFER", "CALLBACK", "CLOSE", "COMMIT", "COPY", "CREATE",
+                    "DELETE", "DUPLICATE", "EMPTY", "EOF", "EXISTS", "FIXFORMAT", "FLUSH", "FREE", "GET",
+                    "GETSTATE", "HOLD", "LOCK", "LOGOUT", "NAME", "NEXT", "NOMEMO", "OPEN", "PACK",
+                    "PREVIOUS", "PUT", "RECORDS", "REGET", "RELEASE", "REMOVE", "RENAME", "RESET",
+                    "RESTORESTATE", "ROLLBACK", "SEND", "SET", "SHARE", "STATUS", "STREAM", "UNFIXFORMAT",
+                    "UNLOCK", "WATCH" },
             // Queue
-            "CHANGES", "POINTER", "SORT",
-
+            new[] { "Queue", "CHANGES", "POINTER", "SORT" },
             // Window / UI
-            "ACCEPT", "ACCEPTED", "ASK", "BEEP", "CHANGE", "CHOICE",
-            "CLONE", "COLORDIALOG", "CONTENTS", "DESTROY", "DISABLE",
-            "DISPLAY", "DRAGID", "DROPID", "ENABLE", "ERASE", "EVENT",
-            "FIELD", "FILEDIALOG", "FIRSTFIELD", "FOCUS", "FONTDIALOG",
-            "GETFONT", "GETPOSITION", "HIDE", "KEYBOARD", "KEYCHAR",
-            "KEYCODE", "KEYSTATE", "LASTFIELD", "MOUSEX", "MOUSEY",
-            "POPUP", "POST", "PRESSKEY", "SELECT", "SELECTED",
-            "SET3DLOOK", "SETCLIPBOARD", "SETCURSOR", "SETDROPID",
-            "SETFONT", "SETKEYCHAR", "SETKEYCODE", "SETLAYOUT",
-            "SETPENCOLOR", "SETPENSTYLE", "SETPENWIDTH", "SETPOSITION",
-            "SETTARGET", "SHOW", "TYPE", "UNHIDE", "UPDATE",
-
+            new[] { "Window/UI", "ACCEPT", "ACCEPTED", "ASK", "BEEP", "CHANGE", "CHOICE", "CLONE",
+                    "COLORDIALOG", "CONTENTS", "DESTROY", "DISABLE", "DISPLAY", "DRAGID", "DROPID", "ENABLE",
+                    "ERASE", "EVENT", "FIELD", "FILEDIALOG", "FIRSTFIELD", "FOCUS", "FONTDIALOG", "GETFONT",
+                    "GETPOSITION", "HIDE", "KEYBOARD", "KEYCHAR", "KEYCODE", "KEYSTATE", "LASTFIELD",
+                    "MOUSEX", "MOUSEY", "POPUP", "POST", "PRESSKEY", "SELECT", "SELECTED", "SET3DLOOK",
+                    "SETCLIPBOARD", "SETCURSOR", "SETDROPID", "SETFONT", "SETKEYCHAR", "SETKEYCODE",
+                    "SETLAYOUT", "SETPENCOLOR", "SETPENSTYLE", "SETPENWIDTH", "SETPOSITION", "SETTARGET",
+                    "SHOW", "TYPE", "UNHIDE", "UPDATE" },
             // Report
-            "ENDPAGE", "PRINT",
-
+            new[] { "Report", "ENDPAGE", "PRINT" },
             // Memory / System
-            "ADDRESS", "BAND", "BOR", "BSHIFT", "BXOR", "CALL", "CHAIN",
-            "HALT", "INSTANCE", "PEEK", "POKE", "RUN", "RUNCODE",
-            "SHUTDOWN", "STOP", "UNLOAD",
-
+            new[] { "Memory/System", "ADDRESS", "BAND", "BOR", "BSHIFT", "BXOR", "CALL", "CHAIN", "HALT",
+                    "INSTANCE", "PEEK", "POKE", "RUN", "RUNCODE", "SHUTDOWN", "STOP", "UNLOAD" },
             // Threading
-            "LOCKTHREAD", "NOTIFICATION", "NOTIFY", "RESUME", "START",
-            "SUSPEND", "THREAD", "THREADLOCKED", "UNLOCKTHREAD",
-
+            new[] { "Threading", "LOCKTHREAD", "NOTIFICATION", "NOTIFY", "RESUME", "START", "SUSPEND",
+                    "THREAD", "THREADLOCKED", "UNLOCKTHREAD" },
             // Runtime expressions
-            "BIND", "BINDEXPRESSION", "EVALUATE", "POPBIND", "PUSHBIND",
-            "UNBIND",
-
+            new[] { "Runtime expressions", "BIND", "BINDEXPRESSION", "EVALUATE", "POPBIND", "PUSHBIND",
+                    "UNBIND" },
             // Registry
-            "DELETEREG", "GETREG", "PUTREG",
-
+            new[] { "Registry", "DELETEREG", "GETREG", "PUTREG" },
             // Path / Filesystem
-            "DIRECTORY", "LONGPATH", "PATH", "SETPATH", "SHORTPATH",
-
+            new[] { "Path/Filesystem", "DIRECTORY", "LONGPATH", "PATH", "SETPATH", "SHORTPATH" },
             // Introspection
-            "GETGROUP", "HOWMANY", "ISALPHA", "ISGROUP", "ISLOWER",
-            "ISSTRING", "ISUPPER", "NULL", "OMITTED", "SETNULL",
-            "SETNULLS", "SETNONULL", "GETNULLS", "WHAT", "WHERE", "WHO",
-
+            new[] { "Introspection", "GETGROUP", "HOWMANY", "ISALPHA", "ISGROUP", "ISLOWER", "ISSTRING",
+                    "ISUPPER", "NULL", "OMITTED", "SETNULL", "SETNULLS", "SETNONULL", "GETNULLS", "WHAT",
+                    "WHERE", "WHO" },
             // Error handling
-            "ASSERT", "ERROR", "ERRORCODE", "ERRORFILE", "FILEERROR",
-            "FILEERRORCODE", "POPERRORS", "PUSHERRORS",
-
+            new[] { "Error handling", "ASSERT", "ERROR", "ERRORCODE", "ERRORFILE", "FILEERROR",
+                    "FILEERRORCODE", "POPERRORS", "PUSHERRORS" },
             // Miscellaneous
-            "BOF", "CHOOSE", "CLEAR", "COMMAND", "CONVERTANSITOOEM",
-            "CONVERTOEMTOANSI", "INLIST", "INRANGE", "MESSAGE",
-            "SETCOMMAND", "SQL", "SQLCALLBACK",
-
+            new[] { "Miscellaneous", "BOF", "CHOOSE", "CLEAR", "COMMAND", "CONVERTANSITOOEM",
+                    "CONVERTOEMTOANSI", "INLIST", "INRANGE", "MESSAGE", "SETCOMMAND", "SQL", "SQLCALLBACK" },
             // Drawing
-            "ARC", "BOX", "CHORD", "ELLIPSE", "IMAGE", "LINE",
-            "PENCOLOR", "PENSTYLE", "PENWIDTH", "PIE", "POLYGON",
-
+            new[] { "Drawing", "ARC", "BOX", "CHORD", "ELLIPSE", "IMAGE", "LINE", "PENCOLOR", "PENSTYLE",
+                    "PENWIDTH", "PIE", "POLYGON" },
             // DDE
-            "DDEACKNOWLEDGE", "DDEAPP", "DDECHANNEL", "DDECLIENT",
-            "DDECLOSE", "DDEEXECUTE", "DDEITEM", "DDEPOKE",
-            "DDEQUERY", "DDEREAD", "DDESERVER", "DDETOPIC",
-            "DDEVALUE", "DDEWRITE",
-
+            new[] { "DDE", "DDEACKNOWLEDGE", "DDEAPP", "DDECHANNEL", "DDECLIENT", "DDECLOSE", "DDEEXECUTE",
+                    "DDEITEM", "DDEPOKE", "DDEQUERY", "DDEREAD", "DDESERVER", "DDETOPIC", "DDEVALUE",
+                    "DDEWRITE" },
             // OLE
-            "OLEDIRECTORY", "OCXREGISTERPROPEDIT",
-            "OCXREGISTERPROPCHANGE", "OCXREGISTEREVENTPROC",
-            "OCXUNREGISTERPROPEDIT", "OCXUNREGISTERPROPCHANGE",
-            "OCXUNREGISTEREVENTPROC",
-
+            new[] { "OLE", "OLEDIRECTORY", "OCXREGISTERPROPEDIT", "OCXREGISTERPROPCHANGE",
+                    "OCXREGISTEREVENTPROC", "OCXUNREGISTERPROPEDIT", "OCXUNREGISTERPROPCHANGE",
+                    "OCXUNREGISTEREVENTPROC" },
             // Object lifecycle
-            "NEW", "DISPOSE",
-
+            new[] { "Object lifecycle", "NEW", "DISPOSE" },
             // ASTRING
-            "TIE", "TIED", "UNTIE",
-
+            new[] { "ASTRING", "TIE", "TIED", "UNTIE" },
             // Misc functions
-            "LOCALE", "PRAGMA", "PRESS", "POSITION",
-            "SETTODAY", "GOTOXYABS",
-
+            new[] { "Miscellaneous", "LOCALE", "PRAGMA", "PRESS", "POSITION", "SETTODAY", "GOTOXYABS" },
             // View
-            "FREESTATE",
-
+            new[] { "View", "FREESTATE" },
             // Language structures that look like calls but aren't
-            "IF", "THEN", "ELSIF", "ELSE", "CASE", "OF", "OROF",
-            "LOOP", "WHILE", "UNTIL", "TIMES", "BY", "EXECUTE",
-            "BEGIN", "RETURN", "EXIT", "CYCLE", "BREAK", "GOTO", "DO",
-            "NOT", "AND", "OR", "XOR", "BAND", "BOR", "BXOR", "BSHIFT",
+            new[] { "Statement", "IF", "THEN", "ELSIF", "ELSE", "CASE", "OF", "OROF", "LOOP", "WHILE",
+                    "UNTIL", "TIMES", "BY", "EXECUTE", "BEGIN", "RETURN", "EXIT", "CYCLE", "BREAK", "GOTO",
+                    "DO", "NOT", "AND", "OR", "XOR", "BAND", "BOR", "BXOR", "BSHIFT" },
         };
+
+        private static readonly HashSet<string> _builtins = Flatten(_builtinGroups);
 
         /// <summary>
         /// All Clarion reserved/structure keywords that should never be treated as procedure names.
         /// Superset of the old IsKeyword() method.
         /// </summary>
-        private static readonly HashSet<string> _keywords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        // Grouped by category (each group's first element). The category is the detail line a
+        // keyword/built-in completion item and hover card show (1c685f2e); membership is unchanged.
+        private static readonly string[][] _keywordGroups =
         {
             // Program structure
-            "PROGRAM", "MEMBER", "MAP", "MODULE", "END", "PROCEDURE", "FUNCTION",
-            "CODE", "DATA", "ROUTINE", "CLASS", "INTERFACE", "APPLICATION",
-
+            new[] { "Program structure", "PROGRAM", "MEMBER", "MAP", "MODULE", "END", "PROCEDURE", "FUNCTION",
+                    "CODE", "DATA", "ROUTINE", "CLASS", "INTERFACE", "APPLICATION" },
             // Data structure keywords
-            "GROUP", "QUEUE", "FILE", "RECORD", "KEY", "INDEX", "MEMO", "BLOB",
-            "VIEW", "JOIN", "WINDOW", "REPORT", "TOOLBAR", "MENUBAR",
-
+            new[] { "Data structure", "GROUP", "QUEUE", "FILE", "RECORD", "KEY", "INDEX", "MEMO", "BLOB",
+                    "VIEW", "JOIN", "WINDOW", "REPORT", "TOOLBAR", "MENUBAR" },
             // Control keywords (inside WINDOW/REPORT)
-            "BUTTON", "CHECK", "COMBO", "ENTRY", "ITEM", "LIST", "MENU",
-            "OLE", "OPTION", "PANEL", "PROGRESS", "PROMPT", "RADIO",
-            "REGION", "SHEET", "TAB", "SPIN", "TEXT",
-
+            new[] { "Control", "BUTTON", "CHECK", "COMBO", "ENTRY", "ITEM", "LIST", "MENU", "OLE", "OPTION",
+                    "PANEL", "PROGRESS", "PROMPT", "RADIO", "REGION", "SHEET", "TAB", "SPIN", "TEXT" },
             // Report sub-structures
-            "HEADER", "FOOTER", "DETAIL", "FORM",
-
+            new[] { "Report structure", "HEADER", "FOOTER", "DETAIL", "FORM" },
             // Compiler directives
-            "INCLUDE", "SECTION", "COMPILE", "OMIT", "ONCE", "ITEMIZE", "EQUATE",
-
+            new[] { "Compiler directive", "INCLUDE", "SECTION", "COMPILE", "OMIT", "ONCE", "ITEMIZE",
+                    "EQUATE" },
             // Declaration attributes
-            "VIRTUAL", "DERIVED", "PRIVATE", "PROTECTED", "PUBLIC",
-            "STATIC", "THREAD", "EXTERNAL", "DLL", "TYPE", "AUTO",
-            "BINDABLE", "IMPLEMENTS", "REPLACE", "PROC",
-            "NAME", "PRE", "DIM", "OVER", "LIKE",
-
+            new[] { "Attribute", "VIRTUAL", "DERIVED", "PRIVATE", "PROTECTED", "PUBLIC", "STATIC", "THREAD",
+                    "EXTERNAL", "DLL", "TYPE", "AUTO", "BINDABLE", "IMPLEMENTS", "REPLACE", "PROC", "NAME",
+                    "PRE", "DIM", "OVER", "LIKE" },
             // Calling conventions
-            "C", "PASCAL", "RAW",
-
+            new[] { "Calling convention", "C", "PASCAL", "RAW" },
             // Data types
-            "BYTE", "SHORT", "USHORT", "LONG", "ULONG", "SIGNED", "UNSIGNED",
-            "SREAL", "REAL", "BFLOAT4", "BFLOAT8", "DECIMAL", "PDECIMAL",
-            "STRING", "ASTRING", "CSTRING", "PSTRING", "DATE", "TIME",
-            "ANY", "BOOL", "LIKE",
-
+            new[] { "Data type", "BYTE", "SHORT", "USHORT", "LONG", "ULONG", "SIGNED", "UNSIGNED", "SREAL",
+                    "REAL", "BFLOAT4", "BFLOAT8", "DECIMAL", "PDECIMAL", "STRING", "ASTRING", "CSTRING",
+                    "PSTRING", "DATE", "TIME", "ANY", "BOOL", "LIKE" },
             // Special
-            "SELF", "PARENT", "ACCEPT", "RETURN", "EXIT",
+            new[] { "Special", "SELF", "PARENT", "ACCEPT", "RETURN", "EXIT" },
         };
+
+        private static readonly HashSet<string> _keywords = Flatten(_keywordGroups);
+
+        private static HashSet<string> Flatten(string[][] groups)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var g in groups)
+                for (int i = 1; i < g.Length; i++) set.Add(g[i]);
+            return set;
+        }
+
+        /// <summary>Every built-in procedure/statement name with its category, in list order; a name listed
+        /// in two groups is returned once, under its first.</summary>
+        public static IEnumerable<KeyValuePair<string, string>> BuiltinsWithCategory() { return WithCategory(_builtinGroups); }
+
+        /// <summary>Every reserved/structure keyword with its category, in list order.</summary>
+        public static IEnumerable<KeyValuePair<string, string>> KeywordsWithCategory() { return WithCategory(_keywordGroups); }
+
+        private static IEnumerable<KeyValuePair<string, string>> WithCategory(string[][] groups)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var g in groups)
+                for (int i = 1; i < g.Length; i++)
+                    if (seen.Add(g[i])) yield return new KeyValuePair<string, string>(g[i], g[0]);
+        }
+
+        /// <summary>The category of a built-in (first) or keyword, or null for neither.</summary>
+        public static string CategoryOf(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            foreach (var groups in new[] { _builtinGroups, _keywordGroups })
+                foreach (var g in groups)
+                    for (int i = 1; i < g.Length; i++)
+                        if (string.Equals(g[i], name, StringComparison.OrdinalIgnoreCase)) return g[0];
+            return null;
+        }
 
         /// <summary>
         /// Returns true if the name is a Clarion built-in procedure/function/statement.

@@ -409,6 +409,7 @@ namespace ClarionAssistant.Services
 
         private static void DeleteDbFiles(string dbPath)
         {
+            SymbolIndex.Release(dbPath);   // completion's held-open read handle would block the delete (1c685f2e)
             foreach (string suffix in new[] { "", "-wal", "-shm" })
             {
                 try { if (File.Exists(dbPath + suffix)) File.Delete(dbPath + suffix); }

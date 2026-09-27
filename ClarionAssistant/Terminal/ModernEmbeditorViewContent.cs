@@ -540,7 +540,7 @@ namespace ClarionAssistant.Terminal
                     var map = new Dictionary<string, ClarionAppDataReader.TableDef>(StringComparer.OrdinalIgnoreCase);
                     foreach (var t in tables)
                         if (!string.IsNullOrEmpty(t.Name)) map[t.Name] = t;
-                    lock (_liveLock) { _liveTables = map; }
+                    lock (_liveLock) { _liveTables = map; LiveDictionaryIndex.Publish(map); }
                 }
             }
             catch { /* keep prior dict cache; GetOtherFiles falls back to the .dcv */ }
@@ -584,7 +584,7 @@ namespace ClarionAssistant.Terminal
             if (appChanged)
             {
                 lock (_txaLock) { _wholeAppTxa = null; }
-                lock (_liveLock) { _liveTables = null; }
+                lock (_liveLock) { _liveTables = null; LiveDictionaryIndex.Publish(null); }
             }
 
             RefreshPadSources();

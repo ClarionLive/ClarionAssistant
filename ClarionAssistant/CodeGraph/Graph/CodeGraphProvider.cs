@@ -29,7 +29,7 @@ namespace ClarionCodeGraph.Graph
         public string DatabasePath { get { return _dbPath; } }
 
         // Column list shared by the symbol-returning queries (matches MapSymbol).
-        private const string SymbolSelect =
+        internal const string SymbolSelect =
             "SELECT s.id, s.name, s.type, s.file_path, s.line_number, " +
             "       p.name AS project_name, s.params, s.return_type, " +
             "       s.parent_name, s.member_of, s.scope, s.project_id " +
@@ -550,7 +550,7 @@ namespace ClarionCodeGraph.Graph
             return null;
         }
 
-        private static CodeGraphSymbol MapSymbol(SQLiteDataReader reader)
+        internal static CodeGraphSymbol MapSymbol(SQLiteDataReader reader)
         {
             return new CodeGraphSymbol
             {

@@ -184,6 +184,34 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                            "Services\ModernEmbeditorDiagnostics.cs",
                            "Services\ClarionAppDataReader.cs", "Services\ClarionAppDataReader.Model.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Xml.dll") }
+            # 1c685f2e: instant buffer-local completion/hover - scope, parameters, the local-class owner
+            # rule, encodings, and R3 (never Split the whole 3.2 MB buffer; allocation + scaling budgets).
+            @{ Name = "LocalScopeIndex.Test"
+               Sources = @("tests\LocalScopeIndex.Test.cs", "Services\LocalScopeIndex.cs", "Services\LspClient.cs",
+                           "Services\LspTrace.cs", "Services\EncodingHelper.cs", "CodeGraph\Parsing\ClarionBuiltins.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
+               Args = @((Join-Path $TestDir "fixtures\local-scope"), (Join-Path $RepoDir "Services\LocalScopeIndex.cs")) }
+            # 1c685f2e: dictionary PRE:Field / table-name completion and hover from the live snapshot
+            # (SchemaGraph only as the no-snapshot fallback), plus keyword/built-in names + categories.
+            @{ Name = "LiveDictionaryIndex.Test"
+               Sources = @("tests\LiveDictionaryIndex.Test.cs", "Services\LiveDictionaryIndex.cs", "Services\ClarionAppDataReader.Model.cs",
+                           "Services\LocalScopeIndex.cs", "Services\LspClient.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs",
+                           "CodeGraph\Parsing\ClarionBuiltins.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }
+            # 1c685f2e: held-open NOCASE symbol lookups - range queries and their plans, the parameter
+            # leak, inherited members across both DBs, the old-schema fallback, and the connection
+            # lifecycle (a held handle must never block the reindex delete). Synthetic x86 SQLite DBs.
+            @{ Name = "SymbolIndex.Test"
+               Sources = @("tests\SymbolIndex.Test.cs", "Services\SymbolIndex.cs",
+                           "CodeGraph\Graph\CodeGraphProvider.cs", "CodeGraph\Graph\CodeGraphDatabase.cs",
+                           "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
+                           "CodeGraph\Parsing\Models\SolutionProject.cs", "CodeGraph\Parsing\Models\ParseResult.cs",
+                           "Services\LspClient.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Data.dll", "System.Web.Extensions.dll")
+               RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
+               Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
+               Platform = "x86"
+               Args = @($RepoDir) }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"
