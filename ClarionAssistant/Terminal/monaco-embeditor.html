@@ -4544,6 +4544,29 @@
         return false;
     }
 
+    // Hover (R7): the local card and the LSP card come from two providers, which Monaco renders as they
+    // settle. Both share ONE localHover request per (model, version, position). The LSP provider waits for
+    // that answer before it asks: an authoritative local answer (a local, a parameter, a routine, a module
+    // procedure) means no LSP request at all; otherwise the LSP card is dropped when it names the same
+    // symbol as the local card, so the two never show the same thing twice.
+    function sharedLocalHover(model, position) {
+        var key = String(model.id || '') + ':' + model.getVersionId() + ':' + position.lineNumber + ':' + position.column;
+        if (localHoverShared && localHoverShared.key === key) return localHoverShared.promise;
+        var p = requestFromHost('localHover', withBuffer(model, { line: position.lineNumber, column: position.column }), LOCAL_TIMEOUT_MS);
+        localHoverShared = { key: key, promise: p };
+        return p;
+    }
+    // The symbol a hover card names: the leading label of its first code-block line (or of its first line),
+    // e.g. "MyVar  LONG" -> MyVar, "ThisWindow.Init PROCEDURE" -> ThisWindow.Init. Upper-cased; '' if none.
+    function hoverCardSymbol(md) {
+        var s = String(md || '');
+        var fence = /```[^\n]*\n([^\n]*)/.exec(s);
+        var first = fence ? fence[1] : s.split('\n')[0];
+        first = first.replace(/^[\s*_#>`]+/, '').replace(/^\([^)]*\)\s*/, '');
+        var m = /^[A-Za-z_][A-Za-z0-9_:.]*/.exec(first);
+        return m ? m[0].replace(/[.:]+$/, '').toUpperCase() : '';
+    }
+
     function registerClarionProviders() {
         // ----- Column-1 typing = no completion (native Clarion parity, task 8933fa05) -----
         // Column 1 is label/keyword territory (procedure labels, ROUTINE labels, MAP END...) — the native
@@ -4786,6 +4809,19 @@
                 return { suggestions: sugg };
             }
         });
+        // Two hover providers (1c685f2e item 6): the local card first, in milliseconds; then the LSP card,
+        // decided only once the local answer is in (see sharedLocalHover).
+        monaco.languages.registerHoverProvider('clarion', {
+            provideHover: function (model, position) {
+                if (isInClarionComment(model.getLineContent(position.lineNumber), position.column - 1)) return null;
+                return sharedLocalHover(model, position)
+                    .then(function (local) {
+                        if (!local || !local.contents) return null;
+                        return { contents: [{ value: local.contents }] };
+                    })
+                    .catch(function () { return null; });
+            }
+        });
         monaco.languages.registerHoverProvider('clarion', {
             provideHover: function (model, position) {
                 // Suppress the tooltip when the hover position is inside a Clarion comment — hovering a
@@ -4793,10 +4829,18 @@
                 // is 1-based, so pass column-1 as the 0-based index. Guarding here (not host-side) avoids
                 // a wasted round-trip and needs no C# change. (task 37e2079f)
                 if (isInClarionComment(model.getLineContent(position.lineNumber), position.column - 1)) return null;
-                return requestFromHost('hover', withBuffer(model, { line: position.lineNumber, column: position.column }))
-                    .then(function (resp) {
-                        if (!resp || !resp.contents) return null;
-                        return { contents: [{ value: resp.contents }] };
+                return sharedLocalHover(model, position)
+                    .then(function (local) {
+                        var localCard = local && local.contents;
+                        if (localCard && local.authoritative) return null;   // the local card owns it: no LSP call
+                        return requestFromHost('hover', withBuffer(model, { line: position.lineNumber, column: position.column }))
+                            .then(function (resp) {
+                                if (!resp || !resp.contents) return null;
+                                // Same symbol as the local card already on screen: one card, not two.
+                                if (localCard && hoverCardSymbol(localCard) &&
+                                    hoverCardSymbol(localCard) === hoverCardSymbol(resp.contents)) return null;
+                                return { contents: [{ value: resp.contents }] };
+                            });
                     })
                     .catch(function () { return null; });
             }

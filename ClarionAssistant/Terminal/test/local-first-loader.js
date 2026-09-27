@@ -133,7 +133,11 @@ function check(name, cond, detail) {
     else { fail++; failures.push(name + (detail ? ' - ' + detail : '')); console.log('  FAIL  ' + name + (detail ? ' - ' + detail : '')); }
 }
 function section(t) { console.log('\n' + t); }
+// A promise that never settles would otherwise end the run early with exit code 0 and no summary.
+let finished = false;
+process.on('exit', () => { if (!finished) { console.log('\nHARNESS DID NOT FINISH (an awaited promise never settled)'); process.exitCode = 1; } });
 function finish() {
+    finished = true;
     console.log('\n' + pass + ' passed, ' + fail + ' failed');
     if (fail) { console.log('\nFailures:\n  ' + failures.join('\n  ')); process.exit(1); }
 }

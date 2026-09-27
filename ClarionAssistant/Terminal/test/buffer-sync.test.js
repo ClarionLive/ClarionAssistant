@@ -109,7 +109,8 @@ function load(opts) {
             languages: {
                 CompletionItemKind: new Proxy({}, { get: () => 1 }),
                 registerCompletionItemProvider(lang, p) { (providers.completion = providers.completion || []).push(p); },
-                registerHoverProvider(lang, p) { providers.hover = p; },
+                // Two since 1c685f2e item 6: the local card first, the LSP one (which waits for local) last.
+                registerHoverProvider(lang, p) { if (providers.hover) providers.hoverLocal = providers.hover; providers.hover = p; },
                 registerSignatureHelpProvider(lang, p) { providers.signatureHelp = p; },
             },
             editor: {
@@ -147,8 +148,9 @@ function load(opts) {
     api.registerClarionProviders();
     api.installFindKeyInterceptor();
     api.wireCtrlClickDefinition(env.editor);
-    // Messages posted since `mark`, parsed.
-    env.since = (mark) => posted.slice(mark).map(s => JSON.parse(s));
+    // Messages posted since `mark`, parsed - requests and syncs; the [local-rt] log posts are in sinceAll.
+    env.sinceAll = (mark) => posted.slice(mark).map(s => JSON.parse(s));
+    env.since = (mark) => env.sinceAll(mark).filter(m => m.action !== 'log');
     env.reply = (reqId, data) => { const r = env.pendingRequests[reqId]; if (r) { delete env.pendingRequests[reqId]; r(data); } };
     return env;
 }
@@ -159,7 +161,14 @@ const ACTIONS = {
     completion: (e) => e.providers.completion[0].provideCompletionItems(e.model, pos),
     // 1c685f2e: the completion provider asks the local layer in the same breath (4.15).
     localCompletion: (e) => e.providers.completion[0].provideCompletionItems(e.model, pos),
-    hover: (e) => e.providers.hover.provideHover(e.model, pos),
+    // The LSP hover provider asks only once the shared localHover has answered (1c685f2e item 6): answer it
+    // (non-authoritative, no card) so the 'hover' request is posted.
+    hover: async (e) => {
+        e.providers.hover.provideHover(e.model, pos);
+        for (const m of e.since(0).filter(x => x.action === 'localHover')) e.reply(m.reqId, { contents: null, authoritative: false });
+        await flush();
+    },
+    localHover: (e) => e.providers.hoverLocal.provideHover(e.model, pos),
     signatureHelp: (e) => e.providers.signatureHelp.provideSignatureHelp(e.model, pos, null, {}),
     foldingRanges: (e) => e.api.__foldingCallback(e.model),
     diagnostics: (e) => e.api.refreshDiagnostics(),
@@ -175,12 +184,17 @@ function fireKey(e, init) {
     e.listeners.filter(l => l.type === 'keydown').forEach(l => l.fn(ev));
 }
 
+// A provider promise that never settles would otherwise end the run early with exit code 0 and no summary.
+let finished = false;
+process.on('exit', () => { if (!finished) { console.log('\nHARNESS DID NOT FINISH (an awaited promise never settled)'); process.exitCode = 1; } });
+
 async function main() {
     section('Every buffer-needing request sends `v`, not `buffer`');
     for (const [name, fire] of Object.entries(ACTIONS)) {
         const e = load();
         const mark = e.posted.length;
-        fire(e);
+        const fired = fire(e);
+        if (fire.constructor.name === 'AsyncFunction') await fired;   // (the other actions return never-settling promises)
         const msgs = e.since(mark);
         const action = name === 'definitionCtrlClick' ? 'definition' : name;
         const req = msgs.find(m => m.action === action);
@@ -207,7 +221,7 @@ async function main() {
     section('An edit: the next request is preceded by exactly one bufferSync, later ones by none');
     {
         const e = load();
-        ACTIONS.hover(e);
+        await ACTIONS.hover(e);
         const v1 = e.since(0).find(m => m.action === 'hover').v;
         e.model.edit('PROGRAM\r\n  CODE\r\n  x = 1\r\n');
         const mark = e.posted.length;
@@ -257,7 +271,7 @@ async function main() {
             msgs.filter(m => m.action === 'bufferSync').length === 1 && msgs[0].buffer === 'OTHER\r\n');
         mark = e.posted.length;
         if (e.api.resetBufferSync) e.api.resetBufferSync();   // setSource's model.setValue, or the host's 'bufferResync'
-        ACTIONS.hover(e);
+        ACTIONS.completion(e);   // (a hover at the same spot reuses its shared local answer)
         msgs = e.since(mark);
         check('resetBufferSync (setSource / bufferResync) forces a resend', msgs.filter(m => m.action === 'bufferSync').length === 1);
         check('setSource resets the sync after model.setValue',
@@ -300,7 +314,7 @@ async function main() {
         while ((m = re.exec(html))) bad.push(m[1]);
         check('no requestFromHost(..., { buffer: ... })', bad.length === 0, bad.join(', '));
         for (const a of ['foldingRanges', 'diagnostics', 'hover', 'completion', 'signatureHelp', 'definition', 'implementation',
-                         'documentStructure', 'openDesigner', 'openDesignerCreate', 'localCompletion']) {
+                         'documentStructure', 'openDesigner', 'openDesignerCreate', 'localCompletion', 'localHover']) {
             let n = (html.match(new RegExp("requestFromHost\\('" + a + "',\\s*withBuffer\\(", 'g')) || []).length;
             // diagnostics builds its payload first (so a throw cannot wedge the in-flight slot)
             if (a === 'diagnostics' && /payload = withBuffer\(model, \{ ranges: liveEditableRanges\(\) \}\)/.test(html) &&
@@ -397,7 +411,7 @@ async function main() {
     section('Requests are stamped with sentAt + timeoutMs (host logs replies that arrive after the page gave up)');
     {
         const e = load();
-        ACTIONS.hover(e);
+        await ACTIONS.hover(e);
         const h = e.since(0).find(m => m.action === 'hover');
         check('hover carries sentAt and timeoutMs=4000', h && typeof h.sentAt === 'number' && h.timeoutMs === 4000);
     }
@@ -406,7 +420,7 @@ async function main() {
     section('[local-rt]: one timing line per timed reply, on the page clock, sync attributed once');
     {
         const RT_RE = /^\[local-rt\] action=(\w+) v=(\S+) rtMs=(\d+) syncBytes=(\d+) syncMs=(\d+)( syncAgeMs=(\d+))?( timeout=1| null=1)?$/;
-        const logs = (e, mark) => e.since(mark || 0).filter(m => m.action === 'log');
+        const logs = (e, mark) => e.sinceAll(mark || 0).filter(m => m.action === 'log');
         const parse = (m) => { const x = RT_RE.exec(m.line); return x && { action: x[1], v: x[2], rtMs: +x[3], syncBytes: +x[4], syncMs: +x[5],
             syncAgeMs: x[7] == null ? null : +x[7], flag: (x[8] || '').trim() }; };
         const lastReq = (e, action) => e.since(0).filter(m => m.action === action).pop();
@@ -438,9 +452,9 @@ async function main() {
         // 0.4: a second request with no edit carries no sync.
         let mark = e.posted.length;
         e.clock = 2000;
-        ACTIONS.hover(e);
+        ACTIONS.foldingRanges(e);
         e.clock = 2010;
-        e.reply(lastReq(e, 'hover').reqId, { contents: 'x' });
+        e.reply(lastReq(e, 'foldingRanges').reqId, { ranges: [] });
         await flush();
         L = logs(e, mark);
         const r2 = L.length === 1 ? parse(L[0]) : null;
@@ -463,17 +477,17 @@ async function main() {
         // 0.6: a page timeout is logged (timeout=1), a host null as null=1.
         const t = load();
         t.clock = 50;
-        ACTIONS.hover(t);
-        const giveUp = t.timers.filter(x => x.ms === 4000).pop();
-        t.clock = 4050;
+        ACTIONS.foldingRanges(t);
+        const giveUp = t.timers.filter(x => x.ms === 1500).pop();
+        t.clock = 1550;
         giveUp.fn();
         await flush();
         L = logs(t).map(parse);
-        check('0.6 a timed-out request logs rtMs=<timeout> timeout=1', L.length === 1 && L[0] && L[0].flag === 'timeout=1' && L[0].rtMs === 4000,
+        check('0.6 a timed-out request logs rtMs=<timeout> timeout=1', L.length === 1 && L[0] && L[0].flag === 'timeout=1' && L[0].rtMs === 1500,
             JSON.stringify(logs(t)));
         const n = load();
-        ACTIONS.hover(n);
-        n.reply(lastReq(n, 'hover').reqId, null);
+        ACTIONS.foldingRanges(n);
+        n.reply(lastReq(n, 'foldingRanges').reqId, null);
         await flush();
         L = logs(n).map(parse);
         check('0.6 a host null reply logs null=1', L.length === 1 && L[0] && L[0].flag === 'null=1', JSON.stringify(logs(n)));
@@ -540,6 +554,7 @@ async function main() {
         check('(b) posts the buffer once per edit (10 copies), not once per request (40)', bytesB < one * 10.1 + 40 * 400, 'bytes ' + bytesB);
     }
 
+    finished = true;
     console.log('\n' + pass + ' passed, ' + fail + ' failed');
     if (fail) { console.log('\nFailures:\n  ' + failures.join('\n  ')); process.exit(1); }
 }
