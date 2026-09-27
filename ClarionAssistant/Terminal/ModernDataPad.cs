@@ -549,6 +549,11 @@ namespace ClarionAssistant
                         if (!string.IsNullOrEmpty(dir)) { Services.ExplorerRecentsStore.SetLastFolder(dir); PostExplorerData(); }
                     });
                 }
+                else if (action == "openHeaderPath")
+                {
+                    // Header APP / ROOT click. Only "app" or "root" is read from the page — never a path.
+                    OpenHeaderPathInExplorer(ExtractJsonValue(json, "which"));
+                }
                 else if (action == "reveal")
                 {
                     string path = ExtractJsonValue(json, "path");
@@ -1023,7 +1028,7 @@ namespace ClarionAssistant
                 SeedExplorerUiState(versionTag, solutionTag);
 
                 var vm = Services.ExplorerFileClassifier.BuildViewModel(true);
-                Post(new Dictionary<string, object>
+                var data = new Dictionary<string, object>
                 {
                     { "type", "setExplorerData" },
                     // Carry the active bucket so the page's banner can self-correct: the pad may post once at IDE
@@ -1042,7 +1047,9 @@ namespace ClarionAssistant
                         { "scope",     _explorerScope },
                         { "extMode",   _explorerExtMode },
                         { "customExt", _explorerCustomExt } } }
-                });
+                };
+                AddHeaderFields(data, sol); // the header self-corrects with the bucket (see versionTag above)
+                Post(data);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] PostExplorerData: " + ex.Message); }
         }
@@ -1137,14 +1144,76 @@ namespace ClarionAssistant
             {
                 string sol = null;
                 try { sol = Services.EditorService.GetOpenSolutionPath(); } catch { }
-                Post(new Dictionary<string, object>
+                var data = new Dictionary<string, object>
                 {
                     { "type", "setVersionInfo" },
                     { "versionTag", Services.ModernEmbeditorHistory.VersionTag() },
                     { "solutionTag", Services.ModernEmbeditorHistory.SolutionTag(sol) }
-                });
+                };
+                AddHeaderFields(data, sol);
+                Post(data);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] PostVersionInfo: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// 16d140e9: the header's APP / VERSION / ROOT values. APP is the open .app's full path, else the
+        /// solution's (labelled SOLUTION); VERSION and ROOT are the IDE's current version entry - the one it
+        /// builds with, which may not be the install the IDE runs from. Remembers the APP and ROOT paths so a
+        /// click can name the line instead of sending a path. UI thread.
+        /// </summary>
+        private void AddHeaderFields(Dictionary<string, object> data, string solutionPath)
+        {
+            string app = null, versionName = null, root = null;
+            try { app = new Services.AppTreeService().GetOpenAppFileName(); } catch { }
+            try
+            {
+                var cfg = Services.ClarionVersionService.Detect()?.GetCurrentConfig();
+                if (cfg != null) { versionName = cfg.Name; root = cfg.RootPath; }
+            }
+            catch { }
+
+            var m = Services.ExplorerHeader.Compose(app, solutionPath, versionName, root);
+            _lastHdrAppKey = app ?? "";
+            _hdrAppPath = m.AppPath;
+            _hdrRootPath = m.RootPath;
+            data["appLabel"] = m.AppLabel;
+            data["appPath"] = m.AppPath;
+            data["versionName"] = m.VersionName;
+            data["rootPath"] = m.RootPath;
+        }
+
+        /// <summary>
+        /// Open the header's APP (containing folder, file selected) or ROOT folder in Windows Explorer.
+        /// <paramref name="which"/> is all the page supplies; the path is the one this host last showed, and
+        /// it must pass <see cref="Services.ExplorerHeader.TryBuildExplorerArgs"/> (drive or UNC path, no
+        /// quote/wildcard/control chars, exists). explorer.exe is started directly - never through cmd.exe.
+        /// The existence check runs off the UI thread: an unreachable UNC share can take seconds to answer.
+        /// </summary>
+        private void OpenHeaderPathInExplorer(string which)
+        {
+            bool isApp = string.Equals(which, "app", StringComparison.Ordinal);
+            bool isRoot = string.Equals(which, "root", StringComparison.Ordinal);
+            if (!isApp && !isRoot) return;
+            string path = isApp ? _hdrAppPath : _hdrRootPath;
+            if (string.IsNullOrEmpty(path)) return;
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    string args;
+                    if (!Services.ExplorerHeader.TryBuildExplorerArgs(path, isApp, File.Exists, Directory.Exists, out args))
+                    {
+                        System.Diagnostics.Debug.WriteLine("[ModernDataPad] openHeaderPath refused: " + path);
+                        return;
+                    }
+                    string explorer = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
+                    var psi = new System.Diagnostics.ProcessStartInfo(explorer, args) { UseShellExecute = false };
+                    using (System.Diagnostics.Process.Start(psi)) { }
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] openHeaderPath: " + ex.Message); }
+            });
         }
 
         // Supersedes an in-flight redirection enumeration when the index is re-requested (e.g. the solution or
@@ -1551,6 +1620,10 @@ namespace ClarionAssistant
         private bool _lastShownNative;
         private bool _lastShownSelection;    // last shown proc came from app-tree selection, not a focused editor
         private string _lastEnvKey = "\0"; // last (solution | version | active .red path) key; sentinel so the first tick posts the banner
+        private string _lastHdrAppKey = "\0"; // open .app the header last showed; an app opened or closed re-posts the header only
+        // What the header's APP and ROOT lines last showed. The page's click names WHICH line ("app"/"root"),
+        // never a path, so nothing the page sends is ever handed to explorer.exe.
+        private string _hdrAppPath, _hdrRootPath;
         private string _lastShownProc = "\0"; // sentinel so the first tick always refreshes
 
         /// <summary>
@@ -1601,6 +1674,15 @@ namespace ClarionAssistant
                     // otherwise the type-ahead/trace would keep resolving against the previous environment's index.
                     RequestRedIndex();
                 }
+            }
+            else
+            {
+                // Header only: opening or closing an .app (same solution, same version) changes the APP line and
+                // nothing else, so it re-posts the header without rebuilding recents or the redirection index.
+                string appKey;
+                try { appKey = new Services.AppTreeService().GetOpenAppFileName() ?? ""; }
+                catch { appKey = _lastHdrAppKey; }
+                if (!string.Equals(appKey, _lastHdrAppKey, StringComparison.OrdinalIgnoreCase)) PostVersionInfo();
             }
 
             string proc;

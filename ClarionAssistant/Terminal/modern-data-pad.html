@@ -128,16 +128,34 @@
         color: #8a8a8a; font-size: 14px; line-height: 1; padding: 2px 4px; user-select: none; }
     #filterClear:hover { color: #1f1f1f; }
 
-    /* ===================== Version/solution banner (under #bar) ===================== */
-    .ver-banner { display: flex; align-items: center; gap: 6px; flex: none;
-        padding: 3px 10px; font-size: 11px; color: #5a5a64;
-        background: #eef1f5; border-bottom: 1px solid #dfe3e8; white-space: nowrap;
-        overflow: hidden; text-overflow: ellipsis; }
-    /* Fixed width so the .red line below can align its path to this line's text. */
-    .ver-banner .vb-ico { font-size: 12px; width: 14px; text-align: center; flex: none; }
-    #verText { font-weight: 600; color: #0a5dc2; }
-    body.dark .ver-banner { color: #c2c8dc; background: #21212e; border-bottom-color: #33333f; }
-    body.dark #verText { color: #89b4fa; }
+    /* ===================== Environment header (under #bar) — 16d140e9 =====================
+       APP / VERSION / ROOT / RED, one fact per line behind a small uppercase label column, the same
+       treatment as the Assistant panel's SOLUTION / VERSION / RED / CODEGRAPH rows so the two views read
+       alike. The label column is fixed-width so every value starts in one column. Paths truncate at the
+       START (direction:rtl) so the file name stays visible; the full path is always in the tooltip. */
+    .env-hdr { flex: none; padding: 3px 10px 4px 10px; font-size: 11px;
+        background: #eef1f5; border-bottom: 1px solid #dfe3e8; }
+    .env-row { display: flex; align-items: center; gap: 6px; min-width: 0; line-height: 17px; }
+    .env-hdr .vb-ico { font-size: 12px; width: 14px; text-align: center; flex: none; }
+    .env-label { flex: none; width: 58px; text-align: right; font-size: 10px; color: #6c6f85;
+        text-transform: uppercase; letter-spacing: 0.5px; }
+    .env-val { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        color: #3c3c46; }
+    .env-val.path { font-family: Consolas, 'Courier New', monospace; color: #5a5a64;
+        direction: rtl; text-align: left; }
+    #hdrVersion { font-weight: 600; color: #0a5dc2; }
+    .env-val.link { color: #0a5dc2; cursor: pointer; }
+    .env-val.link:hover { text-decoration: underline; }
+    .env-val.none { color: #b0152e; font-style: italic; direction: ltr; }
+    .env-val.unknown, #hdrVersion.unknown { color: #8b8b96; font-weight: normal; direction: ltr; }
+    body.dark .env-hdr { background: #21212e; border-bottom-color: #33333f; }
+    body.dark .env-label { color: #7f849c; }
+    body.dark .env-val { color: #c2c8dc; }
+    body.dark .env-val.path { color: #c2c8dc; }
+    body.dark #hdrVersion { color: #89b4fa; }
+    body.dark .env-val.link { color: #89b4fa; }
+    body.dark .env-val.none { color: #f38ba8; }
+    body.dark .env-val.unknown, body.dark #hdrVersion.unknown { color: #6c7086; }
 
     /* ===================== Tab strip (Data | Files) — adapted from header.html .tab-bar/.tab ===================== */
     .tab-bar { display: flex; align-items: flex-end; gap: 2px; padding: 4px 8px 0 8px;
@@ -240,20 +258,7 @@
        .fmenu is namespaced (not .menu) to avoid colliding with anything else on the page. The menu is
        absolutely positioned inside .splitwrap; it drops from the toolbar at the very top of the panel,
        so #panel-files's overflow:auto has plenty of room and never clips it. */
-    /* Active .red — the second line of the version/solution banner block, so it reads as part of the same
-       environment context rather than as chrome hanging off the tab strip. Matches .ver-banner's palette;
-       the divider between the two lines is dropped so they group visually. */
-    /* Same gap + icon width as .ver-banner above it, so the two VALUES line up in one column. That is why
-       this leads with an icon rather than an "Active .RED" label — a ~60px text label could never align
-       with a ~14px emoji, and the path's own .red extension already says what it is. */
-    .redbanner { display: flex; align-items: center; gap: 6px; padding: 0 10px 4px 10px; flex: none;
-        background: #eef1f5; border-bottom: 1px solid #dfe3e8; font-size: 11px; min-width: 0; margin-top: -1px; }
-    .redbanner .vb-ico { font-size: 12px; width: 14px; text-align: center; flex: none; color: #8b8b96; }
-    .redbanner .path { font-family: Consolas, 'Courier New', monospace; color: #5a5a64;
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
-    .redbanner .path.link { color: #0a5dc2; cursor: pointer; }
-    .redbanner .path.link:hover { text-decoration: underline; }
-    .redbanner .path.none { color: #b0152e; font-style: italic; direction: ltr; }
+    /* The active .red is the RED line of the environment header (see .env-hdr above). */
 
     .splitwrap { position: relative; display: inline-flex; }
     .files-toolbar .btn-split { padding-right: 0; }
@@ -427,11 +432,6 @@
     body.dark .redopen-trace-log .pathlink:hover { color: #89b4fa; }
 
     /* ----- Files tab — dark ----- */
-    body.dark .redbanner { background: #21212e; border-bottom-color: #33333f; }
-    body.dark .redbanner .vb-ico { color: #a3aac2; }
-    body.dark .redbanner .path { color: #c2c8dc; }
-    body.dark .redbanner .path.link { color: #89b4fa; }
-    body.dark .redbanner .path.none { color: #f38ba8; }
     body.dark .files-toolbar { border-bottom-color: #3a3a4a; }
     body.dark .files-toolbar .btn { background: #313244; border-color: #313244; color: #d4d4d4; }
     body.dark .files-toolbar .btn:hover { background: #3a3a52; }
@@ -643,20 +643,34 @@
         <button id="settingsBtn" class="icon" title="Customize sections (reorder, hide, expand)">⚙</button>
     </div>
 
-    <!-- Version/solution banner: recents & pinned folders are saved PER Clarion version + solution
-         (see ExplorerRecentsStore). Showing the active bucket makes a version switch obvious — i.e. why a
-         different Clarion version shows different recents. Populated by the host's setVersionInfo message. -->
-    <div id="verBanner" class="ver-banner" title="Recent files and pinned folders are saved per Clarion version and solution. This shows the active bucket.">
-        <span class="vb-ico">📦</span><span id="verText">—</span>
-    </div>
-
-    <!-- Second line of the same environment block: which .red every redirection search actually resolves
-         through. Sits with the version/solution banner deliberately — these are all "what environment am I
-         in" facts and belong together. Worth stating because CA falls back to the Clarion install's own
-         clarion.red when no solution is loaded, so "no solution" does NOT mean "no redirection". -->
-    <div class="redbanner" title="The redirection file every search resolves through.">
-        <span class="vb-ico">↪</span>
-        <span class="path" id="redBannerPath" title="Waiting for the redirection index…">—</span>
+    <!-- Environment header (16d140e9): what this Explorer is working against, one labelled fact per line.
+         APP     the open .app's full path (SOLUTION and the .sln when no app is open) - click shows it in
+                 Windows Explorer with the file selected
+         VERSION the Clarion version NAME the IDE builds with, as the Assistant panel's VERSION box names it
+         ROOT    that version's root folder - click opens it in Windows Explorer
+         RED     the .red every redirection search resolves through - click opens it in the CA Editor. Worth
+                 stating because CA falls back to the Clarion install's own clarion.red when no solution is
+                 loaded, so "no solution" does NOT mean "no redirection".
+         Recents and pinned folders are saved per version + solution (ExplorerRecentsStore), which is why a
+         version switch shows a different list. Populated by the host's setVersionInfo / setExplorerData;
+         a click posts only WHICH line was clicked, never a path. An unknown value shows a dash and is inert. -->
+    <div id="envHeader" class="env-hdr">
+        <div class="env-row">
+            <span class="vb-ico">📦</span><span class="env-label" id="hdrAppLabel">APP</span>
+            <span class="env-val path unknown" id="hdrApp" title="No app or solution open">—</span>
+        </div>
+        <div class="env-row" title="Recent files and pinned folders are saved per Clarion version and solution.">
+            <span class="vb-ico"></span><span class="env-label">Version</span>
+            <span class="env-val unknown" id="hdrVersion" title="Unknown">—</span>
+        </div>
+        <div class="env-row">
+            <span class="vb-ico"></span><span class="env-label">Root</span>
+            <span class="env-val path unknown" id="hdrRoot" title="Unknown">—</span>
+        </div>
+        <div class="env-row" title="The redirection file every search resolves through.">
+            <span class="vb-ico"></span><span class="env-label">Red</span>
+            <span class="env-val path" id="redBannerPath" title="Waiting for the redirection index…">—</span>
+        </div>
     </div>
 
     <!-- Tab strip: Data (the original Data Pad) | Files (Monaco file loader). pick() toggles .active. -->
@@ -1191,14 +1205,46 @@
         try { window.chrome.webview.postMessage(JSON.stringify(obj)); } catch (e) {}
     }
 
-    // Update the version/solution banner under the title. Source of truth = the host (setVersionInfo and the
-    // setExplorerData payload both call this), so the banner self-corrects once the solution is loaded.
-    function setVerBanner(versionTag, solutionTag) {
-        var vt = document.getElementById('verText');
-        if (!vt) return;
-        var sol = (solutionTag && solutionTag !== 'NoSolution') ? solutionTag : 'no solution';
-        vt.textContent = (versionTag || '?') + '   ·   ' + sol;
+    // ===================== Environment header (16d140e9) =====================
+    // The APP / VERSION / ROOT lines under the title (RED is filled by the setRedIndex handler). Source of
+    // truth = the host: setVersionInfo and the setExplorerData payload both carry appLabel / appPath /
+    // versionName / rootPath, so the header self-corrects once the solution or an app finishes loading.
+    // A missing value renders as a dash and is not clickable. A clickable line posts only WHICH line it is
+    // ('app' / 'root'); the host opens the path it last sent, so no path from the page reaches explorer.exe.
+    var HDR_DASH = '—';
+    var HDR_LRM = '‎'; // keeps a path's leading "\\" and trailing punctuation in place under direction:rtl
+
+    function hdrField(id, value, isPath, which, hint) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        var known = typeof value === 'string' && value.length > 0;
+        el.textContent = known ? (isPath ? HDR_LRM + value + HDR_LRM : value) : HDR_DASH;
+        el.title = known ? value + (which ? '\n(' + hint + ')' : '') : 'Unknown';
+        el.className = 'env-val' + (isPath ? ' path' : '') + (known ? (which ? ' link' : '') : ' unknown');
+        if (known && which) el.setAttribute('data-open', which);
+        else el.removeAttribute('data-open');
     }
+
+    function renderEnvHeader(h) {
+        h = h || {};
+        var label = document.getElementById('hdrAppLabel');
+        if (label) label.textContent = h.appLabel === 'SOLUTION' ? 'SOLUTION' : 'APP';
+        hdrField('hdrApp', h.appPath, true, 'app', 'click to show it in Windows Explorer');
+        hdrField('hdrVersion', h.versionName, false, null, null);
+        hdrField('hdrRoot', h.rootPath, true, 'root', 'click to open it in Windows Explorer');
+    }
+
+    function wireEnvHeader() {
+        ['hdrApp', 'hdrRoot'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener('click', function () {
+                var which = el.getAttribute('data-open');
+                if (which === 'app' || which === 'root') postToHost({ action: 'openHeaderPath', which: which });
+            });
+        });
+    }
+    // ===================== end Environment header =====================
 
     function insert(name) { postToHost({ action: 'insert', name: name }); }
 
@@ -2627,9 +2673,9 @@
             if (msg.type === 'setExplorerData') {
                 // Files tab payload (host -> JS). Store and render the Files panel. See renderExplorer().
                 explorerData = msg;
-                // The payload also carries the active bucket — refresh the banner so it self-corrects if the first
+                // The payload also carries the header values — refresh it so it self-corrects if the first
                 // setVersionInfo (posted at startup) captured "no solution" before the solution finished loading.
-                if (msg.versionTag) setVerBanner(msg.versionTag, msg.solutionTag);
+                if ('appLabel' in msg) renderEnvHeader(msg);
                 if (msg.uiState) {
                     if (msg.uiState.collapsed) {
                         explorerCollapsed = {};
@@ -2663,9 +2709,9 @@
                 renderExplorer();
             }
             if (msg.type === 'setVersionInfo') {
-                // Banner under the title: which Clarion-version + solution bucket the recents/pins come from
-                // (saved per version + solution — see ExplorerRecentsStore). Makes a version switch obvious.
-                setVerBanner(msg.versionTag, msg.solutionTag);
+                // Header under the title: APP / VERSION / ROOT (16d140e9). Recents/pins are saved per version +
+                // solution (ExplorerRecentsStore), so naming them here also makes a version switch obvious.
+                renderEnvHeader(msg);
                 return;
             }
             if (msg.type === 'setRedIndex') {
@@ -2722,14 +2768,14 @@
                 var rbp = document.getElementById('redBannerPath');
                 if (rbp) {
                     if (redAvailable && msg.redPath) {
-                        rbp.textContent = msg.redPath;
+                        rbp.textContent = '‎' + msg.redPath + '‎'; // LRM: keeps a path's edge punctuation in place under direction:rtl
                         rbp.title = msg.redPath + '\n(click to open)';
-                        rbp.className = 'path link';
+                        rbp.className = 'env-val path link';
                         rbp.setAttribute('data-redpath', msg.redPath);
                     } else {
                         rbp.textContent = 'None';
                         rbp.title = 'No active redirection file — open a Clarion solution.';
-                        rbp.className = 'path none';
+                        rbp.className = 'env-val path none';
                         rbp.removeAttribute('data-redpath');
                     }
                 }
@@ -3976,6 +4022,7 @@
 
         // Clicking the named .red opens it — you usually want to look at the file the moment you notice
         // it is not the one you expected.
+        wireEnvHeader(); // APP / ROOT lines -> Windows Explorer via the host
         var redBannerPath = document.getElementById('redBannerPath');
         if (redBannerPath) redBannerPath.addEventListener('click', function () {
             var p = this.getAttribute('data-redpath');

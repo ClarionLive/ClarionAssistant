@@ -208,6 +208,22 @@ namespace ClarionAssistant.Services
             return ModernEmbeditorLauncher.WarmupAbc();
         }
 
+        /// <summary>
+        /// The open .app's FileName (the focused app view first, else the first one found), or null.
+        /// A light read for the CA Explorer header (16d140e9), which polls it: no dictionary lookup.
+        /// </summary>
+        public string GetOpenAppFileName()
+        {
+            try
+            {
+                var app = GetAppObject();
+                if (app == null) return null;
+                string f = GetProp(app, "FileName")?.ToString();
+                return string.IsNullOrEmpty(f) ? null : f;
+            }
+            catch { return null; }
+        }
+
         public Dictionary<string, object> GetAppInfo()
         {
             var app = GetAppObject();
