@@ -10,6 +10,8 @@
 //            the current one. Pinned: a superseded reply is dropped, a reply for a buffer that has since
 //            changed is dropped (and a fresh pass scheduled), the latest reply for the current buffer applies,
 //            and a timed-out (null) reply still leaves the rendered markers alone (#170).
+//   GH #184  the font family is a plain <select>: every preset always listed, a pick applies at once, a saved
+//            font outside the list is added as an option so it round-trips, "Default" = "".
 
 const fs = require('fs');
 const path = require('path');
@@ -164,123 +166,75 @@ async function testDiagnostics() {
 }
 
 // =====================================================================================================
-// GH #184 — the font family list shows every preset while the box has focus
+// GH #184 — the font family is a non-editable <select> with every preset always listed
 // =====================================================================================================
 function testFontPicker() {
-    section('GH #184 — focusing the font family box shows the full list; leaving it restores the font');
-    let src = null;
-    try {
-        src = slice(html, '    // ===================== Font family picker (GH #184)', '    // ===================== end Font family picker', 'font picker');
-    } catch (e) {
-        check('font picker section present in the page', false, e.message);
-        return;
-    }
+    section('GH #184 — font family select: full list, a pick applies at once, unknown saved fonts round-trip');
     const { JSDOM } = require('jsdom');
-    const inputMarkup = /<input[^>]*id="setFontFamily"[^>]*>/.exec(html);
-    const listMarkup = /<datalist id="fontFamilyList">[\s\S]*?<\/datalist>/.exec(html);
-    if (!inputMarkup || !listMarkup) { check('font family input + datalist found in the page', false); return; }
+    const labelMarkup = /<label[^>]*>Font family[\s\S]*?<\/label>/.exec(html);
+    let src = null;
+    try { src = slice(html, '    // ===================== Font family select (GH #184)', '    // ===================== end Font family select', 'font family select'); }
+    catch (e) { src = null; }
+    check('font family select section present in the page', !!src);
+    check('font family control markup found', !!labelMarkup);
+    if (!labelMarkup) return;
 
-    // One fresh page per scenario: the real markup, the real section, and a stand-in for the generic
-    // change -> onSettingChanged listener registered AFTER the picker, exactly as wireSettingsPanel orders them.
-    function load(initial) {
-        const dom = new JSDOM('<!DOCTYPE html><body><button id="other">x</button>' + inputMarkup[0] + listMarkup[0] + '</body>');
-        const win = dom.window, doc = win.document;
-        const api = new Function('document', src + '\nreturn { wireFontFamilyPicker: wireFontFamilyPicker, fontFamilyFieldValue: fontFamilyFieldValue,' +
-            ' setFontFamilyBox: typeof setFontFamilyBox === "function" ? setFontFamilyBox : null };')(doc);
+    // One fresh page per scenario: the real markup, the real setter, and a stand-in for the generic
+    // change -> onSettingChanged listener that reads the control's value the way the settings payload does.
+    function load() {
+        const dom = new JSDOM('<!DOCTYPE html><body>' + labelMarkup[0] + '</body>');
+        const doc = dom.window.document;
         const el = doc.getElementById('setFontFamily');
-        el.value = initial;
-        api.wireFontFamilyPicker();
+        const setter = src ? new Function('document', src + '\nreturn setFontFamilySelect;')(doc) : null;
         const saved = [];
-        el.addEventListener('change', () => saved.push(api.fontFamilyFieldValue(el)));
-        return { win, doc, el, api, saved, fire: (t) => el.dispatchEvent(new win.Event(t, { bubbles: true })) };
+        if (el) el.addEventListener('change', () => saved.push(el.value.trim().slice(0, 64)));
+        const set = (v) => { if (setter) setter(el, v); else el.value = v; };
+        const values = () => (el && el.options) ? Array.from(el.options).map(o => o.value) : [];
+        return { dom, doc, el, set, saved, values };
     }
+    const PRESETS = ['Consolas', 'Cascadia Code', 'Cascadia Mono', 'Courier New', 'Fira Code', 'JetBrains Mono', 'Lucida Console', 'Source Code Pro'];
 
     {
-        const p = load('Consolas');
-        const origPlaceholder = p.el.placeholder;
-        p.el.focus();
-        check('focus clears the box so the datalist is not filtered', p.el.value === '', JSON.stringify(p.el.value));
-        check('...the current font stays visible as the placeholder', p.el.placeholder === 'Consolas', p.el.placeholder);
-        check('...and settings read while blanked still see the current font', p.api.fontFamilyFieldValue(p.el) === 'Consolas');
-        p.el.blur();
-        check('leaving without a pick restores the font', p.el.value === 'Consolas', JSON.stringify(p.el.value));
-        check('...and the original placeholder', p.el.placeholder === origPlaceholder, p.el.placeholder);
+        const p = load();
+        check('the font family control is a non-editable select', !!p.el && p.el.tagName === 'SELECT', p.el ? p.el.tagName : 'missing');
+        check('no datalist remains', !/<datalist id="fontFamilyList"/.test(html));
+        const v = p.values();
+        check('every preset is always listed', PRESETS.every(f => v.includes(f)), JSON.stringify(v));
+        const first = p.el && p.el.options && p.el.options[0];
+        check('the first option is "Default" with value "" (the editor default)',
+            !!first && first.value === '' && /^Default/.test(first.textContent), first ? JSON.stringify([first.value, first.textContent]) : '-');
     }
     {
-        const p = load('Consolas');
-        p.el.focus();
-        p.fire('change');   // a change that fires on the way out while the box is still blank
-        check('a change while still blank saves the current font, not "default"', p.saved.length === 1 && p.saved[0] === 'Consolas',
-            JSON.stringify(p.saved));
+        const p = load();
+        p.set('Courier New');
+        check('with a font set, the full list is still there', PRESETS.every(f => p.values().includes(f)), JSON.stringify(p.values()));
+        p.el.value = 'Fira Code';
+        p.el.dispatchEvent(new p.dom.window.Event('change', { bubbles: true }));
+        check('choosing an option applies it at once through change', p.saved.length === 1 && p.saved[0] === 'Fira Code', JSON.stringify(p.saved));
+        p.el.value = '';
+        p.el.dispatchEvent(new p.dom.window.Event('change', { bubbles: true }));
+        check('choosing Default saves ""', p.saved[p.saved.length - 1] === '', JSON.stringify(p.saved));
     }
     {
-        const p = load('Consolas');
-        p.el.focus();
-        p.el.value = 'Fira Code'; p.fire('input'); p.fire('change');   // picked from the list
-        p.el.blur();
-        check('a font picked from the list is kept and saved', p.el.value === 'Fira Code' && p.saved[p.saved.length - 1] === 'Fira Code',
-            JSON.stringify({ v: p.el.value, saved: p.saved }));
-        p.el.focus();
-        check('re-focusing after a pick clears again (full list)', p.el.value === '', JSON.stringify(p.el.value));
-        p.el.blur();
-        check('...and leaving restores the picked font', p.el.value === 'Fira Code', JSON.stringify(p.el.value));
+        const p = load();
+        const legacy = "Consolas, 'Courier New'";
+        p.set(legacy);
+        check('an unknown saved font is added as an option and selected', p.el.tagName === 'SELECT' && p.el.value === legacy &&
+            p.values().filter(v => v === legacy).length === 1, JSON.stringify({ v: p.el.value, opts: p.values() }));
+        check('...and round-trips unchanged into the settings payload', p.el.value.trim().slice(0, 64) === legacy);
+        p.set(legacy);
+        check('setting it again does not duplicate the option', p.values().filter(v => v === legacy).length === 1, JSON.stringify(p.values()));
+        p.set('JetBrains Mono');
+        check('a later preset selects the preset and drops the stale extra', p.el.value === 'JetBrains Mono' && !p.values().includes(legacy),
+            JSON.stringify(p.values()));
+        p.set('');
+        check('setting "" selects Default', p.el.selectedIndex === 0 && p.el.value === '', String(p.el.selectedIndex));
     }
-    {
-        const p = load('Consolas');
-        p.el.focus();
-        p.el.value = 'Fira Code'; p.fire('input'); p.fire('change');   // pick, focus stays in the box
-        p.fire('pointerdown'); p.fire('mousedown'); p.fire('click');  // click inside it to edit the name in place
-        check('clicking inside the already-focused box leaves its text alone', p.el.value === 'Fira Code', JSON.stringify(p.el.value));
-        p.el.value = 'Fira Code, Consolas'; p.fire('input'); p.fire('change');
-        p.el.blur();
-        check('...so a fallback font can be added in place', p.el.value === 'Fira Code, Consolas' &&
-            p.saved[p.saved.length - 1] === 'Fira Code, Consolas', JSON.stringify({ v: p.el.value, saved: p.saved }));
-    }
-    {
-        // The page writes the box while it is focused and blanked (settings from the host, follow-IDE, import).
-        const p = load('Consolas');
-        const origPlaceholder = p.el.placeholder;
-        p.el.focus();
-        if (p.api.setFontFamilyBox) p.api.setFontFamilyBox(p.el, ''); else p.el.value = '';   // host: font back to default
-        p.el.blur();
-        check('a page write of "" (default) while blanked survives blur', p.el.value === '', JSON.stringify(p.el.value));
-        check('...and saves as the default', p.api.fontFamilyFieldValue(p.el) === '', JSON.stringify(p.api.fontFamilyFieldValue(p.el)));
-        check('...with the original placeholder back', p.el.placeholder === origPlaceholder, p.el.placeholder);
-    }
-    {
-        const p = load('Consolas');
-        p.el.focus();
-        if (p.api.setFontFamilyBox) p.api.setFontFamilyBox(p.el, 'Lucida Console'); else p.el.value = 'Lucida Console';
-        check('settings read after a page write while blanked see the written font', p.api.fontFamilyFieldValue(p.el) === 'Lucida Console');
-        p.el.blur();
-        check('a page write of a font while blanked survives blur', p.el.value === 'Lucida Console', JSON.stringify(p.el.value));
-        p.el.focus();
-        check('...and the next focus blanks it again for the full list', p.el.value === '' && p.el.placeholder === 'Lucida Console');
-    }
-    {
-        const p = load('Consolas');
-        p.el.focus();
-        p.el.value = 'Cour'; p.fire('input');
-        check('typing filters as before (the typed text is kept)', p.el.value === 'Cour');
-        p.el.value = ''; p.fire('input'); p.fire('change');   // then erased it on purpose
-        p.el.blur();
-        check('erasing the box on purpose still selects the default (blank)', p.el.value === '' && p.saved[p.saved.length - 1] === '',
-            JSON.stringify({ v: p.el.value, saved: p.saved }));
-    }
-    {
-        const p = load('');
-        p.el.focus(); p.el.blur();
-        check('an already-blank box stays blank', p.el.value === '');
-    }
-    check('the settings payload reads the box through fontFamilyFieldValue',
-        /fontFamily: storedPref\('fontFamily', \(function \(\) \{ var e = document\.getElementById\('setFontFamily'\); return e \? fontFamilyFieldValue\(e\)/.test(html));
-    check('every page write to the font box goes through setFontFamilyBox',
-        !/getElementById\('setFontFamily'\)\)\)?\s*el\.value\s*=/.test(html) &&
-        /setFontFamilyBox\(el, followingFontFamily/.test(html) &&
-        /else if \(e\.id === 'setFontFamily'\) setFontFamilyBox\(e, String\(v\)\)/.test(html) &&
-        /\(el = document\.getElementById\('setFontFamily'\)\)\) setFontFamilyBox\(el, \(typeof s\.fontFamily/.test(html));
-    const wireAt = html.indexOf('wireFontFamilyPicker();'), idsAt = html.indexOf("var ids = ['setCursorBehindEol'");
-    check('the picker is wired before the generic change listeners', wireAt > 0 && idsAt > 0 && wireAt < idsAt);
+    check('no blank-on-focus machinery is left', !/_ffStash|ffRestore|fontFamilyFieldValue|setFontFamilyBox|wireFontFamilyPicker/.test(html));
+    check('every page write to the font family goes through setFontFamilySelect',
+        /setFontFamilySelect\(el, followingFontFamily/.test(html) &&
+        /else if \(e\.id === 'setFontFamily'\) setFontFamilySelect\(e, String\(v\)\)/.test(html) &&
+        /\(el = document\.getElementById\('setFontFamily'\)\)\) setFontFamilySelect\(el, \(typeof s\.fontFamily/.test(html));
 }
 
 // =====================================================================================================

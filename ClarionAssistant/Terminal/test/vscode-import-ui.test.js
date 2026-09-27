@@ -57,8 +57,14 @@ const vscJsFull = slice(html,
     '    // ----- Keyboard rebinding table (gear panel) -----', 'VS Code import section');
 
 const escHtmlJs = slice(html, '    function escHtml(s) {', '    }', 'escHtml');
-// The import writes the font box through the font picker's setFontFamilyBox (GH #184), so that section rides along.
-const fontPickerJs = slice(html, '    // ===================== Font family picker (GH #184)', '    // ===================== end Font family picker', 'font picker section');
+// The import writes the font family through setFontFamilySelect (GH #184), so that section rides along.
+// (Falls back to the earlier <input list> picker section so this file still RUNS against an older page — the
+// select checks below then fail cleanly instead of the whole harness throwing.)
+const fontPickerJs = html.indexOf('    // ===================== Font family select (GH #184)') >= 0
+    ? slice(html, '    // ===================== Font family select (GH #184)', '    // ===================== end Font family select', 'font family select section')
+    : (html.indexOf('    // ===================== Font family picker (GH #184)') >= 0
+        ? slice(html, '    // ===================== Font family picker (GH #184)', '    // ===================== end Font family picker', 'old font picker section')
+        : '');
 
 if (!/vscImportBtn/.test(gearMarkup)) throw new Error('extracted markup has no import button');
 if (!/function vscApply/.test(vscJsFull)) throw new Error('extracted JS has no vscApply');
@@ -253,6 +259,25 @@ section('State (a) — found, with changes');
     check('CANCEL: control untouched', e2.$('setTabSize').value === '2');
     check('CANCEL: no write', e2.spy.settingChanged === 0);
     check('CANCEL: preview closes', e2.result().classList.contains('hidden'));
+
+    // ---- font family is a <select> (GH #184): the import SELECTS the font, adding it when not a preset ----
+    const ff = e.$('setFontFamily');
+    check('APPLY: the font family control is a select and the imported font is the selected option',
+        ff.tagName === 'SELECT' && ff.selectedIndex >= 0 && ff.options[ff.selectedIndex].value === 'Cascadia Code',
+        ff.tagName + ' ' + (ff.options ? ff.selectedIndex : '-'));
+    const e5 = makeEnv();
+    e5.seedPanel();
+    e5.api.vscRequest(false);
+    await e5.reply({ found: true, path: 'p', error: '', values: { fontFamily: "Fira Code, 'Courier New', monospace" },
+                     skipped: [], cancelled: false });
+    e5.clickBtn('Import');
+    const ff5 = e5.$('setFontFamily');
+    const opts5 = ff5.options ? Array.from(ff5.options).map(o => o.value) : [];
+    check('APPLY: an imported font that is not a preset is added as an option and selected',
+        ff5.tagName === 'SELECT' && ff5.value === "Fira Code, 'Courier New', monospace" &&
+        opts5.filter(v => v === "Fira Code, 'Courier New', monospace").length === 1, JSON.stringify(opts5));
+    check('APPLY: ...and the presets are all still listed', ['', 'Consolas', 'Cascadia Code', 'Fira Code'].every(v => opts5.includes(v)),
+        JSON.stringify(opts5));
 }
 
 section('State (b) — found, nothing to change');

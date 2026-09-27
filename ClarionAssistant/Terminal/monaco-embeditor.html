@@ -727,19 +727,18 @@
         <label>Minimap <input type="checkbox" id="setMinimap"></label>
         <label>Complete word on insert key (space . ( = {) <input type="checkbox" id="setCompleteOnInsertKey"></label>
         <label>Font size <input type="number" id="setFontSize" min="6" max="48" step="1"></label>
-        <label title="Any installed monospace font. Blank = default (Consolas).">Font family
-            <input type="text" id="setFontFamily" list="fontFamilyList" placeholder="Consolas (default)"
-                   maxlength="64" autocomplete="off" spellcheck="false" style="width:150px"></label>
-        <datalist id="fontFamilyList">
-            <option value="Consolas"></option>
-            <option value="Cascadia Code"></option>
-            <option value="Cascadia Mono"></option>
-            <option value="Courier New"></option>
-            <option value="Fira Code"></option>
-            <option value="JetBrains Mono"></option>
-            <option value="Lucida Console"></option>
-            <option value="Source Code Pro"></option>
-        </datalist>
+        <label title="The editor font. Default = Consolas.">Font family
+            <select id="setFontFamily" style="width:150px">
+                <option value="">Default</option>
+                <option value="Consolas">Consolas</option>
+                <option value="Cascadia Code">Cascadia Code</option>
+                <option value="Cascadia Mono">Cascadia Mono</option>
+                <option value="Courier New">Courier New</option>
+                <option value="Fira Code">Fira Code</option>
+                <option value="JetBrains Mono">JetBrains Mono</option>
+                <option value="Lucida Console">Lucida Console</option>
+                <option value="Source Code Pro">Source Code Pro</option>
+            </select></label>
         <label title="Highlight all other occurrences of the word at the cursor (and of the selected text).">Highlight matching occurrences <input type="checkbox" id="setOccurrenceHighlight"></label>
         <label>Horizontal scrollbar
             <select id="setHorizontalScrollbar">
@@ -4960,7 +4959,7 @@
         }
         if ((el = document.getElementById('setFontFamily'))) {
             var followingFontFamily = (s.followIdeIndentation !== false) && _ideOpts && typeof _ideOpts.fontFamily === 'string' && _ideOpts.fontFamily !== '';
-            setFontFamilyBox(el, followingFontFamily ? _ideOpts.fontFamily : ((typeof s.fontFamily === 'string') ? s.fontFamily : ''));
+            setFontFamilySelect(el, followingFontFamily ? _ideOpts.fontFamily : ((typeof s.fontFamily === 'string') ? s.fontFamily : ''));
         }
         if ((el = document.getElementById('setOccurrenceHighlight'))) el.checked = (s.occurrenceHighlight !== false);   // default ON (#62)
         if ((el = document.getElementById('setHorizontalScrollbar'))) el.value = s.horizontalScrollbar || 'auto';
@@ -5046,7 +5045,7 @@
             minimap: chk('setMinimap'),
             completeOnInsertKey: chk('setCompleteOnInsertKey'),
             fontSize: storedPref('fontSize', num('setFontSize', 13, 6, 48)),
-            fontFamily: storedPref('fontFamily', (function () { var e = document.getElementById('setFontFamily'); return e ? fontFamilyFieldValue(e).trim().slice(0, 64) : ''; })()),
+            fontFamily: storedPref('fontFamily', (function () { var e = document.getElementById('setFontFamily'); return e ? e.value.trim().slice(0, 64) : ''; })()),
             occurrenceHighlight: (function () { var e = document.getElementById('setOccurrenceHighlight'); return e ? !!e.checked : true; })(),
             horizontalScrollbar: sel('setHorizontalScrollbar', 'auto'),
             // ----- Smart Formatter -----
@@ -5134,7 +5133,7 @@
         if (!e) return;
         // Set the control ONLY — deliberately no 'change' dispatch. The import commits once via
         // onSettingChanged(); firing per-control events would post one saveSettings per imported key.
-        if (m.kind === 'chk') e.checked = !!v; else if (e.id === 'setFontFamily') setFontFamilyBox(e, String(v)); else e.value = String(v);
+        if (m.kind === 'chk') e.checked = !!v; else if (e.id === 'setFontFamily') setFontFamilySelect(e, String(v)); else e.value = String(v);
         // An import IS a deliberate new stored pref, so update _storedPrefs for the follow-owned keys as well.
         // Without this, importing a font while follow-mode owns the field would write the value into a control
         // that storedPref() then overrides on the commit below, and the imported font would vanish silently.
@@ -5576,55 +5575,33 @@
         ov.remove();
     }
 
-    // ===================== Font family picker (GH #184)
-    // A native <input list> filters its <datalist> by the text already in the box, so once a font was set,
-    // opening the list showed only that one font. While the box has focus it is blanked (the full list shows;
-    // the current font stays readable as the placeholder), and on the way out the old value is put back
-    // unless the developer picked or typed something. Deliberately erasing it still means "default": the
-    // erase is an input event, so it counts as an edit. fontFamilyFieldValue() reads through the blanking,
-    // so anything that saves settings while the box is focused never mistakes it for "default".
-    var _ffStash = null;         // the value the box held when it was blanked; null = not blanked
-    var _ffEdited = false;       // an input event since blanking (a pick from the list is one)
-    var _ffPlaceholder = null;
-    function fontFamilyFieldValue(e) {
-        if (!e) return '';
-        if (e.value === '' && _ffStash !== null && !_ffEdited) return _ffStash;
-        return e.value;
-    }
-    function ffBlank(e) {
-        if (_ffStash !== null || e.disabled || e.value === '') return;
-        _ffStash = e.value;
-        _ffEdited = false;
-        _ffPlaceholder = e.placeholder;
-        e.placeholder = _ffStash;
-        e.value = '';
-    }
-    // Every page write to the box goes through here (settings from the host, follow-IDE, VS Code import): the
-    // written value is the new truth, so drop any blanking state — blur must not put the old font back over it.
-    function setFontFamilyBox(e, v) {
-        if (_ffStash !== null) { e.placeholder = _ffPlaceholder; _ffStash = null; _ffEdited = false; }
+    // ===================== Font family select (GH #184)
+    // The font family is a plain, non-editable <select>: every preset is always listed (an <input list> filtered
+    // its <datalist> down to the font already in the box) and a pick applies at once through the generic change
+    // listener, with no edit state left behind. "Default" (value "") means the editor default.
+    // Every page write to the control goes through setFontFamilySelect (settings from the host, follow-IDE off,
+    // VS Code import). A value that is not a preset (an older saved fallback list such as
+    // "Consolas, 'Courier New'", or an imported font) is added as an extra option so it shows as selected and
+    // round-trips unchanged instead of being dropped; only one such extra is kept at a time.
+    function setFontFamilySelect(e, v) {
+        if (!e) return;
+        v = (v === null || v === undefined) ? '' : String(v);
+        var i, found = false;
+        for (i = e.options.length - 1; i >= 0; i--) {
+            var o = e.options[i];
+            if (o.value === v) found = true;
+            else if (o.getAttribute('data-extra') === '1') e.removeChild(o);
+        }
+        if (!found) {
+            var add = document.createElement('option');
+            add.value = v;
+            add.textContent = v;
+            add.setAttribute('data-extra', '1');
+            e.appendChild(add);
+        }
         e.value = v;
     }
-    function ffRestore(e) {
-        if (_ffStash === null) return;
-        if (e.value === '' && !_ffEdited) e.value = _ffStash;
-        e.placeholder = _ffPlaceholder;
-        _ffStash = null;
-        _ffEdited = false;
-    }
-    function wireFontFamilyPicker() {
-        var e = document.getElementById('setFontFamily');
-        if (!e) return;
-        // Only on the way IN. A click inside the already-focused box (to edit the name in place, say to add a
-        // fallback font) leaves the text alone; the full list comes back on the next focus.
-        e.addEventListener('focus', function () { ffBlank(e); });
-        e.addEventListener('input', function () { if (_ffStash !== null) _ffEdited = true; });
-        // Must be registered BEFORE the generic change -> onSettingChanged listener: a change that fires on the
-        // way out while the box is still blank then sees the restored value, not a false "default".
-        e.addEventListener('change', function () { ffRestore(e); });
-        e.addEventListener('blur', function () { ffRestore(e); });
-    }
-    // ===================== end Font family picker
+    // ===================== end Font family select
 
     function wireSettingsPanel() {
         var btn = document.getElementById('settingsBtn');
@@ -5636,7 +5613,6 @@
             // reopening later must not offer a stale "current → imported" the developer has since changed.
             if (p.classList.contains('hidden')) vscHide();
         });
-        wireFontFamilyPicker();   // GH #184 — before the change listeners below (see its comment)
         var ids = ['setCursorBehindEol', 'setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setFontFamily', 'setOccurrenceHighlight', 'setHorizontalScrollbar',
             // Smart Formatter controls
             'setPreferredColumn', 'setContLineMultiplier', 'setIndentComments', 'setDontIndentCol1Comments', 'setFormatLineOnEnter',
@@ -5663,7 +5639,7 @@
                 var s = _storedPrefs || lastSettings || {};   // _storedPrefs is null until the first host payload
                 var el;
                 if ((el = document.getElementById('setFontSize')) && typeof s.fontSize === 'number') el.value = s.fontSize;
-                if ((el = document.getElementById('setFontFamily'))) setFontFamilyBox(el, (typeof s.fontFamily === 'string') ? s.fontFamily : '');
+                if ((el = document.getElementById('setFontFamily'))) setFontFamilySelect(el, (typeof s.fontFamily === 'string') ? s.fontFamily : '');
                 if ((el = document.getElementById('setCursorBehindEol'))) el.checked = !!s.cursorBehindEOL;
             }
             syncFollowIdeUi();
