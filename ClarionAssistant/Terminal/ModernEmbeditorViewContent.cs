@@ -2092,10 +2092,19 @@ namespace ClarionAssistant.Terminal
             if (!_fileMode) return;
             try
             {
-                var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-                var data = ser.DeserializeObject(json) as Dictionary<string, object>;
+                // 16d140e9: the control already cached this message's text as the buffer sync for its `v` —
+                // take that same string instead of deserialising a second multi-megabyte copy. An older page
+                // (no `v`) falls through to the full parse, unchanged.
+                Dictionary<string, object> data = null;
+                string cached = _panel != null ? _panel.FileStateText(json, out data) : null;
+                if (cached == null)
+                {
+                    var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                    data = ser.DeserializeObject(json) as Dictionary<string, object>;
+                }
                 if (data == null) return;
-                if (data.ContainsKey("text") && data["text"] is string) _fileLiveText = (string)data["text"];
+                if (cached != null) _fileLiveText = cached;
+                else if (data.ContainsKey("text") && data["text"] is string) _fileLiveText = (string)data["text"];
                 if (data.ContainsKey("dirty")) _fileDirty = Convert.ToBoolean(data["dirty"]);
                 TrySetHostDirty(_fileDirty);
             }
@@ -3198,9 +3207,15 @@ namespace ClarionAssistant.Terminal
 
         private void HandleCompletion(string json)
         {
-            int reqId, line, column; string buffer;
-            if (!ParseRequest(json, out reqId, out line, out column, out buffer)) return;
-            Task.Run(() =>
+            int reqId, line, column; string buffer; MonacoRequestStamp stamp;
+            var resolveSw = System.Diagnostics.Stopwatch.StartNew();
+            if (!ParseRequest(json, out reqId, out line, out column, out buffer, out stamp)) return;
+            var timing = new RequestTimingLine("[lsp-timing]", "completion", stamp)
+                .Add("surface", _fileMode ? "CA Editor(tab)" : "CA Embeditor").Add("reqId", reqId)
+                .Add("chars", buffer != null ? buffer.Length : 0).Add("resolveMs", resolveSw.ElapsedMilliseconds);
+            // 16d140e9: one completion at a time, newest wins — Monaco re-asks on every keystroke while the
+            // suggest widget is open, and each ask would otherwise sync the whole buffer in its own thread.
+            RunLatestOrNow("completion", reqId, timing, () =>
             {
                 var items = new List<Dictionary<string, object>>();
                 string lspStatus;
@@ -3213,7 +3228,15 @@ namespace ClarionAssistant.Terminal
                     {
                         // Pass the LIVE buffer (mirror HandleHover). Passing null made the shared server complete
                         // against an empty document → always "no suggestions" (John's test; root-caused with Bob).
-                        var comps = SharedLspBridge.GetCompletion(_lspFileName, LspLine0(buffer, line), Math.Max(0, column - 1), 2500, LspBuffer(buffer));
+                        string lspBuf = LspBuffer(buffer);
+                        // Sync first, timed on its own (GetCompletion then finds the same text and skips it).
+                        var syncSw = System.Diagnostics.Stopwatch.StartNew();
+                        bool resent = LspSyncFingerprint.NoteAndCompare(_lspFileName, lspBuf);
+                        if (!string.IsNullOrEmpty(lspBuf)) SharedLspBridge.EnsureBufferSynced(_lspFileName, lspBuf);
+                        timing.Add("syncMs", syncSw.ElapsedMilliseconds).Add("textChangedSinceLastCompletion", resent ? "yes(full-text didChange likely)" : "no");
+                        var reqSw = System.Diagnostics.Stopwatch.StartNew();
+                        var comps = SharedLspBridge.GetCompletion(_lspFileName, LspLine0(buffer, line), Math.Max(0, column - 1), 2500, lspBuf);
+                        timing.Add("requestMs", reqSw.ElapsedMilliseconds).Add("items", comps != null ? comps.Count : 0);
                         if (comps != null)
                             foreach (var c in comps)
                                 items.Add(new Dictionary<string, object>
@@ -3236,6 +3259,20 @@ namespace ClarionAssistant.Terminal
                     lspStatus = "error: " + ex.Message;
                 }
                 PostResponse(reqId, new Dictionary<string, object> { { "items", items }, { "lsp", lspStatus } });
+                timing.Add("lsp", lspStatus);
+                try { MonacoSpikeLog.Write(timing.Format()); } catch { }
+            });
+        }
+
+        /// <summary>Completion/hover dispatch (16d140e9): through the control's newest-wins lane, logging a
+        /// request dropped there. Falls back to a plain Task.Run with no control (never expected).</summary>
+        private void RunLatestOrNow(string lane, int reqId, RequestTimingLine timing, Action work)
+        {
+            var panel = _panel;
+            if (panel == null) { Task.Run(work); return; }
+            panel.RunLatest(lane, reqId, work, () =>
+            {
+                try { MonacoSpikeLog.Write(timing.Add("dropped", "superseded-by-newer-request").Format()); } catch { }
             });
         }
 
@@ -3414,9 +3451,14 @@ namespace ClarionAssistant.Terminal
         /// <summary>LSP hover request from Monaco. Syncs the current buffer (needed to resolve the symbol).</summary>
         private void HandleHover(string json)
         {
-            int reqId, line, column; string buffer;
-            if (!ParseRequest(json, out reqId, out line, out column, out buffer)) return;
-            Task.Run(() =>
+            int reqId, line, column; string buffer; MonacoRequestStamp stamp;
+            var resolveSw = System.Diagnostics.Stopwatch.StartNew();
+            if (!ParseRequest(json, out reqId, out line, out column, out buffer, out stamp)) return;
+            var timing = new RequestTimingLine("[lsp-timing]", "hover", stamp)
+                .Add("surface", _fileMode ? "CA Editor(tab)" : "CA Embeditor").Add("reqId", reqId)
+                .Add("chars", buffer != null ? buffer.Length : 0).Add("resolveMs", resolveSw.ElapsedMilliseconds);
+            // 16d140e9: newest hover wins (mouse movement re-asks constantly) — see HandleCompletion.
+            RunLatestOrNow("hover", reqId, timing, () =>
             {
                 string contents = null;
                 try
@@ -3424,12 +3466,18 @@ namespace ClarionAssistant.Terminal
                     EnsureLspStarted();
                     if (SharedLspBridge.IsRunning)
                     {
+                        // Sync happens INSIDE GetHover on the bundled client and not at all on the shared
+                        // addin (it answers from the last synced text), so requestMs includes any sync.
+                        var reqSw = System.Diagnostics.Stopwatch.StartNew();
                         var resp = SharedLspBridge.GetHover(_lspFileName, LspLine0(buffer, line), Math.Max(0, column - 1), LspBuffer(buffer));
                         contents = ExtractHoverString(resp);
+                        timing.Add("sync", "inline").Add("requestMs", reqSw.ElapsedMilliseconds);
                     }
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] hover: " + ex.Message); }
                 PostResponse(reqId, new Dictionary<string, object> { { "contents", contents } });
+                timing.Add("items", string.IsNullOrEmpty(contents) ? 0 : 1);
+                try { MonacoSpikeLog.Write(timing.Format()); } catch { }
             });
         }
 
@@ -3442,38 +3490,55 @@ namespace ClarionAssistant.Terminal
         /// </summary>
         private void HandleDiagnostics(string json)
         {
-            int reqId; string buffer; List<int[]> ranges;
-            if (!ParseDiagnosticsRequest(json, out reqId, out buffer, out ranges)) return;
-            Task.Run(async () =>
+            int reqId; string buffer; List<int[]> ranges; MonacoRequestStamp stamp;
+            var resolveSw = System.Diagnostics.Stopwatch.StartNew();
+            if (!ParseDiagnosticsRequest(json, out reqId, out buffer, out ranges, out stamp)) return;
+            long resolveMs = resolveSw.ElapsedMilliseconds;
+            var timingLine = new RequestTimingLine("[diag-timing]", "diagnostics", stamp)
+                .Add("surface", _fileMode ? "CA Editor(tab)" : "CA Embeditor")
+                .Add("reqId", reqId);
+            // Newest-wins lane per surface (pipeline MINOR): the page keeps one request in flight, but once it
+            // gives up (timeout) its next request would otherwise start a second whole-buffer analysis beside
+            // the one still running here. A request displaced while waiting is answered null (keep markers).
+            // Blocking the lane's one pool thread on the async settle loop is deliberate: one per surface.
+            RunLatestOrNow("diagnostics", reqId, timingLine, () =>
             {
                 var markers = new List<Dictionary<string, object>>();
+                var timing = new ModernEmbeditorDiagnostics.Timing();
+                // Never the load-time _sourceText: ParseDiagnosticsRequest only succeeds with the request's own
+                // buffer (inline from an older page, or cached by `v`), so this is always the text on screen.
+                string text = buffer;
                 try
                 {
-                    markers = await ModernEmbeditorDiagnostics.ComputeAsync(
+                    markers = ModernEmbeditorDiagnostics.ComputeAsync(
                         _lspFileName,
-                        buffer ?? _sourceText,
+                        text,
                         (ranges != null && ranges.Count > 0) ? ranges : _editableRanges,
                         _procedureName,
                         embedSlotChecks: !_fileMode,    // file mode: LSP only, skip embed-slot heuristics
-                        lspContext: _lspContext)        // #56: wrap the LSP pass with the MEMBER header
-                        .ConfigureAwait(false);
+                        lspContext: _lspContext,        // #56: wrap the LSP pass with the MEMBER header
+                        timing: timing)                 // 16d140e9: per-phase timings for the log line below
+                        .GetAwaiter().GetResult();
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] diagnostics: " + ex.Message); }
                 PostResponse(reqId, new Dictionary<string, object> { { "markers", markers } });
+                MonacoEditorControl.LogDiagTiming(timingLine, text, resolveMs, timing, markers);
             });
         }
 
         // Parses a diagnostics request: reqId, the live buffer text, and the live editable ranges
         // (an array of [start,end] line pairs from Monaco's tracked decorations).
-        private bool ParseDiagnosticsRequest(string json, out int reqId, out string buffer, out List<int[]> ranges)
+        private bool ParseDiagnosticsRequest(string json, out int reqId, out string buffer, out List<int[]> ranges,
+            out MonacoRequestStamp stamp)
         {
-            reqId = 0; buffer = null; ranges = null;
+            reqId = 0; buffer = null; ranges = null; stamp = null;
             try
             {
                 var data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(json) as Dictionary<string, object>;
                 if (data == null) return false;
+                stamp = MonacoRequestStamp.From(data);
                 if (data.ContainsKey("reqId")) reqId = Convert.ToInt32(data["reqId"]);
-                if (data.ContainsKey("buffer")) buffer = data["buffer"] as string;
+                if (!ResolveRequestBuffer(data, out buffer)) return false;   // 16d140e9: cached by `v`
                 if (data.ContainsKey("ranges"))
                 {
                     var arr = data["ranges"] as object[];
@@ -3655,7 +3720,7 @@ namespace ClarionAssistant.Terminal
                 if (data == null) return false;
                 if (data.ContainsKey("reqId")) reqId = Convert.ToInt32(data["reqId"]);
                 if (data.ContainsKey("line")) line = Convert.ToInt32(data["line"]);
-                if (data.ContainsKey("buffer")) buffer = data["buffer"] as string;
+                if (!ResolveRequestBuffer(data, out buffer)) return false;   // 16d140e9: cached by `v`
                 if (data.ContainsKey("templateTitle")) templateTitle = data["templateTitle"] as string;
                 if (data.ContainsKey("ranges"))
                 {
@@ -3948,18 +4013,39 @@ namespace ClarionAssistant.Terminal
 
         private bool ParseRequest(string json, out int reqId, out int line, out int column, out string buffer)
         {
-            reqId = 0; line = 0; column = 0; buffer = null;
+            MonacoRequestStamp stamp;
+            return ParseRequest(json, out reqId, out line, out column, out buffer, out stamp);
+        }
+
+        // 16d140e9: the buffer comes from the control's per-surface cache (the page syncs it once per content
+        // version and stamps the request with `v`); an inline "buffer" from an older page is still honoured.
+        // False when the request cannot be served — including a `v` the cache does not hold, which the
+        // control has already answered (null reply + resync), so the caller just returns.
+        private bool ParseRequest(string json, out int reqId, out int line, out int column, out string buffer,
+            out MonacoRequestStamp stamp)
+        {
+            reqId = 0; line = 0; column = 0; buffer = null; stamp = null;
             try
             {
                 var data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(json) as Dictionary<string, object>;
                 if (data == null) return false;
+                stamp = MonacoRequestStamp.From(data);
                 if (data.ContainsKey("reqId")) reqId = Convert.ToInt32(data["reqId"]);
                 if (data.ContainsKey("line")) line = Convert.ToInt32(data["line"]);
                 if (data.ContainsKey("column")) column = Convert.ToInt32(data["column"]);
-                if (data.ContainsKey("buffer")) buffer = data["buffer"] as string;
-                return true;
+                return ResolveRequestBuffer(data, out buffer);
             }
             catch { return false; }
+        }
+
+        /// <summary>The request's buffer via the control's cache (see MonacoEditorControl.TryResolveRequestBuffer).</summary>
+        private bool ResolveRequestBuffer(Dictionary<string, object> data, out string buffer)
+        {
+            buffer = null;
+            var panel = _panel;
+            if (panel != null) return panel.TryResolveRequestBuffer(data, out buffer);
+            if (data.ContainsKey("buffer")) buffer = data["buffer"] as string;
+            return buffer != null;   // no control to resync through: refuse rather than serve a null buffer
         }
 
         /// <summary>Posts a {type:"response", reqId, data} message back to Monaco (marshaled by the control).</summary>

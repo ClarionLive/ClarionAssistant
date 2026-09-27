@@ -977,7 +977,13 @@
     function pushFileState() {
         if (!fileMode || !editor) return;
         trimPad();   // file mode's equivalent of the gatherSlots() chokepoint — never mirror padding to the host
-        postToHost({ action: 'fileState', dirty: isDirty, seq: editSeq, text: editor.getModel().getValue() });
+        // The mirror IS a buffer sync (16d140e9): stamp it with the next `v` so the host caches this text
+        // once and LSP requests for the same version reuse it instead of shipping the buffer again.
+        // `text` stays last so the host can read the small fields without scanning the buffer.
+        var model = editor.getModel();
+        var v = ++bufSyncSeq;
+        postToHost({ action: 'fileState', dirty: isDirty, seq: editSeq, v: v, text: model.getValue() });
+        bufSyncedKey = bufferKey(model);
     }
     // Unsaved edits stashed by the host from an externally torn-down overlay, waiting for the async
     // source fetch to populate the model before they can be re-applied (task d19c036d).
@@ -1317,7 +1323,7 @@
                     // Returning null on any failure keeps the local pass as the fallback.
                     if (typeof setClarionLspFolding === 'function') {
                         setClarionLspFolding(function (model) {
-                            return requestFromHost('foldingRanges', { buffer: model.getValue() }, FOLD_TIMEOUT_MS)
+                            return requestFromHost('foldingRanges', withBuffer(model, {}), FOLD_TIMEOUT_MS)
                                 .then(function (resp) { return (resp && resp.ranges) ? resp.ranges : null; });
                         });
                     }
@@ -1579,6 +1585,8 @@
                 var model = editor.getModel();
                 guarding = true;            // programmatic load — don't let the guard revert it
                 model.setValue(text);
+                resetBufferSync();          // a new document: the host's cached buffer is the old one (16d140e9)
+                resetDiagnosticsForNewSource();   // ...and its first squiggle pass must not queue behind the old one's
                 // Honor the host's language choice (file mode can open non-Clarion files as plaintext).
                 try { if (msg.language) monaco.editor.setModelLanguage(model, msg.language); } catch (e) { }
                 applyEmbedDecorations();
@@ -1663,6 +1671,10 @@
             pendingRequests[reqId] = resolve;
             var msg = { action: action, reqId: reqId };
             if (payload) for (var k in payload) if (payload.hasOwnProperty(k)) msg[k] = payload[k];
+            // When it was sent and how long we will wait for it: the host logs a reply that lands after
+            // the page has already given up (16d140e9 timing instrumentation). Ignored by every handler.
+            msg.sentAt = Date.now();
+            msg.timeoutMs = timeoutMs || 4000;
             postToHost(msg);
             // Don't hang a Monaco provider forever if the host never replies.
             setTimeout(function () {
@@ -1670,6 +1682,41 @@
             }, timeoutMs || 4000);
         });
     }
+
+    // ----- Buffer sync: the whole buffer crosses to the host ONCE per content version (16d140e9) -----
+    // Every LSP request used to carry buffer: model.getValue(). On a generated module (InventoryTable:
+    // 86,722 lines / 3.2 MB) each request became a 6.4 MB UTF-16 string in Clarion.exe — a 32-bit process
+    // with a 2 GB address space — plus the JSON copies around it, and hover/folding/completion fire
+    // constantly. Chromium's OOM termination (0xE0000008) inside TryGetWebMessageAsString took the IDE
+    // down. Now the buffer goes over in a 'bufferSync' message only when the content changed since the
+    // last one, and every request carries just `v`, the sync it was computed against. WebView2 delivers
+    // page->host messages in order, so the sync posted here always reaches the host before the request
+    // that follows it. The host keeps ONE cached copy per surface (MonacoBufferCache) and answers a `v`
+    // it does not hold with a null reply + 'bufferResync', which clears bufSyncedKey so the next request
+    // resends. File mode's fileState mirror carries the same stamp, so its text doubles as the sync.
+    var bufSyncSeq = 0;          // `v` of the last bufferSync / fileState posted (monotonic per page load)
+    var bufSyncedKey = null;     // model id + version the host holds as bufSyncSeq; null = must resend
+    function bufferKey(model) { return String(model.id || '') + ':' + model.getVersionId(); }
+    // Post the buffer if the host's copy is not this model's current version; returns the `v` to stamp.
+    function syncBufferToHost(model) {
+        var key = bufferKey(model);
+        if (key !== bufSyncedKey) {
+            var v = ++bufSyncSeq;
+            // Key order matters: `buffer` LAST lets the host read action + v without scanning 3 MB.
+            postToHost({ action: 'bufferSync', v: v, buffer: model.getValue() });
+            bufSyncedKey = key;
+        }
+        return bufSyncSeq;
+    }
+    // A request payload that refers to the synced buffer instead of carrying it.
+    function withBuffer(model, payload) {
+        var p = {};
+        if (payload) for (var k in payload) if (payload.hasOwnProperty(k)) p[k] = payload[k];
+        p.v = syncBufferToHost(model);
+        return p;
+    }
+    // Model content replaced wholesale (setSource / reload) or the host lost its copy: resend next time.
+    function resetBufferSync() { bufSyncedKey = null; }
 
     function lspKindToMonaco(k) {
         var M = monaco.languages.CompletionItemKind;
@@ -2880,10 +2927,9 @@
         var ed = activeEd();
         var pos = ed.getPosition();
         if (!pos) return;
-        requestFromHost('openDesigner', {
-            line: pos.lineNumber, column: pos.column,
-            buffer: ed.getModel().getValue(), ranges: liveEditableRanges()
-        }).then(function (resp) {
+        requestFromHost('openDesigner', withBuffer(ed.getModel(), {
+            line: pos.lineNumber, column: pos.column, ranges: liveEditableRanges()
+        })).then(function (resp) {
             if (!resp) { showToast('Designer request timed out', false); return; }
             if (!resp.ok) { showToast(resp.message || 'Cannot open the designer here', false); return; }
             if (resp.mode === 'pickTemplate') { showTemplatePicker(resp.templates || [], pos); return; }
@@ -2937,11 +2983,10 @@
             if (!title) return;
             close();
             var ed = activeEd();
-            requestFromHost('openDesignerCreate', {
-                line: pos.lineNumber, column: pos.column,
-                buffer: ed.getModel().getValue(), ranges: liveEditableRanges(),
+            requestFromHost('openDesignerCreate', withBuffer(ed.getModel(), {
+                line: pos.lineNumber, column: pos.column, ranges: liveEditableRanges(),
                 templateTitle: title
-            }).then(function (resp) {
+            })).then(function (resp) {
                 if (!resp) { showToast('Designer request timed out', false); return; }
                 if (!resp.ok) { showToast(resp.message || 'Cannot open the designer here', false); return; }
                 beginDesignerSession(resp.startLine, resp.endLine);
@@ -3261,7 +3306,7 @@
                 e.target.position && e.target.position.lineNumber) {
                 var pos = e.target.position;
                 recordNavAt(pos.lineNumber, pos.column);   // seed origin so Navigate Back returns here (#40)
-                requestFromHost('definition', { line: pos.lineNumber, column: pos.column, buffer: ed.getModel().getValue() });
+                requestFromHost('definition', withBuffer(ed.getModel(), { line: pos.lineNumber, column: pos.column }));
             }
         });
     }
@@ -4246,7 +4291,32 @@
     // plus the buffer sync and marshalling a whole-file buffer across the WebView2 boundary each way —
     // several seconds on a slow machine or a large file. Deliberately generous: with the timeout no
     // longer clearing markers (below), overshooting costs nothing but a late no-op.
+    // This is the FLOOR. 16d140e9: on an 86,722-line / 3.2 MB generated module the host's analysis ran
+    // past 10 s, so every reply landed after the page had given up and a DO NoSuchRoutine squiggle took
+    // ~5 minutes to appear. The budget now grows with the buffer (diagTimeoutFor), capped so a wedged
+    // host still frees the single in-flight slot below.
     var DIAG_TIMEOUT_MS = 10000;
+    var DIAG_TIMEOUT_PER_MB_MS = 3000;
+    var DIAG_TIMEOUT_MAX_MS = 60000;
+    function diagTimeoutFor(chars) {
+        var mb = Math.max(0, chars || 0) / (1024 * 1024);
+        return Math.min(DIAG_TIMEOUT_MAX_MS, DIAG_TIMEOUT_MS + Math.ceil(mb * DIAG_TIMEOUT_PER_MB_MS));
+    }
+    // At most ONE diagnostics request in flight (16d140e9). With a budget of up to a minute, letting every
+    // debounced pass dispatch its own request would stack whole-buffer analyses on the host, each for a
+    // version the next edit has already made stale. A pass asked for while one is out is remembered in
+    // diagRerun and dispatched when the outstanding one settles (reply or timeout) — the newest edit wins.
+    var diagInFlight = false;
+    var diagRerun = false;
+    // Bumped by setSource (a new procedure/file): the outstanding request belongs to the OLD source, so the
+    // new source's first pass must not wait up to a minute behind it, and the old reply must not touch the
+    // in-flight slot or schedule anything when it lands.
+    var diagGen = 0;
+    function resetDiagnosticsForNewSource() {
+        diagGen++;
+        diagInFlight = false;
+        diagRerun = false;
+    }
 
     // GH #176: ordering guard. requestFromHost correlates each reply to its own request, but nothing said
     // whether that reply is still the NEWEST one — setModelMarkers replaces the whole set, so whichever
@@ -4258,11 +4328,28 @@
 
     function refreshDiagnostics() {
         if (!editor) return;
+        if (diagInFlight) { diagRerun = true; return; }   // dispatched when the outstanding pass settles
         var model = editor.getModel();
         var mySeq = ++diagReqSeq;
         var myVersion = model.getVersionId();
-        requestFromHost('diagnostics', { buffer: model.getValue(), ranges: liveEditableRanges() }, DIAG_TIMEOUT_MS)
+        var chars = model.getValueLength ? model.getValueLength() : model.getValue().length;
+        // Build the payload (which may post the buffer sync) BEFORE claiming the in-flight slot: a throw
+        // here must not leave diagInFlight stuck true, which would silence diagnostics until a reload.
+        var payload;
+        try { payload = withBuffer(model, { ranges: liveEditableRanges() }); }
+        catch (e) { return; }
+        var myGen = diagGen;
+        diagInFlight = true;
+        requestFromHost('diagnostics', payload, diagTimeoutFor(chars))
             .then(function (resp) {
+                // An older source's request (setSource since): the slot and any rerun belong to the new one.
+                if (myGen !== diagGen) return;
+                diagInFlight = false;
+                // A pass was asked for while this one was out. If the buffer moved on (or the model was
+                // swapped), the stale-reply branch below schedules it; if not, this reply answers it —
+                // unless it is a null (timeout), which answers nothing, so the held pass is scheduled.
+                var rerun = diagRerun;
+                diagRerun = false;
                 // Superseded: a newer request is in flight (or already rendered) — its answer owns the markers.
                 if (mySeq !== diagReqSeq) return;
                 // The buffer moved on since dispatch (or the model was swapped): these line numbers belong to
@@ -4270,7 +4357,7 @@
                 // a programmatic edit may not have scheduled a pass of its own. Only when no pass is pending:
                 // typing already armed one, and re-arming would just push it back.
                 if (!editor || editor.getModel() !== model || model.getVersionId() !== myVersion) {
-                    if (editor && editor.getModel() === model && !diagTimer) scheduleDiagnostics();
+                    if (editor && editor.getModel() && (editor.getModel() === model || rerun) && !diagTimer) scheduleDiagnostics();
                     return;
                 }
                 // null = the host never replied in time: NO INFORMATION, which is not the same claim as
@@ -4282,7 +4369,10 @@
                 // A reply that IS present but carries an empty list still clears, as it should — that
                 // is the host telling us the file really is clean. Same null-vs-empty distinction the
                 // diagnostics pill draws in PollLspUi.
-                if (!resp) return;
+                if (!resp) {
+                    if (rerun && !diagTimer) scheduleDiagnostics();   // the held pass still needs an answer
+                    return;
+                }
                 var markers = resp.markers || [];
                 monaco.editor.setModelMarkers(model, 'clarion', markers.map(function (m) {
                     return {
@@ -4293,7 +4383,7 @@
                     };
                 }));
             })
-            .catch(function () { /* never let a failed diagnostics round-trip disrupt editing */ });
+            .catch(function () { if (myGen === diagGen) diagInFlight = false; /* never let a failed diagnostics round-trip disrupt editing */ });
     }
 
     function scheduleDiagnostics() {
@@ -4435,7 +4525,7 @@
                 // unaffected — the run is then identical to `pfx` and the widening never triggers.
                 var colonPfx = /[A-Za-z0-9_:]*$/.exec(before);
                 var colonRun = colonPfx ? colonPfx[0] : '';
-                return requestFromHost('completion', { line: position.lineNumber, column: position.column, buffer: model.getValue() })
+                return requestFromHost('completion', withBuffer(model, { line: position.lineNumber, column: position.column }))
                     .then(function (resp) {
                         var items = (resp && resp.items) || [];
                         if (!items.length) maybeReportLsp(resp && resp.lsp);
@@ -4543,7 +4633,7 @@
                 // is 1-based, so pass column-1 as the 0-based index. Guarding here (not host-side) avoids
                 // a wasted round-trip and needs no C# change. (task 37e2079f)
                 if (isInClarionComment(model.getLineContent(position.lineNumber), position.column - 1)) return null;
-                return requestFromHost('hover', { line: position.lineNumber, column: position.column, buffer: model.getValue() })
+                return requestFromHost('hover', withBuffer(model, { line: position.lineNumber, column: position.column }))
                     .then(function (resp) {
                         if (!resp || !resp.contents) return null;
                         return { contents: [{ value: resp.contents }] };
@@ -4582,7 +4672,7 @@
                 var sigLine = model.getLineContent(position.lineNumber);
                 // A '(' or ',' typed inside a string/comment is text, not a call site (683ded6c).
                 if (isInClarionComment(sigLine, position.column - 1) || isInClarionString(sigLine, position.column - 1)) return null;
-                return requestFromHost('signatureHelp', { line: position.lineNumber, column: position.column, buffer: model.getValue() })
+                return requestFromHost('signatureHelp', withBuffer(model, { line: position.lineNumber, column: position.column }))
                     .then(function (resp) {
                         var h = resp && resp.signatureHelp;
                         if (!h || !h.signatures || !h.signatures.length) return null;
@@ -5918,7 +6008,7 @@
                 var ipos = editor && editor.getPosition();
                 if (ipos) {
                     recordNavAt(ipos.lineNumber, ipos.column);   // seed origin so Navigate Back returns here (#40)
-                    requestFromHost('implementation', { line: ipos.lineNumber, column: ipos.column, buffer: editor.getModel().getValue() });
+                    requestFromHost('implementation', withBuffer(editor.getModel(), { line: ipos.lineNumber, column: ipos.column }));
                 }
             } else if (!ev.shiftKey && (ev.keyCode === 123 || ev.key === 'F12')) {          // F12 → go to definition (#40)
                 // NOT Shift+F12: that is Find All References elsewhere, and this editor has no references UI.
@@ -5928,7 +6018,7 @@
                 var dpos = editor && editor.getPosition();
                 if (dpos) {
                     recordNavAt(dpos.lineNumber, dpos.column);   // seed origin so Navigate Back returns here (#40)
-                    requestFromHost('definition', { line: dpos.lineNumber, column: dpos.column, buffer: editor.getModel().getValue() });
+                    requestFromHost('definition', withBuffer(editor.getModel(), { line: dpos.lineNumber, column: dpos.column }));
                 }
             }
         }, true);   // capture phase — runs ahead of Monaco's own keydown listener
@@ -6739,7 +6829,7 @@
         var op = document.getElementById('outlinePanel');
         if (!op || op.classList.contains('hidden') || !editor) return;
         var mySeq = ++outlineSeq;
-        requestFromHost('documentStructure', { buffer: editor.getModel().getValue() })
+        requestFromHost('documentStructure', withBuffer(editor.getModel(), {}))
             .then(function (data) {
                 if (mySeq !== outlineSeq) return;   // a newer refresh superseded this one
                 outlineSymbols = regroupSymbols((data && data.symbols) ? data.symbols : []);
@@ -7623,6 +7713,8 @@
             } else if (msg.type === 'response' && msg.reqId != null) {
                 var resolver = pendingRequests[msg.reqId];
                 if (resolver) { delete pendingRequests[msg.reqId]; resolver(msg.data); }
+            } else if (msg.type === 'bufferResync') {
+                resetBufferSync();   // the host has no copy of the version we stamped — resend with the next request (16d140e9)
             } else if (msg.type === 'insertText') {
                 insertTextAtCursor(msg.text);
             } else if (msg.type === 'moveCaretToPoint') {

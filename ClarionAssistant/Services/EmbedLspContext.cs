@@ -147,8 +147,25 @@ namespace ClarionAssistant.Services
         public string WrapBuffer(string buffer)
         {
             string b = buffer ?? "";
-            return OpensWithModuleHeader(b) ? b : HeaderLine + "\r\n" + b;
+            // 16d140e9: the page now syncs its buffer once per content version, so every request for that
+            // version hands us the SAME string instance. Re-wrapping it built a fresh multi-megabyte copy
+            // per completion/hover/folding request (3.2 MB -> 6.4 MB UTF-16 each on a big generated module,
+            // in a 32-bit IDE). Reuse the last result while the input is the same instance.
+            var last = _lastWrap;
+            if (last != null && ReferenceEquals(last.Input, b)) return last.Output;
+            string wrapped = OpensWithModuleHeader(b) ? b : HeaderLine + "\r\n" + b;
+            _lastWrap = new WrapPair(b, wrapped);
+            return wrapped;
         }
+
+        // One immutable pair, swapped atomically (requests run on pool threads). Holds at most the current
+        // buffer and its wrapped form — both already alive while that version is the one being edited.
+        private sealed class WrapPair
+        {
+            public readonly string Input, Output;
+            public WrapPair(string input, string output) { Input = input; Output = output; }
+        }
+        private volatile WrapPair _lastWrap;
 
         /// <summary>True when the buffer's first line is a MEMBER/PROGRAM statement — the one test that
         /// decides both whether <see cref="WrapBuffer"/> prepends and what <see cref="LineOffsetFor"/>
@@ -191,6 +208,7 @@ namespace ClarionAssistant.Services
         /// </remarks>
         public void RevertShadow()
         {
+            _lastWrap = null;         // 16d140e9: the embed is closing — release the cached wrapped buffer
             string path = RealPath;   // capture — the context may be torn down under us
             try
             {

@@ -53,6 +53,8 @@ function harness() {
         capturingKey: false, snippetPickerOpen: false, findUiMode: 'panel',
         openFindAll() { }, postCaFindOpen() { }, openFindUi() { }, gotoMatch() { },
         recordNavAt() { },
+        // 16d140e9: requests name the synced buffer version instead of carrying the buffer.
+        withBuffer(model, payload) { return Object.assign({ v: 1 }, payload); },
         requestFromHost(kind, payload) { requests.push({ kind, payload }); }
     };
     const names = Object.keys(env);
