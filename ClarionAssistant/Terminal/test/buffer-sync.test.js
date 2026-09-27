@@ -55,7 +55,8 @@ const SLICES = [
     slice(html, '    function cmdStructureDesigner() {', '    // ----- "New Structure" template picker', 'cmdStructureDesigner'),
     slice(html, '    function wireCtrlClickDefinition(ed) {', '    function installGlyphBookmarkClick()', 'wireCtrlClickDefinition'),
     slice(html, '    var DIAG_TIMEOUT_MS = ', '    // registerClarionFolding()', 'diagnostics'),
-    slice(html, '    function registerClarionProviders() {', '    // Clarion syntax highlighting (Monarch)', 'registerClarionProviders'),
+    // From the comment/string helpers through the providers: includes the local-first state (1c685f2e).
+    slice(html, '    function isInClarionComment(', '    // Clarion syntax highlighting (Monarch)', 'registerClarionProviders'),
     slice(html, '    function installFindKeyInterceptor() {', '    // ----- Code Snippets picker', 'installFindKeyInterceptor'),
     slice(html, '    function refreshOutline() {', '\n    }\n', 'refreshOutline') + '\n    }\n',
 ];
@@ -156,6 +157,8 @@ function load(opts) {
 const pos = { lineNumber: 2, column: 5 };
 const ACTIONS = {
     completion: (e) => e.providers.completion[0].provideCompletionItems(e.model, pos),
+    // 1c685f2e: the completion provider asks the local layer in the same breath (4.15).
+    localCompletion: (e) => e.providers.completion[0].provideCompletionItems(e.model, pos),
     hover: (e) => e.providers.hover.provideHover(e.model, pos),
     signatureHelp: (e) => e.providers.signatureHelp.provideSignatureHelp(e.model, pos, null, {}),
     foldingRanges: (e) => e.api.__foldingCallback(e.model),
@@ -217,6 +220,30 @@ async function main() {
             msgs.filter(m => m.action !== 'bufferSync').every(m => m.v === syncs[0].v));
     }
 
+    section('1c685f2e: the local + LSP completion pair shares ONE bufferSync; the local call has a short timeout');
+    {
+        const e = load();
+        ACTIONS.hover(e);
+        e.model.edit('PROGRAM\r\n  CODE\r\n  lo\r\n');
+        const mark = e.posted.length;
+        ACTIONS.completion(e);
+        const msgs = e.since(mark);
+        const lc = msgs.find(m => m.action === 'localCompletion'), c = msgs.find(m => m.action === 'completion');
+        check('4.16 localCompletion + completion after an edit: exactly one bufferSync, first',
+            msgs.filter(m => m.action === 'bufferSync').length === 1 && msgs[0].action === 'bufferSync' && !!lc && !!c,
+            JSON.stringify(msgs.map(m => m.action)));
+        check('4.15 both name the synced v and carry no buffer', lc && c && lc.v === msgs[0].v && c.v === msgs[0].v &&
+            !('buffer' in lc) && !('buffer' in c));
+        check('5.18 localCompletion gives up within 500 ms', lc && lc.timeoutMs <= 500, lc && String(lc.timeoutMs));
+        check('...and the local request is posted before the LSP one (it carries the sync)', msgs.indexOf(lc) < msgs.indexOf(c));
+        // 4.17: a bufferResync after a local request resets the sync, so the next request resends.
+        e.api.resetBufferSync();
+        const m2 = e.posted.length;
+        ACTIONS.completion(e);
+        check('4.17 after a bufferResync the next local request resends the buffer',
+            e.since(m2).filter(m => m.action === 'bufferSync').length === 1);
+    }
+
     section('Model swap / setSource / host resync force a resend');
     {
         const e = load();
@@ -273,7 +300,7 @@ async function main() {
         while ((m = re.exec(html))) bad.push(m[1]);
         check('no requestFromHost(..., { buffer: ... })', bad.length === 0, bad.join(', '));
         for (const a of ['foldingRanges', 'diagnostics', 'hover', 'completion', 'signatureHelp', 'definition', 'implementation',
-                         'documentStructure', 'openDesigner', 'openDesignerCreate']) {
+                         'documentStructure', 'openDesigner', 'openDesignerCreate', 'localCompletion']) {
             let n = (html.match(new RegExp("requestFromHost\\('" + a + "',\\s*withBuffer\\(", 'g')) || []).length;
             // diagnostics builds its payload first (so a throw cannot wedge the in-flight slot)
             if (a === 'diagnostics' && /payload = withBuffer\(model, \{ ranges: liveEditableRanges\(\) \}\)/.test(html) &&
@@ -465,12 +492,15 @@ async function main() {
         const fm = load({ fileMode: true });
         fm.model.edit('FILE MODE TEXT\r\n');
         fm.api.pushFileState();
-        ACTIONS.completion(fm);
+        ACTIONS.completion(fm);        // posts localCompletion + completion (item 5)
         fm.reply(lastReq(fm, 'completion').reqId, { items: [] });
+        const lc = lastReq(fm, 'localCompletion');
+        if (lc) fm.reply(lc.reqId, { items: [] });
         await flush();
         L = logs(fm).map(parse);
-        check('file mode: the fileState text is the attributed sync', L.length === 1 && L[0] && L[0].syncBytes === 'FILE MODE TEXT\r\n'.length,
-            JSON.stringify(logs(fm)));
+        check('file mode: the fileState text is the attributed sync (on exactly one request)',
+            L.length >= 1 && L.filter(x => x && x.syncBytes > 0).length === 1 &&
+            L.find(x => x.syncBytes > 0).syncBytes === 'FILE MODE TEXT\r\n'.length, JSON.stringify(logs(fm)));
         check('the page posts the line through the generic {action:\'log\'} channel', /postToHost\(\{ action: 'log', line: line \}\)/.test(html));
     }
 

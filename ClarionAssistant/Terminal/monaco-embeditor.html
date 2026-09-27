@@ -1590,6 +1590,7 @@
                 model.setValue(text);
                 resetBufferSync();          // a new document: the host's cached buffer is the old one (16d140e9)
                 resetDiagnosticsForNewSource();   // ...and its first squiggle pass must not queue behind the old one's
+                resetLocalFirstState();     // ...and the old procedure's cached completion must not leak in (1c685f2e)
                 // Honor the host's language choice (file mode can open non-Clarion files as plaintext).
                 try { if (msg.language) monaco.editor.setModelLanguage(model, msg.language); } catch (e) { }
                 applyEmbedDecorations();
@@ -4474,6 +4475,75 @@
         return inStr;
     }
 
+    // ----- Local-first completion + hover (1c685f2e items 5-6) -----
+    // On a generated module (InventoryTable: 86k lines) the LSP takes seconds per request, and Monaco showed
+    // "Loading..." then "No suggestions". The host now also answers localCompletion / localHover from a local
+    // pass over the buffer in milliseconds, in lanes of their own. The providers ask both at once, show the
+    // local answer at once, and merge the LSP's when it has arrived.
+    //
+    // Completion (R1/R2):
+    //   * The LSP gets a LSP_RACE_BUDGET_MS head start. It misses -> the local items are returned with
+    //     incomplete:true, and the LSP answer is merged on the NEXT re-query (the next keystroke) from the
+    //     cache below. Nothing re-triggers the suggest widget.
+    //   * The cache is keyed on (model.id, line, wordStart) - NOT versionId, which every keystroke bumps - and
+    //     serves any query whose typed prefix EXTENDS the cached one, filtered client-side. One entry per model.
+    //   * LSP_MISSES_TO_SKIP consecutive race misses on a model = the LSP is slow on it: stop waiting for it and
+    //     return local at once. It is still asked (unawaited) so the cache fills. Any LSP reply that lands
+    //     within the budget of its OWN request is a hit and resets the count, raced or not - so skip mode
+    //     ends as soon as the LSP is fast again.
+    var LOCAL_TIMEOUT_MS = 400;        // the local layer answers in ms; past this treat it as down and fall back
+    var LSP_RACE_BUDGET_MS = 200;
+    var LSP_MISSES_TO_SKIP = 3;
+    var lspComplCache = {};            // model.id -> {line, wordStart, prefix, promise, done, resp, sentAt}
+    var lspComplMisses = {};           // model.id -> consecutive race misses
+    var localHoverShared = null;       // {key, promise}: ONE localHover per (model, version, position)
+    // A new document (setSource): cached answers and the miss count belong to the previous procedure. The
+    // model id survives a setValue, so the (model.id, line, wordStart) key alone would serve them. (5.9)
+    function resetLocalFirstState() { lspComplCache = {}; lspComplMisses = {}; localHoverShared = null; }
+
+    // Can cached LSP completion `c` answer a query at (line, wordStart) with typed `prefix`? Only when the
+    // prefix EXTENDS the cached one. Below 2 chars the host skips its bare-prefix merges (globals, CodeGraph),
+    // so a 0-1 char answer is not a superset of a longer prefix's - except in a member/qualifier context
+    // (after '.', ':' or '?'), where the server returns the whole member list regardless of what is typed.
+    function lspCacheServes(c, line, wordStart, prefix, qualified) {
+        if (!c || c.line !== line || c.wordStart !== wordStart) return false;
+        var cp = c.prefix.toUpperCase(), p = prefix.toUpperCase();
+        if (p.indexOf(cp) !== 0) return false;
+        return p.length === cp.length || cp.length >= 2 || qualified;
+    }
+    // The cached LSP completion that serves this query, or a new request that becomes the cache entry.
+    function lspCompletionFor(model, position, wordStart, prefix, qualified) {
+        var id = String(model.id || '');
+        var c = lspComplCache[id];
+        if (lspCacheServes(c, position.lineNumber, wordStart, prefix, qualified)) return c;
+        c = { line: position.lineNumber, wordStart: wordStart, prefix: prefix, done: false, resp: null, sentAt: rtNow() };
+        var misses = lspComplMisses;
+        c.promise = requestFromHost('completion', withBuffer(model, { line: position.lineNumber, column: position.column }))
+            .then(function (resp) {
+                c.done = true;
+                c.resp = resp;
+                // null = timed out / dropped: no answer to reuse, so the next keystroke must ask again.
+                if (!resp) { if (lspComplCache[id] === c) delete lspComplCache[id]; return null; }
+                if (rtNow() - c.sentAt <= LSP_RACE_BUDGET_MS) misses[id] = 0;   // a hit: race again (5.13/5.14)
+                return resp;
+            });
+        lspComplCache[id] = c;
+        return c;
+    }
+    // Client-side filter for a cached answer reused under a longer prefix: keep an item if its label,
+    // filterText or insertText - or the part after its last ':'/'.' (PROP:Bevel, LOC:Count) - starts with P.
+    function completionMatchesPrefix(it, P) {
+        var cands = [it.filterText, it.label, it.insertText];
+        for (var i = 0; i < cands.length; i++) {
+            if (cands[i] == null) continue;
+            var s = String(cands[i]).toUpperCase();
+            if (s.indexOf(P) === 0) return true;
+            var tail = s.slice(Math.max(s.lastIndexOf(':'), s.lastIndexOf('.')) + 1);
+            if (tail.indexOf(P) === 0) return true;
+        }
+        return false;
+    }
+
     function registerClarionProviders() {
         // ----- Column-1 typing = no completion (native Clarion parity, task 8933fa05) -----
         // Column 1 is label/keyword territory (procedure labels, ROUTINE labels, MAP END...) — the native
@@ -4549,7 +4619,7 @@
         }
         monaco.languages.registerCompletionItemProvider('clarion', {
             triggerCharacters: ['.', ':', '?'],
-            provideCompletionItems: function (model, position) {
+            provideCompletionItems: function (model, position, context) {
                 // Completion replace-range = the trailing identifier chars only, breaking on ':' and '.'.
                 // We intentionally do NOT use getWordUntilPosition here: the Clarion wordPattern keeps ':'
                 // inside a word (so double-click selects prefixed names like Add:AddressID), but the server's
@@ -4573,15 +4643,57 @@
                 // unaffected — the run is then identical to `pfx` and the widening never triggers.
                 var colonPfx = /[A-Za-z0-9_:]*$/.exec(before);
                 var colonRun = colonPfx ? colonPfx[0] : '';
-                return requestFromHost('completion', withBuffer(model, { line: position.lineNumber, column: position.column }))
-                    .then(function (resp) {
-                        var items = (resp && resp.items) || [];
-                        if (!items.length) maybeReportLsp(resp && resp.lsp);
+                // Two-phase (1c685f2e item 5): the local layer and the LSP are asked at once; see the
+                // "Local-first completion" block above for the race, the cache and skip mode.
+                var prefix = pfx ? pfx[0] : '';
+                var qualified = /[.:?]/.test(before.charAt(startCol - 2));
+                var localPayload = { line: position.lineNumber, column: position.column };
+                if (context && context.triggerCharacter) localPayload.triggerCharacter = context.triggerCharacter;
+                // Local first, so it is the request that carries a needed bufferSync ahead of the LSP's.
+                var localP = requestFromHost('localCompletion', withBuffer(model, localPayload), LOCAL_TIMEOUT_MS);
+                var modelId = String(model.id || '');
+                var lsp = lspCompletionFor(model, position, startCol, prefix, qualified);
+                var inBudget;
+                if (lsp.done || (lspComplMisses[modelId] || 0) >= LSP_MISSES_TO_SKIP) {
+                    inBudget = Promise.resolve();          // answered from the cache, or skip mode: no race
+                } else {
+                    inBudget = new Promise(function (resolve) {
+                        var timer = setTimeout(function () {
+                            if (!lsp.done) lspComplMisses[modelId] = (lspComplMisses[modelId] || 0) + 1;
+                            resolve();
+                        }, LSP_RACE_BUDGET_MS);
+                        lsp.promise.then(function () { clearTimeout(timer); resolve(); });
+                    });
+                }
+                return Promise.all([localP, inBudget])
+                    .then(function (r) {
+                        // No local answer (timed out / host without the local layer): wait for the LSP as
+                        // before rather than show an empty list. (5.16)
+                        if (!r[0] && !lsp.done) return lsp.promise.then(function () { return r[0]; });
+                        return r[0];
+                    })
+                    .then(function (local) {
+                        var localItems = (local && local.items) || [];
+                        var lspItems = (lsp.done && lsp.resp && lsp.resp.items) || [];
+                        // A cached answer reused under a longer prefix: drop what the longer prefix excludes.
+                        if (lspItems.length && prefix.length > lsp.prefix.length) {
+                            var P = prefix.toUpperCase();
+                            lspItems = lspItems.filter(function (it) { return completionMatchesPrefix(it, P); });
+                        }
+                        if (lsp.done && !localItems.length && !lspItems.length) maybeReportLsp(lsp.resp && lsp.resp.lsp);
+                        // Case-insensitive label dedupe; the local item wins (it knows the caret's scope). Only
+                        // LSP items are dropped, so its overloads (Open(LONG) / Open(STRING)) all survive.
+                        var localLabels = {};
+                        localItems.forEach(function (it) { if (it && it.label != null) localLabels[String(it.label).toLowerCase()] = true; });
+                        var items = localItems.concat(lspItems.filter(function (it) {
+                            return !(it && it.label != null && localLabels[String(it.label).toLowerCase()]);
+                        }));
                         // incomplete:true → Monaco re-queries the provider on every keystroke instead of
                         // caching the first response and fuzzy-filtering client-side. Required so the
                         // host-side CodeGraph prefix merge (task a47a6cac) runs live as-you-type — without
                         // it, globals only appear on a forced Ctrl+Space (min-prefix guard suppresses the
-                        // 1-char query, then the stale list is filtered and never re-fetched).
+                        // 1-char query, then the stale list is filtered and never re-fetched). It is also
+                        // how a late LSP answer is merged: on the next re-query, from the cache.
                         var sugg = items.map(function (it) { return toMonacoCompletion(it, range, colonRun); });
                         // Keywords rank first + exact-typed keyword gets selected. The server ALSO returns
                         // some keywords (e.g. PROCEDURE) — those dedupe our injected copy away, so the
