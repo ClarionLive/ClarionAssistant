@@ -366,14 +366,33 @@ namespace ClarionAssistant.Terminal
             if (data == null) return;
             long reqId;
             MonacoBufferCache.TryGetLong(data, "reqId", out reqId);
-            string buffer;
-            if (!TryResolveRequestBuffer(data, out buffer)) return;   // already answered null + resync
+            // 1c685f2e R11: a request carrying its own slice needs no synced buffer (the page no longer syncs
+            // the whole buffer while typing). Without one it refers to the synced buffer by `v`, as before.
+            string buffer = null;
+            if (!Services.LocalLayerHandlers.CarriesSlice(data) && !TryResolveRequestBuffer(data, out buffer)) return;   // answered null + resync
             RunLatest(lane, (int)reqId, () =>
             {
                 int lineOffset = 0;
                 try { if (options != null && options.LineOffsetFor != null) lineOffset = options.LineOffsetFor(buffer); } catch { }
                 PostResponse((int)reqId, Services.LocalLayerHandlers.Handle(action, buffer, data, lineOffset, options));
             }, () => MonacoSpikeLog.Write("[local-timing] action=" + action + " reqId=" + reqId + " dropped=superseded-by-newer-request"));
+        }
+
+        /// <summary>
+        /// 1c685f2e R11: after each full sync, push the page the buffer's span map ({type:'spanMap', v, headerHash,
+        /// procs:[...]}) so it can cut slices for the local layer. Built off the UI thread in the newest-wins
+        /// "span-map" lane; a job whose version was already replaced by a newer sync does nothing.
+        /// </summary>
+        private void PushSpanMap()
+        {
+            long v = _bufferCache.CurrentBufferVersion;
+            _lanes.Submit("span-map", () =>
+            {
+                string text = _bufferCache.Resolve(v);
+                if (text == null) return;   // superseded by a newer sync; that one pushes its own map
+                string msg = Services.LocalLayerHandlers.SpanMapMessage(v, text, MonacoSpikeLog.Write);
+                if (msg != null) PostJson(msg);
+            }, null);
         }
 
         public MonacoEditorControl(IMonacoEditorHost host, bool isDark = true,
@@ -476,7 +495,12 @@ namespace ClarionAssistant.Terminal
                         // 16d140e9: the page's buffer, sent once per content version. Cached here (one copy per
                         // surface, replacing the last) so no host has to implement anything to receive it.
                         // AcceptSync logs `[buffer-sync] recv ...` or `... parse failed ...` (items 0 and 8).
-                        _bufferCache.AcceptSync(json, "buffer", getMs, MonacoSpikeLog.Write);
+                        if (_bufferCache.AcceptSync(json, "buffer", getMs, MonacoSpikeLog.Write)) PushSpanMap();
+                        return;
+                    case "headerSync":
+                        // 1c685f2e R11: the module header text for a hash the host lacked (it answered a slice
+                        // request {needHeader:true}); the page retries that request once after posting this.
+                        Services.LocalLayerHandlers.AcceptHeaderSync(json, MonacoSpikeLog.Write);
                         return;
                     case "log":
                     case "localRt":   // the name first proposed for the same message; kept as an alias
@@ -591,7 +615,7 @@ namespace ClarionAssistant.Terminal
                         // File mode's synchronous close-safety mirror. Stamped with `v`, it is ALSO the buffer
                         // sync for that version (16d140e9): cache its text first, so the host's OnFileState
                         // (via FileStateText) and every LSP request for this version share this one copy.
-                        _bufferCache.AcceptSync(json, "text", getMs, MonacoSpikeLog.Write);
+                        if (_bufferCache.AcceptSync(json, "text", getMs, MonacoSpikeLog.Write)) PushSpanMap();
                         h.OnFileState(this, json);
                         break;
                     case "openDesigner":      h.OnOpenDesigner(this, json); break;

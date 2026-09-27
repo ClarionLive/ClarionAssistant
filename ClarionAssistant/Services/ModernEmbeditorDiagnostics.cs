@@ -231,18 +231,67 @@ namespace ClarionAssistant.Services
             }
             catch { routines = new HashSet<string>(StringComparer.OrdinalIgnoreCase); }
 
-            // ---- Passes 2 & 3: per-slot structure balance + undefined routine ----
             foreach (var r in ranges)
             {
                 if (r == null || r.Length < 2) continue;
-                int s = Math.Max(1, r[0]);
-                int e = Math.Min(lines.Length, r[1]);
-                if (e < s) continue;
+                CheckSlot(lines, 1, Math.Max(1, r[0]), Math.Min(lines.Length, r[1]), routines, markers);
+            }
+            return markers;
+        }
 
+        /// <summary>One embed slot as the page sends it in the R11 slice form: its first Monaco line and its text.</summary>
+        public sealed class SlotText
+        {
+            public int Start;
+            public string Text;
+        }
+
+        /// <summary>
+        /// The slice form of <see cref="ComputeSlotChecks(string,List{int[]},string)"/> (1c685f2e R11): the page sends
+        /// only the slots' text, never the 3.2 MB buffer. The routine set is <paramref name="routines"/> (the
+        /// procedure family's ROUTINE labels from the host's span map) plus any ROUTINE label typed inside a slot.
+        /// Markers come back in Monaco lines (each slot's Start + its line index).
+        /// </summary>
+        public static List<Dictionary<string, object>> ComputeSlotChecks(IList<SlotText> slots, IEnumerable<string> routines)
+        {
+            var markers = new List<Dictionary<string, object>>();
+            if (slots == null || slots.Count == 0) return markers;
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (routines != null) foreach (var r in routines) if (!string.IsNullOrEmpty(r)) set.Add(r);
+            var split = new List<string[]>();
+            foreach (var slot in slots)
+            {
+                string text = (slot != null ? slot.Text : null) ?? "";
+                split.Add(text.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n'));
+                try
+                {
+                    var parsed = ClarionAppDataReader.ParseRoutines(text, null);
+                    if (parsed != null) foreach (var p in parsed) set.Add(p.Name);
+                }
+                catch { }
+            }
+            for (int i = 0; i < slots.Count; i++)
+            {
+                if (slots[i] == null || slots[i].Start < 1) continue;
+                int first = slots[i].Start;
+                CheckSlot(split[i], first, first, first + split[i].Length - 1, set, markers);
+            }
+            return markers;
+        }
+
+        /// <summary>
+        /// Passes 2 &amp; 3 over ONE slot: Monaco lines <paramref name="s"/>..<paramref name="e"/>, where the text of
+        /// Monaco line <c>ln</c> is <c>lines[ln - first]</c> (first = 1 for a whole buffer, the slot's start for a slice).
+        /// </summary>
+        private static void CheckSlot(string[] lines, int first, int s, int e, HashSet<string> routines,
+            List<Dictionary<string, object>> markers)
+        {
+            if (e < s) return;
+            {
                 var open = new Stack<int[]>(); // [line1, col1] for each unmatched opener within this slot
                 for (int ln = s; ln <= e; ln++)
                 {
-                    string code = Sanitize(lines[ln - 1]); // blanks comments + string interiors, preserves columns
+                    string code = Sanitize(lines[ln - first]); // blanks comments + string interiors, preserves columns
                     string trimmed = code.Trim();
                     if (trimmed.Length == 0) continue;
                     string u = trimmed.ToUpperInvariant();
@@ -272,7 +321,7 @@ namespace ClarionAssistant.Services
                     // class, so this can only remove false positives (same reasoning as the trailing-'.'
                     // close below).
                     if (PostCondClose.IsMatch(u) && open.Count > 0 &&
-                        StructWord(lines[open.Peek()[0] - 1]) == "LOOP")
+                        StructWord(lines[open.Peek()[0] - first]) == "LOOP")
                     {
                         open.Pop();
                         continue;
@@ -406,13 +455,11 @@ namespace ClarionAssistant.Services
                 while (open.Count > 0)
                 {
                     var o = open.Pop();
-                    string word = StructWord(lines[o[0] - 1]);
+                    string word = StructWord(lines[o[0] - first]);
                     markers.Add(Marker(o[0], o[1], o[0], o[1] + Math.Max(1, word.Length),
                         word + " is not terminated with END or '.' in this embed slot.", SevError));
                 }
             }
-
-            return markers;
         }
 
         /// <summary>Per-phase timings of one <see cref="ComputeAsync"/> call, for the hosts' [diag-timing]

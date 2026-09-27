@@ -136,6 +136,18 @@ static class MonacoBufferSyncTest
                     "sync@" + syncAt + " hostCheck@" + hostCheck);
                 Check("item 0: the page's log action is handled before the _host==null return", logAt > 0 && logAt < hostCheck,
                     "log@" + logAt + " hostCheck@" + hostCheck);
+                int headerAt = dispatch.IndexOf("case \"headerSync\":", StringComparison.Ordinal);
+                Check("R11: headerSync is handled before the _host==null return", headerAt > 0 && headerAt < hostCheck,
+                    "headerSync@" + headerAt + " hostCheck@" + hostCheck);
+                Check("R11: a full bufferSync / fileState that was cached pushes the span map",
+                    dispatch.Contains("if (_bufferCache.AcceptSync(json, \"buffer\", getMs, MonacoSpikeLog.Write)) PushSpanMap();") &&
+                    dispatch.Contains("if (_bufferCache.AcceptSync(json, \"text\", getMs, MonacoSpikeLog.Write)) PushSpanMap();"));
+                string push = MethodBody(ctl, "private void PushSpanMap(");
+                Check("R11: the span map is built off the UI thread in the newest-wins \"span-map\" lane",
+                    push.Contains("_lanes.Submit(\"span-map\"") && push.Contains("_bufferCache.Resolve(v)"), push.Length + " chars");
+                string runLocal = MethodBody(ctl, "public void RunLocalAction(");
+                Check("R11: a request carrying a slice skips the `v` lookup; one without still goes through it",
+                    runLocal.Contains("!Services.LocalLayerHandlers.CarriesSlice(data) && !TryResolveRequestBuffer(data, out buffer)"));
                 Check("8.2 message errors go to the log, not Debug.WriteLine",
                     dispatch.Contains("MonacoSpikeLog.Write(\"[MonacoEditorControl] message error") && !dispatch.Contains("Debug.WriteLine(\"[MonacoEditorControl] Message error"));
 
@@ -196,7 +208,7 @@ static class MonacoBufferSyncTest
             var blockedStarted = new ManualResetEventSlim(false);
             lanes.Submit("completion", () => { blockedStarted.Set(); block.Wait(10000); }, () => { });
             Check("the completion lane is busy", blockedStarted.Wait(2000));
-            foreach (var lane in new[] { "local-completion", "local-hover", "slot-diagnostics", "folding", "hover", "diagnostics" })
+            foreach (var lane in new[] { "local-completion", "local-hover", "slot-diagnostics", "folding", "span-map", "hover", "diagnostics" })
             {
                 var done = new ManualResetEventSlim(false);
                 var sw = System.Diagnostics.Stopwatch.StartNew();

@@ -92,6 +92,30 @@ static class LocalLayerHandlersTest
                 "calls=" + SharedLspBridge.TotalCalls);
         }
 
+        Console.WriteLine("\nR11: slotDiagnostics slice payload {procedureName, routines, slots:[{start,text}]} - no synced buffer");
+        {
+            log.Clear();
+            string req = "{\"action\":\"slotDiagnostics\",\"procedureName\":\"TestProc\",\"routines\":[\"RealRtn\"]," +
+                         "\"slots\":[{\"start\":4,\"text\":" + Json("  LOOP\r\n    DO NoSuchRoutine\r\n    x# += 1") + "}]}";
+            var args = Req(req);
+            Check("the request is recognised as carrying its own slice (the control skips the `v` lookup)", LocalLayerHandlers.CarriesSlice(args));
+            var r = LocalLayerHandlers.Handle("slotDiagnostics", null, args, 1, embed);
+            var ms = Markers(r);
+            Check("markers from the slice alone, in Monaco lines (LOOP at 4, DO at 5)",
+                ms.Count == 2 && ms.Any(m => (int)m["line"] == 4) && ms.Any(m => (int)m["line"] == 5 && ((string)m["message"]).Contains("NoSuchRoutine")), Json(ms));
+            Check("[local-timing] reports sliceChars (the slot text length)",
+                log.Count == 1 && log[0].Contains(" sliceChars=" + "  LOOP\r\n    DO NoSuchRoutine\r\n    x# += 1".Length), log.FirstOrDefault());
+            var tab = LocalLayerHandlers.Handle("slotDiagnostics", null, args, 0, fileTab);
+            Check("the file-mode tab still answers an empty list for a slice", Markers(tab).Count == 0);
+            log.Clear();
+            LocalLayerHandlers.Handle("slotDiagnostics", EmbedBuffer, Req("{\"ranges\":[[4,6]]}"), 0, embed);
+            Check("the `v` form logs sliceChars=none(v)", log.Count == 1 && log[0].Contains(" sliceChars=none(v)"), log.FirstOrDefault());
+            log.Clear();
+            LocalLayerHandlers.Handle("localCompletion", null,
+                Req("{\"line\":5,\"column\":7,\"slice\":{\"headerHash\":\"h1\",\"span\":{\"start\":1,\"text\":\"abc\"},\"ownerData\":{\"start\":1,\"text\":\"de\"},\"routines\":[]}}"), 0, embed);
+            Check("a localCompletion slice logs sliceChars = span + ownerData chars", log.Count == 1 && log[0].Contains(" sliceChars=5"), log.FirstOrDefault());
+        }
+
         Console.WriteLine("\n4.8 one [local-timing] line per call");
         {
             log.Clear();

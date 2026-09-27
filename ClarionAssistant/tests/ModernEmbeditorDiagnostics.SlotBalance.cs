@@ -275,6 +275,25 @@ static class SlotBalance
             Ok("7.4b ABC shape: DO NotThere flagged, DO RefreshTotals not",
                 abcMarkers.Count == 1 && (int)abcMarkers[0]["line"] == 13 && ((string)abcMarkers[0]["message"]).Contains("NotThere"), Show(abcMarkers));
 
+            // R11: the slice form. The page sends only the slot's text and the span map's routine names; the
+            // markers must be the full-buffer form's, at the same Monaco lines.
+            var sliceSlots = new List<ModernEmbeditorDiagnostics.SlotText> {
+                new ModernEmbeditorDiagnostics.SlotText { Start = 4, Text = string.Join("\r\n", SplitFixture.Skip(3).Take(4)) } };
+            var fromSlice = ModernEmbeditorDiagnostics.ComputeSlotChecks(sliceSlots, new[] { "RealRtn" });
+            Ok("R11 slice form: the same markers at the same Monaco lines as the full-buffer form",
+                Show(fromSlice) == Show(slot), Show(fromSlice) + " vs " + Show(slot));
+            var typed = new List<ModernEmbeditorDiagnostics.SlotText> {
+                new ModernEmbeditorDiagnostics.SlotText { Start = 20, Text = "  DO Fresh\r\nFresh ROUTINE\r\n  x# = 1" } };
+            Ok("R11 slice form: a ROUTINE typed inside a slot counts (no marker for DO Fresh)",
+                ModernEmbeditorDiagnostics.ComputeSlotChecks(typed, new[] { "RealRtn" }).Count == 0,
+                Show(ModernEmbeditorDiagnostics.ComputeSlotChecks(typed, new[] { "RealRtn" })));
+            var twoSlots = new List<ModernEmbeditorDiagnostics.SlotText> {
+                new ModernEmbeditorDiagnostics.SlotText { Start = 10, Text = "  x# = 1" },
+                new ModernEmbeditorDiagnostics.SlotText { Start = 50, Text = "  x# = 2\r\n  IF a = 1" } };
+            var tm = ModernEmbeditorDiagnostics.ComputeSlotChecks(twoSlots, new string[0]);
+            Ok("R11 slice form: each slot is balanced on its own, lines offset by its start (IF at 51)",
+                tm.Count == 1 && (int)tm[0]["line"] == 51 && ((string)tm[0]["message"]).StartsWith("IF is not terminated"), Show(tm));
+
             // 7.6: budget on a module-sized buffer (86k lines) with one 30-line slot.
             var big = new System.Text.StringBuilder();
             big.Append("BigProc PROCEDURE\r\n  CODE\r\n");
