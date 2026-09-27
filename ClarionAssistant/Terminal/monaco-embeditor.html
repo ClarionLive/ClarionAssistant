@@ -4563,6 +4563,11 @@
         if (!caretBehindEolOn || !ed) return false;
         var model = ed.getModel();
         if (!model || line < 1 || line > model.getLineCount()) return false;
+        // Under word wrap, never pad a line past the wrap column: the padding itself would break the line
+        // onto a second row, and on a wrapped line screen columns stop being model columns (16d140e9).
+        // A column that needs c-1 characters fits while c-1 <= the wrap column.
+        var wc = wrapColumnOf(ed);
+        if (wc > 0 && column > model.getLineMaxColumn(line) && column - 1 > wc) return false;
         if (_pad && !(_pad.ed === ed && _pad.line === line)) trimPad();
         if (!_pad) {
             var m = model.getLineMaxColumn(line);
@@ -4602,6 +4607,27 @@
         } catch (e) { }
     }
 
+    // True when word wrap has broken this line over more than one screen row. On such a line a screen
+    // column is NOT a model column: e.target.mouseColumn counts from the left edge of the clicked ROW, and a
+    // row other than the first starts part-way through the line. Treating it as a model column is what put
+    // the caret (and the up/down goal) out at the width of the window (ticket 16d140e9). Uses only public
+    // editor API; an editor that cannot answer (tests, no wrap) is "not wrapped".
+    // The live wrap column in characters, or 0 when word wrap is off (or the editor cannot say).
+    function wrapColumnOf(ed) {
+        try {
+            var EO = monaco.editor.EditorOption;
+            var wi = (EO && EO.wrappingInfo !== undefined && ed.getOption) ? ed.getOption(EO.wrappingInfo) : null;
+            return (wi && wi.wrappingColumn > 0) ? wi.wrappingColumn : 0;
+        } catch (e) { return 0; }
+    }
+    function lineIsWrapped(ed, line) {
+        try {
+            if (!wrapColumnOf(ed)) return false;
+            var model = ed.getModel();
+            return ed.getTopForPosition(line, 1) !== ed.getTopForPosition(line, model.getLineMaxColumn(line));
+        } catch (e) { return false; }
+    }
+
     function installCaretBehindEol(ed) {
         if (!ed || ed._cbeolInstalled) return;
         ed._cbeolInstalled = true;
@@ -4612,8 +4638,16 @@
             if (!caretBehindEolOn || !e || !e.target) return;
             var pos = e.target.position;
             var mc = e.target.mouseColumn;
-            if (!pos || typeof mc !== 'number' || mc <= pos.column) return;
+            // Any click that does not land past EOL is an ordinary caret move, which ends the up/down goal
+            // (Monaco's own goal column resets the same way). A stale goal would drag every later up/down
+            // out to a column the user left long ago.
+            if (!pos || typeof mc !== 'number' || mc <= pos.column) { _padGoal = null; return; }
             if (e.event && e.event.altKey) return;          // leave column-select / multi-cursor alone
+            // Past EOL only means something when the click is on the line's real end on a one-row line; on
+            // a wrapped line mouseColumn is a screen column in the clicked row (see lineIsWrapped).
+            if (pos.column !== ed.getModel().getLineMaxColumn(pos.lineNumber) || lineIsWrapped(ed, pos.lineNumber)) {
+                _padGoal = null; return;
+            }
             if (!ensurePad(ed, pos.lineNumber, mc)) return;
             if (e.event && e.event.shiftKey) {
                 // Shift+click past EOL extends the existing selection out to the clicked column.
@@ -4649,8 +4683,10 @@
                         e.preventDefault(); e.stopPropagation();
                         ed.setPosition({ lineNumber: pos.lineNumber, column: pos.column + 1 });
                         _padGoal = pos.column + 1;
+                        return;
                     }
                 }
+                _padGoal = null;                                 // an ordinary step right (or wrap to the next line) ends the goal
                 return;
             }
             // Shift+right at EOL extends the selection past the end of the line.
@@ -4686,6 +4722,12 @@
                 var goal = _padGoal || pos.column;
                 var target = pos.lineNumber + (e.keyCode === KC.DownArrow ? 1 : -1);
                 if (target < 1 || target > model.getLineCount()) return;
+                // A line word wrap has split over several rows: up/down moves between ITS rows first, and
+                // pos.column is a model column, not what is on screen. Leave it all to Monaco (16d140e9).
+                // Monaco's own (visual) goal takes over from there, so ours ends here — otherwise an older goal
+                // would re-apply once the caret came back onto short lines. A wrapped TARGET is skipped too:
+                // padding it would only push it further across rows.
+                if (lineIsWrapped(ed, pos.lineNumber) || lineIsWrapped(ed, target)) { _padGoal = null; return; }
                 if (goal <= model.getLineMaxColumn(target)) return;   // real text reaches that far — let Monaco do it
                 e.preventDefault(); e.stopPropagation();
                 trimPad();
@@ -4694,9 +4736,18 @@
                 _padGoal = goal;
                 return;
             }
-            // Any other navigation key resets the goal column, matching Monaco's own behaviour.
-            if (e.keyCode === KC.LeftArrow || e.keyCode === KC.Home || e.keyCode === KC.PageUp || e.keyCode === KC.PageDown)
-                _padGoal = null;
+            // Any other key ends the goal column, matching Monaco's own behaviour: navigation (Left, Home,
+            // PgUp/PgDn) and every EDIT too — typing, Enter, Backspace, Tab. Before 16d140e9 only the four
+            // navigation keys cleared it, so a goal survived typing and Enter and the next up/down padded
+            // the line out to a column from minutes earlier (the Owner saw column 125). Up/Down with a
+            // modifier or a selection, and bare modifier presses, leave it alone.
+            var kc = e.keyCode;
+            if (kc === KC.UpArrow || kc === KC.DownArrow) return;
+            if (KC.Shift !== undefined && (kc === KC.Shift || kc === KC.Ctrl || kc === KC.Alt || kc === KC.Meta)) return;
+            // Ctrl/Cmd chords that neither move the caret nor edit keep it too (copy, save, find), as in Monaco.
+            if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey &&
+                (kc === KC.KeyC || kc === KC.KeyS || kc === KC.KeyF || kc === KC.Insert)) return;
+            _padGoal = null;
         });
 
         // Central reconciler: whenever the caret ends up somewhere else, make the invariant true again.
