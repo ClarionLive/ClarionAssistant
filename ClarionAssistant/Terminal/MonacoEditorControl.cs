@@ -185,7 +185,8 @@ namespace ClarionAssistant.Terminal
     /// </summary>
     public interface IMonacoFoldingHost
     {
-        /// <summary>{action:"foldingRanges", buffer} — host replies via PostResponse with
+        /// <summary>{action:"foldingRanges", v} — the buffer is resolved through
+        /// MonacoEditorControl.TryResolveRequestBuffer (16d140e9); host replies via PostResponse with
         /// {ranges:[{start,end,kind}]} (1-based, inclusive) or {ranges:null} when unavailable.</summary>
         void OnFoldingRanges(MonacoEditorControl editor, string rawJson);
     }
@@ -233,6 +234,112 @@ namespace ClarionAssistant.Terminal
         /// only in that page's memory until it tells us.
         /// </summary>
         public bool IsDark { get; private set; }
+
+        // ── Buffer sync (16d140e9) ──────────────────────────────────────────────────────────────
+        // The page posts its buffer in 'bufferSync' (and file mode's 'fileState') only when the content
+        // changed; requests carry `v`. ONE cached copy per surface, replaced on every sync. See
+        // MonacoBufferSync.cs for why (a 3.2 MB buffer per request crashed a 32-bit Clarion.exe).
+        private readonly MonacoBufferCache _bufferCache = new MonacoBufferCache();
+        private readonly Dictionary<string, LatestOnlyWorker> _latestWorkers = new Dictionary<string, LatestOnlyWorker>();
+
+        /// <summary>The page's buffer as of its last sync (null before the first one).</summary>
+        public string CurrentBuffer { get { return _bufferCache.CurrentBuffer; } }
+
+        /// <summary>The page's sync version `v` for <see cref="CurrentBuffer"/> (-1 before the first sync).</summary>
+        public long CurrentBufferVersion { get { return _bufferCache.CurrentBufferVersion; } }
+
+        /// <summary>The cached buffer if it is version <paramref name="v"/>, else null.</summary>
+        public string ResolveBuffer(long v) { return _bufferCache.Resolve(v); }
+
+        /// <summary>
+        /// THE way a handler gets the buffer a request refers to. An inline "buffer" (older page) is used
+        /// as-is; otherwise "v" is resolved from the cache. When the request names a version this surface
+        /// does not hold (should not happen — the page posts the sync first and WebView2 keeps order), the
+        /// request is answered HERE with a null reply (the page treats it exactly like a timeout) and the
+        /// page is told to resend with its next request; the caller gets false and must return without
+        /// replying. Never throws, never blocks.
+        /// </summary>
+        public bool TryResolveRequestBuffer(IDictionary<string, object> data, out string buffer)
+        {
+            buffer = null;
+            MonacoBufferCache.Lookup how;
+            try { how = _bufferCache.ResolveRequest(data, out buffer); }
+            catch { how = MonacoBufferCache.Lookup.None; }
+            if (how != MonacoBufferCache.Lookup.Missing) return true;
+
+            long reqId, v;
+            MonacoBufferCache.TryGetLong(data, "reqId", out reqId);
+            MonacoBufferCache.TryGetLong(data, "v", out v);
+            try
+            {
+                MonacoSpikeLog.Write("[buffer-sync] request reqId=" + reqId + " names v=" + v +
+                    " but this surface holds v=" + _bufferCache.CurrentBufferVersion + " - null reply + resync");
+            }
+            catch { }
+            if (reqId > 0) PostResponse((int)reqId, null);
+            PostJson("{\"type\":\"bufferResync\"}");
+            return false;
+        }
+
+        /// <summary>
+        /// File mode's mirror text for a 'fileState' message: the cached copy when the message was stamped
+        /// with `v` (the control cached it on arrival — one copy, not two), else null (older page: the
+        /// caller deserialises the message itself). <paramref name="header"/> holds the small fields
+        /// (dirty, seq, v) when the message is in the page's shape.
+        /// </summary>
+        public string FileStateText(string json, out Dictionary<string, object> header)
+        {
+            header = null;
+            try
+            {
+                int start;
+                header = MonacoBufferCache.ParseHeader(json, "text", out start);
+                long v;
+                if (header == null || !MonacoBufferCache.TryGetLong(header, "v", out v)) return null;
+                return _bufferCache.Resolve(v);
+            }
+            catch { header = null; return null; }
+        }
+
+        /// <summary>One [diag-timing] line per diagnostics request (both hosts). Never throws.</summary>
+        public static void LogDiagTiming(RequestTimingLine line, string text, long resolveMs,
+            Services.ModernEmbeditorDiagnostics.Timing t, List<Dictionary<string, object>> markers)
+        {
+            try
+            {
+                line.Add("chars", text != null ? text.Length : 0)
+                    .Add("resolveMs", resolveMs)
+                    .Add("lspRunning", t != null && t.LspRan)
+                    .Add("syncMs", t != null ? t.SyncMs : -1)
+                    .Add("waitMs", t != null ? t.WaitMs : -1)
+                    .Add("waitEnd", t != null ? (t.WaitEnd ?? "n/a") : "n/a")
+                    .Add("lspEntries", t != null ? t.LspEntries : -1)
+                    .Add("slotMs", t != null ? t.SlotMs : -1)
+                    .Add("markers", markers != null ? markers.Count : 0);
+                MonacoSpikeLog.Write(line.Format());
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Run <paramref name="work"/> on a background thread, one at a time per <paramref name="lane"/>,
+        /// keeping only the newest waiting request: an older one still waiting when a newer one arrives is
+        /// answered with a null reply (the page's timeout shape) instead of being run. Used for completion
+        /// and hover, which Monaco re-asks on every keystroke / mouse move. (16d140e9)
+        /// </summary>
+        public void RunLatest(string lane, int reqId, Action work, Action onDropped = null)
+        {
+            LatestOnlyWorker w;
+            lock (_latestWorkers)
+            {
+                if (!_latestWorkers.TryGetValue(lane, out w)) { w = new LatestOnlyWorker(); _latestWorkers[lane] = w; }
+            }
+            w.Submit(work, () =>
+            {
+                PostResponse(reqId, null);
+                if (onDropped != null) { try { onDropped(); } catch { } }
+            });
+        }
 
         public MonacoEditorControl(IMonacoEditorHost host, bool isDark = true,
                                    string htmlFileName = "monaco-embeditor.html",
@@ -326,6 +433,14 @@ namespace ClarionAssistant.Terminal
 
                 switch (action)
                 {
+                    case "bufferSync":
+                        // 16d140e9: the page's buffer, sent once per content version. Cached here (one copy per
+                        // surface, replacing the last) so no host has to implement anything to receive it.
+                        {
+                            long sv; string stext;
+                            if (MonacoBufferCache.TryParseSync(json, "buffer", out sv, out stext)) _bufferCache.Store(sv, stext);
+                        }
+                        break;
                     case "themeChanged":
                         // Page → host mirror of the persisted light/dark pref (localStorage is authoritative;
                         // see CaEditorSettings.MonacoThemeDark). Handled here — not on IMonacoEditorHost — so
@@ -412,7 +527,16 @@ namespace ClarionAssistant.Terminal
                     case "selectionChanged":  h.OnSelectionChanged(this, json); break;
                     case "focusEditor":       h.OnFocusEditor(this); break;
                     case "reload":            h.OnReload(this); break;
-                    case "fileState":         h.OnFileState(this, json); break;
+                    case "fileState":
+                        // File mode's synchronous close-safety mirror. Stamped with `v`, it is ALSO the buffer
+                        // sync for that version (16d140e9): cache its text first, so the host's OnFileState
+                        // (via FileStateText) and every LSP request for this version share this one copy.
+                        {
+                            long fv; string ftext;
+                            if (MonacoBufferCache.TryParseSync(json, "text", out fv, out ftext)) _bufferCache.Store(fv, ftext);
+                        }
+                        h.OnFileState(this, json);
+                        break;
                     case "openDesigner":      h.OnOpenDesigner(this, json); break;
                     case "openDesignerCreate":h.OnOpenDesignerCreate(this, json); break;
                     case "activateDesigner":  h.OnActivateDesigner(this); break;
@@ -1029,6 +1153,7 @@ namespace ClarionAssistant.Terminal
             if (disposing && !_disposedControl)
             {
                 _disposedControl = true;
+                try { _bufferCache.Clear(); } catch { }
                 try
                 {
                     HandleCreated -= OnHandleCreated;

@@ -154,6 +154,11 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "EmbedApplyFlow.Test"
                Sources = @("tests\EmbedApplyFlow.Test.cs", "Services\EmbedApplyFlow.cs", "Services\McpCallContext.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # 16d140e9: the Monaco buffer crosses to the host once per content version - the per-surface
+            # cache/accessor MonacoEditorControl uses, the sync-message parser, and the newest-wins lane.
+            @{ Name = "MonacoBufferSync.Test"
+               Sources = @("tests\MonacoBufferSync.Test.cs", "Terminal\MonacoBufferSync.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }
             # Per-embed-slot structure balance (Passes 2 & 3), LSP pass stubbed. Reuses the
             # StructureScan stubs so the REAL ClarionAppDataReader supplies the routine set.
             @{ Name = "ModernEmbeditorDiagnostics.SlotBalance"

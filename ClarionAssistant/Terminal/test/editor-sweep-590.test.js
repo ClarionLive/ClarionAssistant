@@ -67,9 +67,11 @@ function loadDiag() {
     }
     const fakeSetTimeout = (fn) => { env.scheduled++; env.timers.push(fn); return env.timers.length; };
     const fakeClearTimeout = () => { env.cleared++; };
-    const api = new Function('editor', 'monaco', 'requestFromHost', 'liveEditableRanges', 'setTimeout', 'clearTimeout',
+    // 16d140e9: requests name the synced buffer version (withBuffer) instead of carrying the buffer.
+    const withBuffer = (m, payload) => Object.assign({ v: m.getVersionId() }, payload);
+    const api = new Function('editor', 'monaco', 'requestFromHost', 'liveEditableRanges', 'setTimeout', 'clearTimeout', 'withBuffer',
         'var diagTimer = null;\n' + diagSrc + '\nreturn { refreshDiagnostics: refreshDiagnostics, scheduleDiagnostics: scheduleDiagnostics };')(
-        env.editor, monaco, requestFromHost, () => [[1, 10]], fakeSetTimeout, fakeClearTimeout);
+        env.editor, monaco, requestFromHost, () => [[1, 10]], fakeSetTimeout, fakeClearTimeout, withBuffer);
     env.api = api;
     return env;
 }
@@ -78,33 +80,36 @@ const reply = (line) => ({ markers: [{ severity: 8, message: 'm', line, column: 
 async function testDiagnostics() {
     section('GH #176 — only the newest diagnostics reply, for the buffer on screen, is rendered');
     {
-        // Two round-trips in flight: request 1 for v1, an edit, request 2 for v2. Reply 2 arrives first,
-        // then the slow reply 1 — it must not overwrite the newer markers.
+        // 16d140e9 changed the shape of this race: only ONE diagnostics request is in flight, so a pass asked
+        // for during request 1 (v1) is held, not dispatched. When the slow reply 1 arrives the buffer is at
+        // v2: it must be dropped, and the held pass dispatched for v2 — whose reply then applies.
         const env = loadDiag();
         env.api.refreshDiagnostics();
         env.model.version = 2;
         env.api.refreshDiagnostics();
-        check('two requests dispatched', env.pending.length === 2, 'got ' + env.pending.length);
+        check('a second pass while one is in flight is held, not dispatched', env.pending.length === 1, 'got ' + env.pending.length);
+        env.pending[0].resolve(reply(4));
+        await flush();
+        check('a stale (older) reply is dropped', env.applied.length === 0, JSON.stringify(env.applied));
+        check('...and the held pass is scheduled', env.timers.length === 1);
+        env.timers[0]();                       // debounce fires -> request 2 for v2
+        check('...which dispatches for the new version', env.pending.length === 2 && env.pending[1].payload.v === 2,
+            JSON.stringify(env.pending.map(p => p.payload)));
         env.pending[1].resolve(reply(7));
         await flush();
         check('the newest reply applies', env.applied.length === 1 && env.applied[0][0] === 7, JSON.stringify(env.applied));
-        env.pending[0].resolve(reply(4));
-        await flush();
-        check('a stale (older) reply arriving late is dropped', env.applied.length === 1 && env.applied[env.applied.length - 1][0] === 7,
-            JSON.stringify(env.applied));
     }
     {
-        // Same buffer version for both requests (two passes without an edit between), so ONLY the request
-        // sequence can tell them apart: the superseded reply still must not render after the newer one.
+        // Same buffer version for both passes (no edit between): the held pass has nothing new to ask, so
+        // the outstanding reply answers it — one request, one render, nothing scheduled.
         const env = loadDiag();
         env.api.refreshDiagnostics();
         env.api.refreshDiagnostics();
-        env.pending[1].resolve(reply(6));
+        env.pending[0].resolve(reply(6));
         await flush();
-        env.pending[0].resolve(reply(2));
-        await flush();
-        check('a superseded reply for the same buffer version is dropped', env.applied.length === 1 && env.applied[0][0] === 6,
-            JSON.stringify(env.applied));
+        check('a pass held for an unchanged buffer is answered by the outstanding reply', env.pending.length === 1 &&
+            env.applied.length === 1 && env.applied[0][0] === 6 && env.timers.length === 0,
+            JSON.stringify({ req: env.pending.length, applied: env.applied, timers: env.timers.length }));
     }
     {
         // The only request in flight, but the buffer changed before its reply came back (e.g. a programmatic

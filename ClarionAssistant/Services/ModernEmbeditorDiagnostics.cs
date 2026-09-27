@@ -148,10 +148,11 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static async Task<List<Dictionary<string, object>>> ComputeAsync(
             string lspFileName, string buffer, List<int[]> ranges, string procedureName,
-            bool embedSlotChecks = true, EmbedLspContext lspContext = null)
+            bool embedSlotChecks = true, EmbedLspContext lspContext = null, Timing timing = null)
         {
             var markers = new List<Dictionary<string, object>>();
             if (string.IsNullOrEmpty(buffer) || ranges == null || ranges.Count == 0) return markers;
+            var phase = System.Diagnostics.Stopwatch.StartNew();
 
             string[] lines = buffer.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
 
@@ -165,10 +166,15 @@ namespace ClarionAssistant.Services
                     // numbers run AHEAD of Monaco's by what WrapBuffer prepended to THIS buffer (0 when it
                     // passed it through) — subtract that before clamping to slots.
                     int off = (lspContext != null) ? lspContext.LineOffsetFor(buffer) : 0;
+                    if (timing != null) timing.LspRan = true;
+                    phase.Restart();
                     SharedLspBridge.EnsureBufferSynced(lspFileName,
                         (lspContext != null) ? lspContext.WrapBuffer(buffer) : buffer);
+                    if (timing != null) timing.SyncMs = phase.ElapsedMilliseconds;
+                    phase.Restart();
                     List<LspClient.DiagnosticEntry> entries =
-                        await WaitForSettledDiagnosticsAsync(lspFileName).ConfigureAwait(false);
+                        await WaitForSettledDiagnosticsAsync(lspFileName, timing).ConfigureAwait(false);
+                    if (timing != null) { timing.WaitMs = phase.ElapsedMilliseconds; timing.LspEntries = entries.Count; }
 
                     foreach (var d in entries)
                     {
@@ -190,6 +196,7 @@ namespace ClarionAssistant.Services
             // File mode (whole-source): stop here. The LSP pass above already covers the whole file;
             // the per-slot heuristics below mis-fire on declaration files (FILE/GROUP/... as param types).
             if (!embedSlotChecks) return markers;
+            phase.Restart();
 
             // Routine set for the undefined-routine check (only flag when we actually parsed routines,
             // so a parse failure never produces false positives).
@@ -383,7 +390,21 @@ namespace ClarionAssistant.Services
                 }
             }
 
+            if (timing != null) timing.SlotMs = phase.ElapsedMilliseconds;
             return markers;
+        }
+
+        /// <summary>Per-phase timings of one <see cref="ComputeAsync"/> call, for the hosts' [diag-timing]
+        /// log line (16d140e9: a squiggle took ~5 minutes to appear on a 3.2 MB generated module).
+        /// -1 = the phase did not run.</summary>
+        public sealed class Timing
+        {
+            public bool LspRan;
+            public long SyncMs = -1;       // EnsureBufferSynced (didChange of the whole buffer)
+            public long WaitMs = -1;       // WaitForSettledDiagnosticsAsync, settle window included
+            public string WaitEnd;         // how the wait ended: complete / timeout(pending) + settle outcome
+            public int LspEntries = -1;    // server entries before clamping to slots
+            public long SlotMs = -1;       // Passes 2 & 3 (embed mode only)
         }
 
         // The Clarion LSP publishes diagnostics progressively for a file that just changed: an early
@@ -412,22 +433,29 @@ namespace ClarionAssistant.Services
         // thread per request for the whole settle window; past the pool's core-count baseline .NET only
         // injects replacements at roughly 1-2/sec, so queuing delay compounds exactly when requests
         // overlap, which is the same slow-machine case this settle window exists to serve.
-        private static async Task<List<LspClient.DiagnosticEntry>> WaitForSettledDiagnosticsAsync(string lspFileName)
+        private static async Task<List<LspClient.DiagnosticEntry>> WaitForSettledDiagnosticsAsync(string lspFileName, Timing timing = null)
         {
             var wait = SharedLspBridge.WaitForDiagnostics(lspFileName, 1500, true);
+            bool complete = wait != null && !wait.Pending && wait.Entries != null;
             List<LspClient.DiagnosticEntry> last =
-                (wait != null && !wait.Pending && wait.Entries != null)
+                complete
                     ? wait.Entries
                     : (SharedLspBridge.GetCachedDiagnostics(lspFileName) ?? new List<LspClient.DiagnosticEntry>());
+            string end = complete ? "complete" : "timeout(1500ms,pending->cached)";
 
+            int polls = 0;
+            bool republished = false;
             for (int i = 0; last.Count == 0 && i < SettleMaxChecks; i++)
             {
                 await Task.Delay(SettleIntervalMs).ConfigureAwait(false);
+                polls++;
                 var next = SharedLspBridge.GetCachedDiagnostics(lspFileName);
                 if (next == null) continue; // no fresher publish yet — keep waiting out the settle window
                 last = next;
-                if (last.Count > 0) break; // a fuller batch landed — done, no need to keep waiting
+                if (last.Count > 0) { republished = true; break; } // a fuller batch landed — done, no need to keep waiting
             }
+            if (timing != null)
+                timing.WaitEnd = end + (polls == 0 ? "" : republished ? "+settle:republish@" + polls : "+settle:quiet@" + polls);
             return last;
         }
 

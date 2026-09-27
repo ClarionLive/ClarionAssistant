@@ -226,6 +226,7 @@
     <Compile Include="Terminal\NativeDiffViewContent.cs" />
     <Compile Include="Terminal\ModernEmbeditorViewContent.cs" />
     <Compile Include="Terminal\MonacoEditorControl.cs" />
+    <Compile Include="Terminal\MonacoBufferSync.cs" />
     <Compile Include="Services\DiffService.cs" />
     <Compile Include="Services\UnifiedDiffGenerator.cs" />
     <Compile Include="Services\EncodingHelper.cs" />

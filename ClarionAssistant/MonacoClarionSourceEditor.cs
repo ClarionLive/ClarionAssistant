@@ -851,9 +851,15 @@ namespace ClarionAssistant
         // LSP completion — route to the shared bridge against the REAL file path so includes/symbols resolve.
         void IMonacoEditorHost.OnCompletion(MonacoEditorControl editor, string rawJson)
         {
-            int reqId, line, col; string buffer;
-            if (!ParseLspRequest(rawJson, out reqId, out line, out col, out buffer)) return;
-            System.Threading.Tasks.Task.Run(() =>
+            int reqId, line, col; string buffer; MonacoRequestStamp stamp;
+            var resolveSw = System.Diagnostics.Stopwatch.StartNew();
+            if (!ParseLspRequest(editor, rawJson, out reqId, out line, out col, out buffer, out stamp)) return;
+            var timing = new RequestTimingLine("[lsp-timing]", "completion", stamp)
+                .Add("surface", "CA Editor(overlay)").Add("reqId", reqId)
+                .Add("chars", buffer != null ? buffer.Length : 0).Add("resolveMs", resolveSw.ElapsedMilliseconds);
+            // 16d140e9: one completion at a time, newest wins — Monaco re-asks on every keystroke while the
+            // suggest widget is open, and each ask would otherwise sync the whole buffer in its own thread.
+            editor.RunLatest("completion", reqId, () =>
             {
                 var items = new List<Dictionary<string, object>>();
                 string lspStatus = "ok";
@@ -863,7 +869,14 @@ namespace ClarionAssistant
                     if (!SharedLspBridge.IsRunning) lspStatus = "starting";
                     else
                     {
+                        // Sync first, timed on its own (GetCompletion then finds the same text and skips it).
+                        var syncSw = System.Diagnostics.Stopwatch.StartNew();
+                        bool resent = LspSyncFingerprint.NoteAndCompare(_filePath, buffer);
+                        if (!string.IsNullOrEmpty(buffer)) SharedLspBridge.EnsureBufferSynced(_filePath, buffer);
+                        timing.Add("syncMs", syncSw.ElapsedMilliseconds).Add("resent", resent ? "yes(full-text didChange)" : "no(unchanged)");
+                        var reqSw = System.Diagnostics.Stopwatch.StartNew();
                         var comps = SharedLspBridge.GetCompletion(_filePath, Math.Max(0, line - 1), Math.Max(0, col - 1), 2500, buffer);
+                        timing.Add("requestMs", reqSw.ElapsedMilliseconds).Add("items", comps != null ? comps.Count : 0);
                         if (comps != null)
                             foreach (var c in comps)
                                 items.Add(new Dictionary<string, object>
@@ -875,26 +888,41 @@ namespace ClarionAssistant
                 }
                 catch (Exception ex) { lspStatus = "error: " + ex.Message; MonacoSpikeLog.Write("overlay completion error: " + ex.Message); }
                 editor.PostResponse(reqId, new Dictionary<string, object> { { "items", items }, { "lsp", lspStatus } });
-            });
+                timing.Add("lsp", lspStatus);
+                MonacoSpikeLog.Write(timing.Format());
+            }, () => MonacoSpikeLog.Write(timing.Add("dropped", "superseded-by-newer-request").Format()));
         }
 
         // LSP hover — the page shows "Loading…" until we PostResponse, so we must always answer.
+        // (A hover displaced by a newer one is answered null by the control's newest-wins lane.)
         void IMonacoEditorHost.OnHover(MonacoEditorControl editor, string rawJson)
         {
-            int reqId, line, col; string buffer;
-            if (!ParseLspRequest(rawJson, out reqId, out line, out col, out buffer)) return;
-            System.Threading.Tasks.Task.Run(() =>
+            int reqId, line, col; string buffer; MonacoRequestStamp stamp;
+            var resolveSw = System.Diagnostics.Stopwatch.StartNew();
+            if (!ParseLspRequest(editor, rawJson, out reqId, out line, out col, out buffer, out stamp)) return;
+            var timing = new RequestTimingLine("[lsp-timing]", "hover", stamp)
+                .Add("surface", "CA Editor(overlay)").Add("reqId", reqId)
+                .Add("chars", buffer != null ? buffer.Length : 0).Add("resolveMs", resolveSw.ElapsedMilliseconds);
+            editor.RunLatest("hover", reqId, () =>
             {
                 string contents = null;
                 try
                 {
                     EnsureLsp();
                     if (SharedLspBridge.IsRunning)
+                    {
+                        // Sync is inside GetHover (bundled client) or absent (shared addin answers from the
+                        // last synced text), so requestMs includes any sync.
+                        var reqSw = System.Diagnostics.Stopwatch.StartNew();
                         contents = ExtractHover(SharedLspBridge.GetHover(_filePath, Math.Max(0, line - 1), Math.Max(0, col - 1), buffer));
+                        timing.Add("sync", "inline").Add("requestMs", reqSw.ElapsedMilliseconds);
+                    }
                 }
                 catch (Exception ex) { MonacoSpikeLog.Write("overlay hover error: " + ex.Message); }
                 editor.PostResponse(reqId, new Dictionary<string, object> { { "contents", contents } });
-            });
+                timing.Add("items", string.IsNullOrEmpty(contents) ? 0 : 1);
+                MonacoSpikeLog.Write(timing.Format());
+            }, () => MonacoSpikeLog.Write(timing.Add("dropped", "superseded-by-newer-request").Format()));
         }
 
         // Ctrl+F12 go-to-implementation — declaration → implementation body. Same navigation shape
@@ -902,7 +930,7 @@ namespace ClarionAssistant
         void IMonacoEditorHost.OnImplementation(MonacoEditorControl editor, string rawJson)
         {
             int reqId, line, col; string buffer;
-            if (!ParseLspRequest(rawJson, out reqId, out line, out col, out buffer)) return;
+            if (!ParseLspRequest(editor, rawJson, out reqId, out line, out col, out buffer)) return;
             System.Threading.Tasks.Task.Run(() =>
             {
                 bool navigated = false;
@@ -935,7 +963,7 @@ namespace ClarionAssistant
         void IMonacoEditorHost.OnSignatureHelp(MonacoEditorControl editor, string rawJson)
         {
             int reqId, line, col; string buffer;
-            if (!ParseLspRequest(rawJson, out reqId, out line, out col, out buffer)) return;
+            if (!ParseLspRequest(editor, rawJson, out reqId, out line, out col, out buffer)) return;
             System.Threading.Tasks.Task.Run(() =>
             {
                 Dictionary<string, object> help = null;
@@ -956,7 +984,7 @@ namespace ClarionAssistant
         void IMonacoEditorHost.OnDefinition(MonacoEditorControl editor, string rawJson)
         {
             int reqId, line, col; string buffer;
-            if (!ParseLspRequest(rawJson, out reqId, out line, out col, out buffer)) return;
+            if (!ParseLspRequest(editor, rawJson, out reqId, out line, out col, out buffer)) return;
             System.Threading.Tasks.Task.Run(() =>
             {
                 bool navigated = false;
@@ -1008,7 +1036,7 @@ namespace ClarionAssistant
         void IMonacoEditorHost.OnDocumentStructure(MonacoEditorControl editor, string rawJson)
         {
             int reqId, line, col; string buffer;
-            if (!ParseLspRequest(rawJson, out reqId, out line, out col, out buffer)) return;
+            if (!ParseLspRequest(editor, rawJson, out reqId, out line, out col, out buffer)) return;
             System.Threading.Tasks.Task.Run(() =>
             {
                 var symbols = new List<Dictionary<string, object>>();
@@ -1044,7 +1072,7 @@ namespace ClarionAssistant
         void IMonacoFoldingHost.OnFoldingRanges(MonacoEditorControl editor, string rawJson)
         {
             int reqId, line, col; string buffer;
-            if (!ParseLspRequest(rawJson, out reqId, out line, out col, out buffer)) return;
+            if (!ParseLspRequest(editor, rawJson, out reqId, out line, out col, out buffer)) return;
             System.Threading.Tasks.Task.Run(() =>
             {
                 List<Dictionary<string, object>> ranges = null;
@@ -1202,18 +1230,24 @@ namespace ClarionAssistant
         // editing; caveat = it can false-positive on declaration files (FILE/GROUP as param types).
         void IMonacoEditorHost.OnDiagnostics(MonacoEditorControl editor, string rawJson)
         {
-            int reqId; string buffer; List<int[]> ranges;
-            if (!ParseDiagRequest(rawJson, out reqId, out buffer, out ranges)) return;
+            int reqId; string buffer; List<int[]> ranges; MonacoRequestStamp stamp;
+            var resolveSw = System.Diagnostics.Stopwatch.StartNew();
+            if (!ParseDiagRequest(editor, rawJson, out reqId, out buffer, out ranges, out stamp)) return;
+            long resolveMs = resolveSw.ElapsedMilliseconds;
+            var timingLine = new RequestTimingLine("[diag-timing]", "diagnostics", stamp)
+                .Add("surface", "CA Editor(overlay)").Add("reqId", reqId);
             System.Threading.Tasks.Task.Run(async () =>
             {
                 var markers = new List<Dictionary<string, object>>();
+                var timing = new ModernEmbeditorDiagnostics.Timing();
                 try
                 {
                     markers = await ModernEmbeditorDiagnostics.ComputeAsync(
-                        _filePath, buffer ?? "", ranges, null, embedSlotChecks: true).ConfigureAwait(false);
+                        _filePath, buffer ?? "", ranges, null, embedSlotChecks: true, timing: timing).ConfigureAwait(false);
                 }
                 catch (Exception ex) { MonacoSpikeLog.Write("overlay diagnostics error: " + ex.Message); }
                 editor.PostResponse(reqId, new Dictionary<string, object> { { "markers", markers } });
+                MonacoEditorControl.LogDiagTiming(timingLine, buffer, resolveMs, timing, markers);
             });
         }
 
@@ -1509,9 +1543,16 @@ namespace ClarionAssistant
         {
             try
             {
-                var data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(rawJson) as Dictionary<string, object>;
+                // 16d140e9: the control already cached this message's text as the buffer sync for its `v` —
+                // take that same string instead of deserialising a second multi-megabyte copy. An older page
+                // (no `v`) falls through to the full parse, unchanged.
+                Dictionary<string, object> data;
+                string cached = editor.FileStateText(rawJson, out data);
+                if (cached == null)
+                    data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(rawJson) as Dictionary<string, object>;
                 if (data == null) return;
-                if (data.ContainsKey("text") && data["text"] is string) _overlayLiveText = (string)data["text"];
+                if (cached != null) _overlayLiveText = cached;
+                else if (data.ContainsKey("text") && data["text"] is string) _overlayLiveText = (string)data["text"];
                 if (data.ContainsKey("dirty")) _overlayDirty = Convert.ToBoolean(data["dirty"]);
                 // The page stamps every mirror with its edit sequence. Keep it: a save that writes
                 // _overlayLiveText has, by definition, saved the buffer AS OF this seq, and the page clears
@@ -1536,7 +1577,10 @@ namespace ClarionAssistant
                 if (data == null) return;
                 if (data.ContainsKey("reqId")) reqId = Convert.ToInt32(data["reqId"]);
                 int line = data.ContainsKey("line") ? Convert.ToInt32(data["line"]) : 0;
-                string buffer = data.ContainsKey("buffer") ? data["buffer"] as string : null;
+                // 16d140e9: the buffer comes from the control's cache by `v` (inline on an older page). A `v`
+                // the cache lacks has already been answered by the control.
+                string buffer;
+                if (!editor.TryResolveRequestBuffer(data, out buffer)) return;
                 if (string.IsNullOrEmpty(buffer)) { editor.PostResponse(reqId, Refusal("Designer request was malformed.")); return; }
 
                 if (StructureDesignerService.IsActive)
@@ -2347,31 +2391,43 @@ namespace ClarionAssistant
             catch { }
         }
 
-        private static bool ParseLspRequest(string json, out int reqId, out int line, out int column, out string buffer)
+        private static bool ParseLspRequest(MonacoEditorControl editor, string json, out int reqId, out int line, out int column, out string buffer)
         {
-            reqId = 0; line = 0; column = 0; buffer = null;
+            MonacoRequestStamp stamp;
+            return ParseLspRequest(editor, json, out reqId, out line, out column, out buffer, out stamp);
+        }
+
+        // 16d140e9: the buffer comes from the control's per-surface cache by `v` (the page syncs it once per
+        // content version); an inline "buffer" from an older page still works. False = do not reply —
+        // either unparseable, or a `v` the cache lacks, which the control has already answered.
+        private static bool ParseLspRequest(MonacoEditorControl editor, string json, out int reqId, out int line, out int column,
+            out string buffer, out MonacoRequestStamp stamp)
+        {
+            reqId = 0; line = 0; column = 0; buffer = null; stamp = null;
             try
             {
                 var data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(json) as Dictionary<string, object>;
                 if (data == null) return false;
+                stamp = MonacoRequestStamp.From(data);
                 if (data.ContainsKey("reqId")) reqId = Convert.ToInt32(data["reqId"]);
                 if (data.ContainsKey("line")) line = Convert.ToInt32(data["line"]);
                 if (data.ContainsKey("column")) column = Convert.ToInt32(data["column"]);
-                if (data.ContainsKey("buffer")) buffer = data["buffer"] as string;
-                return true;
+                return editor.TryResolveRequestBuffer(data, out buffer);
             }
             catch { return false; }
         }
 
-        private static bool ParseDiagRequest(string json, out int reqId, out string buffer, out List<int[]> ranges)
+        private static bool ParseDiagRequest(MonacoEditorControl editor, string json, out int reqId, out string buffer, out List<int[]> ranges,
+            out MonacoRequestStamp stamp)
         {
-            reqId = 0; buffer = null; ranges = new List<int[]>();
+            reqId = 0; buffer = null; ranges = new List<int[]>(); stamp = null;
             try
             {
                 var data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(json) as Dictionary<string, object>;
                 if (data == null) return false;
+                stamp = MonacoRequestStamp.From(data);
                 if (data.ContainsKey("reqId")) reqId = Convert.ToInt32(data["reqId"]);
-                if (data.ContainsKey("buffer")) buffer = data["buffer"] as string;
+                if (!editor.TryResolveRequestBuffer(data, out buffer)) return false;   // 16d140e9: cached by `v`
                 var arr = data.ContainsKey("ranges") ? data["ranges"] as object[] : null;
                 if (arr != null)
                     foreach (var item in arr)
