@@ -1587,9 +1587,13 @@
         if (msg.snippets) snippetsList = msg.snippets;
         renderGearSnippets();
         // Source is transferred via the virtual-host URL to avoid huge postMessage payloads.
+        // Two setSources in a row can have their fetches finish out of order: only the NEWEST may load, or the
+        // previous procedure's text lands under the new one's ranges, title and mode. (1c685f2e F1)
+        var myGen = ++srcGen;
         fetch(msg.sourceUrl, { cache: 'no-store' })
             .then(function (r) { return r.text(); })
             .then(function (text) {
+                if (myGen !== srcGen) return;   // a newer setSource superseded this one
                 var model = editor.getModel();
                 guarding = true;            // programmatic load — don't let the guard revert it
                 model.setValue(text);
@@ -1613,9 +1617,11 @@
                 postToHost({ action: 'caFindActivity' });
             })
             .catch(function (err) {
+                if (myGen !== srcGen) return;
                 editor.setValue('// Failed to load embeditor source: ' + err);
             });
     }
+    var srcGen = 0;   // bumped by every applySource; a fetch that is no longer the newest is discarded (F1)
 
     // Paint the classic Clarion scheme: editable slots stay white (default), generated lines grey.
     // Editable decorations are kept (invisible) so the read-only guard can query their live ranges.
@@ -1731,7 +1737,8 @@
     function sliceCharsOf(msg) {
         var parts = msg.slice ? msg.slice.pieces : msg.slots;
         if (!parts) return null;
-        return parts.reduce(function (n, p) { return n + (p.text ? p.text.length : 0); }, 0);
+        var header = msg.slice && msg.slice.headerText ? msg.slice.headerText.length : 0;
+        return parts.reduce(function (n, p) { return n + (p.text ? p.text.length : 0); }, header);
     }
     function claimBufferSync(v) {
         if (!unclaimedSync || unclaimedSync.v !== v) return null;
@@ -4476,7 +4483,8 @@
         try { payload = slotSlicePayload(model) || withBuffer(model, { ranges: liveEditableRanges() }); }
         catch (e) { return; }
         slotAskedKey = key;
-        requestFromHost('slotDiagnostics', payload, diagTimeoutForModel(model))
+        // The slot checks are a local-layer answer (their own lane, no LSP): the local budget, not the LSP's. (F5)
+        requestFromHost('slotDiagnostics', payload, LOCAL_TIMEOUT_MS)
             .then(function (resp) {
                 if (myGen !== diagGen) return;
                 // null = no answer (timeout, or superseded in the host's lane): keep what is on screen, and let
@@ -4685,6 +4693,11 @@
                 })
             };
         });
+        // The module header (line 1 up to the first proc) is tracked the same way (F2): once edited, slices carry
+        // its text, since the host's copy under headerHash is stale.
+        var first = n + 1;
+        procs.forEach(function (p) { first = Math.min(first, decs[p.spanAt].range.startLineNumber); });
+        var header = first > 1 ? { at: track(1, first - 1), dirty: false } : null;
         if (spanMap && spanMap.model !== model) clearSpanMap();
         var ids = model.deltaDecorations(spanMap ? spanMap.ids : [], decs);
         procs.forEach(function (p) {
@@ -4692,23 +4705,40 @@
             p.data.id = ids[p.data.at];
             p.routineSpans.forEach(function (r) { r.id = ids[r.at]; });
         });
-        spanMap = { model: model, headerHash: msg.headerHash, ids: ids, procs: procs };
+        if (header) header.id = ids[header.at];
+        spanMap = { model: model, headerHash: msg.headerHash, header: header, ids: ids, procs: procs };
     }
-    // Content changes (pre-edit ranges) that touch a DATA piece make it dirty: its text no longer matches the
-    // hash the host holds, so it must travel as text until the next map. Edits above only shift it.
+    // Every tracked piece whose text the host holds by hash: the header, each proc's and routine's DATA.
+    function trackedPieces() {
+        var all = spanMap.header ? [spanMap.header] : [];
+        spanMap.procs.forEach(function (p) { all.push(p.data); all = all.concat(p.routineSpans); });
+        return all;
+    }
+    // Content changes (pre-edit ranges) that touch a tracked piece make it dirty: its text no longer matches
+    // the hash the host holds, so it must travel as text until the next map. Edits above only shift it.
+    // A multi-change edit that alters the line count (a multi-cursor Enter, a replace-all across lines) makes
+    // the pre-edit ranges unreliable against the moved decorations: everything from its first line on is
+    // marked (conservative - the cost is a few KB of text until the next map). (F4)
     function markDirtyPieces(changes) {
-        if (!spanMap || !changes || !editor || editor.getModel() !== spanMap.model) return;
+        if (!spanMap || !changes || !changes.length || !editor || editor.getModel() !== spanMap.model) return;
         var model = spanMap.model;
-        var touch = function (piece) {
+        var shifts = function (c) {
+            var r = c.range;
+            return String(c.text || '').split('\n').length - 1 !== r.endLineNumber - r.startLineNumber;
+        };
+        var from = Infinity;
+        if (changes.length > 1 && changes.some(shifts))
+            changes.forEach(function (c) { from = Math.min(from, c.range.startLineNumber); });
+        trackedPieces().forEach(function (piece) {
             if (piece.dirty) return;
             var r = model.getDecorationRange(piece.id);
             if (!r) return;
+            if (r.endLineNumber >= from) { piece.dirty = true; return; }
             for (var i = 0; i < changes.length; i++) {
                 var c = changes[i].range;
                 if (c.startLineNumber <= r.endLineNumber && c.endLineNumber >= r.startLineNumber) { piece.dirty = true; return; }
             }
-        };
-        spanMap.procs.forEach(function (p) { touch(p.data); p.routineSpans.forEach(touch); });
+        });
     }
     // The map's proc whose tracked span holds `line`, with its current range. None -> {proc:null, range: the gap
     // between the neighbouring procs (the module header, before the first one)}.
@@ -4765,9 +4795,14 @@
         pieces.push({ start: s, text: windowText });
         sources.push(null);
         return {
-            slice: { headerHash: spanMap.headerHash, routines: withTypedRoutines(proc ? proc.routines : [], [windowText]), pieces: pieces },
+            slice: withHeaderText(model, { headerHash: spanMap.headerHash, routines: withTypedRoutines(proc ? proc.routines : [], [windowText]), pieces: pieces }),
             sources: sources
         };
+    }
+    // An edited header travels as text in every slice until the next map (F2); a clean one by headerHash.
+    function withHeaderText(model, slice) {
+        if (spanMap.header && spanMap.header.dirty) slice.headerText = headerText(model);
+        return slice;
     }
     // The module header as it stands now (line 1 up to the first proc), for a host that lost it (needHeader).
     function headerText(model) {
@@ -4825,18 +4860,34 @@
         return p.length === cp.length || cp.length >= 2 || qualified;
     }
     // The cached LSP completion that serves this query, or a new request that becomes the cache entry.
-    // While the version is being typed and unsynced (R12) no request is made: an already-answered stand-in
-    // with no items, so the list is local-only (incomplete:true) until the re-query after the idle sync.
+    // While the version is being typed and unsynced (R12) - which is EVERY query while typing, since the
+    // keystroke arms the idle timer before Monaco asks - the entry is DEFERRED: cached at once, its request
+    // sent from the idle sync for this position (the cache matches later keystrokes by prefix extension, so
+    // the version moving on does not matter), unless a newer entry replaced it meanwhile. The list is
+    // local-only until then; the first keystroke after the pause is served the LSP answer. (F3)
     function lspCompletionFor(model, position, wordStart, prefix, qualified) {
         var id = modelKey(model);
         var c = lspComplCache[id];
         if (lspCacheServes(c, position.lineNumber, wordStart, prefix, qualified)) return c;
-        if (typingUnsynced(model)) return { prefix: prefix, done: true, resp: null, promise: Promise.resolve(null) };
-        c = { line: position.lineNumber, wordStart: wordStart, prefix: prefix, done: false, resp: null, sentAt: rtNow() };
+        c = { line: position.lineNumber, wordStart: wordStart, prefix: prefix, done: false, resp: null, sentAt: 0, deferred: false };
         // Captured, not re-read at reply time: a late reply from before a setSource must reset the OLD
         // document's miss count, not the new one's (resetLocalFirstState replaces the object).
         var misses = lspComplMisses;
-        c.promise = requestFromHost('completion', withBuffer(model, { line: position.lineNumber, column: position.column }))
+        var send = function () {
+            c.deferred = false;
+            c.sentAt = rtNow();
+            return requestFromHost('completion', withBuffer(model, { line: position.lineNumber, column: position.column }));
+        };
+        var sent;
+        if (typingUnsynced(model)) {
+            c.deferred = true;
+            sent = new Promise(function (resolve) {
+                idleWaiters.push(function () { resolve(lspComplCache[id] === c ? send() : null); });
+            });
+        } else {
+            sent = send();
+        }
+        c.promise = sent
             .then(function (resp) {
                 c.done = true;
                 c.resp = resp;
@@ -4849,9 +4900,10 @@
         return c;
     }
     // Resolves once `c` has answered or its race budget ran out, whichever is first; a budget that runs out
-    // is a miss for model `id`. No race (resolved at once) when `c` already answered or `id` is in skip mode.
+    // is a miss for model `id`. No race (resolved at once) when `c` already answered, is still deferred to the
+    // idle sync (typing: not a miss), or `id` is in skip mode.
     function lspWithinBudget(c, id) {
-        if (c.done || (lspComplMisses[id] || 0) >= LSP_MISSES_TO_SKIP) return Promise.resolve();
+        if (c.done || c.deferred || (lspComplMisses[id] || 0) >= LSP_MISSES_TO_SKIP) return Promise.resolve();
         return new Promise(function (resolve) {
             var timer = setTimeout(function () {
                 if (!c.done) lspComplMisses[id] = (lspComplMisses[id] || 0) + 1;

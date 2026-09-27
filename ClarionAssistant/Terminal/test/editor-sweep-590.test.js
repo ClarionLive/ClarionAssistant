@@ -74,8 +74,8 @@ function loadDiag() {
         getModelMarkers: (filter) => (env.owners[filter.owner] || []).map(x => Object.assign({ owner: filter.owner }, x)),
     } };
     env.slot = [];         // slotDiagnostics requests, parked like `pending` (which holds only 'diagnostics')
-    function requestFromHost(action, payload) {
-        return new Promise(resolve => (action === 'slotDiagnostics' ? env.slot : env.pending).push({ action, payload, resolve }));
+    function requestFromHost(action, payload, timeoutMs) {
+        return new Promise(resolve => (action === 'slotDiagnostics' ? env.slot : env.pending).push({ action, payload, timeoutMs, resolve }));
     }
     const fakeSetTimeout = (fn) => { env.scheduled++; env.timers.push(fn); return env.timers.length; };
     const fakeClearTimeout = () => { env.cleared++; };
@@ -90,11 +90,11 @@ function loadDiag() {
     const typingUnsynced = () => env.typing;
     const slotSlicePayload = () => env.slotSlice;
     const api = new Function('editor', 'monaco', 'requestFromHost', 'liveEditableRanges', 'setTimeout', 'clearTimeout', 'withBuffer', 'bufferKey',
-        'typingUnsynced', 'idleWaiters', 'slotSlicePayload',
+        'typingUnsynced', 'idleWaiters', 'slotSlicePayload', 'LOCAL_TIMEOUT_MS',
         'var diagTimer = null;\n' + diagSrc + '\nreturn { refreshDiagnostics: refreshDiagnostics, scheduleDiagnostics: scheduleDiagnostics,' +
         ' resetDiagnosticsForNewSource: resetDiagnosticsForNewSource, setSlotChecks: function (on) { slotChecksEnabled = on; } };')(
         env.editor, monaco, requestFromHost, () => [[1, 10]], fakeSetTimeout, fakeClearTimeout, withBuffer, bufferKey,
-        typingUnsynced, env.idleWaiters, slotSlicePayload);
+        typingUnsynced, env.idleWaiters, slotSlicePayload, 400);
     env.api = api;
     return env;
 }
@@ -209,6 +209,8 @@ async function testSlotDiagnostics() {
             'slot ' + env.slot.length + ' lsp ' + env.pending.length);
         check('...with the live editable ranges and the synced v', env.slot[0] && env.slot[0].payload.v === 1 &&
             JSON.stringify(env.slot[0].payload.ranges) === '[[1,10]]');
+        check('F5 slotDiagnostics uses the local budget (400 ms), not the size-scaled LSP timeout', env.slot[0] && env.slot[0].timeoutMs === 400,
+            env.slot[0] && String(env.slot[0].timeoutMs));
         env.model.version = 2;
         env.api.refreshDiagnostics();
         check('7.7 with the LSP request still in flight, a second pass still posts slotDiagnostics (2), not diagnostics (1)',

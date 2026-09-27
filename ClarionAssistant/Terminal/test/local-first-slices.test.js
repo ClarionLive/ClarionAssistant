@@ -211,6 +211,70 @@ async function main() {
             'bytes ' + JSON.stringify(e.requests('localCompletion')[0]).length);
     }
 
+    section('F3: REAL typing - the keystroke arms the idle timer before Monaco asks; the LSP is still asked');
+    {
+        const e = setup();
+        type(e, 7, '  l');
+        ask(e, 7, 4);
+        e.reply('localCompletion', { items: [] });
+        type(e, 7, '  lo');
+        ask(e, 7, 5);
+        e.reply('localCompletion', { items: [] });
+        await flush();
+        check('F3 while typing: no completion is sent and no race timer armed (typing is not a miss)',
+            count(e, 'completion') === 0 && e.armed(200) === 0, 'completion ' + count(e, 'completion') + ' races ' + e.armed(200));
+        fireIdle(e);                                      // the pause
+        await flush();
+        const cs = e.requests('completion'), sync = e.requests('bufferSync')[0];
+        check('F3 the pause sends ONE completion, for the newest word (a replaced entry is dropped), after the sync',
+            cs.length === 1 && cs[0].line === 7 && cs[0].column === 5 && sync && cs[0].v === sync.v &&
+            e.posted.indexOf(sync) < e.posted.indexOf(cs[0]), JSON.stringify(cs.map(c => [c.line, c.column])));
+        e.reply('completion', { items: [{ label: 'LocLsp', kind: 6, insertText: 'LocLsp' }, { label: 'LongLsp', kind: 6, insertText: 'LongLsp' }] });
+        await flush();
+        type(e, 7, '  loc');                              // the first keystroke after the pause
+        const q = ask(e, 7, 6);
+        e.reply('localCompletion', { items: [{ label: 'LOC:Count', kind: 6, insertText: 'LOC:Count' }] });
+        await flush();
+        const labels = q.done ? q.value.suggestions.map(s => s.label) : [];
+        check('F3 the next keystroke merges the LSP answer (filtered to "loc") with local, no new request',
+            q.done && labels.includes('LocLsp') && !labels.includes('LongLsp') && labels.includes('LOC:Count') && count(e, 'completion') === 1,
+            JSON.stringify(labels));
+    }
+
+    section('F2: an edited module header travels as text');
+    {
+        const e = setup();
+        ask(e, 7, 5);
+        check('F2 a clean header: no headerText (the host has it by hash)', lastSlice(e) && !('headerText' in lastSlice(e)));
+        type(e, 2, '  MAP ! edited');
+        ask(e, 7, 5);                                     // inside a procedure, before any idle sync
+        const s = lastSlice(e);
+        check('F2 after a header edit, the slice carries the current header text (no final newline)',
+            s && s.headerText === joinLines(e.model._lines, 1, 3), JSON.stringify(s && s.headerText));
+        check('F2 ...and the DATA pieces are untouched (still by hash)', s && s.pieces[0].hash === 'D0');
+        fireIdle(e);
+        e.api.applySpanMap({ type: 'spanMap', v: e.requests('bufferSync')[0].v, headerHash: 'H2', procs: MAP });
+        ask(e, 7, 5);
+        check('F2 a new span map clears it: back to the (new) hash', lastSlice(e) && !('headerText' in lastSlice(e)) &&
+            lastSlice(e).headerHash === 'H2');
+    }
+
+    section('F4: a multi-change edit that changes the line count marks everything from its first line');
+    {
+        const e = setup();
+        e.api.noteBufferEdit({ changes: [
+            { range: { startLineNumber: 10, startColumn: 1, endLineNumber: 10, endColumn: 1 }, text: 'a\nb' },
+            { range: { startLineNumber: 11, startColumn: 1, endLineNumber: 11, endColumn: 1 }, text: 'x' }] });
+        ask(e, 15, 9);
+        check('F4 a piece below the first change (proc 1 DATA) goes as text', shape(lastSlice(e)).indexOf('13:2') === 0, shape(lastSlice(e)));
+        ask(e, 10, 5);
+        check('F4 ...pieces above it stay hashes', shape(lastSlice(e)).indexOf('4#D0 9#R0') === 0, shape(lastSlice(e)));
+        const f = setup();
+        f.api.noteBufferEdit({ changes: [{ range: { startLineNumber: 10, startColumn: 1, endLineNumber: 10, endColumn: 1 }, text: 'a\nb' }] });
+        ask(f, 15, 9);
+        check('F4 a SINGLE change adding a line leaves the pieces below by hash', shape(lastSlice(f)).indexOf('13#D1') === 0, shape(lastSlice(f)));
+    }
+
     section('R11: no usable map -> the synced buffer; needHeader / needPieces; sliceChars; slot slice');
     {
         const e = load({ lines: LINES });
