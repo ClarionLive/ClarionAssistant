@@ -611,6 +611,7 @@ namespace ClarionAssistant.McpServer
                 var libPaths = BuildIndexLibraryPaths();
                 var activeRed = ActiveRedFileService;
 
+                SymbolIndex.Release(dbPath);   // completion's read-only handle (1c685f2e) - never across a write open
                 var db = new ClarionCodeGraph.Graph.CodeGraphDatabase();
                 db.Open(dbPath);
                 try

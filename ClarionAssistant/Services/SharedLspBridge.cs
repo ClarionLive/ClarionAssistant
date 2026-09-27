@@ -695,27 +695,23 @@ namespace ClarionAssistant.Services
             {
                 try
                 {
-                    if (string.IsNullOrEmpty(db) || !File.Exists(db)) continue;
-                    using (var p = new CodeGraphProvider())
+                    // Held-open NOCASE range query (1c685f2e); it used to be a full-table LIKE '%IDENT:%' scan
+                    // on a fresh connection per keystroke. Procedure-private rows (another procedure's
+                    // "LOC:x") no longer leak in: in-scope colon labels come from LocalScopeIndex.
+                    var idx = SymbolIndex.For(db);
+                    if (idx == null) continue;
+                    foreach (var s in idx.ByPrefix(qualifier, 2000))
                     {
-                        if (!p.Open(db)) continue;
-                        var syms = p.FindSymbols(qualifier, 2000);   // LIKE %IDENT:% — narrowed to true prefix below
-                        if (syms == null) continue;
-                        foreach (var s in syms)
+                        if (s == null || string.IsNullOrEmpty(s.Name) || !seen.Add(s.Name)) continue;
+                        int ci = s.Name.IndexOf(':');
+                        string insert = (ci >= 0 && ci < s.Name.Length - 1) ? s.Name.Substring(ci + 1) : s.Name;
+                        primary.Add(new LspClient.CompletionItemInfo
                         {
-                            if (s == null || string.IsNullOrEmpty(s.Name)) continue;
-                            if (!s.Name.StartsWith(qualifier, StringComparison.OrdinalIgnoreCase)) continue;
-                            if (!seen.Add(s.Name)) continue;
-                            int ci = s.Name.IndexOf(':');
-                            string insert = (ci >= 0 && ci < s.Name.Length - 1) ? s.Name.Substring(ci + 1) : s.Name;
-                            primary.Add(new LspClient.CompletionItemInfo
-                            {
-                                Label = s.Name,
-                                Kind = 21,   // Constant (equates)
-                                Detail = SymbolIndex.CompletionDetail(s),
-                                InsertText = insert
-                            });
-                        }
+                            Label = s.Name,
+                            Kind = 21,   // Constant (equates)
+                            Detail = SymbolIndex.CompletionDetail(s),
+                            InsertText = insert
+                        });
                     }
                 }
                 catch { }
@@ -936,9 +932,9 @@ namespace ClarionAssistant.Services
             }
         }
 
-        private static readonly Regex CgGroupQueueOpen = new Regex(@"^([A-Za-z_][A-Za-z0-9_:]*)\s+(GROUP|QUEUE)\b(.*)$", RegexOptions.IgnoreCase);
-        private static readonly Regex CgEndLine = new Regex(@"^\s*END\b", RegexOptions.IgnoreCase);
-        private static readonly Regex CgPeriodEnd = new Regex(@"^\s*\.\s*$");
+        private static readonly Regex CgGroupQueueOpen = LocalScopeIndex.GroupQueueOpen;
+        private static readonly Regex CgEndLine = LocalScopeIndex.EndLine;
+        private static readonly Regex CgPeriodEnd = LocalScopeIndex.PeriodEnd;
 
         /// <summary>First depth-0 data declaration in [start, end) whose label exactly matches <paramref
         /// name="word"/> (case-insensitive) - its rest-of-line - or null. Only GROUP/QUEUE nesting is
@@ -1556,30 +1552,7 @@ namespace ClarionAssistant.Services
         /// were a reference.</summary>
         private static bool CgIsInsideStringOrComment(string lineText, int character)
         {
-            if (string.IsNullOrEmpty(lineText)) return false;
-            bool inString = false;
-            int stringStart = -1;
-            for (int i = 0; i < lineText.Length; i++)
-            {
-                char ch = lineText[i];
-                if (!inString && ch == '!') return character >= i;
-                if (ch == '\'')
-                {
-                    if (inString && i + 1 < lineText.Length && lineText[i + 1] == '\'') { i++; continue; } // '' escape
-                    if (inString)
-                    {
-                        if (character >= stringStart && character <= i) return true;
-                        inString = false;
-                    }
-                    else
-                    {
-                        inString = true;
-                        stringStart = i;
-                    }
-                }
-            }
-            // Unterminated string running to end of line — still "inside" from the opening quote onward.
-            return inString && character >= stringStart;
+            return LocalScopeIndex.IsInsideStringOrComment(lineText, character);   // one rule for both layers
         }
 
         /// <summary>True when a dispatcher result carries no usable payload (null, an error, or an
@@ -2233,11 +2206,9 @@ namespace ClarionAssistant.Services
             try
             {
                 if (line < 0) return null;
-                if (!string.IsNullOrEmpty(bufferText))
-                {
-                    var arr = bufferText.Split('\n');
-                    return line < arr.Length ? arr[line].TrimEnd('\r') : null;
-                }
+                // The live buffer is 3.2 MB on a generated module; find the line from the cached per-instance
+                // anchor instead of splitting it (1c685f2e).
+                if (!string.IsNullOrEmpty(bufferText)) return LocalScopeIndex.LineAt(bufferText, line);
                 if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
                 {
                     var lines = EncodingHelper.ReadAllLines(filePath, out _);
@@ -2340,14 +2311,12 @@ namespace ClarionAssistant.Services
         // SUPPLEMENTS Mark's LSP, which resolves project-local member access but may not index libsrc/ABC.
 
         // "<identifier>.<partial>" at end of line. The instance label may contain ':' (e.g. Access:Customer).
-        private static readonly Regex CgMemberAccess =
-            new Regex(@"([A-Za-z_][A-Za-z0-9_:]*)\.([A-Za-z0-9_]*)$");
+        private static readonly Regex CgMemberAccess = LocalScopeIndex.MemberAccessPattern;
         // "CLASS(Parent)" — the instance is a derived class; member access resolves to the parent's members.
         private static readonly Regex CgClassParen =
             new Regex(@"^\s*CLASS\s*\(\s*([A-Za-z_][A-Za-z0-9_:]*)\s*\)", RegexOptions.IgnoreCase);
         // Leading type token in a declaration's rest-of-line, stripping an optional reference '&'.
-        private static readonly Regex CgTypeToken =
-            new Regex(@"^\s*&?\s*([A-Za-z_][A-Za-z0-9_:]*)");
+        private static readonly Regex CgTypeToken = LocalScopeIndex.TypeToken;
 
         /// <summary>Member-access completion: when the cursor sits after "oInstance." resolve the instance's
         /// declared class and offer that class's methods from ClarionGraph + the project CodeGraph. For a
