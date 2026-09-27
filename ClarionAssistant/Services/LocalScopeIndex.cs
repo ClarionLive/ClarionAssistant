@@ -295,6 +295,15 @@ namespace ClarionAssistant.Services
             return null;
         }
 
+        /// <summary>The text of 0-based line <paramref name="line0"/> (trailing CR dropped), or null past the
+        /// end - found from the buffer instance's cached anchor, never by splitting the buffer.</summary>
+        internal static string LineAt(string buffer, int line0)
+        {
+            if (string.IsNullOrEmpty(buffer) || line0 < 0) return null;
+            int ls = LineStartOf(buffer, line0, Origin(buffer));
+            return ls < 0 ? null : LineText(buffer, ls);
+        }
+
         /// <summary>Test hook: how many times a module header has been parsed (a cache miss).</summary>
         public static int HeaderParseCount { get { return _headerParseCount; } }
         private static int _headerParseCount;
@@ -331,13 +340,13 @@ namespace ClarionAssistant.Services
         private static readonly Regex DoStatementEmpty = new Regex(@"^\s*DO\s+$", RegexOptions.IgnoreCase);
         // A data declaration: a column-1 label (group 1) followed by its type/rest-of-line (group 2).
         internal static readonly Regex DataLabelPattern = new Regex(@"^([A-Za-z_][A-Za-z0-9_:]*)\s+(\S.*)$");
-        private static readonly Regex GroupQueueOpen = new Regex(@"^([A-Za-z_][A-Za-z0-9_:]*)\s+(GROUP|QUEUE)\b(.*)$", RegexOptions.IgnoreCase);
+        internal static readonly Regex GroupQueueOpen = new Regex(@"^([A-Za-z_][A-Za-z0-9_:]*)\s+(GROUP|QUEUE)\b(.*)$", RegexOptions.IgnoreCase);
         private static readonly Regex ClassOpen = new Regex(@"^([A-Za-z_][A-Za-z0-9_:]*)\s+(CLASS|INTERFACE)\b(.*)$", RegexOptions.IgnoreCase);
         // The type argument right after GROUP/QUEUE/CLASS - "(SomeType)". Anchored so a later attribute's
         // parentheses (PRE(q), NAME('x')) are never read as the base type.
         private static readonly Regex BaseTypeArg = new Regex(@"^\s*\(\s*([A-Za-z_][A-Za-z0-9_:]*)\s*\)", RegexOptions.IgnoreCase);
-        private static readonly Regex EndLine = new Regex(@"^\s*END\b", RegexOptions.IgnoreCase);
-        private static readonly Regex PeriodEnd = new Regex(@"^\s*\.\s*$");
+        internal static readonly Regex EndLine = new Regex(@"^\s*END\b", RegexOptions.IgnoreCase);
+        internal static readonly Regex PeriodEnd = new Regex(@"^\s*\.\s*$");
         private static readonly Regex StructLiteral = new Regex(@"'(?:[^']|'')*'");
         private static readonly Regex LineComment = new Regex(@"!.*$");
         private static readonly Regex SelfClosingStructure = new Regex(@"(?:\bEND\b|\.)\s*$", RegexOptions.IgnoreCase);
@@ -350,9 +359,10 @@ namespace ClarionAssistant.Services
         // contain ':' (template queues like "Queue:Browse:1"); greedy backtracking keeps PRE ("Cus:Name" ->
         // "Cus") and plain-dotted ("Group." -> "Group") intact.
         internal static readonly Regex QualifierPattern = new Regex(@"([A-Za-z_][A-Za-z0-9_:]*)([:.])([A-Za-z0-9_]*)$");
-        private static readonly Regex MemberAccessPattern = new Regex(@"([A-Za-z_][A-Za-z0-9_:]*)\.([A-Za-z0-9_]*)$");
-        private static readonly Regex ClassParen = new Regex(@"^\s*CLASS\s*\(\s*([A-Za-z_][A-Za-z0-9_:]*)\s*\)", RegexOptions.IgnoreCase);
-        private static readonly Regex TypeToken = new Regex(@"^\s*&?\s*([A-Za-z_][A-Za-z0-9_:]*)");
+        internal static readonly Regex MemberAccessPattern = new Regex(@"([A-Za-z_][A-Za-z0-9_:]*)\.([A-Za-z0-9_]*)$");
+        private static readonly Regex ProcedureDecl = new Regex(@"^\s*(PROCEDURE|FUNCTION)\b", RegexOptions.IgnoreCase);
+        private static readonly Regex PrototypeHeader = new Regex(@"^\s*([A-Za-z_][A-Za-z0-9_.:]*)\s+(?:PROCEDURE|FUNCTION)\b", RegexOptions.IgnoreCase);
+        internal static readonly Regex TypeToken = new Regex(@"^\s*&?\s*([A-Za-z_][A-Za-z0-9_:]*)");
         private static readonly Regex ParamName = new Regex(@"^[A-Za-z_][A-Za-z0-9_:]*$");
 
         // ============================================================================ the scope
@@ -732,10 +742,11 @@ namespace ClarionAssistant.Services
                 // document order. Routines typed inside the slice since the map was built follow them.
                 if (_extraRoutines == null) return names;
                 var all = new List<string>();
+                var have = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var r in _extraRoutines)
-                    if (!string.IsNullOrEmpty(r) && !all.Exists(n => string.Equals(n, r, StringComparison.OrdinalIgnoreCase))) all.Add(r);
+                    if (!string.IsNullOrEmpty(r) && have.Add(r)) all.Add(r);
                 foreach (var n in names)
-                    if (!all.Exists(x => string.Equals(x, n, StringComparison.OrdinalIgnoreCase))) all.Add(n);
+                    if (have.Add(n)) all.Add(n);
                 return all;
             }
 
@@ -973,8 +984,7 @@ namespace ClarionAssistant.Services
 
         private static bool IsProcedureDecl(string rest)
         {
-            var m = Regex.Match(rest ?? "", @"^\s*(PROCEDURE|FUNCTION)\b", RegexOptions.IgnoreCase);
-            return m.Success;
+            return ProcedureDecl.IsMatch(rest ?? "");
         }
 
         private static string ExtractPre(string attrs)
@@ -1084,7 +1094,7 @@ namespace ClarionAssistant.Services
             label = null;
             if (string.IsNullOrEmpty(header)) return list;
             string h = StripTrailingComment(header);
-            var lm = Regex.Match(h, @"^\s*([A-Za-z_][A-Za-z0-9_.:]*)\s+(?:PROCEDURE|FUNCTION)\b", RegexOptions.IgnoreCase);
+            var lm = PrototypeHeader.Match(h);
             if (!lm.Success) return list;
             label = lm.Groups[1].Value;
             int i = lm.Index + lm.Length;
@@ -1230,26 +1240,18 @@ namespace ClarionAssistant.Services
             return i + kw.Length;
         }
 
-        // The walks ask "ROUTINE?" then "PROCEDURE?" of the same column-1 line; the label + blank scan is
-        // the costly part (~250 ns a line on 32-bit), so the last answer is kept per thread.
-        [ThreadStatic] private static string _hwText;
-        [ThreadStatic] private static int _hwLine, _hwWord;
-
         /// <summary>Start of the word after a column-1 label and its blanks, or -1. Hot path: no LineEnd
         /// lookup - the label and blank runs stop at the line break by themselves, and CR/LF end a word
         /// for MatchWord.</summary>
         private static int HeaderWord(string s, int ls)
         {
             if (ls >= s.Length || !IsLabelStart(s[ls])) return -1;
-            if (ReferenceEquals(s, _hwText) && ls == _hwLine) return _hwWord;
             int n = s.Length;
             int i = ls + 1;
             while (i < n && IsLabelChar(s[i], true)) i++;
             int ws = i;
             i = SkipBlanks(s, i);
-            int word = i == ws ? -1 : i;
-            _hwText = s; _hwLine = ls; _hwWord = word;
-            return word;
+            return i == ws ? -1 : i;
         }
 
         /// <summary>Skip whitespace up to, not across, the end of the line.</summary>
@@ -1764,14 +1766,15 @@ namespace ClarionAssistant.Services
 
             // Procedure list: the span map's, plus any implementation typed inside the pieces since.
             var procs = new List<KeyValuePair<string, string>>(hdr.Procs ?? new List<KeyValuePair<string, string>>());
+            var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in procs) known.Add(kv.Key);
             foreach (var range in placed)
                 for (int p = range.Key; p >= 0 && p < range.Value; p = NextLine(buf, p))
                 {
                     if (!IsLabelStart(buf[p]) || !IsImplHeader(buf, p, 0)) continue;
                     string label = LabelAt(buf, p);
-                    if (label.IndexOf('.') >= 0 || label.IndexOf(':') >= 0) continue;
-                    if (!procs.Exists(kv => string.Equals(kv.Key, label, StringComparison.OrdinalIgnoreCase)))
-                        procs.Add(new KeyValuePair<string, string>(label, StripTrailingComment(LineText(buf, p).Trim()).Trim()));
+                    if (label.IndexOf('.') >= 0 || label.IndexOf(':') >= 0 || !known.Add(label)) continue;
+                    procs.Add(new KeyValuePair<string, string>(label, StripTrailingComment(LineText(buf, p).Trim()).Trim()));
                 }
             return new Scope(buf, 0, caretOff, hdr, procs, routines);
         }

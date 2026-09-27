@@ -276,15 +276,23 @@ namespace ClarionAssistant.Services
         public static LocalHoverResult HoverWord(string word)
         {
             if (string.IsNullOrEmpty(word)) return null;
-            foreach (var kv in All())
-                if (string.Equals(kv.Key, word, StringComparison.OrdinalIgnoreCase))
-                    return new LocalHoverResult
-                    {
-                        Markdown = "```clarion\n" + kv.Key + "\n```\n\n" + kv.Value,
-                        Authoritative = false,
-                        Kind = "keyword"
-                    };
-            return null;
+            var byName = _byName;
+            if (byName == null)
+            {
+                byName = new Dictionary<string, KeyValuePair<string, string>>(StringComparer.OrdinalIgnoreCase);
+                foreach (var kv in All()) byName[kv.Key] = kv;
+                _byName = byName;
+            }
+            KeyValuePair<string, string> hit;
+            if (!byName.TryGetValue(word, out hit)) return null;
+            return new LocalHoverResult
+            {
+                Markdown = "```clarion\n" + hit.Key + "\n```\n\n" + hit.Value,
+                Authoritative = false,
+                Kind = "keyword"
+            };
         }
+
+        private static Dictionary<string, KeyValuePair<string, string>> _byName;
     }
 }
