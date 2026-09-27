@@ -186,6 +186,7 @@ namespace ClarionAssistant
 
         private void OnHeaderReady(object sender, EventArgs e)
         {
+            HookIdeVersionChanges();
             LoadVersions();
             LoadSolutionHistory();
             DetectFromIde();
@@ -326,8 +327,8 @@ namespace ClarionAssistant
                     // also called from non-user paths (startup, solution change)
                     // and must NOT clear the override in those cases — that's
                     // why the clear lives here, not inside DetectFromIde.
-                    _settings.Set("Clarion.Version.Override", "");
-                    DetectFromIde();
+                    EffectiveClarionVersion.ClearOverride();
+                    DetectFromIde();   // also restarts the LSP if the version moved
                     break;
                 case "browse": OnBrowseSolution(sender, EventArgs.Empty); break;
                 case "fullIndex": RunIndex(false); break;
@@ -659,19 +660,14 @@ namespace ClarionAssistant
                 return;
             }
 
-            _currentVersionConfig = _versionInfo.GetCurrentConfig();
-
-            // Issue #32: a saved user override wins over IDE-detected, but only
-            // if it still resolves to a real version (the user may have uninstalled
-            // that Clarion edition since the override was saved).
-            string overrideName = _settings.Get("Clarion.Version.Override");
-            ClarionVersionConfig overrideConfig = null;
-            if (!string.IsNullOrEmpty(overrideName))
-            {
-                overrideConfig = _versionInfo.Versions.Find(v => v.Name == overrideName);
-                if (overrideConfig != null)
-                    _currentVersionConfig = overrideConfig;
-            }
+            // 16d140e9: ONE resolution for the panel, the indexer, the LSP and the library graph. The IDE's
+            // Build > Set Clarion Version decides; CA's saved VERSION choice (Issue #32) holds only while the
+            // IDE's choice is still the one it was saved against — it used to win forever, for every solution.
+            var selection = EffectiveClarionVersion.Resolve(_versionInfo);
+            _currentVersionConfig = selection.Config;
+            _lastIdeVersionChoice = selection.IdeChoice;
+            _versionSelection = selection;
+            System.Diagnostics.Debug.WriteLine("[AssistantChatControl] " + selection.Describe());
 
             var labels = new System.Collections.Generic.List<string>();
             var values = new System.Collections.Generic.List<string>();
@@ -681,20 +677,77 @@ namespace ClarionAssistant
             {
                 var config = _versionInfo.Versions[i];
                 string label = config.Name;
-                if (overrideConfig != null && config.Name == overrideConfig.Name)
-                    label += " (saved)";
-                else if (_currentVersionConfig != null && config.Name == _currentVersionConfig.Name
-                    && _versionInfo.CurrentVersionName != null
-                    && _versionInfo.CurrentVersionName.IndexOf("Current", StringComparison.OrdinalIgnoreCase) >= 0)
-                    label += " (active)";
+                bool selected = _currentVersionConfig != null && config.Name == _currentVersionConfig.Name;
+                // Say which source chose the selected entry — never resolve a version silently.
+                if (selected && selection.ShortSource != null)
+                    label += " (" + selection.ShortSource + ")";
 
                 labels.Add(label);
                 values.Add(config.Name);
-                if (_currentVersionConfig != null && config.Name == _currentVersionConfig.Name)
+                if (selected)
                     selectedIdx = i;
             }
 
             _header.SetVersions(labels.ToArray(), values.ToArray(), selectedIdx);
+        }
+
+        /// <summary>The IDE's Build &gt; Set Clarion Version choice at the last resolution (normalized).</summary>
+        private string _lastIdeVersionChoice;
+
+        /// <summary>The last version selection, with the tier that decided it (for the index log).</summary>
+        private ClarionVersionSelection _versionSelection;
+
+        private bool _ideVersionHooked;
+
+        /// <summary>
+        /// Follow the IDE's Build &gt; Set Clarion Version (16d140e9). Clarion's Versions.SetActiveVersion (the
+        /// menu command) and SetActiveVersionFromSolution (solution open) both end in
+        /// PropertyService.Set("Clarion.Version", ...), which raises PropertyService.PropertyChanged — the same
+        /// hook MonacoSettingsBroadcaster uses for the editor options. The 10 s poll re-checks too, so a missed
+        /// event only delays the switch.
+        /// </summary>
+        private void HookIdeVersionChanges()
+        {
+            if (_ideVersionHooked) return;
+            try
+            {
+                ICSharpCode.Core.PropertyService.PropertyChanged += (s, e) =>
+                {
+                    try
+                    {
+                        if (e == null || e.Key != "Clarion.Version" || IsDisposed || !IsHandleCreated) return;
+                        // Posted, even on the UI thread: run after the IDE has finished its own switch.
+                        BeginInvoke((Action)(() => SyncVersionWithIde()));
+                    }
+                    catch { }
+                };
+                _ideVersionHooked = true;
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[AssistantChatControl] Clarion.Version hook: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// Re-resolve when the IDE's Build &gt; Set Clarion Version moved since the last resolution: reload the
+        /// VERSION list and the .red, and restart the language server on the new version's paths. Cheap when
+        /// nothing changed (one PropertyService read). UI thread.
+        /// </summary>
+        private void SyncVersionWithIde()
+        {
+            try
+            {
+                string live;
+                if (!ClarionVersionService.TryGetLiveIdeVersionName(out live)) return;
+                string now = ClarionVersionSelector.NormalizeIdeChoice(live);
+                if (_lastIdeVersionChoice != null && string.Equals(now, _lastIdeVersionChoice, StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] IDE Build > Set Clarion Version: "
+                    + (_lastIdeVersionChoice ?? "(unknown)") + " -> " + now);
+                LoadVersions();
+                LoadRedFile();
+                LspService.RestartIfVersionChanged(_currentVersionConfig != null ? _currentVersionConfig.Name : null);
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[AssistantChatControl] SyncVersionWithIde: " + ex.Message); }
         }
 
         private void OnVersionChanged(string value)
@@ -704,14 +757,14 @@ namespace ClarionAssistant
                 _currentVersionConfig = _versionInfo.Versions.Find(v => v.Name == value);
                 if (_currentVersionConfig != null)
                 {
-                    // Issue #32: persist the user's choice so it survives IDE
-                    // reload. Without this, LoadVersions() re-queries the Clarion
-                    // IDE's PropertyService on every load and reverts to whatever
-                    // the IDE itself has selected (e.g. "Clarion.NET 4.0.13372").
-                    _settings.Set("Clarion.Version.Override", value);
+                    // Issue #32: persist the user's choice so it survives IDE reload — recorded against
+                    // the IDE's current Build > Set Clarion Version choice, so it yields as soon as the
+                    // developer changes that (16d140e9). Picking what the IDE already resolves to clears it.
+                    EffectiveClarionVersion.SaveOverride(value, _versionInfo);
                     LoadVersions(); // refresh labels so the "(saved)" tag appears
                 }
                 LoadRedFile();
+                LspService.RestartIfVersionChanged(_currentVersionConfig != null ? _currentVersionConfig.Name : null);
             }
         }
 
@@ -845,6 +898,12 @@ namespace ClarionAssistant
                     System.Diagnostics.Debug.WriteLine("[AssistantChatControl] Solution changed: " + slnPath);
                     DetectFromIde();
                 }
+                else
+                {
+                    // Backstop for the Clarion.Version PropertyChanged hook (16d140e9): follow a
+                    // Build > Set Clarion Version change within one poll even if the event was missed.
+                    SyncVersionWithIde();
+                }
 
                 // Backstop: keep the LSP up whenever a solution is known. Idempotent and
                 // guarded (no-op if already running), this covers the startup-restore case
@@ -874,6 +933,8 @@ namespace ClarionAssistant
             LoadVersions();
             LoadRedFile();
             UpdateInstanceState();
+            // A running server keeps the version it started with; restart it if that moved (16d140e9).
+            LspService.RestartIfVersionChanged(_currentVersionConfig != null ? _currentVersionConfig.Name : null);
 
             // Eager-start the LSP (background) when the IDE's open solution is detected,
             // so embeditor completion is fully populated without a manual LSP trigger.
@@ -2158,6 +2219,10 @@ namespace ClarionAssistant
 
             string slnPath = _currentSlnPath;
 
+            // Index against the IDE's CURRENT Build > Set Clarion Version (16d140e9): re-check it now rather
+            // than trust the .red loaded at the last solution change.
+            SyncVersionWithIde();
+
             // Build library paths from RED file .inc search paths
             List<string> libPaths = BuildIndexLibraryPaths();
             var activeRed = _redFileService;
@@ -2191,6 +2256,8 @@ namespace ClarionAssistant
             // Always-on per-run transcript (ticket 0d788f8b) — survives an IDE crash or a
             // closed window; the progress form's Open Log button points here.
             var runLog = new ClarionAssistant.Services.IndexRunLog(Path.GetFileNameWithoutExtension(slnPath));
+            // Which Clarion version (and which source chose it) this run's .red and libraries come from.
+            if (_versionSelection != null) runLog.WriteLine(_versionSelection.Describe());
 
             // Built for every run, SHOWN only when asked (ticket 7f1c67b2). Constructing it
             // unconditionally is deliberate: it keeps one completion path instead of

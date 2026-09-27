@@ -110,6 +110,11 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\ClarionVersionService.ExeMatchTest.cs", "Services\ClarionVersionService.cs", "Services\ClarionConfigDirectory.cs")
                Refs = @("System.dll", "System.Xml.dll")
                Args = @((Join-Path $TestDir "fixtures\gh209\ClarionProperties.xml")) }
+            # 16d140e9: the IDE's Build > Set Clarion Version wins over a stale CA VERSION override, and
+            # every selection names the tier that decided it.
+            @{ Name = "ClarionVersionSelector.Test"
+               Sources = @("tests\ClarionVersionSelector.Test.cs", "Services\ClarionVersionService.cs", "Services\ClarionConfigDirectory.cs")
+               Refs = @("System.dll", "System.Xml.dll", "System.Core.dll") }
             # GH #187 follow-up: the CA Embeditor's Monaco <-> LSP line mapping agrees with what
             # WrapBuffer actually prepended (0 lines for a buffer opening with MEMBER/PROGRAM).
             @{ Name = "EmbedLspContext.LineMapping"

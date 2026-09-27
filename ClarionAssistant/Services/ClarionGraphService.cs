@@ -172,8 +172,9 @@ namespace ClarionAssistant.Services
         {
             try
             {
-                var info = ClarionVersionService.Detect();
-                var cfg = info?.GetCurrentConfig();
+                // The same version the panel, indexer and LSP use (16d140e9) — it used to skip CA's
+                // saved VERSION choice, so the library graph could come from a different install.
+                var cfg = EffectiveClarionVersion.CurrentConfig();
                 string root = cfg?.RootPath;
                 if (string.IsNullOrEmpty(root))
                     return null;

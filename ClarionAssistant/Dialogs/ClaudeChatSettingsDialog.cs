@@ -1442,8 +1442,7 @@ namespace ClarionAssistant.Dialogs
 
         private void HandleBuildLib()
         {
-            var info = ClarionVersionService.Detect();
-            var config = info?.GetCurrentConfig();
+            var config = EffectiveClarionVersion.CurrentConfig();
             string clarionRoot = config?.RootPath;
 
             if (string.IsNullOrEmpty(clarionRoot))

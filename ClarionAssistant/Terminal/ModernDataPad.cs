@@ -1168,7 +1168,7 @@ namespace ClarionAssistant
             try { app = new Services.AppTreeService().GetOpenAppFileName(); } catch { }
             try
             {
-                var cfg = Services.ClarionVersionService.Detect()?.GetCurrentConfig();
+                var cfg = Services.EffectiveClarionVersion.CurrentConfig();
                 if (cfg != null) { versionName = cfg.Name; root = cfg.RootPath; }
             }
             catch { }
@@ -1260,8 +1260,7 @@ namespace ClarionAssistant
             if (_ownRed != null) return _ownRed;
             try
             {
-                var versionInfo = Services.ClarionVersionService.Detect();
-                var cfg = versionInfo != null ? versionInfo.GetCurrentConfig() : null;
+                var cfg = Services.EffectiveClarionVersion.CurrentConfig();
                 if (cfg == null) return null;
 
                 string sol = null;
