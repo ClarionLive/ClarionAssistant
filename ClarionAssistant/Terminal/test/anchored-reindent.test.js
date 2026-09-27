@@ -217,5 +217,147 @@ section('Well-formed source: result identical to the absolute formatter');
         '\n' + model3.lines.slice(8, 14).join('\n'));
 }
 
+// ---------- 5. Column-1 label lines are never anchors (review of 130dbac) ----------
+// A ROUTINE / PROCEDURE header or a data declaration puts its label in column 1 and its keyword at the
+// preferred/data column — the gap reflects label length, not structure depth. Anchoring on it shifted the
+// Procedure Routines embed's CODE and statements into COLUMN 1, where Clarion reads them as labels.
+function absFmt(src, a, b, align) {
+    return F.formatClarionRange(src.join('\r\n'), a, b, { alignAssignments: !!align, tabSize: 4, insertSpaces: true }).text.split('\r\n');
+}
+section('ROUTINE header above: CODE and statements keep their depth indent');
+{
+    const src = [
+        "  MEMBER('inv.app')", '',
+        'MyProc               PROCEDURE', '',
+        '    CODE',
+        '    DO MyRoutine', '',
+        'MyRoutine ROUTINE',
+        '  CODE',
+        '  x = 1',
+        '  y = 2'
+    ];
+    const expected = absFmt(src, 9, 9);
+    const m1 = makeModel(src.concat([''])), e1 = makeEditor(m1);
+    load(e1).formatLineNow(e1, 9);
+    check('Enter on CODE under a ROUTINE header == absolute format (never column 1)',
+        m1.getLineContent(9) === expected[8] && indentOf(m1.getLineContent(9)) > 0,
+        JSON.stringify(m1.getLineContent(9)) + ' vs ' + JSON.stringify(expected[8]));
+    const exp2 = absFmt(src, 9, 10, true);
+    const m2 = makeModel(src.concat([''])), e2 = makeEditor(m2, new Range(9, 1, 10, 1));
+    load(e2).cmdFormat();
+    check('Ctrl+I on CODE + x = 1 under a ROUTINE header == absolute format',
+        m2.lines.slice(8, 10).join('\n') === exp2.slice(8, 10).join('\n') && indentOf(m2.getLineContent(10)) > 0,
+        '\n' + m2.lines.slice(8, 10).join('\n'));
+    const m3 = makeModel(src.concat([''])), e3 = makeEditor(m3);
+    load(e3).formatLineNow(e3, 11);
+    check('statement under the ROUTINE body never lands in column 1', indentOf(m3.getLineContent(11)) > 0,
+        JSON.stringify(m3.getLineContent(11)));
+}
+
+section('Labelled QUEUE / GROUP: Enter after END keeps the data-column layout');
+{
+    const src = [
+        "  MEMBER('inv.app')", '',
+        'MyProc               PROCEDURE', '',
+        'Q  QUEUE',
+        'VeryLongFieldLabelName LONG',
+        'B      LONG',
+        'G GROUP',
+        'C LONG',
+        ' END',
+        '  END',
+        '    CODE'
+    ];
+    const expected = absFmt(src, 5, 11);
+    const m = makeModel(src.concat([''])), e = makeEditor(m);
+    load(e).formatBlockNow(e, 11);
+    check('labelled QUEUE block == absolute format', m.lines.slice(4, 11).join('\n') === expected.slice(4, 11).join('\n'),
+        '\n' + m.lines.slice(4, 11).join('\n') + '\n--- expected ---\n' + expected.slice(4, 11).join('\n'));
+    const exp2 = absFmt(src, 8, 10);
+    const m2 = makeModel(src.concat([''])), e2 = makeEditor(m2);
+    load(e2).formatBlockNow(e2, 10);
+    check('nested labelled GROUP block == absolute format', m2.lines.slice(7, 10).join('\n') === exp2.slice(7, 10).join('\n'),
+        '\n' + m2.lines.slice(7, 10).join('\n'));
+}
+
+section('Well-formed PROCEDURE file with a labelled statement: identical to the absolute format');
+{
+    const src = [
+        "  MEMBER('inv.app')", '',
+        'MyProc               PROCEDURE', '',
+        'Loc:A                LONG', '',
+        '    CODE',
+        'Scan    LOOP 3 TIMES',
+        '  Loc:A += 1',
+        '       IF Loc:A > 2',
+        '  BREAK',
+        '   END',
+        '  END',
+        '    RETURN'
+    ];
+    const exp = absFmt(src, 8, 13);
+    const m = makeModel(src.concat([''])), e = makeEditor(m);
+    load(e).formatBlockNow(e, 13);
+    check('Enter after END of "Scan LOOP" == absolute format', m.lines.slice(7, 13).join('\n') === exp.slice(7, 13).join('\n'),
+        '\n' + m.lines.slice(7, 13).join('\n') + '\n--- expected ---\n' + exp.slice(7, 13).join('\n'));
+    const exp9 = absFmt(src, 9, 9);
+    const m2 = makeModel(src.concat([''])), e2 = makeEditor(m2);
+    load(e2).formatLineNow(e2, 9);
+    check('Enter on the line under "Scan LOOP" == absolute format', m2.getLineContent(9) === exp9[8],
+        JSON.stringify(m2.getLineContent(9)) + ' vs ' + JSON.stringify(exp9[8]));
+    // An already-formatted file: knock ONE line out of place at a time and press Enter on it. Its anchor
+    // above is always where the formatter puts it (including the column-1 header, declaration and "Scan"
+    // label lines), so the result must be exactly the absolute format.
+    const good = absFmt(src, 1, src.length).slice(0, src.length);
+    let bad = [];
+    for (let L = 5; L <= good.length; L++) {
+        if (!/^[ \t]+\S/.test(good[L - 1])) continue;         // only indented code lines can be knocked out
+        const knocked = good.slice(); knocked[L - 1] = '  ' + good[L - 1].trim();
+        const mm = makeModel(knocked.concat([''])), ee = makeEditor(mm);
+        load(ee).formatLineNow(ee, L);
+        if (mm.getLineContent(L) !== good[L - 1]) bad.push(L + ': ' + JSON.stringify(mm.getLineContent(L)) + ' vs ' + JSON.stringify(good[L - 1]));
+    }
+    check('Enter on each knocked-out line of a formatted file restores the absolute format', bad.length === 0, bad.join('; '));
+}
+
+section('Labelled statement INSIDE a drifted embed block moves with the block, label stays in column 1');
+{
+    const prefix = generatedPrefix(28);
+    const blk = ['            IF Loc:A = 1', 'Scan LOOP 3 TIMES', '    BREAK', '  END', '            END'];
+    const op = prefix.length + 1, end = op + blk.length - 1;
+    const m = makeModel(prefix.concat(blk, [''])), e = makeEditor(m);
+    load(e).formatBlockNow(e, end);
+    const got = m.lines.slice(op - 1, end);
+    check('block re-indents relative to the IF; "Scan" keeps column 1 with LOOP one indent in',
+        got.join('\n') === ['            IF Loc:A = 1', 'Scan            LOOP 3 TIMES', '                    BREAK', '                END', '            END'].join('\n'),
+        '\n' + got.join('\n'));
+}
+
+// ---------- 6. An indented line is never shifted into column 1 ----------
+section('Shift clamps at column 2, never column 1');
+{
+    // Drifted module; the user's IF sits at column 2 and the line after it closes a structure the
+    // formatter thinks was opened far above, so its relative shift goes below zero.
+    const prefix = generatedPrefix(28);
+    const lines = prefix.concat(['  IF Loc:A = 1', '    Loc:B = 2', '  END', '  END', '']);
+    const m = makeModel(lines), e = makeEditor(m, new Range(prefix.length + 2, 1, prefix.length + 4, 1));
+    load(e).cmdFormat();
+    const got = [prefix.length + 2, prefix.length + 3, prefix.length + 4].map(n => m.getLineContent(n));
+    check('no formatted code line lands in column 1', got.every(s => /^[ \t]/.test(s)), JSON.stringify(got));
+}
+
+// ---------- 7. No anchor in reach: never throw a line far right ----------
+section('No anchor within the look-back: a wild absolute column is not applied');
+{
+    const prefix = generatedPrefix(28);
+    const blanks = []; for (let k = 0; k < 250; k++) blanks.push('');
+    const lines = prefix.concat(blanks, ['            Loc:Q = 1', '']);
+    const L = prefix.length + blanks.length + 1;
+    const m = makeModel(lines), e = makeEditor(m);
+    load(e).formatLineNow(e, L);
+    check('line with no anchor within 200 lines stays put (< col 40)', indentOf(m.getLineContent(L)) < 40,
+        'col ' + indentOf(m.getLineContent(L)));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 if (fail) { console.log('\nFailures:\n  ' + failures.join('\n  ')); process.exit(1); }

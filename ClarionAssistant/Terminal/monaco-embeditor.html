@@ -2601,17 +2601,17 @@
         for (var i = 0; i < ws.length; i++) w = (ws.charAt(i) === '\t') ? (Math.floor(w / tabSize) + 1) * tabSize : w + 1;
         return w;
     }
-    // Column of a line's code (0-based): its indent, or — for a column-1 label ("Lbl LOOP") — the column of
-    // the token after the label. -1 when the line can't anchor anything (blank, comment, bare column-1 word).
+    // Column of a line's code (0-based) when it can serve as an anchor, else -1. Only an INDENTED code line
+    // anchors: a line starting in column 1 carries a label (ROUTINE / PROCEDURE header, data declaration,
+    // "Scan LOOP"), and the gap after a label reflects the label's length and the preferred/data column,
+    // not the structure depth — anchoring on it threw the code under a ROUTINE into column 1. Blank lines and
+    // comments never anchor either.
     function fmtCodeCol(s, o) {
         if (s == null) return -1;
         var t = s.trim();
         if (t === '' || t.charAt(0) === '!') return -1;
-        var ts = (o && o.tabSize) || 4;
         var m = /^[ \t]+/.exec(s);
-        if (m) return fmtVisualWidth(m[0], ts);
-        var lm = /^(\S+)([ \t]+)\S/.exec(s);
-        return lm ? fmtVisualWidth(lm[1] + lm[2], ts) : -1;
+        return m ? fmtVisualWidth(m[0], (o && o.tabSize) || 4) : -1;
     }
     function fmtAnchorDelta(current, formatted, o) {
         var c = fmtCodeCol(current, o), f = fmtCodeCol(formatted, o);
@@ -2623,16 +2623,18 @@
         var ts = o.tabSize || 4;
         return new Array(Math.floor(col / ts) + 1).join('\t') + new Array(col % ts + 1).join(' ');
     }
-    // Shift one formatted line's code column by delta (never below column 1). Column-1 comments stay put;
-    // a column-1 label stays in column 1 and only the gap before its statement changes.
+    // Shift one formatted line's code column by delta. An indented line never reaches column 1 (that would
+    // make it a label); it keeps at least one space. Column-1 lines stay as formatted — a data declaration's
+    // column is the data-column layout, already anchored to column 1 — except a labelled control statement
+    // ("Scan LOOP"), whose keyword moves with its block while the label stays in column 1.
     function fmtShiftLine(s, delta, o) {
         if (!delta || s == null || s.trim() === '') return s;
         var ts = o.tabSize || 4;
         var m = /^[ \t]+/.exec(s);
-        if (m) return fmtPad(Math.max(0, fmtVisualWidth(m[0], ts) + delta), o) + s.slice(m[0].length);
-        if (s.charAt(0) === '!') return s;
-        var lm = /^(\S+)([ \t]+)(\S[\s\S]*)$/.exec(s);
-        if (!lm) return s;
+        if (m) return fmtPad(Math.max(1, fmtVisualWidth(m[0], ts) + delta), o) + s.slice(m[0].length);
+        var lm = /^(\S+)([ \t]+)(([A-Za-z_]+)[\s\S]*)$/.exec(s);
+        var ctl = (typeof ClarionFormatter !== 'undefined' && ClarionFormatter.CONTROL_OPENERS) || [];
+        if (!lm || s.charAt(0) === '!' || ctl.indexOf(lm[4].toUpperCase()) < 0) return s;
         var col = Math.max(lm[1].length + 1, fmtVisualWidth(lm[1] + lm[2], ts) + delta);
         return lm[1] + new Array(col - lm[1].length + 1).join(' ') + lm[3];
     }
@@ -2640,8 +2642,9 @@
         if (!delta) return lines;
         return lines.map(function (s) { return fmtShiftLine(s, delta, o); });
     }
-    // Nearest line above L whose code can serve as the anchor (skips blanks and comments); 0 if none within
-    // a bounded look-back.
+    // Nearest line above L whose code can serve as the anchor (skips blanks, comments and column-1 label
+    // lines); 0 if none within a bounded 200-line look-back. With no anchor the caller falls back to the
+    // absolute format (formatLineNow refuses a >40-column jump there).
     function fmtAnchorAbove(model, L) {
         for (var k = L - 1; k >= 1 && k >= L - 200; k--) {
             if (fmtCodeCol(model.getLineContent(k), null) >= 0) return k;
@@ -2688,7 +2691,11 @@
             var res = ClarionFormatter.formatClarionRange(model.getValue(), startLine, endLine, o);
             var fl = res.text.split(/\r\n|\n/).slice(startLine - 1, endLine);
             // Keep the opener where the user sees it; re-indent the block RELATIVE to it (16d140e9).
+            // A column-1 opener (labelled QUEUE/GROUP, "Scan LOOP") never anchors (fmtCodeCol) → shift 0; a DATA
+            // structure's layout is the data column, anchored to column 1 already, so it never shifts either.
             var delta = fmtAnchorDelta(model.getLineContent(startLine), fl[0], o);
+            var ow = /^\s*([A-Za-z_]+)/.exec(model.getLineContent(startLine));
+            if (ow && (ClarionFormatter.DATA_STRUCT_OPENERS || []).indexOf(ow[1].toUpperCase()) >= 0) delta = 0;
             var newLines = fmtShiftLines(fl, delta, o).join('\n');
             if (newLines === model.getValueInRange(range)) return;
             var savedPos = ed.getPosition();
@@ -2714,6 +2721,10 @@
             var formatted = fl[L - 1];
             if (formatted == null) return;
             if (anc) formatted = fmtShiftLine(formatted, fmtAnchorDelta(model.getLineContent(anc), fl[anc - 1], o), o);
+            // No anchor within the look-back (e.g. >200 blank/comment lines above): the absolute column is all
+            // we have, and it may carry the whole-module drift. Don't apply a jump that big — leave the line.
+            else if (Math.abs(fmtVisualWidth(/^[ \t]*/.exec(formatted)[0], o.tabSize || 4) -
+                              fmtVisualWidth(/^[ \t]*/.exec(orig)[0], o.tabSize || 4)) > 40) return;
             if (formatted === orig) return;
             var savedPos = ed.getPosition();
             _fmtLineGuard = true;
