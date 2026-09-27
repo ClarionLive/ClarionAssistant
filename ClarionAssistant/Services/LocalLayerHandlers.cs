@@ -17,6 +17,13 @@ namespace ClarionAssistant.Services
         /// <summary>The LSP line offset for a buffer (the embeditor's MEMBER header: 0 or 1); null = 0. Passed
         /// to <see cref="LocalLayerHandlers.Handle"/> as lineOffset.</summary>
         public Func<string, int> LineOffsetFor;
+        /// <summary>The project's .codegraph.db path (solution globals, the app's classes); null = none. Resolved
+        /// at most every few seconds (it may walk directories), never per keystroke.</summary>
+        public Func<string> ProjectDbPath;
+        /// <summary>The ClarionGraph library DB path (ABC classes); null = none. Cached like ProjectDbPath.</summary>
+        public Func<string> LibraryDbPath;
+        /// <summary>Shown in a local hover card's detail line; optional.</summary>
+        public string FileName;
         /// <summary>For the [local-timing] line.</summary>
         public string Surface;
         /// <summary>Where the [local-timing] line goes (monaco-spike.log in the IDE; a list in tests).</summary>
@@ -125,7 +132,24 @@ namespace ClarionAssistant.Services
                         {
                             var slice = LocalSlice.From(args);
                             if (slice != null) sliceChars = slice.Chars;
-                            reply = EmptyReply(action);
+                            // The slice path lands with Coder-A's slice overloads (R11); until then a slice
+                            // request answers its empty shape and the `v` form below does the work.
+                            if (slice != null || string.IsNullOrEmpty(buffer)) { reply = EmptyReply(action); break; }
+                            int line0 = ReadInt(args, "line") - 1, col0 = ReadInt(args, "column") - 1;
+                            if (action == LocalCompletion)
+                            {
+                                object t;
+                                string trig = args != null && args.TryGetValue("triggerCharacter", out t) ? t as string : null;
+                                var list = CompleteAt(buffer, line0, col0, string.IsNullOrEmpty(trig) ? (char?)null : trig[0], options);
+                                items = list.Count;
+                                reply = new Dictionary<string, object> { { "items", ToPage(list) }, { "source", "local" } };
+                            }
+                            else
+                            {
+                                var h = HoverAt(buffer, line0, col0, options);
+                                items = h != null ? 1 : 0;
+                                reply = new Dictionary<string, object> { { "contents", h != null ? h.Markdown : null }, { "authoritative", h != null && h.Authoritative } };
+                            }
                             break;
                         }
                     default:
@@ -144,6 +168,182 @@ namespace ClarionAssistant.Services
             reply["ms"] = ms;
             WriteTiming(options, action, ms, items, sliceChars, error);
             return reply;
+        }
+
+        // ====================================================================== completion and hover
+        // Composition order (the contract): the buffer first, then the indexes, and a local name always
+        // wins a label clash. Every source here is in memory or a held-open, index-backed SQLite handle
+        // that never waits more than 50 ms (SymbolIndex); a DB without the NOCASE indexes is skipped.
+
+        private const int DbLimit = 50;
+        private static readonly System.Text.RegularExpressions.Regex BarePrefix =
+            new System.Text.RegularExpressions.Regex(@"[A-Za-z_][A-Za-z0-9_]*$");
+        private static readonly System.Text.RegularExpressions.Regex PreQualifier =
+            new System.Text.RegularExpressions.Regex(@"(?<![A-Za-z0-9_:.])([A-Za-z_][A-Za-z0-9_]*):([A-Za-z0-9_]*)$");
+        private static readonly System.Text.RegularExpressions.Regex DoContext =
+            new System.Text.RegularExpressions.Regex(@"(?:^|\s|;)DO\s+[A-Za-z0-9_]*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        /// <summary>localCompletion over the synced buffer at 0-based (line, column).</summary>
+        internal static List<LspClient.CompletionItemInfo> CompleteAt(string buffer, int line0, int col0, char? trigger, LocalLayerOptions options)
+        {
+            var result = new List<LspClient.CompletionItemInfo>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            // 1. The buffer: locals, parameters, module data, local procedures, routines, PRE'd structures,
+            //    members of an in-scope CLASS.
+            AddAll(result, seen, LocalScopeIndex.Complete(buffer, line0, col0, trigger));
+
+            var scope = LocalScopeIndex.GetScope(buffer, line0);
+            if (scope == null) return result;
+            string lineText = scope.CaretLine;
+            int col = Math.Max(0, Math.Min(col0, lineText.Length));
+            if (LocalScopeIndex.IsInsideStringOrComment(lineText, col)) return result;
+            string upTo = lineText.Substring(0, col);
+            if (upTo.EndsWith("?")) return result;
+
+            // 2. "x." member access: the parent/declared class's members from the DBs (inherited included).
+            var ma = LocalScopeIndex.GetMemberAccess(buffer, line0, col0);
+            if (ma != null)
+            {
+                if (!string.IsNullOrEmpty(ma.BaseType))
+                {
+                    string proj = UsableDb(ProjectDb(options)), lib = UsableDb(LibraryDb(options));
+                    if (proj != null || lib != null)
+                    {
+                        string partial = ma.Partial ?? "";
+                        foreach (var s in SymbolIndex.MembersOf(ma.BaseType, true, proj, lib))
+                        {
+                            string member = s == null ? null : SymbolIndex.MemberName(s.Name);
+                            if (member == null || (partial.Length > 0 && !member.StartsWith(partial, StringComparison.OrdinalIgnoreCase))) continue;
+                            if (seen.Add(member)) result.Add(SymbolIndex.ToMemberItem(s));
+                        }
+                    }
+                }
+                return result;
+            }
+
+            // 3. "PRE:" dictionary fields and keys (live snapshot only: no SQLite fallback in this lane).
+            var q = PreQualifier.Match(upTo);
+            if (q.Success)
+            {
+                AddAll(result, seen, LiveDictionaryIndex.CompleteQualifier(q.Groups[1].Value, q.Groups[2].Value, null));
+                return result;
+            }
+
+            // 4. A bare prefix of 2+ characters: solution and library symbols, keywords, dictionary tables.
+            if (DoContext.IsMatch(upTo)) return result;   // DO: routines only (step 1)
+            var m = BarePrefix.Match(upTo);
+            if (!m.Success || m.Length < 2) return result;
+            if (m.Index > 0 && (upTo[m.Index - 1] == '.' || upTo[m.Index - 1] == ':')) return result;
+            string prefix = m.Value;
+            foreach (string db in new[] { UsableDb(ProjectDb(options)), UsableDb(LibraryDb(options)) })
+            {
+                if (db == null) continue;
+                var idx = SymbolIndex.For(db);
+                if (idx == null) continue;
+                foreach (var s in idx.ByPrefix(prefix, DbLimit))
+                    if (s != null && !string.IsNullOrEmpty(s.Name) && seen.Add(s.Name)) result.Add(SymbolIndex.ToCompletionItem(s));
+            }
+            AddAll(result, seen, ClarionKeywordIndex.Complete(prefix));
+            AddAll(result, seen, LiveDictionaryIndex.CompleteTableNames(prefix, 25, null));
+            return result;
+        }
+
+        /// <summary>localHover: the buffer (authoritative for locals, parameters, routines, local procedures),
+        /// then the live dictionary, then the solution and library DBs, then keywords/built-ins.</summary>
+        internal static LocalHoverResult HoverAt(string buffer, int line0, int col0, LocalLayerOptions options)
+        {
+            var local = LocalScopeIndex.Hover(buffer, line0, col0, options.FileName);
+            if (local != null) return local;
+            var scope = LocalScopeIndex.GetScope(buffer, line0);
+            if (scope == null) return null;
+            string lineText = scope.CaretLine;
+            int col = Math.Max(0, Math.Min(col0, lineText.Length));
+            if (LocalScopeIndex.IsInsideStringOrComment(lineText, col)) return null;
+            string word = LocalScopeIndex.WordAt(lineText, col);
+            if (string.IsNullOrEmpty(word)) return null;
+
+            var dict = LiveDictionaryIndex.HoverWord(word);
+            if (dict != null) return dict;
+
+            if (word.IndexOf('.') < 0)
+            {
+                foreach (string db in new[] { UsableDb(ProjectDb(options)), UsableDb(LibraryDb(options)) })
+                {
+                    if (db == null) continue;
+                    var idx = SymbolIndex.For(db);
+                    var s = idx != null ? idx.FindByName(word) : null;
+                    if (s != null) return new LocalHoverResult { Markdown = SymbolCard(s), Authoritative = false, Kind = "index" };
+                }
+            }
+            return ClarionKeywordIndex.HoverWord(word);
+        }
+
+        private static string SymbolCard(ClarionCodeGraph.Graph.CodeGraphSymbol s)
+        {
+            string sig = s.Name + (string.IsNullOrEmpty(s.Params) ? "" : " " + s.Params) +
+                         (string.IsNullOrEmpty(s.ReturnType) ? "" : " : " + s.ReturnType);
+            string where = string.IsNullOrEmpty(s.FilePath) ? "" :
+                "\n\n" + System.IO.Path.GetFileName(s.FilePath) + (s.LineNumber > 0 ? ":" + s.LineNumber : "");
+            return "```clarion\n" + sig + "\n```\n" + SymbolIndex.CompletionDetail(s) + where;
+        }
+
+        private static void AddAll(List<LspClient.CompletionItemInfo> into, HashSet<string> seen, List<LspClient.CompletionItemInfo> from)
+        {
+            if (from == null) return;
+            foreach (var it in from)
+                if (it != null && !string.IsNullOrEmpty(it.Label) && seen.Add(it.Label)) into.Add(it);
+        }
+
+        private static List<Dictionary<string, object>> ToPage(List<LspClient.CompletionItemInfo> list)
+        {
+            var items = new List<Dictionary<string, object>>(list.Count);
+            foreach (var c in list)
+                items.Add(new Dictionary<string, object>
+                {
+                    { "label", c.Label }, { "kind", c.Kind }, { "detail", c.Detail },
+                    { "documentation", c.Documentation }, { "insertText", c.InsertText }
+                });
+            return items;
+        }
+
+        // DB paths come from host providers that may walk directories or ask the IDE, so they are resolved at
+        // most every PathTtlMs, never per keystroke. A DB without the NOCASE indexes (an older index build) is
+        // skipped here once SymbolIndex knows it (after its first query, which pays the ~150 ms fallback once):
+        // that scan is too slow for this lane. The late merge still uses it.
+        private const int PathTtlMs = 5000;
+        private static readonly object PathGate = new object();
+        private static string _projPath, _libPath;
+        private static long _projAt = -PathTtlMs, _libAt = -PathTtlMs;
+        private static readonly Stopwatch Clock = Stopwatch.StartNew();
+
+        private static string ProjectDb(LocalLayerOptions o) { return Cached(o.ProjectDbPath, ref _projPath, ref _projAt); }
+        private static string LibraryDb(LocalLayerOptions o) { return Cached(o.LibraryDbPath, ref _libPath, ref _libAt); }
+
+        private static string Cached(Func<string> provider, ref string path, ref long at)
+        {
+            if (provider == null) return null;
+            lock (PathGate)
+            {
+                long now = Clock.ElapsedMilliseconds;
+                if (now - at >= PathTtlMs)
+                {
+                    string p = null;
+                    try { p = provider(); } catch { }
+                    path = !string.IsNullOrEmpty(p) && System.IO.File.Exists(p) ? p : null;
+                    at = now;
+                }
+                return path;
+            }
+        }
+
+        /// <summary>Test hook: forget the cached DB paths.</summary>
+        internal static void ResetPathCache() { lock (PathGate) { _projAt = _libAt = -PathTtlMs; _projPath = _libPath = null; } }
+
+        private static string UsableDb(string path)
+        {
+            if (path == null) return null;
+            var idx = SymbolIndex.For(path);
+            return idx != null && !idx.NoIndex ? path : null;
         }
 
         private static Dictionary<string, object> EmptyReply(string action)

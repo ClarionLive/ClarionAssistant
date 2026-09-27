@@ -94,7 +94,7 @@ function Invoke-Scan([string]$ctlPath, [string]$viewPath, [string]$ovPath, [stri
     }
 
     $viewOpts = Get-Body $view 'private LocalLayerOptions LocalOptions('
-    $ovOpts = Get-Body $ov 'private static LocalLayerOptions LocalOptions('
+    $ovOpts = Get-Body $ov 'private LocalLayerOptions LocalOptions('
     if (-not $viewOpts -or $viewOpts -notmatch 'SlotChecks = !_fileMode') { $fails.Add('slot: the CA Embeditor options do not keep SlotChecks = !_fileMode') }
     if (-not $ovOpts -or $ovOpts -notmatch 'SlotChecks = true') { $fails.Add('slot: the CA Editor overlay options do not keep SlotChecks = true') }
     return , $fails

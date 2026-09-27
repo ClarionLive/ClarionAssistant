@@ -176,18 +176,29 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "LspClient.Robustness.Test"
                Sources = @("tests\LspClient.Robustness.Test.cs", "Services\LspClient.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }
-            # 1c685f2e item 4: LocalLayerHandlers, the one class both hosts route the local layer to. The
-            # SlotBalance stubs stand in for SharedLspBridge and count calls (the local layer makes none).
+            # 1c685f2e item 4: LocalLayerHandlers, the one class both hosts route the local layer to, over the
+            # REAL local indexes (LocalScopeIndex, LiveDictionaryIndex, SymbolIndex on synthetic x86 SQLite DBs).
+            # The SlotBalance stubs stand in for SharedLspBridge and count calls (the local layer makes none).
             @{ Name = "LocalLayer.Handlers.Test"
-               Sources = @("tests\LocalLayer.Handlers.Test.cs", "Services\LocalLayerHandlers.cs",
-                           "tests\ModernEmbeditorDiagnostics.SlotBalance.Stubs.cs", "tests\ClarionAppDataReader.StructureScan.Stubs.cs",
+               Sources = @("tests\LocalLayer.Handlers.Test.cs", "tests\LocalLayer.Handlers.Stubs.cs", "Services\LocalLayerHandlers.cs",
+                           "tests\ModernEmbeditorDiagnostics.SlotBalance.Stubs.cs",
                            "Services\ModernEmbeditorDiagnostics.cs",
-                           "Services\ClarionAppDataReader.cs", "Services\ClarionAppDataReader.Model.cs")
-               Refs = @("System.dll", "System.Core.dll", "System.Xml.dll", "System.Web.Extensions.dll") }
+                           "Services\ClarionAppDataReader.cs", "Services\ClarionAppDataReader.Model.cs",
+                           "Services\LocalScopeIndex.cs", "Services\LiveDictionaryIndex.cs", "Services\SymbolIndex.cs",
+                           "CodeGraph\Graph\CodeGraphProvider.cs", "CodeGraph\Graph\CodeGraphDatabase.cs",
+                           "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
+                           "CodeGraph\Parsing\Models\SolutionProject.cs", "CodeGraph\Parsing\Models\ParseResult.cs",
+                           "CodeGraph\Parsing\ClarionBuiltins.cs",
+                           "Services\LspClient.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Xml.dll", "System.Data.dll", "System.Web.Extensions.dll")
+               RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
+               Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
+               Platform = "x86" }
             # Per-embed-slot structure balance (Passes 2 & 3), LSP pass stubbed. Reuses the
             # StructureScan stubs so the REAL ClarionAppDataReader supplies the routine set.
             @{ Name = "ModernEmbeditorDiagnostics.SlotBalance"
                Sources = @("tests\ModernEmbeditorDiagnostics.SlotBalance.cs", "tests\ModernEmbeditorDiagnostics.SlotBalance.Stubs.cs",
+                           "tests\ModernEmbeditorDiagnostics.SlotBalance.LspClientStub.cs",
                            "tests\ClarionAppDataReader.StructureScan.Stubs.cs",
                            "Services\ModernEmbeditorDiagnostics.cs",
                            "Services\ClarionAppDataReader.cs", "Services\ClarionAppDataReader.Model.cs")

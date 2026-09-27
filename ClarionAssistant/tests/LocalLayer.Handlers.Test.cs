@@ -58,6 +58,175 @@ static class LocalLayerHandlersTest
         "    b# = 2",
         "  RETURN" });
 
+    // ------------------------------------------------------------------ localCompletion / localHover (v form)
+
+    // A module-shaped buffer: module data, a MAP, one procedure with a parameter, locals and a class-typed
+    // local. Lines are 1-based Monaco lines.
+    static readonly string[] ModLines = {
+        "  MEMBER('app')",              // 1
+        "Clip       LONG",              // 2  module data named like a built-in
+        "  MAP",                        // 3
+        "Other        PROCEDURE",       // 4
+        "  END",                        // 5
+        "TestProc PROCEDURE(LONG pCount)", // 6
+        "glovar     LONG",              // 7  a local that clashes (by case) with the DB global GloVar
+        "loTotal    LONG",              // 8
+        "obj        &MyBrowse",         // 9
+        "  CODE",                       // 10
+        "  lo",                         // 11  bare prefix
+        "  obj.",                       // 12  member access
+        "  INV:",                       // 13  dictionary qualifier
+        "  Glo",                        // 14  solution globals
+        "  RETURN loTotal",             // 15  hover: keyword / local
+        "  x# = INV:Qty + GloVar + Clip" }; // 16  hover: dictionary / DB / local-vs-keyword
+    static readonly string ModBuffer = string.Join("\r\n", ModLines);
+
+    static Dictionary<string, object> At(string action, int line, int column, LocalLayerOptions o, int lineOffset = 0)
+    {
+        return LocalLayerHandlers.Handle(action, ModBuffer, Req("{\"line\":" + line + ",\"column\":" + column + "}"), lineOffset, o);
+    }
+
+    static List<string> Labels(Dictionary<string, object> reply)
+    {
+        return ((List<Dictionary<string, object>>)reply["items"]).Select(i => (string)i["label"]).ToList();
+    }
+
+    static void Exec(System.Data.SQLite.SQLiteConnection cn, string sql)
+    {
+        using (var cmd = new System.Data.SQLite.SQLiteCommand(sql, cn)) cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>A CodeGraph-schema DB; <paramref name="indexed"/> = through the indexer's write open (NOCASE
+    /// indexes), else the pre-1c685f2e schema with none.</summary>
+    static void BuildDb(string path, bool indexed, params string[][] rows)
+    {
+        if (indexed) { using (var db = new ClarionCodeGraph.Graph.CodeGraphDatabase()) db.Open(path); }
+        else System.Data.SQLite.SQLiteConnection.CreateFile(path);
+        using (var cn = new System.Data.SQLite.SQLiteConnection("Data Source=" + path + ";Version=3;"))
+        {
+            cn.Open();
+            if (!indexed)
+            {
+                Exec(cn, "CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, guid TEXT, cwproj_path TEXT, output_type TEXT, sln_path TEXT)");
+                Exec(cn, "CREATE TABLE symbols (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, type TEXT NOT NULL, file_path TEXT NOT NULL, line_number INTEGER, project_id INTEGER, params TEXT, return_type TEXT, parent_name TEXT, member_of TEXT, scope TEXT, source_preview TEXT, decl_kind TEXT)");
+            }
+            Exec(cn, "INSERT INTO projects (id, name) VALUES (1, 'proj')");
+            foreach (var r in rows)
+                using (var cmd = new System.Data.SQLite.SQLiteCommand("INSERT INTO symbols (name, type, file_path, line_number, project_id, params, parent_name, scope) VALUES (@n, @t, 'x.clw', 1, 1, @p, @par, @s)", cn))
+                {
+                    cmd.Parameters.AddWithValue("@n", r[0]); cmd.Parameters.AddWithValue("@t", r[1]);
+                    cmd.Parameters.AddWithValue("@s", r[2]); cmd.Parameters.AddWithValue("@par", (object)r[3] ?? DBNull.Value);
+                    cmd.Parameters.AddWithValue("@p", (object)r[4] ?? DBNull.Value);
+                    cmd.ExecuteNonQuery();
+                }
+        }
+    }
+
+    static ClarionAppDataReader.FieldDef F(string n, string t) { return new ClarionAppDataReader.FieldDef { Name = n, Type = t }; }
+
+    static void CompletionAndHover(List<string> log)
+    {
+        string work = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ca-locallayer-" + Guid.NewGuid().ToString("N").Substring(0, 8));
+        System.IO.Directory.CreateDirectory(work);
+        string proj = System.IO.Path.Combine(work, "proj.codegraph.db"), lib = System.IO.Path.Combine(work, "ClarionGraph_t.db"),
+               old = System.IO.Path.Combine(work, "old.codegraph.db");
+        var projRows = new[] {
+            new[] { "GloVar", "variable", "global", null, "LONG" },
+            new[] { "GloLocal", "variable", "local", "SomeProc", "LONG" },
+            new[] { "GloParam", "variable", "parameter", "SomeProc", "LONG" },
+            new[] { "MyBrowse", "class", "global", "BrowseClass", null },
+            new[] { "MyBrowse.Custom", "procedure", "global", "MyBrowse", "()" },
+            new[] { "MyBrowse.ResetSort", "procedure", "global", "MyBrowse", "(BYTE Force)" } };
+        BuildDb(proj, true, projRows);
+        BuildDb(lib, true,
+            new[] { "BrowseClass", "class", "global", "ViewManager", null },
+            new[] { "BrowseClass.ResetSort", "procedure", "global", "BrowseClass", "(BYTE Force)" },
+            new[] { "BrowseClass.TakeKey", "procedure", "global", "BrowseClass", "()" },
+            new[] { "ViewManager", "class", "global", null, null },
+            new[] { "ViewManager.Open", "procedure", "global", "ViewManager", "()" });
+        BuildDb(old, false, projRows);
+
+        var inv = new ClarionAppDataReader.TableDef { Name = "Inventory", Prefix = "INV" };
+        inv.Fields.Add(F("Qty", "LONG"));
+        inv.Fields.Add(F("Descr", "STRING(40)"));
+        LiveDictionaryIndex.Publish(new Dictionary<string, ClarionAppDataReader.TableDef>(StringComparer.OrdinalIgnoreCase) { { inv.Name, inv } });
+
+        var o = new LocalLayerOptions { ProcedureName = "TestProc", SlotChecks = true, Log = log.Add,
+                                        ProjectDbPath = () => proj, LibraryDbPath = () => lib, FileName = "mod.clw" };
+        try
+        {
+            LocalLayerHandlers.ResetPathCache();
+            SharedLspBridge.Reset();
+            SharedLspBridge.Running = false;   // 4.2: the LSP is down (and 4.1: nothing below may ask it anyway)
+
+            Console.WriteLine("\n4.1-4.4 localCompletion (v form), LSP down");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var lo = Labels(At("localCompletion", 11, 5, o));
+            long loMs = sw.ElapsedMilliseconds;
+            Check("4.1/4.2 'lo' answers locals at once with the LSP down (" + loMs + " ms, first call opens the DBs)",
+                loMs < 300 && lo.Contains("loTotal", StringComparer.OrdinalIgnoreCase), string.Join(",", lo));
+            Check("...keywords join the list (LOOP), after the buffer's own names",
+                lo.Contains("LOOP") && lo.IndexOf("LOOP") > lo.FindIndex(l => l.Equals("loTotal", StringComparison.OrdinalIgnoreCase)), string.Join(",", lo));
+
+            var mem = Labels(At("localCompletion", 12, 7, o));
+            Check("4.3 'obj.' -> the declared class's members, inherited across both DBs (Custom ResetSort TakeKey Open)",
+                new[] { "Custom", "ResetSort", "TakeKey", "Open" }.All(x => mem.Contains(x, StringComparer.OrdinalIgnoreCase)), string.Join(",", mem));
+            Check("...ResetSort (declared on both MyBrowse and BrowseClass) listed once",
+                mem.Count(x => x.Equals("ResetSort", StringComparison.OrdinalIgnoreCase)) == 1, string.Join(",", mem));
+
+            var dict = Labels(At("localCompletion", 13, 7, o));
+            Check("4.4 'INV:' -> the live dictionary's fields", dict.Contains("INV:Qty") && dict.Contains("INV:Descr"), string.Join(",", dict));
+
+            var glo = Labels(At("localCompletion", 14, 6, o));
+            Check("'Glo' -> the local glovar and the index's GloVar are ONE item, and the local wins (its spelling)",
+                glo.Count(x => x.Equals("glovar", StringComparison.OrdinalIgnoreCase)) == 1 && glo.Contains("glovar"), string.Join(",", glo));
+            SharedLspBridge.Reset();
+            var gloDb = Labels(LocalLayerHandlers.Handle("localCompletion", ModBuffer.Replace("glovar     LONG", "other      LONG"),
+                Req("{\"line\":14,\"column\":6}"), 0, o));
+            Check("'Glo' with no local clash -> the solution's GloVar from the index", gloDb.Contains("GloVar"), string.Join(",", gloDb));
+            Check("...never a procedure's local or parameter row (the scope leak)", !glo.Contains("GloLocal") && !glo.Contains("GloParam"), string.Join(",", glo));
+
+            Check("no call reached the language server", SharedLspBridge.TotalCalls == 0, "calls=" + SharedLspBridge.TotalCalls);
+
+            Console.WriteLine("\nlocalHover (v form)");
+            var hLocal = At("localHover", 15, 12, o);
+            Check("a local -> its card, authoritative", hLocal["contents"] != null && ((string)hLocal["contents"]).Contains("loTotal") && (bool)hLocal["authoritative"],
+                Json(hLocal));
+            var hKw = At("localHover", 15, 4, o);
+            Check("4.5 RETURN -> the keyword card, NOT authoritative", hKw["contents"] != null && !(bool)hKw["authoritative"], Json(hKw));
+            var hDict = At("localHover", 16, 12, o);
+            Check("a dictionary field (INV:Qty) -> the dictionary card", hDict["contents"] != null && ((string)hDict["contents"]).Contains("Qty") && !(bool)hDict["authoritative"], Json(hDict));
+            var hDb = LocalLayerHandlers.Handle("localHover", ModBuffer.Replace("glovar     LONG", "other      LONG"),
+                Req("{\"line\":16,\"column\":22}"), 0, o);
+            Check("a solution global (GloVar) -> the index card, not authoritative",
+                hDb["contents"] != null && ((string)hDb["contents"]).Contains("GloVar") && !(bool)hDb["authoritative"], Json(hDb));
+            var hClip = At("localHover", 16, 28, o);
+            Check("a module variable named like a built-in (Clip) -> the buffer's card wins over the keyword",
+                hClip["contents"] != null && ((string)hClip["contents"]).Contains("LONG"), Json(hClip));
+            var hOff = At("localHover", 8, 2, o, lineOffset: 1);
+            Check("4.6 lineOffset=1 is not applied to the lookup (line 8 is still loTotal)",
+                hOff["contents"] != null && ((string)hOff["contents"]).Contains("loTotal"), Json(hOff));
+
+            Console.WriteLine("\na DB without the NOCASE indexes is skipped in this lane (its fallback costs ~150 ms)");
+            var oOld = new LocalLayerOptions { Log = log.Add, ProjectDbPath = () => old, LibraryDbPath = null };
+            LocalLayerHandlers.ResetPathCache();
+            // SymbolIndex learns NoIndex on its first query (the connection opens lazily), so the first request
+            // pays the fallback once; every later one skips the DB.
+            // (No local glovar here: it would dedupe GloVar away and hide what this check is about.)
+            string noClash = ModBuffer.Replace("glovar     LONG", "other      LONG");
+            LocalLayerHandlers.Handle("localCompletion", noClash, Req("{\"line\":14,\"column\":6}"), 0, oOld);
+            var gloOld = Labels(LocalLayerHandlers.Handle("localCompletion", noClash, Req("{\"line\":14,\"column\":6}"), 0, oOld));
+            Check("an old-schema project DB contributes nothing once its NoIndex is known", !gloOld.Contains("GloVar"), string.Join(",", gloOld));
+            LocalLayerHandlers.ResetPathCache();
+        }
+        finally
+        {
+            LiveDictionaryIndex.Publish(null);
+            SymbolIndex.ReleaseAll();
+            try { System.IO.Directory.Delete(work, true); } catch { }
+        }
+    }
+
     static int Main()
     {
         var log = new List<string>();
@@ -130,6 +299,8 @@ static class LocalLayerHandlersTest
                 Req("{\"line\":5,\"column\":7,\"slice\":{\"headerHash\":\"h1\",\"span\":{\"start\":1,\"text\":\"abc\"},\"ownerData\":{\"start\":1,\"text\":\"de\"},\"routines\":[]}}"), 0, embed);
             Check("a localCompletion slice logs sliceChars = span + ownerData chars", log.Count == 1 && log[0].Contains(" sliceChars=5"), log.FirstOrDefault());
         }
+
+        CompletionAndHover(log);
 
         Console.WriteLine("\n4.8 one [local-timing] line per call");
         {

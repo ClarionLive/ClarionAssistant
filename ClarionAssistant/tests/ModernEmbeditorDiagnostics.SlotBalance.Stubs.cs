@@ -35,25 +35,7 @@ namespace ClarionAssistant.Services
         public static List<LspClient.DiagnosticEntry> GetCachedDiagnostics(string filePath) { CachedCalls++; return null; }
     }
 
-    public class LspClient
-    {
-        public class DiagnosticEntry
-        {
-            public int Severity;
-            public int Line;
-            public int Character;
-            public int EndLine;
-            public int EndCharacter;
-            public string Message;
-            public string Source;
-        }
-
-        public class DiagnosticWaitResult
-        {
-            public List<DiagnosticEntry> Entries;
-            public bool Pending;
-        }
-    }
+    // LspClient's DTOs: ModernEmbeditorDiagnostics.SlotBalance.LspClientStub.cs, or the real LspClient.cs.
 
     public sealed class EmbedLspContext
     {

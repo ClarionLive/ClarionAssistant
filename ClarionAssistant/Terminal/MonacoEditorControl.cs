@@ -378,6 +378,13 @@ namespace ClarionAssistant.Terminal
             }, () => MonacoSpikeLog.Write("[local-timing] action=" + action + " reqId=" + reqId + " dropped=superseded-by-newer-request"));
         }
 
+        /// <summary>The active solution's .codegraph.db for the local layer (both hosts), or null.</summary>
+        public static string ProjectCodeGraphDb()
+        {
+            var provider = Services.SharedLspBridge.CodeGraphDbPathProvider;
+            return provider != null ? provider() : null;
+        }
+
         /// <summary>
         /// 1c685f2e R11: after each full sync, push the page the buffer's span map ({type:'spanMap', v, headerHash,
         /// procs:[...]}) so it can cut slices for the local layer. Built off the UI thread in the newest-wins

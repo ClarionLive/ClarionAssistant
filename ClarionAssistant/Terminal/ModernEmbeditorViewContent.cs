@@ -1604,6 +1604,9 @@ namespace ClarionAssistant.Terminal
                 SlotChecks = !_fileMode,
                 DefaultRanges = _editableRanges,
                 LineOffsetFor = ctx != null ? (Func<string, int>)ctx.LineOffsetFor : null,
+                ProjectDbPath = MonacoEditorControl.ProjectCodeGraphDb,
+                LibraryDbPath = ClarionGraphService.ResolveDbPath,
+                FileName = _fileMode ? _filePath : _lspFileName,
                 Surface = _fileMode ? "CA Editor(tab)" : "CA Embeditor",
                 Log = MonacoSpikeLog.Write
             };

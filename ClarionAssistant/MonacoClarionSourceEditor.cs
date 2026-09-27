@@ -1236,9 +1236,17 @@ namespace ClarionAssistant
         void IMonacoEditorHost.OnSlotDiagnostics(MonacoEditorControl editor, string rawJson) { editor.RunLocalAction("slot-diagnostics", LocalLayerHandlers.SlotDiagnostics, rawJson, LocalOptions()); }
 
         /// <summary>This surface's local-layer options: a whole file (no procedure, no line offset), slot checks ON.</summary>
-        private static LocalLayerOptions LocalOptions()
+        private LocalLayerOptions LocalOptions()
         {
-            return new LocalLayerOptions { SlotChecks = true, Surface = "CA Editor(overlay)", Log = MonacoSpikeLog.Write };
+            return new LocalLayerOptions
+            {
+                SlotChecks = true,
+                ProjectDbPath = MonacoEditorControl.ProjectCodeGraphDb,
+                LibraryDbPath = ClarionGraphService.ResolveDbPath,
+                FileName = _filePath,
+                Surface = "CA Editor(overlay)",
+                Log = MonacoSpikeLog.Write
+            };
         }
 
         // LSP diagnostics - the page sends fileMode ranges [[1,lineCount]] (whole file editable). The

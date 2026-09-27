@@ -49,6 +49,7 @@ namespace ClarionAssistant
             // 1c685f2e item 8: a node crash or a dead reader loop gets a line in monaco-spike.log, beside
             // the [lsp-timing] / [diag-timing] lines it explains (the addin installs no LspTrace sink).
             LspClient.LifecycleLog = MonacoSpikeLog.Write;
+            SymbolIndex.LogSink = MonacoSpikeLog.Write;   // noIndex / busy lines from the local layer's DB lookups
 
             try
             {
