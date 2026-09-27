@@ -2360,8 +2360,12 @@
         var a = span[0], b = span[1];
         if (sel.isEmpty()) { a = sel.startLineNumber; b = a; }   // no block selected → just the caret's line
         if (!fileMode && !linesEditable(a, b)) { editGuardToast(); return; }
-        var res = ClarionFormatter.formatClarionRange(model.getValue(), a, b, formatterOptions());
-        var formatted = res.text.split(/\r\n|\n/).slice(a - 1, b).join(model.getEOL());
+        var fo = formatterOptions();
+        var anc = fmtAnchorAbove(model, a);                       // keep the result anchored to the code above (16d140e9)
+        var res = ClarionFormatter.formatClarionRange(model.getValue(), anc || a, b, fo);
+        var fl = res.text.split(/\r\n|\n/);
+        var delta = anc ? fmtAnchorDelta(model.getLineContent(anc), fl[anc - 1], fo) : 0;
+        var formatted = fmtShiftLines(fl.slice(a - 1, b), delta, fo).join(model.getEOL());
         var range = new monaco.Range(a, 1, b, model.getLineMaxColumn(b));
         if (model.getValueInRange(range) === formatted) return;   // already formatted → no undo churn
         applyGuardedEdits([{ range: range, text: formatted }]);
@@ -2583,6 +2587,67 @@
             if (formatLineOnEnter) Promise.resolve().then(function () { formatLineNow(ed, L); });
         });
     }
+    // ----- Anchored re-indent (16d140e9) -----
+    // formatClarionRange computes ABSOLUTE indentation from the structure depth counted from line 1 of the
+    // WHOLE buffer. In the CA Embeditor that buffer is the entire generated module (86,722 lines on
+    // InventoryTable), and generated code the formatter does not model — an OMIT/COMPILE block hiding an
+    // unclosed IF, a '.' it reads differently, and so on — leaves structures open. Each one pushes every later
+    // line one indent further right, so Enter after an embed's END threw the block out to ~column 125.
+    // The RELATIVE indentation within the range is still right, so the callers keep an anchor line where the
+    // user can see it and shift the formatted lines by (anchor's current column - its formatted column).
+    // On code the formatter reads correctly that delta is 0 and the result is exactly the absolute format.
+    function fmtVisualWidth(ws, tabSize) {
+        var w = 0;
+        for (var i = 0; i < ws.length; i++) w = (ws.charAt(i) === '\t') ? (Math.floor(w / tabSize) + 1) * tabSize : w + 1;
+        return w;
+    }
+    // Column of a line's code (0-based): its indent, or — for a column-1 label ("Lbl LOOP") — the column of
+    // the token after the label. -1 when the line can't anchor anything (blank, comment, bare column-1 word).
+    function fmtCodeCol(s, o) {
+        if (s == null) return -1;
+        var t = s.trim();
+        if (t === '' || t.charAt(0) === '!') return -1;
+        var ts = (o && o.tabSize) || 4;
+        var m = /^[ \t]+/.exec(s);
+        if (m) return fmtVisualWidth(m[0], ts);
+        var lm = /^(\S+)([ \t]+)\S/.exec(s);
+        return lm ? fmtVisualWidth(lm[1] + lm[2], ts) : -1;
+    }
+    function fmtAnchorDelta(current, formatted, o) {
+        var c = fmtCodeCol(current, o), f = fmtCodeCol(formatted, o);
+        return (c < 0 || f < 0) ? 0 : c - f;
+    }
+    function fmtPad(col, o) {
+        if (col <= 0) return '';
+        if (o.insertSpaces !== false) return new Array(col + 1).join(' ');
+        var ts = o.tabSize || 4;
+        return new Array(Math.floor(col / ts) + 1).join('\t') + new Array(col % ts + 1).join(' ');
+    }
+    // Shift one formatted line's code column by delta (never below column 1). Column-1 comments stay put;
+    // a column-1 label stays in column 1 and only the gap before its statement changes.
+    function fmtShiftLine(s, delta, o) {
+        if (!delta || s == null || s.trim() === '') return s;
+        var ts = o.tabSize || 4;
+        var m = /^[ \t]+/.exec(s);
+        if (m) return fmtPad(Math.max(0, fmtVisualWidth(m[0], ts) + delta), o) + s.slice(m[0].length);
+        if (s.charAt(0) === '!') return s;
+        var lm = /^(\S+)([ \t]+)(\S[\s\S]*)$/.exec(s);
+        if (!lm) return s;
+        var col = Math.max(lm[1].length + 1, fmtVisualWidth(lm[1] + lm[2], ts) + delta);
+        return lm[1] + new Array(col - lm[1].length + 1).join(' ') + lm[3];
+    }
+    function fmtShiftLines(lines, delta, o) {
+        if (!delta) return lines;
+        return lines.map(function (s) { return fmtShiftLine(s, delta, o); });
+    }
+    // Nearest line above L whose code can serve as the anchor (skips blanks and comments); 0 if none within
+    // a bounded look-back.
+    function fmtAnchorAbove(model, L) {
+        for (var k = L - 1; k >= 1 && k >= L - 200; k--) {
+            if (fmtCodeCol(model.getLineContent(k), null) >= 0) return k;
+        }
+        return 0;
+    }
     // Walk upward from a just-completed END/'.' to its matching opener, balancing nested closers. Uses the
     // formatter's own opener sets; a label may precede a structure word ("Name GROUP"), and one-line
     // IF..THEN.. / single-statement '.' forms never open a block. Returns the END line if no opener is found.
@@ -2621,7 +2686,10 @@
             var o = formatterOptions();
             o.alignAssignments = false;                            // block re-indent only; alignment stays on Ctrl+I
             var res = ClarionFormatter.formatClarionRange(model.getValue(), startLine, endLine, o);
-            var newLines = res.text.split(/\r\n|\n/).slice(startLine - 1, endLine).join('\n');
+            var fl = res.text.split(/\r\n|\n/).slice(startLine - 1, endLine);
+            // Keep the opener where the user sees it; re-indent the block RELATIVE to it (16d140e9).
+            var delta = fmtAnchorDelta(model.getLineContent(startLine), fl[0], o);
+            var newLines = fmtShiftLines(fl, delta, o).join('\n');
             if (newLines === model.getValueInRange(range)) return;
             var savedPos = ed.getPosition();
             _fmtLineGuard = true;
@@ -2640,9 +2708,13 @@
             if (!fileMode && !isEditableRange(lineRange)) return;   // never touch read-only generated lines
             var o = formatterOptions();
             o.alignAssignments = false;                            // single line → no per-line 2-space; that's Ctrl+I
-            var res = ClarionFormatter.formatClarionRange(model.getValue(), L, L, o);
-            var formatted = res.text.split(/\r\n|\n/)[L - 1];
-            if (formatted == null || formatted === orig) return;
+            var anc = fmtAnchorAbove(model, L);                    // anchor on the code above (16d140e9)
+            var res = ClarionFormatter.formatClarionRange(model.getValue(), anc || L, L, o);
+            var fl = res.text.split(/\r\n|\n/);
+            var formatted = fl[L - 1];
+            if (formatted == null) return;
+            if (anc) formatted = fmtShiftLine(formatted, fmtAnchorDelta(model.getLineContent(anc), fl[anc - 1], o), o);
+            if (formatted === orig) return;
             var savedPos = ed.getPosition();
             _fmtLineGuard = true;
             ed.executeEdits('clarion-fmtline', [{ range: lineRange, text: formatted }]);
