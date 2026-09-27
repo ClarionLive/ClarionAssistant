@@ -116,6 +116,11 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\EmbedLspContext.LineMapping.cs", "tests\EmbedLspContext.LineMapping.Stubs.cs",
                            "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # 16d140e9: the CA Explorer header's APP/VERSION/ROOT values and the path check in front of
+            # the "open in Windows Explorer" clicks. Existence probes injected; touches no real path.
+            @{ Name = "ExplorerHeader.Test"
+               Sources = @("tests\ExplorerHeader.Test.cs", "Services\ExplorerHeader.cs")
+               Refs = @("System.dll", "System.Core.dll") }
             @{ Name = "ClarionClDiagnosis.Test"
                Sources = @("tests\ClarionClDiagnosis.Test.cs", "Services\ClarionClDiagnosis.cs")
                Refs = @("System.dll") }
