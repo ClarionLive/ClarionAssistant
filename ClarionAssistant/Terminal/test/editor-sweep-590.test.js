@@ -82,10 +82,19 @@ function loadDiag() {
     // 16d140e9: requests name the synced buffer version (withBuffer) instead of carrying the buffer.
     const withBuffer = (m, payload) => Object.assign({ v: m.getVersionId() }, payload);
     const bufferKey = (m) => 'm:' + m.getVersionId();
+    // R11/R12 (1c685f2e): at rest (never typing-unsynced) and no span map, so the slot checks send `ranges`.
+    // A test may flip env.typing / env.slotSlice.
+    env.typing = false;
+    env.slotSlice = null;
+    env.idleWaiters = [];
+    const typingUnsynced = () => env.typing;
+    const slotSlicePayload = () => env.slotSlice;
     const api = new Function('editor', 'monaco', 'requestFromHost', 'liveEditableRanges', 'setTimeout', 'clearTimeout', 'withBuffer', 'bufferKey',
+        'typingUnsynced', 'idleWaiters', 'slotSlicePayload',
         'var diagTimer = null;\n' + diagSrc + '\nreturn { refreshDiagnostics: refreshDiagnostics, scheduleDiagnostics: scheduleDiagnostics,' +
         ' resetDiagnosticsForNewSource: resetDiagnosticsForNewSource, setSlotChecks: function (on) { slotChecksEnabled = on; } };')(
-        env.editor, monaco, requestFromHost, () => [[1, 10]], fakeSetTimeout, fakeClearTimeout, withBuffer, bufferKey);
+        env.editor, monaco, requestFromHost, () => [[1, 10]], fakeSetTimeout, fakeClearTimeout, withBuffer, bufferKey,
+        typingUnsynced, env.idleWaiters, slotSlicePayload);
     env.api = api;
     return env;
 }

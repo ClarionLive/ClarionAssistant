@@ -28,6 +28,8 @@ const SRC = [
     slice(html, '    function requestFromHost(', '    function lspKindToMonaco(', 'requestFromHost + buffer sync'),
     slice(html, '    function lspKindToMonaco(', '    // ----- Save -----', 'lspKindToMonaco + toMonacoCompletion'),
     PROVIDERS_SRC,
+    // The diagnostics section (slotDiagnostics' slice payload, the LSP pass riding the idle sync).
+    slice(html, '    var DIAG_TIMEOUT_MS = ', '    // registerClarionFolding()', 'diagnostics'),
 ].join('\n');
 
 const DECLARED = new Set();
@@ -46,6 +48,19 @@ function makeModel(id, lines) {
         getLineMaxColumn(n) { return (this._lines[n - 1] || '').length + 1; },
         // Type into line n (replace its text): a new version, like every Monaco edit.
         setLine(n, text) { this._lines[n - 1] = text; this._v++; },
+        // Whole-line text of a range (the page only asks for whole lines).
+        getValueInRange(r) { return this._lines.slice(r.startLineNumber - 1, r.endLineNumber).join('\r\n'); },
+        // Tracked decorations, line-granular: an insert above a range shifts it, one inside grows it.
+        _decs: {}, _decSeq: 0,
+        deltaDecorations(oldIds, decs) {
+            (oldIds || []).forEach(id => { delete this._decs[id]; });
+            return decs.map(d => { const id = 'd' + (++this._decSeq); this._decs[id] = { s: d.range.startLineNumber, e: d.range.endLineNumber }; return id; });
+        },
+        getDecorationRange(id) { const d = this._decs[id]; return d ? { startLineNumber: d.s, endLineNumber: d.e } : null; },
+        insertLines(at, texts) {
+            this._lines.splice(at - 1, 0, ...texts); this._v++;
+            for (const d of Object.values(this._decs)) { if (d.s >= at) { d.s += texts.length; d.e += texts.length; } else if (d.e >= at) d.e += texts.length; }
+        },
     };
 }
 
@@ -65,6 +80,7 @@ function load(opts) {
         clearTimeout(id) { const t = timers[id - 1]; if (t) t.cleared = true; },
         maybeReportLsp() { },
         isEditableRange() { return true; },
+        liveEditableRanges() { return env.embedRanges.map(r => r.slice()); },
         document: { getElementById() { return null; }, addEventListener() { } },
         monaco: {
             Range: function (a, b, c, d) { this.startLineNumber = a; this.startColumn = b; this.endLineNumber = c; this.endColumn = d; },
@@ -74,7 +90,12 @@ function load(opts) {
                 registerHoverProvider(lang, p) { providers.hover.push(p); },
                 registerSignatureHelpProvider(lang, p) { providers.signatureHelp.push(p); },
             },
-            editor: { registerLinkOpener() { }, setModelMarkers() { } },
+            editor: {
+                registerLinkOpener() { },
+                setModelMarkers(m, owner, list) { (env.markers = env.markers || {})[owner] = list; },
+                getModelMarkers(f) { return (env.markers && env.markers[f.owner]) || []; },
+                TrackedRangeStickiness: { AlwaysGrowsWhenTypingAtEdges: 0 },
+            },
         },
     };
     env.performance = { now: () => env.clock };
@@ -90,7 +111,8 @@ function load(opts) {
         get(t, k) { if (k === Symbol.unscopables) return undefined; return (k in t) ? t[k] : STUB; },
         set(t, k, v) { t[k] = v; return true; },
     });
-    const exportsList = ['registerClarionProviders', 'resetLocalFirstState', 'resetBufferSync'];
+    const exportsList = ['registerClarionProviders', 'resetLocalFirstState', 'resetBufferSync', 'applySpanMap', 'noteBufferEdit',
+        'withBuffer', 'buildSlice', 'refreshDiagnostics', 'resetDiagnosticsForNewSource'];
     const ret = '{' + exportsList.map(n => n + ': ' + (DECLARED.has(n) ? n : 'undefined')).join(', ') + '}';
     // eslint-disable-next-line no-new-func
     env.api = new Function('__scope', 'with (__scope) {\n' + SRC + '\nreturn ' + ret + ';\n}')(scope);

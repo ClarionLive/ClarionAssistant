@@ -1322,8 +1322,13 @@
                     // Returning null on any failure keeps the local pass as the fallback.
                     if (typeof setClarionLspFolding === 'function') {
                         setClarionLspFolding(function (model) {
-                            return requestFromHost('foldingRanges', withBuffer(model, {}), FOLD_TIMEOUT_MS)
-                                .then(function (resp) { return (resp && resp.ranges) ? resp.ranges : null; });
+                            // While typing, the current folds stay until the idle sync (R12); a request the
+                            // next edit superseded answers null and the provider falls back to local folds.
+                            return whenIdleSynced(model, {}).then(function (payload) {
+                                if (!payload) return null;
+                                return requestFromHost('foldingRanges', payload, FOLD_TIMEOUT_MS)
+                                    .then(function (resp) { return (resp && resp.ranges) ? resp.ranges : null; });
+                            });
                         });
                     }
                     registerClarionFolding();
@@ -1412,6 +1417,7 @@
                 var _redoBtn = document.getElementById('redoBtn');
                 if (_redoBtn) _redoBtn.addEventListener('click', function () { var e = activeEd(); e.focus(); e.trigger('toolbar', 'redo', null); updateUndoRedo(); });
                 editor.onDidChangeModelContent(updateUndoRedo);   // keep Undo/Redo enabled-state in sync with the edit stack
+                editor.onDidChangeModelContent(noteBufferEdit);   // R12: the full buffer syncs once typing pauses (1c685f2e)
                 // Refresh the structure outline (debounced) while it's open — Phase-1 pull-on-change.
                 editor.onDidChangeModelContent(function () {
                     var op = document.getElementById('outlinePanel');
@@ -1676,7 +1682,7 @@
             if (payload) for (var k in payload) if (payload.hasOwnProperty(k)) msg[k] = payload[k];
             // [local-rt] (1c685f2e item 0): timed actions log request-sent -> reply-received on the page's
             // clock, which includes any bufferSync transit queued ahead of the request.
-            var rt = RT_LOG_ACTIONS.hasOwnProperty(action) ? { sync: claimBufferSync(msg.v), t0: 0 } : null;
+            var rt = RT_LOG_ACTIONS.hasOwnProperty(action) ? { sync: claimBufferSync(msg.v), t0: 0, sliceChars: sliceCharsOf(msg) } : null;
             var settle = function (data, timedOut) {
                 if (rt) logRoundTrip(action, msg.v, rt, data, timedOut);
                 resolve(data);
@@ -1697,7 +1703,8 @@
 
     // ----- [local-rt] round-trip timing (1c685f2e item 0) -----
     // One line per timed request, written by the host to monaco-spike.log verbatim (it adds the timestamp):
-    //   [local-rt] action=<a> v=<v> rtMs=<n> syncBytes=<n> syncMs=<n>[ syncAgeMs=<n>][ timeout=1| null=1]
+    //   [local-rt] action=<a> v=<v> rtMs=<n> syncBytes=<n> syncMs=<n>[ syncAgeMs=<n>][ sliceChars=<n>][ timeout=1| null=1]
+    // sliceChars: what a slice request (R11) carried instead of the buffer.
     // syncBytes = the buffer's JS .length (chars; the host's [buffer-sync] recv line logs the same count), and
     // syncMs = the page-side cost of that sync (getValue + postMessage). A sync is attributed to exactly ONE
     // request: the first timed one that names its `v` (often folding, which fires first on an edit), with
@@ -1718,6 +1725,13 @@
         postToHost(msg);
         unclaimedSync = { v: msg.v, chars: text.length, ms: rtNow() - t0, at: rtNow() };
     }
+    // The chars a slice request carries instead of the synced buffer (R11): span + owner data, or the slots'
+    // text for slotDiagnostics. null for a request that names the synced buffer (`v`).
+    function sliceCharsOf(msg) {
+        if (msg.slice) return (msg.slice.span ? msg.slice.span.text.length : 0) + (msg.slice.ownerData ? msg.slice.ownerData.text.length : 0);
+        if (msg.slots) return msg.slots.reduce(function (n, s) { return n + (s.text ? s.text.length : 0); }, 0);
+        return null;
+    }
     function claimBufferSync(v) {
         if (!unclaimedSync || unclaimedSync.v !== v) return null;
         var s = unclaimedSync;
@@ -1731,6 +1745,7 @@
                 ' rtMs=' + Math.round(rtNow() - rt.t0) +
                 ' syncBytes=' + (s ? s.chars : 0) + ' syncMs=' + (s ? Math.round(s.ms) : 0) +
                 (s ? ' syncAgeMs=' + Math.round(rt.t0 - s.at) : '') +
+                (rt.sliceChars != null ? ' sliceChars=' + rt.sliceChars : '') +
                 (timedOut ? ' timeout=1' : (data == null ? ' null=1' : ''));
             postToHost({ action: 'log', line: line });
         } catch (e) { /* timing must never break a request */ }
@@ -1769,6 +1784,41 @@
     }
     // Model content replaced wholesale (setSource / reload) or the host lost its copy: resend next time.
     function resetBufferSync() { bufSyncedKey = null; }
+
+    // ----- R12: the whole buffer crosses only when typing pauses (1c685f2e) -----
+    // Measured on InventoryTable (3.2 MB): one full sync costs ~30-44 ms on the page plus ~70-110 ms in the
+    // host (spikes to ~400 ms), and folding forced one on EVERY keystroke. So an edit only arms a timer; the
+    // sync is posted IDLE_SYNC_MS after the last edit. Until then the local layer answers from slices (no
+    // buffer needed) and every LSP-bound request for the unsynced version waits (whenIdleSynced). A request
+    // made while nothing is pending (load, a host bufferResync at rest) still syncs at once, as before.
+    var IDLE_SYNC_MS = 400;
+    var idleSyncTimer = null;
+    var idleWaiters = [];        // run once the idle sync has been posted
+    function noteBufferEdit() {
+        if (idleSyncTimer) clearTimeout(idleSyncTimer);
+        idleSyncTimer = setTimeout(idleSync, IDLE_SYNC_MS);
+    }
+    function idleSync() {
+        idleSyncTimer = null;
+        var model = editor && editor.getModel();
+        if (model) { try { syncBufferToHost(model); } catch (e) { /* the next request resyncs */ } }
+        var waiters = idleWaiters;
+        idleWaiters = [];
+        waiters.forEach(function (w) { w(); });
+    }
+    // True while the user is typing and the host does not hold the model's current version.
+    function typingUnsynced(model) { return idleSyncTimer !== null && bufferKey(model) !== bufSyncedKey; }
+    // withBuffer for LSP-bound requests: at once when synced or at rest; otherwise after the idle sync.
+    // Resolves null when the model has moved on meanwhile (a newer request of the same kind replaces it).
+    function whenIdleSynced(model, payload) {
+        if (!typingUnsynced(model)) return Promise.resolve(withBuffer(model, payload));
+        var version = model.getVersionId();
+        return new Promise(function (resolve) {
+            idleWaiters.push(function () {
+                resolve(model.getVersionId() === version && editor && editor.getModel() === model ? withBuffer(model, payload) : null);
+            });
+        });
+    }
 
     function lspKindToMonaco(k) {
         var M = monaco.languages.CompletionItemKind;
@@ -4419,8 +4469,9 @@
         if (key === slotAskedKey) return;
         var myVersion = model.getVersionId();
         var myGen = diagGen;
+        // R11: the slots' own text plus the routine names (no full sync); no span map yet -> the synced buffer.
         var payload;
-        try { payload = withBuffer(model, { ranges: liveEditableRanges() }); }
+        try { payload = slotSlicePayload(model) || withBuffer(model, { ranges: liveEditableRanges() }); }
         catch (e) { return; }
         slotAskedKey = key;
         requestFromHost('slotDiagnostics', payload, diagTimeoutForModel(model))
@@ -4448,12 +4499,21 @@
     // number and the model's version id at dispatch; a reply renders only if no newer request has been
     // sent AND the buffer it was computed for is still the buffer on screen.
     var diagReqSeq = 0;
+    var diagAfterIdle = false;   // a pass is queued behind the idle sync (R12)
 
     function refreshDiagnostics() {
         if (!editor) return;
         refreshSlotDiagnostics();   // every pass, ahead of (and never gated by) the LSP request below
         if (diagInFlight) { diagRerun = true; return; }   // dispatched when the outstanding pass settles
         var model = editor.getModel();
+        // R12: the LSP pass for a version still being typed rides the idle sync instead of forcing one.
+        if (typingUnsynced(model)) {
+            if (!diagAfterIdle) {
+                diagAfterIdle = true;
+                idleWaiters.push(function () { diagAfterIdle = false; refreshDiagnostics(); });
+            }
+            return;
+        }
         var mySeq = ++diagReqSeq;
         var myVersion = model.getVersionId();
         var timeoutMs = diagTimeoutForModel(model);
@@ -4568,7 +4628,134 @@
     var localHoverShared = null;       // {key, promise}: ONE localHover per (model, version, position)
     // A new document (setSource): cached answers and the miss count belong to the previous procedure. The
     // model id survives a setValue, so the (model.id, line, wordStart) key alone would serve them. (5.9)
-    function resetLocalFirstState() { lspComplCache = {}; lspComplMisses = {}; localHoverShared = null; }
+    function resetLocalFirstState() {
+        lspComplCache = {}; lspComplMisses = {}; localHoverShared = null;
+        clearSpanMap();
+    }
+
+    // ----- R11: local requests carry a SLICE of the buffer, never the synced whole (1c685f2e) -----
+    // After each full sync the host pushes a span map {type:'spanMap', v, headerHash, procs:[{name, start,
+    // dataEnd, end, owner, routines}]} (1-based lines of that sync's text). Each proc's start..end and
+    // start..dataEnd become tracked decorations, so they follow the edits made until the next map. A local
+    // request then sends only the caret's procedure (capped at SPAN_CAP_LINES around the caret), the owner's
+    // data section for a Class.Method, and the routine names; the host has the module header by hash. No
+    // map yet (first open) -> the request falls back to the synced buffer (`v`), as before.
+    var SPAN_CAP_LINES = 3000;
+    var spanMap = null;          // {model, headerHash, procs:[{name, owner, routines, spanId, dataId}], ids}
+    function clearSpanMap() {
+        if (spanMap) { try { spanMap.model.deltaDecorations(spanMap.ids, []); } catch (e) { } }
+        spanMap = null;
+    }
+    function wholeLines(model, start, end) {
+        return new monaco.Range(start, 1, end, model.getLineMaxColumn(end));
+    }
+    function applySpanMap(msg) {
+        var model = editor && editor.getModel();
+        if (!model || !msg || !msg.procs) return;
+        // The map describes the text of sync `v`. If the model moved on since that sync, its lines no
+        // longer fit: keep the tracked decorations of the previous map until the next idle sync's map.
+        if (msg.v !== bufSyncSeq || bufferKey(model) !== bufSyncedKey) return;
+        var n = model.getLineCount();
+        var clamp = function (l) { return Math.max(1, Math.min(n, l | 0)); };
+        var sticky = { stickiness: monaco.editor.TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges };
+        var decs = [];
+        msg.procs.forEach(function (p) {
+            var s = clamp(p.start), e = Math.max(s, clamp(p.end)), d = Math.max(s, Math.min(e, clamp(p.dataEnd)));
+            decs.push({ range: wholeLines(model, s, e), options: sticky });
+            decs.push({ range: wholeLines(model, s, d), options: sticky });
+        });
+        if (spanMap && spanMap.model !== model) clearSpanMap();
+        var ids = model.deltaDecorations(spanMap ? spanMap.ids : [], decs);
+        spanMap = {
+            model: model, headerHash: msg.headerHash, ids: ids,
+            procs: msg.procs.map(function (p, i) {
+                return { name: p.name, owner: p.owner, routines: p.routines || [], spanId: ids[2 * i], dataId: ids[2 * i + 1] };
+            })
+        };
+    }
+    // The map's proc whose tracked span holds `line`, with its current range. None -> {proc:null, range: the gap
+    // between the neighbouring procs (the module header, before the first one)}.
+    function spanAt(model, line) {
+        var lo = 1, hi = model.getLineCount();
+        for (var i = 0; i < spanMap.procs.length; i++) {
+            var r = model.getDecorationRange(spanMap.procs[i].spanId);
+            if (!r) continue;
+            if (r.startLineNumber <= line && line <= r.endLineNumber) return { proc: spanMap.procs[i], range: r };
+            if (r.endLineNumber < line) lo = Math.max(lo, r.endLineNumber + 1);
+            else hi = Math.min(hi, r.startLineNumber - 1);
+        }
+        return { proc: null, range: { startLineNumber: lo, endLineNumber: hi } };
+    }
+    var ROUTINE_LABEL_RE = /^([A-Za-z_][A-Za-z0-9_:]*)[ \t]+ROUTINE\b/gim;
+    // `names` plus the ROUTINE labels typed in `texts` (not in the map until the next sync), deduped.
+    function withTypedRoutines(names, texts) {
+        var out = [], seen = {};
+        var add = function (n) { var k = String(n).toUpperCase(); if (!seen[k]) { seen[k] = true; out.push(n); } };
+        (names || []).forEach(add);
+        texts.forEach(function (t) { var m; ROUTINE_LABEL_RE.lastIndex = 0; while ((m = ROUTINE_LABEL_RE.exec(t))) add(m[1]); });
+        return out;
+    }
+    // The slice for a local request at `line`, or null when there is no span map for this model.
+    function buildSlice(model, line) {
+        if (!spanMap || spanMap.model !== model) return null;
+        var hit = spanAt(model, line);
+        var lo = hit.range.startLineNumber, hi = hit.range.endLineNumber;
+        var s = lo, e = hi;
+        if (e - s + 1 > SPAN_CAP_LINES) {
+            s = Math.max(lo, line - Math.floor(SPAN_CAP_LINES / 2));
+            e = Math.min(hi, s + SPAN_CAP_LINES - 1);
+            s = Math.max(lo, e - SPAN_CAP_LINES + 1);
+        }
+        var text = model.getValueInRange(wholeLines(model, s, e));
+        var ownerData = null;
+        if (hit.proc && hit.proc.owner != null && spanMap.procs[hit.proc.owner]) {
+            var od = model.getDecorationRange(spanMap.procs[hit.proc.owner].dataId);
+            if (od) ownerData = { start: od.startLineNumber, text: model.getValueInRange(wholeLines(model, od.startLineNumber, od.endLineNumber)) };
+        }
+        return {
+            headerHash: spanMap.headerHash,
+            span: { start: s, text: text },
+            ownerData: ownerData,
+            routines: withTypedRoutines(hit.proc ? hit.proc.routines : [], [text])
+        };
+    }
+    // The module header as it stands now (line 1 up to the first proc), for a host that lost it (needHeader).
+    function headerText(model) {
+        var first = model.getLineCount() + 1;
+        spanMap.procs.forEach(function (p) {
+            var r = model.getDecorationRange(p.spanId);
+            if (r && r.startLineNumber < first) first = r.startLineNumber;
+        });
+        return first > 1 ? model.getValueInRange(wholeLines(model, 1, first - 1)) : '';
+    }
+    // A local request (localCompletion / localHover) at `position`: a slice when there is a span map, else
+    // the synced buffer. {needHeader:true} -> send the header and retry ONCE; a second needHeader = null.
+    function requestLocal(action, model, position, extra) {
+        var payload = { line: position.lineNumber, column: position.column };
+        if (extra) for (var k in extra) if (extra.hasOwnProperty(k)) payload[k] = extra[k];
+        var slice = buildSlice(model, position.lineNumber);
+        if (slice) payload.slice = slice;
+        else payload = withBuffer(model, payload);
+        var ask = function () { return requestFromHost(action, payload, LOCAL_TIMEOUT_MS); };
+        return ask().then(function (resp) {
+            if (!resp || !resp.needHeader) return resp;
+            if (!slice || !spanMap) return null;
+            postToHost({ action: 'headerSync', hash: slice.headerHash, text: headerText(model) });
+            return ask().then(function (again) { return again && !again.needHeader ? again : null; });
+        });
+    }
+    // slotDiagnostics' slice: each live slot's text, plus the routine names of the procs holding them.
+    function slotSlicePayload(model) {
+        if (!spanMap || spanMap.model !== model) return null;
+        var names = [], seen = {};
+        var slots = liveEditableRanges().map(function (r) {
+            var hit = spanAt(model, r[0]);
+            if (hit.proc && !seen[hit.proc.spanId]) { seen[hit.proc.spanId] = true; names = names.concat(hit.proc.routines); }
+            return { start: r[0], text: model.getValueInRange(wholeLines(model, r[0], r[1])) };
+        });
+        // procedureName: null - the page does not know it; the host uses its own.
+        return { procedureName: null, routines: withTypedRoutines(names, []), slots: slots };
+    }
 
     // Can cached LSP completion `c` answer a query at (line, wordStart) with typed `prefix`? Only when the
     // prefix EXTENDS the cached one. Below 2 chars the host skips its bare-prefix merges (globals, CodeGraph),
@@ -4581,10 +4768,13 @@
         return p.length === cp.length || cp.length >= 2 || qualified;
     }
     // The cached LSP completion that serves this query, or a new request that becomes the cache entry.
+    // While the version is being typed and unsynced (R12) no request is made: an already-answered stand-in
+    // with no items, so the list is local-only (incomplete:true) until the re-query after the idle sync.
     function lspCompletionFor(model, position, wordStart, prefix, qualified) {
         var id = modelKey(model);
         var c = lspComplCache[id];
         if (lspCacheServes(c, position.lineNumber, wordStart, prefix, qualified)) return c;
+        if (typingUnsynced(model)) return { prefix: prefix, done: true, resp: null, promise: Promise.resolve(null) };
         c = { line: position.lineNumber, wordStart: wordStart, prefix: prefix, done: false, resp: null, sentAt: rtNow() };
         // Captured, not re-read at reply time: a late reply from before a setSource must reset the OLD
         // document's miss count, not the new one's (resetLocalFirstState replaces the object).
@@ -4637,7 +4827,7 @@
     function sharedLocalHover(model, position) {
         var key = bufferKey(model) + ':' + position.lineNumber + ':' + position.column;
         if (localHoverShared && localHoverShared.key === key) return localHoverShared.promise;
-        var p = requestFromHost('localHover', withBuffer(model, { line: position.lineNumber, column: position.column }), LOCAL_TIMEOUT_MS);
+        var p = requestLocal('localHover', model, position, null);
         localHoverShared = { key: key, promise: p };
         return p;
     }
@@ -4755,10 +4945,10 @@
                 // "Local-first completion" block above for the race, the cache and skip mode.
                 var prefix = pfx ? pfx[0] : '';
                 var qualified = /[.:?]/.test(before.charAt(startCol - 2));
-                var localPayload = { line: position.lineNumber, column: position.column };
-                if (context && context.triggerCharacter) localPayload.triggerCharacter = context.triggerCharacter;
-                // Local first, so it is the request that carries a needed bufferSync ahead of the LSP's.
-                var localP = requestFromHost('localCompletion', withBuffer(model, localPayload), LOCAL_TIMEOUT_MS);
+                // Local first: a slice (R11), or - no span map yet - the request that carries a needed
+                // bufferSync ahead of the LSP's.
+                var localP = requestLocal('localCompletion', model, position,
+                    context && context.triggerCharacter ? { triggerCharacter: context.triggerCharacter } : null);
                 var lsp = lspCompletionFor(model, position, startCol, prefix, qualified);
                 return Promise.all([localP, lspWithinBudget(lsp, modelKey(model))])
                     .then(function (r) {
@@ -4907,7 +5097,9 @@
                         var localCard = local && local.contents;
                         if (localCard && local.authoritative) return null;   // the local card owns it: no LSP call
                         var localSymbol = localCard ? hoverCardSymbol(localCard) : '';
-                        return requestFromHost('hover', withBuffer(model, { line: position.lineNumber, column: position.column }))
+                        // R12: over a version still being typed, the LSP is asked after the idle sync.
+                        return whenIdleSynced(model, { line: position.lineNumber, column: position.column })
+                            .then(function (payload) { return payload ? requestFromHost('hover', payload) : null; })
                             .then(function (resp) {
                                 if (!resp || !resp.contents) return null;
                                 // Same symbol as the local card already on screen: one card, not two.
@@ -4949,7 +5141,9 @@
                 var sigLine = model.getLineContent(position.lineNumber);
                 // A '(' or ',' typed inside a string/comment is text, not a call site (683ded6c).
                 if (isInClarionComment(sigLine, position.column - 1) || isInClarionString(sigLine, position.column - 1)) return null;
-                return requestFromHost('signatureHelp', withBuffer(model, { line: position.lineNumber, column: position.column }))
+                // R12: after the idle sync when the version is still being typed (null = superseded).
+                return whenIdleSynced(model, { line: position.lineNumber, column: position.column })
+                    .then(function (payload) { return payload ? requestFromHost('signatureHelp', payload) : null; })
                     .then(function (resp) {
                         var h = resp && resp.signatureHelp;
                         if (!h || !h.signatures || !h.signatures.length) return null;
@@ -7106,11 +7300,15 @@
         var op = document.getElementById('outlinePanel');
         if (!op || op.classList.contains('hidden') || !editor) return;
         var mySeq = ++outlineSeq;
-        requestFromHost('documentStructure', withBuffer(editor.getModel(), {}))
-            .then(function (data) {
-                if (mySeq !== outlineSeq) return;   // a newer refresh superseded this one
-                outlineSymbols = regroupSymbols((data && data.symbols) ? data.symbols : []);
-                renderOutlineCurrent();
+        // R12: an outline for a version being typed waits for the idle sync (null = superseded meanwhile).
+        whenIdleSynced(editor.getModel(), {})
+            .then(function (payload) {
+                if (!payload || mySeq !== outlineSeq) return;
+                return requestFromHost('documentStructure', payload).then(function (data) {
+                    if (mySeq !== outlineSeq) return;   // a newer refresh superseded this one
+                    outlineSymbols = regroupSymbols((data && data.symbols) ? data.symbols : []);
+                    renderOutlineCurrent();
+                });
             })
             .catch(function () {});
     }
@@ -7992,6 +8190,8 @@
                 if (resolver) { delete pendingRequests[msg.reqId]; resolver(msg.data); }
             } else if (msg.type === 'bufferResync') {
                 resetBufferSync();   // the host has no copy of the version we stamped — resend with the next request (16d140e9)
+            } else if (msg.type === 'spanMap') {
+                applySpanMap(msg);   // procedure spans of the last full sync, tracked as decorations (1c685f2e R11)
             } else if (msg.type === 'insertText') {
                 insertTextAtCursor(msg.text);
             } else if (msg.type === 'moveCaretToPoint') {

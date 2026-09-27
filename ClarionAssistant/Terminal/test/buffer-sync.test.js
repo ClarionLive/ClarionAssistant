@@ -143,7 +143,7 @@ function load(opts) {
     });
     const exportsList = ['requestFromHost', 'pushFileState', '__foldingCallback', 'cmdStructureDesigner', 'wireCtrlClickDefinition',
         'refreshDiagnostics', 'scheduleDiagnostics', 'registerClarionProviders', 'installFindKeyInterceptor', 'refreshOutline',
-        'resetBufferSync', 'withBuffer', 'diagTimeoutFor', 'resetDiagnosticsForNewSource'];
+        'resetBufferSync', 'withBuffer', 'diagTimeoutFor', 'resetDiagnosticsForNewSource', 'noteBufferEdit'];
     // Only names the page really declares (an undeclared one would resolve to a proxy stub).
     const ret = '{' + exportsList.map(n => n + ': ' + (DECLARED.has(n) || n === '__foldingCallback' ? n : 'undefined')).join(', ') + '}';
     // eslint-disable-next-line no-new-func
@@ -173,14 +173,15 @@ const ACTIONS = {
         await flush();
     },
     localHover: (e) => e.providers.hoverLocal.provideHover(e.model, pos),
-    signatureHelp: (e) => e.providers.signatureHelp.provideSignatureHelp(e.model, pos, null, {}),
-    foldingRanges: (e) => e.api.__foldingCallback(e.model),
+    // R12 (1c685f2e): these take their payload from whenIdleSynced, so the request posts a microtask later.
+    signatureHelp: async (e) => { e.providers.signatureHelp.provideSignatureHelp(e.model, pos, null, {}); await flush(); },
+    foldingRanges: async (e) => { e.api.__foldingCallback(e.model); await flush(); },
     diagnostics: (e) => e.api.refreshDiagnostics(),
     slotDiagnostics: (e) => e.api.refreshDiagnostics(),   // 1c685f2e item 7: every pass asks the slot checks too
     definition: (e) => fireKey(e, { keyCode: 123, key: 'F12' }),
     implementation: (e) => fireKey(e, { keyCode: 123, key: 'F12', ctrlKey: true }),
     definitionCtrlClick: (e) => e.mouseDown({ event: { ctrlKey: true }, target: { type: 6, position: { lineNumber: 2, column: 4 } } }),
-    documentStructure: (e) => e.api.refreshOutline(),
+    documentStructure: async (e) => { e.api.refreshOutline(); await flush(); },
     openDesigner: (e) => e.api.cmdStructureDesigner(),
 };
 function fireKey(e, init) {
@@ -216,7 +217,7 @@ async function main() {
         const e = load();
         ACTIONS.hover(e);                      // first request syncs
         const mark = e.posted.length;
-        for (let i = 0; i < 10; i++) { ACTIONS.hover(e); ACTIONS.completion(e); ACTIONS.foldingRanges(e); }
+        for (let i = 0; i < 10; i++) { ACTIONS.hover(e); ACTIONS.completion(e); await ACTIONS.foldingRanges(e); }
         const msgs = e.since(mark);
         check('30 requests without an edit post no bufferSync', msgs.filter(m => m.action === 'bufferSync').length === 0);
         check('...and none of them carries the buffer', msgs.every(m => !('buffer' in m) && !('text' in m)));
@@ -230,7 +231,7 @@ async function main() {
         const v1 = e.since(0).find(m => m.action === 'hover').v;
         e.model.edit('PROGRAM\r\n  CODE\r\n  x = 1\r\n');
         const mark = e.posted.length;
-        ACTIONS.completion(e); ACTIONS.hover(e); ACTIONS.foldingRanges(e);
+        ACTIONS.completion(e); ACTIONS.hover(e); await ACTIONS.foldingRanges(e);
         const msgs = e.since(mark);
         const syncs = msgs.filter(m => m.action === 'bufferSync');
         check('one bufferSync for the edited version', syncs.length === 1 && msgs[0].action === 'bufferSync', 'syncs=' + syncs.length);
@@ -261,6 +262,27 @@ async function main() {
         ACTIONS.completion(e);
         check('4.17 after a bufferResync the next local request resends the buffer',
             e.since(m2).filter(m => m.action === 'bufferSync').length === 1);
+    }
+
+    section('R12 (1c685f2e): while typing, folding / signature help / outline wait for the idle sync');
+    for (const name of ['foldingRanges', 'signatureHelp', 'documentStructure']) {
+        const e = load();
+        await ACTIONS.foldingRanges(e);                   // synced at rest
+        const mark = e.posted.length;
+        e.model.edit('PROGRAM\r\n  CODE\r\n  typed\r\n');
+        e.api.noteBufferEdit();                           // a keystroke
+        await ACTIONS[name](e);
+        check(name + ': nothing is posted while typing (no bufferSync, no request)', e.since(mark).length === 0,
+            JSON.stringify(e.since(mark).map(m => m.action)));
+        const idle = e.timers.filter(t => t.fn.name === 'idleSync').pop();
+        check('...one idle-sync timer of 400 ms is armed', !!idle && idle.ms === 400);
+        if (idle) idle.fn();
+        await flush();
+        const msgs = e.since(mark);
+        const req = msgs.find(m => m.action === name);
+        check(name + ': after the pause, ONE bufferSync, then the request naming it',
+            msgs.filter(m => m.action === 'bufferSync').length === 1 && msgs[0].action === 'bufferSync' && req && req.v === msgs[0].v,
+            JSON.stringify(msgs.map(m => m.action)));
     }
 
     section('Model swap / setSource / host resync force a resend');
@@ -322,8 +344,12 @@ async function main() {
                          'documentStructure', 'openDesigner', 'openDesignerCreate', 'localCompletion', 'localHover', 'slotDiagnostics']) {
             let n = (html.match(new RegExp("requestFromHost\\('" + a + "',\\s*withBuffer\\(", 'g')) || []).length;
             // diagnostics (and the slot checks) build the payload first (so a throw cannot wedge the in-flight slot)
-            if ((a === 'diagnostics' || a === 'slotDiagnostics') && /payload = withBuffer\(model, \{ ranges: liveEditableRanges\(\) \}\)/.test(html) &&
+            if ((a === 'diagnostics' || a === 'slotDiagnostics') && /withBuffer\(model, \{ ranges: liveEditableRanges\(\) \}\)/.test(html) &&
                 new RegExp("requestFromHost\\('" + a + "', payload,").test(html)) n++;
+            // R12: LSP-bound requests take their payload from whenIdleSynced (withBuffer once typing pauses);
+            // R11: the local ones go through requestLocal (a slice, or withBuffer with no span map).
+            if (new RegExp("requestFromHost\\('" + a + "', payload[,)]").test(html) && /return Promise\.resolve\(withBuffer\(model, payload\)\)/.test(html)) n++;
+            if (new RegExp("requestLocal\\('" + a + "'").test(html) && /else payload = withBuffer\(model, payload\);/.test(html)) n++;
             check(a + ' goes through withBuffer', n >= 1, 'found ' + n);
         }
     }
@@ -457,7 +483,7 @@ async function main() {
         // 0.4: a second request with no edit carries no sync.
         let mark = e.posted.length;
         e.clock = 2000;
-        ACTIONS.foldingRanges(e);
+        await ACTIONS.foldingRanges(e);
         e.clock = 2010;
         e.reply(lastReq(e, 'foldingRanges').reqId, { ranges: [] });
         await flush();
@@ -469,7 +495,7 @@ async function main() {
         // 0.5: two requests after one edit share one sync; it is attributed to exactly ONE of them.
         e.model.edit(text.slice(0, -1) + 'Y');
         mark = e.posted.length;
-        ACTIONS.foldingRanges(e);
+        await ACTIONS.foldingRanges(e);
         ACTIONS.completion(e);
         const f = lastReq(e, 'foldingRanges'), c = lastReq(e, 'completion');
         e.reply(c.reqId, { items: [] }); e.reply(f.reqId, { ranges: [] });
@@ -482,7 +508,7 @@ async function main() {
         // 0.6: a page timeout is logged (timeout=1), a host null as null=1.
         const t = load();
         t.clock = 50;
-        ACTIONS.foldingRanges(t);
+        await ACTIONS.foldingRanges(t);
         const giveUp = t.timers.filter(x => x.ms === 1500).pop();
         t.clock = 1550;
         giveUp.fn();
@@ -491,7 +517,7 @@ async function main() {
         check('0.6 a timed-out request logs rtMs=<timeout> timeout=1', L.length === 1 && L[0] && L[0].flag === 'timeout=1' && L[0].rtMs === 1500,
             JSON.stringify(logs(t)));
         const n = load();
-        ACTIONS.foldingRanges(n);
+        await ACTIONS.foldingRanges(n);
         n.reply(lastReq(n, 'foldingRanges').reqId, null);
         await flush();
         L = logs(n).map(parse);
@@ -499,7 +525,7 @@ async function main() {
 
         // Untimed actions log nothing (signature help, definition...): the log stays at the measured set.
         const u = load();
-        ACTIONS.signatureHelp(u);
+        await ACTIONS.signatureHelp(u);
         u.reply(lastReq(u, 'signatureHelp').reqId, null);
         await flush();
         check('an untimed action (signatureHelp) logs no line', logs(u).length === 0);
@@ -541,7 +567,7 @@ async function main() {
         m0 = b.posted.length;
         for (let i = 0; i < 10; i++) {
             b.model.edit(b.model.getValue().slice(0, -1) + String.fromCharCode(65 + i));
-            ACTIONS.hover(b); ACTIONS.completion(b); ACTIONS.foldingRanges(b); ACTIONS.diagnostics(b);
+            ACTIONS.hover(b); ACTIONS.completion(b); await ACTIONS.foldingRanges(b); ACTIONS.diagnostics(b);
             // the host answers diagnostics before the next edit (so the one-in-flight gate never holds one back)
             const d = b.since(0).filter(m => m.action === 'diagnostics').pop();
             if (d) b.reply(d.reqId, { markers: [] });
