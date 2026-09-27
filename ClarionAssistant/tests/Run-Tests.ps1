@@ -185,6 +185,20 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                            "Services\LspTrace.cs", "Services\EncodingHelper.cs", "CodeGraph\Parsing\ClarionBuiltins.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
                Args = @((Join-Path $TestDir "fixtures\local-scope"), (Join-Path $RepoDir "Services\LocalScopeIndex.cs")) }
+            # 1c685f2e: held-open NOCASE symbol lookups - range queries and their plans, the parameter
+            # leak, inherited members across both DBs, the old-schema fallback, and the connection
+            # lifecycle (a held handle must never block the reindex delete). Synthetic x86 SQLite DBs.
+            @{ Name = "SymbolIndex.Test"
+               Sources = @("tests\SymbolIndex.Test.cs", "Services\SymbolIndex.cs",
+                           "CodeGraph\Graph\CodeGraphProvider.cs", "CodeGraph\Graph\CodeGraphDatabase.cs",
+                           "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
+                           "CodeGraph\Parsing\Models\SolutionProject.cs", "CodeGraph\Parsing\Models\ParseResult.cs",
+                           "Services\LspClient.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Data.dll", "System.Web.Extensions.dll")
+               RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
+               Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
+               Platform = "x86"
+               Args = @($RepoDir) }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"

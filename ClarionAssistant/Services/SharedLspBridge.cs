@@ -712,7 +712,7 @@ namespace ClarionAssistant.Services
                             {
                                 Label = s.Name,
                                 Kind = 21,   // Constant (equates)
-                                Detail = CgCompletionDetail(s),
+                                Detail = SymbolIndex.CompletionDetail(s),
                                 InsertText = insert
                             });
                         }
@@ -2179,13 +2179,13 @@ namespace ClarionAssistant.Services
             }
 
             // (4) CodeGraph global symbols (procedures/functions/classes/vars) — project .codegraph.db.
-            MergeDbBarePrefix(primary, seen, prefix, ResolveCodeGraphDb(filePath), bareNamesOnly: false);
+            MergeDbBarePrefix(primary, seen, prefix, ResolveCodeGraphDb(filePath));
 
             // (5) ClarionGraph static LIBRARY symbols (ABC + library classes, equates) — version-keyed
             // cache (ticket 6e8f2439). Bare-prefix offers class/interface NAMES + equates; ClassName.Method
             // entries are skipped here (they belong to member-access completion). No-op until the version
             // DB is built. Additive + defensive: only ADDS, never overrides an LSP item.
-            MergeDbBarePrefix(primary, seen, prefix, ClarionGraphService.ResolveDbPath(), bareNamesOnly: true);
+            MergeDbBarePrefix(primary, seen, prefix, ClarionGraphService.ResolveDbPath());
 
             // (6) Dictionary TABLE names (e.g. "Cus" → "Customers") from the ingested .schemagraph.db.
             // Deliberately does NOT gate on `seen` — a table name colliding with a code symbol is a rare,
@@ -2206,43 +2206,23 @@ namespace ClarionAssistant.Services
 
         /// <summary>
         /// Merge true-prefix global symbols from a CodeGraph-schema DB into the bare-prefix completion
-        /// list. <paramref name="bareNamesOnly"/> skips dotted ClassName.Method entries (used for the
-        /// ClarionGraph library DB, whose methods belong to member-access, not bare-prefix). Dedupes via
-        /// <paramref name="seen"/>; no-op when the DB is missing/unopenable. Never throws.
+        /// list, through SymbolIndex's held-open connection and NOCASE range query (1c685f2e). The query
+        /// itself drops procedure-private rows - scope 'local' AND 'parameter' (every same-prefix
+        /// parameter in the solution used to leak in as a "global") - and dotted ClassName.Method rows,
+        /// which belong to member access. Dedupes via <paramref name="seen"/>; no-op when the DB is
+        /// missing or busy. Never throws.
         /// </summary>
         private static void MergeDbBarePrefix(
-            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen, string prefix,
-            string db, bool bareNamesOnly)
+            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen, string prefix, string db)
         {
             try
             {
-                if (string.IsNullOrEmpty(db) || !File.Exists(db)) return;
-                using (var p = new CodeGraphProvider())
+                var idx = SymbolIndex.For(db);
+                if (idx == null) return;
+                foreach (var s in idx.ByPrefix(prefix, 100))
                 {
-                    if (!p.Open(db)) return;
-                    var syms = p.FindSymbols(prefix, 100);   // substring match, prefix-ordered first
-                    if (syms == null) return;
-                    foreach (var s in syms)
-                    {
-                        if (s == null || string.IsNullOrEmpty(s.Name)) continue;
-                        // A "local" symbol is procedure-private (CodeGraph's own scoping, set by
-                        // ClarionParser) — never a valid completion candidate outside the procedure
-                        // that declared it, let alone from a different file across the whole
-                        // solution. FindSymbols() has no scope awareness (plain name LIKE match), so
-                        // this merge must filter it out itself instead of surfacing every same-prefix
-                        // local from every procedure in every file as if it were global.
-                        if (string.Equals(s.Scope, "local", StringComparison.OrdinalIgnoreCase)) continue;
-                        if (!s.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue; // true prefix only
-                        if (bareNamesOnly && s.Name.IndexOf('.') >= 0) continue; // ClassName.Method → member-access only
-                        if (!seen.Add(s.Name)) continue;
-                        primary.Add(new LspClient.CompletionItemInfo
-                        {
-                            Label = s.Name,
-                            Kind = CgCompletionKind(s.Type),
-                            Detail = CgCompletionDetail(s),
-                            InsertText = s.Name
-                        });
-                    }
+                    if (s == null || string.IsNullOrEmpty(s.Name) || !seen.Add(s.Name)) continue;
+                    primary.Add(SymbolIndex.ToCompletionItem(s));
                 }
             }
             catch { }
@@ -2266,43 +2246,6 @@ namespace ClarionAssistant.Services
             }
             catch { }
             return null;
-        }
-
-        // CodeGraph symbol type → LSP CompletionItemKind int (Monaco icon).
-        private static int CgCompletionKind(string type)
-        {
-            switch ((type ?? "").ToLowerInvariant())
-            {
-                case "class": return 7;       // Class
-                case "interface": return 8;   // Interface
-                case "procedure": return 3;   // Function
-                case "function": return 3;    // Function
-                case "routine": return 2;     // Method
-                case "variable": return 6;    // Variable
-                default: return 6;            // Variable
-            }
-        }
-
-        private static string CgCompletionDetail(CodeGraphSymbol s)
-        {
-            // Variables: Params holds the ACTUAL declared Clarion type (e.g. "STRING(30)", "DECIMAL(13,2)")
-            // -- s.Type is just the generic symbol kind ("variable") and would show that word instead of the
-            // type. Scope is "local" (procedure/routine-private) or "module" (file-scope, visible solution-
-            // wide via this DB) -- shown as Local/Global per the same wording the live-buffer variable merges
-            // use, so a variable reads the same whether it came from the current buffer or cross-file CodeGraph.
-            if (string.Equals(s.Type, "variable", StringComparison.OrdinalIgnoreCase))
-            {
-                string vt = !string.IsNullOrEmpty(s.Params) ? s.Params : "variable";
-                bool isLocal = string.Equals(s.Scope, "local", StringComparison.OrdinalIgnoreCase);
-                vt += "  (" + (isLocal ? "local" : "global") + ")";
-                if (!string.IsNullOrEmpty(s.ProjectName)) vt += "  (" + s.ProjectName + ")";
-                return vt;
-            }
-
-            string t = string.IsNullOrEmpty(s.Type) ? "" : s.Type;
-            if (!string.IsNullOrEmpty(s.ReturnType)) t += " : " + s.ReturnType;
-            if (!string.IsNullOrEmpty(s.ProjectName)) t += "  (" + s.ProjectName + ")";
-            return string.IsNullOrEmpty(t) ? null : t;
         }
 
         // === Late-merge regexes (the buffer-local parsing lives in LocalScopeIndex) ===
@@ -2599,31 +2542,18 @@ namespace ClarionAssistant.Services
         {
             try
             {
-                if (string.IsNullOrEmpty(db) || !File.Exists(db)) return;
-                using (var p = new CodeGraphProvider())
+                var idx = SymbolIndex.For(db);
+                if (idx == null) return;
+                foreach (var s in idx.DirectMembers(className, 500))
                 {
-                    if (!p.Open(db)) return;
-                    var syms = p.FindMembersOfParent(className, 500);
-                    if (syms == null) return;
-                    foreach (var s in syms)
-                    {
-                        if (s == null || string.IsNullOrEmpty(s.Name)) continue;
-                        int dot = s.Name.LastIndexOf('.');
-                        if (dot == s.Name.Length - 1) continue;   // malformed "Parent." row — no member suffix
-                        string member = dot >= 0 ? s.Name.Substring(dot + 1) : s.Name;
-                        if (collectInto != null) collectInto.Add(member);   // full set (unfiltered) for scoping
-                        if (partial.Length > 0 && !member.StartsWith(partial, StringComparison.OrdinalIgnoreCase)) continue;
-                        if (!seen.Add(member)) continue;
-                        // Members are a mix of methods (type=procedure) and class-typed data members
-                        // (type=class) — map each to its real icon rather than labelling all "method".
-                        primary.Add(new LspClient.CompletionItemInfo
-                        {
-                            Label = member,
-                            Kind = s.Type == "procedure" || s.Type == "function" ? 2 /*Method*/ : CgCompletionKind(s.Type),
-                            Detail = CgCompletionDetail(s),
-                            InsertText = member
-                        });
-                    }
+                    if (s == null || string.IsNullOrEmpty(s.Name)) continue;
+                    string member = SymbolIndex.MemberName(s.Name);
+                    if (member == null) continue;                        // malformed "Parent." row
+                    if (collectInto != null) collectInto.Add(member);   // full set (unfiltered) for scoping
+                    if (partial.Length > 0 && !member.StartsWith(partial, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!seen.Add(member)) continue;
+                    // Methods (type=procedure) and class-typed data members (type=class) get their own icons.
+                    primary.Add(SymbolIndex.ToMemberItem(s));
                 }
             }
             catch { }

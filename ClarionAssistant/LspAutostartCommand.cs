@@ -148,6 +148,8 @@ namespace ClarionAssistant
         // shared ClarionLsp addin — it owns its own lifecycle.
         private static void OnSolutionClosed(object sender, EventArgs e)
         {
+            // Completion's held-open symbol DB connections belong to the closed solution (1c685f2e).
+            try { SymbolIndex.ReleaseAll(); } catch { }
             try
             {
                 if (SharedLspBridge.IsSharedActive) return;
