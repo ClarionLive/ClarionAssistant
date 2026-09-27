@@ -26,6 +26,9 @@ namespace ClarionAssistant.Services
         private readonly AutoResetEvent _responseReceived = new AutoResetEvent(false);
         private Thread _readerThread;
         private volatile bool _running;
+        // Set by Stop()/KillForShutdown so an exit THEY caused is not reported as a crash. Not _running:
+        // the reader loop also clears _running when stdout closes, which races the Exited event.
+        private volatile bool _stopRequested;
         private Dictionary<string, object> _pendingUpdatePaths;
 
         // Tracks the last file path any LSP tool operated on. Used by the header
@@ -58,6 +61,63 @@ namespace ClarionAssistant.Services
         private string _lastRawNotificationPreview;
 
         public bool IsRunning { get { return _running && _process != null && !_process.HasExited; } }
+
+        /// <summary>
+        /// Where the server's LIFECYCLE lines go, in addition to <see cref="LspTrace"/>: the node process
+        /// exiting (code + stderr tail) and the reader loop ending. The addin points this at
+        /// monaco-spike.log (LspAutostartCommand), because it installs no LspTrace sink and a node crash
+        /// used to leave no line anywhere, only `IsRunning=false` until the restart timer.
+        /// (1c685f2e item 8)
+        /// </summary>
+        public static volatile Action<string> LifecycleLog;
+
+        private static void WriteLifecycle(string line)
+        {
+            LspTrace.Write(line);
+            var sink = LifecycleLog;
+            if (sink == null) return;
+            try { sink(line); } catch { }
+        }
+
+        /// <summary>The last few stderr lines, joined with " | " (for the exit line).</summary>
+        private string StderrTail(int lines)
+        {
+            lock (_debugLock)
+            {
+                var all = _stderrBuffer.ToArray();
+                int skip = Math.Max(0, all.Length - lines);
+                var tail = new List<string>();
+                for (int i = skip; i < all.Length; i++) tail.Add(all[i]);
+                string s = string.Join(" | ", tail.ToArray());
+                return s.Length > 600 ? s.Substring(s.Length - 600) : s;
+            }
+        }
+
+        /// <summary>
+        /// The node process exited. Deliberate when <see cref="Stop"/> / KillForShutdown took it (they
+        /// clear <c>_running</c> or the process field first); anything else is a crash, logged with the
+        /// exit code and the stderr tail, and the client stops claiming to run.
+        /// </summary>
+        private void OnServerProcessExited(Process proc)
+        {
+            try
+            {
+                // Let the async stderr reader drain the last lines (e.g. "FATAL: heap out of memory"):
+                // WaitForExit() with no timeout waits for EOF on the redirected async streams. Bounded,
+                // in case a grandchild still holds the pipe.
+                try { System.Threading.Tasks.Task.Run(() => proc.WaitForExit()).Wait(1000); } catch { }
+
+                bool current = ReferenceEquals(_process, proc);
+                bool deliberate = !current || _stopRequested;
+                int code = int.MinValue;
+                try { code = proc.ExitCode; } catch { }
+                if (current) _running = false;
+                WriteLifecycle("[LSP] node exited code=" + (code == int.MinValue ? "?" : code.ToString()) +
+                    (deliberate ? " (stopped by CA)" : " UNEXPECTED - client marked not running") +
+                    " stderrTail=[" + StderrTail(5) + "]");
+            }
+            catch { }
+        }
 
         /// <summary>
         /// The most-recently-started LspClient. The app runs a single language
@@ -113,6 +173,7 @@ namespace ClarionAssistant.Services
         {
             if (_running) return true;
             LastSpawnError = null;
+            _stopRequested = false;
             // A new server session: status support is re-detected from its own traffic (see Stop).
             _serverSendsDiagnosticsStatus = false;
 
@@ -198,6 +259,12 @@ namespace ClarionAssistant.Services
                             _stderrBuffer.Dequeue();
                     }
                 };
+
+                // 1c685f2e item 8: a node crash (e.g. heap exhaustion on a 3.2 MB document) gets a log line
+                // with its exit code and stderr tail, and the client stops reporting itself as running.
+                var startedProc = _process;
+                startedProc.EnableRaisingEvents = true;
+                startedProc.Exited += (s, e) => OnServerProcessExited(startedProc);
 
                 try { _process.Start(); }
                 catch (Exception spawnEx)
@@ -358,6 +425,7 @@ namespace ClarionAssistant.Services
         {
             var inst = Active;
             if (inst == null) return;
+            inst._stopRequested = true;
             inst._running = false;
 
             // Claim the Process atomically so a concurrent Stop() (graceful path, reachable during teardown)
@@ -412,6 +480,7 @@ namespace ClarionAssistant.Services
 
         public void Stop()
         {
+            _stopRequested = true;
             _running = false;
 
             try
@@ -1469,13 +1538,17 @@ namespace ClarionAssistant.Services
 
         private void ReadLoop()
         {
+            // The process THIS loop reads. Stop() nulls _process and a later Start() replaces it, so the
+            // exit bookkeeping below must only ever touch the run it belongs to.
+            var proc = _process;
+            string endReason = "loop condition (stopped, or the process exited)";
             try
             {
-                var stream = _process.StandardOutput.BaseStream;
-                while (_running && !_process.HasExited)
+                var stream = proc.StandardOutput.BaseStream;
+                while (_running && !proc.HasExited)
                 {
                     string json = ReadMessage(stream);
-                    if (json == null) break;
+                    if (json == null) { endReason = "stdout closed or an unreadable frame header"; break; }
 
                     try
                     {
@@ -1510,7 +1583,21 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex)
             {
+                endReason = ex.GetType().Name + ": " + ex.Message;
                 LspTrace.Write("[LSP] ReadLoop terminated: " + ex.Message);
+            }
+
+            // 1c685f2e item 8: with the reader gone no response can ever arrive, so the client must stop
+            // claiming to run. Before this, a server that closed stdout (or a read that threw) left
+            // IsRunning=true while every request timed out. Now the restart path (LspService, the 5 s
+            // fallback timer) sees it, and disposes the client, which ends the orphaned process.
+            if (_running && ReferenceEquals(_process, proc))
+            {
+                _running = false;
+                bool alive = false;
+                try { alive = proc != null && !proc.HasExited; } catch { }
+                WriteLifecycle("[LSP] reader stopped while running (" + endReason + "); process " +
+                    (alive ? "still alive" : "exited") + " - client marked not running");
             }
         }
 

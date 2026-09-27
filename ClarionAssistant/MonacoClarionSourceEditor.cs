@@ -1073,7 +1073,9 @@ namespace ClarionAssistant
         {
             int reqId, line, col; string buffer;
             if (!ParseLspRequest(editor, rawJson, out reqId, out line, out col, out buffer)) return;
-            System.Threading.Tasks.Task.Run(() =>
+            // 1c685f2e item 8: newest-wins "folding" lane (see ModernEmbeditorViewContent.HandleFoldingRanges).
+            // A displaced request is answered null by the lane, and the page keeps its local folds.
+            editor.RunLatest("folding", reqId, () =>
             {
                 List<Dictionary<string, object>> ranges = null;
                 try

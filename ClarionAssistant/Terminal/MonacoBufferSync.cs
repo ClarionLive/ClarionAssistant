@@ -148,14 +148,29 @@ namespace ClarionAssistant.Terminal
         /// </summary>
         public static bool TryParseSync(string json, string textKey, out long v, out string text)
         {
+            return TryParseSync(json, textKey, out v, out text, null);
+        }
+
+        /// <summary>
+        /// <see cref="TryParseSync(string,string,out long,out string)"/>, reporting every refusal to
+        /// <paramref name="log"/> as one <c>[buffer-sync] parse failed</c> line. A lost sync used to be
+        /// silent (swallowed, or Debug.WriteLine only), and in the log it looked only like a later request's
+        /// <c>lookup=Missing</c>. On a 3.2 MB buffer in the 32-bit IDE the likely cause is a managed OOM
+        /// here, so that is named explicitly. (1c685f2e item 8)
+        /// </summary>
+        public static bool TryParseSync(string json, string textKey, out long v, out string text, Action<string> log)
+        {
             v = -1; text = null;
-            if (string.IsNullOrEmpty(json)) return false;
+            long headV = -1;
+            if (string.IsNullOrEmpty(json)) { LogParseFailure(log, textKey, headV, 0, "empty message"); return false; }
             try
             {
                 int start;
                 var head = ParseHeader(json, textKey, out start);
                 if (head != null)
                 {
+                    long hv;
+                    if (TryGetLong(head, "v", out hv)) headV = hv;
                     int after;
                     string s = UnescapeJsonString(json, start, out after);
                     if (s != null && IsObjectEnd(json, after) && TryGetLong(head, "v", out v))
@@ -167,12 +182,63 @@ namespace ClarionAssistant.Terminal
                 // Not our shape: pay for the general parser (rare — hand-built or older messages).
                 var d = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(json) as Dictionary<string, object>;
                 object o;
-                if (d == null || !d.TryGetValue(textKey, out o) || !(o is string)) return false;
-                if (!TryGetLong(d, "v", out v)) return false;
+                if (d == null || !d.TryGetValue(textKey, out o) || !(o is string))
+                {
+                    LogParseFailure(log, textKey, headV, json.Length, "no string '" + textKey + "' field");
+                    return false;
+                }
+                if (!TryGetLong(d, "v", out v)) { v = -1; LogParseFailure(log, textKey, headV, json.Length, "no v"); return false; }
                 text = (string)o;
                 return true;
             }
-            catch { v = -1; text = null; return false; }
+            catch (OutOfMemoryException)
+            {
+                v = -1; text = null;
+                LogParseFailure(log, textKey, headV, json.Length, "OutOfMemoryException (32-bit address space)");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                v = -1; text = null;
+                LogParseFailure(log, textKey, headV, json.Length, ex.GetType().Name + ": " + ex.Message);
+                return false;
+            }
+        }
+
+        private static void LogParseFailure(Action<string> log, string textKey, long headV, int msgChars, string reason)
+        {
+            if (log == null) return;
+            try
+            {
+                log("[buffer-sync] parse failed v=" + (headV >= 0 ? headV.ToString() : "?") + " key=" + textKey +
+                    " msgChars=" + msgChars + " reason=" + PageLogLine.Clean(reason, 200) + " - the page's next request for this v will be answered null + resync");
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Parse a sync-shaped message and, when it parses, make it the cached copy. Every sync is logged:
+        /// <c>[buffer-sync] recv v= key= chars= getMs= parseMs=</c> on success (getMs = the caller's
+        /// TryGetWebMessageAsString, parseMs = parse + store), a <c>parse failed</c> line otherwise. This is
+        /// the host half of the item 0 gate: the page logs [local-rt] syncBytes/syncMs, so one log shows
+        /// the page cost, the host cost and the round trip together. (1c685f2e)
+        /// </summary>
+        public bool AcceptSync(string json, string textKey, long getMs, Action<string> log)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            long v; string text;
+            if (!TryParseSync(json, textKey, out v, out text, log)) return false;
+            Store(v, text);
+            if (log != null)
+            {
+                try
+                {
+                    log("[buffer-sync] recv v=" + v + " key=" + textKey + " chars=" + text.Length +
+                        " getMs=" + getMs + " parseMs=" + sw.ElapsedMilliseconds);
+                }
+                catch { }
+            }
+            return true;
         }
 
         private static bool IsObjectEnd(string json, int i)
@@ -297,6 +363,80 @@ namespace ClarionAssistant.Terminal
         {
             if (a == null) return;
             try { a(); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// The per-surface map of newest-wins lanes behind MonacoEditorControl.RunLatest: one
+    /// <see cref="LatestOnlyWorker"/> per lane name, created on first use, so a job stuck in one lane (an
+    /// LSP completion waiting 2.5 s) never delays another. Lanes in use: completion, hover, diagnostics,
+    /// folding (LSP foldingRanges, formerly an unbounded Task.Run per edit competing for the bundled
+    /// client's sync lock and stdio pipe), and the local layer's local-completion, local-hover and
+    /// slot-diagnostics, which exist so local answers never queue behind the LSP. Lives here, not in
+    /// the control, so tests\MonacoBufferSync.Test.cs can prove the lanes are independent. (1c685f2e, T3)
+    /// </summary>
+    public sealed class LaneSet
+    {
+        private readonly Dictionary<string, LatestOnlyWorker> _workers = new Dictionary<string, LatestOnlyWorker>(StringComparer.Ordinal);
+        private readonly Func<Action, Task> _start;
+
+        /// <param name="start">Passed to each lane's worker (default Task.Run).</param>
+        public LaneSet(Func<Action, Task> start = null) { _start = start; }
+
+        public void Submit(string lane, Action work, Action dropped)
+        {
+            LatestOnlyWorker w;
+            lock (_workers)
+            {
+                if (!_workers.TryGetValue(lane ?? "", out w)) { w = new LatestOnlyWorker(_start); _workers[lane ?? ""] = w; }
+            }
+            w.Submit(work, dropped);
+        }
+
+        /// <summary>How many distinct lanes have been used (test hook).</summary>
+        public int LaneCount { get { lock (_workers) return _workers.Count; } }
+    }
+
+    /// <summary>
+    /// A log line the PAGE wrote ({action:'log', line}), e.g. the item 0 gate's
+    /// <c>[local-rt] action=.. rtMs=.. syncBytes=.. syncMs=.. v=..</c>. Written to monaco-spike.log
+    /// verbatim after the usual timestamp, with two guards: CR/LF (and other control characters) become
+    /// spaces so a page cannot forge extra log lines, and the length is capped so a page can never
+    /// push a buffer-sized string into the log. (1c685f2e item 0)
+    /// </summary>
+    public static class PageLogLine
+    {
+        public const int MaxChars = 512;
+        private const string TruncatedMark = "...(truncated)";
+
+        /// <summary>The `line` field of a page log message, cleaned and capped; null when there is none.
+        /// Reads the field without deserialising the whole message.</summary>
+        public static string FromMessage(string json)
+        {
+            if (string.IsNullOrEmpty(json)) return null;
+            try
+            {
+                const string tag = "\"line\":\"";
+                int idx = json.IndexOf(tag, StringComparison.Ordinal);
+                if (idx < 0) return null;
+                int after;
+                string raw = MonacoBufferCache.UnescapeJsonString(json, idx + tag.Length, out after);
+                return raw == null ? null : Clean(raw, MaxChars);
+            }
+            catch { return null; }
+        }
+
+        /// <summary>Control characters to spaces, then capped at <paramref name="max"/> chars (the cap
+        /// includes the truncation mark).</summary>
+        public static string Clean(string s, int max)
+        {
+            if (s == null) return null;
+            bool cut = s.Length > max;
+            int n = cut ? Math.Max(0, max - TruncatedMark.Length) : s.Length;
+            var sb = new System.Text.StringBuilder(n + (cut ? TruncatedMark.Length : 0));
+            for (int i = 0; i < n; i++) { char c = s[i]; sb.Append(char.IsControl(c) ? ' ' : c); }
+            if (cut) sb.Append(TruncatedMark);
+            return sb.ToString();
         }
     }
 

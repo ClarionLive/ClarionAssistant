@@ -40,6 +40,18 @@ static class MonacoBufferSyncTest
 
     static string Json(object o) { return new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(o); }
 
+    /// <summary>The source of the method that starts with <paramref name="signature"/>, up to the first line
+    /// closing at the method's own indentation ("" when absent, which fails the caller's Contains checks).</summary>
+    static string MethodBody(string src, string signature)
+    {
+        int s = src.IndexOf(signature, StringComparison.Ordinal);
+        if (s < 0) return "";
+        int lineStart = src.LastIndexOf('\n', s) + 1;
+        string indent = src.Substring(lineStart, s - lineStart);
+        int e = src.IndexOf("\n" + indent + "}", s, StringComparison.Ordinal);
+        return e < 0 ? src.Substring(s) : src.Substring(s, e - s);
+    }
+
     static int Main()
     {
         Console.WriteLine("\nMonacoBufferCache: store / resolve / replace");
@@ -114,8 +126,105 @@ static class MonacoBufferSyncTest
                     System.Text.RegularExpressions.Regex.IsMatch(ctl, "case \"ready\":\\s*(//[^\\n]*\\s*)*_bufferCache\\.Clear\\(\\);"));
                 Check("RevertShadow releases the cached wrapped buffer",
                     System.Text.RegularExpressions.Regex.IsMatch(ctx, "public void RevertShadow\\(\\)\\s*\\{\\s*_lastWrap = null;"));
+
+                // 1c685f2e 8.1b: bufferSync (and the page's log line) are handled BEFORE the host check.
+                string dispatch = MethodBody(ctl, "private void OnWebMessageReceived(");
+                int hostCheck = dispatch.IndexOf("if (h == null) return;", StringComparison.Ordinal);
+                int syncAt = dispatch.IndexOf("_bufferCache.AcceptSync(json, \"buffer\"", StringComparison.Ordinal);
+                int logAt = dispatch.IndexOf("case \"log\":", StringComparison.Ordinal);
+                Check("8.1b bufferSync is cached before the _host==null return", hostCheck > 0 && syncAt > 0 && syncAt < hostCheck,
+                    "sync@" + syncAt + " hostCheck@" + hostCheck);
+                Check("item 0: the page's log action is handled before the _host==null return", logAt > 0 && logAt < hostCheck,
+                    "log@" + logAt + " hostCheck@" + hostCheck);
+                Check("8.2 message errors go to the log, not Debug.WriteLine",
+                    dispatch.Contains("MonacoSpikeLog.Write(\"[MonacoEditorControl] message error") && !dispatch.Contains("Debug.WriteLine(\"[MonacoEditorControl] Message error"));
+
+                // 1c685f2e 8.8: foldingRanges runs in the newest-wins "folding" lane in BOTH hosts.
+                string foldView = MethodBody(view, "private void HandleFoldingRanges(");
+                string foldOverlay = MethodBody(overlay, "void IMonacoFoldingHost.OnFoldingRanges(");
+                Check("8.8 CA Embeditor folding uses the \"folding\" lane, no Task.Run",
+                    foldView.Contains("RunLatestOrNow(\"folding\"") && !foldView.Contains("Task.Run("), foldView.Length + " chars");
+                Check("8.8 CA Editor overlay folding uses the \"folding\" lane, no Task.Run",
+                    foldOverlay.Contains("editor.RunLatest(\"folding\"") && !foldOverlay.Contains("Task.Run("), foldOverlay.Length + " chars");
             }
             else Check("repo dir passed for the source scan", false, "arg: " + (repo ?? "(none)"));
+        }
+
+        Console.WriteLine("\nItem 0: the page's log line ({action:'log', line}) - verbatim, one line, capped");
+        {
+            string line = "[local-rt] action=hover rtMs=137 syncBytes=0 syncMs=0 v=4";
+            Check("0.9 a normal line comes through verbatim",
+                PageLogLine.FromMessage("{\"action\":\"log\",\"line\":" + Json(line) + "}") == line);
+            string forged = PageLogLine.FromMessage("{\"action\":\"log\",\"line\":\"a\\r\\n2026-01-01 00:00:00.000  [buffer-sync] fake\"}");
+            Check("0.9 CR/LF become spaces (a page cannot forge a second log line)",
+                forged != null && forged.IndexOf('\n') < 0 && forged.IndexOf('\r') < 0 && forged.StartsWith("a  2026"), forged);
+            string huge = new string('x', 2 * 1024 * 1024);
+            string capped = PageLogLine.FromMessage("{\"action\":\"log\",\"line\":\"" + huge + "\"}");
+            Check("0.9 a 2 MB line is capped at " + PageLogLine.MaxChars + " chars and marked",
+                capped != null && capped.Length == PageLogLine.MaxChars && capped.EndsWith("...(truncated)"), capped == null ? "null" : capped.Length.ToString());
+            Check("0.9 no line field -> nothing to write", PageLogLine.FromMessage("{\"action\":\"log\"}") == null);
+            Check("0.9 malformed -> nothing, never throws", PageLogLine.FromMessage("{\"action\":\"log\",\"line\":\"unterminated") == null);
+        }
+
+        Console.WriteLine("\nItems 0 + 8: AcceptSync caches and logs every sync, success or failure");
+        {
+            var c = new MonacoBufferCache();
+            var log = new List<string>();
+            string text = "  CODE\r\n  x = 1\r\n";
+            bool ok = c.AcceptSync("{\"action\":\"bufferSync\",\"v\":5,\"buffer\":" + Json(text) + "}", "buffer", 7, log.Add);
+            Check("8.1 a sync is cached (no host involved)", ok && c.Resolve(5) == text);
+            Check("item 0: one [buffer-sync] recv line with v, chars, getMs and parseMs",
+                log.Count == 1 && log[0].StartsWith("[buffer-sync] recv v=5 key=buffer chars=" + text.Length + " getMs=7 parseMs="), string.Join(" | ", log));
+
+            log.Clear();
+            ok = c.AcceptSync("{\"action\":\"bufferSync\",\"v\":3,\"buffer\":\"unterminated", "buffer", 0, log.Add);
+            Check("8.2 a malformed sync is refused and the cache keeps v=5", !ok && c.Resolve(5) == text && c.Resolve(3) == null);
+            Check("8.2 ...and says so: [buffer-sync] parse failed v=3",
+                log.Count == 1 && log[0].StartsWith("[buffer-sync] parse failed v=3 "), string.Join(" | ", log));
+
+            log.Clear();
+            long v; string got;
+            Check("8.2 no v -> a parse failed line with v=?",
+                !MonacoBufferCache.TryParseSync("{\"action\":\"bufferSync\",\"buffer\":\"x\"}", "buffer", out v, out got, log.Add)
+                && log.Count == 1 && log[0].StartsWith("[buffer-sync] parse failed v=? "), string.Join(" | ", log));
+        }
+
+        Console.WriteLine("\n4.11 / 8.7: every lane is independent of every other (LaneSet)");
+        {
+            var lanes = new LaneSet();
+            var block = new ManualResetEventSlim(false);
+            var blockedStarted = new ManualResetEventSlim(false);
+            lanes.Submit("completion", () => { blockedStarted.Set(); block.Wait(10000); }, () => { });
+            Check("the completion lane is busy", blockedStarted.Wait(2000));
+            foreach (var lane in new[] { "local-completion", "local-hover", "slot-diagnostics", "folding", "hover", "diagnostics" })
+            {
+                var done = new ManualResetEventSlim(false);
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                lanes.Submit(lane, () => done.Set(), () => { });
+                bool ran = done.Wait(200);
+                Check("'" + lane + "' completes within 200 ms while 'completion' is blocked", ran, sw.ElapsedMilliseconds + " ms");
+            }
+            block.Set();
+        }
+
+        Console.WriteLine("\n4.12: slot-diagnostics is newest-wins (R8 relies on it)");
+        {
+            var lanes = new LaneSet(a => Task.Factory.StartNew(a, TaskCreationOptions.LongRunning));
+            var gate = new ManualResetEventSlim(false);
+            var started = new ManualResetEventSlim(false);
+            var ran = new List<int>(); var dropped = new List<int>();
+            var last = new ManualResetEventSlim(false);
+            lanes.Submit("slot-diagnostics", () => { started.Set(); gate.Wait(5000); lock (ran) ran.Add(1); }, () => { lock (dropped) dropped.Add(1); });
+            started.Wait(2000);
+            for (int i = 2; i <= 5; i++)
+            {
+                int id = i;
+                lanes.Submit("slot-diagnostics", () => { lock (ran) ran.Add(id); if (id == 5) last.Set(); }, () => { lock (dropped) dropped.Add(id); });
+            }
+            gate.Set();
+            Check("the newest runs after the running one", last.Wait(5000));
+            lock (ran) Check("5 quick submissions: 1 running + 1 newest ran", string.Join(",", ran) == "1,5", string.Join(",", ran));
+            lock (dropped) Check("...and the 3 in between were answered as dropped", string.Join(",", dropped) == "2,3,4", string.Join(",", dropped));
         }
 
         Console.WriteLine("\nTryParseSync: the page's shape, escapes, fallback");

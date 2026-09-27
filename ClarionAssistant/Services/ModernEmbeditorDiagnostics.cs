@@ -151,7 +151,10 @@ namespace ClarionAssistant.Services
             bool embedSlotChecks = true, EmbedLspContext lspContext = null, Timing timing = null)
         {
             var markers = new List<Dictionary<string, object>>();
-            if (string.IsNullOrEmpty(buffer) || ranges == null || ranges.Count == 0) return markers;
+            // Why the LSP pass did not run, named for the [diag-timing] line (1c685f2e item 8). It used to
+            // log a bare lspRunning=False for all four cases, which read as "the server is down".
+            if (string.IsNullOrEmpty(buffer)) { if (timing != null) timing.Skip = "emptyBuffer"; return markers; }
+            if (ranges == null || ranges.Count == 0) { if (timing != null) timing.Skip = "emptyRanges"; return markers; }
             var phase = System.Diagnostics.Stopwatch.StartNew();
 
             string[] lines = buffer.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
@@ -160,7 +163,9 @@ namespace ClarionAssistant.Services
             try
             {
                 // Route through SharedLspBridge: shared ClarionLsp when active, else the bundled LspClient.
-                if (SharedLspBridge.IsRunning && !string.IsNullOrEmpty(lspFileName))
+                if (string.IsNullOrEmpty(lspFileName)) { if (timing != null) timing.Skip = "noFile"; }
+                else if (!SharedLspBridge.IsRunning) { if (timing != null) timing.Skip = "lspDown"; }
+                else
                 {
                     // #56: with a real-module context the LSP sees the MEMBER-wrapped buffer, so its line
                     // numbers run AHEAD of Monaco's by what WrapBuffer prepended to THIS buffer (0 when it
@@ -400,6 +405,9 @@ namespace ClarionAssistant.Services
         public sealed class Timing
         {
             public bool LspRan;
+            /// <summary>Why the LSP pass did not run: emptyBuffer, emptyRanges, noFile or lspDown; null when
+            /// it ran. Logged as skip= (1c685f2e item 8).</summary>
+            public string Skip;
             public long SyncMs = -1;       // EnsureBufferSynced (didChange of the whole buffer)
             public long WaitMs = -1;       // WaitForSettledDiagnosticsAsync, settle window included
             public string WaitEnd;         // how the wait ended: complete / timeout(pending) + settle outcome

@@ -170,6 +170,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\MonacoBufferSync.Test.cs", "Terminal\MonacoBufferSync.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
                Args = @($RepoDir) }
+            # 1c685f2e item 8: the bundled LspClient stops claiming to run when node crashes (exit line with
+            # code + stderr tail) or its reader loop ends with the process still alive. The harness plays
+            # the language server itself (copied to <temp>\node.exe), so it needs no node.
+            @{ Name = "LspClient.Robustness.Test"
+               Sources = @("tests\LspClient.Robustness.Test.cs", "Services\LspClient.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }
             # Per-embed-slot structure balance (Passes 2 & 3), LSP pass stubbed. Reuses the
             # StructureScan stubs so the REAL ClarionAppDataReader supplies the routine set.
             @{ Name = "ModernEmbeditorDiagnostics.SlotBalance"

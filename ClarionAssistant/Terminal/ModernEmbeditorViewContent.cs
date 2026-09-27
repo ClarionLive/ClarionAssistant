@@ -403,9 +403,13 @@ namespace ClarionAssistant.Terminal
         // local pass rather than showing an empty gutter.
         private void HandleFoldingRanges(string json)
         {
-            int reqId, line, column; string buffer;
-            if (!ParseRequest(json, out reqId, out line, out column, out buffer)) return;
-            Task.Run(() =>
+            int reqId, line, column; string buffer; MonacoRequestStamp stamp;
+            if (!ParseRequest(json, out reqId, out line, out column, out buffer, out stamp)) return;
+            // 1c685f2e item 8: newest-wins "folding" lane, not a Task.Run per edit. Monaco re-asks after every
+            // change, and each ask used to start its own LSP round-trip competing with completion/hover. A
+            // displaced request is answered null, and the page keeps its local folds.
+            var dropLine = new RequestTimingLine("[lsp-timing]", "foldingRanges", stamp).Add("reqId", reqId);
+            RunLatestOrNow("folding", reqId, dropLine, () =>
             {
                 List<Dictionary<string, object>> ranges = null;
                 try

@@ -170,6 +170,28 @@ static class SlotBalance
             Ok("While:Count (prefixed name) is a statement, not a closer", ms.Count == 0, Show(ms));
         }
 
+        // --- 1c685f2e 8.6: [diag-timing] names WHY the LSP pass did not run (skip=) ---
+        {
+            var one = new List<int[]> { new[] { 1, 1 } };
+            Func<string, string, List<int[]>, string> skip = (file, buf, ranges) =>
+            {
+                var t = new ModernEmbeditorDiagnostics.Timing();
+                ModernEmbeditorDiagnostics.ComputeAsync(file, buf, ranges, "TestProc", timing: t).GetAwaiter().GetResult();
+                return t.Skip ?? "(null)";
+            };
+            SharedLspBridge.Reset();
+            SharedLspBridge.Running = true;
+            SharedLspBridge.FixedEntries.Add(new LspClient.DiagnosticEntry { Line = 0, Character = 0, EndLine = 0, EndCharacter = 3, Severity = 1, Message = "lsp says" });
+            Ok("8.6 empty buffer -> skip=emptyBuffer", skip("x.clw", "", one) == "emptyBuffer", skip("x.clw", "", one));
+            Ok("8.6 empty ranges -> skip=emptyRanges", skip("x.clw", "x = 1", new List<int[]>()) == "emptyRanges", skip("x.clw", "x = 1", new List<int[]>()));
+            Ok("8.6 null ranges -> skip=emptyRanges", skip("x.clw", "x = 1", null) == "emptyRanges", skip("x.clw", "x = 1", null));
+            Ok("8.6 no LSP file name -> skip=noFile", skip("", "x = 1", one) == "noFile", skip("", "x = 1", one));
+            Ok("8.6 LSP ran -> skip is null", skip("x.clw", "x = 1", one) == "(null)", skip("x.clw", "x = 1", one));
+            SharedLspBridge.Running = false;
+            Ok("8.6 server not running -> skip=lspDown", skip("x.clw", "x = 1", one) == "lspDown", skip("x.clw", "x = 1", one));
+            SharedLspBridge.Reset();
+        }
+
         Console.WriteLine();
         Console.WriteLine("  " + pass + " passed, " + fail + " failed.");
         return fail == 0 ? 0 : 1;

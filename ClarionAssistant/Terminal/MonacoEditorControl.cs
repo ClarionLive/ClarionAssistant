@@ -240,7 +240,7 @@ namespace ClarionAssistant.Terminal
         // changed; requests carry `v`. ONE cached copy per surface, replaced on every sync. See
         // MonacoBufferSync.cs for why (a 3.2 MB buffer per request crashed a 32-bit Clarion.exe).
         private readonly MonacoBufferCache _bufferCache = new MonacoBufferCache();
-        private readonly Dictionary<string, LatestOnlyWorker> _latestWorkers = new Dictionary<string, LatestOnlyWorker>();
+        private readonly LaneSet _lanes = new LaneSet();   // RunLatest lanes (MonacoLanes), see MonacoBufferSync.cs
 
         /// <summary>The page's buffer as of its last sync (null before the first one).</summary>
         public string CurrentBuffer { get { return _bufferCache.CurrentBuffer; } }
@@ -317,7 +317,9 @@ namespace ClarionAssistant.Terminal
             {
                 line.Add("chars", text != null ? text.Length : 0)
                     .Add("resolveMs", resolveMs)
-                    .Add("lspRunning", t != null && t.LspRan)
+                    // skip= names why the LSP pass did not run (none = it ran). Replaces lspRunning=, which was
+                    // False for an empty buffer/ranges or no file too, not only for a stopped server.
+                    .Add("skip", t == null ? "n/a" : (t.Skip ?? (t.LspRan ? "none" : "?")))
                     .Add("syncMs", t != null ? t.SyncMs : -1)
                     .Add("waitMs", t != null ? t.WaitMs : -1)
                     .Add("waitEnd", t != null ? (t.WaitEnd ?? "n/a") : "n/a")
@@ -337,12 +339,7 @@ namespace ClarionAssistant.Terminal
         /// </summary>
         public void RunLatest(string lane, int reqId, Action work, Action onDropped = null)
         {
-            LatestOnlyWorker w;
-            lock (_latestWorkers)
-            {
-                if (!_latestWorkers.TryGetValue(lane, out w)) { w = new LatestOnlyWorker(); _latestWorkers[lane] = w; }
-            }
-            w.Submit(work, () =>
+            _lanes.Submit(lane, work, () =>
             {
                 PostResponse(reqId, null);
                 if (onDropped != null) { try { onDropped(); } catch { } }
@@ -432,23 +429,40 @@ namespace ClarionAssistant.Terminal
         // control routes unconditionally; the host knows its own mode.
         private void OnWebMessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
         {
+            string json = null, action = null;
             try
             {
-                string json = e.TryGetWebMessageAsString();
-                string action = ExtractJsonValue(json, "action");
-                var h = _host;
-                if (h == null) return;
+                var readSw = System.Diagnostics.Stopwatch.StartNew();
+                json = e.TryGetWebMessageAsString();
+                long getMs = readSw.ElapsedMilliseconds;
+                action = ExtractJsonValue(json, "action");
 
+                // Host-agnostic messages are handled BEFORE the host check (1c685f2e item 8). A bufferSync
+                // dropped by an early return here was silent: every later request for that version showed only
+                // as `lookup=Missing`, followed by a full-buffer resync under the same memory pressure.
                 switch (action)
                 {
                     case "bufferSync":
                         // 16d140e9: the page's buffer, sent once per content version. Cached here (one copy per
                         // surface, replacing the last) so no host has to implement anything to receive it.
+                        // AcceptSync logs `[buffer-sync] recv ...` or `... parse failed ...` (items 0 and 8).
+                        _bufferCache.AcceptSync(json, "buffer", getMs, MonacoSpikeLog.Write);
+                        return;
+                    case "log":
+                    case "localRt":   // the name first proposed for the same message; kept as an alias
+                        // 1c685f2e item 0: a line the page wrote ([local-rt] ...), cleaned + capped, else verbatim.
                         {
-                            long sv; string stext;
-                            if (MonacoBufferCache.TryParseSync(json, "buffer", out sv, out stext)) _bufferCache.Store(sv, stext);
+                            string pageLine = PageLogLine.FromMessage(json);
+                            if (!string.IsNullOrEmpty(pageLine)) MonacoSpikeLog.Write(pageLine);
                         }
-                        break;
+                        return;
+                }
+
+                var h = _host;
+                if (h == null) return;
+
+                switch (action)
+                {
                     case "themeChanged":
                         // Page → host mirror of the persisted light/dark pref (localStorage is authoritative;
                         // see CaEditorSettings.MonacoThemeDark). Handled here — not on IMonacoEditorHost — so
@@ -544,10 +558,7 @@ namespace ClarionAssistant.Terminal
                         // File mode's synchronous close-safety mirror. Stamped with `v`, it is ALSO the buffer
                         // sync for that version (16d140e9): cache its text first, so the host's OnFileState
                         // (via FileStateText) and every LSP request for this version share this one copy.
-                        {
-                            long fv; string ftext;
-                            if (MonacoBufferCache.TryParseSync(json, "text", out fv, out ftext)) _bufferCache.Store(fv, ftext);
-                        }
+                        _bufferCache.AcceptSync(json, "text", getMs, MonacoSpikeLog.Write);
                         h.OnFileState(this, json);
                         break;
                     case "openDesigner":      h.OnOpenDesigner(this, json); break;
@@ -562,7 +573,14 @@ namespace ClarionAssistant.Terminal
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[MonacoEditorControl] Message error: " + ex.Message);
+                // To the log, not Debug.WriteLine (1c685f2e item 8): on a 3.2 MB buffer this is where a managed
+                // OOM from TryGetWebMessageAsString lands, and it used to vanish.
+                try
+                {
+                    MonacoSpikeLog.Write("[MonacoEditorControl] message error action=" + (action ?? "?") +
+                        " msgChars=" + (json != null ? json.Length : -1) + " " + ex.GetType().Name + ": " + ex.Message);
+                }
+                catch { }
             }
         }
 
