@@ -359,5 +359,30 @@ section('No anchor within the look-back: a wild absolute column is not applied')
         'col ' + indentOf(m.getLineContent(L)));
 }
 
+// ---------- 8. Data structures in a LATER procedure of a drifted module (review of 7692dac) ----------
+// A data-structure opener takes shift 0, so the drifted absolute format would be applied as-is: the QUEUE's
+// fields jumped to ~column 116 and the label left column 1. formatBlockNow must refuse such a result.
+section('Drifted module: Enter after END of a data structure in a later procedure is refused');
+{
+    const prefix = generatedPrefix(28);
+    const q = ['', 'P2  PROCEDURE', 'Q  QUEUE', 'Id   LONG', ' END', '  CODE', ''];
+    const m = makeModel(prefix.concat(q)), e = makeEditor(m);
+    load(e).formatBlockNow(e, prefix.length + 5);
+    const got = m.lines.slice(prefix.length + 2, prefix.length + 5);
+    check('QUEUE block left alone (labels in column 1, nothing past col 40)',
+        /^Q\s/.test(got[0]) && /^Id\s/.test(got[1]) && got.every(s => indentOf(s) < 40 && s.search(/\S\s*$/) < 60),
+        JSON.stringify(got));
+    const w = ['', 'P2  PROCEDURE', "Win  WINDOW('x')", '  SHEET,AT(1,1,1,1)', "    TAB('a')", '    END', '  END', 'END', '  CODE', ''];
+    const m2 = makeModel(prefix.concat(w)), e2 = makeEditor(m2);
+    load(e2).formatBlockNow(e2, prefix.length + 7);
+    const got2 = m2.lines.slice(prefix.length + 3, prefix.length + 7);
+    check('SHEET/TAB block left alone (nothing moves > 40 columns)', got2.every(s => indentOf(s) < 40), JSON.stringify(got2));
+    const l = ['            IF Loc:A = 1', 'Lbl  Loc:B = 2', '            END', ''];
+    const m3 = makeModel(prefix.concat(l)), e3 = makeEditor(m3);
+    load(e3).formatBlockNow(e3, prefix.length + 3);
+    check('a column-1 label inside the block is never moved out of column 1', /^Lbl\s/.test(m3.getLineContent(prefix.length + 2)),
+        JSON.stringify(m3.getLineContent(prefix.length + 2)));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 if (fail) { console.log('\nFailures:\n  ' + failures.join('\n  ')); process.exit(1); }

@@ -2613,6 +2613,19 @@
         var m = /^[ \t]+/.exec(s);
         return m ? fmtVisualWidth(m[0], (o && o.tabSize) || 4) : -1;
     }
+    function fmtIndentWidth(s, o) { return fmtVisualWidth(/^[ \t]*/.exec(s || '')[0], (o && o.tabSize) || 4); }
+    // True when replacing `cur` with `next` is a drift artefact, not a re-indent: the line moves more than
+    // 40 columns, or a column-1 label would leave column 1 — a compile break. A statement keyword typed in
+    // column 1 (BREAK, END, RETURN…) is not a label; moving it in is the fix, not a break.
+    function fmtWouldBreak(cur, next, o) {
+        if (cur == null || next == null || cur.trim() === '' || next.trim() === '') return false;
+        if (/^[^ \t!]/.test(cur) && /^[ \t]/.test(next)) {
+            var kw = /^([A-Za-z_]+)(?![A-Za-z0-9_:])/.exec(cur);
+            var kws = (typeof ClarionFormatter !== 'undefined' && ClarionFormatter.ALWAYS_KEYWORDS) || [];
+            if (!(kw && kws.indexOf(kw[1].toUpperCase()) >= 0)) return true;
+        }
+        return Math.abs(fmtIndentWidth(next, o) - fmtIndentWidth(cur, o)) > 40;
+    }
     function fmtAnchorDelta(current, formatted, o) {
         var c = fmtCodeCol(current, o), f = fmtCodeCol(formatted, o);
         return (c < 0 || f < 0) ? 0 : c - f;
@@ -2696,7 +2709,14 @@
             var delta = fmtAnchorDelta(model.getLineContent(startLine), fl[0], o);
             var ow = /^\s*([A-Za-z_]+)/.exec(model.getLineContent(startLine));
             if (ow && (ClarionFormatter.DATA_STRUCT_OPENERS || []).indexOf(ow[1].toUpperCase()) >= 0) delta = 0;
-            var newLines = fmtShiftLines(fl, delta, o).join('\n');
+            var shifted = fmtShiftLines(fl, delta, o);
+            // With shift 0 (data structures, column-1 openers) the drifted absolute format would be applied
+            // as-is. Refuse any result that moves a line > 40 columns or pulls a column-1 label out of column 1.
+            for (var i = 0; i < shifted.length; i++) {
+                var cur = model.getLineContent(startLine + i);
+                if (fmtWouldBreak(cur, shifted[i], o)) return;
+            }
+            var newLines = shifted.join('\n');
             if (newLines === model.getValueInRange(range)) return;
             var savedPos = ed.getPosition();
             _fmtLineGuard = true;
@@ -2723,8 +2743,7 @@
             if (anc) formatted = fmtShiftLine(formatted, fmtAnchorDelta(model.getLineContent(anc), fl[anc - 1], o), o);
             // No anchor within the look-back (e.g. >200 blank/comment lines above): the absolute column is all
             // we have, and it may carry the whole-module drift. Don't apply a jump that big — leave the line.
-            else if (Math.abs(fmtVisualWidth(/^[ \t]*/.exec(formatted)[0], o.tabSize || 4) -
-                              fmtVisualWidth(/^[ \t]*/.exec(orig)[0], o.tabSize || 4)) > 40) return;
+            else if (Math.abs(fmtIndentWidth(formatted, o) - fmtIndentWidth(orig, o)) > 40) return;
             if (formatted === orig) return;
             var savedPos = ed.getPosition();
             _fmtLineGuard = true;
