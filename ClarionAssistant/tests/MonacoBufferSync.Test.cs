@@ -106,6 +106,14 @@ static class MonacoBufferSyncTest
                 string view = System.IO.File.ReadAllText(System.IO.Path.Combine(repo, @"Terminal\ModernEmbeditorViewContent.cs"));
                 Check("the control's accessor uses TryResolveForRequest (None is refused)", ctl.Contains("_bufferCache.TryResolveForRequest("));
                 Check("the embeditor's diagnostics no longer falls back to load-time _sourceText", !view.Contains("buffer ?? _sourceText"));
+                string overlay = System.IO.File.ReadAllText(System.IO.Path.Combine(repo, @"MonacoClarionSourceEditor.cs"));
+                string ctx = System.IO.File.ReadAllText(System.IO.Path.Combine(repo, @"Services\EmbedLspContext.cs"));
+                Check("CA Embeditor/tab diagnostics run in the newest-wins lane", view.Contains("RunLatestOrNow(\"diagnostics\""));
+                Check("CA Editor overlay diagnostics run in the newest-wins lane", overlay.Contains("editor.RunLatest(\"diagnostics\""));
+                Check("a (re)loaded page's 'ready' clears the buffer cache",
+                    System.Text.RegularExpressions.Regex.IsMatch(ctl, "case \"ready\":\\s*(//[^\\n]*\\s*)*_bufferCache\\.Clear\\(\\);"));
+                Check("RevertShadow releases the cached wrapped buffer",
+                    System.Text.RegularExpressions.Regex.IsMatch(ctx, "public void RevertShadow\\(\\)\\s*\\{\\s*_lastWrap = null;"));
             }
             else Check("repo dir passed for the source scan", false, "arg: " + (repo ?? "(none)"));
         }

@@ -134,7 +134,7 @@ function load(opts) {
     });
     const exportsList = ['requestFromHost', 'pushFileState', '__foldingCallback', 'cmdStructureDesigner', 'wireCtrlClickDefinition',
         'refreshDiagnostics', 'scheduleDiagnostics', 'registerClarionProviders', 'installFindKeyInterceptor', 'refreshOutline',
-        'resetBufferSync', 'withBuffer', 'diagTimeoutFor'];
+        'resetBufferSync', 'withBuffer', 'diagTimeoutFor', 'resetDiagnosticsForNewSource'];
     // Only names the page really declares (an undeclared one would resolve to a proxy stub).
     const ret = '{' + exportsList.map(n => n + ': ' + (DECLARED.has(n) || n === '__foldingCallback' ? n : 'undefined')).join(', ') + '}';
     // eslint-disable-next-line no-new-func
@@ -271,7 +271,10 @@ async function main() {
         check('no requestFromHost(..., { buffer: ... })', bad.length === 0, bad.join(', '));
         for (const a of ['foldingRanges', 'diagnostics', 'hover', 'completion', 'signatureHelp', 'definition', 'implementation',
                          'documentStructure', 'openDesigner', 'openDesignerCreate']) {
-            const n = (html.match(new RegExp("requestFromHost\\('" + a + "',\\s*withBuffer\\(", 'g')) || []).length;
+            let n = (html.match(new RegExp("requestFromHost\\('" + a + "',\\s*withBuffer\\(", 'g')) || []).length;
+            // diagnostics builds its payload first (so a throw cannot wedge the in-flight slot)
+            if (a === 'diagnostics' && /payload = withBuffer\(model, \{ ranges: liveEditableRanges\(\) \}\)/.test(html) &&
+                /requestFromHost\('diagnostics', payload,/.test(html)) n++;
             check(a + ' goes through withBuffer', n >= 1, 'found ' + n);
         }
     }
@@ -318,6 +321,47 @@ async function main() {
         await flush();
         e3.api.refreshDiagnostics();
         check('after a null (timeout) reply the next pass dispatches', e3.since(0).filter(m => m.action === 'diagnostics').length === 2);
+
+        // Pipeline MINOR: a pass held behind a request that then TIMES OUT (null) must still run.
+        const e4 = load();
+        e4.api.refreshDiagnostics();
+        e4.api.refreshDiagnostics();           // held (same version)
+        const r4 = e4.since(0).find(m => m.action === 'diagnostics');
+        const t4 = e4.timers.length;
+        e4.reply(r4.reqId, null);
+        await flush();
+        check('a held pass is scheduled when the outstanding reply is a timeout (null)', e4.timers.length === t4 + 1,
+            'scheduled ' + (e4.timers.length - t4));
+
+        // Pipeline MINOR: setSource (new procedure/file) must not queue the new source's pass behind the old one.
+        const e5 = load();
+        e5.api.refreshDiagnostics();           // old source's request, still out
+        const hasReset = typeof e5.api.resetDiagnosticsForNewSource === 'function';
+        check('the page has resetDiagnosticsForNewSource', hasReset);
+        check('setSource calls it after loading the new text', /resetBufferSync\(\);[^\n]*\n\s*resetDiagnosticsForNewSource\(\);/.test(html));
+        if (hasReset) e5.api.resetDiagnosticsForNewSource();
+        e5.model = makeModel('$model1', 'NEW PROCEDURE\r\n');
+        e5.model._v = 7;
+        e5.api.refreshDiagnostics();
+        let d5 = e5.since(0).filter(m => m.action === 'diagnostics');
+        check('the new source\'s first pass dispatches at once', d5.length === 2, 'dispatched ' + d5.length);
+        const t5 = e5.timers.length;
+        e5.reply(d5[0].reqId, { markers: [{ severity: 8, message: 'old', line: 1, column: 1, endLine: 1, endColumn: 2 }] });
+        await flush();
+        check('the old source\'s late reply schedules nothing and paints nothing', e5.timers.length === t5 && !e5.markersSet);
+        e5.api.refreshDiagnostics();
+        d5 = e5.since(0).filter(m => m.action === 'diagnostics');
+        check('...and does not free the NEW request\'s in-flight slot', d5.length === 2, 'dispatched ' + d5.length);
+
+        // Pipeline NIT: a throw while building the payload must not leave diagnostics stuck in flight.
+        const e6 = load();
+        const realGet = e6.model.getValue;
+        e6.model.getValue = () => { throw new Error('boom'); };
+        try { e6.api.refreshDiagnostics(); } catch (err) { /* the pre-fix page throws out of here */ }
+        e6.model.getValue = realGet;
+        e6.model.edit('after the throw\r\n');
+        e6.api.refreshDiagnostics();
+        check('a throw building the payload does not wedge diagnostics', e6.since(0).filter(m => m.action === 'diagnostics').length === 1);
     }
 
     section('Requests are stamped with sentAt + timeoutMs (host logs replies that arrive after the page gave up)');

@@ -3233,7 +3233,7 @@ namespace ClarionAssistant.Terminal
                         var syncSw = System.Diagnostics.Stopwatch.StartNew();
                         bool resent = LspSyncFingerprint.NoteAndCompare(_lspFileName, lspBuf);
                         if (!string.IsNullOrEmpty(lspBuf)) SharedLspBridge.EnsureBufferSynced(_lspFileName, lspBuf);
-                        timing.Add("syncMs", syncSw.ElapsedMilliseconds).Add("resent", resent ? "yes(full-text didChange)" : "no(unchanged)");
+                        timing.Add("syncMs", syncSw.ElapsedMilliseconds).Add("textChangedSinceLastCompletion", resent ? "yes(full-text didChange likely)" : "no");
                         var reqSw = System.Diagnostics.Stopwatch.StartNew();
                         var comps = SharedLspBridge.GetCompletion(_lspFileName, LspLine0(buffer, line), Math.Max(0, column - 1), 2500, lspBuf);
                         timing.Add("requestMs", reqSw.ElapsedMilliseconds).Add("items", comps != null ? comps.Count : 0);
@@ -3497,7 +3497,11 @@ namespace ClarionAssistant.Terminal
             var timingLine = new RequestTimingLine("[diag-timing]", "diagnostics", stamp)
                 .Add("surface", _fileMode ? "CA Editor(tab)" : "CA Embeditor")
                 .Add("reqId", reqId);
-            Task.Run(async () =>
+            // Newest-wins lane per surface (pipeline MINOR): the page keeps one request in flight, but once it
+            // gives up (timeout) its next request would otherwise start a second whole-buffer analysis beside
+            // the one still running here. A request displaced while waiting is answered null (keep markers).
+            // Blocking the lane's one pool thread on the async settle loop is deliberate: one per surface.
+            RunLatestOrNow("diagnostics", reqId, timingLine, () =>
             {
                 var markers = new List<Dictionary<string, object>>();
                 var timing = new ModernEmbeditorDiagnostics.Timing();
@@ -3506,7 +3510,7 @@ namespace ClarionAssistant.Terminal
                 string text = buffer;
                 try
                 {
-                    markers = await ModernEmbeditorDiagnostics.ComputeAsync(
+                    markers = ModernEmbeditorDiagnostics.ComputeAsync(
                         _lspFileName,
                         text,
                         (ranges != null && ranges.Count > 0) ? ranges : _editableRanges,
@@ -3514,7 +3518,7 @@ namespace ClarionAssistant.Terminal
                         embedSlotChecks: !_fileMode,    // file mode: LSP only, skip embed-slot heuristics
                         lspContext: _lspContext,        // #56: wrap the LSP pass with the MEMBER header
                         timing: timing)                 // 16d140e9: per-phase timings for the log line below
-                        .ConfigureAwait(false);
+                        .GetAwaiter().GetResult();
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] diagnostics: " + ex.Message); }
                 PostResponse(reqId, new Dictionary<string, object> { { "markers", markers } });

@@ -495,7 +495,12 @@ namespace ClarionAssistant.Terminal
                         }
                         catch (Exception lex) { System.Diagnostics.Debug.WriteLine("[MonacoEditorControl] openLocation error: " + lex.Message); }
                         break;
-                    case "ready":             h.OnReady(this); break;
+                    case "ready":
+                        // A (re)loaded page restarts its sync versions at 1: drop the previous load's copy so a
+                        // stale v can never match it. The page always syncs before its first request anyway.
+                        _bufferCache.Clear();
+                        h.OnReady(this);
+                        break;
                     case "save":              h.OnSave(this, json); break;
                     case "cancel":            h.OnCancel(this); break;
                     case "confirmSaveExit":   h.OnConfirmSaveExit(this); break;

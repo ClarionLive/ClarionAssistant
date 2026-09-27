@@ -873,7 +873,7 @@ namespace ClarionAssistant
                         var syncSw = System.Diagnostics.Stopwatch.StartNew();
                         bool resent = LspSyncFingerprint.NoteAndCompare(_filePath, buffer);
                         if (!string.IsNullOrEmpty(buffer)) SharedLspBridge.EnsureBufferSynced(_filePath, buffer);
-                        timing.Add("syncMs", syncSw.ElapsedMilliseconds).Add("resent", resent ? "yes(full-text didChange)" : "no(unchanged)");
+                        timing.Add("syncMs", syncSw.ElapsedMilliseconds).Add("textChangedSinceLastCompletion", resent ? "yes(full-text didChange likely)" : "no");
                         var reqSw = System.Diagnostics.Stopwatch.StartNew();
                         var comps = SharedLspBridge.GetCompletion(_filePath, Math.Max(0, line - 1), Math.Max(0, col - 1), 2500, buffer);
                         timing.Add("requestMs", reqSw.ElapsedMilliseconds).Add("items", comps != null ? comps.Count : 0);
@@ -1236,19 +1236,21 @@ namespace ClarionAssistant
             long resolveMs = resolveSw.ElapsedMilliseconds;
             var timingLine = new RequestTimingLine("[diag-timing]", "diagnostics", stamp)
                 .Add("surface", "CA Editor(overlay)").Add("reqId", reqId);
-            System.Threading.Tasks.Task.Run(async () =>
+            // Newest-wins lane per surface (pipeline MINOR): after a page timeout the next request must not
+            // start a second whole-buffer analysis beside the one still running. Displaced = null reply.
+            editor.RunLatest("diagnostics", reqId, () =>
             {
                 var markers = new List<Dictionary<string, object>>();
                 var timing = new ModernEmbeditorDiagnostics.Timing();
                 try
                 {
-                    markers = await ModernEmbeditorDiagnostics.ComputeAsync(
-                        _filePath, buffer ?? "", ranges, null, embedSlotChecks: true, timing: timing).ConfigureAwait(false);
+                    markers = ModernEmbeditorDiagnostics.ComputeAsync(
+                        _filePath, buffer, ranges, null, embedSlotChecks: true, timing: timing).GetAwaiter().GetResult();
                 }
                 catch (Exception ex) { MonacoSpikeLog.Write("overlay diagnostics error: " + ex.Message); }
                 editor.PostResponse(reqId, new Dictionary<string, object> { { "markers", markers } });
                 MonacoEditorControl.LogDiagTiming(timingLine, buffer, resolveMs, timing, markers);
-            });
+            }, () => MonacoSpikeLog.Write(timingLine.Add("dropped", "superseded-by-newer-request").Format()));
         }
 
         /// <summary>{action:"clipboard"} — Clarion-style Ctrl+X (doClarionCut in monaco-embeditor.html) posts the

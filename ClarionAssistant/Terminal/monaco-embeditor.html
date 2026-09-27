@@ -1586,6 +1586,7 @@
                 guarding = true;            // programmatic load — don't let the guard revert it
                 model.setValue(text);
                 resetBufferSync();          // a new document: the host's cached buffer is the old one (16d140e9)
+                resetDiagnosticsForNewSource();   // ...and its first squiggle pass must not queue behind the old one's
                 // Honor the host's language choice (file mode can open non-Clarion files as plaintext).
                 try { if (msg.language) monaco.editor.setModelLanguage(model, msg.language); } catch (e) { }
                 applyEmbedDecorations();
@@ -4307,6 +4308,15 @@
     // diagRerun and dispatched when the outstanding one settles (reply or timeout) — the newest edit wins.
     var diagInFlight = false;
     var diagRerun = false;
+    // Bumped by setSource (a new procedure/file): the outstanding request belongs to the OLD source, so the
+    // new source's first pass must not wait up to a minute behind it, and the old reply must not touch the
+    // in-flight slot or schedule anything when it lands.
+    var diagGen = 0;
+    function resetDiagnosticsForNewSource() {
+        diagGen++;
+        diagInFlight = false;
+        diagRerun = false;
+    }
 
     // GH #176: ordering guard. requestFromHost correlates each reply to its own request, but nothing said
     // whether that reply is still the NEWEST one — setModelMarkers replaces the whole set, so whichever
@@ -4323,12 +4333,21 @@
         var mySeq = ++diagReqSeq;
         var myVersion = model.getVersionId();
         var chars = model.getValueLength ? model.getValueLength() : model.getValue().length;
+        // Build the payload (which may post the buffer sync) BEFORE claiming the in-flight slot: a throw
+        // here must not leave diagInFlight stuck true, which would silence diagnostics until a reload.
+        var payload;
+        try { payload = withBuffer(model, { ranges: liveEditableRanges() }); }
+        catch (e) { return; }
+        var myGen = diagGen;
         diagInFlight = true;
-        requestFromHost('diagnostics', withBuffer(model, { ranges: liveEditableRanges() }), diagTimeoutFor(chars))
+        requestFromHost('diagnostics', payload, diagTimeoutFor(chars))
             .then(function (resp) {
+                // An older source's request (setSource since): the slot and any rerun belong to the new one.
+                if (myGen !== diagGen) return;
                 diagInFlight = false;
                 // A pass was asked for while this one was out. If the buffer moved on (or the model was
-                // swapped), the stale-reply branch below schedules it; if not, this reply answers it.
+                // swapped), the stale-reply branch below schedules it; if not, this reply answers it —
+                // unless it is a null (timeout), which answers nothing, so the held pass is scheduled.
                 var rerun = diagRerun;
                 diagRerun = false;
                 // Superseded: a newer request is in flight (or already rendered) — its answer owns the markers.
@@ -4350,7 +4369,10 @@
                 // A reply that IS present but carries an empty list still clears, as it should — that
                 // is the host telling us the file really is clean. Same null-vs-empty distinction the
                 // diagnostics pill draws in PollLspUi.
-                if (!resp) return;
+                if (!resp) {
+                    if (rerun && !diagTimer) scheduleDiagnostics();   // the held pass still needs an answer
+                    return;
+                }
                 var markers = resp.markers || [];
                 monaco.editor.setModelMarkers(model, 'clarion', markers.map(function (m) {
                     return {
@@ -4361,7 +4383,7 @@
                     };
                 }));
             })
-            .catch(function () { diagInFlight = false; /* never let a failed diagnostics round-trip disrupt editing */ });
+            .catch(function () { if (myGen === diagGen) diagInFlight = false; /* never let a failed diagnostics round-trip disrupt editing */ });
     }
 
     function scheduleDiagnostics() {

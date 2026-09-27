@@ -208,6 +208,7 @@ namespace ClarionAssistant.Services
         /// </remarks>
         public void RevertShadow()
         {
+            _lastWrap = null;         // 16d140e9: the embed is closing — release the cached wrapped buffer
             string path = RealPath;   // capture — the context may be torn down under us
             try
             {
