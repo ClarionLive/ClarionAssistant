@@ -24,6 +24,10 @@ namespace ClarionAssistant.Services
     ///   3. UNDEFINED ROUTINE — a 'DO &lt;name&gt;' whose &lt;name&gt; is not a ROUTINE declared in this
     ///      procedure (routine set parsed from the assembled buffer via ClarionAppDataReader).
     ///
+    /// Since 1c685f2e item 7 these are two separate requests: <see cref="ComputeAsync"/> is source 1 (the LSP),
+    /// and <see cref="ComputeSlotChecks"/> is sources 2 and 3, answered at once with no LSP. The page paints
+    /// them under separate marker owners.
+    ///
     /// Markers are 1-based {line,column,endLine,endColumn,message,severity} carrying Monaco's
     /// MarkerSeverity (Error=8, Warning=4, Info=2, Hint=1) so the HTML renders them with no translation.
     /// </summary>
@@ -135,20 +139,18 @@ namespace ClarionAssistant.Services
         private static readonly Regex InlineEnd = new Regex(@"\bEND\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         /// <summary>
-        /// Build the marker list. <paramref name="ranges"/> are 1-based inclusive [start,end] editable
-        /// slot ranges (live — passed from Monaco's tracked decorations so they reflect edits that grew
-        /// a slot). Returns an empty list in mirror mode (no editable slots).
+        /// Pass 1 ONLY: the Clarion LSP's diagnostics, clamped to the editable ranges. <paramref name="ranges"/>
+        /// are 1-based inclusive [start,end] slot ranges (live, from Monaco's tracked decorations, so they
+        /// reflect edits that grew a slot). Returns an empty list in mirror mode (no editable slots).
         ///
-        /// <paramref name="embedSlotChecks"/>: when false (plain-source FILE MODE — ticket 564aa142),
-        /// only Pass 1 (the real Clarion LSP, spanning the whole file) runs. The per-slot structure-balance
-        /// heuristic (Passes 2 &amp; 3) is designed for tiny embed fragments and mis-reads a full class/.inc:
-        /// it matches FILE/GROUP/QUEUE/etc. used as PARAMETER TYPES (e.g. <c>Procedure(*File pTable)</c>)
-        /// or labels as if a structure opened, producing bogus "FILE is not terminated with END" errors.
-        /// The LSP/compiler does real whole-file structure validation, so the heuristic adds only noise.
+        /// 1c685f2e item 7: the slot checks (Passes 2 and 3) are no longer part of this. They are
+        /// <see cref="ComputeSlotChecks"/>, answered by the page's slotDiagnostics request in its own lane,
+        /// so a `DO NoSuchRoutine` squiggle no longer waits for this LSP pass (up to minutes on a 3.2 MB
+        /// generated module). This reply carries LSP markers only.
         /// </summary>
         public static async Task<List<Dictionary<string, object>>> ComputeAsync(
-            string lspFileName, string buffer, List<int[]> ranges, string procedureName,
-            bool embedSlotChecks = true, EmbedLspContext lspContext = null, Timing timing = null)
+            string lspFileName, string buffer, List<int[]> ranges,
+            EmbedLspContext lspContext = null, Timing timing = null)
         {
             var markers = new List<Dictionary<string, object>>();
             // Why the LSP pass did not run, named for the [diag-timing] line (1c685f2e item 8). It used to
@@ -156,8 +158,6 @@ namespace ClarionAssistant.Services
             if (string.IsNullOrEmpty(buffer)) { if (timing != null) timing.Skip = "emptyBuffer"; return markers; }
             if (ranges == null || ranges.Count == 0) { if (timing != null) timing.Skip = "emptyRanges"; return markers; }
             var phase = System.Diagnostics.Stopwatch.StartNew();
-
-            string[] lines = buffer.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
 
             // ---- Pass 1: LSP structural diagnostics, clamped to editable slots ----
             try
@@ -197,11 +197,28 @@ namespace ClarionAssistant.Services
             {
                 System.Diagnostics.Debug.WriteLine("[ModernEmbeditorDiagnostics] LSP pass: " + ex.Message);
             }
+            return markers;
+        }
 
-            // File mode (whole-source): stop here. The LSP pass above already covers the whole file;
-            // the per-slot heuristics below mis-fire on declaration files (FILE/GROUP/... as param types).
-            if (!embedSlotChecks) return markers;
-            phase.Restart();
+        /// <summary>
+        /// Passes 2 and 3, the slot checks: per-slot structure balance (an opener with no END or '.' in the
+        /// same slot, or a stray END) and undefined routines (`DO name` with no `name ROUTINE` in the
+        /// procedure). A pure function of its arguments: it never touches the LSP, SharedLspBridge or any
+        /// database, so it answers while the server is starting, busy or down. (1c685f2e item 7)
+        ///
+        /// Callers run it only where slot checks apply: embed mode, and the CA Editor overlay, which asks
+        /// for them over the whole file. The CA Embeditor's plain-source FILE MODE tab does not (ticket
+        /// 564aa142): the heuristic is designed for small embed fragments and mis-reads a full class or
+        /// .inc, taking FILE/GROUP/QUEUE parameter types (<c>Procedure(*File pTable)</c>) or labels for
+        /// openers and reporting bogus "FILE is not terminated with END" errors.
+        /// </summary>
+        public static List<Dictionary<string, object>> ComputeSlotChecks(
+            string buffer, List<int[]> ranges, string procedureName)
+        {
+            var markers = new List<Dictionary<string, object>>();
+            if (string.IsNullOrEmpty(buffer) || ranges == null || ranges.Count == 0) return markers;
+
+            string[] lines = buffer.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
 
             // Routine set for the undefined-routine check (only flag when we actually parsed routines,
             // so a parse failure never produces false positives).
@@ -395,7 +412,6 @@ namespace ClarionAssistant.Services
                 }
             }
 
-            if (timing != null) timing.SlotMs = phase.ElapsedMilliseconds;
             return markers;
         }
 
@@ -412,7 +428,6 @@ namespace ClarionAssistant.Services
             public long WaitMs = -1;       // WaitForSettledDiagnosticsAsync, settle window included
             public string WaitEnd;         // how the wait ended: complete / timeout(pending) + settle outcome
             public int LspEntries = -1;    // server entries before clamping to slots
-            public long SlotMs = -1;       // Passes 2 & 3 (embed mode only)
         }
 
         // The Clarion LSP publishes diagnostics progressively for a file that just changed: an early

@@ -1226,10 +1226,23 @@ namespace ClarionAssistant
             return false;
         }
 
-        // LSP/hybrid diagnostics — the page sends fileMode ranges [[1,lineCount]] (whole file editable).
-        // embedSlotChecks:true ALSO runs the structure-balance heuristic over the whole file (unmatched
-        // IF/LOOP/CASE/structure → squiggle), which file mode normally skips. John wants it for source
-        // editing; caveat = it can false-positive on declaration files (FILE/GROUP as param types).
+        // 1c685f2e item 4: the instant local layer, each in its own newest-wins lane (never behind the LSP).
+        void IMonacoEditorHost.OnLocalCompletion(MonacoEditorControl editor, string rawJson) { editor.RunLocalAction("local-completion", LocalLayerHandlers.LocalCompletion, rawJson, LocalOptions()); }
+        void IMonacoEditorHost.OnLocalHover(MonacoEditorControl editor, string rawJson) { editor.RunLocalAction("local-hover", LocalLayerHandlers.LocalHover, rawJson, LocalOptions()); }
+        // The structure-balance heuristic over the whole file (the page sends ranges [[1,lineCount]]): unmatched
+        // IF/LOOP/CASE/structure -> squiggle. The CA Embeditor's own file-mode tab skips it; John wants it here
+        // for source editing (caveat: it can false-positive on declaration files, FILE/GROUP as param types).
+        // Formerly part of the diagnostics reply (embedSlotChecks:true); now answered first, in its own lane.
+        void IMonacoEditorHost.OnSlotDiagnostics(MonacoEditorControl editor, string rawJson) { editor.RunLocalAction("slot-diagnostics", LocalLayerHandlers.SlotDiagnostics, rawJson, LocalOptions()); }
+
+        /// <summary>This surface's local-layer options: a whole file (no procedure, no line offset), slot checks ON.</summary>
+        private static LocalLayerOptions LocalOptions()
+        {
+            return new LocalLayerOptions { SlotChecks = true, Surface = "CA Editor(overlay)", Log = MonacoSpikeLog.Write };
+        }
+
+        // LSP diagnostics - the page sends fileMode ranges [[1,lineCount]] (whole file editable). The
+        // structure checks are OnSlotDiagnostics above.
         void IMonacoEditorHost.OnDiagnostics(MonacoEditorControl editor, string rawJson)
         {
             int reqId; string buffer; List<int[]> ranges; MonacoRequestStamp stamp;
@@ -1246,8 +1259,9 @@ namespace ClarionAssistant
                 var timing = new ModernEmbeditorDiagnostics.Timing();
                 try
                 {
+                    // LSP markers only (1c685f2e item 7): the structure checks answer the page's slotDiagnostics.
                     markers = ModernEmbeditorDiagnostics.ComputeAsync(
-                        _filePath, buffer, ranges, null, embedSlotChecks: true, timing: timing).GetAwaiter().GetResult();
+                        _filePath, buffer, ranges, timing: timing).GetAwaiter().GetResult();
                 }
                 catch (Exception ex) { MonacoSpikeLog.Write("overlay diagnostics error: " + ex.Message); }
                 editor.PostResponse(reqId, new Dictionary<string, object> { { "markers", markers } });

@@ -104,6 +104,13 @@ namespace ClarionAssistant.Terminal
         /// <summary>{action:"documentStructure"} — outline/document-symbol tree for the current buffer;
         /// host replies via PostResponse with {symbols:[{name,kind,detail,line,children}], fileMode}.</summary>
         void OnDocumentStructure(MonacoEditorControl editor, string rawJson);
+        /// <summary>1c685f2e item 4: the instant local layer, answered with no language server. On the
+        /// interface (not OnUnknownAction) so the compiler refuses a host that does not route them - the
+        /// dual-host no-op gotcha. Each implementation is one call to <see cref="MonacoEditorControl.RunLocalAction"/>
+        /// naming its lane and the host's <see cref="Services.LocalLayerOptions"/>.</summary>
+        void OnLocalCompletion(MonacoEditorControl editor, string rawJson);
+        void OnLocalHover(MonacoEditorControl editor, string rawJson);
+        void OnSlotDiagnostics(MonacoEditorControl editor, string rawJson);
 
         /// <summary>{action:"saveSettings"} — persist gear-panel settings + broadcast to all tabs.</summary>
         void OnSaveSettings(MonacoEditorControl editor, string rawJson);
@@ -324,7 +331,6 @@ namespace ClarionAssistant.Terminal
                     .Add("waitMs", t != null ? t.WaitMs : -1)
                     .Add("waitEnd", t != null ? (t.WaitEnd ?? "n/a") : "n/a")
                     .Add("lspEntries", t != null ? t.LspEntries : -1)
-                    .Add("slotMs", t != null ? t.SlotMs : -1)
                     .Add("markers", markers != null ? markers.Count : 0);
                 MonacoSpikeLog.Write(line.Format());
             }
@@ -344,6 +350,30 @@ namespace ClarionAssistant.Terminal
                 PostResponse(reqId, null);
                 if (onDropped != null) { try { onDropped(); } catch { } }
             });
+        }
+
+        /// <summary>
+        /// A local-layer request (localCompletion / localHover / slotDiagnostics), end to end: resolve its
+        /// buffer by `v`, run <see cref="Services.LocalLayerHandlers.Handle"/> in <paramref name="lane"/> (newest
+        /// wins, never behind an LSP lane), and post the reply. Hosts call this with their own options and add
+        /// nothing else. No LSP, no sync, no database: see LocalLayerHandlers. (1c685f2e item 4)
+        /// </summary>
+        public void RunLocalAction(string lane, string action, string json, Services.LocalLayerOptions options)
+        {
+            Dictionary<string, object> data;
+            try { data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(json) as Dictionary<string, object>; }
+            catch (Exception ex) { MonacoSpikeLog.Write("[local-timing] action=" + action + " unreadable request: " + ex.Message); return; }
+            if (data == null) return;
+            long reqId;
+            MonacoBufferCache.TryGetLong(data, "reqId", out reqId);
+            string buffer;
+            if (!TryResolveRequestBuffer(data, out buffer)) return;   // already answered null + resync
+            RunLatest(lane, (int)reqId, () =>
+            {
+                int lineOffset = 0;
+                try { if (options != null && options.LineOffsetFor != null) lineOffset = options.LineOffsetFor(buffer); } catch { }
+                PostResponse((int)reqId, Services.LocalLayerHandlers.Handle(action, buffer, data, lineOffset, options));
+            }, () => MonacoSpikeLog.Write("[local-timing] action=" + action + " reqId=" + reqId + " dropped=superseded-by-newer-request"));
         }
 
         public MonacoEditorControl(IMonacoEditorHost host, bool isDark = true,
@@ -536,6 +566,9 @@ namespace ClarionAssistant.Terminal
                     case "signatureHelp":     h.OnSignatureHelp(this, json); break;
                     case "implementation":    h.OnImplementation(this, json); break;
                     case "documentStructure": h.OnDocumentStructure(this, json); break;
+                    case "localCompletion":   h.OnLocalCompletion(this, json); break;
+                    case "localHover":        h.OnLocalHover(this, json); break;
+                    case "slotDiagnostics":   h.OnSlotDiagnostics(this, json); break;
                     case "foldingRanges":
                         // Optional capability (IMonacoFoldingHost) — a surface that can't answer leaves
                         // the page's request to time out, and it falls back to the local fold pass.

@@ -199,6 +199,7 @@
     <Compile Include="Services\EmbedAdoptPolicy.cs" />
     <Compile Include="Services\EmbedApplyFlow.cs" />
     <Compile Include="Services\ModernEmbeditorDiagnostics.cs" />
+    <Compile Include="Services\LocalLayerHandlers.cs" />
     <Compile Include="Services\ModernEmbeditorSettings.cs" />
     <Compile Include="Services\MonacoSettingsBroadcaster.cs" />
     <Compile Include="Services\VsCodeSettingsImporter.cs" />

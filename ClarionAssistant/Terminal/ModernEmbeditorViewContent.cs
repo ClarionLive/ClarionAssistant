@@ -1588,6 +1588,26 @@ namespace ClarionAssistant.Terminal
         void IMonacoEditorHost.OnImplementation(MonacoEditorControl editor, string rawJson) { HandleImplementation(rawJson); }
         void IMonacoEditorHost.OnDocumentStructure(MonacoEditorControl editor, string rawJson) { HandleDocumentStructure(rawJson); }
         void IMonacoFoldingHost.OnFoldingRanges(MonacoEditorControl editor, string rawJson) { HandleFoldingRanges(rawJson); }
+        // 1c685f2e item 4: the instant local layer, each in its own newest-wins lane (never behind the LSP).
+        void IMonacoEditorHost.OnLocalCompletion(MonacoEditorControl editor, string rawJson) { editor.RunLocalAction("local-completion", LocalLayerHandlers.LocalCompletion, rawJson, LocalOptions()); }
+        void IMonacoEditorHost.OnLocalHover(MonacoEditorControl editor, string rawJson) { editor.RunLocalAction("local-hover", LocalLayerHandlers.LocalHover, rawJson, LocalOptions()); }
+        void IMonacoEditorHost.OnSlotDiagnostics(MonacoEditorControl editor, string rawJson) { editor.RunLocalAction("slot-diagnostics", LocalLayerHandlers.SlotDiagnostics, rawJson, LocalOptions()); }
+
+        /// <summary>This surface's local-layer options. Slot checks run in embed mode only: the plain-source
+        /// FILE MODE tab never ran them (ticket 564aa142), and its page is told so (slotChecks:false in setSource).</summary>
+        private LocalLayerOptions LocalOptions()
+        {
+            var ctx = _lspContext;
+            return new LocalLayerOptions
+            {
+                ProcedureName = _procedureName,
+                SlotChecks = !_fileMode,
+                DefaultRanges = _editableRanges,
+                LineOffsetFor = ctx != null ? (Func<string, int>)ctx.LineOffsetFor : null,
+                Surface = _fileMode ? "CA Editor(tab)" : "CA Embeditor",
+                Log = MonacoSpikeLog.Write
+            };
+        }
         void IMonacoEditorHost.OnSaveSettings(MonacoEditorControl editor, string rawJson) { HandleSaveSettings(rawJson); }
         // Read-only preview feed for the gear panel's VS Code import; applying goes back through
         // OnSaveSettings above, so there is still exactly one write path.
@@ -3514,12 +3534,11 @@ namespace ClarionAssistant.Terminal
                 string text = buffer;
                 try
                 {
+                    // LSP markers only (1c685f2e item 7): the slot checks answer the page's slotDiagnostics.
                     markers = ModernEmbeditorDiagnostics.ComputeAsync(
                         _lspFileName,
                         text,
                         (ranges != null && ranges.Count > 0) ? ranges : _editableRanges,
-                        _procedureName,
-                        embedSlotChecks: !_fileMode,    // file mode: LSP only, skip embed-slot heuristics
                         lspContext: _lspContext,        // #56: wrap the LSP pass with the MEMBER header
                         timing: timing)                 // 16d140e9: per-phase timings for the log line below
                         .GetAwaiter().GetResult();
@@ -4208,6 +4227,10 @@ namespace ClarionAssistant.Terminal
                     "\"language\":" + JsonString(_language) + "," +
                     "\"isDark\":" + (_isDark ? "true" : "false") + "," +
                     "\"fileMode\":" + (_fileMode ? "true" : "false") + "," +
+                    // 1c685f2e item 7: this FILE MODE tab never runs the slot checks (ticket 564aa142), so the page
+                    // skips slotDiagnostics. The CA Editor overlay also sends fileMode:true but omits this flag:
+                    // it does run them, over the whole file.
+                    (_fileMode ? "\"slotChecks\":false," : "") +
                     "\"filePath\":" + JsonString(_filePath ?? "") + "," +
                     "\"saveEnabled\":" + (_saveEnabled ? "true" : "false") + "," +
                     "\"findUiMode\":\"" + Services.CaFindSettings.FindUiModeForPage + "\"," +   // Pad vs in-editor Overlay (#66 phase 2)
