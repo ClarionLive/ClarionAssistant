@@ -65,7 +65,7 @@ function makeMonaco() {
     return {
         Range: Range,
         KeyCode: { RightArrow: 17, LeftArrow: 15, UpArrow: 16, DownArrow: 18, End: 13, Home: 14, PageUp: 11, PageDown: 12 },
-        editor: { EditorOption: { readOnly: 91 } }
+        editor: { EditorOption: { readOnly: 91, wrappingInfo: 150 } }
     };
 }
 
@@ -116,7 +116,16 @@ function makeEditor(model, opts) {
             }
             return Object.assign({}, selection, { isEmpty: () => false });
         },
-        getOption(id) { return id === 91 ? !!opts.readOnly : undefined; },
+        getOption(id) {
+            if (id === 91) return !!opts.readOnly;
+            if (id === 150) return { wrappingColumn: opts.wrapColumn || -1 };   // Monaco: -1 = not wrapping
+            return undefined;
+        },
+        // Screen top of a position. With wrapColumn set, a line breaks into rows of that many columns.
+        getTopForPosition(line, column) {
+            const row = opts.wrapColumn ? Math.floor((column - 1) / opts.wrapColumn) : 0;
+            return line * 1000 + row * 18;
+        },
         onMouseDown(f) { handlers.mouse.push(f); },
         onKeyDown(f) { handlers.key.push(f); },
         onDidChangeCursorPosition(f) { handlers.cursor.push(f); },
@@ -143,6 +152,7 @@ function makeEnv(opts) {
             captureIdeOptions: captureIdeOptions,
             effIde: effIde,
             padState: function () { return _pad; },
+            padGoal: function () { return _padGoal; },
             guarding: function () { return guarding; },
             setEditable: function (v) { _editable = v; },
             isOn: function () { return caretBehindEolOn; }
@@ -420,6 +430,124 @@ section('Up/down carry our own goal column');
     ed._handlers.cursor.forEach(f => f({ position: { lineNumber: 1, column: 1 } }));
     check('padding removed on leaving', model.getLineContent(2) === 'ab',
         JSON.stringify(model.getLineContent(2)));
+}
+
+// ---------- stale goal column + word wrap (ticket 16d140e9) ----------
+// The Owner, 5.9.0: with word wrap on, a click in the empty space to the right of a wrapped row set the
+// caret AND the up/down goal to that screen column (~the window width, column 125 for him), because
+// mouseColumn counts from the left of the clicked ROW, not the start of the line. Nothing but four
+// navigation keys ever cleared the goal, so it outlived typing, Enter, clicks and the wrap toggle: every
+// later up/down padded the line it landed on out to column 125, and typing then Enter on such a blank
+// line carried 124 spaces of indent onto the new line. Reopening the procedure reloaded the page, which
+// is the only thing that reset it.
+function keyDown(ed, keyCode, extra) {
+    let prevented = false;
+    const ev = Object.assign({ keyCode: keyCode, preventDefault: () => { prevented = true; }, stopPropagation() { } }, extra || {});
+    ed._handlers.key.forEach(f => f(ev));
+    return prevented;
+}
+function click(ed, line, column, mouseColumn) {
+    ed._handlers.mouse.forEach(f => f({
+        target: { position: { lineNumber: line, column: column }, mouseColumn: mouseColumn },
+        event: { shiftKey: false, altKey: false }
+    }));
+}
+function moveCaret(ed, line, column) {       // what Monaco does after an edit or a plain click: move, then notify
+    ed.setPosition({ lineNumber: line, column: column });
+    ed._handlers.cursor.forEach(f => f({ position: { lineNumber: line, column: column } }));
+}
+const KC_ENTER = 3, KC_KEY_X = 54, KC_DOWN = 18;
+
+section('Enter ends the goal column (16d140e9)');
+{
+    const env = makeEnv();
+    const model = makeModel(['abc', '  x = 1', '', 'de']);
+    const ed = makeEditor(model);
+    env.setCaretBehindEol(true);
+    env.installCaretBehindEol(ed);
+    click(ed, 1, 4, 40);                                     // past EOL: goal 40, legitimately
+    check('precondition: a click past EOL sets the goal', env.padGoal() === 40, 'goal=' + env.padGoal());
+    moveCaret(ed, 2, 8);                                     // caret goes elsewhere (not by a key we see)
+    keyDown(ed, KC_ENTER);                                   // Enter
+    moveCaret(ed, 3, 3);                                     // Monaco puts the caret on the new indented line
+    check('Enter cleared the goal', env.padGoal() === null, 'goal=' + env.padGoal());
+    keyDown(ed, KC_DOWN);
+    check('the next Down does not pad out to the stale goal', model.getLineContent(4) === 'de',
+        JSON.stringify(model.getLineContent(4)));
+}
+
+section('Typing ends the goal column (16d140e9)');
+{
+    const env = makeEnv();
+    const model = makeModel(['abc', 'de']);
+    const ed = makeEditor(model);
+    env.setCaretBehindEol(true);
+    env.installCaretBehindEol(ed);
+    click(ed, 1, 4, 30);
+    keyDown(ed, KC_KEY_X);
+    check('a typed character cleared the goal', env.padGoal() === null, 'goal=' + env.padGoal());
+}
+
+section('A click inside the text ends the goal column (16d140e9)');
+{
+    const env = makeEnv();
+    const model = makeModel(['abc', 'a-longer-line', 'de']);
+    const ed = makeEditor(model);
+    env.setCaretBehindEol(true);
+    env.installCaretBehindEol(ed);
+    click(ed, 1, 4, 30);                                     // goal 30
+    click(ed, 2, 3, 3);                                      // an ordinary click inside the text
+    moveCaret(ed, 2, 3);
+    check('the ordinary click cleared the goal', env.padGoal() === null, 'goal=' + env.padGoal());
+    keyDown(ed, KC_DOWN);
+    check('Down from there does not jump to column 30', model.getLineContent(3) === 'de',
+        JSON.stringify(model.getLineContent(3)));
+}
+
+section('Word wrap: a click right of a wrapped row is NOT past EOL (16d140e9)');
+{
+    const env = makeEnv();
+    const long = '  Loc:Something = ' + 'x'.repeat(180);    // wraps at 80 → three screen rows
+    const model = makeModel([long, '  a = 1', '']);
+    const ed = makeEditor(model, { wrapColumn: 80 });
+    env.setCaretBehindEol(true);
+    env.installCaretBehindEol(ed);
+    // Monaco clamps position to the end of the clicked ROW (col 81); mouseColumn is the screen column (125).
+    click(ed, 1, 81, 125);
+    check('caret NOT thrown to model column 125', ed.getPosition().column !== 125, 'column=' + ed.getPosition().column);
+    check('no goal column taken from a screen column', env.padGoal() === null, 'goal=' + env.padGoal());
+    check('the wrapped line was not touched', model.getLineContent(1) === long);
+    moveCaret(ed, 1, 81);
+    keyDown(ed, KC_DOWN);
+    check('Down on the next line did not pad it out to column 125', model.getLineContent(2) === '  a = 1',
+        JSON.stringify(model.getLineContent(2)));
+}
+
+section('Word wrap: up/down on a wrapped line is left to Monaco (16d140e9)');
+{
+    const env = makeEnv();
+    const model = makeModel(['L'.repeat(200), 'ab']);
+    const ed = makeEditor(model, { wrapColumn: 80 });
+    env.setCaretBehindEol(true);
+    env.installCaretBehindEol(ed);
+    ed.setPosition({ lineNumber: 1, column: 150 });          // on the wrapped line's second row
+    const prevented = keyDown(ed, KC_DOWN);
+    check('Down was not intercepted (Monaco moves to the next ROW)', prevented === false);
+    check('the short line below was not padded', model.getLineContent(2) === 'ab', JSON.stringify(model.getLineContent(2)));
+}
+
+section('Word wrap: a one-row line still takes a click past EOL');
+{
+    // Regression floor for the fix above: wrap mode only disqualifies WRAPPED lines.
+    const env = makeEnv();
+    const model = makeModel(['abc']);
+    const ed = makeEditor(model, { wrapColumn: 80 });
+    env.setCaretBehindEol(true);
+    env.installCaretBehindEol(ed);
+    click(ed, 1, 4, 12);
+    check('caret landed at the clicked column', ed.getPosition().column === 12, 'column=' + ed.getPosition().column);
+    check('line padded to reach it', model.getLineMaxColumn(1) === 12);
+    check('goal column taken', env.padGoal() === 12, 'goal=' + env.padGoal());
 }
 
 // ---------- follow-mode resolver ----------
