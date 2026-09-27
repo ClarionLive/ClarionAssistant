@@ -55,7 +55,8 @@ const SLICES = [
     slice(html, '    function cmdStructureDesigner() {', '    // ----- "New Structure" template picker', 'cmdStructureDesigner'),
     slice(html, '    function wireCtrlClickDefinition(ed) {', '    function installGlyphBookmarkClick()', 'wireCtrlClickDefinition'),
     slice(html, '    var DIAG_TIMEOUT_MS = ', '    // registerClarionFolding()', 'diagnostics'),
-    slice(html, '    function registerClarionProviders() {', '    // Clarion syntax highlighting (Monarch)', 'registerClarionProviders'),
+    // From the comment/string helpers through the providers: includes the local-first state (1c685f2e).
+    slice(html, '    function isInClarionComment(', '    // Clarion syntax highlighting (Monarch)', 'registerClarionProviders'),
     slice(html, '    function installFindKeyInterceptor() {', '    // ----- Code Snippets picker', 'installFindKeyInterceptor'),
     slice(html, '    function refreshOutline() {', '\n    }\n', 'refreshOutline') + '\n    }\n',
 ];
@@ -108,12 +109,17 @@ function load(opts) {
             languages: {
                 CompletionItemKind: new Proxy({}, { get: () => 1 }),
                 registerCompletionItemProvider(lang, p) { (providers.completion = providers.completion || []).push(p); },
-                registerHoverProvider(lang, p) { providers.hover = p; },
+                // Two since 1c685f2e item 6: the local card first, the LSP one (which waits for local) last.
+                registerHoverProvider(lang, p) { if (providers.hover) providers.hoverLocal = providers.hover; providers.hover = p; },
                 registerSignatureHelpProvider(lang, p) { providers.signatureHelp = p; },
             },
             editor: {
                 registerLinkOpener() { },
-                setModelMarkers(m, owner, list) { (env.markersSet = env.markersSet || []).push(list.length); },
+                // markersSet = the LSP owner's paints; the slot owner (1c685f2e item 7) is recorded apart.
+                setModelMarkers(m, owner, list) {
+                    if (owner === 'clarion') (env.markersSet = env.markersSet || []).push(list.length);
+                    else (env.slotMarkersSet = env.slotMarkersSet || []).push(list.length);
+                },
                 MouseTargetType: { CONTENT_TEXT: 6 },
             },
         },
@@ -137,7 +143,7 @@ function load(opts) {
     });
     const exportsList = ['requestFromHost', 'pushFileState', '__foldingCallback', 'cmdStructureDesigner', 'wireCtrlClickDefinition',
         'refreshDiagnostics', 'scheduleDiagnostics', 'registerClarionProviders', 'installFindKeyInterceptor', 'refreshOutline',
-        'resetBufferSync', 'withBuffer', 'diagTimeoutFor', 'resetDiagnosticsForNewSource'];
+        'resetBufferSync', 'withBuffer', 'diagTimeoutFor', 'resetDiagnosticsForNewSource', 'noteBufferEdit'];
     // Only names the page really declares (an undeclared one would resolve to a proxy stub).
     const ret = '{' + exportsList.map(n => n + ': ' + (DECLARED.has(n) || n === '__foldingCallback' ? n : 'undefined')).join(', ') + '}';
     // eslint-disable-next-line no-new-func
@@ -146,8 +152,9 @@ function load(opts) {
     api.registerClarionProviders();
     api.installFindKeyInterceptor();
     api.wireCtrlClickDefinition(env.editor);
-    // Messages posted since `mark`, parsed.
-    env.since = (mark) => posted.slice(mark).map(s => JSON.parse(s));
+    // Messages posted since `mark`, parsed - requests and syncs; the [local-rt] log posts are in sinceAll.
+    env.sinceAll = (mark) => posted.slice(mark).map(s => JSON.parse(s));
+    env.since = (mark) => env.sinceAll(mark).filter(m => m.action !== 'log');
     env.reply = (reqId, data) => { const r = env.pendingRequests[reqId]; if (r) { delete env.pendingRequests[reqId]; r(data); } };
     return env;
 }
@@ -156,14 +163,25 @@ function load(opts) {
 const pos = { lineNumber: 2, column: 5 };
 const ACTIONS = {
     completion: (e) => e.providers.completion[0].provideCompletionItems(e.model, pos),
-    hover: (e) => e.providers.hover.provideHover(e.model, pos),
-    signatureHelp: (e) => e.providers.signatureHelp.provideSignatureHelp(e.model, pos, null, {}),
-    foldingRanges: (e) => e.api.__foldingCallback(e.model),
+    // 1c685f2e: the completion provider asks the local layer in the same breath (4.15).
+    localCompletion: (e) => e.providers.completion[0].provideCompletionItems(e.model, pos),
+    // The LSP hover provider asks only once the shared localHover has answered (1c685f2e item 6): answer it
+    // (non-authoritative, no card) so the 'hover' request is posted.
+    hover: async (e) => {
+        e.providers.hover.provideHover(e.model, pos);
+        for (const m of e.since(0).filter(x => x.action === 'localHover')) e.reply(m.reqId, { contents: null, authoritative: false });
+        await flush();
+    },
+    localHover: (e) => e.providers.hoverLocal.provideHover(e.model, pos),
+    // R12 (1c685f2e): these take their payload from whenIdleSynced, so the request posts a microtask later.
+    signatureHelp: async (e) => { e.providers.signatureHelp.provideSignatureHelp(e.model, pos, null, {}); await flush(); },
+    foldingRanges: async (e) => { e.api.__foldingCallback(e.model); await flush(); },
     diagnostics: (e) => e.api.refreshDiagnostics(),
+    slotDiagnostics: (e) => e.api.refreshDiagnostics(),   // 1c685f2e item 7: every pass asks the slot checks too
     definition: (e) => fireKey(e, { keyCode: 123, key: 'F12' }),
     implementation: (e) => fireKey(e, { keyCode: 123, key: 'F12', ctrlKey: true }),
     definitionCtrlClick: (e) => e.mouseDown({ event: { ctrlKey: true }, target: { type: 6, position: { lineNumber: 2, column: 4 } } }),
-    documentStructure: (e) => e.api.refreshOutline(),
+    documentStructure: async (e) => { e.api.refreshOutline(); await flush(); },
     openDesigner: (e) => e.api.cmdStructureDesigner(),
 };
 function fireKey(e, init) {
@@ -172,12 +190,17 @@ function fireKey(e, init) {
     e.listeners.filter(l => l.type === 'keydown').forEach(l => l.fn(ev));
 }
 
+// A provider promise that never settles would otherwise end the run early with exit code 0 and no summary.
+let finished = false;
+process.on('exit', () => { if (!finished) { console.log('\nHARNESS DID NOT FINISH (an awaited promise never settled)'); process.exitCode = 1; } });
+
 async function main() {
     section('Every buffer-needing request sends `v`, not `buffer`');
     for (const [name, fire] of Object.entries(ACTIONS)) {
         const e = load();
         const mark = e.posted.length;
-        fire(e);
+        const fired = fire(e);
+        if (fire.constructor.name === 'AsyncFunction') await fired;   // (the other actions return never-settling promises)
         const msgs = e.since(mark);
         const action = name === 'definitionCtrlClick' ? 'definition' : name;
         const req = msgs.find(m => m.action === action);
@@ -194,7 +217,7 @@ async function main() {
         const e = load();
         ACTIONS.hover(e);                      // first request syncs
         const mark = e.posted.length;
-        for (let i = 0; i < 10; i++) { ACTIONS.hover(e); ACTIONS.completion(e); ACTIONS.foldingRanges(e); }
+        for (let i = 0; i < 10; i++) { ACTIONS.hover(e); ACTIONS.completion(e); await ACTIONS.foldingRanges(e); }
         const msgs = e.since(mark);
         check('30 requests without an edit post no bufferSync', msgs.filter(m => m.action === 'bufferSync').length === 0);
         check('...and none of them carries the buffer', msgs.every(m => !('buffer' in m) && !('text' in m)));
@@ -204,17 +227,62 @@ async function main() {
     section('An edit: the next request is preceded by exactly one bufferSync, later ones by none');
     {
         const e = load();
-        ACTIONS.hover(e);
+        await ACTIONS.hover(e);
         const v1 = e.since(0).find(m => m.action === 'hover').v;
         e.model.edit('PROGRAM\r\n  CODE\r\n  x = 1\r\n');
         const mark = e.posted.length;
-        ACTIONS.completion(e); ACTIONS.hover(e); ACTIONS.foldingRanges(e);
+        ACTIONS.completion(e); ACTIONS.hover(e); await ACTIONS.foldingRanges(e);
         const msgs = e.since(mark);
         const syncs = msgs.filter(m => m.action === 'bufferSync');
         check('one bufferSync for the edited version', syncs.length === 1 && msgs[0].action === 'bufferSync', 'syncs=' + syncs.length);
         check('...carrying the edited text', syncs[0] && syncs[0].buffer === e.model.getValue());
         check('...with a new v that every following request names', syncs[0] && syncs[0].v !== v1 &&
             msgs.filter(m => m.action !== 'bufferSync').every(m => m.v === syncs[0].v));
+    }
+
+    section('1c685f2e: the local + LSP completion pair shares ONE bufferSync; the local call has a short timeout');
+    {
+        const e = load();
+        ACTIONS.hover(e);
+        e.model.edit('PROGRAM\r\n  CODE\r\n  lo\r\n');
+        const mark = e.posted.length;
+        ACTIONS.completion(e);
+        const msgs = e.since(mark);
+        const lc = msgs.find(m => m.action === 'localCompletion'), c = msgs.find(m => m.action === 'completion');
+        check('4.16 localCompletion + completion after an edit: exactly one bufferSync, first',
+            msgs.filter(m => m.action === 'bufferSync').length === 1 && msgs[0].action === 'bufferSync' && !!lc && !!c,
+            JSON.stringify(msgs.map(m => m.action)));
+        check('4.15 both name the synced v and carry no buffer', lc && c && lc.v === msgs[0].v && c.v === msgs[0].v &&
+            !('buffer' in lc) && !('buffer' in c));
+        check('5.18 localCompletion gives up within 500 ms', lc && lc.timeoutMs <= 500, lc && String(lc.timeoutMs));
+        check('...and the local request is posted before the LSP one (it carries the sync)', msgs.indexOf(lc) < msgs.indexOf(c));
+        // 4.17: a bufferResync after a local request resets the sync, so the next request resends.
+        e.api.resetBufferSync();
+        const m2 = e.posted.length;
+        ACTIONS.completion(e);
+        check('4.17 after a bufferResync the next local request resends the buffer',
+            e.since(m2).filter(m => m.action === 'bufferSync').length === 1);
+    }
+
+    section('R12 (1c685f2e): while typing, folding / signature help / outline wait for the idle sync');
+    for (const name of ['foldingRanges', 'signatureHelp', 'documentStructure']) {
+        const e = load();
+        await ACTIONS.foldingRanges(e);                   // synced at rest
+        const mark = e.posted.length;
+        e.model.edit('PROGRAM\r\n  CODE\r\n  typed\r\n');
+        e.api.noteBufferEdit();                           // a keystroke
+        await ACTIONS[name](e);
+        check(name + ': nothing is posted while typing (no bufferSync, no request)', e.since(mark).length === 0,
+            JSON.stringify(e.since(mark).map(m => m.action)));
+        const idle = e.timers.filter(t => t.fn.name === 'idleSync').pop();
+        check('...one idle-sync timer of 400 ms is armed', !!idle && idle.ms === 400);
+        if (idle) idle.fn();
+        await flush();
+        const msgs = e.since(mark);
+        const req = msgs.find(m => m.action === name);
+        check(name + ': after the pause, ONE bufferSync, then the request naming it',
+            msgs.filter(m => m.action === 'bufferSync').length === 1 && msgs[0].action === 'bufferSync' && req && req.v === msgs[0].v,
+            JSON.stringify(msgs.map(m => m.action)));
     }
 
     section('Model swap / setSource / host resync force a resend');
@@ -230,7 +298,7 @@ async function main() {
             msgs.filter(m => m.action === 'bufferSync').length === 1 && msgs[0].buffer === 'OTHER\r\n');
         mark = e.posted.length;
         if (e.api.resetBufferSync) e.api.resetBufferSync();   // setSource's model.setValue, or the host's 'bufferResync'
-        ACTIONS.hover(e);
+        ACTIONS.completion(e);   // (a hover at the same spot reuses its shared local answer)
         msgs = e.since(mark);
         check('resetBufferSync (setSource / bufferResync) forces a resend', msgs.filter(m => m.action === 'bufferSync').length === 1);
         check('setSource resets the sync after model.setValue',
@@ -273,11 +341,15 @@ async function main() {
         while ((m = re.exec(html))) bad.push(m[1]);
         check('no requestFromHost(..., { buffer: ... })', bad.length === 0, bad.join(', '));
         for (const a of ['foldingRanges', 'diagnostics', 'hover', 'completion', 'signatureHelp', 'definition', 'implementation',
-                         'documentStructure', 'openDesigner', 'openDesignerCreate']) {
+                         'documentStructure', 'openDesigner', 'openDesignerCreate', 'localCompletion', 'localHover', 'slotDiagnostics']) {
             let n = (html.match(new RegExp("requestFromHost\\('" + a + "',\\s*withBuffer\\(", 'g')) || []).length;
-            // diagnostics builds its payload first (so a throw cannot wedge the in-flight slot)
-            if (a === 'diagnostics' && /payload = withBuffer\(model, \{ ranges: liveEditableRanges\(\) \}\)/.test(html) &&
-                /requestFromHost\('diagnostics', payload,/.test(html)) n++;
+            // diagnostics (and the slot checks) build the payload first (so a throw cannot wedge the in-flight slot)
+            if ((a === 'diagnostics' || a === 'slotDiagnostics') && /withBuffer\(model, \{ ranges: liveEditableRanges\(\) \}\)/.test(html) &&
+                new RegExp("requestFromHost\\('" + a + "', payload,").test(html)) n++;
+            // R12: LSP-bound requests take their payload from whenIdleSynced (withBuffer once typing pauses);
+            // R11: the local ones go through requestLocal (a slice, or withBuffer with no span map).
+            if (new RegExp("requestFromHost\\('" + a + "', payload[,)]").test(html) && /return Promise\.resolve\(withBuffer\(model, payload\)\)/.test(html)) n++;
+            if (new RegExp("requestLocal\\('" + a + "'").test(html) && /else payload = withBuffer\(model, payload\);/.test(html)) n++;
             check(a + ' goes through withBuffer', n >= 1, 'found ' + n);
         }
     }
@@ -370,7 +442,7 @@ async function main() {
     section('Requests are stamped with sentAt + timeoutMs (host logs replies that arrive after the page gave up)');
     {
         const e = load();
-        ACTIONS.hover(e);
+        await ACTIONS.hover(e);
         const h = e.since(0).find(m => m.action === 'hover');
         check('hover carries sentAt and timeoutMs=4000', h && typeof h.sentAt === 'number' && h.timeoutMs === 4000);
     }
@@ -379,7 +451,7 @@ async function main() {
     section('[local-rt]: one timing line per timed reply, on the page clock, sync attributed once');
     {
         const RT_RE = /^\[local-rt\] action=(\w+) v=(\S+) rtMs=(\d+) syncBytes=(\d+) syncMs=(\d+)( syncAgeMs=(\d+))?( timeout=1| null=1)?$/;
-        const logs = (e, mark) => e.since(mark || 0).filter(m => m.action === 'log');
+        const logs = (e, mark) => e.sinceAll(mark || 0).filter(m => m.action === 'log');
         const parse = (m) => { const x = RT_RE.exec(m.line); return x && { action: x[1], v: x[2], rtMs: +x[3], syncBytes: +x[4], syncMs: +x[5],
             syncAgeMs: x[7] == null ? null : +x[7], flag: (x[8] || '').trim() }; };
         const lastReq = (e, action) => e.since(0).filter(m => m.action === action).pop();
@@ -411,9 +483,9 @@ async function main() {
         // 0.4: a second request with no edit carries no sync.
         let mark = e.posted.length;
         e.clock = 2000;
-        ACTIONS.hover(e);
+        await ACTIONS.foldingRanges(e);
         e.clock = 2010;
-        e.reply(lastReq(e, 'hover').reqId, { contents: 'x' });
+        e.reply(lastReq(e, 'foldingRanges').reqId, { ranges: [] });
         await flush();
         L = logs(e, mark);
         const r2 = L.length === 1 ? parse(L[0]) : null;
@@ -423,7 +495,7 @@ async function main() {
         // 0.5: two requests after one edit share one sync; it is attributed to exactly ONE of them.
         e.model.edit(text.slice(0, -1) + 'Y');
         mark = e.posted.length;
-        ACTIONS.foldingRanges(e);
+        await ACTIONS.foldingRanges(e);
         ACTIONS.completion(e);
         const f = lastReq(e, 'foldingRanges'), c = lastReq(e, 'completion');
         e.reply(c.reqId, { items: [] }); e.reply(f.reqId, { ranges: [] });
@@ -436,24 +508,24 @@ async function main() {
         // 0.6: a page timeout is logged (timeout=1), a host null as null=1.
         const t = load();
         t.clock = 50;
-        ACTIONS.hover(t);
-        const giveUp = t.timers.filter(x => x.ms === 4000).pop();
-        t.clock = 4050;
+        await ACTIONS.foldingRanges(t);
+        const giveUp = t.timers.filter(x => x.ms === 1500).pop();
+        t.clock = 1550;
         giveUp.fn();
         await flush();
         L = logs(t).map(parse);
-        check('0.6 a timed-out request logs rtMs=<timeout> timeout=1', L.length === 1 && L[0] && L[0].flag === 'timeout=1' && L[0].rtMs === 4000,
+        check('0.6 a timed-out request logs rtMs=<timeout> timeout=1', L.length === 1 && L[0] && L[0].flag === 'timeout=1' && L[0].rtMs === 1500,
             JSON.stringify(logs(t)));
         const n = load();
-        ACTIONS.hover(n);
-        n.reply(lastReq(n, 'hover').reqId, null);
+        await ACTIONS.foldingRanges(n);
+        n.reply(lastReq(n, 'foldingRanges').reqId, null);
         await flush();
         L = logs(n).map(parse);
         check('0.6 a host null reply logs null=1', L.length === 1 && L[0] && L[0].flag === 'null=1', JSON.stringify(logs(n)));
 
         // Untimed actions log nothing (signature help, definition...): the log stays at the measured set.
         const u = load();
-        ACTIONS.signatureHelp(u);
+        await ACTIONS.signatureHelp(u);
         u.reply(lastReq(u, 'signatureHelp').reqId, null);
         await flush();
         check('an untimed action (signatureHelp) logs no line', logs(u).length === 0);
@@ -465,12 +537,15 @@ async function main() {
         const fm = load({ fileMode: true });
         fm.model.edit('FILE MODE TEXT\r\n');
         fm.api.pushFileState();
-        ACTIONS.completion(fm);
+        ACTIONS.completion(fm);        // posts localCompletion + completion (item 5)
         fm.reply(lastReq(fm, 'completion').reqId, { items: [] });
+        const lc = lastReq(fm, 'localCompletion');
+        if (lc) fm.reply(lc.reqId, { items: [] });
         await flush();
         L = logs(fm).map(parse);
-        check('file mode: the fileState text is the attributed sync', L.length === 1 && L[0] && L[0].syncBytes === 'FILE MODE TEXT\r\n'.length,
-            JSON.stringify(logs(fm)));
+        check('file mode: the fileState text is the attributed sync (on exactly one request)',
+            L.length >= 1 && L.filter(x => x && x.syncBytes > 0).length === 1 &&
+            L.find(x => x.syncBytes > 0).syncBytes === 'FILE MODE TEXT\r\n'.length, JSON.stringify(logs(fm)));
         check('the page posts the line through the generic {action:\'log\'} channel', /postToHost\(\{ action: 'log', line: line \}\)/.test(html));
     }
 
@@ -492,7 +567,7 @@ async function main() {
         m0 = b.posted.length;
         for (let i = 0; i < 10; i++) {
             b.model.edit(b.model.getValue().slice(0, -1) + String.fromCharCode(65 + i));
-            ACTIONS.hover(b); ACTIONS.completion(b); ACTIONS.foldingRanges(b); ACTIONS.diagnostics(b);
+            ACTIONS.hover(b); ACTIONS.completion(b); await ACTIONS.foldingRanges(b); ACTIONS.diagnostics(b);
             // the host answers diagnostics before the next edit (so the one-in-flight gate never holds one back)
             const d = b.since(0).filter(m => m.action === 'diagnostics').pop();
             if (d) b.reply(d.reqId, { markers: [] });
@@ -510,6 +585,7 @@ async function main() {
         check('(b) posts the buffer once per edit (10 copies), not once per request (40)', bytesB < one * 10.1 + 40 * 400, 'bytes ' + bytesB);
     }
 
+    finished = true;
     console.log('\n' + pass + ' passed, ' + fail + ' failed');
     if (fail) { console.log('\nFailures:\n  ' + failures.join('\n  ')); process.exit(1); }
 }
