@@ -210,6 +210,13 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                            "Services\LspTrace.cs", "Services\EncodingHelper.cs", "CodeGraph\Parsing\ClarionBuiltins.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
                Args = @((Join-Path $TestDir "fixtures\local-scope"), (Join-Path $RepoDir "Services\LocalScopeIndex.cs")) }
+            # 1c685f2e R11: the slice overloads (header + owner DATA + caret span, from the span map)
+            # answer exactly what the full-buffer overloads answer, at every caret of the fixture.
+            @{ Name = "LocalScopeIndex.SliceParity"
+               Sources = @("tests\LocalScopeIndex.SliceParity.cs", "Services\LocalScopeIndex.cs", "Services\LspClient.cs",
+                           "Services\LspTrace.cs", "Services\EncodingHelper.cs", "CodeGraph\Parsing\ClarionBuiltins.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
+               Args = @((Join-Path $TestDir "fixtures\local-scope")) }
             # 1c685f2e: dictionary PRE:Field / table-name completion and hover from the live snapshot
             # (SchemaGraph only as the no-snapshot fallback), plus keyword/built-in names + categories.
             @{ Name = "LiveDictionaryIndex.Test"
