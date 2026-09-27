@@ -1481,6 +1481,9 @@
         embedRanges = msg.editableRanges || [];
         saveEnabled = !!msg.saveEnabled;
         fileMode = !!msg.fileMode;
+        // The slot checks run unless the host turns them off (the Embeditor's file-mode tab: LSP only). The CA
+        // Editor overlay keeps them over the whole file, so this is NOT the same switch as fileMode. (1c685f2e)
+        slotChecksEnabled = msg.slotChecks !== false;
         if (msg.findUiMode) findUiMode = (msg.findUiMode === 'overlay') ? 'overlay' : 'pad';   // which UI answers Ctrl+F/Ctrl+H
         // The "include read-only (generated) blocks" find toggle only means something in PWEE/slot mode.
         // In file mode the whole buffer is editable — there are no read-only regions — so hide it.
@@ -4365,6 +4368,68 @@
         diagGen++;
         diagInFlight = false;
         diagRerun = false;
+        // The old source's slot squiggles go now; its late slot replies are dropped by the diagGen check.
+        if (editor && editor.getModel()) monaco.editor.setModelMarkers(editor.getModel(), SLOT_MARKER_OWNER, []);
+    }
+
+    // ----- Slot checks, painted apart from the LSP pass (1c685f2e item 7) -----
+    // The host's structure-balance and undefined-DO checks are pure functions of the buffer and the slots,
+    // answered in milliseconds by 'slotDiagnostics' in a lane of their own, while the LSP pass can take
+    // seconds on a generated module. So they are asked on EVERY debounce with no in-flight limit (the host
+    // lane is newest-wins: a superseded request is answered null) and painted under their own owner.
+    // The two sets never show the same squiggle twice: whichever lands second is deduped by (line, message)
+    // against the other one on screen - an LSP reply before it is painted, the LSP set when a slot reply lands.
+    var SLOT_MARKER_OWNER = 'clarion-slot';
+    var slotChecksEnabled = true;   // setSource's slotChecks:false (the Embeditor's file-mode tab) turns it off
+
+    function toMarkerData(m) {
+        return {
+            severity: m.severity,
+            message: m.message,
+            startLineNumber: m.line, startColumn: m.column,
+            endLineNumber: m.endLine, endColumn: m.endColumn
+        };
+    }
+    // The markers of `owner` on screen now, at their Monaco-tracked positions.
+    function markersOnScreen(model, owner) {
+        if (!monaco.editor.getModelMarkers) return [];
+        return monaco.editor.getModelMarkers({ owner: owner, resource: model.uri }) || [];
+    }
+    function markerKey(m) { return m.startLineNumber + '|' + m.message; }
+    // `list` without the entries whose (line, message) a marker of `otherOwner` already shows.
+    function withoutDuplicatesOf(model, list, otherOwner) {
+        var seen = {};
+        markersOnScreen(model, otherOwner).forEach(function (m) { seen[markerKey(m)] = true; });
+        return list.filter(function (m) { return !seen[markerKey(m)]; });
+    }
+
+    function refreshSlotDiagnostics() {
+        if (!editor || !slotChecksEnabled) return;
+        var model = editor.getModel();
+        if (!model) return;
+        var myVersion = model.getVersionId();
+        var myGen = diagGen;
+        var chars = model.getValueLength ? model.getValueLength() : model.getValue().length;
+        var payload;
+        try { payload = withBuffer(model, { ranges: liveEditableRanges() }); }
+        catch (e) { return; }
+        requestFromHost('slotDiagnostics', payload, diagTimeoutFor(chars))
+            .then(function (resp) {
+                // null = no answer (timeout, or superseded in the host's lane): keep what is on screen.
+                if (!resp || myGen !== diagGen) return;
+                // Computed for text no longer on screen: a newer request (every debounce sends one) paints.
+                if (!editor || editor.getModel() !== model || model.getVersionId() !== myVersion) return;
+                var slot = (resp.markers || []).map(toMarkerData);
+                monaco.editor.setModelMarkers(model, SLOT_MARKER_OWNER, slot);
+                // The LSP set may already show some of these (it landed first): drop those copies.
+                var lsp = markersOnScreen(model, 'clarion');
+                var kept = withoutDuplicatesOf(model, lsp, SLOT_MARKER_OWNER);
+                if (kept.length !== lsp.length) monaco.editor.setModelMarkers(model, 'clarion', kept.map(function (m) {
+                    return { severity: m.severity, message: m.message, startLineNumber: m.startLineNumber, startColumn: m.startColumn,
+                             endLineNumber: m.endLineNumber, endColumn: m.endColumn };
+                }));
+            })
+            .catch(function () { /* never let a failed round-trip disrupt editing */ });
     }
 
     // GH #176: ordering guard. requestFromHost correlates each reply to its own request, but nothing said
@@ -4377,6 +4442,7 @@
 
     function refreshDiagnostics() {
         if (!editor) return;
+        refreshSlotDiagnostics();   // every pass, ahead of (and never gated by) the LSP request below
         if (diagInFlight) { diagRerun = true; return; }   // dispatched when the outstanding pass settles
         var model = editor.getModel();
         var mySeq = ++diagReqSeq;
@@ -4422,15 +4488,9 @@
                     if (rerun && !diagTimer) scheduleDiagnostics();   // the held pass still needs an answer
                     return;
                 }
-                var markers = resp.markers || [];
-                monaco.editor.setModelMarkers(model, 'clarion', markers.map(function (m) {
-                    return {
-                        severity: m.severity,
-                        message: m.message,
-                        startLineNumber: m.line, startColumn: m.column,
-                        endLineNumber: m.endLine, endColumn: m.endColumn
-                    };
-                }));
+                // Minus what the slot checks already squiggle on screen (1c685f2e item 7).
+                var markers = (resp.markers || []).map(toMarkerData);
+                monaco.editor.setModelMarkers(model, 'clarion', withoutDuplicatesOf(model, markers, SLOT_MARKER_OWNER));
             })
             .catch(function () { if (myGen === diagGen) diagInFlight = false; /* never let a failed diagnostics round-trip disrupt editing */ });
     }

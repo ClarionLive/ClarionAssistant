@@ -115,7 +115,11 @@ function load(opts) {
             },
             editor: {
                 registerLinkOpener() { },
-                setModelMarkers(m, owner, list) { (env.markersSet = env.markersSet || []).push(list.length); },
+                // markersSet = the LSP owner's paints; the slot owner (1c685f2e item 7) is recorded apart.
+                setModelMarkers(m, owner, list) {
+                    if (owner === 'clarion') (env.markersSet = env.markersSet || []).push(list.length);
+                    else (env.slotMarkersSet = env.slotMarkersSet || []).push(list.length);
+                },
                 MouseTargetType: { CONTENT_TEXT: 6 },
             },
         },
@@ -172,6 +176,7 @@ const ACTIONS = {
     signatureHelp: (e) => e.providers.signatureHelp.provideSignatureHelp(e.model, pos, null, {}),
     foldingRanges: (e) => e.api.__foldingCallback(e.model),
     diagnostics: (e) => e.api.refreshDiagnostics(),
+    slotDiagnostics: (e) => e.api.refreshDiagnostics(),   // 1c685f2e item 7: every pass asks the slot checks too
     definition: (e) => fireKey(e, { keyCode: 123, key: 'F12' }),
     implementation: (e) => fireKey(e, { keyCode: 123, key: 'F12', ctrlKey: true }),
     definitionCtrlClick: (e) => e.mouseDown({ event: { ctrlKey: true }, target: { type: 6, position: { lineNumber: 2, column: 4 } } }),
@@ -314,11 +319,11 @@ async function main() {
         while ((m = re.exec(html))) bad.push(m[1]);
         check('no requestFromHost(..., { buffer: ... })', bad.length === 0, bad.join(', '));
         for (const a of ['foldingRanges', 'diagnostics', 'hover', 'completion', 'signatureHelp', 'definition', 'implementation',
-                         'documentStructure', 'openDesigner', 'openDesignerCreate', 'localCompletion', 'localHover']) {
+                         'documentStructure', 'openDesigner', 'openDesignerCreate', 'localCompletion', 'localHover', 'slotDiagnostics']) {
             let n = (html.match(new RegExp("requestFromHost\\('" + a + "',\\s*withBuffer\\(", 'g')) || []).length;
-            // diagnostics builds its payload first (so a throw cannot wedge the in-flight slot)
-            if (a === 'diagnostics' && /payload = withBuffer\(model, \{ ranges: liveEditableRanges\(\) \}\)/.test(html) &&
-                /requestFromHost\('diagnostics', payload,/.test(html)) n++;
+            // diagnostics (and the slot checks) build the payload first (so a throw cannot wedge the in-flight slot)
+            if ((a === 'diagnostics' || a === 'slotDiagnostics') && /payload = withBuffer\(model, \{ ranges: liveEditableRanges\(\) \}\)/.test(html) &&
+                new RegExp("requestFromHost\\('" + a + "', payload,").test(html)) n++;
             check(a + ' goes through withBuffer', n >= 1, 'found ' + n);
         }
     }
