@@ -29,6 +29,47 @@ namespace ClarionAssistant.Services
         public string BaseType;
     }
 
+    /// <summary>A piece of the page's buffer: <see cref="Text"/> starts at 1-based Monaco line <see cref="Start"/>.</summary>
+    public sealed class SlicePiece
+    {
+        public int Start;
+        public string Text;
+        public SlicePiece() { }
+        public SlicePiece(int start, string text) { Start = start; Text = text; }
+    }
+
+    /// <summary>One procedure implementation in a span map. Lines are 1-based Monaco lines: <see cref="Start"/>
+    /// is the header, <see cref="DataEnd"/> the CODE line (or Start when there is none), <see cref="End"/>
+    /// the last line before the next implementation header. <see cref="Owner"/> is, for a
+    /// "Class.Method PROCEDURE", the index of the nearest preceding non-dotted procedure (whose DATA a local
+    /// class's methods see). <see cref="Routines"/> are the ROUTINE labels between Start and End.</summary>
+    public sealed class SpanProc
+    {
+        public string Name;
+        public int Start, DataEnd, End;
+        public int? Owner;
+        public readonly List<string> Routines = new List<string>();
+        /// <summary>Each routine's header line and DATA end (its CODE line, or its header when it has no
+        /// DATA section). A page that caps a long span around the caret sends the enclosing routine's
+        /// header..DataEnd as its own piece, so the routine's DATA stays in scope.</summary>
+        public readonly List<SpanRoutine> RoutineSpans = new List<SpanRoutine>();
+    }
+
+    public sealed class SpanRoutine
+    {
+        public string Name;
+        public int Start, DataEnd;
+    }
+
+    /// <summary>What the host pushes to the page after each full buffer (R11): the header's hash (its text is
+    /// cached here under that hash) and the procedure spans.</summary>
+    public sealed class SpanMap
+    {
+        public string HeaderHash;
+        public string HeaderText;
+        public readonly List<SpanProc> Procs = new List<SpanProc>();
+    }
+
     /// <summary>
     /// Buffer-local completion and hover for Clarion source: the enclosing procedure's and routine's
     /// DATA, its PROTOTYPE parameters, module data, MAP procedures, routines, GROUP/QUEUE fields and the
@@ -71,10 +112,30 @@ namespace ClarionAssistant.Services
         /// comment and in a "?" field-equate context. Never throws.</summary>
         public static List<LspClient.CompletionItemInfo> Complete(string buffer, int line0, int col0, char? trigger)
         {
+            return CompleteIn(SafeScope(() => GetScope(buffer, line0)), col0);
+        }
+
+        /// <summary>Complete over a SLICE (R11): the module header text, the owning procedure's
+        /// start..DATA piece (for a Class.Method, else null), the enclosing procedure's span piece, and the
+        /// span map's routine names. Pieces carry their 1-based Monaco start line; the caret is 0-based
+        /// Monaco line/column. Returns exactly what the full-buffer overload returns for the same caret
+        /// when the pieces are the span map's (the parity harness checks every caret).</summary>
+        public static List<LspClient.CompletionItemInfo> Complete(
+            string headerText, SlicePiece ownerData, SlicePiece span, IList<string> routines, int line0, int col0, char? trigger)
+        {
+            return CompleteIn(SafeScope(() => SliceScope(headerText, ownerData, span, routines, line0)), col0);
+        }
+
+        private static Scope SafeScope(Func<Scope> make)
+        {
+            try { return make(); } catch { return null; }
+        }
+
+        private static List<LspClient.CompletionItemInfo> CompleteIn(Scope scope, int col0)
+        {
             var items = new List<LspClient.CompletionItemInfo>();
             try
             {
-                var scope = GetScope(buffer, line0);
                 if (scope == null) return items;
                 string lineText = scope.CaretLine;
                 int col = col0 < 0 ? 0 : (col0 > lineText.Length ? lineText.Length : col0);
@@ -137,9 +198,20 @@ namespace ClarionAssistant.Services
         /// <paramref name="fileName"/> (optional) is shown in the card's detail line. Never throws.</summary>
         public static LocalHoverResult Hover(string buffer, int line0, int col0, string fileName = null)
         {
+            return HoverIn(SafeScope(() => GetScope(buffer, line0)), col0, fileName);
+        }
+
+        /// <summary>Hover over a SLICE (R11); see the slice overload of Complete.</summary>
+        public static LocalHoverResult Hover(
+            string headerText, SlicePiece ownerData, SlicePiece span, IList<string> routines, int line0, int col0, string fileName = null)
+        {
+            return HoverIn(SafeScope(() => SliceScope(headerText, ownerData, span, routines, line0)), col0, fileName);
+        }
+
+        private static LocalHoverResult HoverIn(Scope scope, int col0, string fileName)
+        {
             try
             {
-                var scope = GetScope(buffer, line0);
                 if (scope == null) return null;
                 string lineText = scope.CaretLine;
                 int col = col0 < 0 ? 0 : (col0 > lineText.Length ? lineText.Length : col0);
@@ -175,9 +247,20 @@ namespace ClarionAssistant.Services
         /// caret is not in a single-level member-access context. Never throws.</summary>
         public static LocalMemberAccess GetMemberAccess(string buffer, int line0, int col0)
         {
+            return MemberAccessIn(SafeScope(() => GetScope(buffer, line0)), col0);
+        }
+
+        /// <summary>GetMemberAccess over a SLICE (R11); see the slice overload of Complete.</summary>
+        public static LocalMemberAccess GetMemberAccess(
+            string headerText, SlicePiece ownerData, SlicePiece span, IList<string> routines, int line0, int col0)
+        {
+            return MemberAccessIn(SafeScope(() => SliceScope(headerText, ownerData, span, routines, line0)), col0);
+        }
+
+        private static LocalMemberAccess MemberAccessIn(Scope scope, int col0)
+        {
             try
             {
-                var scope = GetScope(buffer, line0);
                 if (scope == null) return null;
                 string lineText = scope.CaretLine;
                 int col = col0 < 0 ? 0 : (col0 > lineText.Length ? lineText.Length : col0);
@@ -213,6 +296,7 @@ namespace ClarionAssistant.Services
         public static void ResetCaches()
         {
             lock (_headerLock) { _headers.Clear(); _headerOrder.Clear(); }
+            lock (_rangeLock) { _rangeCache.Clear(); _rangeOrder.Clear(); }
             lock (_instLock) { for (int i = 0; i < _instances.Length; i++) _instances[i] = null; }
         }
 
@@ -277,9 +361,60 @@ namespace ClarionAssistant.Services
 
         internal sealed class Param { public string Name; public string Type; }
 
-        /// <summary>One DATA range: its relevant lines only (column-1 labels, and END lines once a label
-        /// has been seen) - every other line is inert to the label/structure walks below.</summary>
-        private sealed class DataRange { public List<string> Lines; public string Kind; }
+        /// <summary>One DATA range's content: its relevant lines only (column-1 labels, and END lines once a
+        /// label has been seen - every other line is inert to the walks below), with its depth-0
+        /// declarations and GROUP/QUEUE structures parsed ONCE. Shared across requests by content hash: a
+        /// procedure's DATA rarely changes while its code is being typed, and InventoryTable's is 236 KB.</summary>
+        internal sealed class RangeData
+        {
+            public readonly List<string> Lines;
+            /// <summary>Depth-0 declarations (label, rest-of-line) in order: plain data plus a GROUP/QUEUE/
+            /// CLASS container's own label, never a field or member.</summary>
+            public readonly List<KeyValuePair<string, string>> Decls = new List<KeyValuePair<string, string>>();
+            private List<Struct> _structs;
+
+            public RangeData(List<string> lines)
+            {
+                Lines = lines;
+                int depth = 0;
+                foreach (var ln in lines)
+                {
+                    bool isEnd = IsEnd(ln);
+                    if (depth == 0 && !isEnd)
+                    {
+                        var lm = DataLabelPattern.Match(ln);
+                        if (lm.Success) Decls.Add(new KeyValuePair<string, string>(lm.Groups[1].Value, lm.Groups[2].Value));
+                    }
+                    if (IsStructOpen(ln)) depth++;
+                    else if (isEnd && depth > 0) depth--;
+                }
+            }
+
+            /// <summary>GROUP/QUEUE structures of this range (nesting + PRE inheritance). Read-only once built.</summary>
+            public List<Struct> Structs
+            {
+                get
+                {
+                    var s = _structs;
+                    if (s != null) return s;
+                    s = new List<Struct>();
+                    ParseStructures(Lines, s);
+                    return _structs = s;
+                }
+            }
+        }
+
+        private sealed class DataRange
+        {
+            public RangeData Data;
+            public string Kind;
+            public List<string> Lines { get { return Data.Lines; } }
+        }
+
+        private static readonly object _rangeLock = new object();
+        private static readonly Dictionary<string, RangeData> _rangeCache = new Dictionary<string, RangeData>();
+        private static readonly LinkedList<string> _rangeOrder = new LinkedList<string>();
+        private const int RangeCacheSize = 32;
 
         /// <summary>Everything in scope at one caret line. Built by walking outward from the caret.</summary>
         internal sealed class Scope
@@ -293,15 +428,23 @@ namespace ClarionAssistant.Services
             private readonly int _procHeader = -1;      // enclosing implementation header (caret line or above)
             private readonly string _procLabel;
             private readonly Header _header;
+            private readonly List<KeyValuePair<string, string>> _procs;   // slice: the span map's procedures
+            private readonly IList<string> _extraRoutines;                  // slice: the span map's routines
             private List<Struct> _structs;
 
-            internal Scope(string buf, int origin, int caretLineStart)
+            /// <param name="header">A slice's header, already resolved (else parsed from the buffer).</param>
+            /// <param name="procs">A slice's procedure list (else the buffer's own, per instance).</param>
+            /// <param name="extraRoutines">A slice's routine names, unioned with those in the buffer.</param>
+            internal Scope(string buf, int origin, int caretLineStart, Header header = null,
+                           List<KeyValuePair<string, string>> procs = null, IList<string> extraRoutines = null)
             {
                 _buf = buf;
                 _origin = origin;
+                _procs = procs;
+                _extraRoutines = extraRoutines;
                 int cle = LineEnd(buf, caretLineStart);
                 CaretLine = buf.Substring(caretLineStart, cle - caretLineStart);
-                _header = GetHeader(buf, origin);
+                _header = header ?? GetHeader(buf, origin);
 
                 // A column-1 declaration in progress ("Test PRO", about to become "Test PROCEDURE") that is
                 // not yet a complete header: it belongs to the construct above whose DATA is still open, or
@@ -352,21 +495,38 @@ namespace ClarionAssistant.Services
 
             private void AddModuleRanges()
             {
-                foreach (var r in _header.ModuleRanges) _ranges.Add(new DataRange { Lines = r, Kind = "module" });
+                foreach (var r in _header.ModuleRanges) _ranges.Add(new DataRange { Data = r, Kind = "module" });
             }
 
             private DataRange ReadRange(int headerStart, string kind)
             {
-                var lines = new List<string>();
-                bool sawLabel = false;
-                for (int p = NextLine(_buf, headerStart); p >= 0; p = NextLine(_buf, p))
+                // Where the DATA ends: its CODE line, or the next procedure/routine header.
+                int first = NextLine(_buf, headerStart), end = _buf.Length;
+                for (int p = first; p >= 0; p = NextLine(_buf, p))
+                    if (IsCodeLine(_buf, p) || IsImplHeader(_buf, p, _origin) || IsRoutineHeader(_buf, p)) { end = p; break; }
+                if (first < 0) first = end = _buf.Length;
+
+                string key = HeaderKey(_buf, first, end);
+                RangeData data;
+                lock (_rangeLock) { _rangeCache.TryGetValue(key, out data); }
+                if (data == null)
                 {
-                    if (IsCodeLine(_buf, p)) break;
-                    if (IsImplHeader(_buf, p, _origin) || IsRoutineHeader(_buf, p)) break;
-                    if (p < _buf.Length && IsLabelStart(_buf[p])) { sawLabel = true; lines.Add(LineText(_buf, p)); }
-                    else if (sawLabel && IsEndLineAt(_buf, p)) lines.Add(LineText(_buf, p));
+                    var lines = new List<string>();
+                    bool sawLabel = false;
+                    for (int p = first; p >= 0 && p < end; p = NextLine(_buf, p))
+                    {
+                        if (IsLabelStart(_buf[p])) { sawLabel = true; lines.Add(LineText(_buf, p)); }
+                        else if (sawLabel && IsEndLineAt(_buf, p)) lines.Add(LineText(_buf, p));
+                    }
+                    data = new RangeData(lines);
+                    lock (_rangeLock)
+                    {
+                        if (!_rangeCache.ContainsKey(key)) _rangeOrder.AddLast(key);
+                        _rangeCache[key] = data;
+                        while (_rangeOrder.Count > RangeCacheSize) { _rangeCache.Remove(_rangeOrder.First.Value); _rangeOrder.RemoveFirst(); }
+                    }
                 }
-                return new DataRange { Lines = lines, Kind = kind };
+                return new DataRange { Data = data, Kind = kind };
             }
 
             private void ParseParams(int headerStart, List<Param> into)
@@ -417,15 +577,15 @@ namespace ClarionAssistant.Services
             {
                 foreach (var r in _ranges)
                 {
-                    if (r.Kind == "routine") CollectLabels(r.Lines, prefix, seen, items, "(routine var)");
+                    if (r.Kind == "routine") CollectLabels(r.Data, prefix, seen, items, "(routine var)");
                     else if (r.Kind == "proc")
                     {
-                        CollectLabels(r.Lines, prefix, seen, items, "(local)");
+                        CollectLabels(r.Data, prefix, seen, items, "(local)");
                         if (includeParams) AddParams(_params, prefix, seen, items);
                     }
                     else if (r.Kind == "owner")
                     {
-                        CollectLabels(r.Lines, prefix, seen, items, "(local)");
+                        CollectLabels(r.Data, prefix, seen, items, "(local)");
                         if (includeParams) AddParams(_ownerParams, prefix, seen, items);
                     }
                 }
@@ -462,7 +622,7 @@ namespace ClarionAssistant.Services
                     items.Add(new LspClient.CompletionItemInfo { Label = name, Kind = 3 /*Function*/, Detail = detail, InsertText = name });
                 }
                 // (b) Procedure implementations in this buffer (Class.Method / prefixed labels excluded).
-                foreach (var pe in ProcList(_buf, _origin))
+                foreach (var pe in _procs ?? ProcList(_buf, _origin))
                 {
                     if (!pe.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !seen.Add(pe.Key)) continue;
                     items.Add(new LspClient.CompletionItemInfo { Label = pe.Key, Kind = 3 /*Function*/, Detail = "(local procedure)", InsertText = pe.Key });
@@ -561,7 +721,15 @@ namespace ClarionAssistant.Services
                     if (name.IndexOf('.') >= 0 || name.IndexOf(':') >= 0) continue;
                     names.Add(name);
                 }
-                return names;
+                // A slice capped around the caret may not hold every routine; the span map names them all, in
+                // document order. Routines typed inside the slice since the map was built follow them.
+                if (_extraRoutines == null) return names;
+                var all = new List<string>();
+                foreach (var r in _extraRoutines)
+                    if (!string.IsNullOrEmpty(r) && !all.Exists(n => string.Equals(n, r, StringComparison.OrdinalIgnoreCase))) all.Add(r);
+                foreach (var n in names)
+                    if (!all.Exists(x => string.Equals(x, n, StringComparison.OrdinalIgnoreCase))) all.Add(n);
+                return all;
             }
 
             // ---- structures and classes
@@ -572,7 +740,7 @@ namespace ClarionAssistant.Services
                 {
                     if (_structs != null) return _structs;
                     var all = new List<Struct>();
-                    foreach (var r in _ranges) ParseStructures(r.Lines, all);
+                    foreach (var r in _ranges) all.AddRange(r.Data.Structs);
                     return _structs = all;
                 }
             }
@@ -609,7 +777,7 @@ namespace ClarionAssistant.Services
             {
                 foreach (var r in _ranges)
                 {
-                    string rest = FindDataLabel(r.Lines, instance);
+                    string rest = FindDataLabel(r.Data, instance);
                     if (rest == null) continue;
                     var tk = TypeToken.Match(rest);
                     return tk.Success ? tk.Groups[1].Value : null;
@@ -639,7 +807,7 @@ namespace ClarionAssistant.Services
                 if (string.IsNullOrEmpty(word)) return null;
                 foreach (var r in _ranges)
                 {
-                    string rest = FindDataLabel(r.Lines, word);
+                    string rest = FindDataLabel(r.Data, word);
                     if (rest != null)
                     {
                         string detail, doc;
@@ -656,7 +824,7 @@ namespace ClarionAssistant.Services
                 foreach (var kv in _header.MapProcs)
                     if (string.Equals(kv.Key, word, StringComparison.OrdinalIgnoreCase))
                         return Card(string.IsNullOrEmpty(kv.Value) ? word : kv.Value, "local procedure", fileName, "procedure");
-                foreach (var pe in ProcList(_buf, _origin))
+                foreach (var pe in _procs ?? ProcList(_buf, _origin))
                     if (string.Equals(pe.Key, word, StringComparison.OrdinalIgnoreCase))
                         return Card(pe.Value, "local procedure", fileName, "procedure");
                 foreach (var name in RoutineNames())
@@ -705,49 +873,25 @@ namespace ClarionAssistant.Services
 
         /// <summary>Depth-0 labels of one DATA range matching <paramref name="prefix"/>: plain locals plus a
         /// GROUP/QUEUE/CLASS container's own label, never its fields or members.</summary>
-        private static void CollectLabels(List<string> lines, string prefix, HashSet<string> seen,
+        private static void CollectLabels(RangeData d, string prefix, HashSet<string> seen,
                                           List<LspClient.CompletionItemInfo> items, string scopeMarker)
         {
-            int depth = 0;
-            foreach (var ln in lines)
+            foreach (var decl in d.Decls)
             {
-                bool isEnd = IsEnd(ln);
-                if (depth == 0 && !isEnd)
-                {
-                    var lm = DataLabelPattern.Match(ln);
-                    if (lm.Success)
-                    {
-                        string label = lm.Groups[1].Value;
-                        if (label.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && seen.Add(label))
-                        {
-                            string detail, doc;
-                            BuildVarDetail(lm.Groups[2].Value, scopeMarker, out detail, out doc);
-                            items.Add(new LspClient.CompletionItemInfo
-                            { Label = label, Kind = 6 /*Variable*/, Detail = detail, Documentation = doc, InsertText = label });
-                        }
-                    }
-                }
-                if (IsStructOpen(ln)) depth++;
-                else if (isEnd && depth > 0) depth--;
+                string label = decl.Key;
+                if (!label.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !seen.Add(label)) continue;
+                string detail, doc;
+                BuildVarDetail(decl.Value, scopeMarker, out detail, out doc);
+                items.Add(new LspClient.CompletionItemInfo
+                { Label = label, Kind = 6 /*Variable*/, Detail = detail, Documentation = doc, InsertText = label });
             }
         }
 
         /// <summary>First depth-0 declaration labelled <paramref name="word"/> - its rest-of-line - or null.</summary>
-        private static string FindDataLabel(List<string> lines, string word)
+        private static string FindDataLabel(RangeData d, string word)
         {
-            int depth = 0;
-            foreach (var ln in lines)
-            {
-                bool isEnd = IsEnd(ln);
-                if (depth == 0 && !isEnd)
-                {
-                    var lm = DataLabelPattern.Match(ln);
-                    if (lm.Success && string.Equals(lm.Groups[1].Value, word, StringComparison.OrdinalIgnoreCase))
-                        return lm.Groups[2].Value;
-                }
-                if (IsStructOpen(ln)) depth++;
-                else if (isEnd && depth > 0) depth--;
-            }
+            foreach (var decl in d.Decls)
+                if (string.Equals(decl.Key, word, StringComparison.OrdinalIgnoreCase)) return decl.Value;
             return null;
         }
 
@@ -1058,6 +1202,7 @@ namespace ClarionAssistant.Services
         private static bool MatchWord(string s, int i, int le, string kw)
         {
             if (le - i < kw.Length) return false;
+            if ((s[i] | 0x20) != (kw[0] | 0x20)) return false;   // cheap first-letter reject (keywords are ASCII)
             if (string.Compare(s, i, kw, 0, kw.Length, StringComparison.OrdinalIgnoreCase) != 0) return false;
             int after = i + kw.Length;
             return after >= le || !IsWordChar(s[after]);
@@ -1073,14 +1218,38 @@ namespace ClarionAssistant.Services
         /// keyword, or -1. The label may carry '.' and ':' (ThisWindow.Init, Queue:Browse).</summary>
         private static int HeaderKeyword(string s, int ls, string kw)
         {
-            if (ls >= s.Length || !IsLabelStart(s[ls])) return -1;
-            int le = LineEnd(s, ls);
-            int i = ls + 1;
-            while (i < le && IsLabelChar(s[i], true)) i++;
-            int ws = i;
-            i = SkipWs(s, i, le);
-            if (i == ws || !MatchWord(s, i, le, kw)) return -1;
+            int i = HeaderWord(s, ls);
+            if (i < 0 || !MatchWord(s, i, s.Length, kw)) return -1;
             return i + kw.Length;
+        }
+
+        // The walks ask "ROUTINE?" then "PROCEDURE?" of the same column-1 line; the label + blank scan is
+        // the costly part (~250 ns a line on 32-bit), so the last answer is kept per thread.
+        [ThreadStatic] private static string _hwText;
+        [ThreadStatic] private static int _hwLine, _hwWord;
+
+        /// <summary>Start of the word after a column-1 label and its blanks, or -1. Hot path: no LineEnd
+        /// lookup - the label and blank runs stop at the line break by themselves, and CR/LF end a word
+        /// for MatchWord.</summary>
+        private static int HeaderWord(string s, int ls)
+        {
+            if (ls >= s.Length || !IsLabelStart(s[ls])) return -1;
+            if (ReferenceEquals(s, _hwText) && ls == _hwLine) return _hwWord;
+            int n = s.Length;
+            int i = ls + 1;
+            while (i < n && IsLabelChar(s[i], true)) i++;
+            int ws = i;
+            i = SkipBlanks(s, i);
+            int word = i == ws ? -1 : i;
+            _hwText = s; _hwLine = ls; _hwWord = word;
+            return word;
+        }
+
+        /// <summary>Skip whitespace up to, not across, the end of the line.</summary>
+        private static int SkipBlanks(string s, int i)
+        {
+            while (i < s.Length && s[i] != '\n' && s[i] != '\r' && char.IsWhiteSpace(s[i])) i++;
+            return i;
         }
 
         private static string LabelAt(string s, int ls)
@@ -1164,8 +1333,7 @@ namespace ClarionAssistant.Services
 
         private static bool IsCodeLine(string s, int ls)
         {
-            int le = LineEnd(s, ls);
-            return MatchWord(s, SkipWs(s, ls, le), le, "CODE");
+            return MatchWord(s, SkipBlanks(s, ls), s.Length, "CODE");
         }
 
         private static bool IsEndLineAt(string s, int ls)
@@ -1274,8 +1442,12 @@ namespace ClarionAssistant.Services
 
         internal sealed class Header
         {
-            public readonly List<List<string>> ModuleRanges = new List<List<string>>();
+            public string Text;
+            public readonly List<RangeData> ModuleRanges = new List<RangeData>();
             public readonly List<KeyValuePair<string, string>> MapProcs = new List<KeyValuePair<string, string>>();
+            /// <summary>The procedure implementations of the last full buffer this header was mapped from
+            /// (BuildSpanMap) - what a slice cannot see for itself. Null until a map is built.</summary>
+            public volatile List<KeyValuePair<string, string>> Procs;
         }
 
         private static readonly object _headerLock = new object();
@@ -1283,31 +1455,246 @@ namespace ClarionAssistant.Services
         private static readonly LinkedList<string> _headerOrder = new LinkedList<string>();
         private const int HeaderCacheSize = 8;
 
+        /// <summary>The cache key of a header text: FNV-1a over its characters, plus its length.</summary>
+        private static string HeaderKey(string s, int from, int to)
+        {
+            // Two 32-bit hashes (FNV-1a and a multiplicative one): 64-bit multiplies are slow on the
+            // 32-bit IDE process, and this runs over a 236 KB DATA section per request.
+            uint a = 2166136261u, b = 0;
+            for (int i = from; i < to; i++) { char c = s[i]; a = (a ^ c) * 16777619u; b = b * 31u + c; }
+            return a.ToString("x8") + b.ToString("x8") + ":" + (to - from);
+        }
+
         /// <summary>The module header - MEMBER down to the first procedure implementation, MAP-aware -
-        /// parsed once per distinct header text (FNV-1a over the header's characters plus its length).</summary>
+        /// parsed once per distinct header text.</summary>
         private static Header GetHeader(string s, int origin)
         {
             int end = HeaderEnd(s, origin);
-            ulong h = 14695981039346656037UL;
-            for (int i = 0; i < end; i++) { h ^= s[i]; h *= 1099511628211UL; }
-            string key = h.ToString("x16") + ":" + end;
+            return HeaderFor(HeaderKey(s, origin, end), () => s.Substring(origin, end - origin));
+        }
+
+        private static Header HeaderFor(string key, Func<string> text)
+        {
             lock (_headerLock)
             {
                 Header hit;
                 if (_headers.TryGetValue(key, out hit)) return hit;
             }
-            var parsed = ParseHeader(s.Substring(origin, end - origin));
+            string t = text();
+            var parsed = ParseHeader(t);
+            parsed.Text = t;
             System.Threading.Interlocked.Increment(ref _headerParseCount);
             lock (_headerLock)
             {
-                if (!_headers.ContainsKey(key))
-                {
-                    _headers[key] = parsed;
-                    _headerOrder.AddLast(key);
-                    while (_headerOrder.Count > HeaderCacheSize) { _headers.Remove(_headerOrder.First.Value); _headerOrder.RemoveFirst(); }
-                }
+                Header raced;
+                if (_headers.TryGetValue(key, out raced)) return raced;
+                Put(key, parsed);
             }
             return parsed;
+        }
+
+        private static void Put(string key, Header h)   // under _headerLock
+        {
+            if (!_headers.ContainsKey(key)) _headerOrder.AddLast(key);
+            _headers[key] = h;
+            while (_headerOrder.Count > HeaderCacheSize) { _headers.Remove(_headerOrder.First.Value); _headerOrder.RemoveFirst(); }
+        }
+
+        // ============================================================================ span map + slices (R11)
+        // The page must not ship the 3.2 MB buffer on every keystroke (measured 85-110 ms, spikes to 400 ms
+        // on InventoryTable). The host builds a SPAN MAP from each full buffer it receives (idle sync); the
+        // page then sends only the caret's procedure span (and, for a Class.Method, the owner's DATA), and
+        // the header travels once, by hash. The slice overloads rebuild a line-aligned text from those
+        // pieces - header, blank lines, owner piece, blank lines, span piece - so line numbers ARE Monaco
+        // lines and the full-buffer scope rules run unchanged on it.
+
+        /// <summary>The module header's hash (the cache key the page echoes), its text, and every procedure
+        /// implementation with its 1-based Monaco line span.</summary>
+        public static SpanMap BuildSpanMap(string buffer)
+        {
+            var map = new SpanMap();
+            if (string.IsNullOrEmpty(buffer)) return map;
+            int origin = Origin(buffer);
+            int end = HeaderEnd(buffer, origin);
+            map.HeaderHash = HeaderKey(buffer, origin, end);
+            map.HeaderText = buffer.Substring(origin, end - origin);
+            string text = map.HeaderText;
+            var hdr = HeaderFor(map.HeaderHash, () => text);
+            hdr.Procs = ProcList(buffer, origin);
+
+            int line = 1;
+            for (int i = buffer.IndexOf('\n', 0); i >= 0 && i < end; i = buffer.IndexOf('\n', i + 1)) line++;
+            SpanProc cur = null;
+            bool dataOpen = false;
+            SpanRoutine routineData = null;   // the routine whose DATA is still open (no CODE yet)
+            int lastOwner = -1;
+            for (int p = end; p >= 0 && p <= buffer.Length; p = NextLine(buffer, p), line++)
+            {
+                bool label = p < buffer.Length && IsLabelStart(buffer[p]);
+                if (label && IsImplHeader(buffer, p, origin))
+                {
+                    if (cur != null) cur.End = line - 1;
+                    string name = LabelAt(buffer, p);
+                    cur = new SpanProc { Name = name, Start = line, DataEnd = line };
+                    dataOpen = true;
+                    routineData = null;
+                    if (name.IndexOf('.') >= 0) cur.Owner = lastOwner >= 0 ? lastOwner : (int?)null;
+                    else lastOwner = map.Procs.Count;
+                    map.Procs.Add(cur);
+                    continue;
+                }
+                if (cur == null) continue;
+                bool routine = label && IsRoutineHeader(buffer, p);
+                if (dataOpen || routineData != null)
+                {
+                    if (IsCodeLine(buffer, p))
+                    {
+                        if (dataOpen) cur.DataEnd = line; else routineData.DataEnd = line;
+                        dataOpen = false;
+                        routineData = null;
+                    }
+                    else if (routine) { dataOpen = false; routineData = null; }
+                }
+                if (routine)
+                {
+                    string rn = LabelAt(buffer, p);
+                    if (rn.IndexOf('.') < 0 && rn.IndexOf(':') < 0) cur.Routines.Add(rn);
+                    routineData = new SpanRoutine { Name = rn, Start = line, DataEnd = line };
+                    cur.RoutineSpans.Add(routineData);
+                }
+            }
+            if (cur != null) cur.End = line - 1;
+            return map;
+        }
+
+        /// <summary>The header text cached under <paramref name="headerHash"/> (by BuildSpanMap or
+        /// RegisterHeader), or false - the host then asks the page for it (needHeader).</summary>
+        public static bool TryGetHeaderText(string headerHash, out string text)
+        {
+            text = null;
+            if (string.IsNullOrEmpty(headerHash)) return false;
+            lock (_headerLock)
+            {
+                Header h;
+                if (!_headers.TryGetValue(headerHash, out h)) return false;
+                text = h.Text;
+                return text != null;
+            }
+        }
+
+        /// <summary>The page's headerSync: cache <paramref name="headerText"/> under the hash the page
+        /// holds. Returns false when the text does not hash to it (the page's header was edited since the
+        /// map); it is cached under both keys either way.</summary>
+        public static bool RegisterHeader(string headerHash, string headerText)
+        {
+            if (headerText == null) return false;
+            string computed = HeaderKey(headerText, 0, headerText.Length);
+            var h = HeaderFor(computed, () => headerText);
+            if (string.IsNullOrEmpty(headerHash) || headerHash == computed) return true;
+            lock (_headerLock) { Put(headerHash, h); }
+            return false;
+        }
+
+        /// <summary>Complete over any list of slice pieces (e.g. a capped span sent as its DATA piece plus a
+        /// window around the caret). Same contract as the two-piece overload.</summary>
+        public static List<LspClient.CompletionItemInfo> Complete(
+            string headerText, IList<SlicePiece> pieces, IList<string> routines, int line0, int col0, char? trigger)
+        {
+            return CompleteIn(SafeScope(() => SliceScope(headerText, pieces, routines, line0)), col0);
+        }
+
+        /// <summary>Hover over any list of slice pieces.</summary>
+        public static LocalHoverResult Hover(
+            string headerText, IList<SlicePiece> pieces, IList<string> routines, int line0, int col0, string fileName = null)
+        {
+            return HoverIn(SafeScope(() => SliceScope(headerText, pieces, routines, line0)), col0, fileName);
+        }
+
+        private static Scope SliceScope(string headerText, SlicePiece ownerData, SlicePiece span, IList<string> routines, int line0)
+        {
+            var pieces = new List<SlicePiece>(2);
+            if (ownerData != null) pieces.Add(ownerData);
+            if (span != null) pieces.Add(span);
+            return SliceScope(headerText, pieces, routines, line0);
+        }
+
+        private static Scope SliceScope(string headerText, IList<SlicePiece> pieces, IList<string> routines, int line0)
+        {
+            if (headerText == null || line0 < 0) return null;
+            var hdr = HeaderFor(HeaderKey(headerText, 0, headerText.Length), () => headerText);
+
+            var sb = new StringBuilder(headerText.Length + 4096);
+            sb.Append(headerText);
+            int next0 = CountNewlines(headerText);                      // 0-based line the next text lands on
+            if (headerText.Length > 0 && headerText[headerText.Length - 1] != '\n') { sb.Append('\n'); next0++; }
+            int caretOff = line0 < next0 ? OffsetOfLine(headerText, 0, line0) : -1;
+
+            var ordered = new List<SlicePiece>();
+            if (pieces != null) foreach (var pc in pieces) if (pc != null && pc.Text != null && pc.Start >= 1) ordered.Add(pc);
+            ordered.Sort((a, b) => a.Start.CompareTo(b.Start));
+            var placed = new List<KeyValuePair<int, int>>();             // [start, end) offsets of each piece
+            foreach (var pc in ordered)
+            {
+                string t = pc.Text;
+                int at0 = pc.Start - 1;
+                if (at0 < next0)
+                {
+                    // Overlaps what is already placed: drop the leading lines that are already there.
+                    int off = OffsetOfLine(t, 0, next0 - at0);
+                    if (off < 0) continue;
+                    t = t.Substring(off);
+                    at0 = next0;
+                }
+                else sb.Append('\n', at0 - next0);
+                int pieceStart = sb.Length;
+                int lines = CountNewlines(t);
+                int pieceLines = t.Length > 0 && t[t.Length - 1] != '\n' ? lines + 1 : lines;
+                if (caretOff < 0 && line0 >= at0 && line0 < at0 + Math.Max(pieceLines, 1))
+                {
+                    int rel = OffsetOfLine(t, 0, line0 - at0);
+                    if (rel >= 0) caretOff = pieceStart + rel;
+                }
+                sb.Append(t);
+                if (t.Length == 0 || t[t.Length - 1] != '\n') sb.Append('\n');
+                next0 = at0 + Math.Max(pieceLines, 1);
+                placed.Add(new KeyValuePair<int, int>(pieceStart, sb.Length));
+            }
+            if (caretOff < 0) return null;                            // the caret is on no line we were given
+            string buf = sb.ToString();
+
+            // Procedure list: the span map's, plus any implementation typed inside the pieces since.
+            var procs = new List<KeyValuePair<string, string>>(hdr.Procs ?? new List<KeyValuePair<string, string>>());
+            foreach (var range in placed)
+                for (int p = range.Key; p >= 0 && p < range.Value; p = NextLine(buf, p))
+                {
+                    if (!IsLabelStart(buf[p]) || !IsImplHeader(buf, p, 0)) continue;
+                    string label = LabelAt(buf, p);
+                    if (label.IndexOf('.') >= 0 || label.IndexOf(':') >= 0) continue;
+                    if (!procs.Exists(kv => string.Equals(kv.Key, label, StringComparison.OrdinalIgnoreCase)))
+                        procs.Add(new KeyValuePair<string, string>(label, StripTrailingComment(LineText(buf, p).Trim()).Trim()));
+                }
+            return new Scope(buf, 0, caretOff, hdr, procs, routines);
+        }
+
+        private static int CountNewlines(string s)
+        {
+            int n = 0;
+            for (int i = s.IndexOf('\n'); i >= 0; i = s.IndexOf('\n', i + 1)) n++;
+            return n;
+        }
+
+        /// <summary>Offset of 0-based line <paramref name="line"/> of <paramref name="s"/> counted from
+        /// <paramref name="from"/>, or -1 past the end.</summary>
+        private static int OffsetOfLine(string s, int from, int line)
+        {
+            int off = from;
+            for (int k = 0; k < line; k++)
+            {
+                int nl = s.IndexOf('\n', off);
+                if (nl < 0) return -1;
+                off = nl + 1;
+            }
+            return off;
         }
 
         private static int HeaderEnd(string s, int origin)
@@ -1355,7 +1742,7 @@ namespace ClarionAssistant.Services
                 {
                     if (MapOpen.IsMatch(ln))
                     {
-                        if (i > rangeStart) hdr.ModuleRanges.Add(Slice(lines, rangeStart, i));
+                        if (i > rangeStart) hdr.ModuleRanges.Add(new RangeData(Slice(lines, rangeStart, i)));
                         mapDepth = 1;
                     }
                 }
@@ -1367,7 +1754,7 @@ namespace ClarionAssistant.Services
             {
                 int end = lines.Length;
                 if (end > rangeStart && lines[end - 1].Length == 0 && text.EndsWith("\n", StringComparison.Ordinal)) end--;   // the header's own trailing newline
-                if (end > rangeStart) hdr.ModuleRanges.Add(Slice(lines, rangeStart, end));
+                if (end > rangeStart) hdr.ModuleRanges.Add(new RangeData(Slice(lines, rangeStart, end)));
             }
 
             // MAP prototypes (nested MODULE(...)...END counted; directives and comments skipped).
