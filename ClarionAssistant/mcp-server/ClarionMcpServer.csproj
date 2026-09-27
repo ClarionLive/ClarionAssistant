@@ -142,6 +142,8 @@
     <Compile Include="..\Services\RedFileService.cs"><Link>Services\RedFileService.cs</Link></Compile>
     <Compile Include="..\Services\ClarionConfigDirectory.cs"><Link>Services\ClarionConfigDirectory.cs</Link></Compile>
     <Compile Include="..\Services\ClarionVersionService.cs"><Link>Services\ClarionVersionService.cs</Link></Compile>
+    <Compile Include="..\Services\EffectiveClarionVersion.cs"><Link>Services\EffectiveClarionVersion.cs</Link></Compile>
+    <Compile Include="..\Services\LspStartGate.cs"><Link>Services\LspStartGate.cs</Link></Compile>
     <Compile Include="..\Services\EncodingHelper.cs"><Link>Services\EncodingHelper.cs</Link></Compile>
     <!-- The agnostic tool-backing services. Each verified to import only System.*. -->
     <Compile Include="..\Services\ClarionClassParser.cs"><Link>Services\ClarionClassParser.cs</Link></Compile>

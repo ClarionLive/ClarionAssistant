@@ -469,7 +469,7 @@ namespace ClarionAssistant.Services
                 string root = null;
                 try
                 {
-                    var cfg = ClarionVersionService.Detect()?.GetCurrentConfig();
+                    var cfg = EffectiveClarionVersion.CurrentConfig();
                     root = cfg != null ? cfg.RootPath : null;
                 }
                 catch { }
