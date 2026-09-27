@@ -123,7 +123,8 @@
     "msarson": "Mark Sarson",
     "bdinko": "Dinko Bačun",
     "OkayPlunk": "OkayPlunk",
-    "armisoftware": "armisoftware"
+    "armisoftware": "armisoftware",
+    "Rick-UpperPark": "Rick Martin"
   },
   "$comment_docsOnlyPathPatterns": [
     "A merged PR touching ONLY these paths is documentation, not a change that needs a",

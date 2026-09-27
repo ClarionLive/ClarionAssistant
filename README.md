@@ -166,6 +166,50 @@ Indexing a PostgreSQL database that had a user-defined **aggregate** failed outr
 
 `build_app` and `generate_source` default to the app open in your IDE &mdash; which is the IDE holding it open &mdash; so ClarionCL failed with *"Could not gain access to MyApp.ap~"* / *"Cannot open application … (status 32)"*, reading exactly like a template or source error. The result now carries a **DIAGNOSIS** line saying the `.app` is locked by a Clarion IDE, most likely this one, and to close it there and retry.
 
+### CA Editor and Embeditor: Mark Word on Ctrl+W ([#229](https://github.com/ClarionLive/ClarionAssistant/issues/229))
+
+**Ctrl+W** marks the word at the caret. A word is letters, digits and underscores &mdash; the colon is deliberately not part of one &mdash; so in `LOC:CustomerName` it marks just `LOC` or just `CustomerName`, the one way to take either half on its own (double-click takes the whole name). Press **Ctrl+W** again while that half is still selected and it widens to the whole `LOC:CustomerName`, the same word double-click takes. It works at every cursor, only changes the selection, and can be rebound in the gear panel's **Keyboard** section. Requested and contributed by Rick Martin ([PR #231](https://github.com/ClarionLive/ClarionAssistant/pull/231)).
+
+<!-- release-docs: covered=mcp,embeditor -->
+### The embeditor tools reach large procedures, and never save over your unsaved edits ([PR #198](https://github.com/ClarionLive/ClarionAssistant/pull/198))
+
+On a large procedure `apply_embed_edits` and `open_procedure_embed` always failed with *"UI thread did not respond within 30s"* while the IDE was simply working: every UI-thread tool shared one 30-second budget, and a single native embeditor open can take 45 seconds by itself. The four slow tools &mdash; `open_procedure_embed`, `apply_embed_edits`, `save_and_close_embeditor` and `warmup_abc` &mdash; now get **180 seconds**; everything else keeps 30. To give every UI-thread tool more, add `Mcp.UiToolTimeoutSeconds` to `%APPDATA%\ClarionAssistant\settings.txt` (5&ndash;600 seconds; it never lowers a tool below its own minimum). `apply_embed_edits` can now use a procedure you already have open in the embeditor, but only when it has **no unsaved changes** and no CA Embeditor is showing it &mdash; otherwise it refuses and writes nothing, so it can never save your edits along with its own. And a call that timed out **no longer saves late**: a call the IDE never started does not run, `apply_embed_edits` discards instead of saving, `save_and_close_embeditor` does not save, and the message says what really happened.
+
+<!-- release-docs: covered=lsp -->
+### `lsp_diagnostics` no longer calls a file clean too early ([#216](https://github.com/ClarionLive/ClarionAssistant/issues/216))
+
+`lsp_diagnostics` is how the assistant checks its own edits, and it could answer *"no errors"* before the language server had finished. Since v1.0.4 the server ends every analysis with an explicit status for the file, and the bundled client now waits for it: only a **complete** for this file, at the version we sent, ends the wait, and running out of time still answers *"pending"*, never *"clean"*. Older servers keep the previous behaviour. With Mark Sarson's ClarionLsp addin installed, requests go through the addin, and clarion-lsp v1.4.3 does the same wait.
+
+<!-- release-docs: covered=editor,monaco -->
+### CA Editor: squiggles on the right line, the whole font list, and no white flash ([#176](https://github.com/ClarionLive/ClarionAssistant/issues/176), [#184](https://github.com/ClarionLive/ClarionAssistant/issues/184), [#195](https://github.com/ClarionLive/ClarionAssistant/issues/195))
+
+**Squiggles no longer land lines off:** a slow diagnostics reply to an older request could overwrite a newer one and draw its lines over a buffer that had since changed; a stale reply is now dropped and a fresh check runs. **The Font family box shows the whole list:** the browser filtered it by the font already in the box, so only that font appeared. The box now empties while it has focus, with the current font as its placeholder, and leaving without choosing puts the old font back. After you pick a font, click out of the box and back in to see the full list again. **No white flash on open:** everything shown before the editor paints now uses the editor's own background in the CA Editor and the CA Embeditor, and under **Windows High Contrast** the contrast theme's window colour.
+
+<!-- release-docs: covered=completion,embeditor -->
+### Completion lists a member once ([#187](https://github.com/ClarionLive/ClarionAssistant/issues/187))
+
+Member completion showed some methods twice, because the language server sent them twice and nothing removed the repeat. Identical items are now listed once; overloads with the same bare name but a different signature are kept. Found along the way: in the CA Embeditor, a buffer that already started with `MEMBER` or `PROGRAM` sent every position to the language server **one line low** and mapped every answer back one line high &mdash; fixed, though not shown to be the reporter's cause. The separate report in that issue about completion after `st.` in a data embed could not be reproduced and is not claimed fixed.
+
+<!-- release-docs: covered=embeditor -->
+### The embeditor finds generated modules through your redirection file ([PR #228](https://github.com/ClarionLive/ClarionAssistant/pull/228))
+
+The CA Embeditor looked for the procedure's generated `.clw` only **next to the `.app`**, so if your `.red` sends generated source elsewhere, every embed quietly fell back to a path that does not exist, and diagnostics and navigation ran against nothing. It now resolves through the redirection file, searching `[Debug32]`, `[Release32]`, `[Debug]` and `[Release]` before `[Common]`, and honouring the `.app` folder's own `.red` ahead of the solution's. **Behaviour change:** Clarion only honours a local `.red` named for the running version (`Clarion120.red`, say) and ignores any other `*.red` in the folder; Clarion Assistant used to take the first `*.red` it found in a solution or app folder, and now follows Clarion's rule, so a misnamed or backup `.red` is ignored. This came out of [#179](https://github.com/ClarionLive/ClarionAssistant/issues/179) but does **not** fix its access violation.
+
+<!-- release-docs: covered=instance-coord -->
+### A hung Clarion no longer sits on the multi-instance roster forever ([PR #208](https://github.com/ClarionLive/ClarionAssistant/pull/208))
+
+A Clarion IDE that hung without exiting kept its place in the list of running instances the others check for procedure conflicts, so they kept colliding with it until a reboot. An instance that stops responding is now dropped after about **two minutes of not responding continuously**. One slow answer is not enough, because a busy IDE mid-build or mid-generation gives the same answer, and a busy IDE that was dropped puts itself back once it responds again.
+
+<!-- release-docs: covered=explorer -->
+### CA Explorer matches the running Clarion to the right version ([#209](https://github.com/ClarionLive/ClarionAssistant/issues/209))
+
+When Clarion's record of the current version is missing, stale or says *"(Current ...)"*, the version is worked out from the running `Clarion.exe`'s bin folder &mdash; and it took the **first** entry with that folder, although every install registers its Clarion.NET compiler on the same bin. The IDE could be treated as its own .NET compiler. It now prefers the Win32 entry whose build number matches the running exe. The same version decides the `.red` file, the language server and CodeGraph, not only the CA Explorer banner and recents.
+
+<!-- release-docs: covered=mcp -->
+### `append_to_file` no longer adds a blank line ([#232](https://github.com/ClarionLive/ClarionAssistant/issues/232))
+
+It always wrote a line break before the new text, so appending to a file that already ended with one left a blank line. It now adds the break only when the file does not already end in one; encoding handling is unchanged.
+
 <!-- release-docs: covered=completion,ctrl-d,focus,knowledge -->
 ### Community fixes
 
@@ -187,6 +231,8 @@ With the CA Editor (Monaco) in front, the CA Debugger painted **no execution-lin
 
 - **Messaging in IDE terminals.** Claude Code 2.1.265 stopped resolving the MultiTerminal channel supplied on the command line, so every IDE terminal printed *"no MCP server configured with that name"* and quietly fell back to polling. The channel now arrives through the plugin.
 - **Deploy is stricter.** It refuses to deploy onto a running Clarion, never reports success on a partial copy, fails when the shipped language server does not match its pin, and is gated on the BOM guard &mdash; which now also fails if it scanned nothing, rather than passing vacuously. `deploy.ps1` parses under Windows PowerShell 5.1 again.
+- **The shipped language server is checked, not just its source.** Deploy and the installer build hash the `server.js` they ship and compare it with the pinned version's recorded hash; a proven mismatch is refused unless `-AllowUnpinnedLsp` is passed, and `Sync-LspServer.ps1 -Pure` refuses a non-git source tree unless `-TrustNonGitTree` is passed ([PR #191](https://github.com/ClarionLive/ClarionAssistant/pull/191)).
+- **`deploy.ps1 -Version all` starts faster.** Its search for Clarion installs scanned every mounted drive, network shares included; it now scans local fixed drives only ([PR #211](https://github.com/ClarionLive/ClarionAssistant/pull/211)).
 
 <!-- release-docs: covered=installer -->
 ### Installing no longer corrupts non-ASCII characters in your Claude Code settings ([#200](https://github.com/ClarionLive/ClarionAssistant/issues/200))
@@ -217,13 +263,17 @@ The blanket rule against generating Clarion code was also too broad, and is narr
 
 - **[@BoxSoft](https://github.com/BoxSoft)** &mdash; [#192](https://github.com/ClarionLive/ClarionAssistant/issues/192) and [#193](https://github.com/ClarionLive/ClarionAssistant/issues/193). Both reports named the specific keys and the specific visual mismatch, which is what made them fixable rather than a general complaint about feel.
 - **[@KevinErskine](https://github.com/KevinErskine)** &mdash; [#200](https://github.com/ClarionLive/ClarionAssistant/issues/200), and for the second time a gold-vs-live pair of his settings file. One character differed, and having both copies turned "something changed" into a measurable byte sequence. He also answered the follow-up question that ruled out a fourth defect.
-- **[Mark Sarson](https://github.com/msarson)** &mdash; for the Clarion Addin Registry and AddinFinder, whose source settled how our version numbers have to behave; for language-server folding ([PR #223](https://github.com/ClarionLive/ClarionAssistant/pull/223)); and for [#224](https://github.com/ClarionLive/ClarionAssistant/issues/224) and [#216](https://github.com/ClarionLive/ClarionAssistant/issues/216), which pinned down exactly why `lsp_diagnostics` can answer too early.
-- **[@geircodes](https://github.com/geircodes)** &mdash; six merged fixes: [PR #221](https://github.com/ClarionLive/ClarionAssistant/pull/221), [#219](https://github.com/ClarionLive/ClarionAssistant/pull/219), [#215](https://github.com/ClarionLive/ClarionAssistant/pull/215), [#226](https://github.com/ClarionLive/ClarionAssistant/pull/226), [#220](https://github.com/ClarionLive/ClarionAssistant/pull/220) and [#217](https://github.com/ClarionLive/ClarionAssistant/pull/217). #220 arrived with a 22-case test harness.
-- **[Dinko Bačun](https://github.com/bdinko)** &mdash; [PR #186](https://github.com/ClarionLive/ClarionAssistant/pull/186), which the v1.0.5 re-pin ran through, and [PR #199](https://github.com/ClarionLive/ClarionAssistant/pull/199), retiring wrong knowledge entries.
-- **[@KevinErskine](https://github.com/KevinErskine)** again &mdash; [#227](https://github.com/ClarionLive/ClarionAssistant/issues/227), where the file's timestamp and a byte-identical match against our shipped reference made the cause obvious within minutes; [#212](https://github.com/ClarionLive/ClarionAssistant/issues/212), correcting our own release note; and [#188](https://github.com/ClarionLive/ClarionAssistant/issues/188).
+- **[Mark Sarson](https://github.com/msarson)** &mdash; for the Clarion Addin Registry and AddinFinder, whose source settled how our version numbers have to behave; for language-server folding ([PR #223](https://github.com/ClarionLive/ClarionAssistant/pull/223)); and for [#224](https://github.com/ClarionLive/ClarionAssistant/issues/224) and [#216](https://github.com/ClarionLive/ClarionAssistant/issues/216), which pinned down exactly why `lsp_diagnostics` can answer too early &mdash; and for the server's end-of-analysis status that the fix now waits for.
+- **[@geircodes](https://github.com/geircodes)** &mdash; seven merged fixes: [PR #221](https://github.com/ClarionLive/ClarionAssistant/pull/221), [#219](https://github.com/ClarionLive/ClarionAssistant/pull/219), [#215](https://github.com/ClarionLive/ClarionAssistant/pull/215), [#226](https://github.com/ClarionLive/ClarionAssistant/pull/226), [#220](https://github.com/ClarionLive/ClarionAssistant/pull/220), [#217](https://github.com/ClarionLive/ClarionAssistant/pull/217) and [#211](https://github.com/ClarionLive/ClarionAssistant/pull/211). #220 arrived with a 22-case test harness. Also [#176](https://github.com/ClarionLive/ClarionAssistant/issues/176), which named the missing request sequencing behind the drifting squiggles, and [#184](https://github.com/ClarionLive/ClarionAssistant/issues/184).
+- **[Dinko Bačun](https://github.com/bdinko)** &mdash; [PR #186](https://github.com/ClarionLive/ClarionAssistant/pull/186), which the v1.0.5 re-pin ran through; [PR #199](https://github.com/ClarionLive/ClarionAssistant/pull/199), retiring wrong knowledge entries; [PR #191](https://github.com/ClarionLive/ClarionAssistant/pull/191), checking the language server we actually ship; and [PR #198](https://github.com/ClarionLive/ClarionAssistant/pull/198), measured on a real procedure of about 3,000 generated lines that no attempt could reach.
+- **[Adrián Santarelli](https://github.com/asantarelli)** &mdash; [PR #228](https://github.com/ClarionLive/ClarionAssistant/pull/228) and [PR #208](https://github.com/ClarionLive/ClarionAssistant/pull/208), both found while chasing [#179](https://github.com/ClarionLive/ClarionAssistant/issues/179), and both real problems in their own right.
+- **[Rick Martin](https://github.com/Rick-UpperPark)** &mdash; [#229](https://github.com/ClarionLive/ClarionAssistant/issues/229) and [PR #231](https://github.com/ClarionLive/ClarionAssistant/pull/231): the request and the implementation, with its own test.
+- **[@KevinErskine](https://github.com/KevinErskine)** again &mdash; [#227](https://github.com/ClarionLive/ClarionAssistant/issues/227), where the file's timestamp and a byte-identical match against our shipped reference made the cause obvious within minutes; [#212](https://github.com/ClarionLive/ClarionAssistant/issues/212), correcting our own release note; [#188](https://github.com/ClarionLive/ClarionAssistant/issues/188); and [#209](https://github.com/ClarionLive/ClarionAssistant/issues/209), whose `ClarionProperties.xml` showed the .NET entry sitting ahead of the IDE's own.
 - **[@oleendrebergerud](https://github.com/oleendrebergerud)** &mdash; [#203](https://github.com/ClarionLive/ClarionAssistant/issues/203) and [#204](https://github.com/ClarionLive/ClarionAssistant/issues/204), both with the exact bytes and error text.
 - **[@gla-chk](https://github.com/gla-chk)** &mdash; [#201](https://github.com/ClarionLive/ClarionAssistant/issues/201): root cause, repro and a verified patch in one report.
 - **[@Rokartt-52](https://github.com/Rokartt-52)** &mdash; [#222](https://github.com/ClarionLive/ClarionAssistant/issues/222).
+- **[@armisoftware](https://github.com/armisoftware)** &mdash; [#187](https://github.com/ClarionLive/ClarionAssistant/issues/187), with the screenshot that showed the repeats were the server's.
+- **[@PeterPetropoulos](https://github.com/PeterPetropoulos)** &mdash; [#195](https://github.com/ClarionLive/ClarionAssistant/issues/195).
 
 ---
 
