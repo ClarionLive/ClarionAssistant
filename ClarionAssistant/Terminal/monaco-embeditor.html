@@ -982,7 +982,10 @@
         // `text` stays last so the host can read the small fields without scanning the buffer.
         var model = editor.getModel();
         var v = ++bufSyncSeq;
-        postToHost({ action: 'fileState', dirty: isDirty, seq: editSeq, v: v, text: model.getValue() });
+        var t0 = rtNow();
+        var text = model.getValue();
+        postToHost({ action: 'fileState', dirty: isDirty, seq: editSeq, v: v, text: text });
+        noteBufferSync(v, text.length, rtNow() - t0);
         bufSyncedKey = bufferKey(model);
     }
     // Unsaved edits stashed by the host from an externally torn-down overlay, waiting for the async
@@ -1668,19 +1671,61 @@
     function requestFromHost(action, payload, timeoutMs) {
         return new Promise(function (resolve) {
             var reqId = ++reqSeq;
-            pendingRequests[reqId] = resolve;
+            var wait = timeoutMs || 4000;
             var msg = { action: action, reqId: reqId };
             if (payload) for (var k in payload) if (payload.hasOwnProperty(k)) msg[k] = payload[k];
+            // [local-rt] (1c685f2e item 0): timed actions log request-sent -> reply-received on the page's
+            // clock, which includes any bufferSync transit queued ahead of the request.
+            var rt = RT_LOG_ACTIONS.hasOwnProperty(action) ? { sync: claimBufferSync(msg.v), t0: 0 } : null;
+            var settle = function (data, timedOut) {
+                if (rt) logRoundTrip(action, msg.v, rt, data, timedOut);
+                resolve(data);
+            };
+            pendingRequests[reqId] = function (data) { settle(data, false); };
             // When it was sent and how long we will wait for it: the host logs a reply that lands after
             // the page has already given up (16d140e9 timing instrumentation). Ignored by every handler.
             msg.sentAt = Date.now();
-            msg.timeoutMs = timeoutMs || 4000;
+            msg.timeoutMs = wait;
+            if (rt) rt.t0 = rtNow();
             postToHost(msg);
             // Don't hang a Monaco provider forever if the host never replies.
             setTimeout(function () {
-                if (pendingRequests[reqId]) { delete pendingRequests[reqId]; resolve(null); }
-            }, timeoutMs || 4000);
+                if (pendingRequests[reqId]) { delete pendingRequests[reqId]; settle(null, true); }
+            }, wait);
         });
+    }
+
+    // ----- [local-rt] round-trip timing (1c685f2e item 0) -----
+    // One line per timed request, written by the host to monaco-spike.log verbatim (it adds the timestamp):
+    //   [local-rt] action=<a> v=<v> rtMs=<n> syncBytes=<n> syncMs=<n>[ syncAgeMs=<n>][ timeout=1| null=1]
+    // syncBytes = the buffer's JS .length (chars; the host's [buffer-sync] recv line logs the same count), and
+    // syncMs = the page-side cost of that sync (getValue + postMessage). A sync is attributed to exactly ONE
+    // request: the first timed one that names its `v` (often folding, which fires first on an edit), with
+    // syncAgeMs = how long before that request the sync was posted. Every other request of that version
+    // logs syncBytes=0 syncMs=0. timeout=1: the page gave up; null=1: the host answered null (drop/resync).
+    var RT_LOG_ACTIONS = { completion: 1, hover: 1, foldingRanges: 1, diagnostics: 1,
+                           localCompletion: 1, localHover: 1, slotDiagnostics: 1 };
+    var unclaimedSync = null;    // {v, chars, ms, at}: the last buffer sync not yet attributed to a request
+    function rtNow() {
+        return (typeof performance !== 'undefined' && performance && performance.now) ? performance.now() : Date.now();
+    }
+    function noteBufferSync(v, chars, ms) { unclaimedSync = { v: v, chars: chars, ms: ms, at: rtNow() }; }
+    function claimBufferSync(v) {
+        if (!unclaimedSync || unclaimedSync.v !== v) return null;
+        var s = unclaimedSync;
+        unclaimedSync = null;
+        return s;
+    }
+    function logRoundTrip(action, v, rt, data, timedOut) {
+        try {
+            var s = rt.sync;
+            var line = '[local-rt] action=' + action + ' v=' + (v == null ? '-' : v) +
+                ' rtMs=' + Math.round(rtNow() - rt.t0) +
+                ' syncBytes=' + (s ? s.chars : 0) + ' syncMs=' + (s ? Math.round(s.ms) : 0) +
+                (s ? ' syncAgeMs=' + Math.round(rt.t0 - s.at) : '') +
+                (timedOut ? ' timeout=1' : (data == null ? ' null=1' : ''));
+            postToHost({ action: 'log', line: line });
+        } catch (e) { /* timing must never break a request */ }
     }
 
     // ----- Buffer sync: the whole buffer crosses to the host ONCE per content version (16d140e9) -----
@@ -1702,8 +1747,11 @@
         var key = bufferKey(model);
         if (key !== bufSyncedKey) {
             var v = ++bufSyncSeq;
+            var t0 = rtNow();
+            var text = model.getValue();
             // Key order matters: `buffer` LAST lets the host read action + v without scanning 3 MB.
-            postToHost({ action: 'bufferSync', v: v, buffer: model.getValue() });
+            postToHost({ action: 'bufferSync', v: v, buffer: text });
+            noteBufferSync(v, text.length, rtNow() - t0);
             bufSyncedKey = key;
         }
         return bufSyncSeq;

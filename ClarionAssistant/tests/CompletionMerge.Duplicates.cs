@@ -61,6 +61,10 @@ static class CompletionMergeDuplicates
             Exec(cn, "INSERT INTO symbols VALUES (4, 'Issue187Class.Trace', 'procedure', 'issue187.inc', 4, '(<string errMsg>)', NULL, 'Issue187Class', NULL, 'virtual', 1)");
             Exec(cn, "INSERT INTO symbols VALUES (5, 'Issue187Class._DataEnd', 'variable', 'issue187.inc', 5, 'LONG', NULL, 'Issue187Class', NULL, 'class', 1)");
             Exec(cn, "INSERT INTO symbols VALUES (6, 'Issue187Class.DbOnlyMethod', 'procedure', 'issue187.inc', 6, '()', NULL, 'Issue187Class', NULL, 'class', 1)");
+            // 1c685f2e: a bare-prefix pair that differs ONLY by scope. The parameter row passes every other
+            // filter (true prefix, not dotted, not local), so the parameter filter alone decides.
+            Exec(cn, "INSERT INTO symbols VALUES (7, 'Issue187Global', 'variable', 'issue187.clw', 7, 'LONG', NULL, NULL, NULL, 'global', 1)");
+            Exec(cn, "INSERT INTO symbols VALUES (8, 'Issue187Param', 'variable', 'issue187.clw', 8, 'LONG', NULL, 'OtherProc', NULL, 'parameter', 1)");
         }
         SharedLspBridge.CodeGraphDbPathProvider = () => db;
 
@@ -76,6 +80,7 @@ static class CompletionMergeDuplicates
             "",
             "  CODE",
             "  obj.",
+            "  Issue187",
             "  RETURN",
         };
         string buffer = string.Join("\r\n", lines) + "\r\n";
@@ -146,6 +151,14 @@ static class CompletionMergeDuplicates
             Check(countLabel("DbOnlyMethod") == 1,
                 "DbOnlyMethod (CodeGraph-only member) listed " + countLabel("DbOnlyMethod") + " times, expected once");
             Check(countLabel("_DataEnd LONG") == 1, "the _DataEnd field was dropped or doubled");
+
+            // 6. 1c685f2e: a bare prefix never offers another procedure's PARAMETER as a global. The global
+            // row of the same shape IS offered, so the DB merge demonstrably ran.
+            int bareLine = Array.IndexOf(lines, "  Issue187");
+            var bareItems = SharedLspBridge.GetCompletion(file, bareLine, lines[bareLine].Length, 5000, buffer) ?? new List<LspClient.CompletionItemInfo>();
+            Func<string, bool> has = l => bareItems.Any(it => string.Equals(it.Label, l, StringComparison.OrdinalIgnoreCase));
+            Check(has("Issue187Global"), "bare prefix: the global row Issue187Global was not offered - the DB merge did not run");
+            Check(!has("Issue187Param"), "bare prefix: Issue187Param (scope 'parameter' of another procedure) leaked in as a global");
         }
         finally
         {

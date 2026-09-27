@@ -118,6 +118,9 @@ function load(opts) {
             },
         },
     };
+    // Injectable clock for the [local-rt] timing (1c685f2e item 0): the page reads performance.now().
+    env.clock = 0;
+    env.performance = { now: () => env.clock };
     env.model = makeModel('$model1', opts.text || 'PROGRAM\r\n  CODE\r\n');
     env.editor = {
         getModel: () => env.model,
@@ -370,6 +373,105 @@ async function main() {
         ACTIONS.hover(e);
         const h = e.since(0).find(m => m.action === 'hover');
         check('hover carries sentAt and timeoutMs=4000', h && typeof h.sentAt === 'number' && h.timeoutMs === 4000);
+    }
+
+    // ------------------------------------------------------------------ [local-rt] timing (1c685f2e item 0)
+    section('[local-rt]: one timing line per timed reply, on the page clock, sync attributed once');
+    {
+        const RT_RE = /^\[local-rt\] action=(\w+) v=(\S+) rtMs=(\d+) syncBytes=(\d+) syncMs=(\d+)( syncAgeMs=(\d+))?( timeout=1| null=1)?$/;
+        const logs = (e, mark) => e.since(mark || 0).filter(m => m.action === 'log');
+        const parse = (m) => { const x = RT_RE.exec(m.line); return x && { action: x[1], v: x[2], rtMs: +x[3], syncBytes: +x[4], syncMs: +x[5],
+            syncAgeMs: x[7] == null ? null : +x[7], flag: (x[8] || '').trim() }; };
+        const lastReq = (e, action) => e.since(0).filter(m => m.action === action).pop();
+
+        // 0.1 / 0.2 / 0.3 / 0.8: sync at t=900 (costing 25 ms inside getValue), request at 1000, reply at 1137.
+        const text = 'x'.repeat(3198532);
+        const e = load({ text });
+        const realGet = e.model.getValue.bind(e.model);
+        e.model.getValue = () => { e.clock += 25; return realGet(); };   // the sync's own cost, on the page clock
+        e.clock = 900;
+        const p = e.api.withBuffer(e.model, { line: 2, column: 5 });   // posts the bufferSync (900 -> 925)
+        e.clock = 1000;
+        e.api.requestFromHost('completion', p);
+        check('0.1 nothing is logged on send', logs(e).length === 0);
+        e.clock = 1137;
+        e.reply(lastReq(e, 'completion').reqId, { items: [] });
+        await flush();
+        let L = logs(e);
+        const r1 = L.length === 1 ? parse(L[0]) : null;
+        check('0.1 exactly one well-formed [local-rt] line per reply', !!r1, JSON.stringify(L));
+        check('0.2 rtMs is request-sent -> reply-received (137)', r1 && r1.rtMs === 137, r1 && ('rtMs=' + r1.rtMs));
+        const syncMsg = e.since(0).find(m => m.action === 'bufferSync');
+        check('0.3 syncBytes = the posted buffer\'s JS length', r1 && syncMsg && r1.syncBytes === syncMsg.buffer.length && r1.syncBytes === 3198532,
+            r1 && ('syncBytes=' + r1.syncBytes));
+        check('0.8 syncMs = the page-side cost of the sync (getValue + postMessage) = 25', r1 && r1.syncMs === 25, r1 && ('syncMs=' + r1.syncMs));
+        check('0.2 syncAgeMs = request send minus sync post (1000 - 925)', r1 && r1.syncAgeMs === 75, r1 && ('syncAgeMs=' + r1.syncAgeMs));
+        check('...and the line names the action and the v', r1 && r1.action === 'completion' && r1.v === String(syncMsg.v));
+
+        // 0.4: a second request with no edit carries no sync.
+        let mark = e.posted.length;
+        e.clock = 2000;
+        ACTIONS.hover(e);
+        e.clock = 2010;
+        e.reply(lastReq(e, 'hover').reqId, { contents: 'x' });
+        await flush();
+        L = logs(e, mark);
+        const r2 = L.length === 1 ? parse(L[0]) : null;
+        check('0.4 no edit: syncBytes=0 syncMs=0 and no syncAgeMs', r2 && r2.syncBytes === 0 && r2.syncMs === 0 && r2.syncAgeMs === null && r2.rtMs === 10,
+            JSON.stringify(L));
+
+        // 0.5: two requests after one edit share one sync; it is attributed to exactly ONE of them.
+        e.model.edit(text.slice(0, -1) + 'Y');
+        mark = e.posted.length;
+        ACTIONS.foldingRanges(e);
+        ACTIONS.completion(e);
+        const f = lastReq(e, 'foldingRanges'), c = lastReq(e, 'completion');
+        e.reply(c.reqId, { items: [] }); e.reply(f.reqId, { ranges: [] });
+        await flush();
+        L = logs(e, mark).map(parse);
+        check('0.5 two lines, the sync bytes on exactly one (the first request of that version)',
+            L.length === 2 && L.filter(x => x && x.syncBytes > 0).length === 1 &&
+            L.find(x => x.syncBytes > 0).action === 'foldingRanges', JSON.stringify(L));
+
+        // 0.6: a page timeout is logged (timeout=1), a host null as null=1.
+        const t = load();
+        t.clock = 50;
+        ACTIONS.hover(t);
+        const giveUp = t.timers.filter(x => x.ms === 4000).pop();
+        t.clock = 4050;
+        giveUp.fn();
+        await flush();
+        L = logs(t).map(parse);
+        check('0.6 a timed-out request logs rtMs=<timeout> timeout=1', L.length === 1 && L[0] && L[0].flag === 'timeout=1' && L[0].rtMs === 4000,
+            JSON.stringify(logs(t)));
+        const n = load();
+        ACTIONS.hover(n);
+        n.reply(lastReq(n, 'hover').reqId, null);
+        await flush();
+        L = logs(n).map(parse);
+        check('0.6 a host null reply logs null=1', L.length === 1 && L[0] && L[0].flag === 'null=1', JSON.stringify(logs(n)));
+
+        // Untimed actions log nothing (signature help, definition...): the log stays at the measured set.
+        const u = load();
+        ACTIONS.signatureHelp(u);
+        u.reply(lastReq(u, 'signatureHelp').reqId, null);
+        await flush();
+        check('an untimed action (signatureHelp) logs no line', logs(u).length === 0);
+
+        // 0.7: no log post is ever over 1 KB (it never carries the buffer).
+        check('0.7 every log post is under 1 KB', e.posted.filter(s => s.indexOf('"action":"log"') >= 0).every(s => s.length < 1024));
+
+        // File mode: the fileState mirror is the sync, so it is attributed the same way.
+        const fm = load({ fileMode: true });
+        fm.model.edit('FILE MODE TEXT\r\n');
+        fm.api.pushFileState();
+        ACTIONS.completion(fm);
+        fm.reply(lastReq(fm, 'completion').reqId, { items: [] });
+        await flush();
+        L = logs(fm).map(parse);
+        check('file mode: the fileState text is the attributed sync', L.length === 1 && L[0] && L[0].syncBytes === 'FILE MODE TEXT\r\n'.length,
+            JSON.stringify(logs(fm)));
+        check('the page posts the line through the generic {action:\'log\'} channel', /postToHost\(\{ action: 'log', line: line \}\)/.test(html));
     }
 
     // ------------------------------------------------------------------------------------ measurement

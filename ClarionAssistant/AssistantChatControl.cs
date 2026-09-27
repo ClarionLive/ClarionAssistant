@@ -978,6 +978,8 @@ namespace ClarionAssistant
         {
             if (!string.IsNullOrEmpty(path) && File.Exists(path))
             {
+                // Completion's held-open symbol DB connections belong to the old solution.
+                SymbolIndex.ReleaseAll();
                 _currentSlnPath = path;
                 AddToSolutionHistory(path);
                 UpdateIndexStatus();
@@ -2319,6 +2321,9 @@ namespace ClarionAssistant
             bool partialDbDeleted = false;
             worker.DoWork += (s, e) =>
             {
+                // The editor's completion holds a read-only connection to this db (SymbolIndex, 1c685f2e);
+                // drop it before the write open, so a cancelled full run's delete below is not blocked.
+                SymbolIndex.Release(dbPath);
                 var db = new ClarionCodeGraph.Graph.CodeGraphDatabase();
                 db.Open(dbPath);
                 try
@@ -2358,6 +2363,7 @@ namespace ClarionAssistant
                 // would be the exact silent lie this window exists to remove.
                 if (wasCancelled && !incremental)
                 {
+                    SymbolIndex.Release(dbPath);   // a completion may have reopened it mid-run
                     try { File.Delete(dbPath); } catch { }
                     partialDbDeleted = !File.Exists(dbPath);
                 }

@@ -712,7 +712,7 @@ namespace ClarionAssistant.Services
                             {
                                 Label = s.Name,
                                 Kind = 21,   // Constant (equates)
-                                Detail = CgCompletionDetail(s),
+                                Detail = SymbolIndex.CompletionDetail(s),
                                 InsertText = insert
                             });
                         }
@@ -934,6 +934,33 @@ namespace ClarionAssistant.Services
             {
                 LspTrace.Write("[SharedLspBridge] ResolveNamesFromProgramGlobals('" + modulePath + "'): " + ex.Message);
             }
+        }
+
+        private static readonly Regex CgGroupQueueOpen = new Regex(@"^([A-Za-z_][A-Za-z0-9_:]*)\s+(GROUP|QUEUE)\b(.*)$", RegexOptions.IgnoreCase);
+        private static readonly Regex CgEndLine = new Regex(@"^\s*END\b", RegexOptions.IgnoreCase);
+        private static readonly Regex CgPeriodEnd = new Regex(@"^\s*\.\s*$");
+
+        /// <summary>First depth-0 data declaration in [start, end) whose label exactly matches <paramref
+        /// name="word"/> (case-insensitive) - its rest-of-line - or null. Only GROUP/QUEUE nesting is
+        /// tracked: the looseness ResolveNamesFromProgramGlobals documents and accepts (errs toward
+        /// silencing a diagnostic already known to misfire).</summary>
+        private static string FindDataLabelInRange(string[] lines, int start, int end, string word)
+        {
+            int depth = 0;
+            for (int i = start; i < end && i < lines.Length; i++)
+            {
+                string ln = lines[i];
+                bool isEnd = CgEndLine.IsMatch(ln) || CgPeriodEnd.IsMatch(ln);
+                if (depth == 0 && !isEnd)
+                {
+                    var lm = CgDataLabelPattern.Match(ln);
+                    if (lm.Success && string.Equals(lm.Groups[1].Value, word, StringComparison.OrdinalIgnoreCase))
+                        return lm.Groups[2].Value;
+                }
+                if (CgGroupQueueOpen.IsMatch(ln)) depth++;
+                else if (isEnd && depth > 0) depth--;
+            }
+            return null;
         }
 
         /// <summary>Mark every still-unresolved name in <paramref name="names"/> that this DB declares at a
@@ -1856,8 +1883,12 @@ namespace ClarionAssistant.Services
                 // indexed solution or library. CgHoverFromDb below is a global, UNSCOPED exact-name lookup —
                 // without this, an in-scope local (e.g. "PRO") or a brand-new, not-yet-indexed procedure
                 // (e.g. "Test") can resolve to an unrelated class member elsewhere that merely shares the name.
-                var localHover = BufferLocalHover(lines, line, word, filePath);
-                if (localHover != null) return localHover;
+                string text = CgGetText(bufferText, filePath);
+                var scope = text == null ? null : LocalScopeIndex.GetScope(text, line);
+                var localHover = scope == null ? null
+                    : scope.HoverWord(word, string.IsNullOrEmpty(filePath) ? null : Path.GetFileName(filePath));
+                if (localHover != null)
+                    return WrapResult(new Dictionary<string, object> { { "contents", localHover.Markdown } });
 
                 // BufferLocalHover just searched this file's ENTIRE local/routine/module/local-procedure
                 // scope at this exact cursor and found nothing — so a "variable"-kind exact-name match from
@@ -1876,83 +1907,6 @@ namespace ClarionAssistant.Services
                 return AbcGlobalHover(word);
             }
             catch { return null; }
-        }
-
-        /// <summary>Exact-name hover for a word declared right here in the buffer — a local/routine/module
-        /// variable (via the same scope ranges completion uses, so it honors the column-1-declaration-in-
-        /// progress guard) or a module-local procedure (MAP prototype or in-buffer implementation). Tried
-        /// BEFORE the global CodeGraph/ClarionGraph exact-name lookup so an in-scope local always outranks a
-        /// same-named symbol declared elsewhere in the solution or library. Null when nothing in the buffer
-        /// matches — the global lookup then proceeds as before. Never throws.</summary>
-        private static Dictionary<string, object> BufferLocalHover(string[] lines, int line, string word, string filePath)
-        {
-            try
-            {
-                if (lines == null || string.IsNullOrEmpty(word)) return null;
-                string fileName = string.IsNullOrEmpty(filePath) ? null : Path.GetFileName(filePath);
-
-                foreach (var rg in GetScopeDataRanges(lines, line))
-                {
-                    string restOfLine = FindDataLabelInRange(lines, rg[0], rg[1], word);
-                    if (restOfLine == null) continue;
-                    string detail, doc;
-                    BuildVarDetail(restOfLine, null, out detail, out doc);
-                    var bits = new List<string> { "local" };
-                    if (fileName != null) bits.Add(fileName);
-                    string sig = string.IsNullOrEmpty(detail) ? word : word + "  " + detail;
-                    return WrapResult(new Dictionary<string, object> {
-                        { "contents", "```clarion\n" + sig + "\n```\n\n" + string.Join(" · ", bits) } });
-                }
-
-                foreach (var kv in GetModuleMapProcedures(lines))
-                {
-                    if (!string.Equals(kv.Key, word, StringComparison.OrdinalIgnoreCase)) continue;
-                    var bits = new List<string> { "local procedure" };
-                    if (fileName != null) bits.Add(fileName);
-                    string sig = string.IsNullOrEmpty(kv.Value) ? word : kv.Value;
-                    return WrapResult(new Dictionary<string, object> {
-                        { "contents", "```clarion\n" + sig + "\n```\n\n" + string.Join(" · ", bits) } });
-                }
-
-                foreach (var ln in lines)
-                {
-                    var hm = CgProcHeaderLabel.Match(ln);
-                    if (!hm.Success) continue;
-                    if (hm.Groups[1].Value.IndexOf('.') >= 0 || hm.Groups[1].Value.IndexOf(':') >= 0) continue;
-                    if (!string.Equals(hm.Groups[1].Value, word, StringComparison.OrdinalIgnoreCase)) continue;
-                    var bits = new List<string> { "local procedure" };
-                    if (fileName != null) bits.Add(fileName);
-                    string sig = CgTrailingComment.Replace(ln.Trim(), "").Trim();
-                    return WrapResult(new Dictionary<string, object> {
-                        { "contents", "```clarion\n" + sig + "\n```\n\n" + string.Join(" · ", bits) } });
-                }
-
-                return null;
-            }
-            catch { return null; }
-        }
-
-        /// <summary>First depth-0 data declaration in [start, end) whose label exactly matches <paramref
-        /// name="word"/> (case-insensitive) — its rest-of-line (type + optional trailing '!' comment), or
-        /// null. Mirrors CollectDataLabels'/MergeModuleVarCompletions' depth tracking so a struct's own
-        /// field names don't false-positive as bare locals.</summary>
-        private static string FindDataLabelInRange(string[] lines, int start, int end, string word)
-        {
-            int depth = 0;
-            for (int i = start; i < end && i < lines.Length; i++)
-            {
-                string ln = lines[i];
-                bool isEnd = CgEndLine.IsMatch(ln) || CgPeriodEnd.IsMatch(ln);
-                if (depth == 0 && !isEnd)
-                {
-                    var lm = CgDataLabelPattern.Match(ln);
-                    if (lm.Success && string.Equals(lm.Groups[1].Value, word, StringComparison.OrdinalIgnoreCase))
-                        return lm.Groups[2].Value;
-                }
-                if (CgGroupQueueOpen.IsMatch(ln)) depth++;
-                else if (isEnd && depth > 0) depth--;
-            }
-            return null;
         }
 
         /// <summary>Hover for a well-known ABC standard global/equate (GlobalRequest, GlobalResponse,
@@ -2164,30 +2118,28 @@ namespace ClarionAssistant.Services
             foreach (var it in primary)
                 if (it != null && !string.IsNullOrEmpty(it.Label)) seen.Add(it.Label);
 
-            string[] lines = CgGetLines(bufferText, filePath);
+            // (0)-(2) come from the buffer alone - LocalScopeIndex, the SAME code the instant local layer
+            // answers with (1c685f2e), so the merged list and the local list cannot disagree.
+            string text = CgGetText(bufferText, filePath);
+            var scope = text == null ? null : LocalScopeIndex.GetScope(text, line);
 
-            // (0) "DO <prefix>" — a DO operand is a ROUTINE label and nothing else, so this context is
+            // (0) "DO <prefix>" - a DO operand is a ROUTINE label and nothing else, so this context is
             // completed from routines ALONE and returns without merging any of the sources below.
             //
             // Routines are procedure-private, which is why they can't come from the CodeGraph DB: the
             // scope filter in MergeDbBarePrefix correctly drops every symbol the indexer scoped "local",
-            // and ClarionParser scopes ROUTINEs "local" alongside procedure-local variables. Before that
-            // filter, "DO Refr" was answered by the DB with every same-prefix routine in the SOLUTION
-            // (plus unrelated globals — an observed "DO ref" offered Reflection class methods and not the
-            // RefreshWindow routine three lines up). Parsing them out of the live buffer is both the fix
-            // for that and the only source that can see an unsaved routine, the same reasoning that puts
-            // local VARIABLES on the buffer-parse path at (1) instead of in the DB merge.
-            if (lines != null && CgDoStatement.IsMatch(upToCursor))
+            // and ClarionParser scopes ROUTINEs "local" alongside procedure-local variables. Parsing them
+            // out of the live buffer is both the fix for that and the only source that can see an unsaved
+            // routine.
+            if (scope != null && CgDoStatement.IsMatch(upToCursor))
             {
                 var routines = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                MergeRoutineCompletions(primary, seen, prefix, lines, line, routines);
+                scope.AddRoutines(prefix, seen, primary, routines);
 
-                // Drop anything that isn't one of them — the LSP answers this position from its general
-                // symbol set, which can't be a DO target. Same never-blank-a-working-list guard the
-                // member-access and colon-qualifier scoping passes use: only filter when routines
-                // actually matched, so a prefix with no routine behind it keeps whatever the LSP offered
-                // rather than showing an empty popup. RemoveAll (not reassignment) — `primary` is the
-                // caller's list and a local rebind wouldn't reach it.
+                // Drop anything that isn't one of them - the LSP answers this position from its general
+                // symbol set, which can't be a DO target. Only filter when routines actually matched, so a
+                // prefix with no routine behind it keeps whatever the LSP offered rather than showing an
+                // empty popup. RemoveAll (not reassignment) - `primary` is the caller's list.
                 if (routines.Count > 0)
                     primary.RemoveAll(it =>
                     {
@@ -2198,36 +2150,18 @@ namespace ClarionAssistant.Services
                 return;
             }
 
-            // (1) Local variables (depth-aware) from the enclosing routine + procedure DATA. Never in the
-            // CodeGraph (not cross-project) + must reflect unsaved edits, so parse the live buffer. Phase 2.
-            if (lines != null) MergeLocalVarCompletions(primary, seen, prefix, lines, line);
-
-            // (1b) Module-scope (file-scope) scalar + group/queue container labels (declared outside any
-            // procedure — in scope module-wide). After locals so a same-named local shadows it. Item #5.
-            if (lines != null) MergeModuleVarCompletions(primary, seen, prefix, lines);
-
-            // (1c) Module-local PROCEDURES — MAP prototypes + in-buffer procedure implementations. Module-
-            // specific, so ranked above the cross-project DB globals below. Item #4.
-            if (lines != null) MergeLocalProcedureCompletions(primary, seen, prefix, lines);
-
-            // (2) No-PRE group/queue FIELDS in scope (bare-accessible). PRE'd group fields require their
-            // prefix and are offered via the ':' path (MergeQualifiedFieldCompletions) instead.
-            if (lines != null)
-                foreach (var s in ParseScopeStructures(lines, GetScopeDataRanges(lines, line)))
-                {
-                    if (s.Pre != null) continue;
-                    foreach (var f in s.Fields)
-                    {
-                        if (!f.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
-                        if (!seen.Add(f.Name)) continue;
-                        primary.Add(new LspClient.CompletionItemInfo
-                        {
-                            Label = f.Name, Kind = 5 /*Field*/,
-                            Detail = string.IsNullOrEmpty(f.Type) ? "(field)" : f.Type + "  (field)",
-                            InsertText = f.Name
-                        });
-                    }
-                }
+            if (scope != null)
+            {
+                // (1) Locals (depth-aware) from the enclosing routine + procedure DATA, then the procedure's
+                // prototype parameters; inside a local class's method also the owning procedure's.
+                scope.AddLocals(prefix, seen, primary, includeParams: true);
+                // (1b) Module-scope data (after locals so a same-named local shadows it).
+                scope.AddModuleVars(prefix, seen, primary);
+                // (1c) Module-local PROCEDURES - MAP prototypes + in-buffer procedure implementations.
+                scope.AddLocalProcedures(prefix, seen, primary);
+                // (2) No-PRE group/queue FIELDS in scope (bare-accessible).
+                scope.AddNoPreFields(prefix, seen, primary);
+            }
 
             // (3) ABC standard globals / request-response equates. These are ABC-template-generated, not
             // user-declared (CodeGraph never indexes them) and not language built-ins — so they need this
@@ -2245,13 +2179,13 @@ namespace ClarionAssistant.Services
             }
 
             // (4) CodeGraph global symbols (procedures/functions/classes/vars) — project .codegraph.db.
-            MergeDbBarePrefix(primary, seen, prefix, ResolveCodeGraphDb(filePath), bareNamesOnly: false);
+            MergeDbBarePrefix(primary, seen, prefix, ResolveCodeGraphDb(filePath));
 
             // (5) ClarionGraph static LIBRARY symbols (ABC + library classes, equates) — version-keyed
             // cache (ticket 6e8f2439). Bare-prefix offers class/interface NAMES + equates; ClassName.Method
             // entries are skipped here (they belong to member-access completion). No-op until the version
             // DB is built. Additive + defensive: only ADDS, never overrides an LSP item.
-            MergeDbBarePrefix(primary, seen, prefix, ClarionGraphService.ResolveDbPath(), bareNamesOnly: true);
+            MergeDbBarePrefix(primary, seen, prefix, ClarionGraphService.ResolveDbPath());
 
             // (6) Dictionary TABLE names (e.g. "Cus" → "Customers") from the ingested .schemagraph.db.
             // Deliberately does NOT gate on `seen` — a table name colliding with a code symbol is a rare,
@@ -2259,56 +2193,36 @@ namespace ClarionAssistant.Services
             // dictionary results are additive, distinguished via Detail, never silently dropped).
             try
             {
-                string schemaDb = ResolveSchemaGraphDb(filePath);
-                if (!string.IsNullOrEmpty(schemaDb))
+                // Live dictionary snapshot first; the ingested .schemagraph.db only without one (1c685f2e).
+                var tables = LiveDictionaryIndex.CompleteTableNames(prefix, 25, () =>
                 {
-                    var service = new SchemaGraphService(schemaDb);
-                    var tables = service.GetTableNameCompletions(prefix);
-                    if (tables != null) primary.AddRange(tables);
-                }
+                    string schemaDb = ResolveSchemaGraphDb(filePath);
+                    return string.IsNullOrEmpty(schemaDb) ? null : new SchemaGraphService(schemaDb).GetTableNameCompletions(prefix);
+                });
+                if (tables != null) primary.AddRange(tables);
             }
             catch (Exception ex) { LspTrace.Write("[SharedLspBridge] dictionary table-name completion merge failed: " + ex.Message); }
         }
 
         /// <summary>
         /// Merge true-prefix global symbols from a CodeGraph-schema DB into the bare-prefix completion
-        /// list. <paramref name="bareNamesOnly"/> skips dotted ClassName.Method entries (used for the
-        /// ClarionGraph library DB, whose methods belong to member-access, not bare-prefix). Dedupes via
-        /// <paramref name="seen"/>; no-op when the DB is missing/unopenable. Never throws.
+        /// list, through SymbolIndex's held-open connection and NOCASE range query (1c685f2e). The query
+        /// itself drops procedure-private rows - scope 'local' AND 'parameter' (every same-prefix
+        /// parameter in the solution used to leak in as a "global") - and dotted ClassName.Method rows,
+        /// which belong to member access. Dedupes via <paramref name="seen"/>; no-op when the DB is
+        /// missing or busy. Never throws.
         /// </summary>
         private static void MergeDbBarePrefix(
-            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen, string prefix,
-            string db, bool bareNamesOnly)
+            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen, string prefix, string db)
         {
             try
             {
-                if (string.IsNullOrEmpty(db) || !File.Exists(db)) return;
-                using (var p = new CodeGraphProvider())
+                var idx = SymbolIndex.For(db);
+                if (idx == null) return;
+                foreach (var s in idx.ByPrefix(prefix, 100))
                 {
-                    if (!p.Open(db)) return;
-                    var syms = p.FindSymbols(prefix, 100);   // substring match, prefix-ordered first
-                    if (syms == null) return;
-                    foreach (var s in syms)
-                    {
-                        if (s == null || string.IsNullOrEmpty(s.Name)) continue;
-                        // A "local" symbol is procedure-private (CodeGraph's own scoping, set by
-                        // ClarionParser) — never a valid completion candidate outside the procedure
-                        // that declared it, let alone from a different file across the whole
-                        // solution. FindSymbols() has no scope awareness (plain name LIKE match), so
-                        // this merge must filter it out itself instead of surfacing every same-prefix
-                        // local from every procedure in every file as if it were global.
-                        if (string.Equals(s.Scope, "local", StringComparison.OrdinalIgnoreCase)) continue;
-                        if (!s.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue; // true prefix only
-                        if (bareNamesOnly && s.Name.IndexOf('.') >= 0) continue; // ClassName.Method → member-access only
-                        if (!seen.Add(s.Name)) continue;
-                        primary.Add(new LspClient.CompletionItemInfo
-                        {
-                            Label = s.Name,
-                            Kind = CgCompletionKind(s.Type),
-                            Detail = CgCompletionDetail(s),
-                            InsertText = s.Name
-                        });
-                    }
+                    if (s == null || string.IsNullOrEmpty(s.Name) || !seen.Add(s.Name)) continue;
+                    primary.Add(SymbolIndex.ToCompletionItem(s));
                 }
             }
             catch { }
@@ -2334,259 +2248,13 @@ namespace ClarionAssistant.Services
             return null;
         }
 
-        // CodeGraph symbol type → LSP CompletionItemKind int (Monaco icon).
-        private static int CgCompletionKind(string type)
-        {
-            switch ((type ?? "").ToLowerInvariant())
-            {
-                case "class": return 7;       // Class
-                case "interface": return 8;   // Interface
-                case "procedure": return 3;   // Function
-                case "function": return 3;    // Function
-                case "routine": return 2;     // Method
-                case "variable": return 6;    // Variable
-                default: return 6;            // Variable
-            }
-        }
-
-        private static string CgCompletionDetail(CodeGraphSymbol s)
-        {
-            // Variables: Params holds the ACTUAL declared Clarion type (e.g. "STRING(30)", "DECIMAL(13,2)")
-            // -- s.Type is just the generic symbol kind ("variable") and would show that word instead of the
-            // type. Scope is "local" (procedure/routine-private) or "module" (file-scope, visible solution-
-            // wide via this DB) -- shown as Local/Global per the same wording the live-buffer variable merges
-            // use, so a variable reads the same whether it came from the current buffer or cross-file CodeGraph.
-            if (string.Equals(s.Type, "variable", StringComparison.OrdinalIgnoreCase))
-            {
-                string vt = !string.IsNullOrEmpty(s.Params) ? s.Params : "variable";
-                bool isLocal = string.Equals(s.Scope, "local", StringComparison.OrdinalIgnoreCase);
-                vt += "  (" + (isLocal ? "local" : "global") + ")";
-                if (!string.IsNullOrEmpty(s.ProjectName)) vt += "  (" + s.ProjectName + ")";
-                return vt;
-            }
-
-            string t = string.IsNullOrEmpty(s.Type) ? "" : s.Type;
-            if (!string.IsNullOrEmpty(s.ReturnType)) t += " : " + s.ReturnType;
-            if (!string.IsNullOrEmpty(s.ProjectName)) t += "  (" + s.ProjectName + ")";
-            return string.IsNullOrEmpty(t) ? null : t;
-        }
-
-        // === Local-variable prefix completion (task a47a6cac Phase 2) ===
-        // Procedure header: a column-1 label followed by the PROCEDURE keyword (e.g. "ThisWindow.Init PROCEDURE").
-        private static readonly Regex CgProcHeaderPattern = new Regex(@"^[A-Za-z_][A-Za-z0-9_.:]*\s+PROCEDURE\b", RegexOptions.IgnoreCase);
-        // Same as above but captures the label (group 1) — used to harvest local procedure names (item #4).
-        private static readonly Regex CgProcHeaderLabel = new Regex(@"^([A-Za-z_][A-Za-z0-9_.:]*)\s+PROCEDURE\b", RegexOptions.IgnoreCase);
-        // Routine header: a column-1 label followed by the ROUTINE keyword (e.g. "TestRoutine ROUTINE").
-        private static readonly Regex CgRoutineHeaderPattern = new Regex(@"^[A-Za-z_][A-Za-z0-9_.:]*\s+ROUTINE\b", RegexOptions.IgnoreCase);
-        // Same as above but captures the label (group 1) — used to harvest routine names for DO completion.
-        private static readonly Regex CgRoutineHeaderLabel = new Regex(@"^([A-Za-z_][A-Za-z0-9_.:]*)\s+ROUTINE\b", RegexOptions.IgnoreCase);
-        // A DO statement with the cursor in its operand: "  DO Refr|". DO takes a ROUTINE label and nothing
-        // else, so this context is completed from routines alone — see the DO branch in
-        // MergeBarePrefixCompletions.
-        private static readonly Regex CgDoStatement = new Regex(@"^\s*DO\s+[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.IgnoreCase);
-        // The CODE statement that ends a procedure's DATA section.
-        private static readonly Regex CgCodeLinePattern = new Regex(@"^\s*CODE\b", RegexOptions.IgnoreCase);
+        // === Late-merge regexes (the buffer-local parsing lives in LocalScopeIndex) ===
+        // A DO statement with the cursor in its operand: "  DO Refr|".
+        private static readonly Regex CgDoStatement = LocalScopeIndex.DoStatement;
         // A data declaration: a column-1 label (group 1) followed by its type/rest-of-line (group 2).
-        private static readonly Regex CgDataLabelPattern = new Regex(@"^([A-Za-z_][A-Za-z0-9_:]*)\s+(\S.*)$");
-        // Trailing Clarion line comment (' ! ...') — stripped from the type shown in the detail column.
-        private static readonly Regex CgTrailingComment = new Regex(@"\s+!.*$");
-        // Same trailing comment, but CAPTURING the text after '!' (group 1) — used as the variable's
-        // "description" in completion Detail, since Clarion source has no other description mechanism.
-        private static readonly Regex CgTrailingCommentCapture = new Regex(@"^(.*?)\s+!\s*(.*)$");
-
-        /// <summary>Builds a variable completion's Detail ("TYPE  (scope)" — short, single-line, shown right
-        /// in the suggestion row) and Documentation (the description, if any — shown in Monaco's expandable
-        /// docs panel, which wraps). Split on purpose: Monaco's Detail column doesn't wrap and truncates long
-        /// text, so the trailing '!' comment on a declaration (Clarion's only per-variable description
-        /// mechanism) goes to Documentation instead of being appended to Detail.</summary>
-        private static void BuildVarDetail(string restOfLine, string scopeTag, out string detail, out string documentation)
-        {
-            string typeText = restOfLine ?? "";
-            string description = null;
-            var cm = CgTrailingCommentCapture.Match(typeText);
-            if (cm.Success) { typeText = cm.Groups[1].Value; description = cm.Groups[2].Value.Trim(); }
-            typeText = typeText.Trim();
-            if (description != null && description.Length == 0) description = null;
-
-            var sb = new System.Text.StringBuilder();
-            if (typeText.Length > 0) sb.Append(typeText);
-            if (!string.IsNullOrEmpty(scopeTag)) { if (sb.Length > 0) sb.Append("  "); sb.Append(scopeTag); }
-            detail = sb.Length > 0 ? sb.ToString() : null;
-            documentation = description;
-        }
-
-        /// <summary>Phase 2: merge in-scope local variables from the live buffer. Two scopes, most-specific
-        /// first: (a) the enclosing ROUTINE's private DATA (visible only inside that routine), then (b) the
-        /// enclosing PROCEDURE's main DATA (visible everywhere in the proc, including its routines). Parsed
-        /// from the live buffer so it reflects unsaved edits. Never throws.</summary>
-        private static void MergeLocalVarCompletions(
-            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen, string prefix,
-            string[] lines, int line)
-        {
-            if (lines == null || line < 0 || line >= lines.Length) return;
-            int from = Math.Min(line, lines.Length - 1);
-
-            // The cursor's own line is a column-1 declaration in progress (e.g. "Test PRO", about to become
-            // "Test PROCEDURE") that ISN'T a complete PROCEDURE/ROUTINE header yet. Column 1 always starts a
-            // new top-level construct in Clarion, implicitly ending whatever procedure precedes it in the
-            // text — UNLESS that procedure's DATA section is still open (no CODE line yet), in which case
-            // this is just a sibling declaration within it. Without this check the plain backward scan below
-            // ignores CODE lines entirely and walks straight past the PREVIOUS procedure's CODE into its
-            // header, surfacing ITS locals while a brand-new procedure header is still being typed.
-            if (CgDataLabelPattern.IsMatch(lines[from]) && !CgProcHeaderPattern.IsMatch(lines[from]) && !CgRoutineHeaderPattern.IsMatch(lines[from]))
-            {
-                int openHeader = FindOpenDataSectionHeader(lines, from);
-                if (openHeader < 0) return;   // past any procedure's CODE line → brand-new construct, no locals
-                from = openHeader;
-            }
-
-            // (a) Enclosing ROUTINE (most specific). Scanning up, an enclosing routine is one whose header
-            // we reach BEFORE any PROCEDURE header — otherwise the cursor is in the procedure's main body.
-            // Added first so a routine-private var shadows a same-named procedure local (via `seen`).
-            for (int i = from; i >= 0; i--)
-            {
-                if (CgRoutineHeaderPattern.IsMatch(lines[i])) { CollectDataLabels(lines, i, prefix, seen, primary, "(routine var)"); break; }
-                if (CgProcHeaderPattern.IsMatch(lines[i])) break;   // in proc main body → no enclosing routine
-            }
-
-            // (b) Enclosing PROCEDURE main locals — in scope everywhere in the proc, incl. its routines.
-            for (int i = from; i >= 0; i--)
-                if (CgProcHeaderPattern.IsMatch(lines[i])) { CollectDataLabels(lines, i, prefix, seen, primary, "(local)"); break; }
-        }
-
-        /// <summary>Scans upward from just above <paramref name="from"/> for the nearest PROCEDURE/ROUTINE
-        /// header whose DATA section is still open. Returns its line index, or -1 if a CODE line (or the top
-        /// of the file) is reached first — meaning <paramref name="from"/> sits past that construct's DATA
-        /// section entirely (e.g. a brand-new top-level declaration starting there). Used to disambiguate a
-        /// column-1 declaration-in-progress from a genuine sibling DATA declaration.</summary>
-        private static int FindOpenDataSectionHeader(string[] lines, int from)
-        {
-            for (int i = from - 1; i >= 0; i--)
-            {
-                if (CgProcHeaderPattern.IsMatch(lines[i]) || CgRoutineHeaderPattern.IsMatch(lines[i])) return i;
-                if (CgCodeLinePattern.IsMatch(lines[i])) return -1;
-            }
-            return -1;
-        }
-
-        /// <summary>Phase 2 refinement (task a47a6cac item #5): merge module-scope (file-scope) scalar and
-        /// GROUP/QUEUE container labels — declared at column 1 outside any PROCEDURE, visible to every
-        /// procedure in the module. Depth-aware (only depth-0 labels; struct fields are surfaced via the
-        /// field/member paths that share GetScopeDataRanges). Called AFTER the local/routine merge, so a
-        /// same-named proc/routine local shadows the module var via <paramref name="seen"/>. Never throws.</summary>
-        private static void MergeModuleVarCompletions(
-            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen, string prefix, string[] lines)
-        {
-            if (lines == null) return;
-            foreach (var rg in GetModuleDataRanges(lines))
-            {
-                int depth = 0;
-                for (int i = rg[0]; i < rg[1] && i < lines.Length; i++)
-                {
-                    string ln = lines[i];
-                    bool isEnd = CgEndLine.IsMatch(ln) || CgPeriodEnd.IsMatch(ln);
-                    if (depth == 0 && !isEnd)
-                    {
-                        var lm = CgDataLabelPattern.Match(ln);
-                        if (lm.Success)
-                        {
-                            string label = lm.Groups[1].Value;
-                            if (label.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && seen.Add(label))
-                            {
-                                // Module (file) scope reads as "global" to match the CodeGraph cross-file
-                                // wording below — same TYPE/description/scope shape as CollectDataLabels.
-                                string detail, doc;
-                                BuildVarDetail(lm.Groups[2].Value, "(global)", out detail, out doc);
-                                primary.Add(new LspClient.CompletionItemInfo
-                                { Label = label, Kind = 6 /*Variable*/, Detail = detail, Documentation = doc, InsertText = label });
-                            }
-                        }
-                    }
-                    if (CgGroupQueueOpen.IsMatch(ln)) depth++;
-                    else if (isEnd && depth > 0) depth--;
-                }
-            }
-        }
-
-        /// <summary>Collect column-1 data declarations from <paramref name="headerIdx"/>+1 down to the next
-        /// CODE statement (the end of that PROCEDURE/ROUTINE's DATA section), offering labels that match
-        /// <paramref name="prefix"/> and aren't already in <paramref name="seen"/>. Shows the declared type
-        /// in the detail column with <paramref name="scopeMarker"/>.</summary>
-        private static void CollectDataLabels(
-            string[] lines, int headerIdx, string prefix, HashSet<string> seen,
-            List<LspClient.CompletionItemInfo> primary, string scopeMarker)
-        {
-            int depth = 0;   // GROUP/QUEUE nesting — fields inside structures are NOT plain locals
-            for (int i = headerIdx + 1; i < lines.Length; i++)
-            {
-                string ln = lines[i];
-                if (CgCodeLinePattern.IsMatch(ln)) break;                                   // end of DATA section
-                if (CgProcHeaderPattern.IsMatch(ln) || CgRoutineHeaderPattern.IsMatch(ln)) break;  // next proc/routine
-                bool isEnd = CgEndLine.IsMatch(ln) || CgPeriodEnd.IsMatch(ln);
-                // Emit only depth-0 declarations: plain locals + the GROUP/QUEUE container's own label.
-                if (depth == 0 && !isEnd)
-                {
-                    var lm = CgDataLabelPattern.Match(ln);
-                    if (lm.Success)
-                    {
-                        string label = lm.Groups[1].Value;
-                        if (label.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && seen.Add(label))
-                        {
-                            // Detail = "TYPE  (scope)" (short, single-line). Documentation = the trailing '!'
-                            // comment, if any (Clarion has no other per-variable description mechanism) —
-                            // shown in Monaco's expandable docs panel instead of the non-wrapping Detail line.
-                            string detail, doc;
-                            BuildVarDetail(lm.Groups[2].Value, scopeMarker, out detail, out doc);
-                            primary.Add(new LspClient.CompletionItemInfo
-                            { Label = label, Kind = 6 /*Variable*/, Detail = detail, Documentation = doc, InsertText = label });
-                        }
-                    }
-                }
-                if (CgGroupQueueOpen.IsMatch(ln)) depth++;
-                else if (isEnd && depth > 0) depth--;
-            }
-        }
-
-        // === Group/Queue FIELD completion (task a47a6cac Phase 2 refinement) ===
-        // Parses GROUP/QUEUE structures (with PRE() + nesting) from the in-scope DATA sections, then offers
-        // their fields via PRE prefix ("Cus:"), dotted access ("Group."), and bare labels (no-PRE groups, in
-        // MergeBarePrefixCompletions). Proc + routine + module scope (GetScopeDataRanges supplies all three;
-        // cross-file global fields remain a follow-up → ClarionGraph task 6e8f2439).
-
-        private static readonly Regex CgGroupQueueOpen = new Regex(@"^([A-Za-z_][A-Za-z0-9_:]*)\s+(GROUP|QUEUE)\b(.*)$", RegexOptions.IgnoreCase);
-        // The type argument immediately after GROUP/QUEUE — "(SomeType)" in "Q QUEUE(SomeType),PRE(q)".
-        // Anchored so a later attribute's parentheses (PRE(q), NAME('x')) can't be read as the base type.
-        // ':' is allowed: a prefixed type name (PREFIX:SomeType) is a normal Clarion type reference.
-        private static readonly Regex CgBaseTypeArg = new Regex(@"^\s*\(\s*([A-Za-z_][A-Za-z0-9_:]*)\s*\)", RegexOptions.IgnoreCase);
-        private static readonly Regex CgEndLine   = new Regex(@"^\s*END\b", RegexOptions.IgnoreCase);
-        private static readonly Regex CgPeriodEnd = new Regex(@"^\s*\.\s*$");
-        // CgEndLine/CgPeriodEnd are both anchored at the START of a line, so neither can see a
-        // declaration that closes itself — "Settings GROUP(SomeType) END" — whose terminator sits at
-        // the END of the line, inside CgGroupQueueOpen's own group-3 capture. These spot that form.
-        private static readonly Regex CgStructLiteral         = new Regex(@"'(?:[^']|'')*'");
-        private static readonly Regex CgLineComment           = new Regex(@"!.*$");
-        private static readonly Regex CgSelfClosingStructure  = new Regex(@"(?:\bEND\b|\.)\s*$", RegexOptions.IgnoreCase);
-        // MAP prototype block (module-scope). Its own END (and any nested MODULE(...)...END) is tracked so
-        // GetModuleDataRanges can SKIP prototypes — they are procedure declarations (item #4), not data.
-        private static readonly Regex CgMapOpen       = new Regex(@"^\s*MAP\b", RegexOptions.IgnoreCase);
-        private static readonly Regex CgMapModuleOpen = new Regex(@"^\s*MODULE\b", RegexOptions.IgnoreCase);
-        // Non-prototype lines inside a MAP (directives/comments) — excluded when harvesting local procs (#4).
-        private static readonly Regex CgMapDirective  = new Regex(@"^\s*(INCLUDE|OMIT|COMPILE|SECTION|PRAGMA|!)", RegexOptions.IgnoreCase);
-        // A MAP prototype line: leading procedure name (group 1). Rest of line is the prototype signature.
-        private static readonly Regex CgMapProtoName  = new Regex(@"^\s*([A-Za-z_][A-Za-z0-9_]*)", RegexOptions.IgnoreCase);
-        private static readonly Regex CgPreAttr   = new Regex(@",\s*PRE\(\s*([A-Za-z_][A-Za-z0-9_]*)?\s*\)", RegexOptions.IgnoreCase);
-        // Qualifier immediately before the cursor: <identifier><':' or '.'><partial>. The identifier may
-        // contain ':' so a colon-named container (template queues like "Queue:Browse:1") is matched for
-        // dotted access — mirrors CgGroupQueueOpen / CgMemberAccess / CgDataLabelPattern, which all allow ':'.
-        // Greedy backtracking keeps PRE ("Cus:Name"→"Cus") and plain-dotted ("Group."→"Group") intact.
-        private static readonly Regex CgQualifier = new Regex(@"([A-Za-z_][A-Za-z0-9_:]*)([:.])([A-Za-z0-9_]*)$");
-
-        private sealed class CgStructField { public string Name; public string Type; }
-        /// <summary>BaseType is the type argument of a "Name QUEUE(SomeType)" / "Name GROUP(SomeType)"
-        /// declaration. Such a structure has the named type's fields PLUS any declared inline, and the
-        /// type lives in another file we do NOT scan here — so when BaseType is set, Fields is known to
-        /// be INCOMPLETE and must never be used as an authoritative member scope.</summary>
-        private sealed class CgStruct { public string Name; public string Pre; public string BaseType; public readonly List<CgStructField> Fields = new List<CgStructField>(); }
+        private static readonly Regex CgDataLabelPattern = LocalScopeIndex.DataLabelPattern;
+        // Qualifier immediately before the cursor: <identifier><':' or '.'><partial>.
+        private static readonly Regex CgQualifier = LocalScopeIndex.QualifierPattern;
 
         /// <summary>Full buffer (live text preferred, else disk) split into lines, or null.</summary>
         private static string[] CgGetLines(string bufferText, string filePath)
@@ -2596,286 +2264,12 @@ namespace ClarionAssistant.Services
             return null;
         }
 
-        /// <summary>The enclosing routine + procedure DATA-section line ranges [start, endExclusive).</summary>
-        private static List<int[]> GetScopeDataRanges(string[] lines, int line)
+        /// <summary>Full buffer text (live text preferred, else disk), or null.</summary>
+        private static string CgGetText(string bufferText, string filePath)
         {
-            var ranges = new List<int[]>();
-            int from = Math.Min(line, lines.Length - 1);
-
-            // Same column-1-declaration-in-progress guard as MergeLocalVarCompletions — see its comment.
-            if (CgDataLabelPattern.IsMatch(lines[from]) && !CgProcHeaderPattern.IsMatch(lines[from]) && !CgRoutineHeaderPattern.IsMatch(lines[from]))
-            {
-                int openHeader = FindOpenDataSectionHeader(lines, from);
-                if (openHeader < 0) { ranges.AddRange(GetModuleDataRanges(lines)); return ranges; }
-                from = openHeader;
-            }
-
-            for (int i = from; i >= 0; i--)   // enclosing routine (only if reached before any procedure header)
-            {
-                if (CgRoutineHeaderPattern.IsMatch(lines[i])) { ranges.Add(new[] { i + 1, FindCodeAfter(lines, i) }); break; }
-                if (CgProcHeaderPattern.IsMatch(lines[i])) break;
-            }
-            for (int i = from; i >= 0; i--)   // enclosing procedure
-                if (CgProcHeaderPattern.IsMatch(lines[i])) { ranges.Add(new[] { i + 1, FindCodeAfter(lines, i) }); break; }
-            // Module-scope (file-scope) data is in scope from EVERY procedure in the module, so it is always
-            // appended (cursor-independent). This carries module-level GROUP/QUEUE structures through all the
-            // field/member-access paths that consume GetScopeDataRanges for free. (task a47a6cac item #5)
-            ranges.AddRange(GetModuleDataRanges(lines));
-            return ranges;
-        }
-
-        /// <summary>Module-scope (file-scope) DATA line ranges: everything at column 1 outside any PROCEDURE,
-        /// from the top of the module down to the first procedure implementation. MAP prototype blocks are
-        /// excluded (they declare procedures, not data — item #4), so the region is returned as one or more
-        /// sub-ranges split around each MAP block. A data-only file with no procedure header (e.g. a .inc)
-        /// yields a single range covering the whole file. Never throws.</summary>
-        private static List<int[]> GetModuleDataRanges(string[] lines)
-        {
-            var ranges = new List<int[]>();
-            if (lines == null || lines.Length == 0) return ranges;
-            int rangeStart = 0;
-            int mapDepth = 0;
-            for (int i = 0; i < lines.Length; i++)
-            {
-                string ln = lines[i];
-                if (mapDepth == 0)
-                {
-                    // First real procedure implementation → module data ends here.
-                    if (CgProcHeaderPattern.IsMatch(ln))
-                    {
-                        if (i > rangeStart) ranges.Add(new[] { rangeStart, i });
-                        return ranges;
-                    }
-                    // Entering a MAP prototype block → close the data range before it, then skip the block.
-                    if (CgMapOpen.IsMatch(ln))
-                    {
-                        if (i > rangeStart) ranges.Add(new[] { rangeStart, i });
-                        mapDepth = 1;
-                    }
-                }
-                else   // inside a MAP block: count nested MODULE(...)...END so we exit on the MAP's own END
-                {
-                    if (CgMapModuleOpen.IsMatch(ln)) mapDepth++;
-                    else if (CgEndLine.IsMatch(ln) || CgPeriodEnd.IsMatch(ln))
-                    {
-                        mapDepth--;
-                        if (mapDepth == 0) rangeStart = i + 1;   // data resumes after the MAP block
-                    }
-                }
-            }
-            // No procedure header (data-only module/.inc): the trailing region is all module data. A MAP left
-            // unterminated mid-edit (mapDepth > 0) is intentionally dropped rather than emitting prototypes.
-            if (mapDepth == 0 && lines.Length > rangeStart) ranges.Add(new[] { rangeStart, lines.Length });
-            return ranges;
-        }
-
-        /// <summary>Local procedure prototypes declared in the module's MAP block(s) — the procedures private
-        /// to this module (task a47a6cac item #4). Mirrors GetModuleDataRanges' MAP-block walk but keeps the
-        /// prototype lines instead of skipping them: for each MAP...END (nested MODULE(...)...END counted) that
-        /// precedes the first procedure implementation, returns (name, prototype-signature) per prototype line.
-        /// Directive/comment lines (INCLUDE/OMIT/COMPILE/SECTION/PRAGMA/'!') are excluded. Never throws.</summary>
-        private static List<KeyValuePair<string, string>> GetModuleMapProcedures(string[] lines)
-        {
-            var protos = new List<KeyValuePair<string, string>>();
-            if (lines == null || lines.Length == 0) return protos;
-            int mapDepth = 0;
-            for (int i = 0; i < lines.Length; i++)
-            {
-                string ln = lines[i];
-                if (mapDepth == 0)
-                {
-                    if (CgProcHeaderPattern.IsMatch(ln)) break;   // reached the implementations — MAP region done
-                    if (CgMapOpen.IsMatch(ln)) mapDepth = 1;
-                    continue;
-                }
-                // Inside a MAP block: track nesting, then treat every remaining identifier-led line as a proto.
-                if (CgMapModuleOpen.IsMatch(ln)) { mapDepth++; continue; }
-                if (CgEndLine.IsMatch(ln) || CgPeriodEnd.IsMatch(ln)) { mapDepth--; continue; }
-                if (CgMapDirective.IsMatch(ln)) continue;         // INCLUDE/OMIT/COMPILE/comment — not a prototype
-                var m = CgMapProtoName.Match(ln);
-                if (!m.Success) continue;
-                string proto = CgTrailingComment.Replace(ln.Trim(), "").Trim();
-                protos.Add(new KeyValuePair<string, string>(m.Groups[1].Value, proto));
-            }
-            return protos;
-        }
-
-        /// <summary>Merge module-local procedure names into the bare-prefix completion list (item #4). Two
-        /// sources, unioned + deduped: (a) inline MAP prototypes (authoritative — carries the signature in the
-        /// detail), and (b) procedure-implementation headers present in this buffer. Class.Method / prefixed
-        /// implementations are skipped (member-access completion owns those). Prototypes pulled in via an
-        /// INCLUDE'd .inc are NOT in the buffer — that gap is covered by the CodeGraph/ClarionGraph DB merge.
-        /// Never throws.</summary>
-        private static void MergeLocalProcedureCompletions(
-            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen, string prefix, string[] lines)
-        {
-            if (lines == null) return;
-
-            // (a) Inline MAP prototypes — richest source (signature shown in the detail column).
-            foreach (var kv in GetModuleMapProcedures(lines))
-            {
-                string name = kv.Key;
-                if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !seen.Add(name)) continue;
-                string detail = string.IsNullOrEmpty(kv.Value) ? "(local procedure)" : kv.Value + "  (local procedure)";
-                primary.Add(new LspClient.CompletionItemInfo
-                { Label = name, Kind = 3 /*Function*/, Detail = detail, InsertText = name });
-            }
-
-            // (b) Procedure implementations in this buffer. Skip Class.Method / prefixed labels — those are
-            // member-access targets, not bare-callable module procedures.
-            foreach (var ln in lines)
-            {
-                var hm = CgProcHeaderLabel.Match(ln);
-                if (!hm.Success) continue;
-                string name = hm.Groups[1].Value;
-                if (name.IndexOf('.') >= 0 || name.IndexOf(':') >= 0) continue;
-                if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !seen.Add(name)) continue;
-                primary.Add(new LspClient.CompletionItemInfo
-                { Label = name, Kind = 3 /*Function*/, Detail = "(local procedure)", InsertText = name });
-            }
-        }
-
-        /// <summary>Merge ROUTINE labels declared in the CURRENT procedure into the completion list (the DO
-        /// branch of MergeBarePrefixCompletions). Scoped to the enclosing procedure because that is a
-        /// routine's actual visibility in Clarion — DO can't reach a routine in another procedure, let alone
-        /// another file, which is exactly the over-reach the CodeGraph scope filter removed.
-        ///
-        /// <paramref name="found"/> collects every prefix-matching routine name seen, whether or not this
-        /// merge added it: a routine the LSP already returned is skipped by the <paramref name="seen"/>
-        /// dedupe but must still survive the caller's scoping filter. Never throws.</summary>
-        private static void MergeRoutineCompletions(
-            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen, string prefix,
-            string[] lines, int line, HashSet<string> found)
-        {
-            if (lines == null || lines.Length == 0) return;
-            int from = line;
-            if (from > lines.Length - 1) from = lines.Length - 1;
-            if (from < 0) return;
-
-            // Enclosing procedure: nearest PROCEDURE header at or above the cursor, ending at the next one.
-            // With no header above (module-level cursor, or a .inc with no implementations) start stays at 0
-            // and the scan simply finds no routine headers, which is the right answer for that position.
-            int start = 0;
-            for (int i = from; i >= 0; i--)
-                if (CgProcHeaderPattern.IsMatch(lines[i])) { start = i; break; }
-            int end = lines.Length;
-            for (int i = start + 1; i < lines.Length; i++)
-                if (CgProcHeaderPattern.IsMatch(lines[i])) { end = i; break; }
-
-            for (int i = start; i < end; i++)
-            {
-                var m = CgRoutineHeaderLabel.Match(lines[i]);
-                if (!m.Success) continue;
-                string name = m.Groups[1].Value;
-                // Dotted/prefixed labels are member-access targets, not DO-callable routines — same
-                // exclusion MergeLocalProcedureCompletions applies to procedure implementations.
-                if (name.IndexOf('.') >= 0 || name.IndexOf(':') >= 0) continue;
-                if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
-                if (found != null) found.Add(name);
-                if (!seen.Add(name)) continue;
-                primary.Add(new LspClient.CompletionItemInfo
-                { Label = name, Kind = 2 /*Method*/, Detail = "(routine)", InsertText = name });
-            }
-        }
-
-        // End a DATA region at its CODE statement, OR at the next procedure/routine header — the latter
-        // matters because a routine without its own DATA/CODE (or one being edited) has no CODE of its own,
-        // and without the routine-header stop its range would over-extend into the NEXT routine's DATA and
-        // leak that routine's groups/fields out of scope.
-        private static int FindCodeAfter(string[] lines, int headerIdx)
-        {
-            for (int i = headerIdx + 1; i < lines.Length; i++)
-            {
-                if (CgCodeLinePattern.IsMatch(lines[i])) return i;
-                if (CgProcHeaderPattern.IsMatch(lines[i]) || CgRoutineHeaderPattern.IsMatch(lines[i])) return i;
-            }
-            return lines.Length;
-        }
-
-        /// <summary>Parse GROUP/QUEUE structures (nesting + PRE inheritance) from the given line ranges.</summary>
-        private static List<CgStruct> ParseScopeStructures(string[] lines, List<int[]> ranges)
-        {
-            var all = new List<CgStruct>();
-            foreach (var rg in ranges)
-            {
-                var stack = new List<CgStruct>();
-                for (int i = rg[0]; i < rg[1] && i < lines.Length; i++)
-                {
-                    string ln = lines[i];
-                    var gq = CgGroupQueueOpen.Match(ln);
-                    if (gq.Success)
-                    {
-                        string pre = CgExtractPre(gq.Groups[3].Value)
-                                     ?? (stack.Count > 0 ? stack[stack.Count - 1].Pre : null);
-                        var s = new CgStruct { Name = gq.Groups[1].Value, Pre = pre, BaseType = CgExtractBaseType(gq.Groups[3].Value) };
-                        if (stack.Count > 0)   // a nested group is also a field of its parent
-                            stack[stack.Count - 1].Fields.Add(new CgStructField { Name = s.Name, Type = gq.Groups[2].Value });
-                        all.Add(s);
-                        // A declaration that closes on its own line ("Settings GROUP(SomeType) END")
-                        // declares no inline fields. Pushing it left it open for the rest of the scope,
-                        // so every following declaration was collected as one of ITS fields — and
-                        // MergeMemberAccessCompletions then returned those as the member scope, filtering
-                        // the LSP's real members out of the completion list and leaving the surrounding
-                        // locals in their place.
-                        if (!CgClosesOnSameLine(gq.Groups[3].Value)) stack.Add(s);
-                        continue;
-                    }
-                    if (stack.Count > 0 && (CgEndLine.IsMatch(ln) || CgPeriodEnd.IsMatch(ln)))
-                    {
-                        stack.RemoveAt(stack.Count - 1);
-                        continue;
-                    }
-                    if (stack.Count > 0)
-                    {
-                        var fm = CgDataLabelPattern.Match(ln);
-                        if (fm.Success)
-                            stack[stack.Count - 1].Fields.Add(new CgStructField
-                            {
-                                Name = fm.Groups[1].Value,
-                                Type = CgTrailingComment.Replace(fm.Groups[2].Value, "").Trim()
-                            });
-                    }
-                }
-            }
-            return all;
-        }
-
-        private static string CgExtractPre(string attrs)
-        {
-            var m = CgPreAttr.Match(attrs ?? "");
-            return (m.Success && m.Groups[1].Success && m.Groups[1].Value.Length > 0) ? m.Groups[1].Value : null;
-        }
-
-        /// <summary>The type argument of "Name QUEUE(SomeType)" / "Name GROUP(SomeType)", or null when the
-        /// declaration names no base type. <paramref name="afterKeyword"/> is everything following the
-        /// GROUP/QUEUE keyword, so the argument (when present) is the FIRST thing on it — anything later is
-        /// an attribute list (",PRE(x),NAME('y')") and must not be mistaken for one. Never throws.</summary>
-        private static string CgExtractBaseType(string afterKeyword)
-        {
-            if (string.IsNullOrEmpty(afterKeyword)) return null;
-            try
-            {
-                var m = CgBaseTypeArg.Match(afterKeyword);
-                return (m.Success && m.Groups[1].Value.Length > 0) ? m.Groups[1].Value : null;
-            }
-            catch { return null; }
-        }
-
-        /// <summary>True when a GROUP/QUEUE declaration terminates on its OWN line — a trailing END, or
-        /// the '.' shorthand — and therefore declares no inline fields. <paramref name="afterKeyword"/> is
-        /// everything following the GROUP/QUEUE keyword. String literals and any trailing comment are
-        /// removed first, so neither NAME('APPEND') nor "! ... end" can be misread as a terminator.
-        /// Never throws.</summary>
-        private static bool CgClosesOnSameLine(string afterKeyword)
-        {
-            if (string.IsNullOrEmpty(afterKeyword)) return false;
-            try
-            {
-                string tail = CgStructLiteral.Replace(afterKeyword, "''");   // keep tokens apart
-                tail = CgLineComment.Replace(tail, "");
-                return CgSelfClosingStructure.IsMatch(tail);
-            }
-            catch { return false; }
+            if (!string.IsNullOrEmpty(bufferText)) return bufferText;
+            try { if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath)) return EncodingHelper.ReadAllText(filePath, out _); } catch { }
+            return null;
         }
 
         /// <summary>Group/queue FIELD completion for qualified contexts: PRE prefix ("Cus:partial" → fields
@@ -2896,37 +2290,14 @@ namespace ClarionAssistant.Services
             char sep = q.Groups[2].Value[0];
             string partial = q.Groups[3].Value;
 
-            string[] lines = CgGetLines(bufferText, filePath);
-            if (lines == null) return;
-            var structs = ParseScopeStructures(lines, GetScopeDataRanges(lines, line));
-            if (structs.Count == 0) return;
+            string text = CgGetText(bufferText, filePath);
+            var scope = text == null ? null : LocalScopeIndex.GetScope(text, line);
+            if (scope == null || scope.Structures.Count == 0) return;
 
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var it in primary)
                 if (it != null && !string.IsNullOrEmpty(it.Label)) seen.Add(it.Label);
-
-            foreach (var s in structs)
-            {
-                bool match = sep == ':'
-                    ? (s.Pre != null && string.Equals(s.Pre, qualifier, StringComparison.OrdinalIgnoreCase))
-                    : string.Equals(s.Name, qualifier, StringComparison.OrdinalIgnoreCase);
-                if (!match) continue;
-
-                foreach (var f in s.Fields)
-                {
-                    if (partial.Length > 0 && !f.Name.StartsWith(partial, StringComparison.OrdinalIgnoreCase)) continue;
-                    // PRE label shows the full "Cus:Field"; insert just the field name (the range breaks on
-                    // ':'/'.', so the qualifier + separator already typed stays put).
-                    string label = sep == ':' ? qualifier + ":" + f.Name : f.Name;
-                    if (!seen.Add(label)) continue;
-                    primary.Add(new LspClient.CompletionItemInfo
-                    {
-                        Label = label, Kind = 5 /*Field*/,
-                        Detail = string.IsNullOrEmpty(f.Type) ? "(field)" : f.Type + "  (field)",
-                        InsertText = f.Name
-                    });
-                }
-            }
+            scope.AddQualifiedFields(qualifier, sep, partial, seen, primary);
         }
 
         /// <summary>Dictionary table FIELD/KEY completion: "Cus:partial" → columns + keys of the ingested
@@ -2953,11 +2324,13 @@ namespace ClarionAssistant.Services
             string qualifier = q.Groups[1].Value;
             string partial = q.Groups[3].Value;
 
-            string db = ResolveSchemaGraphDb(filePath);
-            if (string.IsNullOrEmpty(db)) return;
-
-            var service = new SchemaGraphService(db);
-            var items = service.GetQualifierCompletions(qualifier, partial);
+            // The live dictionary snapshot first (1c685f2e: no ingest needed, no SQLite open); the ingested
+            // .schemagraph.db only when there is no live snapshot (e.g. the standalone MCP server).
+            var items = LiveDictionaryIndex.CompleteQualifier(qualifier, partial, () =>
+            {
+                string db = ResolveSchemaGraphDb(filePath);
+                return string.IsNullOrEmpty(db) ? null : new SchemaGraphService(db).GetQualifierCompletions(qualifier, partial);
+            });
             if (items != null) primary.AddRange(items);
         }
 
@@ -3003,9 +2376,9 @@ namespace ClarionAssistant.Services
 
             // GROUP/QUEUE in scope → field access (MergeQualifiedFieldCompletions adds the fields). Return its
             // field-name set so the scoping pass keeps the fields and drops the LSP keyword dump.
-            if (lines != null)
-                foreach (var s in ParseScopeStructures(lines, GetScopeDataRanges(lines, line)))
-                    if (string.Equals(s.Name, instance, StringComparison.OrdinalIgnoreCase))
+            var scope = lines == null ? null : LocalScopeIndex.GetScope(CgGetText(bufferText, filePath), line);
+            var s = scope == null ? null : scope.FindStructure(instance);
+            if (s != null)
                     {
                         // "Q QUEUE(SomeType)" carries SomeType's fields PLUS any declared inline, and
                         // SomeType lives in another file this buffer scan never reads. Scoping to the
@@ -3171,31 +2544,18 @@ namespace ClarionAssistant.Services
         {
             try
             {
-                if (string.IsNullOrEmpty(db) || !File.Exists(db)) return;
-                using (var p = new CodeGraphProvider())
+                var idx = SymbolIndex.For(db);
+                if (idx == null) return;
+                foreach (var s in idx.DirectMembers(className, 500))
                 {
-                    if (!p.Open(db)) return;
-                    var syms = p.FindMembersOfParent(className, 500);
-                    if (syms == null) return;
-                    foreach (var s in syms)
-                    {
-                        if (s == null || string.IsNullOrEmpty(s.Name)) continue;
-                        int dot = s.Name.LastIndexOf('.');
-                        if (dot == s.Name.Length - 1) continue;   // malformed "Parent." row — no member suffix
-                        string member = dot >= 0 ? s.Name.Substring(dot + 1) : s.Name;
-                        if (collectInto != null) collectInto.Add(member);   // full set (unfiltered) for scoping
-                        if (partial.Length > 0 && !member.StartsWith(partial, StringComparison.OrdinalIgnoreCase)) continue;
-                        if (!seen.Add(member)) continue;
-                        // Members are a mix of methods (type=procedure) and class-typed data members
-                        // (type=class) — map each to its real icon rather than labelling all "method".
-                        primary.Add(new LspClient.CompletionItemInfo
-                        {
-                            Label = member,
-                            Kind = s.Type == "procedure" || s.Type == "function" ? 2 /*Method*/ : CgCompletionKind(s.Type),
-                            Detail = CgCompletionDetail(s),
-                            InsertText = member
-                        });
-                    }
+                    if (s == null || string.IsNullOrEmpty(s.Name)) continue;
+                    string member = SymbolIndex.MemberName(s.Name);
+                    if (member == null) continue;                        // malformed "Parent." row
+                    if (collectInto != null) collectInto.Add(member);   // full set (unfiltered) for scoping
+                    if (partial.Length > 0 && !member.StartsWith(partial, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!seen.Add(member)) continue;
+                    // Methods (type=procedure) and class-typed data members (type=class) get their own icons.
+                    primary.Add(SymbolIndex.ToMemberItem(s));
                 }
             }
             catch { }
