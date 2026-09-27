@@ -86,13 +86,16 @@ static class LocalScopeIndexSliceParity
             Check(rm.Procs.Count > 0, "R11.real", "the real module maps to " + rm.Procs.Count + " procedures");
 
             // Per-keystroke cost of a slice call deep in the largest procedure, span capped the way the page
-            // caps it (3000 lines: the procedure's header..DATA plus a window around the caret).
+            // caps it: the procedure's header..DATA, the routine's header..DATA, and a 400-line window.
             var raw = buf.Split('\n');
             var big = rm.Procs.OrderByDescending(p => p.End - p.Start).First();
             int caret1 = big.Start + (big.End - big.Start) * 2 / 3;
             var pcs = new List<SlicePiece> { new SlicePiece(big.Start, Lines(raw, big.Start, big.DataEnd)) };
-            int wlo = Math.Max(big.DataEnd + 1, caret1 - 1500), whi = Math.Min(big.End, caret1 + 1500);
+            int wlo = Math.Max(big.DataEnd + 1, caret1 - 200), whi = Math.Min(big.End, caret1 + 200);
+            var brt = big.RoutineSpans.LastOrDefault(r => r.Start <= caret1);
+            if (brt != null) pcs.Add(new SlicePiece(brt.Start, Lines(raw, brt.Start, brt.DataEnd)));
             pcs.Add(new SlicePiece(wlo, Lines(raw, wlo, whi)));
+            Console.WriteLine("    pieces: " + string.Join(", ", pcs.Select(p => "line " + p.Start + ": " + (p.Text.Length / 1024) + " KB")));
             if (big.Owner.HasValue) { var o = rm.Procs[big.Owner.Value]; pcs.Insert(0, new SlicePiece(o.Start, Lines(raw, o.Start, o.DataEnd))); }
             string hdrText;
             LocalScopeIndex.TryGetHeaderText(rm.HeaderHash, out hdrText);
@@ -110,7 +113,8 @@ static class LocalScopeIndexSliceParity
             Console.WriteLine(string.Format("    slice Complete+Hover at line {0} of {1} ({2}, {3} lines): median {4:F2} ms, max {5:F2} ms; slice {6} KB chars",
                 caret1, raw.Length, big.Name, big.End - big.Start + 1, st[10], st[20], sliceChars / 1024));
             Parity(Path.GetFileName(real), buf, Math.Max(1, lineCount / 60), capped: false);
-            Parity(Path.GetFileName(real) + " capped", buf, Math.Max(1, lineCount / 60) + 7, capped: true);
+            Parity(Path.GetFileName(real) + " capped, 3-line window", buf, Math.Max(1, lineCount / 60) + 7, capped: true);
+            Parity(Path.GetFileName(real) + " capped, 400-line window", buf, Math.Max(1, lineCount / 60) + 3, capped: true, window: 200);
         }
 
         Console.WriteLine();
@@ -132,7 +136,7 @@ static class LocalScopeIndexSliceParity
     }
 
     /// <summary>The page's slice for 0-based line <paramref name="line0"/>, from the span map.</summary>
-    static void Slice(SpanMap map, string[] rawLines, int line0, bool capped,
+    static void Slice(SpanMap map, string[] rawLines, int line0, bool capped, int window,
                       out List<SlicePiece> pieces, out List<string> routines)
     {
         pieces = new List<SlicePiece>();
@@ -156,7 +160,7 @@ static class LocalScopeIndexSliceParity
         pieces.Add(new SlicePiece(proc.Start, Lines(rawLines, proc.Start, proc.DataEnd)));
         var rt = proc.RoutineSpans.LastOrDefault(r => r.Start <= line1);
         if (rt != null) pieces.Add(new SlicePiece(rt.Start, Lines(rawLines, rt.Start, rt.DataEnd)));
-        int lo = Math.Max(proc.DataEnd + 1, line1 - 3), hi = Math.Min(proc.End, line1 + 3);   // a small window, so routines fall outside it
+        int lo = Math.Max(proc.DataEnd + 1, line1 - window), hi = Math.Min(proc.End, line1 + window);
         if (lo <= hi) pieces.Add(new SlicePiece(lo, Lines(rawLines, lo, hi)));
     }
 
@@ -169,7 +173,7 @@ static class LocalScopeIndexSliceParity
 
     static string Mem(LocalMemberAccess m) { return m == null ? "(null)" : m.Instance + "|" + m.Partial + "|" + m.LocalClass + "|" + m.BaseType; }
 
-    static void Parity(string name, string buf, int step, bool capped)
+    static void Parity(string name, string buf, int step, bool capped, int window = 3)
     {
         var map = LocalScopeIndex.BuildSpanMap(buf);
         string header;
@@ -182,7 +186,7 @@ static class LocalScopeIndexSliceParity
             string line = raw[l].TrimEnd('\r');
             List<SlicePiece> pieces;
             List<string> routines;
-            Slice(map, raw, l, capped, out pieces, out routines);
+            Slice(map, raw, l, capped, window, out pieces, out routines);
             var cols = new SortedSet<int> { line.Length };
             for (int c = 1; c < line.Length; c++)
             {

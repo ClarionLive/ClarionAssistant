@@ -296,6 +296,7 @@ namespace ClarionAssistant.Services
         public static void ResetCaches()
         {
             lock (_headerLock) { _headers.Clear(); _headerOrder.Clear(); }
+            lock (_rangeLock) { _rangeCache.Clear(); _rangeOrder.Clear(); }
             lock (_instLock) { for (int i = 0; i < _instances.Length; i++) _instances[i] = null; }
         }
 
@@ -360,9 +361,60 @@ namespace ClarionAssistant.Services
 
         internal sealed class Param { public string Name; public string Type; }
 
-        /// <summary>One DATA range: its relevant lines only (column-1 labels, and END lines once a label
-        /// has been seen) - every other line is inert to the label/structure walks below.</summary>
-        private sealed class DataRange { public List<string> Lines; public string Kind; }
+        /// <summary>One DATA range's content: its relevant lines only (column-1 labels, and END lines once a
+        /// label has been seen - every other line is inert to the walks below), with its depth-0
+        /// declarations and GROUP/QUEUE structures parsed ONCE. Shared across requests by content hash: a
+        /// procedure's DATA rarely changes while its code is being typed, and InventoryTable's is 236 KB.</summary>
+        internal sealed class RangeData
+        {
+            public readonly List<string> Lines;
+            /// <summary>Depth-0 declarations (label, rest-of-line) in order: plain data plus a GROUP/QUEUE/
+            /// CLASS container's own label, never a field or member.</summary>
+            public readonly List<KeyValuePair<string, string>> Decls = new List<KeyValuePair<string, string>>();
+            private List<Struct> _structs;
+
+            public RangeData(List<string> lines)
+            {
+                Lines = lines;
+                int depth = 0;
+                foreach (var ln in lines)
+                {
+                    bool isEnd = IsEnd(ln);
+                    if (depth == 0 && !isEnd)
+                    {
+                        var lm = DataLabelPattern.Match(ln);
+                        if (lm.Success) Decls.Add(new KeyValuePair<string, string>(lm.Groups[1].Value, lm.Groups[2].Value));
+                    }
+                    if (IsStructOpen(ln)) depth++;
+                    else if (isEnd && depth > 0) depth--;
+                }
+            }
+
+            /// <summary>GROUP/QUEUE structures of this range (nesting + PRE inheritance). Read-only once built.</summary>
+            public List<Struct> Structs
+            {
+                get
+                {
+                    var s = _structs;
+                    if (s != null) return s;
+                    s = new List<Struct>();
+                    ParseStructures(Lines, s);
+                    return _structs = s;
+                }
+            }
+        }
+
+        private sealed class DataRange
+        {
+            public RangeData Data;
+            public string Kind;
+            public List<string> Lines { get { return Data.Lines; } }
+        }
+
+        private static readonly object _rangeLock = new object();
+        private static readonly Dictionary<string, RangeData> _rangeCache = new Dictionary<string, RangeData>();
+        private static readonly LinkedList<string> _rangeOrder = new LinkedList<string>();
+        private const int RangeCacheSize = 32;
 
         /// <summary>Everything in scope at one caret line. Built by walking outward from the caret.</summary>
         internal sealed class Scope
@@ -443,21 +495,38 @@ namespace ClarionAssistant.Services
 
             private void AddModuleRanges()
             {
-                foreach (var r in _header.ModuleRanges) _ranges.Add(new DataRange { Lines = r, Kind = "module" });
+                foreach (var r in _header.ModuleRanges) _ranges.Add(new DataRange { Data = r, Kind = "module" });
             }
 
             private DataRange ReadRange(int headerStart, string kind)
             {
-                var lines = new List<string>();
-                bool sawLabel = false;
-                for (int p = NextLine(_buf, headerStart); p >= 0; p = NextLine(_buf, p))
+                // Where the DATA ends: its CODE line, or the next procedure/routine header.
+                int first = NextLine(_buf, headerStart), end = _buf.Length;
+                for (int p = first; p >= 0; p = NextLine(_buf, p))
+                    if (IsCodeLine(_buf, p) || IsImplHeader(_buf, p, _origin) || IsRoutineHeader(_buf, p)) { end = p; break; }
+                if (first < 0) first = end = _buf.Length;
+
+                string key = HeaderKey(_buf, first, end);
+                RangeData data;
+                lock (_rangeLock) { _rangeCache.TryGetValue(key, out data); }
+                if (data == null)
                 {
-                    if (IsCodeLine(_buf, p)) break;
-                    if (IsImplHeader(_buf, p, _origin) || IsRoutineHeader(_buf, p)) break;
-                    if (p < _buf.Length && IsLabelStart(_buf[p])) { sawLabel = true; lines.Add(LineText(_buf, p)); }
-                    else if (sawLabel && IsEndLineAt(_buf, p)) lines.Add(LineText(_buf, p));
+                    var lines = new List<string>();
+                    bool sawLabel = false;
+                    for (int p = first; p >= 0 && p < end; p = NextLine(_buf, p))
+                    {
+                        if (IsLabelStart(_buf[p])) { sawLabel = true; lines.Add(LineText(_buf, p)); }
+                        else if (sawLabel && IsEndLineAt(_buf, p)) lines.Add(LineText(_buf, p));
+                    }
+                    data = new RangeData(lines);
+                    lock (_rangeLock)
+                    {
+                        if (!_rangeCache.ContainsKey(key)) _rangeOrder.AddLast(key);
+                        _rangeCache[key] = data;
+                        while (_rangeOrder.Count > RangeCacheSize) { _rangeCache.Remove(_rangeOrder.First.Value); _rangeOrder.RemoveFirst(); }
+                    }
                 }
-                return new DataRange { Lines = lines, Kind = kind };
+                return new DataRange { Data = data, Kind = kind };
             }
 
             private void ParseParams(int headerStart, List<Param> into)
@@ -508,15 +577,15 @@ namespace ClarionAssistant.Services
             {
                 foreach (var r in _ranges)
                 {
-                    if (r.Kind == "routine") CollectLabels(r.Lines, prefix, seen, items, "(routine var)");
+                    if (r.Kind == "routine") CollectLabels(r.Data, prefix, seen, items, "(routine var)");
                     else if (r.Kind == "proc")
                     {
-                        CollectLabels(r.Lines, prefix, seen, items, "(local)");
+                        CollectLabels(r.Data, prefix, seen, items, "(local)");
                         if (includeParams) AddParams(_params, prefix, seen, items);
                     }
                     else if (r.Kind == "owner")
                     {
-                        CollectLabels(r.Lines, prefix, seen, items, "(local)");
+                        CollectLabels(r.Data, prefix, seen, items, "(local)");
                         if (includeParams) AddParams(_ownerParams, prefix, seen, items);
                     }
                 }
@@ -671,7 +740,7 @@ namespace ClarionAssistant.Services
                 {
                     if (_structs != null) return _structs;
                     var all = new List<Struct>();
-                    foreach (var r in _ranges) ParseStructures(r.Lines, all);
+                    foreach (var r in _ranges) all.AddRange(r.Data.Structs);
                     return _structs = all;
                 }
             }
@@ -708,7 +777,7 @@ namespace ClarionAssistant.Services
             {
                 foreach (var r in _ranges)
                 {
-                    string rest = FindDataLabel(r.Lines, instance);
+                    string rest = FindDataLabel(r.Data, instance);
                     if (rest == null) continue;
                     var tk = TypeToken.Match(rest);
                     return tk.Success ? tk.Groups[1].Value : null;
@@ -738,7 +807,7 @@ namespace ClarionAssistant.Services
                 if (string.IsNullOrEmpty(word)) return null;
                 foreach (var r in _ranges)
                 {
-                    string rest = FindDataLabel(r.Lines, word);
+                    string rest = FindDataLabel(r.Data, word);
                     if (rest != null)
                     {
                         string detail, doc;
@@ -804,49 +873,25 @@ namespace ClarionAssistant.Services
 
         /// <summary>Depth-0 labels of one DATA range matching <paramref name="prefix"/>: plain locals plus a
         /// GROUP/QUEUE/CLASS container's own label, never its fields or members.</summary>
-        private static void CollectLabels(List<string> lines, string prefix, HashSet<string> seen,
+        private static void CollectLabels(RangeData d, string prefix, HashSet<string> seen,
                                           List<LspClient.CompletionItemInfo> items, string scopeMarker)
         {
-            int depth = 0;
-            foreach (var ln in lines)
+            foreach (var decl in d.Decls)
             {
-                bool isEnd = IsEnd(ln);
-                if (depth == 0 && !isEnd)
-                {
-                    var lm = DataLabelPattern.Match(ln);
-                    if (lm.Success)
-                    {
-                        string label = lm.Groups[1].Value;
-                        if (label.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && seen.Add(label))
-                        {
-                            string detail, doc;
-                            BuildVarDetail(lm.Groups[2].Value, scopeMarker, out detail, out doc);
-                            items.Add(new LspClient.CompletionItemInfo
-                            { Label = label, Kind = 6 /*Variable*/, Detail = detail, Documentation = doc, InsertText = label });
-                        }
-                    }
-                }
-                if (IsStructOpen(ln)) depth++;
-                else if (isEnd && depth > 0) depth--;
+                string label = decl.Key;
+                if (!label.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !seen.Add(label)) continue;
+                string detail, doc;
+                BuildVarDetail(decl.Value, scopeMarker, out detail, out doc);
+                items.Add(new LspClient.CompletionItemInfo
+                { Label = label, Kind = 6 /*Variable*/, Detail = detail, Documentation = doc, InsertText = label });
             }
         }
 
         /// <summary>First depth-0 declaration labelled <paramref name="word"/> - its rest-of-line - or null.</summary>
-        private static string FindDataLabel(List<string> lines, string word)
+        private static string FindDataLabel(RangeData d, string word)
         {
-            int depth = 0;
-            foreach (var ln in lines)
-            {
-                bool isEnd = IsEnd(ln);
-                if (depth == 0 && !isEnd)
-                {
-                    var lm = DataLabelPattern.Match(ln);
-                    if (lm.Success && string.Equals(lm.Groups[1].Value, word, StringComparison.OrdinalIgnoreCase))
-                        return lm.Groups[2].Value;
-                }
-                if (IsStructOpen(ln)) depth++;
-                else if (isEnd && depth > 0) depth--;
-            }
+            foreach (var decl in d.Decls)
+                if (string.Equals(decl.Key, word, StringComparison.OrdinalIgnoreCase)) return decl.Value;
             return null;
         }
 
@@ -1157,6 +1202,7 @@ namespace ClarionAssistant.Services
         private static bool MatchWord(string s, int i, int le, string kw)
         {
             if (le - i < kw.Length) return false;
+            if ((s[i] | 0x20) != (kw[0] | 0x20)) return false;   // cheap first-letter reject (keywords are ASCII)
             if (string.Compare(s, i, kw, 0, kw.Length, StringComparison.OrdinalIgnoreCase) != 0) return false;
             int after = i + kw.Length;
             return after >= le || !IsWordChar(s[after]);
@@ -1172,14 +1218,38 @@ namespace ClarionAssistant.Services
         /// keyword, or -1. The label may carry '.' and ':' (ThisWindow.Init, Queue:Browse).</summary>
         private static int HeaderKeyword(string s, int ls, string kw)
         {
-            if (ls >= s.Length || !IsLabelStart(s[ls])) return -1;
-            int le = LineEnd(s, ls);
-            int i = ls + 1;
-            while (i < le && IsLabelChar(s[i], true)) i++;
-            int ws = i;
-            i = SkipWs(s, i, le);
-            if (i == ws || !MatchWord(s, i, le, kw)) return -1;
+            int i = HeaderWord(s, ls);
+            if (i < 0 || !MatchWord(s, i, s.Length, kw)) return -1;
             return i + kw.Length;
+        }
+
+        // The walks ask "ROUTINE?" then "PROCEDURE?" of the same column-1 line; the label + blank scan is
+        // the costly part (~250 ns a line on 32-bit), so the last answer is kept per thread.
+        [ThreadStatic] private static string _hwText;
+        [ThreadStatic] private static int _hwLine, _hwWord;
+
+        /// <summary>Start of the word after a column-1 label and its blanks, or -1. Hot path: no LineEnd
+        /// lookup - the label and blank runs stop at the line break by themselves, and CR/LF end a word
+        /// for MatchWord.</summary>
+        private static int HeaderWord(string s, int ls)
+        {
+            if (ls >= s.Length || !IsLabelStart(s[ls])) return -1;
+            if (ReferenceEquals(s, _hwText) && ls == _hwLine) return _hwWord;
+            int n = s.Length;
+            int i = ls + 1;
+            while (i < n && IsLabelChar(s[i], true)) i++;
+            int ws = i;
+            i = SkipBlanks(s, i);
+            int word = i == ws ? -1 : i;
+            _hwText = s; _hwLine = ls; _hwWord = word;
+            return word;
+        }
+
+        /// <summary>Skip whitespace up to, not across, the end of the line.</summary>
+        private static int SkipBlanks(string s, int i)
+        {
+            while (i < s.Length && s[i] != '\n' && s[i] != '\r' && char.IsWhiteSpace(s[i])) i++;
+            return i;
         }
 
         private static string LabelAt(string s, int ls)
@@ -1263,8 +1333,7 @@ namespace ClarionAssistant.Services
 
         private static bool IsCodeLine(string s, int ls)
         {
-            int le = LineEnd(s, ls);
-            return MatchWord(s, SkipWs(s, ls, le), le, "CODE");
+            return MatchWord(s, SkipBlanks(s, ls), s.Length, "CODE");
         }
 
         private static bool IsEndLineAt(string s, int ls)
@@ -1374,7 +1443,7 @@ namespace ClarionAssistant.Services
         internal sealed class Header
         {
             public string Text;
-            public readonly List<List<string>> ModuleRanges = new List<List<string>>();
+            public readonly List<RangeData> ModuleRanges = new List<RangeData>();
             public readonly List<KeyValuePair<string, string>> MapProcs = new List<KeyValuePair<string, string>>();
             /// <summary>The procedure implementations of the last full buffer this header was mapped from
             /// (BuildSpanMap) - what a slice cannot see for itself. Null until a map is built.</summary>
@@ -1389,9 +1458,11 @@ namespace ClarionAssistant.Services
         /// <summary>The cache key of a header text: FNV-1a over its characters, plus its length.</summary>
         private static string HeaderKey(string s, int from, int to)
         {
-            ulong h = 14695981039346656037UL;
-            for (int i = from; i < to; i++) { h ^= s[i]; h *= 1099511628211UL; }
-            return h.ToString("x16") + ":" + (to - from);
+            // Two 32-bit hashes (FNV-1a and a multiplicative one): 64-bit multiplies are slow on the
+            // 32-bit IDE process, and this runs over a 236 KB DATA section per request.
+            uint a = 2166136261u, b = 0;
+            for (int i = from; i < to; i++) { char c = s[i]; a = (a ^ c) * 16777619u; b = b * 31u + c; }
+            return a.ToString("x8") + b.ToString("x8") + ":" + (to - from);
         }
 
         /// <summary>The module header - MEMBER down to the first procedure implementation, MAP-aware -
@@ -1671,7 +1742,7 @@ namespace ClarionAssistant.Services
                 {
                     if (MapOpen.IsMatch(ln))
                     {
-                        if (i > rangeStart) hdr.ModuleRanges.Add(Slice(lines, rangeStart, i));
+                        if (i > rangeStart) hdr.ModuleRanges.Add(new RangeData(Slice(lines, rangeStart, i)));
                         mapDepth = 1;
                     }
                 }
@@ -1683,7 +1754,7 @@ namespace ClarionAssistant.Services
             {
                 int end = lines.Length;
                 if (end > rangeStart && lines[end - 1].Length == 0 && text.EndsWith("\n", StringComparison.Ordinal)) end--;   // the header's own trailing newline
-                if (end > rangeStart) hdr.ModuleRanges.Add(Slice(lines, rangeStart, end));
+                if (end > rangeStart) hdr.ModuleRanges.Add(new RangeData(Slice(lines, rangeStart, end)));
             }
 
             // MAP prototypes (nested MODULE(...)...END counted; directives and comments skipped).
