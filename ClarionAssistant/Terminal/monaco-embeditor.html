@@ -1725,12 +1725,13 @@
         postToHost(msg);
         unclaimedSync = { v: msg.v, chars: text.length, ms: rtNow() - t0, at: rtNow() };
     }
-    // The chars a slice request carries instead of the synced buffer (R11): span + owner data, or the slots'
+    // The chars a slice request carries instead of the synced buffer (R11b): the pieces sent WITH text (a
+    // clean DATA piece goes by hash), or the slots'
     // text for slotDiagnostics. null for a request that names the synced buffer (`v`).
     function sliceCharsOf(msg) {
-        if (msg.slice) return (msg.slice.span ? msg.slice.span.text.length : 0) + (msg.slice.ownerData ? msg.slice.ownerData.text.length : 0);
-        if (msg.slots) return msg.slots.reduce(function (n, s) { return n + (s.text ? s.text.length : 0); }, 0);
-        return null;
+        var parts = msg.slice ? msg.slice.pieces : msg.slots;
+        if (!parts) return null;
+        return parts.reduce(function (n, p) { return n + (p.text ? p.text.length : 0); }, 0);
     }
     function claimBufferSync(v) {
         if (!unclaimedSync || unclaimedSync.v !== v) return null;
@@ -1794,9 +1795,10 @@
     var IDLE_SYNC_MS = 400;
     var idleSyncTimer = null;
     var idleWaiters = [];        // run once the idle sync has been posted
-    function noteBufferEdit() {
+    function noteBufferEdit(e) {
         if (idleSyncTimer) clearTimeout(idleSyncTimer);
         idleSyncTimer = setTimeout(idleSync, IDLE_SYNC_MS);
+        if (e && e.changes) markDirtyPieces(e.changes);   // R11b: an edited DATA piece travels as text
     }
     function idleSync() {
         idleSyncTimer = null;
@@ -4633,15 +4635,20 @@
         clearSpanMap();
     }
 
-    // ----- R11: local requests carry a SLICE of the buffer, never the synced whole (1c685f2e) -----
+    // ----- R11/R11b: local requests carry PIECES of the buffer, never the synced whole (1c685f2e) -----
     // After each full sync the host pushes a span map {type:'spanMap', v, headerHash, procs:[{name, start,
-    // dataEnd, end, owner, routines}]} (1-based lines of that sync's text). Each proc's start..end and
-    // start..dataEnd become tracked decorations, so they follow the edits made until the next map. A local
-    // request then sends only the caret's procedure (capped at SPAN_CAP_LINES around the caret), the owner's
-    // data section for a Class.Method, and the routine names; the host has the module header by hash. No
-    // map yet (first open) -> the request falls back to the synced buffer (`v`), as before.
-    var SPAN_CAP_LINES = 3000;
-    var spanMap = null;          // {model, headerHash, procs:[{name, owner, routines, spanId, dataId}], ids}
+    // dataEnd, end, owner, dataHash, routines, routineSpans:[{name, start, dataEnd, dataHash}]}]} (1-based
+    // lines of that sync's text); it caches each DATA piece's text under its dataHash. Every proc span, proc
+    // DATA and routine DATA becomes a tracked decoration, so they follow the edits made until the next map.
+    // A local request sends slice {headerHash, routines, pieces}, pieces in this order:
+    //   1. the caret proc's start..dataEnd       2. the enclosing routine's start..dataEnd
+    //   3. a Class.Method's owner start..dataEnd  4. WINDOW_LINES above/below the caret, clipped to the proc
+    // Pieces 1-3 go as {start, hash} while no edit has touched them since the map (the host has the text),
+    // else {start, text}; piece 4 always carries text. InventoryTable's own DATA alone is 236 KB, so a
+    // keystroke now sends ~16 KB. No map yet (first open) -> the synced buffer (`v`), as before.
+    var WINDOW_LINES = 200;
+    var spanMap = null;          // {model, headerHash, ids, procs:[{name, owner, routines, spanId, data, routineSpans}]}
+                                 // data / routineSpans[i] = {id, hash, dirty}
     function clearSpanMap() {
         if (spanMap) { try { spanMap.model.deltaDecorations(spanMap.ids, []); } catch (e) { } }
         spanMap = null;
@@ -4649,6 +4656,7 @@
     function wholeLines(model, start, end) {
         return new monaco.Range(start, 1, end, model.getLineMaxColumn(end));
     }
+    function textOfLines(model, start, end) { return model.getValueInRange(wholeLines(model, start, end)); }
     function applySpanMap(msg) {
         var model = editor && editor.getModel();
         if (!model || !msg || !msg.procs) return;
@@ -4659,19 +4667,48 @@
         var clamp = function (l) { return Math.max(1, Math.min(n, l | 0)); };
         var sticky = { stickiness: monaco.editor.TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges };
         var decs = [];
-        msg.procs.forEach(function (p) {
-            var s = clamp(p.start), e = Math.max(s, clamp(p.end)), d = Math.max(s, Math.min(e, clamp(p.dataEnd)));
-            decs.push({ range: wholeLines(model, s, e), options: sticky });
-            decs.push({ range: wholeLines(model, s, d), options: sticky });
+        var track = function (s, e) { decs.push({ range: wholeLines(model, s, e), options: sticky }); return decs.length - 1; };
+        var dataPiece = function (start, dataEnd, end, hash) {
+            var s = clamp(start);
+            return { at: track(s, Math.max(s, Math.min(end, clamp(dataEnd)))), hash: hash || null, dirty: false };
+        };
+        var procs = msg.procs.map(function (p) {
+            var s = clamp(p.start), e = Math.max(s, clamp(p.end));
+            return {
+                name: p.name, owner: p.owner, routines: p.routines || [],
+                spanAt: track(s, e),
+                data: dataPiece(p.start, p.dataEnd, e, p.dataHash),
+                routineSpans: (p.routineSpans || []).map(function (r) {
+                    var d = dataPiece(r.start, r.dataEnd, e, r.dataHash);
+                    d.name = r.name;
+                    return d;
+                })
+            };
         });
         if (spanMap && spanMap.model !== model) clearSpanMap();
         var ids = model.deltaDecorations(spanMap ? spanMap.ids : [], decs);
-        spanMap = {
-            model: model, headerHash: msg.headerHash, ids: ids,
-            procs: msg.procs.map(function (p, i) {
-                return { name: p.name, owner: p.owner, routines: p.routines || [], spanId: ids[2 * i], dataId: ids[2 * i + 1] };
-            })
+        procs.forEach(function (p) {
+            p.spanId = ids[p.spanAt];
+            p.data.id = ids[p.data.at];
+            p.routineSpans.forEach(function (r) { r.id = ids[r.at]; });
+        });
+        spanMap = { model: model, headerHash: msg.headerHash, ids: ids, procs: procs };
+    }
+    // Content changes (pre-edit ranges) that touch a DATA piece make it dirty: its text no longer matches the
+    // hash the host holds, so it must travel as text until the next map. Edits above only shift it.
+    function markDirtyPieces(changes) {
+        if (!spanMap || !changes || !editor || editor.getModel() !== spanMap.model) return;
+        var model = spanMap.model;
+        var touch = function (piece) {
+            if (piece.dirty) return;
+            var r = model.getDecorationRange(piece.id);
+            if (!r) return;
+            for (var i = 0; i < changes.length; i++) {
+                var c = changes[i].range;
+                if (c.startLineNumber <= r.endLineNumber && c.endLineNumber >= r.startLineNumber) { piece.dirty = true; return; }
+            }
         };
+        spanMap.procs.forEach(function (p) { touch(p.data); p.routineSpans.forEach(touch); });
     }
     // The map's proc whose tracked span holds `line`, with its current range. None -> {proc:null, range: the gap
     // between the neighbouring procs (the module header, before the first one)}.
@@ -4695,28 +4732,41 @@
         texts.forEach(function (t) { var m; ROUTINE_LABEL_RE.lastIndex = 0; while ((m = ROUTINE_LABEL_RE.exec(t))) add(m[1]); });
         return out;
     }
-    // The slice for a local request at `line`, or null when there is no span map for this model.
+    // A DATA piece as it travels: by hash while clean (and hashed), else with its current text.
+    function dataPieceOut(model, piece, withText) {
+        var r = model.getDecorationRange(piece.id);
+        if (!r) return null;
+        if (!withText && !piece.dirty && piece.hash) return { start: r.startLineNumber, hash: piece.hash };
+        return { start: r.startLineNumber, text: textOfLines(model, r.startLineNumber, r.endLineNumber) };
+    }
+    // The slice for a local request at `line`, or null when there is no span map for this model. `sources`
+    // (same order as pieces) keeps each DATA piece's tracking record so a needPieces reply can resend it.
     function buildSlice(model, line) {
         if (!spanMap || spanMap.model !== model) return null;
-        var hit = spanAt(model, line);
-        var lo = hit.range.startLineNumber, hi = hit.range.endLineNumber;
-        var s = lo, e = hi;
-        if (e - s + 1 > SPAN_CAP_LINES) {
-            s = Math.max(lo, line - Math.floor(SPAN_CAP_LINES / 2));
-            e = Math.min(hi, s + SPAN_CAP_LINES - 1);
-            s = Math.max(lo, e - SPAN_CAP_LINES + 1);
+        var hit = spanAt(model, line), proc = hit.proc;
+        var pieces = [], sources = [];
+        var add = function (piece) {
+            var out = piece && dataPieceOut(model, piece, false);
+            if (out) { pieces.push(out); sources.push(piece); }
+        };
+        if (proc) {
+            add(proc.data);
+            var rtn = null;                          // the enclosing routine: the last one starting at/above the caret
+            proc.routineSpans.forEach(function (r) {
+                var rr = model.getDecorationRange(r.id);
+                if (rr && rr.startLineNumber <= line) rtn = r;
+            });
+            add(rtn);
+            if (proc.owner != null && spanMap.procs[proc.owner]) add(spanMap.procs[proc.owner].data);
         }
-        var text = model.getValueInRange(wholeLines(model, s, e));
-        var ownerData = null;
-        if (hit.proc && hit.proc.owner != null && spanMap.procs[hit.proc.owner]) {
-            var od = model.getDecorationRange(spanMap.procs[hit.proc.owner].dataId);
-            if (od) ownerData = { start: od.startLineNumber, text: model.getValueInRange(wholeLines(model, od.startLineNumber, od.endLineNumber)) };
-        }
+        var s = Math.max(hit.range.startLineNumber, line - WINDOW_LINES);
+        var e = Math.min(hit.range.endLineNumber, line + WINDOW_LINES);
+        var windowText = textOfLines(model, s, e);
+        pieces.push({ start: s, text: windowText });
+        sources.push(null);
         return {
-            headerHash: spanMap.headerHash,
-            span: { start: s, text: text },
-            ownerData: ownerData,
-            routines: withTypedRoutines(hit.proc ? hit.proc.routines : [], [text])
+            slice: { headerHash: spanMap.headerHash, routines: withTypedRoutines(proc ? proc.routines : [], [windowText]), pieces: pieces },
+            sources: sources
         };
     }
     // The module header as it stands now (line 1 up to the first proc), for a host that lost it (needHeader).
@@ -4726,22 +4776,29 @@
             var r = model.getDecorationRange(p.spanId);
             if (r && r.startLineNumber < first) first = r.startLineNumber;
         });
-        return first > 1 ? model.getValueInRange(wholeLines(model, 1, first - 1)) : '';
+        return first > 1 ? textOfLines(model, 1, first - 1) : '';
     }
     // A local request (localCompletion / localHover) at `position`: a slice when there is a span map, else
-    // the synced buffer. {needHeader:true} -> send the header and retry ONCE; a second needHeader = null.
+    // the synced buffer. The host lacking the header ({needHeader:true}) and/or some pieces ({needPieces:
+    // [hashes]}) -> send the header, put those pieces' text in, and retry ONCE; a second miss = null.
     function requestLocal(action, model, position, extra) {
         var payload = { line: position.lineNumber, column: position.column };
         if (extra) for (var k in extra) if (extra.hasOwnProperty(k)) payload[k] = extra[k];
-        var slice = buildSlice(model, position.lineNumber);
-        if (slice) payload.slice = slice;
+        var built = buildSlice(model, position.lineNumber);
+        if (built) payload.slice = built.slice;
         else payload = withBuffer(model, payload);
         var ask = function () { return requestFromHost(action, payload, LOCAL_TIMEOUT_MS); };
+        var missed = function (resp) { return resp && (resp.needHeader || (resp.needPieces && resp.needPieces.length)); };
         return ask().then(function (resp) {
-            if (!resp || !resp.needHeader) return resp;
-            if (!slice || !spanMap) return null;
-            postToHost({ action: 'headerSync', hash: slice.headerHash, text: headerText(model) });
-            return ask().then(function (again) { return again && !again.needHeader ? again : null; });
+            if (!missed(resp)) return resp;
+            if (!built || !spanMap) return null;
+            if (resp.needHeader) postToHost({ action: 'headerSync', hash: built.slice.headerHash, text: headerText(model) });
+            var need = {};
+            (resp.needPieces || []).forEach(function (h) { need[h] = true; });
+            built.slice.pieces = built.slice.pieces.map(function (p, i) {
+                return (p.hash && need[p.hash] && built.sources[i]) ? (dataPieceOut(model, built.sources[i], true) || p) : p;
+            });
+            return ask().then(function (again) { return missed(again) ? null : again; });
         });
     }
     // slotDiagnostics' slice: each live slot's text, plus the routine names of the procs holding them.
