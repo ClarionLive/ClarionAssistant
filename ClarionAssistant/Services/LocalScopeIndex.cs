@@ -194,6 +194,17 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
+        /// <summary>The Clarion word (dotted/colon labels included, e.g. "INV:Qty", "SELF.Init") spanning
+        /// 0-based column <paramref name="col0"/> of <paramref name="lineText"/>, or null. For the
+        /// dictionary and keyword hovers, which take a word rather than a caret.</summary>
+        public static string WordAt(string lineText, int col0)
+        {
+            if (string.IsNullOrEmpty(lineText)) return null;
+            foreach (Match m in WordPattern.Matches(lineText))
+                if (col0 >= m.Index && col0 <= m.Index + m.Length) return m.Value;
+            return null;
+        }
+
         /// <summary>Test hook: how many times a module header has been parsed (a cache miss).</summary>
         public static int HeaderParseCount { get { return _headerParseCount; } }
         private static int _headerParseCount;

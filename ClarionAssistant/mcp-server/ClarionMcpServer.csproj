@@ -197,6 +197,7 @@
     <Compile Include="..\Services\SharedLspBridge.cs"><Link>Services\SharedLspBridge.cs</Link></Compile>
     <Compile Include="..\Services\LocalScopeIndex.cs"><Link>Services\LocalScopeIndex.cs</Link></Compile>
     <Compile Include="..\Services\SymbolIndex.cs"><Link>Services\SymbolIndex.cs</Link></Compile>
+    <Compile Include="..\Services\LiveDictionaryIndex.cs"><Link>Services\LiveDictionaryIndex.cs</Link></Compile>
     <Compile Include="..\Services\McpToolRegistry.cs"><Link>Services\McpToolRegistry.cs</Link></Compile>
     <Compile Include="..\Services\ClarionClDiagnosis.cs"><Link>Services\ClarionClDiagnosis.cs</Link></Compile>
   </ItemGroup>

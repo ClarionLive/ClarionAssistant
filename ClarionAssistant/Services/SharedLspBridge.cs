@@ -2193,13 +2193,13 @@ namespace ClarionAssistant.Services
             // dictionary results are additive, distinguished via Detail, never silently dropped).
             try
             {
-                string schemaDb = ResolveSchemaGraphDb(filePath);
-                if (!string.IsNullOrEmpty(schemaDb))
+                // Live dictionary snapshot first; the ingested .schemagraph.db only without one (1c685f2e).
+                var tables = LiveDictionaryIndex.CompleteTableNames(prefix, 25, () =>
                 {
-                    var service = new SchemaGraphService(schemaDb);
-                    var tables = service.GetTableNameCompletions(prefix);
-                    if (tables != null) primary.AddRange(tables);
-                }
+                    string schemaDb = ResolveSchemaGraphDb(filePath);
+                    return string.IsNullOrEmpty(schemaDb) ? null : new SchemaGraphService(schemaDb).GetTableNameCompletions(prefix);
+                });
+                if (tables != null) primary.AddRange(tables);
             }
             catch (Exception ex) { LspTrace.Write("[SharedLspBridge] dictionary table-name completion merge failed: " + ex.Message); }
         }
@@ -2324,11 +2324,13 @@ namespace ClarionAssistant.Services
             string qualifier = q.Groups[1].Value;
             string partial = q.Groups[3].Value;
 
-            string db = ResolveSchemaGraphDb(filePath);
-            if (string.IsNullOrEmpty(db)) return;
-
-            var service = new SchemaGraphService(db);
-            var items = service.GetQualifierCompletions(qualifier, partial);
+            // The live dictionary snapshot first (1c685f2e: no ingest needed, no SQLite open); the ingested
+            // .schemagraph.db only when there is no live snapshot (e.g. the standalone MCP server).
+            var items = LiveDictionaryIndex.CompleteQualifier(qualifier, partial, () =>
+            {
+                string db = ResolveSchemaGraphDb(filePath);
+                return string.IsNullOrEmpty(db) ? null : new SchemaGraphService(db).GetQualifierCompletions(qualifier, partial);
+            });
             if (items != null) primary.AddRange(items);
         }
 
