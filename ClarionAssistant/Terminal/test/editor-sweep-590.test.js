@@ -81,10 +81,11 @@ function loadDiag() {
     const fakeClearTimeout = () => { env.cleared++; };
     // 16d140e9: requests name the synced buffer version (withBuffer) instead of carrying the buffer.
     const withBuffer = (m, payload) => Object.assign({ v: m.getVersionId() }, payload);
-    const api = new Function('editor', 'monaco', 'requestFromHost', 'liveEditableRanges', 'setTimeout', 'clearTimeout', 'withBuffer',
+    const bufferKey = (m) => 'm:' + m.getVersionId();
+    const api = new Function('editor', 'monaco', 'requestFromHost', 'liveEditableRanges', 'setTimeout', 'clearTimeout', 'withBuffer', 'bufferKey',
         'var diagTimer = null;\n' + diagSrc + '\nreturn { refreshDiagnostics: refreshDiagnostics, scheduleDiagnostics: scheduleDiagnostics,' +
         ' resetDiagnosticsForNewSource: resetDiagnosticsForNewSource, setSlotChecks: function (on) { slotChecksEnabled = on; } };')(
-        env.editor, monaco, requestFromHost, () => [[1, 10]], fakeSetTimeout, fakeClearTimeout, withBuffer);
+        env.editor, monaco, requestFromHost, () => [[1, 10]], fakeSetTimeout, fakeClearTimeout, withBuffer, bufferKey);
     env.api = api;
     return env;
 }
@@ -236,8 +237,9 @@ async function testSlotDiagnostics() {
         env.api.refreshDiagnostics();
         env.slot[0].resolve({ markers: [mk(3, 'first')] });
         await flush();
-        env.api.refreshDiagnostics();                  // same version: the LSP pass is held, the slot one goes out
         env.model.version = 2;
+        env.api.refreshDiagnostics();                  // the LSP pass is held, the slot one goes out
+        env.model.version = 3;
         env.slot[1].resolve({ markers: [mk(4, 'stale')] });
         await flush();
         check('7.11 a slot reply for an older version is dropped', JSON.stringify(onScreen(env, 'clarion-slot')) === '["3:first"]',
@@ -247,6 +249,10 @@ async function testSlotDiagnostics() {
         await flush();
         check('7.12 a null slot reply keeps the slot markers on screen', JSON.stringify(onScreen(env, 'clarion-slot')) === '["3:first"]');
         env.api.refreshDiagnostics();
+        check('...and the next pass for that version asks again', env.slot.length === 4, 'slot ' + env.slot.length);
+        env.api.refreshDiagnostics();
+        check('...but a pass for an already-asked version does not re-ask (a held LSP pass re-running)', env.slot.length === 4,
+            'slot ' + env.slot.length);
         env.slot[3].resolve({ markers: [] });
         await flush();
         check('...while a real empty reply clears them', onScreen(env, 'clarion-slot').length === 0);
@@ -257,6 +263,7 @@ async function testSlotDiagnostics() {
         env.api.refreshDiagnostics();
         env.slot[0].resolve({ markers: [mk(2, 'old procedure')] });
         await flush();
+        env.model.version = 2;
         env.api.refreshDiagnostics();                  // an old-source slot request still out
         env.api.resetDiagnosticsForNewSource();
         check('7.13 setSource clears clarion-slot', env.owners['clarion-slot'] && env.owners['clarion-slot'].length === 0,
