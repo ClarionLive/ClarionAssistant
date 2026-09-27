@@ -183,7 +183,7 @@ On a large procedure `apply_embed_edits` and `open_procedure_embed` always faile
 <!-- release-docs: covered=editor,monaco -->
 ### CA Editor: squiggles on the right line, the whole font list, and no white flash ([#176](https://github.com/ClarionLive/ClarionAssistant/issues/176), [#184](https://github.com/ClarionLive/ClarionAssistant/issues/184), [#195](https://github.com/ClarionLive/ClarionAssistant/issues/195))
 
-**Squiggles no longer land lines off:** a slow diagnostics reply to an older request could overwrite a newer one and draw its lines over a buffer that had since changed; a stale reply is now dropped and a fresh check runs. **The Font family box shows the whole list:** the browser filtered it by the font already in the box, so only that font appeared. The box now empties while it has focus, with the current font as its placeholder, and leaving without choosing puts the old font back. After you pick a font, click out of the box and back in to see the full list again. **No white flash on open:** everything shown before the editor paints now uses the editor's own background in the CA Editor and the CA Embeditor, and under **Windows High Contrast** the contrast theme's window colour.
+**Squiggles no longer land lines off:** a slow diagnostics reply to an older request could overwrite a newer one and draw its lines over a buffer that had since changed; a stale reply is now dropped and a fresh check runs. **The Font family box shows the whole list:** the browser filtered it by the font already in the box, so only that font appeared. It is now a **plain dropdown** &mdash; *Default* plus the same fonts, the whole list every time, and a pick applies at once. A saved font that is not in the list (an older fallback list, or a font imported from VS Code) is kept as an extra entry rather than dropped. **No white flash on open:** everything shown before the editor paints now uses the editor's own background in the CA Editor and the CA Embeditor, and under **Windows High Contrast** the contrast theme's window colour.
 
 <!-- release-docs: covered=completion,embeditor -->
 ### Completion lists a member once ([#187](https://github.com/ClarionLive/ClarionAssistant/issues/187))
@@ -209,6 +209,26 @@ When Clarion's record of the current version is missing, stale or says *"(Curren
 ### `append_to_file` no longer adds a blank line ([#232](https://github.com/ClarionLive/ClarionAssistant/issues/232))
 
 It always wrote a line break before the new text, so appending to a file that already ended with one left a blank line. It now adds the break only when the file does not already end in one; encoding handling is unchanged.
+
+<!-- release-docs: covered=editor,embeditor -->
+### Large procedures no longer crash the IDE from the CA Editor or Embeditor
+
+On an 86,722-line, 3.2 MB generated module the 32-bit Clarion IDE could die out of memory with a CA Embeditor open, because the editor sent its **whole buffer** with every hover, completion, definition, diagnostics, outline and folding request. Both Monaco editors now send the buffer **once per edit** and requests only name the version they are about &mdash; twenty hovers on a 3.2 MB buffer went from 66 MB of traffic to 3.3 MB. The diagnostics timeout now grows with the buffer (up to 60 seconds). **Not fixed yet:** completion and diagnostics on very large procedures can still be slow; that is tracked for after 5.9.0.
+
+<!-- release-docs: covered=version -->
+### Clarion Assistant follows Build > Set Clarion Version
+
+The IDE keeps a Clarion version per solution (**Build > Set Clarion Version**). Clarion Assistant read it only at startup or on a solution change, and a version picked in its **VERSION** box was one global setting that beat the IDE forever &mdash; honoured by some parts of Clarion Assistant and not others. Now the IDE's choice decides and is followed when it changes (the `.red` reloads and the bundled language server restarts), and **every part of Clarion Assistant uses the same version**. The VERSION box shows which source chose it. A version picked there is kept **per solution**, and only while the IDE's choice is still the one it was made against.
+
+<!-- release-docs: covered=explorer -->
+### CA Explorer's header says what it means
+
+The header read like `Clarion10v8 · clbrws`, a version folder and a solution name run together. It now shows labelled lines: **APP** (or **SOLUTION** when no app is open), **VERSION**, **ROOT** and **RED**. Clicking **APP** shows the file in Windows Explorer, and **ROOT** opens the folder.
+
+<!-- release-docs: covered=editor,formatter -->
+### CA Embeditor: the caret and Enter stay with the code
+
+Two older problems found in install testing. With **Can move caret behind EOL** and word wrap on, a click beside a wrapped line set the caret's goal column to about the window width, so later up/down moves padded lines out to ~column 125 and Enter carried that indent on; a click there is now an ordinary click. And **Enter after END**, **Enter** and **Ctrl+I** re-indent from the code you can see: the formatter counted structures from the top of the whole generated module, and code it does not model (such as `OMIT` / `COMPILE` blocks) could throw an embed's block out to column 125. Re-indenting now stays anchored to the surrounding code.
 
 <!-- release-docs: covered=completion,ctrl-d,focus,knowledge -->
 ### Community fixes
