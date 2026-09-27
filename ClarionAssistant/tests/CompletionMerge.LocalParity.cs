@@ -49,8 +49,19 @@ static class CompletionMergeLocalParity
     };
 
     // Items the refactor ADDS on purpose, per completion caret (label). Everything else must match.
+    //
+    // BUG FIX, found by this harness at master: ProcA's DATA declares "ThisWindow CLASS(WindowManager)"
+    // with column-1 method prototypes ("Init PROCEDURE(BYTE pMode),BYTE,PROC,DERIVED") - the shape of
+    // EVERY ABC procedure. The old scope scan took the last prototype for ProcA's header, so ProcA's DATA
+    // started after the class: LOC:Count, MyGrp and PGrp (declared above it) were invisible, and "Init"
+    // was offered as a local procedure. Those rows are the fix, listed below.
     static readonly Dictionary<string, string[]> ExpectedAdded = new Dictionary<string, string[]>
     {
+        // The class-prototype fix: ProcA's own DATA is back in scope.
+        { "Loc", new[] { "LOC:Count" } },
+        { "Gr", new[] { "GrpA", "GrpB" } },
+        { "PG:", new[] { "PG:PgX" } },
+        { "MyGrp.", new[] { "GrpA", "GrpB" } },
         // Procedure PROTOTYPE parameters (never parsed locally before 1c685f2e).
         { "pI", new[] { "pId" } },
         // Inside ThisWindow.Init: its own parameter, and ProcA's locals (test 1.5: a local class's
@@ -59,12 +70,21 @@ static class CompletionMergeLocalParity
         { "LO", new[] { "LOC:Count" } },
     };
 
+    // Items the refactor REMOVES on purpose, per completion caret (label).
+    static readonly Dictionary<string, string[]> ExpectedRemoved = new Dictionary<string, string[]>
+    {
+        // "Init" is ThisWindow's method PROTOTYPE, not a procedure of this module.
+        { "In", new[] { "Init" } },
+    };
+
     // Hover results the refactor changes on purpose: key "line|word" -> the new contents must contain this.
     static readonly Dictionary<string, string> ExpectedHoverChange = new Dictionary<string, string>
     {
         { "LOC:Count = pId + ModCounter|pId", "pId  LONG" },
         { "ReturnValue = LocalHelper(pMode)|pMode", "pMode  BYTE" },
-        { "DO RtnB|RtnB", "RtnB" },
+        { "DO RtnB|RtnB", "RtnB ROUTINE" },
+        // The class-prototype fix: LOC:Count is declared above ThisWindow's CLASS block.
+        { "LOC:Count = pId + ModCounter|LOC:Count", "LOC:Count  LONG" },
     };
 
     static int Main(string[] args)
@@ -140,9 +160,17 @@ static class CompletionMergeLocalParity
             assertions++;
             var g = ((System.Collections.ArrayList)gComp[key]).Cast<string>().ToList();
             var c = ((List<string>)cComp[key]).ToList();
-            string[] added;
+            string[] added, removed;
             ExpectedAdded.TryGetValue(key, out added);
             added = added ?? new string[0];
+            ExpectedRemoved.TryGetValue(key, out removed);
+            removed = removed ?? new string[0];
+            foreach (var r in removed)
+            {
+                if (c.Any(row => row.StartsWith(r + " |", StringComparison.Ordinal)))
+                    failures.Add("caret '" + key + "': '" + r + "' should no longer be offered");
+                g = g.Where(row => !row.StartsWith(r + " |", StringComparison.Ordinal)).ToList();
+            }
             foreach (var a in added)
                 if (!c.Any(r => r.StartsWith(a + " |", StringComparison.Ordinal)))
                     failures.Add("caret '" + key + "': expected new item '" + a + "' is missing");

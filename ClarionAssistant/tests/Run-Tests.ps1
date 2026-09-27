@@ -178,6 +178,13 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                            "Services\ModernEmbeditorDiagnostics.cs",
                            "Services\ClarionAppDataReader.cs", "Services\ClarionAppDataReader.Model.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Xml.dll") }
+            # 1c685f2e: instant buffer-local completion/hover - scope, parameters, the local-class owner
+            # rule, encodings, and R3 (never Split the whole 3.2 MB buffer; allocation + scaling budgets).
+            @{ Name = "LocalScopeIndex.Test"
+               Sources = @("tests\LocalScopeIndex.Test.cs", "Services\LocalScopeIndex.cs", "Services\LspClient.cs",
+                           "Services\LspTrace.cs", "Services\EncodingHelper.cs", "CodeGraph\Parsing\ClarionBuiltins.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
+               Args = @((Join-Path $TestDir "fixtures\local-scope"), (Join-Path $RepoDir "Services\LocalScopeIndex.cs")) }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"
