@@ -201,6 +201,19 @@ static class MonacoBufferSyncTest
                 && log.Count == 1 && log[0].StartsWith("[buffer-sync] parse failed v=? "), string.Join(" | ", log));
         }
 
+        Console.WriteLine("\nR11: headerSync {action, hash, text} parsed text-last (no whole-message deserialise)");
+        {
+            Dictionary<string, object> f; string t;
+            Check("text-last shape: hash and the unescaped text",
+                MonacoBufferCache.TryParseTextMessage("{\"action\":\"headerSync\",\"hash\":\"abc\",\"text\":\"  MEMBER()\\r\\nX LONG\"}", "text", out f, out t)
+                && (string)f["hash"] == "abc" && t == "  MEMBER()\r\nX LONG", t);
+            Check("another key order still parses (fallback)",
+                MonacoBufferCache.TryParseTextMessage("{\"text\":\"h\",\"hash\":\"x\",\"action\":\"headerSync\"}", "text", out f, out t) && t == "h" && (string)f["hash"] == "x");
+            Check("no text -> false, never throws",
+                !MonacoBufferCache.TryParseTextMessage("{\"action\":\"headerSync\",\"hash\":\"x\"}", "text", out f, out t)
+                && !MonacoBufferCache.TryParseTextMessage("garbage", "text", out f, out t));
+        }
+
         Console.WriteLine("\n4.11 / 8.7: every lane is independent of every other (LaneSet)");
         {
             var lanes = new LaneSet();

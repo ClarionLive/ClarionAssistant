@@ -1241,8 +1241,6 @@ namespace ClarionAssistant
             return new LocalLayerOptions
             {
                 SlotChecks = true,
-                ProjectDbPath = MonacoEditorControl.ProjectCodeGraphDb,
-                LibraryDbPath = ClarionGraphService.ResolveDbPath,
                 FileName = _filePath,
                 Surface = "CA Editor(overlay)",
                 Log = MonacoSpikeLog.Write

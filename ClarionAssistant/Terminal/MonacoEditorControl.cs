@@ -370,19 +370,8 @@ namespace ClarionAssistant.Terminal
             // the whole buffer while typing). Without one it refers to the synced buffer by `v`, as before.
             string buffer = null;
             if (!Services.LocalLayerHandlers.CarriesSlice(data) && !TryResolveRequestBuffer(data, out buffer)) return;   // answered null + resync
-            RunLatest(lane, (int)reqId, () =>
-            {
-                int lineOffset = 0;
-                try { if (options != null && options.LineOffsetFor != null) lineOffset = options.LineOffsetFor(buffer); } catch { }
-                PostResponse((int)reqId, Services.LocalLayerHandlers.Handle(action, buffer, data, lineOffset, options));
-            }, () => MonacoSpikeLog.Write("[local-timing] action=" + action + " reqId=" + reqId + " dropped=superseded-by-newer-request"));
-        }
-
-        /// <summary>The active solution's .codegraph.db for the local layer (both hosts), or null.</summary>
-        public static string ProjectCodeGraphDb()
-        {
-            var provider = Services.SharedLspBridge.CodeGraphDbPathProvider;
-            return provider != null ? provider() : null;
+            RunLatest(lane, (int)reqId, () => PostResponse((int)reqId, Services.LocalLayerHandlers.Handle(action, buffer, data, options)),
+                () => MonacoSpikeLog.Write("[local-timing] action=" + action + " reqId=" + reqId + " dropped=superseded-by-newer-request"));
         }
 
         /// <summary>
@@ -507,10 +496,14 @@ namespace ClarionAssistant.Terminal
                     case "headerSync":
                         // 1c685f2e R11: the module header text for a hash the host lacked (it answered a slice
                         // request {needHeader:true}); the page retries that request once after posting this.
-                        Services.LocalLayerHandlers.AcceptHeaderSync(json, MonacoSpikeLog.Write);
+                        {
+                            Dictionary<string, object> hf; string htext; object hh;
+                            string hash = MonacoBufferCache.TryParseTextMessage(json, "text", out hf, out htext) && hf.TryGetValue("hash", out hh)
+                                ? Convert.ToString(hh, System.Globalization.CultureInfo.InvariantCulture) : null;
+                            Services.LocalLayerHandlers.AcceptHeader(hash, htext, MonacoSpikeLog.Write);
+                        }
                         return;
                     case "log":
-                    case "localRt":   // the name first proposed for the same message; kept as an alias
                         // 1c685f2e item 0: a line the page wrote ([local-rt] ...), cleaned + capped, else verbatim.
                         {
                             string pageLine = PageLogLine.FromMessage(json);

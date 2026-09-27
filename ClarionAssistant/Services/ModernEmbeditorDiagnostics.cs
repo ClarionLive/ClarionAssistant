@@ -218,7 +218,7 @@ namespace ClarionAssistant.Services
             var markers = new List<Dictionary<string, object>>();
             if (string.IsNullOrEmpty(buffer) || ranges == null || ranges.Count == 0) return markers;
 
-            string[] lines = buffer.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+            string[] lines = SplitLines(buffer);
 
             // Routine set for the undefined-routine check (only flag when we actually parsed routines,
             // so a parse failure never produces false positives).
@@ -262,7 +262,7 @@ namespace ClarionAssistant.Services
             foreach (var slot in slots)
             {
                 string text = (slot != null ? slot.Text : null) ?? "";
-                split.Add(text.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n'));
+                split.Add(SplitLines(text));
                 try
                 {
                     var parsed = ClarionAppDataReader.ParseRoutines(text, null);
@@ -287,178 +287,176 @@ namespace ClarionAssistant.Services
             List<Dictionary<string, object>> markers)
         {
             if (e < s) return;
+            var open = new Stack<int[]>(); // [line1, col1] for each unmatched opener within this slot
+            for (int ln = s; ln <= e; ln++)
             {
-                var open = new Stack<int[]>(); // [line1, col1] for each unmatched opener within this slot
-                for (int ln = s; ln <= e; ln++)
+                string code = Sanitize(lines[ln - first]); // blanks comments + string interiors, preserves columns
+                string trimmed = code.Trim();
+                if (trimmed.Length == 0) continue;
+                string u = trimmed.ToUpperInvariant();
+
+                // Set when THIS line opens a structure (pushed, or self-terminated on the same
+                // line). Consumed by the trailing-'.' close below: such a line spends the first
+                // '.' of its run terminating ITSELF, so only the remaining dots close outer ones.
+                bool lineOpensStructure = false;
+
+                // Close: a line beginning with END..., or a lone '.'
+                if (EndRx.IsMatch(u) || u == ".")
                 {
-                    string code = Sanitize(lines[ln - first]); // blanks comments + string interiors, preserves columns
-                    string trimmed = code.Trim();
-                    if (trimmed.Length == 0) continue;
-                    string u = trimmed.ToUpperInvariant();
-
-                    // Set when THIS line opens a structure (pushed, or self-terminated on the same
-                    // line). Consumed by the trailing-'.' close below: such a line spends the first
-                    // '.' of its run terminating ITSELF, so only the remaining dots close outer ones.
-                    bool lineOpensStructure = false;
-
-                    // Close: a line beginning with END..., or a lone '.'
-                    if (EndRx.IsMatch(u) || u == ".")
-                    {
-                        if (open.Count > 0) open.Pop();
-                        else
-                            markers.Add(Marker(ln, FirstNonWs(code) + 1, ln, code.Length + 1,
-                                "END has no matching structure in this embed slot.", SevWarning));
-                        continue;
-                    }
-
-                    // Close (post-condition LOOP): 'LOOP ... UNTIL expr' / 'LOOP ... WHILE expr' ends the
-                    // LOOP with the UNTIL/WHILE line instead of END (GH #222 follow-up — SoftVelocity's own
-                    // libsrc\win\abbrowse.clw uses it). It closes ONLY a LOOP that is the innermost open
-                    // structure; with an IF/CASE/... on top it is not this LOOP's closer and closes nothing.
-                    // The pre-condition form 'LOOP WHILE x' starts with LOOP, so it never reaches here and
-                    // is still pushed as an opener that needs END. With no LOOP on top the line falls
-                    // through and is treated exactly as before (an ordinary statement) — no new warning
-                    // class, so this can only remove false positives (same reasoning as the trailing-'.'
-                    // close below).
-                    if (PostCondClose.IsMatch(u) && open.Count > 0 &&
-                        StructWord(lines[open.Peek()[0] - first]) == "LOOP")
-                    {
-                        open.Pop();
-                        continue;
-                    }
-
-                    // Block IF only — skip one-liners: 'IF .. THEN stmt' or a trailing '.' terminator.
-                    if (IfRx.IsMatch(u))
-                    {
-                        lineOpensStructure = true;
-                        int thenIdx = u.IndexOf(" THEN", StringComparison.Ordinal);
-                        string afterThen = thenIdx >= 0 ? trimmed.Substring(thenIdx + 5).Trim() : "";
-                        bool oneLiner = afterThen.Length > 0 || TrailingDot.IsMatch(trimmed);
-                        if (!oneLiner) open.Push(new[] { ln, FirstNonWs(code) + 1 });
-                        // fall through so a 'DO' on the same line is still checked
-                    }
+                    if (open.Count > 0) open.Pop();
                     else
-                    {
-                        Match structMatch = StructOpen.Match(u);
-                        Match bandMatch = structMatch.Success ? null : BandOpen.Match(u);
-                        Match openMatch = structMatch.Success ? structMatch : bandMatch;
-                        if (openMatch == null || !openMatch.Success)
-                        {
-                            // GROUP was pulled out of StructOpen's alternation (see GroupOpen's
-                            // comment) — this is its own match slot, same shape as ToolbarOpen below.
-                            Match groupMatch = GroupOpen.Match(u);
-                            if (groupMatch.Success) openMatch = groupMatch;
-                        }
-                        if (openMatch == null || !openMatch.Success)
-                        {
-                            // RECORD was pulled out of StructOpen's alternation too (see RecordOpen's
-                            // comment) — same shape as GroupOpen above.
-                            Match recordMatch = RecordOpen.Match(u);
-                            if (recordMatch.Success) openMatch = recordMatch;
-                        }
-                        if (openMatch == null || !openMatch.Success)
-                        {
-                            // TOOLBAR has its own tight pattern (see ToolbarOpen) and never takes a
-                            // label, so the label gate below can't apply to it: ToolbarOpen has no
-                            // capture group, Groups[1] is empty and never in DeclarationStructKeywords.
-                            Match toolbarMatch = ToolbarOpen.Match(u);
-                            if (toolbarMatch.Success) openMatch = toolbarMatch;
-                        }
-                        if (openMatch == null || !openMatch.Success)
-                        {
-                            // Same reasoning as ToolbarOpen, for MENU/MENUBAR/SHEET/TAB/OPTION: matched
-                            // keyword never takes a label, so the label gate below can't apply — its
-                            // Groups[1] value isn't checked against DeclarationStructKeywords here either
-                            // (none of these five are in that set).
-                            Match nestedMatch = NestedBandOpen.Match(u);
-                            if (nestedMatch.Success) openMatch = nestedMatch;
-                        }
-
-                        if (openMatch != null && openMatch.Success)
-                        {
-                            // ✅ FIX: if the matched keyword is a declaration-structure keyword AND it's at
-                            // column 0 of this (already-trimmed) line, the optional label group backtracked
-                            // to empty — meaning this word IS the label itself (e.g. "Report" in
-                            // "Report          &STRING"), not a structure type in second position. A Clarion
-                            // label always starts at column 0 (confirmed directly against the compiler:
-                            // indenting a label desyncs the parser and produces unrelated errors on the
-                            // following tokens), so a match at column 0 can only be the label — a real
-                            // structure type always has a label before it. Skip it so it falls through as a
-                            // plain statement instead of pushing a bogus, never-closed opener that would
-                            // swallow a later real END and make an unrelated, genuinely-terminated structure
-                            // misreport as unterminated.
-                            string keyword = openMatch.Groups[1].Value;
-                            bool keywordIsFirstWord = openMatch.Groups[1].Index == 0;
-                            bool usedAsLabel = keywordIsFirstWord && DeclarationStructKeywords.Contains(keyword);
-
-                            if (!usedAsLabel)
-                            {
-                                lineOpensStructure = true;
-                                // Skip a self-terminated inline structure (trailing '.' or an END later on the
-                                // same line, e.g. "EXECUTE n; a; b END") — only multi-line openers are tracked.
-                                bool selfTerminated = TrailingDot.IsMatch(trimmed) || InlineEnd.IsMatch(u);
-                                if (!selfTerminated) open.Push(new[] { ln, FirstNonWs(code) + 1 });
-                            }
-                        }
-                    }
-
-                    // Close (part 2): a trailing '.' is Clarion's END-EQUIVALENT terminator and is legal at
-                    // the END OF AN ORDINARY STATEMENT, not only on a line of its own — "return self.Bind(x).",
-                    // "hr = ok." and "return -1." all close the enclosing IF/LOOP/CASE. The branch above only
-                    // recognised a line STARTING with END or a line that is EXACTLY ".", so every such
-                    // statement-terminator left its opener on the stack; the slot then ran out of closers and
-                    // an enclosing, perfectly legal IF was reported as unterminated (this shape is pervasive —
-                    // 136 occurrences in a single hand-written library source). A line that OPENED a structure
-                    // spends its trailing '.' terminating ITSELF (already handled as the IF one-liner /
-                    // selfTerminated cases above), so it closes nothing further here.
-                    //
-                    // Deliberately closes AT MOST ONE structure per line. Clarion's ".." / "..." close two and
-                    // three respectively, but that shape did not occur anywhere in the surveyed corpus, so
-                    // honouring it would mean shipping untested counting logic to buy a case that may not
-                    // arise; a multi-dot line simply keeps the old under-closing behaviour until a real
-                    // occurrence justifies it.
-                    //
-                    // Guards, matching the discipline of the two existing TrailingDot call sites:
-                    //   * Sanitize() has already blanked '!' comments and string-literal interiors, so a
-                    //     period inside 'All done.' or a trailing comment can never reach here.
-                    //   * A digit before the '.' is NOT a decimal point — Clarion writes "return -1." with the
-                    //     '.' as the terminator (verified against real library source).
-                    //   * '|' line continuation needs no special handling even though this scanner is purely
-                    //     per-line: a continued statement carries its terminating '.' on its LAST physical
-                    //     line, which is the line examined here. (A continued line ends with '|', never '.'.)
-                    //   * When nothing is open this stays SILENT rather than reporting "END has no matching
-                    //     structure" — deliberately no new warning class, so the change can only remove false
-                    //     positives, never add one. The pre-existing lone-'.' branch above keeps its warning.
-                    if (!lineOpensStructure && TrailingDot.IsMatch(trimmed) && open.Count > 0)
-                    {
-                        open.Pop();
-                    }
-
-                    // Undefined routine: DO <name>
-                    if (routines.Count > 0)
-                    {
-                        var m = DoStmt.Match(code);
-                        if (m.Success)
-                        {
-                            string name = m.Groups[1].Value;
-                            if (!routines.Contains(name))
-                            {
-                                int col = m.Groups[1].Index + 1;
-                                markers.Add(Marker(ln, col, ln, col + name.Length,
-                                    "Routine '" + name + "' is not defined in this procedure.", SevWarning));
-                            }
-                        }
-                    }
+                        markers.Add(Marker(ln, FirstNonWs(code) + 1, ln, code.Length + 1,
+                            "END has no matching structure in this embed slot.", SevWarning));
+                    continue;
                 }
 
-                // Unmatched openers left on the stack → unterminated within this slot.
-                while (open.Count > 0)
+                // Close (post-condition LOOP): 'LOOP ... UNTIL expr' / 'LOOP ... WHILE expr' ends the
+                // LOOP with the UNTIL/WHILE line instead of END (GH #222 follow-up — SoftVelocity's own
+                // libsrc\win\abbrowse.clw uses it). It closes ONLY a LOOP that is the innermost open
+                // structure; with an IF/CASE/... on top it is not this LOOP's closer and closes nothing.
+                // The pre-condition form 'LOOP WHILE x' starts with LOOP, so it never reaches here and
+                // is still pushed as an opener that needs END. With no LOOP on top the line falls
+                // through and is treated exactly as before (an ordinary statement) — no new warning
+                // class, so this can only remove false positives (same reasoning as the trailing-'.'
+                // close below).
+                if (PostCondClose.IsMatch(u) && open.Count > 0 &&
+                    StructWord(lines[open.Peek()[0] - first]) == "LOOP")
                 {
-                    var o = open.Pop();
-                    string word = StructWord(lines[o[0] - first]);
-                    markers.Add(Marker(o[0], o[1], o[0], o[1] + Math.Max(1, word.Length),
-                        word + " is not terminated with END or '.' in this embed slot.", SevError));
+                    open.Pop();
+                    continue;
                 }
+
+                // Block IF only — skip one-liners: 'IF .. THEN stmt' or a trailing '.' terminator.
+                if (IfRx.IsMatch(u))
+                {
+                    lineOpensStructure = true;
+                    int thenIdx = u.IndexOf(" THEN", StringComparison.Ordinal);
+                    string afterThen = thenIdx >= 0 ? trimmed.Substring(thenIdx + 5).Trim() : "";
+                    bool oneLiner = afterThen.Length > 0 || TrailingDot.IsMatch(trimmed);
+                    if (!oneLiner) open.Push(new[] { ln, FirstNonWs(code) + 1 });
+                    // fall through so a 'DO' on the same line is still checked
+                }
+                else
+                {
+                    Match structMatch = StructOpen.Match(u);
+                    Match bandMatch = structMatch.Success ? null : BandOpen.Match(u);
+                    Match openMatch = structMatch.Success ? structMatch : bandMatch;
+                    if (openMatch == null || !openMatch.Success)
+                    {
+                        // GROUP was pulled out of StructOpen's alternation (see GroupOpen's
+                        // comment) — this is its own match slot, same shape as ToolbarOpen below.
+                        Match groupMatch = GroupOpen.Match(u);
+                        if (groupMatch.Success) openMatch = groupMatch;
+                    }
+                    if (openMatch == null || !openMatch.Success)
+                    {
+                        // RECORD was pulled out of StructOpen's alternation too (see RecordOpen's
+                        // comment) — same shape as GroupOpen above.
+                        Match recordMatch = RecordOpen.Match(u);
+                        if (recordMatch.Success) openMatch = recordMatch;
+                    }
+                    if (openMatch == null || !openMatch.Success)
+                    {
+                        // TOOLBAR has its own tight pattern (see ToolbarOpen) and never takes a
+                        // label, so the label gate below can't apply to it: ToolbarOpen has no
+                        // capture group, Groups[1] is empty and never in DeclarationStructKeywords.
+                        Match toolbarMatch = ToolbarOpen.Match(u);
+                        if (toolbarMatch.Success) openMatch = toolbarMatch;
+                    }
+                    if (openMatch == null || !openMatch.Success)
+                    {
+                        // Same reasoning as ToolbarOpen, for MENU/MENUBAR/SHEET/TAB/OPTION: matched
+                        // keyword never takes a label, so the label gate below can't apply — its
+                        // Groups[1] value isn't checked against DeclarationStructKeywords here either
+                        // (none of these five are in that set).
+                        Match nestedMatch = NestedBandOpen.Match(u);
+                        if (nestedMatch.Success) openMatch = nestedMatch;
+                    }
+
+                    if (openMatch != null && openMatch.Success)
+                    {
+                        // ✅ FIX: if the matched keyword is a declaration-structure keyword AND it's at
+                        // column 0 of this (already-trimmed) line, the optional label group backtracked
+                        // to empty — meaning this word IS the label itself (e.g. "Report" in
+                        // "Report          &STRING"), not a structure type in second position. A Clarion
+                        // label always starts at column 0 (confirmed directly against the compiler:
+                        // indenting a label desyncs the parser and produces unrelated errors on the
+                        // following tokens), so a match at column 0 can only be the label — a real
+                        // structure type always has a label before it. Skip it so it falls through as a
+                        // plain statement instead of pushing a bogus, never-closed opener that would
+                        // swallow a later real END and make an unrelated, genuinely-terminated structure
+                        // misreport as unterminated.
+                        string keyword = openMatch.Groups[1].Value;
+                        bool keywordIsFirstWord = openMatch.Groups[1].Index == 0;
+                        bool usedAsLabel = keywordIsFirstWord && DeclarationStructKeywords.Contains(keyword);
+
+                        if (!usedAsLabel)
+                        {
+                            lineOpensStructure = true;
+                            // Skip a self-terminated inline structure (trailing '.' or an END later on the
+                            // same line, e.g. "EXECUTE n; a; b END") — only multi-line openers are tracked.
+                            bool selfTerminated = TrailingDot.IsMatch(trimmed) || InlineEnd.IsMatch(u);
+                            if (!selfTerminated) open.Push(new[] { ln, FirstNonWs(code) + 1 });
+                        }
+                    }
+                }
+
+                // Close (part 2): a trailing '.' is Clarion's END-EQUIVALENT terminator and is legal at
+                // the END OF AN ORDINARY STATEMENT, not only on a line of its own — "return self.Bind(x).",
+                // "hr = ok." and "return -1." all close the enclosing IF/LOOP/CASE. The branch above only
+                // recognised a line STARTING with END or a line that is EXACTLY ".", so every such
+                // statement-terminator left its opener on the stack; the slot then ran out of closers and
+                // an enclosing, perfectly legal IF was reported as unterminated (this shape is pervasive —
+                // 136 occurrences in a single hand-written library source). A line that OPENED a structure
+                // spends its trailing '.' terminating ITSELF (already handled as the IF one-liner /
+                // selfTerminated cases above), so it closes nothing further here.
+                //
+                // Deliberately closes AT MOST ONE structure per line. Clarion's ".." / "..." close two and
+                // three respectively, but that shape did not occur anywhere in the surveyed corpus, so
+                // honouring it would mean shipping untested counting logic to buy a case that may not
+                // arise; a multi-dot line simply keeps the old under-closing behaviour until a real
+                // occurrence justifies it.
+                //
+                // Guards, matching the discipline of the two existing TrailingDot call sites:
+                //   * Sanitize() has already blanked '!' comments and string-literal interiors, so a
+                //     period inside 'All done.' or a trailing comment can never reach here.
+                //   * A digit before the '.' is NOT a decimal point — Clarion writes "return -1." with the
+                //     '.' as the terminator (verified against real library source).
+                //   * '|' line continuation needs no special handling even though this scanner is purely
+                //     per-line: a continued statement carries its terminating '.' on its LAST physical
+                //     line, which is the line examined here. (A continued line ends with '|', never '.'.)
+                //   * When nothing is open this stays SILENT rather than reporting "END has no matching
+                //     structure" — deliberately no new warning class, so the change can only remove false
+                //     positives, never add one. The pre-existing lone-'.' branch above keeps its warning.
+                if (!lineOpensStructure && TrailingDot.IsMatch(trimmed) && open.Count > 0)
+                {
+                    open.Pop();
+                }
+
+                // Undefined routine: DO <name>
+                if (routines.Count > 0)
+                {
+                    var m = DoStmt.Match(code);
+                    if (m.Success)
+                    {
+                        string name = m.Groups[1].Value;
+                        if (!routines.Contains(name))
+                        {
+                            int col = m.Groups[1].Index + 1;
+                            markers.Add(Marker(ln, col, ln, col + name.Length,
+                                "Routine '" + name + "' is not defined in this procedure.", SevWarning));
+                        }
+                    }
+                }
+            }
+
+            // Unmatched openers left on the stack → unterminated within this slot.
+            while (open.Count > 0)
+            {
+                var o = open.Pop();
+                string word = StructWord(lines[o[0] - first]);
+                markers.Add(Marker(o[0], o[1], o[0], o[1] + Math.Max(1, word.Length),
+                    word + " is not terminated with END or '.' in this embed slot.", SevError));
             }
         }
 
@@ -562,6 +560,11 @@ namespace ClarionAssistant.Services
         {
             var m = StructWordRx.Match(Sanitize(rawLine ?? "").Trim());
             return m.Success ? m.Value.ToUpperInvariant() : "Structure";
+        }
+
+        private static string[] SplitLines(string text)
+        {
+            return text.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
         }
 
         private static int FirstNonWs(string s)

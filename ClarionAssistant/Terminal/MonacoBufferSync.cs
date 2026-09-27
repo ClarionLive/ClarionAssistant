@@ -173,8 +173,9 @@ namespace ClarionAssistant.Terminal
                     if (TryGetLong(head, "v", out hv)) headV = hv;
                     int after;
                     string s = UnescapeJsonString(json, start, out after);
-                    if (s != null && IsObjectEnd(json, after) && TryGetLong(head, "v", out v))
+                    if (s != null && IsObjectEnd(json, after) && headV >= 0)
                     {
+                        v = headV;
                         text = s;
                         return true;
                     }
@@ -191,18 +192,38 @@ namespace ClarionAssistant.Terminal
                 text = (string)o;
                 return true;
             }
-            catch (OutOfMemoryException)
-            {
-                v = -1; text = null;
-                LogParseFailure(log, textKey, headV, json.Length, "OutOfMemoryException (32-bit address space)");
-                return false;
-            }
             catch (Exception ex)
             {
                 v = -1; text = null;
-                LogParseFailure(log, textKey, headV, json.Length, ex.GetType().Name + ": " + ex.Message);
+                LogParseFailure(log, textKey, headV, json.Length, ex is OutOfMemoryException
+                    ? "OutOfMemoryException (32-bit address space)" : ex.GetType().Name + ": " + ex.Message);
                 return false;
             }
+        }
+
+        /// <summary>
+        /// A page message whose text field comes LAST (e.g. headerSync {action, hash, text}): the small fields,
+        /// and the text unescaped once, without deserialising the whole message. Falls back to the general
+        /// parser for any other shape. False when there is no string text field. Never throws.
+        /// </summary>
+        public static bool TryParseTextMessage(string json, string textKey, out Dictionary<string, object> fields, out string text)
+        {
+            fields = null; text = null;
+            try
+            {
+                int start, after;
+                fields = ParseHeader(json, textKey, out start);
+                if (fields != null)
+                {
+                    text = UnescapeJsonString(json, start, out after);
+                    if (text != null && IsObjectEnd(json, after)) return true;
+                }
+                fields = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(json) as Dictionary<string, object>;
+                object o;
+                text = fields != null && fields.TryGetValue(textKey, out o) ? o as string : null;
+                return text != null;
+            }
+            catch { fields = null; text = null; return false; }
         }
 
         private static void LogParseFailure(Action<string> log, string textKey, long headV, int msgChars, string reason)

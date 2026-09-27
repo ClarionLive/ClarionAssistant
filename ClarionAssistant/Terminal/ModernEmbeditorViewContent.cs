@@ -1597,15 +1597,11 @@ namespace ClarionAssistant.Terminal
         /// FILE MODE tab never ran them (ticket 564aa142), and its page is told so (slotChecks:false in setSource).</summary>
         private LocalLayerOptions LocalOptions()
         {
-            var ctx = _lspContext;
             return new LocalLayerOptions
             {
                 ProcedureName = _procedureName,
                 SlotChecks = !_fileMode,
                 DefaultRanges = _editableRanges,
-                LineOffsetFor = ctx != null ? (Func<string, int>)ctx.LineOffsetFor : null,
-                ProjectDbPath = MonacoEditorControl.ProjectCodeGraphDb,
-                LibraryDbPath = ClarionGraphService.ResolveDbPath,
                 FileName = _fileMode ? _filePath : _lspFileName,
                 Surface = _fileMode ? "CA Editor(tab)" : "CA Embeditor",
                 Log = MonacoSpikeLog.Write
@@ -4230,10 +4226,10 @@ namespace ClarionAssistant.Terminal
                     "\"language\":" + JsonString(_language) + "," +
                     "\"isDark\":" + (_isDark ? "true" : "false") + "," +
                     "\"fileMode\":" + (_fileMode ? "true" : "false") + "," +
-                    // 1c685f2e item 7: this FILE MODE tab never runs the slot checks (ticket 564aa142), so the page
-                    // skips slotDiagnostics. The CA Editor overlay also sends fileMode:true but omits this flag:
-                    // it does run them, over the whole file.
-                    (_fileMode ? "\"slotChecks\":false," : "") +
+                    // 1c685f2e item 7: the same flag that decides LocalOptions().SlotChecks. This FILE MODE tab never
+                    // runs the slot checks (ticket 564aa142), so the page skips slotDiagnostics. (The CA Editor overlay
+                    // omits the flag; the page treats a missing one as on, and the overlay does run them.)
+                    "\"slotChecks\":" + (!_fileMode ? "true" : "false") + "," +
                     "\"filePath\":" + JsonString(_filePath ?? "") + "," +
                     "\"saveEnabled\":" + (_saveEnabled ? "true" : "false") + "," +
                     "\"findUiMode\":\"" + Services.CaFindSettings.FindUiModeForPage + "\"," +   // Pad vs in-editor Overlay (#66 phase 2)

@@ -94,8 +94,8 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// The node process exited. Deliberate when <see cref="Stop"/> / KillForShutdown took it (they
-        /// clear <c>_running</c> or the process field first); anything else is a crash, logged with the
+        /// The node process exited. Deliberate when <see cref="Stop"/> / KillForShutdown took it (they set
+        /// <c>_stopRequested</c>) or a newer Start replaced the process; anything else is a crash, logged with the
         /// exit code and the stderr tail, and the client stops claiming to run.
         /// </summary>
         private void OnServerProcessExited(Process proc)
