@@ -246,6 +246,13 @@ Schema Sources and Source Control are settings of the **solution**, but they liv
 - **RED is a link.** Click it to open the `.red` file in an IDE editor tab. When no redirection file could be found it stays a warning and is not clickable.
 - **The &#9678; "Show/hide LSP Diagnostics bar" toggle is gone**, and so is the bar. Squiggles in the CA Editor and CA Embeditor show the same diagnostics where you are looking.
 
+<!-- release-docs: covered=close -->
+### Clarion closes faster
+
+Closing the IDE could take about **20 seconds**, even when no CA Embeditor had been opened. Two causes came in during this release cycle, and both are fixed. The **Schema Sources / Source Control** panel, a browser component, was created in every session and had to be torn down at close; it is now created only the first time you open one of those tabs. And the language server was stopped **on the UI thread** when the solution closed, holding the IDE for about 0.4 seconds; it now stops in the background.
+
+Closing is noticeably faster. Measured with an external timer: about **8 seconds** from the solution closing to Clarion exiting, of which Clarion Assistant's own share is about half a second; the rest is Clarion's own teardown. To diagnose a slow close, `%APPDATA%\ClarionAssistant\shutdown.log` now records a `[close +N ms]` line for each step.
+
 <!-- release-docs: covered=version -->
 ### Clarion Assistant follows Build > Set Clarion Version
 
