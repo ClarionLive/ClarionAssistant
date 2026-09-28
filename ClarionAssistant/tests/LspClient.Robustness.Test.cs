@@ -147,6 +147,39 @@ static class LspClientRobustnessTest
                 Thread.Sleep(1500);
             }
 
+            Console.WriteLine("\nK2b: a server that sends diagnosticsStatus and NO publish version (the real v1.0.5)");
+            {
+                var c = StartIn("healthy", serverJs);   // a fresh client: status mode starts off
+                string file = Path.Combine(work, "mod2.clw");
+                Func<string> msgs = () =>
+                {
+                    var r = c.WaitForDiagnostics(file, 700, true);
+                    return (r.Pending ? "pending" : "complete") + ":" + string.Join(",", r.Entries.Select(e => e.Message));
+                };
+
+                c.EnsureBufferSynced(file, "  CODE ! v1 NOVERSION STATUS");
+                Check("K2b a publish confirmed by its complete status is served", WaitFor(() => msgs() == "complete:for v1", 2000), msgs());
+
+                // The exact race: v2 is sent; a publish (no version) for v1 lands AFTER it, then status{version:1}.
+                c.EnsureBufferSynced(file, "  CODE ! v2 NOVERSION STATUS LATE");
+                Check("K2b the late unversioned publish for vN after vN+1 was sent -> PENDING, not served", msgs() == "pending:", msgs());
+                Check("K2b ...and GetCachedDiagnostics gives null", c.GetCachedDiagnostics(file) == null);
+
+                c.EnsureBufferSynced(file, "  CODE ! v3 NOVERSION STATUS DELAY200");
+                Check("K2b a publish followed by status{version:N+1} (the current one) is served", msgs() == "complete:for v3", msgs());
+
+                c.EnsureBufferSynced(file, "  CODE ! v4 NOVERSION");            // a publish with no status yet (async pass running)
+                Check("K2b an unconfirmed publish (no status yet) is pending", msgs() == "pending:", msgs());
+
+                c.EnsureBufferSynced(file, "  CODE ! v5 NOVERSION STATUS STATEdeferred");
+                Check("K2b a `deferred` status confirms the partial publish it closes", msgs() == "complete:for v5", msgs());
+
+                c.EnsureBufferSynced(file, "  CODE ! v6 NOVERSION STATUS STATEsuperseded");
+                Check("K2b a `superseded` status does NOT confirm (a newer publish may sit between) -> pending", msgs() == "pending:", msgs());
+                c.Stop();
+                Thread.Sleep(1500);
+            }
+
             Console.WriteLine("\ncontrol: a healthy server, then a deliberate Stop()");
             {
                 var c = StartIn("healthy", serverJs);
@@ -214,6 +247,13 @@ static class LspClientRobustnessTest
             var dm = System.Text.RegularExpressions.Regex.Match(msg, "DELAY(\\d+)");
             int delay = dm.Success ? int.Parse(dm.Groups[1].Value) : 0;
             bool noVersion = msg.Contains("NOVERSION"), staleFirst = msg.Contains("STALEFIRST");
+            // K2b: STATUS = follow the publish with clarion/diagnosticsStatus (state from STATEx, default complete),
+            // as server.js does. LATE = the publish (and its status) describe the PREVIOUS version: the exact race of
+            // a late publish for vN landing after vN+1 was sent.
+            bool status = msg.Contains("STATUS"), late = msg.Contains("LATE");
+            var sm = System.Text.RegularExpressions.Regex.Match(msg, "STATE([a-z]+)");
+            string state = sm.Success ? sm.Groups[1].Value : "complete";
+            int pubVersion = late ? version - 1 : version;
             Func<int, string, string> body = (v, text) =>
                 "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"" + uri + "\"" +
                 (noVersion ? "" : ",\"version\":" + v) +
@@ -222,7 +262,10 @@ static class LspClientRobustnessTest
             {
                 if (staleFirst) { Thread.Sleep(100); Send(Encoding.UTF8.GetBytes(body(version - 1, "stale"))); }
                 if (delay > 0) Thread.Sleep(delay);
-                Send(Encoding.UTF8.GetBytes(body(version, "for v" + version)));
+                Send(Encoding.UTF8.GetBytes(body(pubVersion, "for v" + pubVersion)));
+                if (status)
+                    Send(Encoding.UTF8.GetBytes("{\"jsonrpc\":\"2.0\",\"method\":\"clarion/diagnosticsStatus\",\"params\":{\"uri\":\"" + uri +
+                        "\",\"version\":" + pubVersion + ",\"state\":\"" + state + "\"}}"));
             }) { IsBackground = true }.Start();
         }
 
