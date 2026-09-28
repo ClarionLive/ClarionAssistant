@@ -120,10 +120,9 @@ namespace ClarionAssistant
             _header.HeaderReady += OnHeaderReady;
             // Fixed height (82938fc7): no splitter, and a saved "Header.Height" from older builds is ignored.
 
-            // === Schema Sources / Source Control panel (82938fc7): shown under the header by its tabs ===
-            _schemaView = new SchemaSourcesView { Visible = false, PaneHeight = _header.PanePixelHeight };
-            _schemaView.ActionReceived += OnSchemaSourceAction;
-            _schemaView.Ready += OnSchemaSourcesReady;
+            // === Schema Sources / Source Control panel (82938fc7): shown under the header by its tabs.
+            // Created lazily by EnsureSchemaView the first time one of those tabs opens (4d63b995): a hidden
+            // WebView2 in every session slowed the IDE's close. ===
             // One zoom for the header and the panel under it (its height is the header's pane): whichever the
             // user zooms, the other follows; the header saves it and re-derives both heights.
             _header.LayoutChanged += (s, e) =>
@@ -132,7 +131,6 @@ namespace ClarionAssistant
                 _schemaView.ZoomFactor = _header.ZoomFactor;
                 _schemaView.PaneHeight = _header.PanePixelHeight;
             };
-            _schemaView.ZoomChanged += (s, e) => _header.ZoomFactor = _schemaView.ZoomFactor;
 
             // === Tab strip (custom-painted, hidden when only 1 tab — MultiTerminal pattern) ===
             _tabStrip = new Panel
@@ -173,7 +171,6 @@ namespace ClarionAssistant
             // Add in correct order (Fill first, then Top items from bottom to top)
             Controls.Add(_contentArea);
             Controls.Add(_tabStrip);
-            Controls.Add(_schemaView);
             Controls.Add(_header);
 
             // Create Home tab — HomeWebView added to _contentArea, visible immediately
@@ -1541,10 +1538,35 @@ namespace ClarionAssistant
         /// <summary>Header tab switch: show the panel for Schema Sources / Source Control, hide it for Solution.</summary>
         private void OnHeaderTab(string tab)
         {
-            if (!SchemaViewAlive) return;
             bool show = HeaderWebView.IsPanelTab(tab);
+            if (show) EnsureSchemaView();
+            if (!SchemaViewAlive) return;
             if (show) _schemaView.SetMode(tab);
             _schemaView.Visible = show;
+        }
+
+        /// <summary>
+        /// Create the panel the first time its tab opens (4d63b995). It takes the header's current zoom and pane
+        /// height: the header raises LayoutChanged before the headerTab action, so the panel missed that one.
+        /// Its data arrives from OnSchemaSourcesReady once the page loads.
+        /// </summary>
+        private void EnsureSchemaView()
+        {
+            if (SchemaViewAlive || IsDisposed || Disposing || _header == null) return;
+            _schemaView = new SchemaSourcesView
+            {
+                Visible = false,
+                PaneHeight = _header.PanePixelHeight,
+                ZoomFactor = _header.ZoomFactor
+            };
+            _schemaView.ActionReceived += OnSchemaSourceAction;
+            _schemaView.Ready += OnSchemaSourcesReady;
+            _schemaView.ZoomChanged += (s, e) => { if (SchemaViewAlive) _header.ZoomFactor = _schemaView.ZoomFactor; };
+            _schemaView.SetTheme(_isDarkTheme);
+            // Docking runs from the highest child index down: the panel's index sits just under the header's,
+            // so the order is header, panel, tab strip, content.
+            Controls.Add(_schemaView);
+            Controls.SetChildIndex(_schemaView, Controls.GetChildIndex(_header));
         }
 
         /// <summary>The panel's page loaded (NavigationCompleted): the one initial push.</summary>
@@ -4717,6 +4739,7 @@ namespace ClarionAssistant
                 //
                 // Still does NOT cover a kill — deploy, crash, Task Manager — which is the common
                 // way CA terminals die and needs a liveness check on the broker side; see the ticket.
+                Services.ShutdownLog.Close("pad dispose: begin (MT disconnect)");
                 try
                 {
                     if (_tabManager != null)
@@ -4727,18 +4750,28 @@ namespace ClarionAssistant
                 }
                 catch (Exception ex) { Services.ShutdownLog.Log("MT disconnect on pad dispose failed: " + ex.Message); }
 
+                // Close timing (4d63b995): one line before each step, so the gaps show where the time goes.
+                Services.ShutdownLog.Close("pad dispose: tabs");
                 if (_tabManager != null) _tabManager.Dispose();
+                Services.ShutdownLog.Close("pad dispose: mcp server");
                 if (_mcpServer != null) _mcpServer.Dispose();
+                Services.ShutdownLog.Close("pad dispose: knowledge service");
                 if (_knowledgeService != null) _knowledgeService.Dispose();
+                Services.ShutdownLog.Close("pad dispose: timers and diagnostics form");
                 if (_lspUiTimer != null) { _lspUiTimer.Stop(); _lspUiTimer.Dispose(); }
                 if (_diagForm != null) { try { _diagForm.Close(); _diagForm.Dispose(); } catch { } }
                 if (_instanceStateTimer != null) { _instanceStateTimer.Stop(); _instanceStateTimer.Dispose(); }
                 UnhookIdeVersionChanges();
                 if (_statusLineTimer != null) { _statusLineTimer.Stop(); _statusLineTimer.Dispose(); }
+                Services.ShutdownLog.Close("pad dispose: instance coordination");
                 if (_instanceCoord != null) _instanceCoord.Dispose();
+                Services.ShutdownLog.Close("pad dispose: home view");
                 if (_homeView != null) _homeView.Dispose();
+                Services.ShutdownLog.Close("pad dispose: schema view" + (_schemaView != null ? "" : " (never created)"));
                 if (_schemaView != null) { _schemaView.Dispose(); _schemaView = null; }
+                Services.ShutdownLog.Close("pad dispose: header");
                 if (_header != null) _header.Dispose();
+                Services.ShutdownLog.Close("pad dispose: done");
             }
             base.Dispose(disposing);
         }

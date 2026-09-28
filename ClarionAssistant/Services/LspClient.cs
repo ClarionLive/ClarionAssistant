@@ -478,6 +478,25 @@ namespace ClarionAssistant.Services
             if (ReferenceEquals(Active, inst)) Active = null;
         }
 
+        /// <summary>
+        /// Stop() off the caller's thread (4d63b995): the IDE raises SolutionClosed on its UI thread, and Stop
+        /// sleeps ~400 ms. The client reads as stopped at once (IsRunning false, and an exit it causes is not a
+        /// crash), so the next solution's EnsureRunning starts a fresh client without waiting; that start never
+        /// reuses this object, and Stop clears Active only while Active is still this client.
+        /// </summary>
+        public void StopInBackground(Action<string> log)
+        {
+            _stopRequested = true;
+            _running = false;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var sw = Stopwatch.StartNew();
+                try { Stop(); }
+                catch (Exception ex) { LspTrace.Write("[LSP] background Stop failed: " + ex.Message); }
+                try { if (log != null) log("LSP background stop done in " + sw.ElapsedMilliseconds + " ms"); } catch { }
+            });
+        }
+
         public void Stop()
         {
             _stopRequested = true;

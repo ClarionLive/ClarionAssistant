@@ -64,6 +64,43 @@ namespace ClarionAssistant.Services
                 ShutdownLog.LogSessionStart("backstop armed");
             }
             catch (Exception ex) { Debug.WriteLine("[Shutdown] appExit subscribe: " + ex.Message); ShutdownLog.Log("appExit subscribe failed: " + ex.Message); }
+            HookCloseTiming();
+        }
+
+        // Close timing (4d63b995): the user's close click starts the "[close +N ms]" clock in shutdown.log;
+        // ProcessExit is the last moment the addin sees. Between them, OnSolutionClosed and the chat pad's
+        // Dispose steps log where a slow close spends its time.
+        private static bool _closeTimingHooked;
+
+        private static void HookCloseTiming()
+        {
+            if (_closeTimingHooked) return;
+            _closeTimingHooked = true;
+            try { AppDomain.CurrentDomain.ProcessExit += (s, e) => ShutdownLog.Close("ProcessExit"); } catch { }
+            if (!TryHookMainFormClosing())
+            {
+                // The workbench form may not exist yet at autostart: retry once the message loop idles.
+                // Bounded: a host with no workbench Form stops asking after a while.
+                EventHandler retry = null;
+                int tries = 0;
+                retry = (s, e) =>
+                {
+                    if (TryHookMainFormClosing() || ++tries >= 500) Application.Idle -= retry;
+                };
+                try { Application.Idle += retry; } catch { }
+            }
+        }
+
+        private static bool TryHookMainFormClosing()
+        {
+            try
+            {
+                var form = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
+                if (form == null) return false;
+                form.FormClosing += (s, e) => ShutdownLog.Close("workbench FormClosing (" + e.CloseReason + ")", startsClose: true);
+                return true;
+            }
+            catch { return false; }
         }
 
         /// <summary>Record the MCP server so Terminate() can stop it (independent of the chat pad's Dispose
@@ -82,6 +119,7 @@ namespace ClarionAssistant.Services
             if (_done) { ShutdownLog.Log("Terminate() re-entry ignored (already done)"); return; }
             _done = true;
             ShutdownLog.Log("Terminate() begin");
+            ShutdownLog.Close("Terminate begin");
 
             // 0. HARD-EXIT WATCHDOG — the never-hang guarantee. WebView2 disposal must run on THIS (the UI)
             //    thread, so a synchronous same-thread dispose that truly deadlocks cannot be unblocked from
@@ -152,6 +190,7 @@ namespace ClarionAssistant.Services
             _teardownDone.Set();
             Debug.WriteLine("[Shutdown] teardown complete");
             ShutdownLog.Log("teardown complete — _teardownDone set, watchdog stands down (native IDE teardown now proceeds)");
+            ShutdownLog.Close("Terminate end");
         }
 
         /// <summary>Run one WebView2 disposer on the current (UI) thread, guarded and Debug-marked so verify
