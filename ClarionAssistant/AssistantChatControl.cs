@@ -186,7 +186,7 @@ namespace ClarionAssistant
             DetectFromIde();
             StartMcpServer();
             _header.SetTheme(_isDarkTheme);
-            _header.SetRedFile(_redFileDisplay, _redFileCss, false); // re-push in case LoadRedFile ran before header was ready
+            _header.SetRedFile(_redFileDisplay, _redFileCss, RedFileOpenable); // re-push in case LoadRedFile ran before header was ready
             // Solutions now auto-detected from IDE, no longer shown on home page
         }
 
@@ -343,6 +343,7 @@ namespace ClarionAssistant
                 case "themeChanged": OnThemeChanged(e.Data); break;
                 case "headerTab": OnHeaderTab(e.Data); break;
                 case "copySolutionPath": OnCopySolutionPath(); break;
+                case "openRedFile": OnOpenRedFile(); break;
                 case "toggleDiagBar": OnToggleDiagnosticsBar(); break;
                 case "cheatSheet": OnCheatSheet(); break;
                 case "docs": OnDocs(); break;
@@ -838,8 +839,46 @@ namespace ClarionAssistant
         {
             _redFileDisplay = display;
             _redFileCss = css;
-            try { if (_header != null) _header.SetRedFile(display, css, false); }
+            try { if (_header != null) _header.SetRedFile(display, css, RedFileOpenable); }
             catch { }
+        }
+
+        /// <summary>RED is a link only while it resolved to a file; never in the warning state.</summary>
+        private bool RedFileOpenable
+        {
+            get
+            {
+                return _redFileCss != "warning" && _redFileService != null
+                    && !string.IsNullOrEmpty(_redFileService.RedFilePath);
+            }
+        }
+
+        /// <summary>
+        /// Header RED link (82938fc7): open the .red in an IDE editor tab. The page sends only the intent; the
+        /// path is this control's own _redFileService.RedFilePath, never one from the page. Deferred out of the
+        /// WebView2 message callback with the IDE main window activated first, as ModernDataPad.DeferExplorer
+        /// does: a WebView2 holding focus while the IDE opens a document is the pattern that deadlocks.
+        /// </summary>
+        private void OnOpenRedFile()
+        {
+            if (!RedFileOpenable) return;
+            string path = _redFileService.RedFilePath;
+            if (!File.Exists(path)) return;
+            try
+            {
+                BeginInvoke((Action)(() =>
+                {
+                    try
+                    {
+                        var mainForm = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
+                        if (mainForm != null) { mainForm.Activate(); Application.DoEvents(); }
+                    }
+                    catch { }
+                    try { _editorService.OpenFileOnly(path); }
+                    catch (Exception ex) { Debug.WriteLine("[AssistantChatControl] open .red: " + ex.Message); }
+                }));
+            }
+            catch (InvalidOperationException) { }
         }
 
         private void LoadSolutionHistory()
