@@ -37,6 +37,9 @@ namespace ClarionAssistant.Terminal
 
         private string _activeTab = "solution";
 
+        /// <summary>True for the tabs the host's SchemaSourcesView renders ("schema", "repo").</summary>
+        public static bool IsPanelTab(string tab) { return tab == "schema" || tab == "repo"; }
+
         /// <summary>The active header tab: "solution", "schema" or "repo".</summary>
         public string ActiveTab { get { return _activeTab; } }
 
@@ -127,7 +130,7 @@ namespace ClarionAssistant.Terminal
                 string data = ExtractJsonValue(json, "data");
                 if (action == "headerTab")
                 {
-                    if (data != "solution" && data != "schema" && data != "repo") return;
+                    if (data != "solution" && !IsPanelTab(data)) return;
                     _activeTab = data;
                     ApplyHeight();
                 }

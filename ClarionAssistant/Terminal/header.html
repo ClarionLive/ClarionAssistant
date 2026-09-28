@@ -394,10 +394,8 @@
   // Header tabs (82938fc7). The host resizes the pane and shows its SchemaSourcesView for
   // 'schema' / 'repo'; this page only marks the active tab and hides the Solution pane.
   var HEADER_TABS = ['solution', 'schema', 'repo'];
-  var headerTab = 'solution';
   function selectHeaderTab(tab) {
     if (HEADER_TABS.indexOf(tab) < 0) return;
-    headerTab = tab;
     var btns = document.querySelectorAll('#hdrTabs .hdr-tab');
     for (var i = 0; i < btns.length; i++)
       btns[i].classList.toggle('active', btns[i].getAttribute('data-tab') === tab);
@@ -473,7 +471,7 @@
     if (msg.type === 'setRedFile') {
       var rf = document.getElementById('redFile');
       var t = msg.text || '(not loaded)';
-      redOpenable = msg.openable === true && !msg.css;
+      redOpenable = msg.openable === true && msg.css !== 'warning';   // the host's rule, kept as a backstop
       rf.textContent = t;
       rf.title = redOpenable ? t + '\nClick to open it in the editor' : t;
       rf.className = 'red-value codegraph-status ' + (msg.css || '') + (redOpenable ? ' red-link' : '');

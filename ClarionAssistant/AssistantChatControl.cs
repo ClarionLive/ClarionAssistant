@@ -126,7 +126,7 @@ namespace ClarionAssistant
             _schemaView.Ready += OnSchemaSourcesReady;
             _header.LayoutChanged += (s, e) =>
             {
-                if (_schemaView != null && !_schemaView.IsDisposed) _schemaView.PaneHeight = _header.PanePixelHeight;
+                if (SchemaViewAlive) _schemaView.PaneHeight = _header.PanePixelHeight;
             };
 
             // === Tab strip (custom-painted, hidden when only 1 tab — MultiTerminal pattern) ===
@@ -220,23 +220,29 @@ namespace ClarionAssistant
             if (!_homeView.IsReady) return;
             try
             {
-                var accounts = Services.SchemaGraphService.GetAllGitHubAccounts();
-                var sb = new System.Text.StringBuilder("[");
-                for (int i = 0; i < accounts.Count; i++)
-                {
-                    if (i > 0) sb.Append(",");
-                    var a = accounts[i];
-                    string prov = a.ContainsKey("provider") ? (string)a["provider"] : "github";
-                    sb.AppendFormat("{{\"id\":\"{0}\",\"displayName\":\"{1}\",\"username\":\"{2}\",\"provider\":\"{3}\"}}",
-                        EscJson((string)a["id"]), EscJson((string)a["displayName"]), EscJson((string)a["username"]), EscJson(prov));
-                }
-                sb.Append("]");
-                _homeView.SetGitHubAccounts(sb.ToString());
+                _homeView.SetGitHubAccounts(BuildGitHubAccountsJson());
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine("[AssistantChatControl] SendGitHubAccountsToHome error: " + ex.Message);
             }
+        }
+
+        /// <summary>The source-control accounts as the Home page and the Source Control pane read them (no tokens).</summary>
+        private static string BuildGitHubAccountsJson()
+        {
+            var accounts = Services.SchemaGraphService.GetAllGitHubAccounts();
+            var sb = new System.Text.StringBuilder("[");
+            for (int i = 0; i < accounts.Count; i++)
+            {
+                if (i > 0) sb.Append(",");
+                var a = accounts[i];
+                string prov = a.ContainsKey("provider") ? (string)a["provider"] : "github";
+                sb.AppendFormat("{{\"id\":\"{0}\",\"displayName\":\"{1}\",\"username\":\"{2}\",\"provider\":\"{3}\"}}",
+                    EscJson((string)a["id"]), EscJson((string)a["displayName"]), EscJson((string)a["username"]), EscJson(prov));
+            }
+            sb.Append("]");
+            return sb.ToString();
         }
 
         private void OnHomeAction(object sender, HomeActionEventArgs e)
@@ -874,8 +880,7 @@ namespace ClarionAssistant
                         if (mainForm != null) { mainForm.Activate(); Application.DoEvents(); }
                     }
                     catch { }
-                    try { _editorService.OpenFileOnly(path); }
-                    catch (Exception ex) { Debug.WriteLine("[AssistantChatControl] open .red: " + ex.Message); }
+                    _editorService.OpenFileOnly(path);   // swallows its own failures
                 }));
             }
             catch (InvalidOperationException) { }
@@ -906,8 +911,9 @@ namespace ClarionAssistant
 
             _header.SetSolutions(paths.ToArray(), selectedIdx);
             UpdateIndexStatus();
-            // Schema Sources / Source Control follow the solution (82938fc7). DetectFromIde, OnBrowseSolution,
-            // OpenSolutionInNewTab and RemoveSolutionFromHistory all change _currentSlnPath and then call this.
+            // Schema Sources / Source Control follow the solution (82938fc7). DetectFromIde, OnBrowseSolution and
+            // OpenSolutionInNewTab change _currentSlnPath and then call this, and so does its own restore above.
+            // Its other callers only reload the dropdown; RefreshSolutionSettings skips an unchanged solution.
             RefreshSolutionSettings();
 
             // NO auto-index here (ticket 7f1c67b2). THIS METHOD HAS SEVEN CALLERS and its job
@@ -1543,39 +1549,49 @@ namespace ClarionAssistant
         /// <summary>Header tab switch: show the panel for Schema Sources / Source Control, hide it for Solution.</summary>
         private void OnHeaderTab(string tab)
         {
-            if (_schemaView == null || _schemaView.IsDisposed) return;
-            bool show = tab == "schema" || tab == "repo";
+            if (!SchemaViewAlive) return;
+            bool show = HeaderWebView.IsPanelTab(tab);
             if (show) _schemaView.SetMode(tab);
             _schemaView.Visible = show;
         }
 
-        /// <summary>
-        /// The panel's page loaded (NavigationCompleted). The ONLY initial push — the page's own
-        /// "schemaSourcesReady" post is ignored, so this no longer runs twice.
-        /// </summary>
+        /// <summary>The panel's page loaded (NavigationCompleted): the one initial push.</summary>
         private void OnSchemaSourcesReady(object sender, EventArgs e)
         {
-            if (_schemaView == null || _schemaView.IsDisposed) return;
+            if (!SchemaViewAlive) return;
             _schemaView.SetTheme(_isDarkTheme);
-            if (_header.ActiveTab == "schema" || _header.ActiveTab == "repo")
-                _schemaView.SetMode(_header.ActiveTab);
-            RefreshSolutionSettings();
+            if (HeaderWebView.IsPanelTab(_header.ActiveTab)) _schemaView.SetMode(_header.ActiveTab);
+            try { _schemaView.SendMessage("{\"type\":\"setRepoAccounts\",\"accounts\":" + BuildGitHubAccountsJson() + "}"); }
+            catch { }
+            RefreshSolutionSettings(force: true);
         }
+
+        // The solution the badge and the panel last showed; RefreshSolutionSettings skips a repeat.
+        private string _settingsSlnPath;
 
         /// <summary>
         /// Re-send everything keyed on the solution: the linked sources (and the header's badge count) and the
-        /// Source Control data. Call it wherever _currentSlnPath changes. Safe before the panel is ready: the
-        /// badge still updates, and the panel gets its data from OnSchemaSourcesReady.
+        /// Source Control repo link. Call it wherever _currentSlnPath changes; it does nothing when the solution
+        /// is the one last shown, unless forced. Safe before the panel is ready: the badge still updates, and
+        /// the panel gets its data from OnSchemaSourcesReady.
         /// </summary>
-        private void RefreshSolutionSettings()
+        private void RefreshSolutionSettings(bool force = false)
         {
+            if (_header == null || !_header.IsReady) return;   // OnHeaderReady reloads the solution, which lands here
+            if (!force && string.Equals(_currentSlnPath, _settingsSlnPath, StringComparison.OrdinalIgnoreCase)) return;
+            _settingsSlnPath = _currentSlnPath;
             SendSchemaSources();
             SendRepoData();
         }
 
+        private bool SchemaViewAlive
+        {
+            get { return _schemaView != null && !_schemaView.IsDisposed; }
+        }
+
         private bool SchemaViewReady
         {
-            get { return _schemaView != null && !_schemaView.IsDisposed && _schemaView.IsReady; }
+            get { return SchemaViewAlive && _schemaView.IsReady; }
         }
 
         /// <summary>Marshal a panel update from a worker thread; dropped if the pane or the panel is gone.</summary>
@@ -1604,30 +1620,10 @@ namespace ClarionAssistant
                 try
                 {
                     var sources = Services.SchemaGraphService.GetSourcesForSolution(slnPath);
-                    var sb = new System.Text.StringBuilder("[");
-                    for (int i = 0; i < sources.Count; i++)
-                    {
-                        if (i > 0) sb.Append(",");
-                        var src = sources[i];
-                        string id = (string)src["id"];
-                        string name = (string)src["name"];
-                        string type = (string)src["type"];
-                        string connInfo = (string)src["connectionInfo"];
-
-                        // Get index status
-                        var status = Services.SchemaGraphService.GetSourceStatus(id, type, connInfo);
-                        bool indexed = (bool)status["indexed"];
-                        int tableCount = status.ContainsKey("tableCount") ? (int)status["tableCount"] : 0;
-                        string lastIndexed = status.ContainsKey("lastIndexed") ? (string)status["lastIndexed"] : null;
-
-                        sb.AppendFormat("{{\"id\":\"{0}\",\"name\":\"{1}\",\"type\":\"{2}\",\"indexed\":{3},\"tableCount\":{4},\"lastIndexed\":{5}}}",
-                            EscJson(id), EscJson(name), EscJson(type),
-                            indexed ? "true" : "false", tableCount,
-                            lastIndexed != null ? "\"" + EscJson(lastIndexed) + "\"" : "null");
-                    }
-                    sb.Append("]");
-                    json = sb.ToString();
                     count = sources.Count;
+                    // Until the panel first loads (the first time its tab opens) the badge needs only the count,
+                    // not each source's status database.
+                    if (SchemaViewReady) json = BuildSourcesJson(sources);
                 }
                 catch (Exception ex)
                 {
@@ -1640,31 +1636,39 @@ namespace ClarionAssistant
             if (SchemaViewReady) _schemaView.SetSources(json);
         }
 
+        private static string BuildSourcesJson(List<Dictionary<string, object>> sources)
+        {
+            var sb = new System.Text.StringBuilder("[");
+            for (int i = 0; i < sources.Count; i++)
+            {
+                if (i > 0) sb.Append(",");
+                var src = sources[i];
+                string id = (string)src["id"];
+                string name = (string)src["name"];
+                string type = (string)src["type"];
+                string connInfo = (string)src["connectionInfo"];
+
+                // Get index status
+                var status = Services.SchemaGraphService.GetSourceStatus(id, type, connInfo);
+                bool indexed = (bool)status["indexed"];
+                int tableCount = status.ContainsKey("tableCount") ? (int)status["tableCount"] : 0;
+                string lastIndexed = status.ContainsKey("lastIndexed") ? (string)status["lastIndexed"] : null;
+
+                sb.AppendFormat("{{\"id\":\"{0}\",\"name\":\"{1}\",\"type\":\"{2}\",\"indexed\":{3},\"tableCount\":{4},\"lastIndexed\":{5}}}",
+                    EscJson(id), EscJson(name), EscJson(type),
+                    indexed ? "true" : "false", tableCount,
+                    lastIndexed != null ? "\"" + EscJson(lastIndexed) + "\"" : "null");
+            }
+            sb.Append("]");
+            return sb.ToString();
+        }
+
         private void SendRepoData()
         {
             if (!SchemaViewReady) return;
 
-            // Send accounts list
-            try
-            {
-                var accounts = Services.SchemaGraphService.GetAllGitHubAccounts();
-                var sb = new System.Text.StringBuilder("[");
-                for (int i = 0; i < accounts.Count; i++)
-                {
-                    if (i > 0) sb.Append(",");
-                    var a = accounts[i];
-                    string prov = a.ContainsKey("provider") ? (string)a["provider"] : "github";
-                    sb.AppendFormat("{{\"id\":\"{0}\",\"displayName\":\"{1}\",\"username\":\"{2}\",\"provider\":\"{3}\"}}",
-                        EscJson((string)a["id"]), EscJson((string)a["displayName"]),
-                        EscJson((string)a["username"]), EscJson(prov));
-                }
-                sb.Append("]");
-                _schemaView.SendMessage("{\"type\":\"setRepoAccounts\",\"accounts\":" + sb + "}");
-            }
-            catch { }
-
-            // Send the solution's repo link, or clear the fields: a solution with no link must not keep
-            // showing the previous solution's.
+            // The account list is not per solution; OnSchemaSourcesReady sends it. Send the solution's repo link,
+            // or clear the fields: a solution with no link must not keep showing the previous solution's.
             string accountId = "", repoName = "";
             string slnPath = _currentSlnPath ?? "";
             if (!string.IsNullOrEmpty(slnPath))
@@ -2631,7 +2635,7 @@ namespace ClarionAssistant
             ApplyThemeColors();
             _header.SetTheme(_isDarkTheme);
             _homeView.SetTheme(_isDarkTheme);
-            if (_schemaView != null && !_schemaView.IsDisposed) _schemaView.SetTheme(_isDarkTheme);
+            if (SchemaViewAlive) _schemaView.SetTheme(_isDarkTheme);
             foreach (var tab in _tabManager.Tabs)
             {
                 if (tab.Renderer != null) tab.Renderer.SetTheme(_isDarkTheme);

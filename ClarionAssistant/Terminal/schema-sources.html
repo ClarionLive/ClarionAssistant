@@ -349,7 +349,6 @@ body.light .status-text.error { color: #d20f39; }
 var sources = [];
 var globalSources = [];
 var linkedIds = [];
-var currentMode = 'schema';
 
 function send(action, data) {
     if (window.chrome && window.chrome.webview)
@@ -359,7 +358,6 @@ function send(action, data) {
 // ── Mode: which pane the header's active tab shows ──
 function setMode(mode) {
     if (mode !== 'schema' && mode !== 'repo') return;
-    currentMode = mode;
     document.getElementById('tabSchemaContent').style.display = mode === 'schema' ? '' : 'none';
     document.getElementById('tabRepoContent').style.display = mode === 'repo' ? '' : 'none';
 }
@@ -713,9 +711,6 @@ function esc(s) {
     d.appendChild(document.createTextNode(s));
     return d.innerHTML;
 }
-
-// Signal ready
-window.addEventListener('load', function() { send('schemaSourcesReady'); });
 
 // Close modal on Escape
 document.addEventListener('keydown', function(e) {

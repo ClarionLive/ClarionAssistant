@@ -175,7 +175,7 @@ namespace ClarionAssistant.Terminal
         /// <summary>Show the Schema Sources ("schema") or the Source Control ("repo") pane.</summary>
         public void SetMode(string mode)
         {
-            if (mode != "schema" && mode != "repo") return;
+            if (!HeaderWebView.IsPanelTab(mode)) return;
             SendMessage("{\"type\":\"setMode\",\"mode\":\"" + mode + "\"}");
         }
 
