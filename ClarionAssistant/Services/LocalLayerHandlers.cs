@@ -32,7 +32,12 @@ namespace ClarionAssistant.Services
     public sealed class LocalSlice
     {
         public string HeaderHash;
+        /// <summary>The header's CURRENT text, sent while the page's header is edited since the last span map
+        /// (pipeline F2). When present it is used instead of the cached header, and never answers needHeader.</summary>
+        public string HeaderText;
         public List<string> Routines = new List<string>();
+        /// <summary>How many pieces the request carried before filtering (for the F6 bound).</summary>
+        public int RawPieceCount;
         /// <summary>A hash-only piece (Text null) is resolved inside LocalScopeIndex's list overloads.</summary>
         public readonly List<SlicePiece> Pieces = new List<SlicePiece>();
 
@@ -49,10 +54,12 @@ namespace ClarionAssistant.Services
             if (args == null || !args.TryGetValue("slice", out o)) return null;
             var d = o as IDictionary<string, object>;
             if (d == null) return null;
-            var s = new LocalSlice { HeaderHash = Str(d, "headerHash"), Routines = LocalLayerHandlers.ReadStrings(d, "routines") };
+            var s = new LocalSlice { HeaderHash = Str(d, "headerHash"), HeaderText = Str(d, "headerText"), Routines = LocalLayerHandlers.ReadStrings(d, "routines") };
             object ps;
-            if (d.TryGetValue("pieces", out ps))
-                foreach (var item in LocalLayerHandlers.AsArray(ps))
+            var raw = d.TryGetValue("pieces", out ps) ? LocalLayerHandlers.AsArray(ps) : new object[0];
+            s.RawPieceCount = raw.Length;
+            if (raw.Length <= WebMessageGuard.MaxPieces)   // over the bound: rejected by the caller, not parsed
+                foreach (var item in raw)
                 {
                     var pd = item as IDictionary<string, object>;
                     if (pd == null) continue;
@@ -75,7 +82,8 @@ namespace ClarionAssistant.Services
         /// </summary>
         public bool TryResolve(out string headerText, out bool needHeader, out List<string> needPieces)
         {
-            needHeader = !LocalScopeIndex.TryGetHeaderText(HeaderHash, out headerText);
+            headerText = HeaderText;
+            needHeader = headerText == null && !LocalScopeIndex.TryGetHeaderText(HeaderHash, out headerText);
             needPieces = LocalScopeIndex.MissingPieces(Pieces) ?? new List<string>();
             return !needHeader && needPieces.Count == 0;
         }
@@ -134,7 +142,8 @@ namespace ClarionAssistant.Services
             return null;
         }
 
-        private static string LineOf(string text, int index)
+        /// <summary>Line <paramref name="index"/> (0-based) of <paramref name="text"/> without its EOL, or null.</summary>
+        internal static string LineOf(string text, int index)
         {
             if (text == null || index < 0) return null;
             int at = 0;
@@ -190,7 +199,16 @@ namespace ClarionAssistant.Services
             string error = null;
             try
             {
-                switch (action)
+                LocalSlice slice = action == SlotDiagnostics ? null : LocalSlice.From(args);
+                string reject = CheckBounds(action, buffer, args, slice);
+                if (reject != null)
+                {
+                    WebMessageGuard.LogReject(options.Log, action,
+                        slice != null ? slice.Chars : buffer != null ? buffer.Length : 0, reject);
+                    reply = EmptyReply(action);
+                    error = "rejected: " + reject;
+                }
+                else switch (action)
                 {
                     case SlotDiagnostics:
                         {
@@ -203,7 +221,6 @@ namespace ClarionAssistant.Services
                     case LocalHover:
                         {
                             LocalSource source;
-                            var slice = LocalSlice.From(args);
                             if (slice != null)
                             {
                                 sliceChars = slice.Chars;
@@ -255,6 +272,53 @@ namespace ClarionAssistant.Services
             reply["ms"] = ms;
             WriteTiming(options, action, ms, items, sliceChars, error);
             return reply;
+        }
+
+        /// <summary>
+        /// 1c685f2e F6: the parsed payload's bounds. Null when acceptable, else the reason. Pieces at most 8,
+        /// routines at most 10,000 of at most 256 chars, slots/ranges at most 2,000, and for completion/hover a
+        /// caret (1-based line and column) that lies inside the buffer or inside a piece of the slice (a hash-only
+        /// piece is read from the cache; one the host lacks leaves the check to the needPieces reply).
+        /// </summary>
+        internal static string CheckBounds(string action, string buffer, IDictionary<string, object> args, LocalSlice slice)
+        {
+            List<string> routines;
+            if (action == SlotDiagnostics)
+            {
+                object o;
+                if (args != null && args.TryGetValue("slots", out o) && AsArray(o).Length > WebMessageGuard.MaxSlots) return "more than " + WebMessageGuard.MaxSlots + " slots";
+                if (args != null && args.TryGetValue("ranges", out o) && AsArray(o).Length > WebMessageGuard.MaxSlots) return "more than " + WebMessageGuard.MaxSlots + " ranges";
+                routines = ReadStrings(args, "routines");
+            }
+            else
+            {
+                if (slice != null && slice.RawPieceCount > WebMessageGuard.MaxPieces) return "more than " + WebMessageGuard.MaxPieces + " pieces";
+                routines = slice != null ? slice.Routines : null;
+            }
+            if (routines != null)
+            {
+                if (routines.Count > WebMessageGuard.MaxRoutines) return "more than " + WebMessageGuard.MaxRoutines + " routines";
+                foreach (var r in routines) if (r.Length > WebMessageGuard.MaxRoutineNameChars) return "a routine name over " + WebMessageGuard.MaxRoutineNameChars + " chars";
+            }
+            if (action != LocalCompletion && action != LocalHover) return null;
+
+            int line = ReadInt(args, "line"), column = ReadInt(args, "column");
+            if (line < 1 || column < 1) return "line/column below 1";
+            string lineText = null;
+            if (slice != null)
+            {
+                bool unresolved = false;   // a hash-only piece the host lacks: the needPieces reply comes first
+                foreach (var p in slice.Pieces)
+                {
+                    string text = p.Text;
+                    if (text == null && !LocalScopeIndex.TryGetPieceText(p.Hash, out text)) { unresolved = true; continue; }
+                    if (line >= p.Start && (lineText = LocalSource.LineOf(text, line - p.Start)) != null) break;
+                }
+                if (lineText == null && !unresolved) return "caret line " + line + " outside the slice's text";
+            }
+            else if (buffer != null && (lineText = LocalSource.LineOf(buffer, line - 1)) == null) return "line " + line + " past the buffer end";
+            if (lineText != null && column - 1 > lineText.Length) return "column " + column + " past the line end";
+            return null;
         }
 
         // ====================================================================== completion and hover
@@ -426,7 +490,13 @@ namespace ClarionAssistant.Services
         /// <summary>Test hook: forget the cached DB paths.</summary>
         internal static void ResetPathCache() { lock (PathGate) { _projAt = _libAt = -PathTtlMs; _projPath = _libPath = null; } }
 
-        private static Dictionary<string, object> EmptyReply(string action)
+        public static bool IsLocalAction(string action)
+        {
+            return action == LocalCompletion || action == LocalHover || action == SlotDiagnostics;
+        }
+
+        /// <summary>The action's reply with nothing in it (what a refused or unanswerable request gets).</summary>
+        public static Dictionary<string, object> EmptyReply(string action)
         {
             switch (action)
             {

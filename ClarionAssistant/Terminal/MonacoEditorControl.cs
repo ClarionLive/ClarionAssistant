@@ -247,7 +247,8 @@ namespace ClarionAssistant.Terminal
         // changed; requests carry `v`. ONE cached copy per surface, replaced on every sync. See
         // MonacoBufferSync.cs for why (a 3.2 MB buffer per request crashed a 32-bit Clarion.exe).
         private readonly MonacoBufferCache _bufferCache = new MonacoBufferCache();
-        private readonly LaneSet _lanes = new LaneSet();   // RunLatest lanes (MonacoLanes), see MonacoBufferSync.cs
+        private readonly LaneSet _lanes = new LaneSet();   // RunLatest lanes, see MonacoBufferSync.cs
+        private readonly Debouncer _fileStateSpanMap = new Debouncer(400);   // F7: one span map per pause in file mode
 
         /// <summary>The page's buffer as of its last sync (null before the first one).</summary>
         public string CurrentBuffer { get { return _bufferCache.CurrentBuffer; } }
@@ -375,6 +376,20 @@ namespace ClarionAssistant.Terminal
         }
 
         /// <summary>
+        /// 1c685f2e F6: refuse an oversized page message. Logged (rate-limited per action) and, when it names a
+        /// request id, answered at once with the action's empty shape so the page does not wait out its timeout.
+        /// The reqId is read by a bounded scan (the prefix only), never by parsing the message.
+        /// </summary>
+        private void RejectMessage(string action, string json, string reason)
+        {
+            Services.WebMessageGuard.LogReject(MonacoSpikeLog.Write, action, json.Length, reason);
+            int reqId;
+            string head = json.Length > 4096 ? json.Substring(0, 4096) : json;
+            if (int.TryParse(ExtractJsonValue(head, "reqId"), out reqId) && reqId > 0)
+                PostResponse(reqId, Services.LocalLayerHandlers.IsLocalAction(action) ? Services.LocalLayerHandlers.EmptyReply(action) : null);
+        }
+
+        /// <summary>
         /// 1c685f2e R11: after each full sync, push the page the buffer's span map ({type:'spanMap', v, headerHash,
         /// procs:[...]}) so it can cut slices for the local layer. Built off the UI thread in the newest-wins
         /// "span-map" lane; a job whose version was already replaced by a newer sync does nothing.
@@ -480,7 +495,13 @@ namespace ClarionAssistant.Terminal
                 var readSw = System.Diagnostics.Stopwatch.StartNew();
                 json = e.TryGetWebMessageAsString();
                 long getMs = readSw.ElapsedMilliseconds;
-                action = ExtractJsonValue(json, "action");
+                if (json == null) return;
+                // 1c685f2e F6: the page is input. Bound the message BEFORE any JSON parsing: nothing over the
+                // largest per-action limit is even scanned for its action, then each action has its own cap.
+                string tooBig = json.Length > Services.WebMessageGuard.MaxSyncChars ? "over " + Services.WebMessageGuard.MaxSyncChars + " chars" : null;
+                action = tooBig == null ? ExtractJsonValue(json, "action") : null;
+                if (tooBig == null) tooBig = Services.WebMessageGuard.CheckSize(action, json.Length);
+                if (tooBig != null) { RejectMessage(action, json, tooBig); return; }
 
                 // Host-agnostic messages are handled BEFORE the host check (1c685f2e item 8). A bufferSync
                 // dropped by an early return here was silent: every later request for that version showed only
@@ -491,7 +512,11 @@ namespace ClarionAssistant.Terminal
                         // 16d140e9: the page's buffer, sent once per content version. Cached here (one copy per
                         // surface, replacing the last) so no host has to implement anything to receive it.
                         // AcceptSync logs `[buffer-sync] recv ...` or `... parse failed ...` (items 0 and 8).
-                        if (_bufferCache.AcceptSync(json, "buffer", getMs, MonacoSpikeLog.Write)) PushSpanMap();
+                        if (_bufferCache.AcceptSync(json, "buffer", getMs, MonacoSpikeLog.Write))
+                        {
+                            _fileStateSpanMap.Cancel();   // this map covers any fileState still waiting
+                            PushSpanMap();
+                        }
                         return;
                     case "headerSync":
                         // 1c685f2e R11: the module header text for a hash the host lacked (it answered a slice
@@ -615,7 +640,8 @@ namespace ClarionAssistant.Terminal
                         // File mode's synchronous close-safety mirror. Stamped with `v`, it is ALSO the buffer
                         // sync for that version (16d140e9): cache its text first, so the host's OnFileState
                         // (via FileStateText) and every LSP request for this version share this one copy.
-                        if (_bufferCache.AcceptSync(json, "text", getMs, MonacoSpikeLog.Write)) PushSpanMap();
+                        // F7: fileState arrives on EVERY file-mode edit; build the span map once the edits pause.
+                        if (_bufferCache.AcceptSync(json, "text", getMs, MonacoSpikeLog.Write)) _fileStateSpanMap.Trigger(PushSpanMap);
                         h.OnFileState(this, json);
                         break;
                     case "openDesigner":      h.OnOpenDesigner(this, json); break;
@@ -1241,6 +1267,7 @@ namespace ClarionAssistant.Terminal
             if (disposing && !_disposedControl)
             {
                 _disposedControl = true;
+                try { _fileStateSpanMap.Dispose(); } catch { }
                 try { _bufferCache.Clear(); } catch { }
                 try
                 {

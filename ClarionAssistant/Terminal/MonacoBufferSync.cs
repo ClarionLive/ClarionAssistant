@@ -419,6 +419,49 @@ namespace ClarionAssistant.Terminal
     }
 
     /// <summary>
+    /// Runs the most recently triggered action once <see cref="DelayMs"/> have passed with no newer trigger
+    /// (1c685f2e pipeline F7). File mode's fileState arrives on every edit, and each one used to rebuild the span
+    /// map; now a burst of edits builds it once, after the typing pauses. Runs on a timer thread.
+    /// </summary>
+    public sealed class Debouncer : IDisposable
+    {
+        private readonly object _gate = new object();
+        private System.Threading.Timer _timer;
+        private Action _pending;
+
+        public int DelayMs { get; private set; }
+
+        public Debouncer(int delayMs) { DelayMs = delayMs; }
+
+        /// <summary>(Re)start the wait; when it ends, <paramref name="action"/> (the newest trigger) runs.</summary>
+        public void Trigger(Action action)
+        {
+            lock (_gate)
+            {
+                _pending = action;
+                if (_timer == null) _timer = new System.Threading.Timer(Fire, null, DelayMs, System.Threading.Timeout.Infinite);
+                else _timer.Change(DelayMs, System.Threading.Timeout.Infinite);
+            }
+        }
+
+        /// <summary>Drop a pending run (a full bufferSync is building the map right now anyway).</summary>
+        public void Cancel() { lock (_gate) { _pending = null; } }
+
+        private void Fire(object state)
+        {
+            Action a;
+            lock (_gate) { a = _pending; _pending = null; }
+            if (a == null) return;
+            try { a(); } catch { }
+        }
+
+        public void Dispose()
+        {
+            lock (_gate) { _pending = null; if (_timer != null) { _timer.Dispose(); _timer = null; } }
+        }
+    }
+
+    /// <summary>
     /// A log line the PAGE wrote ({action:'log', line}), e.g. the item 0 gate's
     /// <c>[local-rt] action=.. rtMs=.. syncBytes=.. syncMs=.. v=..</c>. Written to monaco-spike.log
     /// verbatim after the usual timestamp, with two guards: CR/LF (and other control characters) become

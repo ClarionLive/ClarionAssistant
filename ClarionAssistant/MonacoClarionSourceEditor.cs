@@ -1074,7 +1074,9 @@ namespace ClarionAssistant
             int reqId, line, col; string buffer;
             if (!ParseLspRequest(editor, rawJson, out reqId, out line, out col, out buffer)) return;
             // 1c685f2e item 8: newest-wins "folding" lane (see ModernEmbeditorViewContent.HandleFoldingRanges).
-            // A displaced request is answered null by the lane, and the page keeps its local folds.
+            // A displaced request is answered null by the lane, and the page keeps its local folds. A drop is
+            // logged the same way the CA Embeditor logs it (pipeline F8).
+            var dropLine = new RequestTimingLine("[lsp-timing]", "foldingRanges", null).Add("surface", "CA Editor(overlay)").Add("reqId", reqId);
             editor.RunLatest("folding", reqId, () =>
             {
                 List<Dictionary<string, object>> ranges = null;
@@ -1109,7 +1111,7 @@ namespace ClarionAssistant
                 catch (Exception ex) { MonacoSpikeLog.Write("overlay foldingRanges error: " + ex.Message); }
                 try { editor.PostResponse(reqId, new Dictionary<string, object> { { "ranges", ranges } }); }
                 catch { }
-            });
+            }, () => MonacoSpikeLog.Write(dropLine.Add("dropped", "superseded-by-newer-request").Format()));
         }
 
         /// <summary>Capture the active Clarion IDE theme's toolbar gradient (SerenityBlue/OfficeXP/Win10Blue/…)

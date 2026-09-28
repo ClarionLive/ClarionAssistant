@@ -167,7 +167,7 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             # 16d140e9: the Monaco buffer crosses to the host once per content version - the per-surface
             # cache/accessor MonacoEditorControl uses, the sync-message parser, and the newest-wins lane.
             @{ Name = "MonacoBufferSync.Test"
-               Sources = @("tests\MonacoBufferSync.Test.cs", "Terminal\MonacoBufferSync.cs")
+               Sources = @("tests\MonacoBufferSync.Test.cs", "Terminal\MonacoBufferSync.cs", "Services\WebMessageGuard.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
                Args = @($RepoDir) }
             # 1c685f2e item 8: the bundled LspClient stops claiming to run when node crashes (exit line with
@@ -180,7 +180,7 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             # REAL local indexes (LocalScopeIndex, LiveDictionaryIndex, SymbolIndex on synthetic x86 SQLite DBs).
             # The SlotBalance stubs stand in for SharedLspBridge and count calls (the local layer makes none).
             @{ Name = "LocalLayer.Handlers.Test"
-               Sources = @("tests\LocalLayer.Handlers.Test.cs", "tests\LocalLayer.Handlers.Stubs.cs", "Services\LocalLayerHandlers.cs",
+               Sources = @("tests\LocalLayer.Handlers.Test.cs", "tests\LocalLayer.Handlers.Stubs.cs", "Services\LocalLayerHandlers.cs", "Services\WebMessageGuard.cs",
                            "tests\ModernEmbeditorDiagnostics.SlotBalance.Stubs.cs",
                            "Services\ModernEmbeditorDiagnostics.cs",
                            "Services\ClarionAppDataReader.cs", "Services\ClarionAppDataReader.Model.cs",

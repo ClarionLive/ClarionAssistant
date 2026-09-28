@@ -140,14 +140,23 @@ static class MonacoBufferSyncTest
                 Check("R11: headerSync is handled before the _host==null return", headerAt > 0 && headerAt < hostCheck,
                     "headerSync@" + headerAt + " hostCheck@" + hostCheck);
                 Check("R11: a full bufferSync / fileState that was cached pushes the span map",
-                    dispatch.Contains("if (_bufferCache.AcceptSync(json, \"buffer\", getMs, MonacoSpikeLog.Write)) PushSpanMap();") &&
-                    dispatch.Contains("if (_bufferCache.AcceptSync(json, \"text\", getMs, MonacoSpikeLog.Write)) PushSpanMap();"));
+                    System.Text.RegularExpressions.Regex.IsMatch(dispatch, @"if \(_bufferCache\.AcceptSync\(json, ""buffer"", getMs, MonacoSpikeLog\.Write\)\)\s*\{[^}]*PushSpanMap\(\);") &&
+                    dispatch.Contains("if (_bufferCache.AcceptSync(json, \"text\", getMs, MonacoSpikeLog.Write)) _fileStateSpanMap.Trigger(PushSpanMap);"));
                 string push = MethodBody(ctl, "private void PushSpanMap(");
                 Check("R11: the span map is built off the UI thread in the newest-wins \"span-map\" lane",
                     push.Contains("_lanes.Submit(\"span-map\"") && push.Contains("_bufferCache.Resolve(v)"), push.Length + " chars");
                 string runLocal = MethodBody(ctl, "public void RunLocalAction(");
                 Check("R11: a request carrying a slice skips the `v` lookup; one without still goes through it",
                     runLocal.Contains("!Services.LocalLayerHandlers.CarriesSlice(data) && !TryResolveRequestBuffer(data, out buffer)"));
+                int capAt = dispatch.IndexOf("WebMessageGuard.MaxSyncChars", StringComparison.Ordinal);
+                int actionAt = dispatch.IndexOf("ExtractJsonValue(json, \"action\")", StringComparison.Ordinal);
+                int sizeAt = dispatch.IndexOf("WebMessageGuard.CheckSize(action, json.Length)", StringComparison.Ordinal);
+                int firstParse = dispatch.IndexOf("_bufferCache.AcceptSync(", StringComparison.Ordinal);
+                Check("F6: the overall cap precedes even the action scan, and the per-action cap precedes any parsing",
+                    capAt > 0 && capAt < actionAt && sizeAt > actionAt && sizeAt < firstParse && dispatch.Contains("RejectMessage(action, json, tooBig); return;"),
+                    "cap@" + capAt + " action@" + actionAt + " size@" + sizeAt + " parse@" + firstParse);
+                Check("F7: fileState debounces the span map; bufferSync builds it at once",
+                    dispatch.Contains("_fileStateSpanMap.Trigger(PushSpanMap)") && !dispatch.Contains("\"text\", getMs, MonacoSpikeLog.Write)) PushSpanMap();"));
                 Check("8.2 message errors go to the log, not Debug.WriteLine",
                     dispatch.Contains("MonacoSpikeLog.Write(\"[MonacoEditorControl] message error") && !dispatch.Contains("Debug.WriteLine(\"[MonacoEditorControl] Message error"));
 
@@ -158,6 +167,8 @@ static class MonacoBufferSyncTest
                     foldView.Contains("RunLatestOrNow(\"folding\"") && !foldView.Contains("Task.Run("), foldView.Length + " chars");
                 Check("8.8 CA Editor overlay folding uses the \"folding\" lane, no Task.Run",
                     foldOverlay.Contains("editor.RunLatest(\"folding\"") && !foldOverlay.Contains("Task.Run("), foldOverlay.Length + " chars");
+                Check("F8: the overlay's folding lane logs a dropped request",
+                    System.Text.RegularExpressions.Regex.IsMatch(foldOverlay, @"\}, \(\) => MonacoSpikeLog\.Write\(dropLine\.Add\(""dropped"""));
             }
             else Check("repo dir passed for the source scan", false, "arg: " + (repo ?? "(none)"));
         }
@@ -199,6 +210,58 @@ static class MonacoBufferSyncTest
             Check("8.2 no v -> a parse failed line with v=?",
                 !MonacoBufferCache.TryParseSync("{\"action\":\"bufferSync\",\"buffer\":\"x\"}", "buffer", out v, out got, log.Add)
                 && log.Count == 1 && log[0].StartsWith("[buffer-sync] parse failed v=? "), string.Join(" | ", log));
+        }
+
+        Console.WriteLine("\nF6: every page message is size-checked before any parsing");
+        {
+            var limits = new[] {
+                new KeyValuePair<string, int>("bufferSync", 16000000), new KeyValuePair<string, int>("fileState", 16000000),
+                new KeyValuePair<string, int>("log", 4096), new KeyValuePair<string, int>("headerSync", 1000000),
+                new KeyValuePair<string, int>("localCompletion", 2000000), new KeyValuePair<string, int>("localHover", 2000000),
+                new KeyValuePair<string, int>("slotDiagnostics", 2000000), new KeyValuePair<string, int>("completion", 1000000),
+                new KeyValuePair<string, int>("somethingElse", 1000000) };
+            foreach (var l in limits)
+                Check("F6 " + l.Key + ": " + l.Value + " chars accepted, " + (l.Value + 1) + " rejected",
+                    ClarionAssistant.Services.WebMessageGuard.CheckSize(l.Key, l.Value) == null &&
+                    ClarionAssistant.Services.WebMessageGuard.CheckSize(l.Key, l.Value + 1) != null);
+
+            long now = 0;
+            ClarionAssistant.Services.WebMessageGuard.NowMs = () => now;
+            ClarionAssistant.Services.WebMessageGuard.ResetRateLimit();
+            var lines = new List<string>();
+            ClarionAssistant.Services.WebMessageGuard.LogReject(lines.Add, "hover", 5, "r");
+            now = 4999;
+            ClarionAssistant.Services.WebMessageGuard.LogReject(lines.Add, "hover", 5, "r");
+            ClarionAssistant.Services.WebMessageGuard.LogReject(lines.Add, "log", 5, "r");
+            now = 5000;
+            ClarionAssistant.Services.WebMessageGuard.LogReject(lines.Add, "hover", 5, "r");
+            Check("F6 rejects log `[webmsg] rejected action= chars= reason=`, one per action per 5 s",
+                lines.Count == 3 && lines[0] == "[webmsg] rejected action=hover chars=5 reason=r" && lines[1].Contains("action=log"),
+                string.Join(" | ", lines));
+            ClarionAssistant.Services.WebMessageGuard.NowMs = null;
+            ClarionAssistant.Services.WebMessageGuard.ResetRateLimit();
+        }
+
+        Console.WriteLine("\nF7: a burst of fileStates builds the span map ONCE (Debouncer)");
+        {
+            int runs = 0;
+            var d = new Debouncer(400);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            long lastTrigger = 0, ranAt = -1;
+            for (int i = 0; i < 10; i++)
+            {
+                d.Trigger(() => { Interlocked.Increment(ref runs); ranAt = sw.ElapsedMilliseconds; });
+                lastTrigger = sw.ElapsedMilliseconds;
+                Thread.Sleep(50);
+            }
+            Thread.Sleep(700);
+            Check("F7 10 triggers 50 ms apart -> ONE build", runs == 1, "runs=" + runs);
+            Check("...about 400 ms after the last trigger", ranAt - lastTrigger >= 350, "ran " + (ranAt - lastTrigger) + " ms after the last");
+            d.Trigger(() => Interlocked.Increment(ref runs));
+            d.Cancel();
+            Thread.Sleep(600);
+            Check("F7 Cancel drops the pending build (a bufferSync builds it now)", runs == 1, "runs=" + runs);
+            d.Dispose();
         }
 
         Console.WriteLine("\nR11: headerSync {action, hash, text} parsed text-last (no whole-message deserialise)");

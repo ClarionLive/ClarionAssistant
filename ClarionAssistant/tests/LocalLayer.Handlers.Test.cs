@@ -302,6 +302,17 @@ static class LocalLayerHandlersTest
             LocalLayerHandlers.AcceptHeader("page-hash", headerText, null));
         var afterSync = LocalLayerHandlers.Handle("localCompletion", null, Req(SliceReq(11, 5, "page-hash", HashPiece(6, data), window)), o);
         Check("...and the retry with that hash answers", !afterSync.ContainsKey("needHeader") && Labels(afterSync).Contains("loTotal", StringComparer.OrdinalIgnoreCase), Json(afterSync));
+
+        Console.WriteLine("\nF2: a slice carrying headerText (the page's header is edited) uses it, not the cache");
+        {
+            // The edited header declares a module variable the cached one does not have (same line count).
+            string edited = Lines(1, 5).Replace("Clip       LONG", "hdrNew     LONG");
+            string req = "{\"line\":11,\"column\":5,\"slice\":{\"headerHash\":\"never-seen\",\"headerText\":" + Json(edited) +
+                         ",\"routines\":[],\"pieces\":[" + HashPiece(6, data) + "," + TextPiece(11, "  hd\r\n" + Lines(12, 16)) + "]}}";
+            var r = LocalLayerHandlers.Handle("localCompletion", null, Req(req), o);
+            Check("an unknown headerHash WITH headerText -> no needHeader", !r.ContainsKey("needHeader"), Json(r));
+            Check("...and the answer reflects the edited header (hdrNew offered)", Labels(r).Contains("hdrNew"), string.Join(",", Labels(r)));
+        }
     }
 
     static int Main()
@@ -373,7 +384,7 @@ static class LocalLayerHandlersTest
             Check("the `v` form logs sliceChars=none(v)", log.Count == 1 && log[0].Contains(" sliceChars=none(v)"), log.FirstOrDefault());
             log.Clear();
             LocalLayerHandlers.Handle("localCompletion", null,
-                Req("{\"line\":5,\"column\":7,\"slice\":{\"headerHash\":\"nope\",\"routines\":[],\"pieces\":[{\"start\":1,\"text\":\"abc\"},{\"start\":4,\"hash\":\"h\"},{\"start\":9,\"text\":\"de\"}]}}"), embed);
+                Req("{\"line\":1,\"column\":2,\"slice\":{\"headerHash\":\"nope\",\"routines\":[],\"pieces\":[{\"start\":1,\"text\":\"abc\"},{\"start\":4,\"hash\":\"h\"},{\"start\":9,\"text\":\"de\"}]}}"), embed);
             Check("a localCompletion slice logs sliceChars = the text it carried (a hash-only piece costs 0)",
                 log.Count == 1 && log[0].Contains(" sliceChars=5"), log.FirstOrDefault());
         }
@@ -399,6 +410,41 @@ static class LocalLayerHandlersTest
             Check("localCompletion -> {items:[...], source:'local', ms}", Regex.IsMatch(s, "^\\{\"items\":\\[.*\\],\"source\":\"local\",\"ms\":\\d+\\}$"), s);
             s = Json(LocalLayerHandlers.Handle("localHover", EmbedBuffer, Req("{\"line\":5,\"column\":7}"), embed));
             Check("localHover -> {contents, authoritative:<bool>, ms}", Regex.IsMatch(s, "^\\{\"contents\":(null|\".*\"),\"authoritative\":(true|false),\"ms\":\\d+\\}$"), s);
+        }
+
+        Console.WriteLine("\nF6: the parsed payload is bounded; a reject is the empty shape plus one [webmsg] line");
+        {
+            Func<string, string, Dictionary<string, object>> run = (action, json) =>
+            {
+                WebMessageGuard.ResetRateLimit();
+                log.Clear();
+                return LocalLayerHandlers.Handle(action, EmbedBuffer, Req(json), embed);
+            };
+            Func<Dictionary<string, object>, bool> rejected = r =>
+                log.Any(l => l.StartsWith("[webmsg] rejected action=")) && (r.ContainsKey("items") ? ((List<Dictionary<string, object>>)r["items"]).Count == 0 :
+                                                                           r.ContainsKey("markers") ? ((List<Dictionary<string, object>>)r["markers"]).Count == 0 : r["contents"] == null);
+            Func<string, bool, bool> Because = (why, r) => r && log.Any(l => l.Contains("reason=") && l.Contains(why));
+            Func<int, string> pieces = n => string.Join(",", Enumerable.Range(0, n).Select(i => TextPiece(1 + i, i == 0 ? "  CODE\r\n  lo" : "x")));
+            Func<int, int, string> routines = (n, len) => "[" + string.Join(",", Enumerable.Range(0, n).Select(i => "\"" + ("R" + i).PadRight(len, 'x') + "\"")) + "]";
+
+            var ok8 = run("localCompletion", "{\"line\":2,\"column\":5,\"slice\":{\"headerText\":\"\",\"routines\":[],\"pieces\":[" + pieces(8) + "]}}");
+            Check("8 pieces accepted", !rejected(ok8), string.Join(" | ", log));
+            Check("9 pieces rejected", Because("more than 8 pieces", rejected(run("localCompletion", "{\"line\":2,\"column\":5,\"slice\":{\"headerText\":\"\",\"routines\":[],\"pieces\":[" + pieces(9) + "]}}"))), string.Join(" | ", log));
+            Check("10,000 routines accepted", !rejected(run("slotDiagnostics", "{\"routines\":" + routines(10000, 8) + ",\"slots\":[{\"start\":4,\"text\":\"  x# = 1\"}]}")), string.Join(" | ", log));
+            Check("10,001 routines rejected", Because("more than 10000 routines", rejected(run("slotDiagnostics", "{\"routines\":" + routines(10001, 8) + ",\"slots\":[{\"start\":4,\"text\":\"  x# = 1\"}]}"))), string.Join(" | ", log));
+            Check("a 256-char routine name accepted", !rejected(run("slotDiagnostics", "{\"routines\":" + routines(1, 256) + ",\"slots\":[]}")), string.Join(" | ", log));
+            Check("a 257-char routine name rejected", Because("routine name over 256", rejected(run("slotDiagnostics", "{\"routines\":" + routines(1, 257) + ",\"slots\":[]}"))), string.Join(" | ", log));
+            Func<int, string> slots = n => "[" + string.Join(",", Enumerable.Range(0, n).Select(i => "{\"start\":" + (1 + i) + ",\"text\":\"x\"}")) + "]";
+            Check("2,000 slots accepted", !rejected(run("slotDiagnostics", "{\"routines\":[],\"slots\":" + slots(2000) + "}")), string.Join(" | ", log));
+            Check("2,001 slots rejected", Because("more than 2000 slots", rejected(run("slotDiagnostics", "{\"routines\":[],\"slots\":" + slots(2001) + "}"))), string.Join(" | ", log));
+            Check("line 0 rejected", Because("below 1", rejected(run("localHover", "{\"line\":0,\"column\":1}"))), string.Join(" | ", log));
+            Check("column 0 rejected", Because("below 1", rejected(run("localHover", "{\"line\":5,\"column\":0}"))), string.Join(" | ", log));
+            Check("a line past the buffer end rejected", Because("past the buffer end", rejected(run("localHover", "{\"line\":99999,\"column\":1}"))), string.Join(" | ", log));
+            Check("a column past the line end rejected", Because("past the line end", rejected(run("localHover", "{\"line\":5,\"column\":500}"))), string.Join(" | ", log));
+            Check("the last line + one past its last char accepted", !rejected(run("localHover", "{\"line\":9,\"column\":9}")), string.Join(" | ", log));
+            Check("a caret outside the slice's text rejected",
+                Because("outside the slice", rejected(run("localCompletion", "{\"line\":50,\"column\":1,\"slice\":{\"headerText\":\"\",\"routines\":[],\"pieces\":[" + pieces(2) + "]}}"))), string.Join(" | ", log));
+            WebMessageGuard.ResetRateLimit();
         }
 
         Console.WriteLine("\nrobustness");
