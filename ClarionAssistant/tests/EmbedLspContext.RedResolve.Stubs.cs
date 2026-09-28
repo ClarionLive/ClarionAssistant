@@ -15,6 +15,7 @@ namespace ClarionAssistant.Services
     {
         public static bool IsRunning { get { return false; } }
         public static void EnsureBufferSynced(string filePath, string bufferText) { }
+        public static void ClearDiagnostics(string filePath) { }
     }
 
     public class ClarionVersionConfig

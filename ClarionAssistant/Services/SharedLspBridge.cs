@@ -997,6 +997,17 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>Last diagnostics computed for a file (no re-query).</summary>
+        /// <summary>K2 (1c685f2e): forget the cached diagnostics for <paramref name="filePath"/> (both clients).
+        /// EmbedLspContext.RevertShadow calls it after pushing the on-disk text back, so the next embeditor on this
+        /// module never inherits the disk text's publish.</summary>
+        public static void ClearDiagnostics(string filePath)
+        {
+            if (string.IsNullOrEmpty(filePath)) return;
+            var lsp = LspClient.Active;
+            if (lsp != null) lsp.ClearDiagnostics(filePath);
+            lock (_sharedDiagLock) { _sharedDiagCache.Remove(filePath); }
+        }
+
         public static List<LspClient.DiagnosticEntry> GetCachedDiagnostics(string filePath)
         {
             var c = Shared;

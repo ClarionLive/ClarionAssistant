@@ -124,6 +124,12 @@ static class MonacoBufferSyncTest
                 Check("CA Editor overlay diagnostics run in the newest-wins lane", overlay.Contains("editor.RunLatest(\"diagnostics\""));
                 Check("a (re)loaded page's 'ready' clears the buffer cache",
                     System.Text.RegularExpressions.Regex.IsMatch(ctl, "case \"ready\":\\s*(//[^\\n]*\\s*)*_bufferCache\\.Clear\\(\\);"));
+                Check("K2 RevertShadow clears the URI's cached diagnostics after pushing the disk text",
+                    System.Text.RegularExpressions.Regex.IsMatch(ctx, @"SharedLspBridge\.EnsureBufferSynced\(path, [^;]+;\s*(//[^\n]*\s*)*SharedLspBridge\.ClearDiagnostics\(path\);"));
+                Check("K2 both hosts reply through DiagnosticsReply (null markers -> {markers:null, pending:true})",
+                    view.Contains("PostResponse(reqId, MonacoEditorControl.DiagnosticsReply(markers))") &&
+                    overlay.Contains("editor.PostResponse(reqId, MonacoEditorControl.DiagnosticsReply(markers))") &&
+                    System.Text.RegularExpressions.Regex.IsMatch(ctl, @"markers == null\s*\?\s*new Dictionary<string, object> \{ \{ ""markers"", null \}, \{ ""pending"", true \} \}"));
                 Check("RevertShadow releases the cached wrapped buffer",
                     System.Text.RegularExpressions.Regex.IsMatch(ctx, "public void RevertShadow\\(\\)\\s*\\{\\s*_lastWrap = null;"));
 

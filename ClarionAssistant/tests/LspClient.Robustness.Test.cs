@@ -110,6 +110,43 @@ static class LspClientRobustnessTest
                 Thread.Sleep(1500);
             }
 
+            Console.WriteLine("\nK2: a publish for an older version is never served as the current answer");
+            {
+                var c = StartIn("healthy", serverJs);
+                string file = Path.Combine(work, "mod.clw");
+                Func<string> msgs = () =>
+                {
+                    var r = c.WaitForDiagnostics(file, 700, true);
+                    return (r.Pending ? "pending" : "complete") + ":" + string.Join(",", r.Entries.Select(e => e.Message));
+                };
+
+                c.EnsureBufferSynced(file, "  CODE ! v1 text");                  // v1, published at once
+                Check("K2 setup: the v1 publish is the answer while v1 is current", WaitFor(() => msgs() == "complete:for v1", 2000), msgs());
+                c.EnsureBufferSynced(file, "  CODE ! v2 text NOPUB");            // v2: the server publishes nothing
+                Check("K2 a publish for N, a sync to N+1, a wait timeout -> PENDING with no stale entries", msgs() == "pending:", msgs());
+                Check("K2 ...and GetCachedDiagnostics gives null, not v1's entries", c.GetCachedDiagnostics(file) == null);
+
+                c.EnsureBufferSynced(file, "  CODE ! v3 text DELAY300");         // v3 publishes within the wait
+                Check("K2 a publish for N+1 arriving within the wait is returned", msgs() == "complete:for v3", msgs());
+
+                c.EnsureBufferSynced(file, "  CODE ! v4 text STALEFIRST DELAY300");   // a v3-stamped publish lands first
+                Check("K2 a stale publish landing mid-wait does not end it; the current one is returned",
+                    msgs() == "complete:for v4", msgs());
+
+                c.EnsureBufferSynced(file, "  CODE ! v5 text NOVERSION");        // no `version`: stamped with what CA sent
+                Check("K2 (no version in the publish) it is stamped with the version CA sent: current -> served",
+                    WaitFor(() => msgs() == "complete:for v5", 2000), msgs());
+                c.EnsureBufferSynced(file, "  CODE ! v6 text NOPUB");
+                Check("K2 (no version) ...and after a newer sync it is stale -> pending", msgs() == "pending:", msgs());
+
+                c.EnsureBufferSynced(file, "  CODE ! v7 text");
+                WaitFor(() => c.GetCachedDiagnostics(file) != null, 2000);
+                c.ClearDiagnostics(file);
+                Check("K2 ClearDiagnostics (RevertShadow) empties the URI's cache", c.GetCachedDiagnostics(file) == null);
+                c.Stop();
+                Thread.Sleep(1500);
+            }
+
             Console.WriteLine("\ncontrol: a healthy server, then a deliberate Stop()");
             {
                 var c = StartIn("healthy", serverJs);
@@ -161,6 +198,34 @@ static class LspClientRobustnessTest
             return Encoding.UTF8.GetString(buf);
         }
 
+        /// <summary>
+        /// K2: publish diagnostics for a didOpen/didChange as its TEXT directs (so each test case scripts the
+        /// server by the buffer it syncs): NOPUB = publish nothing; DELAYnnn = publish after nnn ms; NOVERSION =
+        /// omit `version` from the publish; STALEFIRST = first publish one entry stamped with version-1 ("stale"),
+        /// then the real one. The real publish has one entry whose message is "for vN".
+        /// </summary>
+        static void PublishFor(string msg)
+        {
+            var um = System.Text.RegularExpressions.Regex.Match(msg, "\"uri\"\\s*:\\s*\"([^\"]+)\"");
+            var vm = System.Text.RegularExpressions.Regex.Match(msg, "\"version\"\\s*:\\s*(\\d+)");
+            if (!um.Success || !vm.Success || msg.Contains("NOPUB")) return;
+            string uri = um.Groups[1].Value;
+            int version = int.Parse(vm.Groups[1].Value);
+            var dm = System.Text.RegularExpressions.Regex.Match(msg, "DELAY(\\d+)");
+            int delay = dm.Success ? int.Parse(dm.Groups[1].Value) : 0;
+            bool noVersion = msg.Contains("NOVERSION"), staleFirst = msg.Contains("STALEFIRST");
+            Func<int, string, string> body = (v, text) =>
+                "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"" + uri + "\"" +
+                (noVersion ? "" : ",\"version\":" + v) +
+                ",\"diagnostics\":[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":1}},\"severity\":1,\"message\":\"" + text + "\"}]}}";
+            new Thread(() =>
+            {
+                if (staleFirst) { Thread.Sleep(100); Send(Encoding.UTF8.GetBytes(body(version - 1, "stale"))); }
+                if (delay > 0) Thread.Sleep(delay);
+                Send(Encoding.UTF8.GetBytes(body(version, "for v" + version)));
+            }) { IsBackground = true }.Start();
+        }
+
         static int? IdOf(string json)
         {
             var m = System.Text.RegularExpressions.Regex.Match(json, "\"id\"\\s*:\\s*(\\d+)");
@@ -178,6 +243,11 @@ static class LspClientRobustnessTest
                 if (msg == null) { Thread.Sleep(Timeout.Infinite); }   // stdin closed: stay alive until killed
                 int? id = IdOf(msg);
                 if (msg.Contains("\"exit\"")) return 0;
+                if (msg.Contains("textDocument/didOpen") || msg.Contains("textDocument/didChange"))
+                {
+                    PublishFor(msg);
+                    continue;
+                }
                 if (msg.Contains("\"initialize\""))
                 {
                     Send(Encoding.UTF8.GetBytes("{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"capabilities\":{}}}"));

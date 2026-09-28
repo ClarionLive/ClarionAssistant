@@ -3543,7 +3543,7 @@ namespace ClarionAssistant.Terminal
                         .GetAwaiter().GetResult();
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] diagnostics: " + ex.Message); }
-                PostResponse(reqId, new Dictionary<string, object> { { "markers", markers } });
+                PostResponse(reqId, MonacoEditorControl.DiagnosticsReply(markers));   // K2: null = pending
                 MonacoEditorControl.LogDiagTiming(timingLine, text, resolveMs, timing, markers);
             });
         }
