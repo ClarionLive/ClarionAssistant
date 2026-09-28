@@ -185,6 +185,7 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                            "Services\ModernEmbeditorDiagnostics.cs",
                            "Services\ClarionAppDataReader.cs", "Services\ClarionAppDataReader.Model.cs",
                            "Services\LocalScopeIndex.cs", "Services\LiveDictionaryIndex.cs", "Services\SymbolIndex.cs",
+                           "Services\IndexRunGate.cs",
                            "CodeGraph\Graph\CodeGraphProvider.cs", "CodeGraph\Graph\CodeGraphDatabase.cs",
                            "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
                            "CodeGraph\Parsing\Models\SolutionProject.cs", "CodeGraph\Parsing\Models\ParseResult.cs",
