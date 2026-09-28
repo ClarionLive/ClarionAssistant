@@ -92,6 +92,17 @@ body {
 }
 .repo-field:focus { border-color: #89b4fa; }
 
+.stale-note {
+    margin: 2px 0 6px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: rgba(249, 226, 175, 0.12);
+    border: 1px solid rgba(249, 226, 175, 0.45);
+    color: #f9e2af;
+    font-size: 11px;
+}
+.stale-note[hidden] { display: none; }
+
 /* ── Manage Sources Modal ── */
 .modal-overlay {
     display: none;
@@ -206,6 +217,7 @@ body.light .form-row input, body.light .form-row select {
 }
 body.light .form-row input:focus, body.light .form-row select:focus { border-color: #1e66f5; }
 body.light .source-form .form-title { color: #1e66f5; }
+body.light .stale-note { background: rgba(223, 142, 29, 0.10); border-color: rgba(223, 142, 29, 0.5); color: #b0701a; }
 body.light .repo-field { background: #e6e9ef; border-color: #bcc0cc; color: #4c4f69; }
 body.light .status-text.pending { color: #7c7f93; }
 body.light .status-text.indexed { color: #40a02b; }
@@ -218,6 +230,9 @@ body.light .status-text.error { color: #d20f39; }
 <!-- The CA header's Schema Sources / Source Control panes. The header's tabs choose which one
      (setMode); this page has no tab strip or collapse bar of its own (82938fc7). -->
 <div class="content" id="contentArea">
+
+<!-- Shown when the host refused a Select / repo save because the solution changed under it. -->
+<div class="stale-note" id="staleNote" hidden>The solution changed. Settings were refreshed; please re-apply.</div>
 
 <!-- Schema Sources pane -->
 <div id="paneSchema">
@@ -352,12 +367,21 @@ var linkedIds = [];
 // The solution each view was drawn for, as the host stamped it. Every write echoes it back, and the host
 // refuses a write whose solution is no longer the current one (82938fc7): the IDE can switch solutions
 // while the modal is open or a repo field still has focus.
-var modalSln = null;
-var repoSln = null;
+var modalSln = null, modalGen = null;
+var repoSln = null, repoGen = null;
 
 function send(action, data) {
     if (window.chrome && window.chrome.webview)
         window.chrome.webview.postMessage(JSON.stringify({ action: action, data: data || '' }));
+}
+
+// ── A write refused as stale (the solution changed under it): say so for a few seconds ──
+var staleNoteTimer = null;
+function showStaleNote() {
+    var note = document.getElementById('staleNote');
+    note.hidden = false;
+    if (staleNoteTimer) clearTimeout(staleNoteTimer);
+    staleNoteTimer = setTimeout(function () { note.hidden = true; staleNoteTimer = null; }, 5000);
 }
 
 // ── Mode: which pane the header's active tab shows ──
@@ -371,7 +395,7 @@ function setMode(mode) {
 function onRepoChanged() {
     var accountId = document.getElementById('repoAccount').value;
     var repoName = document.getElementById('repoName').value.trim();
-    send('setSolutionRepo', JSON.stringify({ sln: repoSln, accountId: accountId, repoName: repoName }));
+    send('setSolutionRepo', JSON.stringify({ sln: repoSln, gen: repoGen, accountId: accountId, repoName: repoName }));
 
     var status = document.getElementById('repoStatus');
     if (accountId && repoName) {
@@ -472,7 +496,7 @@ function applySelection() {
     for (var i = 0; i < checks.length; i++) {
         if (checks[i].checked) selected.push(checks[i].getAttribute('data-id'));
     }
-    send('applySourceSelection', JSON.stringify({ sln: modalSln, ids: selected }));
+    send('applySourceSelection', JSON.stringify({ sln: modalSln, gen: modalGen, ids: selected }));
     closeManageModal();
 }
 
@@ -626,6 +650,7 @@ if (window.chrome && window.chrome.webview) {
             globalSources = msg.items || [];
             linkedIds = msg.linkedIds || [];
             modalSln = typeof msg.sln === 'string' ? msg.sln : null;
+            modalGen = typeof msg.gen === 'number' ? msg.gen : null;
             renderGlobalSources();
         }
         if (msg.type === 'indexStatus') {
@@ -688,6 +713,7 @@ if (window.chrome && window.chrome.webview) {
         }
         if (msg.type === 'setSolutionRepo') {
             repoSln = typeof msg.sln === 'string' ? msg.sln : null;
+            repoGen = typeof msg.gen === 'number' ? msg.gen : null;
             document.getElementById('repoAccount').value = msg.accountId || '';
             document.getElementById('repoName').value = msg.repoName || '';
         }
@@ -696,6 +722,9 @@ if (window.chrome && window.chrome.webview) {
         }
         if (msg.type === 'setTheme') {
             document.body.classList.toggle('light', msg.theme === 'light');
+        }
+        if (msg.type === 'staleRefused') {
+            showStaleNote();
         }
         if (msg.type === 'setMode') {
             setMode(msg.mode);

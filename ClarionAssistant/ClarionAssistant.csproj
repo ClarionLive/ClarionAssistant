@@ -224,6 +224,7 @@
     <Compile Include="Terminal\WebView2EnvironmentCache.cs" />
     <Compile Include="Terminal\HeaderWebView.cs" />
     <Compile Include="Terminal\IdeUi.cs" />
+    <Compile Include="Terminal\SolutionStamp.cs" />
     <Compile Include="Terminal\HomeWebView.cs" />
     <Compile Include="Terminal\CreateClassWebView.cs" />
     <Compile Include="Terminal\TerminalTab.cs" />

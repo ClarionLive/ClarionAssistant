@@ -178,11 +178,11 @@ namespace ClarionAssistant.Terminal
 
         /// <summary>
         /// Send all global sources (for the Manage Sources modal), stamped with the solution they were drawn
-        /// for; the page echoes it on Select so the host can refuse a stale write.
+        /// for and its generation; the page echoes both on Select so the host can refuse a stale write.
         /// </summary>
-        public void SetGlobalSources(string jsonArray, string linkedIdsJson, string slnPath)
+        public void SetGlobalSources(string jsonArray, string linkedIdsJson, string slnPath, long gen)
         {
-            SendMessage("{\"type\":\"setGlobalSources\",\"sln\":\"" + EscapeJson(slnPath ?? "") + "\",\"items\":" + jsonArray
+            SendMessage("{\"type\":\"setGlobalSources\",\"sln\":\"" + EscapeJson(slnPath ?? "") + "\",\"gen\":" + gen + ",\"items\":" + jsonArray
                 + ",\"linkedIds\":" + linkedIdsJson + "}");
         }
 

@@ -1572,6 +1572,7 @@ namespace ClarionAssistant
             if (_header == null || !_header.IsReady) return;   // OnHeaderReady reloads the solution, which lands here
             if (!force && string.Equals(_currentSlnPath, _settingsSlnPath, StringComparison.OrdinalIgnoreCase)) return;
             _settingsSlnPath = _currentSlnPath;
+            _solutionStamp.Advance();   // an actual change: views drawn before it are stale even if the path comes back (A->B->A)
             SendSchemaSources();
             SendRepoData();   // re-stamps the repo fields: an edit in flight for the old solution is discarded
             // An open Manage Sources modal was drawn for the old solution: redraw its checkboxes for this one
@@ -1579,30 +1580,46 @@ namespace ClarionAssistant
             if (SchemaViewReady && _schemaView.ModalOpen) SendGlobalSourcesToModal();
         }
 
+        // Solution + generation stamped into the modal and the repo fields; advanced on every actual change.
+        private readonly SolutionStamp _solutionStamp = new SolutionStamp();
+
         /// <summary>
-        /// Solution-keyed writes (82938fc7): the modal and the repo fields echo the solution they were drawn for
-        /// (the host stamps it). True when that is no longer _currentSlnPath - the IDE or the dropdown switched
-        /// solutions while the modal was open or a field had focus - so the caller writes nothing.
+        /// Solution-keyed writes (82938fc7): the modal and the repo fields echo the solution AND the generation
+        /// they were drawn for (the host stamps both). True when either is no longer current - the IDE or the
+        /// dropdown switched solutions while the modal was open or a field had focus, including a switch away
+        /// and back (A->B->A), which the path alone cannot see - so the caller writes nothing.
         /// </summary>
-        private bool IsStaleSolutionAction(string action, string shownSln)
+        private bool IsStaleSolutionAction(string action, Dictionary<string, object> payload)
         {
-            if (SameSolutionPath(shownSln, _currentSlnPath)) return false;
+            object o;
+            string shownSln = payload.TryGetValue("sln", out o) ? o as string : null;
+            long shownGen = -1;
+            if (payload.TryGetValue("gen", out o) && o != null)
+            {
+                try { shownGen = Convert.ToInt64(o); } catch { shownGen = -1; }
+            }
+            if (_solutionStamp.Matches(shownSln, shownGen, _currentSlnPath)) return false;
             System.Diagnostics.Debug.WriteLine("[schema] stale action=" + action + " shown=" + (shownSln ?? "(none)")
-                + " current=" + (_currentSlnPath ?? "(none)"));
+                + " gen=" + shownGen + " current=" + (_currentSlnPath ?? "(none)") + " gen=" + _solutionStamp.Gen);
             return true;
         }
 
-        private static bool SameSolutionPath(string a, string b)
+        /// <summary>Tell the panel a write was refused as stale, after its view was re-sent (it shows a note).</summary>
+        private void SendStaleRefused()
         {
-            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
-            return string.Equals(NormalizeSolutionPath(a), NormalizeSolutionPath(b), StringComparison.OrdinalIgnoreCase);
+            if (SchemaViewReady) _schemaView.SendMessage("{\"type\":\"staleRefused\"}");
         }
 
-        private static string NormalizeSolutionPath(string path)
+        private static Dictionary<string, object> ParsePayload(string data)
         {
-            try { return Path.GetFullPath(path).TrimEnd('\\', '/'); }
-            catch { return path.Trim(); }
+            try
+            {
+                return new System.Web.Script.Serialization.JavaScriptSerializer().DeserializeObject(data ?? "")
+                    as Dictionary<string, object>;
+            }
+            catch { return null; }
         }
+
 
         private bool SchemaViewAlive
         {
@@ -1705,7 +1722,7 @@ namespace ClarionAssistant
                 catch { }
             }
             _schemaView.SendMessage(
-                "{\"type\":\"setSolutionRepo\",\"sln\":\"" + EscJson(slnPath) + "\",\"accountId\":\"" + EscJson(accountId) +
+                "{\"type\":\"setSolutionRepo\",\"sln\":\"" + EscJson(slnPath) + "\",\"gen\":" + _solutionStamp.Gen + ",\"accountId\":\"" + EscJson(accountId) +
                 "\",\"repoName\":\"" + EscJson(repoName) + "\"}");
         }
 
@@ -1787,7 +1804,7 @@ namespace ClarionAssistant
                 }
                 idSb.Append("]");
 
-                _schemaView.SetGlobalSources(sb.ToString(), idSb.ToString(), slnPath);
+                _schemaView.SetGlobalSources(sb.ToString(), idSb.ToString(), slnPath, _solutionStamp.Gen);
             }
             catch (Exception ex)
             {
@@ -1847,15 +1864,13 @@ namespace ClarionAssistant
         {
             try
             {
-                // {sln, ids}: sln is the solution the modal was drawn for.
-                var payload = new System.Web.Script.Serialization.JavaScriptSerializer().DeserializeObject(data ?? "")
-                    as Dictionary<string, object>;
+                // {sln, gen, ids}: sln and gen are the solution and generation the modal was drawn for.
+                var payload = ParsePayload(data);
                 if (payload == null) return;
-                object shown;
-                payload.TryGetValue("sln", out shown);
-                if (IsStaleSolutionAction("applySourceSelection", shown as string))
+                if (IsStaleSolutionAction("applySourceSelection", payload))
                 {
                     SendGlobalSourcesToModal();   // redraw for the current solution; nothing is written
+                    SendStaleRefused();
                     return;
                 }
                 string slnPath = _currentSlnPath;
@@ -1944,14 +1959,19 @@ namespace ClarionAssistant
         {
             try
             {
-                if (IsStaleSolutionAction("setSolutionRepo", ExtractJsonField(data, "sln")))
+                // {sln, gen, accountId, repoName}
+                var payload = ParsePayload(data);
+                if (payload == null) return;
+                if (IsStaleSolutionAction("setSolutionRepo", payload))
                 {
                     SendRepoData();   // put back the current solution's link; nothing is written
+                    SendStaleRefused();
                     return;
                 }
                 string slnPath = _currentSlnPath;
-                string accountId = ExtractJsonField(data, "accountId");
-                string repoName = ExtractJsonField(data, "repoName");
+                object o;
+                string accountId = payload.TryGetValue("accountId", out o) ? o as string : null;
+                string repoName = payload.TryGetValue("repoName", out o) ? o as string : null;
                 Services.SchemaGraphService.SetSolutionRepo(slnPath, accountId, repoName);
             }
             catch (Exception ex)

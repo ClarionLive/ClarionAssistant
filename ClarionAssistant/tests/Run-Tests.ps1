@@ -133,6 +133,10 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "ExplorerHeader.Test"
                Sources = @("tests\ExplorerHeader.Test.cs", "Services\ExplorerHeader.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # 82938fc7: a Schema Sources / Source Control write drawn before an A->B->A switch is refused.
+            @{ Name = "SolutionStamp.Test"
+               Sources = @("tests\SolutionStamp.Test.cs", "Terminal\SolutionStamp.cs")
+               Refs = @("System.dll") }
             @{ Name = "ClarionClDiagnosis.Test"
                Sources = @("tests\ClarionClDiagnosis.Test.cs", "Services\ClarionClDiagnosis.cs")
                Refs = @("System.dll") }

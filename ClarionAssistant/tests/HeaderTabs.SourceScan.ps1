@@ -22,8 +22,9 @@
 # H9  no cross-solution writes (pipeline run 1, P1): the modal (SetGlobalSources) and the repo fields
 #     (setSolutionRepo) are stamped with the solution they were drawn for; HandleApplySelection and
 #     HandleSetSolutionRepo check IsStaleSolutionAction BEFORE any link/unlink/SetSolutionRepo write and
-#     return; the check compares with _currentSlnPath case-insensitively and refuses an empty key; an actual
-#     solution change redraws an open modal.
+#     return after re-sending the view and a staleRefused note; the check needs BOTH the echoed solution and
+#     generation to match (SolutionStamp - run 2 R1, the A->B->A case; tests\SolutionStamp.Test.cs covers its
+#     semantics); an actual solution change advances the generation and redraws an open modal.
 # H10 P2: ONE activate-then-defer helper (IdeUi) used by OnOpenRedFile and ModernDataPad.DeferExplorer, with
 #     no inline copy left; the panel shares the header's zoom key (no "schemaSources" key); the modal height
 #     is scaled by zoom and DPI; both views re-apply their height on a DPI change; one light background
@@ -185,13 +186,13 @@ function Invoke-Scan($p) {
     }
 
     # H9
-    if ($sv -notmatch 'public void SetGlobalSources\(string jsonArray, string linkedIdsJson, string slnPath\)' -or $sv -notmatch '\\"sln\\":') {
-        $fails.Add('H9 setGlobalSources is not stamped with the solution')
+    if ($sv -notmatch 'public void SetGlobalSources\(string jsonArray, string linkedIdsJson, string slnPath, long gen\)' -or $sv -notmatch '\\"sln\\":' -or $sv -notmatch '\\"gen\\":" \+ gen') {
+        $fails.Add('H9 setGlobalSources is not stamped with the solution and generation')
     }
     $gs = Get-Body $chat 'private void SendGlobalSourcesToModal('
-    if (-not $gs -or -not $gs.Contains('SetGlobalSources(sb.ToString(), idSb.ToString(), slnPath)')) { $fails.Add('H9 SendGlobalSourcesToModal does not stamp slnPath') }
+    if (-not $gs -or -not $gs.Contains('SetGlobalSources(sb.ToString(), idSb.ToString(), slnPath, _solutionStamp.Gen)')) { $fails.Add('H9 SendGlobalSourcesToModal does not stamp slnPath and the generation') }
     $rd = Get-Body $chat 'private void SendRepoData('
-    if (-not $rd -or -not $rd.Contains('\"sln\":\"" + EscJson(slnPath)')) { $fails.Add('H9 SendRepoData does not stamp the solution into setSolutionRepo') }
+    if (-not $rd -or -not $rd.Contains('\"sln\":\"" + EscJson(slnPath)') -or -not $rd.Contains('\"gen\":" + _solutionStamp.Gen')) { $fails.Add('H9 SendRepoData does not stamp the solution and generation into setSolutionRepo') }
     foreach ($w in @(@{ Sig = 'private void HandleApplySelection('; Act = 'applySourceSelection'; Writes = @('LinkSourceToSolution(', 'UnlinkSourceFromSolution(') },
                      @{ Sig = 'private void HandleSetSolutionRepo('; Act = 'setSolutionRepo'; Writes = @('SetSolutionRepo(slnPath') })) {
         $b = Get-Body $chat $w.Sig
@@ -200,22 +201,22 @@ function Invoke-Scan($p) {
         if ($chk -lt 0) { $fails.Add("H9 $($w.Sig) does not check IsStaleSolutionAction"); continue }
         $blk = Get-BodyAt $b $chk
         if (-not $blk -or -not $blk.Contains('return;')) { $fails.Add("H9 $($w.Sig) does not return on a stale solution") }
+        if (-not $blk -or -not $blk.Contains('SendStaleRefused();')) { $fails.Add("H9 $($w.Sig) refuses silently (no staleRefused note)") }
         foreach ($wr in $w.Writes) {
             $wi = $b.IndexOf($wr, [StringComparison]::Ordinal)
             if ($wi -lt 0) { $fails.Add("H9 $($w.Sig) has no $wr (scan broken?)") }
             elseif ($wi -lt $chk) { $fails.Add("H9 $($w.Sig) writes ($wr) before the stale check") }
         }
     }
-    $same = Get-Body $chat 'private static bool SameSolutionPath('
-    if (-not $same -or -not $same.Contains('StringComparison.OrdinalIgnoreCase') -or -not $same.Contains('IsNullOrEmpty(a)')) {
-        $fails.Add('H9 SameSolutionPath is not case-insensitive or accepts an empty key')
-    }
     $stale = Get-Body $chat 'private bool IsStaleSolutionAction('
-    if (-not $stale -or -not $stale.Contains('SameSolutionPath(shownSln, _currentSlnPath)') -or -not $stale.Contains('[schema] stale action=')) {
-        $fails.Add('H9 IsStaleSolutionAction does not compare with _currentSlnPath and log')
+    if (-not $stale -or -not $stale.Contains('_solutionStamp.Matches(shownSln, shownGen, _currentSlnPath)') -or -not $stale.Contains('TryGetValue("gen"') -or -not $stale.Contains('[schema] stale action=')) {
+        $fails.Add('H9 IsStaleSolutionAction does not require the echoed solution AND generation, or does not log')
     }
+    $note = Get-Body $chat 'private void SendStaleRefused('
+    if (-not $note -or -not $note.Contains('staleRefused')) { $fails.Add('H9 SendStaleRefused does not send staleRefused') }
     $rs = Get-Body $chat 'private void RefreshSolutionSettings('
     if (-not $rs -or $rs -notmatch '_schemaView\.ModalOpen\) SendGlobalSourcesToModal\(\);') { $fails.Add('H9 a solution change does not redraw an open modal') }
+    if (-not $rs -or -not $rs.Contains('_solutionStamp.Advance();')) { $fails.Add('H9 a solution change does not advance the generation') }
 
     # H10
     if (-not $pad.Contains('IdeUi.DeferWithMainFormActivated(_panel, work,')) { $fails.Add('H10 ModernDataPad.DeferExplorer does not use IdeUi') }
@@ -280,14 +281,16 @@ try {
     Test-Mutation 'copy uses another path' 'Chat' 'string path = _currentSlnPath;' 'string path = CurrentDbPath;'
     Test-Mutation 'RED opened synchronously' 'Chat' 'IdeUi.DeferWithMainFormActivated(this, () => _editorService.OpenFileOnly(path), "AssistantChatControl");' '_editorService.OpenFileOnly(path);'
     Test-Mutation 'IdeUi runs the work before activating' 'Ide' "                    catch { }`r`n                    Run(work, logTag);" "                    catch { }"
-    Test-Mutation 'apply selection skips the stale check' 'Chat' 'if (IsStaleSolutionAction("applySourceSelection", shown as string))' 'if (false)'
-    Test-Mutation 'apply selection writes before the stale check' 'Chat' "                object shown;`r`n" "                Services.SchemaGraphService.LinkSourceToSolution(_currentSlnPath, `"x`");`r`n                object shown;`r`n"
-    Test-Mutation 'stale apply falls through to the write' 'Chat' "                    SendGlobalSourcesToModal();   // redraw for the current solution; nothing is written`r`n                    return;" "                    SendGlobalSourcesToModal();   // redraw for the current solution; nothing is written"
-    Test-Mutation 'repo save skips the stale check' 'Chat' 'if (IsStaleSolutionAction("setSolutionRepo", ExtractJsonField(data, "sln")))' 'if (false)'
-    Test-Mutation 'modal not stamped' 'Chat' 'SetGlobalSources(sb.ToString(), idSb.ToString(), slnPath)' 'SetGlobalSources(sb.ToString(), idSb.ToString(), _currentSlnPath)'
+    Test-Mutation 'apply selection skips the stale check' 'Chat' 'if (IsStaleSolutionAction("applySourceSelection", payload))' 'if (false)'
+    Test-Mutation 'apply selection writes before the stale check' 'Chat' "                // {sln, gen, ids}" "                Services.SchemaGraphService.LinkSourceToSolution(_currentSlnPath, `"x`");`r`n                // {sln, gen, ids}"
+    Test-Mutation 'stale apply falls through to the write' 'Chat' "                    SendGlobalSourcesToModal();   // redraw for the current solution; nothing is written`r`n                    SendStaleRefused();`r`n                    return;" "                    SendGlobalSourcesToModal();   // redraw for the current solution; nothing is written`r`n                    SendStaleRefused();"
+    Test-Mutation 'repo save skips the stale check' 'Chat' 'if (IsStaleSolutionAction("setSolutionRepo", payload))' 'if (false)'
+    Test-Mutation 'modal not stamped' 'Chat' 'SetGlobalSources(sb.ToString(), idSb.ToString(), slnPath, _solutionStamp.Gen)' 'SetGlobalSources(sb.ToString(), idSb.ToString(), _currentSlnPath, _solutionStamp.Gen)'
     Test-Mutation 'repo fields not stamped' 'Chat' '\"sln\":\"" + EscJson(slnPath)' '\"sln\":\"" + EscJson("")'
-    Test-Mutation 'solution compare case-sensitive' 'Chat' 'NormalizeSolutionPath(b), StringComparison.OrdinalIgnoreCase)' 'NormalizeSolutionPath(b), StringComparison.Ordinal)'
-    Test-Mutation 'empty solution key accepted' 'Chat' 'if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;' 'if (a == null && b == null) return true;'
+    Test-Mutation 'generation ignored (A->B->A)' 'Chat' '_solutionStamp.Matches(shownSln, shownGen, _currentSlnPath)' '_solutionStamp.Matches(shownSln, _solutionStamp.Gen, _currentSlnPath)'
+    Test-Mutation 'generation never advances' 'Chat' '            _solutionStamp.Advance();' ''
+    Test-Mutation 'repo fields without the generation' 'Chat' '\"gen\":" + _solutionStamp.Gen + ",\"accountId' '\"gen\":0,\"accountId'
+    Test-Mutation 'refusal is silent' 'Chat' "                    SendStaleRefused();`r`n                    return;`r`n                }`r`n                string slnPath = _currentSlnPath;`r`n`r`n" "                    return;`r`n                }`r`n                string slnPath = _currentSlnPath;`r`n`r`n"
     Test-Mutation 'open modal not redrawn on a switch' 'Chat' 'if (SchemaViewReady && _schemaView.ModalOpen) SendGlobalSourcesToModal();' ''
     Test-Mutation 'DeferExplorer keeps its own copy' 'DataPad' 'Terminal.IdeUi.DeferWithMainFormActivated(_panel, work, "ModernDataPad");' '_panel.BeginInvoke((Action)(() => { var f = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form; if (f != null) f.Activate(); work(); }));'
     Test-Mutation 'panel keeps its own zoom key' 'Schema' 'GetZoom(HeaderWebView.ZoomKey)' 'GetZoom("schemaSources")'
