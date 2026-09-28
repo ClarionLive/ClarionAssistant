@@ -23,7 +23,7 @@ namespace ClarionAssistant.Terminal
         {
             Height = 20;
             Dock = DockStyle.Bottom;
-            Visible = false; // hidden until LSP data arrives
+            Visible = false; // always hidden (82938fc7): nothing sets it visible any more
 
             _diagLabel = new Label
             {
@@ -103,7 +103,8 @@ namespace ClarionAssistant.Terminal
                 return;
             }
 
-            Visible = true;
+            // Retired from view (82938fc7): the Owner no longer wants the bar, so nothing shows it. The
+            // labels still update, harmlessly, until follow-up fb98d892 removes the bar entirely.
 
             if (!known)
             {
