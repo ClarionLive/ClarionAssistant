@@ -213,7 +213,27 @@ It always wrote a line break before the new text, so appending to a file that al
 <!-- release-docs: covered=editor,embeditor -->
 ### Large procedures no longer crash the IDE from the CA Editor or Embeditor
 
-On an 86,722-line, 3.2 MB generated module the 32-bit Clarion IDE could die out of memory with a CA Embeditor open, because the editor sent its **whole buffer** with every hover, completion, definition, diagnostics, outline and folding request. Both Monaco editors now send the buffer **once per edit** and requests only name the version they are about &mdash; twenty hovers on a 3.2 MB buffer went from 66 MB of traffic to 3.3 MB. The diagnostics timeout now grows with the buffer (up to 60 seconds). **Not fixed yet:** completion and diagnostics on very large procedures can still be slow; that is tracked for after 5.9.0.
+On an 86,722-line, 3.2 MB generated module the 32-bit Clarion IDE could die out of memory with a CA Embeditor open, because the editor sent its **whole buffer** with every hover, completion, definition, diagnostics, outline and folding request. Both Monaco editors now send the buffer **once per edit** and requests only name the version they are about &mdash; twenty hovers on a 3.2 MB buffer went from 66 MB of traffic to 3.3 MB. The diagnostics timeout now grows with the buffer (up to 60 seconds). That fixed the crash but not the wait; the next entry fixes the wait.
+
+<!-- release-docs: covered=editor,embeditor,lsp,codegraph,schemagraph -->
+### Completion, hover and squiggles are instant on large procedures
+
+On that same 86,722-line module, completion in the CA Embeditor showed *"Loading…"* for four seconds and then *"No suggestions"*. A hover took 1 to 35 seconds, and a `DO` of a missing routine took about **five minutes** to get its squiggle. The native embeditor is instant, and that is the bar. We measured first. The language server re-analyses the **whole** module on every edit, and is just as slow in VS Code, so Clarion Assistant now **answers first from what it already knows** and treats the language server as a late extra:
+
+- **Completion:** your procedure's locals, **parameters**, routines and group fields; class members, including `SELF.` in a `ThisWindow` method with inherited `WindowManager` members; CodeGraph procedures and globals; `PRE:` fields from the **live** dictionary (no ingest); and keywords.
+- **Hover:** the same sources. Keywords, attributes and built-ins now show **what they do**: `DERIVED`, `RETURN`, `CLIP(STRING string)` and so on, from the language server's own data files.
+- **Squiggles:** structure errors and a `DO` of a missing routine appear as soon as they're computed. The language server's squiggles are added when they arrive.
+
+Measured on that module, from keystroke to list on screen: completion **43 ms** typical and **119 ms** at worst, hover **7&ndash;35 ms**, and the `DO` squiggle in under a second.
+
+- **Typing no longer ships the module around.** Each keystroke used to send the whole 3.2 MB buffer to the IDE. It now sends a few hundred characters around the caret, and the full buffer goes over only when you pause.
+- **CodeGraph lookups went from 150&ndash;500 ms to about 0.2 ms.** They keep one connection open and use new case-insensitive indexes. Existing databases get the indexes automatically, built once in the background, with no re-index needed.
+
+**Also fixed along the way:**
+- Locals declared before a `ThisWindow CLASS` were invisible to completion and hover in every ABC procedure.
+- Other procedures' parameters were offered as globals.
+- After a save and reopen, squiggles could be painted from an **older** version of the file, landing on the wrong lines and even inside comments. Diagnostics now have to belong to the text on screen.
+- A language-server crash is now logged instead of vanishing.
 
 <!-- release-docs: covered=version -->
 ### Clarion Assistant follows Build > Set Clarion Version
