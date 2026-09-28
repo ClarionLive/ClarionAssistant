@@ -11,7 +11,7 @@ const path = require('path');
 
 const HTML_PATH = process.argv[2] || path.join(__dirname, '..', 'monaco-embeditor.html');
 const html = fs.readFileSync(HTML_PATH, 'utf8').replace(/\r\n/g, '\n');
-const a = html.indexOf('    function applySource(msg) {');
+const a = html.indexOf('    var srcGen = 0;');   // the generation counter sits just above applySource
 const b = html.indexOf('    // Paint the classic Clarion scheme', a);
 if (a < 0 || b < 0) throw new Error('applySource not found');
 const SRC = html.slice(a, b);
