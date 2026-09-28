@@ -37,6 +37,16 @@ namespace ClarionAssistant.Terminal
 
         private string _activeTab = "solution";
 
+        /// <summary>The zoom key the header and the SchemaSourcesView under it share.</summary>
+        public const string ZoomKey = "header";
+
+        /// <summary>The header's zoom; the host keeps the SchemaSourcesView at the same value.</summary>
+        public double ZoomFactor
+        {
+            get { return _webView != null ? _webView.ZoomFactor : 1.0; }
+            set { if (_webView != null && Math.Abs(_webView.ZoomFactor - value) > 0.001) _webView.ZoomFactor = value; }
+        }
+
         /// <summary>True for the tabs the host's SchemaSourcesView renders ("schema", "repo").</summary>
         public static bool IsPanelTab(string tab) { return tab == "schema" || tab == "repo"; }
 
@@ -84,7 +94,7 @@ namespace ClarionAssistant.Terminal
                 _webView.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
                 _webView.ZoomFactorChanged += (s, ev) =>
                 {
-                    WebViewZoomHelper.SetZoom("header", _webView.ZoomFactor);
+                    WebViewZoomHelper.SetZoom(ZoomKey, _webView.ZoomFactor);
                     ApplyHeight();
                 };
 
@@ -102,7 +112,7 @@ namespace ClarionAssistant.Terminal
         {
             _isInitialized = true;
             _isInitializing = false;
-            _webView.ZoomFactor = WebViewZoomHelper.GetZoom("header");
+            _webView.ZoomFactor = WebViewZoomHelper.GetZoom(ZoomKey);
             ApplyHeight();
             HeaderReady?.Invoke(this, EventArgs.Empty);
         }
@@ -111,6 +121,13 @@ namespace ClarionAssistant.Terminal
         {
             double zoom = _webView != null ? _webView.ZoomFactor : 1.0;
             return (int)Math.Ceiling(cssPixels * zoom * DeviceDpi / 96.0);
+        }
+
+        // Clarion moved to a monitor with another DPI: the fixed CSS heights map to a new pixel height.
+        protected override void OnDpiChangedAfterParent(EventArgs e)
+        {
+            base.OnDpiChangedAfterParent(e);
+            ApplyHeight();
         }
 
         private void ApplyHeight()
@@ -246,7 +263,7 @@ namespace ClarionAssistant.Terminal
         /// <summary>Switch the header between light and dark theme.</summary>
         public void SetTheme(bool isDark)
         {
-            BackColor = isDark ? Color.FromArgb(30, 30, 46) : Color.FromArgb(220, 224, 232);
+            BackColor = isDark ? Color.FromArgb(30, 30, 46) : Color.FromArgb(239, 241, 245);   // = header.html's light #eff1f5
             SendMessage("{\"type\":\"setTheme\",\"theme\":\"" + (isDark ? "dark" : "light") + "\"}");
         }
 

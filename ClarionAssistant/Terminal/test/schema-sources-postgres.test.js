@@ -76,7 +76,7 @@ if (q >= 0) {
 }
 
 // ---- 3. the page is the CA header's panes (82938fc7) ----
-// Schema Sources / Source Control moved out of a collapsed "Solution Settings" bar in each chat tab into
+// Schema Sources / Source Control moved out of a collapsed bar in each chat tab into
 // the CA header's tabs. The page keeps no collapse bar or tab strip of its own; the host's setMode picks
 // the pane. setMode is EXTRACTED from the page and run against a stub document.
 console.log('\nschema-sources.html as the header\'s panes:');
@@ -89,12 +89,12 @@ ok('setMode found in page', !!fnMatch);
 if (fnMatch) {
     var fnSrc = fnMatch[0];
     function runMode(calls) {
-        var els = { tabSchemaContent: { style: { display: '' } }, tabRepoContent: { style: { display: 'none' } } };
+        var els = { paneSchema: { style: { display: '' } }, paneRepo: { style: { display: 'none' } } };
         var document = { getElementById: function (id) { return els[id]; } };
         var currentMode = 'schema';
         eval(fnSrc);
         calls.forEach(function (m) { setMode(m); });
-        return { schema: els.tabSchemaContent.style.display, repo: els.tabRepoContent.style.display };
+        return { schema: els.paneSchema.style.display, repo: els.paneRepo.style.display };
     }
     var r2 = runMode(['repo']);
     ok('setMode("repo") shows only Source Control', r2.repo === '' && r2.schema === 'none', JSON.stringify(r2));

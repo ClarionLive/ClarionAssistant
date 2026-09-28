@@ -13,8 +13,10 @@
 #                          thing under test — which is only possible while those services stay free of
 #                          IDE references. Run outside Clarion entirely.
 #
-#   Terminal\test\*.test.js  node harnesses over the WebView2 pages. Mostly zero-dependency; the one
-#                          exception (vscode-import-ui.test.js) needs jsdom and says so.
+#   Terminal\test\*.test.js  node harnesses over the WebView2 pages. Mostly zero-dependency; the ones
+#                          that need jsdom (vscode-import-ui, header-tabs, schema-sources-solution-key,
+#                          editor-sweep-590) say so, and this script installs it into
+#                          Terminal\test\node_modules when missing.
 #
 #   ..\installer\tests\*.ps1  PowerShell harnesses over the INSTALLER scripts. These live outside
 #                          this folder because they belong next to what they test, and they run the

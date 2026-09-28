@@ -1447,18 +1447,7 @@ namespace ClarionAssistant
         /// </summary>
         private void DeferExplorer(Action work)
         {
-            if (_panel == null) { try { work(); } catch { } return; }
-            _panel.BeginInvoke((Action)(() =>
-            {
-                try
-                {
-                    var mainForm = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
-                    if (mainForm != null) { mainForm.Activate(); Application.DoEvents(); }
-                }
-                catch { }
-                try { work(); }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] explorer action: " + ex.Message); }
-            }));
+            Terminal.IdeUi.DeferWithMainFormActivated(_panel, work, "ModernDataPad");
         }
 
         /// <summary>Sniff the pad's dark/light flag out of the opaque JS UI-state blob (a JSON string with "dark":bool).</summary>

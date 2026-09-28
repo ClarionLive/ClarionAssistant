@@ -124,10 +124,15 @@ namespace ClarionAssistant
             _schemaView = new SchemaSourcesView { Visible = false, PaneHeight = _header.PanePixelHeight };
             _schemaView.ActionReceived += OnSchemaSourceAction;
             _schemaView.Ready += OnSchemaSourcesReady;
+            // One zoom for the header and the panel under it (its height is the header's pane): whichever the
+            // user zooms, the other follows; the header saves it and re-derives both heights.
             _header.LayoutChanged += (s, e) =>
             {
-                if (SchemaViewAlive) _schemaView.PaneHeight = _header.PanePixelHeight;
+                if (!SchemaViewAlive) return;
+                _schemaView.ZoomFactor = _header.ZoomFactor;
+                _schemaView.PaneHeight = _header.PanePixelHeight;
             };
+            _schemaView.ZoomChanged += (s, e) => _header.ZoomFactor = _schemaView.ZoomFactor;
 
             // === Tab strip (custom-painted, hidden when only 1 tab — MultiTerminal pattern) ===
             _tabStrip = new Panel
@@ -862,28 +867,15 @@ namespace ClarionAssistant
         /// <summary>
         /// Header RED link (82938fc7): open the .red in an IDE editor tab. The page sends only the intent; the
         /// path is this control's own _redFileService.RedFilePath, never one from the page. Deferred out of the
-        /// WebView2 message callback with the IDE main window activated first, as ModernDataPad.DeferExplorer
-        /// does: a WebView2 holding focus while the IDE opens a document is the pattern that deadlocks.
+        /// WebView2 message callback with the IDE main window activated first (IdeUi, shared with the CA
+        /// Explorer): a WebView2 holding focus while the IDE opens a document is the pattern that deadlocks.
         /// </summary>
         private void OnOpenRedFile()
         {
             if (!RedFileOpenable) return;
             string path = _redFileService.RedFilePath;
             if (!File.Exists(path)) return;
-            try
-            {
-                BeginInvoke((Action)(() =>
-                {
-                    try
-                    {
-                        var mainForm = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench as Form;
-                        if (mainForm != null) { mainForm.Activate(); Application.DoEvents(); }
-                    }
-                    catch { }
-                    _editorService.OpenFileOnly(path);   // swallows its own failures
-                }));
-            }
-            catch (InvalidOperationException) { }
+            IdeUi.DeferWithMainFormActivated(this, () => _editorService.OpenFileOnly(path), "AssistantChatControl");
         }
 
         private void LoadSolutionHistory()
@@ -1544,7 +1536,7 @@ namespace ClarionAssistant
 
         // Schema Sources and Source Control are SOLUTION settings (82938fc7): one SchemaSourcesView for the
         // whole pane, keyed on _currentSlnPath, shown under the header while its header tab is active. It
-        // used to be one per chat tab, in a collapsed "Solution Settings" bar few people ever opened.
+        // used to be one per chat tab, in a collapsed bar above the terminal that few people ever opened.
 
         /// <summary>Header tab switch: show the panel for Schema Sources / Source Control, hide it for Solution.</summary>
         private void OnHeaderTab(string tab)
@@ -1581,7 +1573,35 @@ namespace ClarionAssistant
             if (!force && string.Equals(_currentSlnPath, _settingsSlnPath, StringComparison.OrdinalIgnoreCase)) return;
             _settingsSlnPath = _currentSlnPath;
             SendSchemaSources();
-            SendRepoData();
+            SendRepoData();   // re-stamps the repo fields: an edit in flight for the old solution is discarded
+            // An open Manage Sources modal was drawn for the old solution: redraw its checkboxes for this one
+            // (the add/edit form, which is global, is left as it is).
+            if (SchemaViewReady && _schemaView.ModalOpen) SendGlobalSourcesToModal();
+        }
+
+        /// <summary>
+        /// Solution-keyed writes (82938fc7): the modal and the repo fields echo the solution they were drawn for
+        /// (the host stamps it). True when that is no longer _currentSlnPath - the IDE or the dropdown switched
+        /// solutions while the modal was open or a field had focus - so the caller writes nothing.
+        /// </summary>
+        private bool IsStaleSolutionAction(string action, string shownSln)
+        {
+            if (SameSolutionPath(shownSln, _currentSlnPath)) return false;
+            System.Diagnostics.Debug.WriteLine("[schema] stale action=" + action + " shown=" + (shownSln ?? "(none)")
+                + " current=" + (_currentSlnPath ?? "(none)"));
+            return true;
+        }
+
+        private static bool SameSolutionPath(string a, string b)
+        {
+            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+            return string.Equals(NormalizeSolutionPath(a), NormalizeSolutionPath(b), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string NormalizeSolutionPath(string path)
+        {
+            try { return Path.GetFullPath(path).TrimEnd('\\', '/'); }
+            catch { return path.Trim(); }
         }
 
         private bool SchemaViewAlive
@@ -1685,7 +1705,7 @@ namespace ClarionAssistant
                 catch { }
             }
             _schemaView.SendMessage(
-                "{\"type\":\"setSolutionRepo\",\"accountId\":\"" + EscJson(accountId) +
+                "{\"type\":\"setSolutionRepo\",\"sln\":\"" + EscJson(slnPath) + "\",\"accountId\":\"" + EscJson(accountId) +
                 "\",\"repoName\":\"" + EscJson(repoName) + "\"}");
         }
 
@@ -1767,7 +1787,7 @@ namespace ClarionAssistant
                 }
                 idSb.Append("]");
 
-                _schemaView.SetGlobalSources(sb.ToString(), idSb.ToString());
+                _schemaView.SetGlobalSources(sb.ToString(), idSb.ToString(), slnPath);
             }
             catch (Exception ex)
             {
@@ -1823,21 +1843,30 @@ namespace ClarionAssistant
             }
         }
 
-        private void HandleApplySelection(string selectedIdsJson)
+        private void HandleApplySelection(string data)
         {
             try
             {
-                string slnPath = _currentSlnPath ?? "";
-                if (string.IsNullOrEmpty(slnPath)) return;
-
-                // Parse selected IDs from JSON array
-                var selectedIds = new System.Collections.Generic.List<string>();
-                string inner = selectedIdsJson.Trim().TrimStart('[').TrimEnd(']');
-                if (!string.IsNullOrEmpty(inner))
+                // {sln, ids}: sln is the solution the modal was drawn for.
+                var payload = new System.Web.Script.Serialization.JavaScriptSerializer().DeserializeObject(data ?? "")
+                    as Dictionary<string, object>;
+                if (payload == null) return;
+                object shown;
+                payload.TryGetValue("sln", out shown);
+                if (IsStaleSolutionAction("applySourceSelection", shown as string))
                 {
-                    foreach (string part in inner.Split(','))
+                    SendGlobalSourcesToModal();   // redraw for the current solution; nothing is written
+                    return;
+                }
+                string slnPath = _currentSlnPath;
+
+                var selectedIds = new System.Collections.Generic.List<string>();
+                object ids;
+                if (payload.TryGetValue("ids", out ids) && ids is object[])
+                {
+                    foreach (object o in (object[])ids)
                     {
-                        string id = part.Trim().Trim('"');
+                        string id = o as string;
                         if (!string.IsNullOrEmpty(id)) selectedIds.Add(id);
                     }
                 }
@@ -1915,8 +1944,12 @@ namespace ClarionAssistant
         {
             try
             {
-                string slnPath = _currentSlnPath ?? "";
-                if (string.IsNullOrEmpty(slnPath)) return;
+                if (IsStaleSolutionAction("setSolutionRepo", ExtractJsonField(data, "sln")))
+                {
+                    SendRepoData();   // put back the current solution's link; nothing is written
+                    return;
+                }
+                string slnPath = _currentSlnPath;
                 string accountId = ExtractJsonField(data, "accountId");
                 string repoName = ExtractJsonField(data, "repoName");
                 Services.SchemaGraphService.SetSolutionRepo(slnPath, accountId, repoName);

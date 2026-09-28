@@ -185,7 +185,7 @@ body {
 .form-actions { display: flex; gap: 8px; margin-top: 10px; }
 
 /* ── Light theme ── */
-body.light { background: #dce0e8; color: #4c4f69; }
+body.light { background: #eff1f5; color: #4c4f69; }
 body.light .content::-webkit-scrollbar-thumb { background: #bcc0cc; }
 body.light .btn-sm { background: #ccd0da; border-color: #bcc0cc; color: #4c4f69; }
 body.light .btn-sm:hover { background: #bcc0cc; }
@@ -220,7 +220,7 @@ body.light .status-text.error { color: #d20f39; }
 <div class="content" id="contentArea">
 
 <!-- Schema Sources pane -->
-<div id="tabSchemaContent">
+<div id="paneSchema">
     <table class="source-table" id="sourceTable">
         <thead>
             <tr>
@@ -241,7 +241,7 @@ body.light .status-text.error { color: #d20f39; }
 </div>
 
 <!-- Source Control pane -->
-<div id="tabRepoContent" style="display:none">
+<div id="paneRepo" style="display:none">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
         <span style="font-size:12px;color:#a6adc8;min-width:60px">Account:</span>
         <select id="repoAccount" class="repo-field" onchange="onRepoChanged()">
@@ -349,6 +349,11 @@ body.light .status-text.error { color: #d20f39; }
 var sources = [];
 var globalSources = [];
 var linkedIds = [];
+// The solution each view was drawn for, as the host stamped it. Every write echoes it back, and the host
+// refuses a write whose solution is no longer the current one (82938fc7): the IDE can switch solutions
+// while the modal is open or a repo field still has focus.
+var modalSln = null;
+var repoSln = null;
 
 function send(action, data) {
     if (window.chrome && window.chrome.webview)
@@ -358,15 +363,15 @@ function send(action, data) {
 // ── Mode: which pane the header's active tab shows ──
 function setMode(mode) {
     if (mode !== 'schema' && mode !== 'repo') return;
-    document.getElementById('tabSchemaContent').style.display = mode === 'schema' ? '' : 'none';
-    document.getElementById('tabRepoContent').style.display = mode === 'repo' ? '' : 'none';
+    document.getElementById('paneSchema').style.display = mode === 'schema' ? '' : 'none';
+    document.getElementById('paneRepo').style.display = mode === 'repo' ? '' : 'none';
 }
 
 // ── Source Control ──
 function onRepoChanged() {
     var accountId = document.getElementById('repoAccount').value;
     var repoName = document.getElementById('repoName').value.trim();
-    send('setSolutionRepo', JSON.stringify({ accountId: accountId, repoName: repoName }));
+    send('setSolutionRepo', JSON.stringify({ sln: repoSln, accountId: accountId, repoName: repoName }));
 
     var status = document.getElementById('repoStatus');
     if (accountId && repoName) {
@@ -467,7 +472,7 @@ function applySelection() {
     for (var i = 0; i < checks.length; i++) {
         if (checks[i].checked) selected.push(checks[i].getAttribute('data-id'));
     }
-    send('applySourceSelection', JSON.stringify(selected));
+    send('applySourceSelection', JSON.stringify({ sln: modalSln, ids: selected }));
     closeManageModal();
 }
 
@@ -620,6 +625,7 @@ if (window.chrome && window.chrome.webview) {
         if (msg.type === 'setGlobalSources') {
             globalSources = msg.items || [];
             linkedIds = msg.linkedIds || [];
+            modalSln = typeof msg.sln === 'string' ? msg.sln : null;
             renderGlobalSources();
         }
         if (msg.type === 'indexStatus') {
@@ -681,6 +687,7 @@ if (window.chrome && window.chrome.webview) {
             sel.value = curVal;
         }
         if (msg.type === 'setSolutionRepo') {
+            repoSln = typeof msg.sln === 'string' ? msg.sln : null;
             document.getElementById('repoAccount').value = msg.accountId || '';
             document.getElementById('repoName').value = msg.repoName || '';
         }
