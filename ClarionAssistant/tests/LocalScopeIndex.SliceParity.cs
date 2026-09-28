@@ -52,6 +52,28 @@ static class LocalScopeIndexSliceParity
         string text;
         Check(LocalScopeIndex.TryGetHeaderText(map.HeaderHash, out text) && text == map.HeaderText && two.StartsWith(text), "R11.4",
               "the header text is cached under the map's hash, and is the buffer's prefix up to ProcA");
+
+        // G2: the page's header text - getValueInRange of lines 1..first-1, joined with the MODEL's EOL, no
+        // trailing EOL ('' when the first procedure is on line 1) - hashes to the map's key, so headerSync works.
+        foreach (var eol in new[] { "\r\n", "\n" })
+        {
+            string buf = two.Replace("\r\n", "\n").Replace("\n", eol);
+            var m = LocalScopeIndex.BuildSpanMap(buf);
+            var modelLines = buf.Replace("\r\n", "\n").Split('\n');
+            string pageHeader = string.Join(eol, modelLines.Take(m.Procs[0].Start - 1));
+            LocalScopeIndex.ResetCaches();   // a host that lost its header
+            string back;
+            Check(m.HeaderText == pageHeader && LocalScopeIndex.RegisterHeader(m.HeaderHash, pageHeader)
+                  && LocalScopeIndex.TryGetHeaderText(m.HeaderHash, out back) && back == pageHeader,
+                  "G2" + (eol == "\n" ? ".lf" : ".crlf"), "the page-built header (" + (eol == "\n" ? "LF" : "CRLF") + ", no trailing EOL) matches the map's key: headerSync succeeds");
+        }
+        {
+            string firstLine = "ProcX                PROCEDURE\r\n  CODE\r\n";
+            var m = LocalScopeIndex.BuildSpanMap(firstLine);
+            Check(m.Procs.Count == 1 && m.Procs[0].Start == 1 && m.HeaderText == "" && LocalScopeIndex.RegisterHeader(m.HeaderHash, ""),
+                  "G2.empty", "the first procedure on line 1: the header is '' and headerSync with '' succeeds");
+        }
+        map = LocalScopeIndex.BuildSpanMap(two);
         string planted;
         Check(!LocalScopeIndex.RegisterHeader("stale-hash", text + "ModX LONG\r\n") && !LocalScopeIndex.TryGetHeaderText("stale-hash", out planted),
               "R11.5", "headerSync FAILS CLOSED: a text that does not hash to the caller's key is refused and stored under no key (F9)");
@@ -61,7 +83,7 @@ static class LocalScopeIndexSliceParity
               "R11.5b", "headerSync with a matching key is cached");
 
         // F2: an edited header travels as text in the slice; the answer reflects it with no headerSync.
-        string editedHeader = text + "ModZ                 LONG\r\n";
+        string editedHeader = text + "\r\nModZ                 LONG";   // canonical: no trailing EOL
         var ma = map.Procs.First(p => p.Name == "ProcA");
         var editedLines = (editedHeader + two.Substring(text.Length)).Split('\n');
         int shift = 1;   // one line added to the header
@@ -91,6 +113,24 @@ static class LocalScopeIndexSliceParity
         Check(sizes[3] <= LocalScopeIndex.CacheCharBudget && LocalScopeIndex.TryGetPieceText(bigMap.Procs.Last().DataHash, out newest)
               && !LocalScopeIndex.TryGetPieceText(bigMap.Procs.First().DataHash, out oldest), "F9.pieces",
               "40 pieces of 400 K chars: the piece cache holds " + sizes[3] / 1024 + " K chars (<= 8 M), newest kept, oldest evicted");
+
+        // G4: the cache is LRU (a hit keeps the mapped header), and a page-supplied edited header is never cached.
+        LocalScopeIndex.ResetCaches();
+        var m4 = LocalScopeIndex.BuildSpanMap(two);                       // the mapped header: the oldest entry
+        for (int i = 0; i < 7; i++) LocalScopeIndex.RegisterHeader(null, "  MEMBER()\r\nH" + i + "   LONG");
+        string kept;
+        LocalScopeIndex.TryGetHeaderText(m4.HeaderHash, out kept);       // a hit: now the newest
+        LocalScopeIndex.RegisterHeader(null, "  MEMBER()\r\nH8   LONG");  // 9th entry evicts the LEAST recently used
+        Check(LocalScopeIndex.TryGetHeaderText(m4.HeaderHash, out kept), "G4.lru", "a header hit since it was added survives the next eviction (LRU)");
+        LocalScopeIndex.ResetCaches();
+        m4 = LocalScopeIndex.BuildSpanMap(two);                           // the cache now holds just this header
+        int before = LocalScopeIndex.CacheSizes()[0];
+        var pa = m4.Procs.First(p => p.Name == "ProcA");
+        var sl4 = new List<SlicePiece> { new SlicePiece(pa.Start, Lines(two.Split('\n'), pa.Start, pa.End)) };
+        for (int i = 0; i < 20; i++)
+            LocalScopeIndex.Complete(m4.HeaderHash, text + "\r\nEdit" + i + "   LONG", sl4, pa.Routines, pa.Start + 16, 4, null);
+        Check(LocalScopeIndex.CacheSizes()[0] == before && LocalScopeIndex.TryGetHeaderText(m4.HeaderHash, out kept), "G4.nocache",
+              "20 requests with an edited headerText cached nothing (" + before + " headers before and after); the mapped header stays");
 
         // F10: a slice's allocation does not grow with the caret's line number (no padding per skipped line).
         {
@@ -291,6 +331,11 @@ static class LocalScopeIndexSliceParity
                     if (sc2 != sc) sc = "(header-text overload differs) " + sc2;
                     if (sm2 != sm) sm = "(header-text overload differs) " + sm2;
                 }
+                // G3: the slice holds every line the buffer does - an empty last line included.
+                var fs = LocalScopeIndex.GetScope(buf, l);
+                string fl = fs == null ? "(none)" : fs.CaretLine;
+                string sl = LocalScopeIndex.SliceCaretLine(map.HeaderHash, null, pieces, l) ?? "(none)";
+                if (fl != sl) { fm = "caret line [" + fl + "]"; sm = "caret line [" + sl + "]"; }
                 if (fc != sc || fh != sh || fm != sm)
                 {
                     diffs++;
