@@ -1305,14 +1305,24 @@ namespace ClarionAssistant.Services
             return !string.IsNullOrEmpty(uri) && _sentVersionByUri.TryGetValue(uri, out v) ? v : -1;
         }
 
-        /// <summary>K2: true when <paramref name="set"/> answers for an OLDER text than CA has since sent for
-        /// <paramref name="uri"/>. Such a set is never served as a current answer: its line numbers belong to
-        /// another text (e.g. the on-disk module RevertShadow pushed when the last embeditor closed). Unknown
-        /// versions (-1) are not stale. Call under _diagnosticsLock.</summary>
+        /// <summary>
+        /// K2/K2b: true when <paramref name="set"/> cannot be served as the answer for the text CA has sent for
+        /// <paramref name="uri"/>: its line numbers may belong to another text (e.g. the on-disk module
+        /// RevertShadow pushed when the last embeditor closed). Call under _diagnosticsLock.
+        ///
+        /// With a server that sends clarion/diagnosticsStatus (v1.0.5 does; its publishes carry NO version), only
+        /// a CONFIRMED version counts: the publish's own `version`, or the version of the complete/deferred status
+        /// that immediately follows it. An unconfirmed set, or one confirmed for an older version, is stale:
+        /// stamping at arrival would give a late publish for vN, landing after vN+1 was sent, the version N+1
+        /// (review K2, HIGH). Only a server that never sends the status falls back to the arrival stamp.
+        /// </summary>
         private bool IsStale_NoLock(DiagnosticSet set, string uri)
         {
+            if (set == null) return false;
             int sent = SentVersion(uri);
-            return set != null && set.Version >= 0 && sent >= 0 && set.Version < sent;
+            if (_serverSendsDiagnosticsStatus)
+                return set.Version < 0 || (sent >= 0 && set.Version < sent);
+            return set.ArrivalVersion >= 0 && sent >= 0 && set.ArrivalVersion < sent;
         }
 
         /// <summary>
@@ -1330,6 +1340,7 @@ namespace ClarionAssistant.Services
                 set.Entries = new List<DiagnosticEntry>();
                 set.WasPublished = false;
                 set.Version = -1;
+                set.ArrivalVersion = -1;
                 try { set.Ready.Reset(); } catch (ObjectDisposedException) { }
             }
         }
@@ -1818,9 +1829,12 @@ namespace ClarionAssistant.Services
 
                 set.Entries = entries;
                 set.WasPublished = true;
-                // K2: which text these entries describe - the publish's own `version` when the server sends one,
-                // else the version CA had last sent for the URI when the publish arrived.
-                set.Version = publishedVersion >= 0 ? publishedVersion : SentVersion(canonical);
+                // K2b: which text these entries describe. The publish's own `version` when the server sends one
+                // (confirmed). Otherwise it is UNCONFIRMED until the complete/deferred diagnosticsStatus that
+                // follows it names the version (HandleDiagnosticsStatus); the arrival stamp (the version CA had
+                // last sent) is kept only for servers that never send the status. See IsStale_NoLock.
+                set.Version = publishedVersion;
+                set.ArrivalVersion = publishedVersion >= 0 ? publishedVersion : SentVersion(canonical);
                 set.PublishSeq++;
                 set.LastUpdateTicks = DateTime.UtcNow.Ticks;
                 // Signal any waiter that new diagnostics have arrived.
@@ -1913,6 +1927,14 @@ namespace ClarionAssistant.Services
                     set.LastCompleteStatusSeq = set.StatusSeq;
                     set.LastCompleteVersion = version;
                 }
+                // K2b: confirm an unversioned publish. The server (v1.0.5 server.js) sends `complete` and
+                // `deferred` in the same synchronous step as the publish they close, so the version they carry
+                // IS the version of the entries cached now. `superseded` is NOT stamped: it is sent after the
+                // async pass, and a newer version's partial publish may have landed in between.
+                bool closesPublish = string.Equals(state, "complete", StringComparison.OrdinalIgnoreCase) ||
+                                     string.Equals(state, "deferred", StringComparison.OrdinalIgnoreCase);
+                if (closesPublish && version >= 0 && set.WasPublished && set.Version < 0)
+                    set.Version = version;
                 set.LastUpdateTicks = DateTime.UtcNow.Ticks;
                 // Wake a waiter: this may be the signal it is gated on, and it carries no publish.
                 try { set.Ready.Set(); } catch (ObjectDisposedException) { }
@@ -2080,8 +2102,12 @@ namespace ClarionAssistant.Services
             // True once a publishDiagnostics has ever arrived for this URI — distinguishes
             // an authoritative "clean file" (Entries=[]) from "we haven't heard anything yet".
             public bool WasPublished;
-            // K2: the textDocument version these entries belong to (-1 = unknown). See IsStale_NoLock.
+            // K2b: the CONFIRMED textDocument version of these entries (-1 = unconfirmed): the publish's own
+            // version, or the one its complete/deferred status named. See IsStale_NoLock.
             public int Version = -1;
+            // K2: the version CA had last sent when the publish arrived. Used ONLY for a server that never sends
+            // clarion/diagnosticsStatus.
+            public int ArrivalVersion = -1;
 
             // ── Two-phase publish tracking (ticket b7505691) ──────────────────────────────────
             // The server analyses a document in TWO passes and publishes after EACH: a
