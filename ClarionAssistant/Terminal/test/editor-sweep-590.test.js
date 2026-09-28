@@ -87,16 +87,17 @@ function loadDiag() {
     // R11/R12 (1c685f2e): at rest (never typing-unsynced) and no span map, so the slot checks send `ranges`.
     // A test may flip env.typing / env.slotSlice.
     env.typing = false;
+    env.clock = 0;         // K2c: the page clock (rtNow), advanced by the tests
     env.slotSlice = null;
     env.idleWaiters = [];
     const typingUnsynced = () => env.typing;
     const slotSlicePayload = () => env.slotSlice;
     const api = new Function('editor', 'monaco', 'requestFromHost', 'liveEditableRanges', 'setTimeout', 'clearTimeout', 'withBuffer', 'bufferKey',
-        'typingUnsynced', 'idleWaiters', 'slotSlicePayload', 'LOCAL_TIMEOUT_MS',
+        'typingUnsynced', 'idleWaiters', 'slotSlicePayload', 'LOCAL_TIMEOUT_MS', 'rtNow',
         'var diagTimer = null;\n' + diagSrc + '\nreturn { refreshDiagnostics: refreshDiagnostics, scheduleDiagnostics: scheduleDiagnostics,' +
         ' resetDiagnosticsForNewSource: resetDiagnosticsForNewSource, setSlotChecks: function (on) { slotChecksEnabled = on; } };')(
         env.editor, monaco, requestFromHost, () => [[1, 10]], fakeSetTimeout, fakeClearTimeout, withBuffer, bufferKey,
-        typingUnsynced, env.idleWaiters, slotSlicePayload, 400);
+        typingUnsynced, env.idleWaiters, slotSlicePayload, 400, () => env.clock);
     env.api = api;
     return env;
 }
@@ -304,8 +305,27 @@ async function testSlotDiagnostics() {
 // =====================================================================================================
 async function testDiagnosticsPending() {
     section('1c685f2e K2 — a pending diagnostics reply keeps the markers and re-asks the same version');
-    // The newest armed (not cleared) 1500 ms timer's index, or -1.
-    const retryAt = (env) => { for (let i = env.timers.length - 1; i >= 0; i--) if (env.timerMs[i] === 1500 && !env.clearedIds.has(i + 1)) return i; return -1; };
+    // The newest armed re-ask timer's index (not the 600 ms debounce, not cleared, not fired), or -1.
+    const retryAt = (env) => {
+        for (let i = env.timers.length - 1; i >= 0; i--)
+            if (env.timerMs[i] !== 600 && !env.clearedIds.has(i + 1) && !env.timers[i].fired) return i;
+        return -1;
+    };
+    // Answer every re-ask with pending until the page stops asking (or `maxMs` of page time passes):
+    // the delays it chose, and the page time when it stopped.
+    async function pendUntilStopped(env, maxMs) {
+        const delays = [];
+        for (;;) {
+            env.pending[env.pending.length - 1].resolve({ markers: null, pending: true });
+            await flush();
+            const i = retryAt(env);
+            if (i < 0 || env.clock >= maxMs) return { delays, at: env.clock };
+            delays.push(env.timerMs[i]);
+            env.clock += env.timerMs[i];
+            env.timers[i].fired = true;
+            env.timers[i]();
+        }
+    }
     const PENDING = { markers: null, pending: true };
     {
         const env = loadDiag();
@@ -318,7 +338,8 @@ async function testDiagnosticsPending() {
         check('K2 a pending reply leaves the LSP markers on screen (no repaint, no clear)', env.applied.length === 1 && env.applied[0][0] === 4,
             JSON.stringify(env.applied));
         const i = retryAt(env);
-        check('K2 ...and schedules ONE re-ask about 1500 ms later', i >= 0 && env.timerMs.filter(ms => ms === 1500).length === 1);
+        check('K2 ...and schedules ONE re-ask about 1500 ms later', i >= 0 && env.timerMs[i] === 1500 &&
+            env.timerMs.filter(ms => ms !== 600).length === 1);
         env.timers[i]();                                   // 1.5 s later, same version
         check('K2 the re-ask requests diagnostics for the same version', env.pending.length === 3 && env.pending[2].payload.v === 1,
             'requests ' + env.pending.length);
@@ -337,19 +358,19 @@ async function testDiagnosticsPending() {
         check('K2 a version change cancels the re-ask (the normal debounce takes over)', env.pending.length === 1, 'requests ' + env.pending.length);
     }
     {
+        // K2c: a full LSP pass on a 3.2 MB module can take minutes - keep asking, at growing intervals, up to a cap.
         const env = loadDiag();
         env.api.refreshDiagnostics();
-        let n = 0;
-        for (let k = 0; k < 8; k++) {
-            env.pending[env.pending.length - 1].resolve(PENDING);
-            await flush();
-            const i = retryAt(env);
-            if (i < 0 || env.timers[i].fired) break;
-            env.timers[i].fired = true;
-            env.timers[i]();
-            n++;
-        }
-        check('K2 it gives up after 5 re-asks', n === 5 && env.pending.length === 6, 're-asks ' + n + ', requests ' + env.pending.length);
+        const early = await pendUntilStopped(env, 20000);
+        check('K2c the re-ask intervals grow: 1.5 s, 3 s, 5 s, then every 10 s', early.delays.slice(0, 5).join() === '1500,3000,5000,10000,10000',
+            early.delays.join());
+        check('K2c a pending reply at 20 s is still re-asked', early.at >= 20000 && retryAt(env) >= 0, 'stopped at ' + early.at);
+        const rest = await pendUntilStopped(env, 10 * 60 * 1000);
+        // This small buffer: 2 x diagTimeoutFor = 20 s, so the 120 s floor is the cap.
+        // (2 x diagTimeoutFor never exceeds 120 s while DIAG_TIMEOUT_MAX_MS is 60 s, so the floor is the cap
+        // for every buffer size today; the 2x term only matters if that maximum is raised.)
+        check('K2c the total is capped (the 120 s floor): it stops after 120 s, not before',
+            rest.at >= 120000 && rest.at < 130000 && retryAt(env) < 0, 'stopped at ' + rest.at);
     }
     {
         const env = loadDiag();
