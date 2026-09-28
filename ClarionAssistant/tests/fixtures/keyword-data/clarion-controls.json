@@ -1,0 +1,20 @@
+{
+  "windowControls": [
+    {
+      "name": "BUTTON",
+      "description": "Declares a pushbutton control that executes when clicked",
+      "syntax": "BUTTON([text])",
+      "commonAttributes": [
+        "AT",
+        "USE",
+        "KEY",
+        "DEFAULT",
+        "ICON",
+        "TIP",
+        "FLAT",
+        "HIDE",
+        "DISABLE"
+      ]
+    }
+  ]
+}

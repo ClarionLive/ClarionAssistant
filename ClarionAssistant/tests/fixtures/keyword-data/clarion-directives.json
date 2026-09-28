@@ -1,0 +1,10 @@
+{
+  "directives": [
+    {
+      "name": "COMPILE",
+      "syntax": "COMPILE(terminator [,expression])",
+      "description": "Compiler directive that includes a block of source code in compilation. Expression parameter is optional - if omitted, always compiles code. If provided (typically an EQUATE), compiles code conditionally when expression is TRUE. Block ends at the line containing the terminator string.",
+      "category": "Compiler Directive"
+    }
+  ]
+}

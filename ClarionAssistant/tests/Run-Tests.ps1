@@ -198,7 +198,8 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\LiveDictionaryIndex.Test.cs", "Services\LiveDictionaryIndex.cs", "Services\ClarionAppDataReader.Model.cs",
                            "Services\LocalScopeIndex.cs", "Services\LspClient.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs",
                            "CodeGraph\Parsing\ClarionBuiltins.cs")
-               Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }
+               Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
+               Args = @((Join-Path $TestDir "fixtures\keyword-data")) }
             # 1c685f2e: held-open NOCASE symbol lookups - range queries and their plans, the parameter
             # leak, inherited members across both DBs, the old-schema fallback, and the connection
             # lifecycle (a held handle must never block the reindex delete). Synthetic x86 SQLite DBs.

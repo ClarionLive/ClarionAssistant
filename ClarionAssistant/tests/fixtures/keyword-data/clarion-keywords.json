@@ -1,0 +1,22 @@
+{
+  "keywords": [
+    {
+      "name": "LOOP",
+      "syntax": "LOOP",
+      "description": "Initiates an iterative statement execution structure. Forms: LOOP (infinite), LOOP count TIMES, LOOP i=initial TO limit BY step, LOOP UNTIL expression, LOOP WHILE expression. Must end with END or UNTIL/WHILE terminator.",
+      "category": "Control Flow"
+    },
+    {
+      "name": "RETURN",
+      "syntax": "RETURN",
+      "description": "Terminates PROGRAM or PROCEDURE and returns control to caller. Expression required for procedures returning values (may be NULL for reference returns). Automatically closes local APPLICATION/WINDOW/REPORT/VIEW/QUEUE structures. Implicit RETURN occurs at end if not specified. Closes program and files when used in PROGRAM.",
+      "category": "Control Flow"
+    },
+    {
+      "name": "ROUTINE",
+      "syntax": "label ROUTINE\n[DATA\n  local data\nCODE]\n  statements",
+      "description": "Declares a local subroutine within PROCEDURE. Can have optional DATA/CODE sections for local variables. Called with DO statement. Cannot duplicate PROCEDURE label. Useful for organizing code within procedures without overhead of separate procedure calls.",
+      "category": "Program Structure"
+    }
+  ]
+}
