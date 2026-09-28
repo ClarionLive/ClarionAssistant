@@ -103,6 +103,26 @@
   }
   .form-select:hover { border-color: #585b70; }
   .form-select:focus { border-color: #89b4fa; }
+  /* Read-only value in a select's box (VERSION, 286f2e57): same height and width rules, so the pane keeps its measured height. */
+  .form-value {
+    flex: 1;
+    min-width: 120px;
+    height: 22px;
+    line-height: 20px;
+    box-sizing: border-box;
+    background: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    padding: 0 6px;
+    font-size: 11px;
+    font-family: 'Segoe UI', sans-serif;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: default;
+    user-select: text;
+  }
 
   /* Buttons */
   .btn {
@@ -285,6 +305,7 @@
   }
   body.light .form-select:hover { border-color: #acb0be; }
   body.light .form-select:focus { border-color: #1e66f5; }
+  body.light .form-value { background-color: #e6e9ef; color: #4c4f69; border-color: #bcc0cc; }
   body.light .btn { border-color: #bcc0cc; background-color: #e6e9ef; color: #4c4f69; }
   body.light .btn:hover { background-color: #ccd0da; border-color: #acb0be; }
   body.light .btn:active { background-color: #bcc0cc; }
@@ -336,8 +357,9 @@
         </div>
         <div class="config-row">
           <span class="config-label">Version</span>
-          <select id="versionSelect" class="form-select"></select>
-          <button class="btn-icon" onclick="send('refresh')" title="Re-detect from Clarion IDE (clears your saved version selection)">&#8635;</button>
+          <!-- Read-only (286f2e57): the IDE's Build > Set Clarion Version decides; CA has no version picker. -->
+          <span id="versionValue" class="form-value" title="Change it with Build &gt; Set Clarion Version">(not detected)</span>
+          <button class="btn-icon" onclick="send('refresh')" title="Re-read Build &gt; Set Clarion Version from the IDE">&#8635;</button>
         </div>
       </div>
 
@@ -380,11 +402,6 @@
     setTheme(newTheme);
     send('themeChanged', newTheme);
   }
-
-  // Version select change
-  document.getElementById('versionSelect').addEventListener('change', function() {
-    send('versionChanged', this.value);
-  });
 
   // Solution select change
   document.getElementById('solutionSelect').addEventListener('change', function() {
@@ -432,16 +449,10 @@
   window.chrome.webview.addEventListener('message', function(e) {
     var msg = JSON.parse(e.data);
 
-    if (msg.type === 'setVersions') {
-      var sel = document.getElementById('versionSelect');
-      sel.innerHTML = '';
-      msg.items.forEach(function(item) {
-        var opt = document.createElement('option');
-        opt.value = item.value;
-        opt.textContent = item.label;
-        if (item.selected) opt.selected = true;
-        sel.appendChild(opt);
-      });
+    if (msg.type === 'setVersion') {
+      var vv = document.getElementById('versionValue');
+      vv.textContent = msg.label || '(not detected)';
+      vv.title = msg.title || '';
     }
 
     if (msg.type === 'setSolutions') {

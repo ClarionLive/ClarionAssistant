@@ -338,19 +338,12 @@ namespace ClarionAssistant
                 case "createClass": OnCreateClass(); break;
                 case "evaluateCode": OnEvaluateCode(sender, EventArgs.Empty); break;
                 case "refresh":
-                    // Issue #32: refresh button intentionally clears the saved
-                    // version override so the dropdown can be reset to whatever
-                    // the Clarion IDE currently has selected. DetectFromIde() is
-                    // also called from non-user paths (startup, solution change)
-                    // and must NOT clear the override in those cases — that's
-                    // why the clear lives here, not inside DetectFromIde.
-                    EffectiveClarionVersion.ClearOverride();
+                    // Re-read the IDE's Build > Set Clarion Version now (the change hook and 10 s poll do it too).
                     DetectFromIde();   // also restarts the LSP if the version moved
                     break;
                 case "browse": OnBrowseSolution(sender, EventArgs.Empty); break;
                 case "fullIndex": RunIndex(false); break;
                 case "updateIndex": RunIndex(true); break;
-                case "versionChanged": OnVersionChanged(e.Data); break;
                 case "solutionChanged": OnSolutionChanged(e.Data); break;
                 case "themeChanged": OnThemeChanged(e.Data); break;
                 case "headerTab": OnHeaderTab(e.Data); break;
@@ -676,13 +669,12 @@ namespace ClarionAssistant
                 string live;
                 if (ClarionVersionService.TryGetLiveIdeVersionName(out live))
                     _lastIdeVersionChoice = ClarionVersionSelector.NormalizeIdeChoice(live);
-                _header.SetVersions(new[] { "(not detected)" }, new[] { "" }, 0);
+                _header.SetVersion("(not detected)", "No Clarion version found in ClarionProperties.xml");
                 return;
             }
 
-            // 16d140e9: ONE resolution for the panel, the indexer, the LSP and the library graph. The IDE's
-            // Build > Set Clarion Version decides; CA's saved VERSION choice (Issue #32, now per solution)
-            // applies only while the IDE's choice is still the one it was saved against.
+            // 16d140e9: ONE resolution for the panel, the indexer, the LSP and the library graph. 286f2e57: it is
+            // the IDE's Build > Set Clarion Version only; CA displays it and has no picker of its own.
             var selection = EffectiveClarionVersion.Resolve(_versionInfo);
             string previousDescribe = _versionSelection != null ? _versionSelection.Describe() : null;
             _currentVersionConfig = selection.Config;
@@ -699,26 +691,10 @@ namespace ClarionAssistant
                 EffectiveClarionVersion.NotifyChanged();
             }
 
-            var labels = new System.Collections.Generic.List<string>();
-            var values = new System.Collections.Generic.List<string>();
-            int selectedIdx = 0;
-
-            for (int i = 0; i < _versionInfo.Versions.Count; i++)
-            {
-                var config = _versionInfo.Versions[i];
-                string label = config.Name;
-                bool selected = _currentVersionConfig != null && config.Name == _currentVersionConfig.Name;
-                // Say which source chose the selected entry — never resolve a version silently.
-                if (selected && selection.ShortSource != null)
-                    label += " (" + selection.ShortSource + ")";
-
-                labels.Add(label);
-                values.Add(config.Name);
-                if (selected)
-                    selectedIdx = i;
-            }
-
-            _header.SetVersions(labels.ToArray(), values.ToArray(), selectedIdx);
+            // Say which source chose it — never resolve a version silently.
+            string label = _currentVersionConfig == null ? "(not detected)"
+                : _currentVersionConfig.Name + (selection.ShortSource != null ? " (" + selection.ShortSource + ")" : "");
+            _header.SetVersion(label, describe + ". Change it with Build > Set Clarion Version.");
         }
 
         /// <summary>The IDE's Build &gt; Set Clarion Version choice at the last resolution (normalized).</summary>
@@ -753,8 +729,6 @@ namespace ClarionAssistant
         private void HookIdeVersionChanges()
         {
             if (_ideVersionHooked) return;
-            // CA's VERSION override is kept per IDE solution, like the IDE's own choice (16d140e9).
-            EffectiveClarionVersion.SolutionPathProvider = () => EditorService.GetOpenSolutionPath();
             try
             {
                 _ideVersionHandler = (s, e) =>
@@ -795,24 +769,6 @@ namespace ClarionAssistant
                 LspService.RestartIfVersionChanged(_currentVersionConfig != null ? _currentVersionConfig.Name : null);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[AssistantChatControl] SyncVersionWithIde: " + ex.Message); }
-        }
-
-        private void OnVersionChanged(string value)
-        {
-            if (_versionInfo != null && !string.IsNullOrEmpty(value))
-            {
-                _currentVersionConfig = _versionInfo.Versions.Find(v => v.Name == value);
-                if (_currentVersionConfig != null)
-                {
-                    // Issue #32: persist the user's choice so it survives IDE reload — recorded against
-                    // the IDE's current Build > Set Clarion Version choice, so it yields as soon as the
-                    // developer changes that (16d140e9). Picking what the IDE already resolves to clears it.
-                    EffectiveClarionVersion.SaveOverride(value, _versionInfo);
-                    LoadVersions(); // refresh labels so the "(saved)" tag appears
-                }
-                LoadRedFile();
-                LspService.RestartIfVersionChanged(_currentVersionConfig != null ? _currentVersionConfig.Name : null);
-            }
         }
 
         private void LoadRedFile()

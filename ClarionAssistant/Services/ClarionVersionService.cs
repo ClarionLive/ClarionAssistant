@@ -24,6 +24,12 @@ namespace ClarionAssistant.Services
         public bool? IsWindowsVersion { get; set; }
 
         /// <summary>
+        /// The entry's &lt;CWVersion&gt; (e.g. 12026 for Clarion 12, 11100 for 11.1, 2000 for a Clarion.NET entry),
+        /// or null when the XML does not say. Its thousands are the Clarion major version.
+        /// </summary>
+        public int? CWVersion { get; set; }
+
+        /// <summary>
         /// The ClarionGraph library-DB key for THIS version (16d140e9): its own Clarion.exe build
         /// (<paramref name="exeBuildKey"/>, e.g. "12.0.0.14313"; "nobuild" when unknown) plus a stable
         /// fingerprint of its root, which is where its LibSrc comes from. Entries sharing one root share one
@@ -124,7 +130,9 @@ namespace ClarionAssistant.Services
         /// prove about itself, and first-match survives only as the tie-break:
         ///   1. Drop IsWindowsVersion=False — Clarion.exe is the Win32 IDE; a Clarion.NET entry never
         ///      is. An entry that omits the flag stays a candidate.
-        ///   2. The exe's build number (FileVersion's last part, e.g. 13372) as a whole number in the
+        ///   2. Drop entries whose CWVersion major (CWVersion / 1000) differs from the exe's FileMajorPart —
+        ///      C:\Clarion12\bin holds "Clarion 12.0.14313" (12026) and "Clarion.NET 4.0.14313" (2000).
+        ///   3. The exe's build number (FileVersion's last part, e.g. 13372) as a whole number in the
         ///      entry name — how Clarion names the entries it creates ("Clarion 11.0.13372").
         /// Each step narrows only when it leaves at least one candidate, so an XML without those
         /// fields, or a renamed entry, degrades to the old answer rather than to none.
@@ -148,6 +156,12 @@ namespace ClarionAssistant.Services
             // Drop only PROVEN .NET entries: an older XML can mark the .NET entry False and omit
             // the flag on the Win32 one, and "== true" would then keep nothing and fall to first-match.
             candidates = Narrow(candidates, v => v.IsWindowsVersion != false);
+
+            // 286f2e57: CWVersion's thousands are the Clarion major version (C12 12026, Clarion.NET 2000), so an
+            // entry whose major differs from the exe's is not this IDE, even one that omits IsWindowsVersion.
+            int major = ClarionExeVersion != null ? ClarionExeVersion.Major : -1;
+            if (major > 0)
+                candidates = Narrow(candidates, v => v.CWVersion == null || v.CWVersion.Value / 1000 == major);
 
             int build = ClarionExeVersion != null ? ClarionExeVersion.Revision : -1;
             if (build > 0)
@@ -359,6 +373,12 @@ namespace ClarionAssistant.Services
                     bool.TryParse(winNode.Attributes["value"].Value, out isWin))
                     config.IsWindowsVersion = isWin;
 
+                var cwNode = node.SelectSingleNode("CWVersion");
+                int cw;
+                if (cwNode != null && cwNode.Attributes["value"] != null &&
+                    int.TryParse(cwNode.Attributes["value"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out cw))
+                    config.CWVersion = cw;
+
                 var redNode = node.SelectSingleNode("Properties[@name='RedirectionFile']");
                 if (redNode != null)
                 {
@@ -445,32 +465,12 @@ namespace ClarionAssistant.Services
     public enum ClarionVersionTier
     {
         None,
-        /// <summary>CA's own VERSION dropdown choice, still valid because the IDE's choice has not moved since.</summary>
-        SavedOverride,
         /// <summary>The IDE's Build &gt; Set Clarion Version, naming a configured entry.</summary>
         IdeSelection,
         /// <summary>The IDE is on "Current" (or names nothing configured): the running Clarion.exe's own entry.</summary>
         RunningExe,
         /// <summary>Nothing matched: the first entry in ClarionProperties.xml.</summary>
         FirstListed
-    }
-
-    /// <summary>
-    /// What became of CA's saved VERSION choice in a selection. Resolution NEVER deletes it (pipeline run 1):
-    /// it is only applied or suspended, so a transient or foreign read — another IDE sharing settings.txt, a
-    /// solution mid-open — cannot destroy a developer's choice. Only the panel's own VERSION change and
-    /// refresh button write it.
-    /// </summary>
-    public enum SavedOverrideState
-    {
-        /// <summary>No saved choice for this solution.</summary>
-        None,
-        /// <summary>The IDE's choice is still the one it was saved against: it decides.</summary>
-        Applied,
-        /// <summary>The IDE's choice moved since it was saved: the IDE decides; it applies again if the IDE returns.</summary>
-        Suspended,
-        /// <summary>It names a version this IDE does not have configured: the IDE decides.</summary>
-        Unavailable
     }
 
     /// <summary>The outcome of <see cref="ClarionVersionSelector.Select"/>: one version for every CA component.</summary>
@@ -485,28 +485,18 @@ namespace ClarionAssistant.Services
         /// <summary>True when <see cref="IdeChoice"/> was read live from the running IDE, false when from the XML.</summary>
         public bool IdeChoiceLive { get; internal set; }
 
-        /// <summary>The IDE choice as a basis key: the name, or "Current@&lt;running exe dir&gt;" (a C10 IDE and a
-        /// C12 IDE both on "Current" are on different versions).</summary>
-        public string IdeChoiceKey { get; internal set; }
-
-        public SavedOverrideState OverrideState { get; internal set; }
-
-        /// <summary>The saved choice's version name, when there is one.</summary>
-        public string OverrideName { get; internal set; }
-
-        /// <summary>Why a saved override was not applied, or null.</summary>
-        public string Note { get; internal set; }
-
-        /// <summary>Short source label for the VERSION dropdown ("saved", "IDE", "first listed").</summary>
+        /// <summary>
+        /// Short source label for the VERSION display: "IDE" whenever the IDE's Build &gt; Set Clarion Version
+        /// decided, including "Current" (the running Clarion's own version); "first listed" when nothing matched.
+        /// </summary>
         public string ShortSource
         {
             get
             {
                 switch (Tier)
                 {
-                    case ClarionVersionTier.SavedOverride: return "saved";
-                    case ClarionVersionTier.IdeSelection: return "IDE";
-                    case ClarionVersionTier.RunningExe: return "IDE";   // the IDE is on "Current": its own running version (286f2e57)
+                    case ClarionVersionTier.IdeSelection:
+                    case ClarionVersionTier.RunningExe: return "IDE";
                     case ClarionVersionTier.FirstListed: return "first listed";
                     default: return null;
                 }
@@ -520,9 +510,6 @@ namespace ClarionAssistant.Services
             string src;
             switch (Tier)
             {
-                case ClarionVersionTier.SavedOverride:
-                    src = "CA's saved VERSION choice (the IDE's Build > Set Clarion Version is still '" + IdeChoice + "', as when it was saved)";
-                    break;
                 case ClarionVersionTier.IdeSelection:
                     src = "the IDE's Build > Set Clarion Version" + (IdeChoiceLive ? "" : " (read from ClarionProperties.xml - no live IDE)");
                     break;
@@ -536,32 +523,28 @@ namespace ClarionAssistant.Services
                     src = "no Clarion version detected";
                     break;
             }
-            return "Clarion version: " + name + " - chosen by " + src + (string.IsNullOrEmpty(Note) ? "" : ". " + Note);
+            return "Clarion version: " + name + " - chosen by " + src;
         }
     }
 
     /// <summary>
-    /// The ONE rule for which Clarion version CA uses (16d140e9). Pure — no IDE, no settings file — so the
-    /// harness (tests\ClarionVersionSelector.Test.cs) drives it directly.
+    /// The ONE rule for which Clarion version CA uses. Pure — no IDE, no settings file — so the harness
+    /// (tests\ClarionVersionSelector.Test.cs) drives it directly.
     ///
-    /// The IDE's Build &gt; Set Clarion Version is the authority. CA's own VERSION dropdown can override it,
-    /// but an override is recorded together with the IDE choice it was made against (its "basis"), and it
-    /// holds only while the IDE's choice is still that basis. When the developer picks a different version in
-    /// Build &gt; Set Clarion Version (or opens a solution whose saved choice differs), the IDE wins and the
-    /// override is suspended (kept, not deleted). Overrides are stored per solution. Before this, the override
-    /// was a single global value that won over the IDE forever — across every solution, and across every IDE
-    /// sharing settings.txt.
-    ///
-    /// A LEGACY override (no basis recorded) is treated as made against "Current": it keeps working while the
-    /// IDE is on its own version (the GH #32 case it was invented for) AND it names an entry on the running exe's
-    /// bin, and yields as soon as the IDE names a version explicitly (286f2e57: settings.txt is shared by every
-    /// IDE, so without the bin check a C10 IDE's pick applied in a C12 IDE on "Current").
+    /// 286f2e57: the IDE's Build &gt; Set Clarion Version is the ONLY authority. CA displays it and has no version
+    /// picker of its own. Before, CA's VERSION dropdown saved an override (GH #32; per solution since 16d140e9)
+    /// that could outrank the IDE: the Owner's C12 IDE on "(Current Version)" showed "Clarion 10 Active And
+    /// Updated (saved)", from a legacy override another IDE had written to the shared settings.txt. Two places
+    /// to set one version was the defect. The overrides are no longer read, and are deleted once at startup
+    /// (<see cref="StaleOverrideKeys"/>).
     /// </summary>
     public static class ClarionVersionSelector
     {
         public const string CurrentChoice = "Current";
 
-        /// <summary>True for the IDE's "use the running version" choice: empty, "Current", "(Current Version)".</summary>
+        /// <summary>True for the IDE's "use the running version" choice: empty, "Current", "(Current Version)".
+        /// Clarion also stores an explicit pick of the RUNNING version's own name as null (the
+        /// Versions.ActiveWinVersion setter), so that reaches CA as empty too.</summary>
         public static bool IsCurrentChoice(string name)
         {
             return string.IsNullOrEmpty(name) || name.IndexOf("Current", StringComparison.OrdinalIgnoreCase) >= 0;
@@ -572,7 +555,7 @@ namespace ClarionAssistant.Services
             return IsCurrentChoice(name) ? CurrentChoice : name.Trim();
         }
 
-        public static ClarionVersionSelection Select(ClarionVersionInfo info, string overrideName, string overrideBasis)
+        public static ClarionVersionSelection Select(ClarionVersionInfo info)
         {
             var sel = new ClarionVersionSelection { Tier = ClarionVersionTier.None };
             if (info == null) return sel;
@@ -582,145 +565,31 @@ namespace ClarionAssistant.Services
             sel.Config = ideConfig;
             sel.Tier = ideConfig != null ? ideTier : ClarionVersionTier.None;
             sel.IdeChoice = NormalizeIdeChoice(info.CurrentVersionName);
-            sel.IdeChoiceKey = IdeChoiceKey(info);
             sel.IdeChoiceLive = info.CurrentVersionFromLiveIde;
-
-            if (string.IsNullOrEmpty(overrideName)) return sel;
-            sel.OverrideName = overrideName;
-
-            var ov = info.Versions.Find(v => v.Name == overrideName);
-            if (ov == null)
-            {
-                sel.OverrideState = SavedOverrideState.Unavailable;
-                sel.Note = "CA's saved VERSION choice '" + overrideName + "' is not a configured Clarion version in this IDE, so the IDE's choice is used";
-                return sel;
-            }
-
-            if (BasisMatches(overrideBasis, sel.IdeChoiceKey))
-            {
-                // 286f2e57: an UNQUALIFIED "Current" basis (the legacy global value, or a record saved where the
-                // exe was unknown) does not say which IDE it was made in, and settings.txt is shared by every
-                // IDE. It applies only to an entry on the running exe's own bin (GH #32's case: a pick among
-                // entries sharing that bin). The Owner's C12 IDE on "Current" applied a legacy "Clarion 10 Active
-                // And Updated" from a C10 IDE, and picking "Clarion 12.0.14313" did not help: Clarion stores the
-                // running version's own name as "Current" (Versions.ActiveWinVersion setter, IsCurrent).
-                if (IsUnqualifiedCurrent(overrideBasis) && !OnRunningBin(info, ov))
-                {
-                    sel.OverrideState = SavedOverrideState.Suspended;
-                    sel.Note = "CA's saved VERSION choice '" + overrideName + "' is suspended: it was saved for 'Current' without naming the IDE, "
-                        + "and its bin (" + ov.BinPath + ") is not the running Clarion's";
-                    return sel;
-                }
-                sel.Config = ov;
-                sel.Tier = ClarionVersionTier.SavedOverride;
-                sel.OverrideState = SavedOverrideState.Applied;
-                return sel;
-            }
-
-            sel.OverrideState = SavedOverrideState.Suspended;
-            sel.Note = "CA's saved VERSION choice '" + overrideName + "' is suspended: it was made while the IDE's Build > Set Clarion Version was '"
-                + NormalizeIdeChoice(overrideBasis) + "', and the IDE now says '" + sel.IdeChoice + "'";
             return sel;
         }
 
-        /// <summary>
-        /// The IDE's choice as a basis key: the version name, or for "Current" the running exe's folder too
-        /// ("Current@C:\CLARION12\BIN") — "Current" means a different version in each installed IDE.
-        /// </summary>
-        public static string IdeChoiceKey(ClarionVersionInfo info)
-        {
-            string name = info != null ? info.CurrentVersionName : null;
-            if (!IsCurrentChoice(name)) return name.Trim();
-            string dir = null;
-            try { dir = info != null && !string.IsNullOrEmpty(info.ClarionExePath) ? System.IO.Path.GetDirectoryName(info.ClarionExePath) : null; }
-            catch { }
-            return string.IsNullOrEmpty(dir) ? CurrentChoice : CurrentChoice + "@" + dir.TrimEnd('\\').ToUpperInvariant();
-        }
+        // ---- Retired CA overrides (286f2e57) ---------------------------------------------------------------
 
-        private static bool IsUnqualifiedCurrent(string savedBasis)
-        {
-            string b = string.IsNullOrEmpty(savedBasis) ? CurrentChoice : savedBasis.Trim();
-            return IsCurrentChoice(b) && b.IndexOf('@') < 0;
-        }
-
-        /// <summary>Is <paramref name="config"/> on the running Clarion.exe's bin? True when the exe is unknown (nothing to contradict).</summary>
-        private static bool OnRunningBin(ClarionVersionInfo info, ClarionVersionConfig config)
-        {
-            string dir = null;
-            try { dir = !string.IsNullOrEmpty(info.ClarionExePath) ? System.IO.Path.GetDirectoryName(info.ClarionExePath) : null; }
-            catch { }
-            if (string.IsNullOrEmpty(dir)) return true;
-            return config.BinPath != null
-                && string.Equals(dir.TrimEnd('\\'), config.BinPath.TrimEnd('\\'),StringComparison.OrdinalIgnoreCase);
-        }
-
-        /// <summary>
-        /// Does a saved basis still describe the IDE's choice? Exact (case-insensitive) match; an unqualified
-        /// "Current" (legacy, or saved where the exe was unknown) matches "Current" in any IDE.
-        /// </summary>
-        public static bool BasisMatches(string savedBasis, string ideChoiceKey)
-        {
-            string b = string.IsNullOrEmpty(savedBasis) ? CurrentChoice : savedBasis.Trim();
-            string k = string.IsNullOrEmpty(ideChoiceKey) ? CurrentChoice : ideChoiceKey;
-            if (IsCurrentChoice(b) && b.IndexOf('@') < 0) return IsCurrentChoice(k);
-            return string.Equals(b, k, StringComparison.OrdinalIgnoreCase);
-        }
-
-        // ---- Per-solution storage (16d140e9, pipeline run 1) ------------------------------------------------
-        // The IDE keeps Build > Set Clarion Version PER SOLUTION, and settings.txt is shared by every IDE the
-        // developer runs, so CA's override is stored per solution too, as ONE record (name + basis) written in
-        // a single Set — never two keys another instance could see half-updated. Resolution only reads it.
-
-        /// <summary>The pre-16d140e9 global override key: still READ, as a fallback made against "Current".</summary>
+        /// <summary>The pre-16d140e9 global override key (GH #32). No longer read; deleted at startup.</summary>
         public const string LegacyOverrideKey = "Clarion.Version.Override";
 
+        /// <summary>The 16d140e9 per-solution override keys ("Clarion.Version.Override@&lt;SLN&gt;"). No longer read; deleted at startup.</summary>
         public const string SolutionOverrideKeyPrefix = "Clarion.Version.Override@";
 
-        /// <summary>The settings key for one solution's override. Case/slash/relative spellings of one .sln agree.</summary>
-        public static string OverrideKeyFor(string slnPath)
+        /// <summary>The retired override keys among <paramref name="keys"/>: the legacy key and every per-solution one.</summary>
+        public static List<string> StaleOverrideKeys(IEnumerable<string> keys)
         {
-            string p = slnPath ?? "";
-            if (p.Length > 0)
+            var stale = new List<string>();
+            if (keys == null) return stale;
+            foreach (var k in keys)
             {
-                try { p = System.IO.Path.GetFullPath(p); } catch { }
-                p = p.Replace('/', '\\').ToUpperInvariant();
+                if (k == null) continue;
+                if (string.Equals(k, LegacyOverrideKey, StringComparison.Ordinal)
+                    || k.StartsWith(SolutionOverrideKeyPrefix, StringComparison.Ordinal))
+                    stale.Add(k);
             }
-            // settings.txt keys may not hold '=' or line breaks.
-            p = p.Replace("=", "%3D").Replace("\r", "").Replace("\n", "");
-            return SolutionOverrideKeyPrefix + p;
-        }
-
-        /// <summary>One record: "name&lt;TAB&gt;basis key" (see <see cref="IdeChoiceKey"/>). Version names never contain a tab.</summary>
-        public static string EncodeOverride(string name, string ideChoiceKey)
-        {
-            return (name ?? "") + "\t" + (string.IsNullOrEmpty(ideChoiceKey) ? CurrentChoice : ideChoiceKey);
-        }
-
-        public static bool TryDecodeOverride(string record, out string name, out string ideBasis)
-        {
-            name = null; ideBasis = null;
-            if (string.IsNullOrEmpty(record)) return false;
-            int tab = record.IndexOf('\t');
-            name = tab >= 0 ? record.Substring(0, tab) : record;
-            ideBasis = tab >= 0 ? record.Substring(tab + 1) : null;
-            if (string.IsNullOrEmpty(ideBasis)) ideBasis = CurrentChoice;
-            return !string.IsNullOrEmpty(name);
-        }
-
-        /// <summary>
-        /// Select for one solution: its own record when it has one, else the legacy global override (read as
-        /// made against an unqualified "Current": it applies while this IDE is on Current and it names an entry
-        /// on the running exe's bin, the GH #32 case, and is suspended otherwise). Pure and read-only — nothing is ever cleared here.
-        /// </summary>
-        public static ClarionVersionSelection SelectForSolution(ClarionVersionInfo info,
-            string solutionRecord, string legacyName)
-        {
-            string name, basis;
-            if (TryDecodeOverride(solutionRecord, out name, out basis))
-                return Select(info, name, basis);
-            if (!string.IsNullOrEmpty(legacyName))
-                return Select(info, legacyName, null);
-            return Select(info, null, null);
+            return stale;
         }
     }
 }

@@ -167,18 +167,13 @@ namespace ClarionAssistant.Terminal
             _webView.CoreWebView2.PostWebMessageAsString(json);
         }
 
-        /// <summary>Set the version dropdown items.</summary>
-        public void SetVersions(string[] labels, string[] values, int selectedIndex)
+        /// <summary>
+        /// Show the Clarion version CA uses (read-only, 286f2e57: the IDE's Build &gt; Set Clarion Version decides;
+        /// CA has no version picker). <paramref name="title"/> is the hover text: which source chose it.
+        /// </summary>
+        public void SetVersion(string label, string title)
         {
-            var items = new System.Text.StringBuilder("[");
-            for (int i = 0; i < labels.Length; i++)
-            {
-                if (i > 0) items.Append(",");
-                items.AppendFormat("{{\"label\":\"{0}\",\"value\":\"{1}\",\"selected\":{2}}}",
-                    EscapeJson(labels[i]), EscapeJson(values[i]), i == selectedIndex ? "true" : "false");
-            }
-            items.Append("]");
-            SendMessage("{\"type\":\"setVersions\",\"items\":" + items + "}");
+            SendMessage("{\"type\":\"setVersion\",\"label\":\"" + EscapeJson(label) + "\",\"title\":\"" + EscapeJson(title) + "\"}");
         }
 
         /// <summary>Set the solution dropdown items.</summary>

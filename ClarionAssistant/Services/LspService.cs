@@ -340,8 +340,8 @@ namespace ClarionAssistant.Services
                         if (versionConfig == null)
                         {
                             // The SAME resolution the Assistant panel, CodeGraph indexer and library graph
-                            // use: the IDE's Build > Set Clarion Version, unless CA's saved VERSION choice
-                            // still applies (16d140e9). Traced with the tier that decided it.
+                            // use: the IDE's Build > Set Clarion Version (16d140e9; the only source since
+                            // 286f2e57). Traced with the tier that decided it.
                             var sel = EffectiveClarionVersion.Resolve();
                             versionConfig = sel.Config;
                             LspTrace.Write("[LspService] " + sel.Describe());

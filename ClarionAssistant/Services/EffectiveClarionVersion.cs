@@ -8,24 +8,14 @@ namespace ClarionAssistant.Services
     /// indexer, the LSP start, the ClarionGraph library root and key, the Data pad and the Explorer header
     /// (16d140e9).
     ///
-    /// Before this, each consumer asked ClarionVersionService.Detect().GetCurrentConfig() on its own, and
-    /// only the panel and the LSP applied CA's saved VERSION override — so with an override set, the panel,
-    /// indexer and LSP used one version while the library graph, Data pad and Explorer header used the IDE's.
-    /// And the override itself was one global value that beat the IDE's Build &gt; Set Clarion Version forever.
-    ///
-    /// The override is now stored PER SOLUTION (the IDE keeps its own choice per solution too) as one record
-    /// holding the chosen name and the IDE choice it was made against. Resolution only READS it — it is applied
-    /// or suspended, never deleted — and only the panel's VERSION change / refresh button write it. The rules
-    /// live in <see cref="ClarionVersionSelector"/> (pure, harnessed).
+    /// It is the IDE's Build &gt; Set Clarion Version and nothing else (286f2e57): CA DISPLAYS the version and
+    /// has no picker of its own. Before, CA's VERSION dropdown saved an override (GH #32, per solution since
+    /// 16d140e9) that could outrank the IDE, and a legacy one written by another IDE made a Clarion 12 IDE on
+    /// "(Current Version)" show "Clarion 10 Active And Updated (saved)". The rules live in
+    /// <see cref="ClarionVersionSelector"/> (pure, harnessed).
     /// </summary>
     public static class EffectiveClarionVersion
     {
-        /// <summary>
-        /// The IDE's open solution, for the per-solution override key. Set by the addin; unset (null) in the
-        /// standalone server, where only the legacy global value is read.
-        /// </summary>
-        public static Func<string> SolutionPathProvider;
-
         private static int _generation;
 
         /// <summary>
@@ -36,12 +26,6 @@ namespace ClarionAssistant.Services
 
         public static void NotifyChanged() { Interlocked.Increment(ref _generation); }
 
-        private static string CurrentSolution()
-        {
-            try { return SolutionPathProvider != null ? SolutionPathProvider() : null; }
-            catch { return null; }
-        }
-
         /// <summary>Detect and select. Never throws; the selection's Config is null when nothing is detected.</summary>
         public static ClarionVersionSelection Resolve()
         {
@@ -50,18 +34,10 @@ namespace ClarionAssistant.Services
             return Resolve(info);
         }
 
-        /// <summary>Select from an already-detected <paramref name="info"/> for the open solution. Read-only.</summary>
+        /// <summary>Select from an already-detected <paramref name="info"/>: the IDE's choice. Read-only.</summary>
         public static ClarionVersionSelection Resolve(ClarionVersionInfo info)
         {
-            string record = null, legacy = null;
-            try
-            {
-                var settings = new SettingsService();   // fresh: reads settings.txt now, not a cached copy
-                record = settings.Get(ClarionVersionSelector.OverrideKeyFor(CurrentSolution()));
-                legacy = settings.Get(ClarionVersionSelector.LegacyOverrideKey);
-            }
-            catch { }
-            return ClarionVersionSelector.SelectForSolution(info, record, legacy);
+            return ClarionVersionSelector.Select(info);
         }
 
         /// <summary>The effective version's config, or null.</summary>
@@ -70,36 +46,28 @@ namespace ClarionAssistant.Services
             return Resolve().Config;
         }
 
-        /// <summary>
-        /// Save the developer's VERSION dropdown choice for the open solution, against the IDE's current
-        /// choice, as ONE record in one Set. Choosing what the IDE already resolves to clears the record.
-        /// Only the panel's own VERSION change calls this.
-        /// </summary>
-        public static void SaveOverride(string versionName, ClarionVersionInfo info)
-        {
-            try
-            {
-                string key = ClarionVersionSelector.OverrideKeyFor(CurrentSolution());
-                ClarionVersionTier ideTier;
-                var ideConfig = info != null ? info.ResolveIdeChoice(out ideTier) : null;
-                bool same = string.IsNullOrEmpty(versionName) || (ideConfig != null && ideConfig.Name == versionName);
-                new SettingsService().Set(key, same ? ""
-                    : ClarionVersionSelector.EncodeOverride(versionName, ClarionVersionSelector.IdeChoiceKey(info)));
-            }
-            catch { }
-        }
+        private static int _retiredOverridesDeleted;
 
-        /// <summary>Forget the VERSION dropdown choice for the open solution (the panel's refresh button), and
-        /// the legacy global one, which would otherwise still apply while the IDE is on "Current".</summary>
-        public static void ClearOverride()
+        /// <summary>
+        /// Delete CA's retired VERSION overrides from settings.txt — the legacy global key and every per-solution
+        /// record — once per process, and log what went. Nothing reads them any more; deleting them means an
+        /// older CA build sharing settings.txt cannot resurrect a stale choice later either.
+        /// </summary>
+        public static void DeleteRetiredOverridesOnce()
         {
+            if (Interlocked.Exchange(ref _retiredOverridesDeleted, 1) != 0) return;
             try
             {
-                var settings = new SettingsService();
-                settings.Set(ClarionVersionSelector.OverrideKeyFor(CurrentSolution()), "");
-                settings.Set(ClarionVersionSelector.LegacyOverrideKey, "");
+                var removed = new SettingsService().RemoveWhere(ClarionVersionSelector.StaleOverrideKeys);
+                if (removed.Count > 0)
+                    LspTrace.Write("[EffectiveClarionVersion] deleted " + removed.Count
+                        + " retired CA VERSION override(s) - CA now shows the IDE's Build > Set Clarion Version only: "
+                        + string.Join(", ", removed));
             }
-            catch { }
+            catch (Exception ex)
+            {
+                LspTrace.Write("[EffectiveClarionVersion] could not delete the retired VERSION overrides: " + ex.Message);
+            }
         }
     }
 }

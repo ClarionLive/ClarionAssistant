@@ -1159,7 +1159,7 @@ namespace ClarionAssistant
         /// <summary>
         /// 16d140e9: the header's APP / VERSION / ROOT values. APP is the open .app's full path, else the
         /// solution's (labelled SOLUTION); VERSION and ROOT are CA's effective version entry (EffectiveClarionVersion:
-        /// the IDE's Build > Set Clarion Version, or CA's saved VERSION choice while it applies) - the one it builds
+        /// the IDE's Build > Set Clarion Version; CA has no version picker of its own, 286f2e57) - the one it builds
         /// with, which may not be the install the IDE runs from. VERSION names the source that chose it, e.g.
         /// "(IDE)". Remembers the APP and ROOT paths so a click can name the line instead of sending a path. UI thread.
         /// </summary>

@@ -137,8 +137,11 @@ static class MonacoBufferSyncTest
                 string run = MethodBody(auto, "public void Run(");
                 Check("L2 the autostart command installs LspService.SolutionPathProvider (no chat needed)",
                     System.Text.RegularExpressions.Regex.IsMatch(run, @"LspService\.SolutionPathProvider\s*=\s*\(\)\s*=>\s*EditorService\.GetOpenSolutionPath\(\)"));
-                Check("L2 ...and EffectiveClarionVersion.SolutionPathProvider (the per-solution VERSION)",
-                    System.Text.RegularExpressions.Regex.IsMatch(run, @"EffectiveClarionVersion\.SolutionPathProvider\s*=\s*\(\)\s*=>\s*EditorService\.GetOpenSolutionPath\(\)"));
+                // 286f2e57: the per-solution VERSION override (and its EffectiveClarionVersion.SolutionPathProvider)
+                // is gone; addin start deletes the retired override keys once instead.
+                Check("L2 ...and deletes CA's retired VERSION overrides once (286f2e57)",
+                    run.Contains("EffectiveClarionVersion.DeleteRetiredOverridesOnce();")
+                    && !run.Contains("EffectiveClarionVersion.SolutionPathProvider"));
                 Check("L2 ...before the first start is attempted",
                     run.IndexOf("LspService.SolutionPathProvider =", StringComparison.Ordinal) >= 0 &&
                     run.IndexOf("LspService.SolutionPathProvider =", StringComparison.Ordinal) < run.IndexOf("LspService.EnsureRunningInBackground()", StringComparison.Ordinal));

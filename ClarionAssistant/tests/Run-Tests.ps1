@@ -112,11 +112,13 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\ClarionVersionService.ExeMatchTest.cs", "Services\ClarionVersionService.cs", "Services\ClarionConfigDirectory.cs")
                Refs = @("System.dll", "System.Xml.dll")
                Args = @((Join-Path $TestDir "fixtures\gh209\ClarionProperties.xml")) }
-            # 16d140e9: the IDE's Build > Set Clarion Version wins over a stale CA VERSION override, and
-            # every selection names the tier that decided it.
+            # 16d140e9 / 286f2e57: CA's version is the IDE's Build > Set Clarion Version only (no CA
+            # override, VERSION is read-only), and every selection names the tier that decided it.
+            # Gets the project dir for its source scans.
             @{ Name = "ClarionVersionSelector.Test"
                Sources = @("tests\ClarionVersionSelector.Test.cs", "Services\ClarionVersionService.cs", "Services\ClarionConfigDirectory.cs")
-               Refs = @("System.dll", "System.Xml.dll", "System.Core.dll") }
+               Refs = @("System.dll", "System.Xml.dll", "System.Core.dll")
+               Args = @($RepoDir) }
             # 16d140e9 pipeline run 1: a restart requested while a background LSP start still holds the
             # single-flight guard is served, never dropped.
             @{ Name = "LspStartGate.Test"
