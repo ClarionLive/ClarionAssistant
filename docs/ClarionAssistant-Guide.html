@@ -1578,25 +1578,15 @@
   <h3 id="ca-embeditor-open">Opening a Procedure</h3>
 
   <p>
-    The fastest way is a right-click in the Clarion application tree:
+    Open a procedure's embeds the way you always have in Clarion: right-click the procedure in the
+    application tree and choose <strong>Embeditor Source</strong>, or use the Views toolbar button. The CA
+    Embeditor lays itself over Clarion's own embeditor automatically, and your edits save straight
+    back with Clarion's Save &amp; Exit.
   </p>
 
-  <ul>
-    <li>
-      <strong>Right-click &rarr; Open in CA Embeditor</strong> &mdash; right-click any procedure in
-      the application tree and choose <strong>Open in CA Embeditor</strong>. The procedure you
-      clicked opens directly in a CA Embeditor tab &mdash; no Tools-menu or picker step in between.
-    </li>
-    <li>
-      <strong>Multiple procedures as tabs</strong> &mdash; open as many procedures as you like; each
-      opens in its own CA Embeditor tab, so you can move between them while you work.
-    </li>
-    <li>
-      <strong>Other ways to open</strong> &mdash; the <strong>CA Embeditor</strong> button on the
-      native embed-editor toolbar opens the currently selected procedure. The right-click is simply
-      the shortcut for the common case.
-    </li>
-  </ul>
+  <p>
+    One procedure is open in the CA Embeditor at a time, as in Clarion's own embeditor.
+  </p>
 
   <h3 id="ca-monaco-editor">Monaco Source Editor</h3>
 
@@ -1640,7 +1630,7 @@
 
   <ul>
     <li><strong>Use the Monaco source editor</strong> &mdash; replaces the native Clarion text editor.</li>
-    <li><strong>Use the Monaco embeditor</strong> &mdash; adds the right-click <em>Open in CA Embeditor</em> item.</li>
+    <li><strong>Use the Monaco embeditor</strong> &mdash; lays the CA Embeditor over Clarion's own embeditor when you open a procedure's embeds.</li>
     <li><strong>Apply to these file types only</strong> &mdash; a semicolon-separated extension filter; blank means all.</li>
   </ul>
 
@@ -1728,8 +1718,8 @@
   <p>
     Open the docked <strong>CA Explorer</strong> from <strong>Tools &rarr; CA Explorer</strong> or
     with <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>D</kbd> (its title bar reads <strong>CA Explorer</strong>
-    when docked). It follows the active CA Embeditor tab, so it always shows the data for the
-    procedure you're currently editing:
+    when docked). It follows the CA Embeditor, so it always shows the data for the procedure
+    you're currently editing:
   </p>
 
   <ul>
@@ -1746,8 +1736,8 @@
       columns, and its relationships to other tables.
     </li>
     <li>
-      <strong>Follows the active tab</strong> &mdash; switch CA Embeditor tabs and the pad updates
-      to match the procedure you switched to.
+      <strong>Follows the open procedure</strong> &mdash; open another procedure's embeds and the
+      pad updates to match.
     </li>
     <li>
       <strong>Drag a field to the editor or designer</strong> &mdash; drag a column or variable row
