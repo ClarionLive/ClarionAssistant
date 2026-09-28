@@ -317,6 +317,18 @@ namespace ClarionAssistant.Terminal
             catch { header = null; return null; }
         }
 
+        /// <summary>
+        /// The diagnostics reply (both hosts). Null markers = K2 pending: the LSP has not answered for the current
+        /// text yet, so the page keeps the LSP markers it shows and asks again, rather than painting a cached
+        /// answer for another text.
+        /// </summary>
+        public static Dictionary<string, object> DiagnosticsReply(List<Dictionary<string, object>> markers)
+        {
+            return markers == null
+                ? new Dictionary<string, object> { { "markers", null }, { "pending", true } }
+                : new Dictionary<string, object> { { "markers", markers } };
+        }
+
         /// <summary>One [diag-timing] line per diagnostics request (both hosts). Never throws.</summary>
         public static void LogDiagTiming(RequestTimingLine line, string text, long resolveMs,
             Services.ModernEmbeditorDiagnostics.Timing t, List<Dictionary<string, object>> markers)

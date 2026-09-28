@@ -207,6 +207,19 @@ static class SlotBalance
             SharedLspBridge.Running = false;
             Ok("8.6 server not running -> skip=lspDown", skip("x.clw", "x = 1", one) == "lspDown", skip("x.clw", "x = 1", one));
             SharedLspBridge.Reset();
+
+            // K2: no answer for the CURRENT text within the wait -> null (the host replies {markers:null, pending:true}),
+            // never the cache: after an embeditor reopen that held the on-disk module's publish (other line numbers).
+            SharedLspBridge.Running = true;
+            SharedLspBridge.PendingResult = true;
+            SharedLspBridge.CachedEntries = new List<LspClient.DiagnosticEntry> {
+                new LspClient.DiagnosticEntry { Line = 0, Character = 0, EndLine = 0, EndCharacter = 3, Severity = 1, Message = "from another text" } };
+            var kt = new ModernEmbeditorDiagnostics.Timing();
+            var pendingMarkers = ModernEmbeditorDiagnostics.ComputeAsync("x.clw", "x = 1", one, timing: kt).GetAwaiter().GetResult();
+            Ok("K2 a pending wait -> ComputeAsync returns null (pending), not the cached entries",
+                pendingMarkers == null && kt.Pending, pendingMarkers == null ? "null" : Show(pendingMarkers));
+            Ok("K2 ...and the cache is not even consulted", SharedLspBridge.CachedCalls == 0, "cached calls=" + SharedLspBridge.CachedCalls);
+            SharedLspBridge.Reset();
         }
 
         // --- 1c685f2e item 7: the slot checks are their own pure function; the LSP pass carries LSP markers only ---

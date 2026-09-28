@@ -12,6 +12,7 @@ namespace ClarionAssistant.Services
     {
         public static bool IsRunning { get { return false; } }
         public static void EnsureBufferSynced(string filePath, string bufferText) { }
+        public static void ClearDiagnostics(string filePath) { }
     }
 
     // RedFileService.cs (compiled in since PR #228: EmbedLspContext resolves the generated module through

@@ -225,6 +225,9 @@ namespace ClarionAssistant.Services
                     // the no-encoding overload here reintroduced exactly the U+FFFD diagnostics #168
                     // removed — every embeditor tab teardown re-poisoned the server's view of the file.
                     SharedLspBridge.EnsureBufferSynced(path, EncodingHelper.ReadAllText(path, out _));
+                    // K2 (1c685f2e): drop what is cached for this URI now. Anything published for the embed's text (or
+                    // for this disk text) has line numbers that are wrong for the NEXT embeditor on the module.
+                    SharedLspBridge.ClearDiagnostics(path);
                     System.Diagnostics.Debug.WriteLine("[EmbedLspContext] reverted LSP shadow for '" + path + "'.");
                 }
                 catch (Exception ex)

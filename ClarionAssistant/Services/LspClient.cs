@@ -999,6 +999,7 @@ namespace ClarionAssistant.Services
                 DiagnosticSet set;
                 if (!_diagnostics.TryGetValue(key, out set)) return null;
                 if (!set.WasPublished) return null;
+                if (IsStale_NoLock(set, key)) return null;   // K2: a publish for text we have since replaced
                 // Return a snapshot to avoid cross-thread mutation of the caller's list.
                 return new List<DiagnosticEntry>(set.Entries);
             }
@@ -1082,7 +1083,7 @@ namespace ClarionAssistant.Services
                     // changed must not satisfy the wait.
                     try { set.Ready.Reset(); } catch { }
                 }
-                else if (set.WasPublished && !waitForSemanticPass)
+                else if (set.WasPublished && !waitForSemanticPass && !IsStale_NoLock(set, key))
                 {
                     // Non-force path with an already-cached publish — return immediately.
                     result.Entries = new List<DiagnosticEntry>(set.Entries);
@@ -1094,30 +1095,42 @@ namespace ClarionAssistant.Services
             if (!waitForSemanticPass)
             {
                 // Wait outside the lock so publish handlers aren't blocked.
-                try
-                {
-                    set.Ready.Wait(timeoutMs);
-                }
-                catch (ObjectDisposedException)
-                {
-                    // Set was evicted between registration and wait — report as pending so the caller can retry.
-                    return result;
-                }
-
+                //
                 // Always check the cache — even on timeout. The publish may have arrived
                 // before our forceRefresh Reset() cleared the event (race between the
                 // initial didOpen publish and the re-trigger). Returning pending:true when
                 // the cache has 44 valid entries is the bug this fixes.
-                lock (_diagnosticsLock)
+                //
+                // K2 (1c685f2e): ...but never a publish for an OLDER version than we have since sent. That one
+                // describes another text (a reopened embeditor found the disk module's 165 entries here and
+                // painted them onto its own lines). A stale publish landing mid-wait does not end the wait: the
+                // current version's publish may still come inside the budget. At the budget it is pending.
+                long deadline = Environment.TickCount + timeoutMs;
+                while (true)
                 {
-                    if (_diagnostics.TryGetValue(key, out set) && set.WasPublished)
+                    long remaining = deadline - Environment.TickCount;
+                    try { set.Ready.Wait((int)Math.Max(0, remaining)); }
+                    catch (ObjectDisposedException)
                     {
-                        result.Entries = new List<DiagnosticEntry>(set.Entries);
-                        result.Pending = false;
+                        // Set was evicted between registration and wait — report as pending so the caller can retry.
+                        return result;
                     }
-                }
 
-                return result;
+                    lock (_diagnosticsLock)
+                    {
+                        if (!_diagnostics.TryGetValue(key, out set)) return result;   // evicted
+                        if (set.WasPublished && !IsStale_NoLock(set, key))
+                        {
+                            result.Entries = new List<DiagnosticEntry>(set.Entries);
+                            result.Pending = false;
+                            return result;
+                        }
+                        // Woken by something that is not a current answer (a stale publish, a status or
+                        // symbols notification): re-arm and keep waiting out the budget.
+                        try { set.Ready.Reset(); } catch (ObjectDisposedException) { return result; }
+                    }
+                    if (deadline - Environment.TickCount <= 0) return result;
+                }
             }
 
             // ── Semantic-pass wait ────────────────────────────────────────────────────────────
@@ -1276,6 +1289,51 @@ namespace ClarionAssistant.Services
         // buffer and returned nothing. (Regression from the diagnostics feature; see ModernEmbeditor.)
         private readonly object _docSyncLock = new object();
 
+        // K2 (1c685f2e): the textDocument version CA last SENT per URI (canonical), readable without
+        // _docSyncLock so the publish handler (under _diagnosticsLock) can stamp a publish with it.
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _sentVersionByUri =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        private void NoteSentVersion(string filePath, int version)
+        {
+            try { _sentVersionByUri[FilePathToUri(filePath)] = version; } catch { }
+        }
+
+        private int SentVersion(string uri)
+        {
+            int v;
+            return !string.IsNullOrEmpty(uri) && _sentVersionByUri.TryGetValue(uri, out v) ? v : -1;
+        }
+
+        /// <summary>K2: true when <paramref name="set"/> answers for an OLDER text than CA has since sent for
+        /// <paramref name="uri"/>. Such a set is never served as a current answer: its line numbers belong to
+        /// another text (e.g. the on-disk module RevertShadow pushed when the last embeditor closed). Unknown
+        /// versions (-1) are not stale. Call under _diagnosticsLock.</summary>
+        private bool IsStale_NoLock(DiagnosticSet set, string uri)
+        {
+            int sent = SentVersion(uri);
+            return set != null && set.Version >= 0 && sent >= 0 && set.Version < sent;
+        }
+
+        /// <summary>
+        /// K2: forget the cached diagnostics for <paramref name="filePath"/>. EmbedLspContext.RevertShadow calls it
+        /// after pushing the on-disk text back, so the next embeditor never inherits the disk module's publish.
+        /// </summary>
+        public void ClearDiagnostics(string filePath)
+        {
+            if (string.IsNullOrEmpty(filePath)) return;
+            string key = FilePathToUri(filePath);
+            lock (_diagnosticsLock)
+            {
+                DiagnosticSet set;
+                if (!_diagnostics.TryGetValue(key, out set)) return;
+                set.Entries = new List<DiagnosticEntry>();
+                set.WasPublished = false;
+                set.Version = -1;
+                try { set.Ready.Reset(); } catch (ObjectDisposedException) { }
+            }
+        }
+
         private void EnsureDocumentOpen(string filePath)
         {
             lock (_docSyncLock)
@@ -1302,7 +1360,7 @@ namespace ClarionAssistant.Services
                 };
 
                 SendNotification("textDocument/didOpen", parms);
-                _openDocuments[filePath] = 1;
+                _openDocuments[filePath] = 1; NoteSentVersion(filePath, 1);
             }
         }
 
@@ -1342,7 +1400,7 @@ namespace ClarionAssistant.Services
                         { "contentChanges", changes }
                     };
                     SendNotification("textDocument/didChange", changeParms);
-                    _openDocuments[filePath] = nextVersion;
+                    _openDocuments[filePath] = nextVersion; NoteSentVersion(filePath, nextVersion);
                     _lastSyncedHash[filePath] = hash;
                     return;
                 }
@@ -1359,7 +1417,7 @@ namespace ClarionAssistant.Services
                     }
                 };
                 SendNotification("textDocument/didOpen", openParms);
-                _openDocuments[filePath] = 1;
+                _openDocuments[filePath] = 1; NoteSentVersion(filePath, 1);
                 _lastSyncedHash[filePath] = hash;
             }
         }
@@ -1416,7 +1474,7 @@ namespace ClarionAssistant.Services
                 };
 
                 SendNotification("textDocument/didChange", parms);
-                _openDocuments[filePath] = nextVersion;
+                _openDocuments[filePath] = nextVersion; NoteSentVersion(filePath, nextVersion);
             }
         }
 
@@ -1709,6 +1767,13 @@ namespace ClarionAssistant.Services
             // we sent on didOpen.
             string canonical = CanonicalizeUri(uri);
 
+            int publishedVersion = -1;
+            object rawVersion;
+            if (parms.TryGetValue("version", out rawVersion) && rawVersion != null)
+            {
+                try { publishedVersion = Convert.ToInt32(rawVersion); } catch { publishedVersion = -1; }
+            }
+
             var entries = new List<DiagnosticEntry>();
             var diagList = parms.ContainsKey("diagnostics") ? parms["diagnostics"] as System.Collections.ArrayList : null;
             if (diagList != null)
@@ -1753,6 +1818,9 @@ namespace ClarionAssistant.Services
 
                 set.Entries = entries;
                 set.WasPublished = true;
+                // K2: which text these entries describe - the publish's own `version` when the server sends one,
+                // else the version CA had last sent for the URI when the publish arrived.
+                set.Version = publishedVersion >= 0 ? publishedVersion : SentVersion(canonical);
                 set.PublishSeq++;
                 set.LastUpdateTicks = DateTime.UtcNow.Ticks;
                 // Signal any waiter that new diagnostics have arrived.
@@ -2012,6 +2080,8 @@ namespace ClarionAssistant.Services
             // True once a publishDiagnostics has ever arrived for this URI — distinguishes
             // an authoritative "clean file" (Entries=[]) from "we haven't heard anything yet".
             public bool WasPublished;
+            // K2: the textDocument version these entries belong to (-1 = unknown). See IsStale_NoLock.
+            public int Version = -1;
 
             // ── Two-phase publish tracking (ticket b7505691) ──────────────────────────────────
             // The server analyses a document in TWO passes and publishes after EACH: a

@@ -1272,7 +1272,7 @@ namespace ClarionAssistant
                         _filePath, buffer, ranges, timing: timing).GetAwaiter().GetResult();
                 }
                 catch (Exception ex) { MonacoSpikeLog.Write("overlay diagnostics error: " + ex.Message); }
-                editor.PostResponse(reqId, new Dictionary<string, object> { { "markers", markers } });
+                editor.PostResponse(reqId, MonacoEditorControl.DiagnosticsReply(markers));   // K2: null = pending
                 MonacoEditorControl.LogDiagTiming(timingLine, buffer, resolveMs, timing, markers);
             }, () => MonacoSpikeLog.Write(timingLine.Add("dropped", "superseded-by-newer-request").Format()));
         }

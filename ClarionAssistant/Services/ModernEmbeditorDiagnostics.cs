@@ -147,6 +147,10 @@ namespace ClarionAssistant.Services
         /// <see cref="ComputeSlotChecks"/>, answered by the page's slotDiagnostics request in its own lane,
         /// so a `DO NoSuchRoutine` squiggle no longer waits for this LSP pass (up to minutes on a 3.2 MB
         /// generated module). This reply carries LSP markers only.
+        ///
+        /// Returns NULL when the server has not answered for the CURRENT text within the wait (K2): the host
+        /// replies {markers:null, pending:true} and the page keeps its markers and asks again. Never a cached
+        /// answer for an older text.
         /// </summary>
         public static async Task<List<Dictionary<string, object>>> ComputeAsync(
             string lspFileName, string buffer, List<int[]> ranges,
@@ -179,7 +183,8 @@ namespace ClarionAssistant.Services
                     phase.Restart();
                     List<LspClient.DiagnosticEntry> entries =
                         await WaitForSettledDiagnosticsAsync(lspFileName, timing).ConfigureAwait(false);
-                    if (timing != null) { timing.WaitMs = phase.ElapsedMilliseconds; timing.LspEntries = entries.Count; }
+                    if (timing != null) { timing.WaitMs = phase.ElapsedMilliseconds; timing.LspEntries = entries != null ? entries.Count : -1; }
+                    if (entries == null) return null;   // K2: pending - no answer for the current text yet
 
                     foreach (var d in entries)
                     {
@@ -473,6 +478,8 @@ namespace ClarionAssistant.Services
             public long WaitMs = -1;       // WaitForSettledDiagnosticsAsync, settle window included
             public string WaitEnd;         // how the wait ended: complete / timeout(pending) + settle outcome
             public int LspEntries = -1;    // server entries before clamping to slots
+            /// <summary>K2: the LSP had no answer for the CURRENT text within the budget; ComputeAsync returned null.</summary>
+            public bool Pending;
         }
 
         // The Clarion LSP publishes diagnostics progressively for a file that just changed: an early
@@ -505,11 +512,17 @@ namespace ClarionAssistant.Services
         {
             var wait = SharedLspBridge.WaitForDiagnostics(lspFileName, 1500, true);
             bool complete = wait != null && !wait.Pending && wait.Entries != null;
-            List<LspClient.DiagnosticEntry> last =
-                complete
-                    ? wait.Entries
-                    : (SharedLspBridge.GetCachedDiagnostics(lspFileName) ?? new List<LspClient.DiagnosticEntry>());
-            string end = complete ? "complete" : "timeout(1500ms,pending->cached)";
+            if (!complete)
+            {
+                // K2 (1c685f2e): pending is pending. The old fallback to the cache served whatever was cached for the
+                // URI, which after an embeditor reopen was the ON-DISK module's publish (other line numbers), so a
+                // squiggle sat on a comment and the real DO lines had none. The caller answers {markers:null,
+                // pending:true}; the page keeps its current LSP markers and asks again.
+                if (timing != null) { timing.WaitEnd = "timeout(1500ms,pending)"; timing.Pending = true; }
+                return null;
+            }
+            List<LspClient.DiagnosticEntry> last = wait.Entries;
+            string end = "complete";
 
             int polls = 0;
             bool republished = false;

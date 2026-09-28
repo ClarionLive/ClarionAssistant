@@ -12,6 +12,10 @@ namespace ClarionAssistant.Services
     public static class SharedLspBridge
     {
         public static bool Running;
+        /// <summary>K2: WaitForDiagnostics reports Pending (no answer for the current text in the budget).</summary>
+        public static bool PendingResult;
+        /// <summary>What GetCachedDiagnostics returns (the old code fell back to it on pending).</summary>
+        public static List<LspClient.DiagnosticEntry> CachedEntries;
         public static int IsRunningCalls, SyncCalls, WaitCalls, CachedCalls;
         /// <summary>What WaitForDiagnostics returns when the LSP pass runs (0-based line).</summary>
         public static List<LspClient.DiagnosticEntry> FixedEntries = new List<LspClient.DiagnosticEntry>();
@@ -19,6 +23,8 @@ namespace ClarionAssistant.Services
         public static void Reset()
         {
             Running = false;
+            PendingResult = false;
+            CachedEntries = null;
             IsRunningCalls = SyncCalls = WaitCalls = CachedCalls = 0;
             FixedEntries = new List<LspClient.DiagnosticEntry>();
         }
@@ -30,9 +36,11 @@ namespace ClarionAssistant.Services
         public static LspClient.DiagnosticWaitResult WaitForDiagnostics(string filePath, int timeoutMs, bool forceRefresh)
         {
             WaitCalls++;
-            return new LspClient.DiagnosticWaitResult { Entries = new List<LspClient.DiagnosticEntry>(FixedEntries), Pending = false };
+            return PendingResult
+                ? new LspClient.DiagnosticWaitResult { Entries = new List<LspClient.DiagnosticEntry>(), Pending = true }
+                : new LspClient.DiagnosticWaitResult { Entries = new List<LspClient.DiagnosticEntry>(FixedEntries), Pending = false };
         }
-        public static List<LspClient.DiagnosticEntry> GetCachedDiagnostics(string filePath) { CachedCalls++; return null; }
+        public static List<LspClient.DiagnosticEntry> GetCachedDiagnostics(string filePath) { CachedCalls++; return CachedEntries; }
     }
 
     // LspClient's DTOs: ModernEmbeditorDiagnostics.SlotBalance.LspClientStub.cs, or the real LspClient.cs.
