@@ -61,17 +61,40 @@ function loadDiag() {
         timers: [],        // their callbacks, so a test can let the debounce fire
         cleared: 0,        // clearTimeout calls (a pending pass pushed back)
     };
-    const monaco = { editor: { setModelMarkers: (m, owner, list) => env.applied.push(list.map(x => x.startLineNumber)) } };
+    // 1c685f2e item 7: markers are stored per owner (getModelMarkers reads them back, as Monaco does); `applied`
+    // keeps recording only the LSP owner's paints, so the GH #176 cases below read exactly as before.
+    env.owners = {};                                       // owner -> the list currently on screen
+    env.paints = [];                                       // every setModelMarkers call: {owner, list}
+    const monaco = { editor: {
+        setModelMarkers: (m, owner, list) => {
+            env.owners[owner] = list.slice();
+            env.paints.push({ owner, list: list.slice() });
+            if (owner === 'clarion') env.applied.push(list.map(x => x.startLineNumber));
+        },
+        getModelMarkers: (filter) => (env.owners[filter.owner] || []).map(x => Object.assign({ owner: filter.owner }, x)),
+    } };
+    env.slot = [];         // slotDiagnostics requests, parked like `pending` (which holds only 'diagnostics')
     function requestFromHost(action, payload) {
-        return new Promise(resolve => env.pending.push({ action, payload, resolve }));
+        return new Promise(resolve => (action === 'slotDiagnostics' ? env.slot : env.pending).push({ action, payload, resolve }));
     }
     const fakeSetTimeout = (fn) => { env.scheduled++; env.timers.push(fn); return env.timers.length; };
     const fakeClearTimeout = () => { env.cleared++; };
     // 16d140e9: requests name the synced buffer version (withBuffer) instead of carrying the buffer.
     const withBuffer = (m, payload) => Object.assign({ v: m.getVersionId() }, payload);
-    const api = new Function('editor', 'monaco', 'requestFromHost', 'liveEditableRanges', 'setTimeout', 'clearTimeout', 'withBuffer',
-        'var diagTimer = null;\n' + diagSrc + '\nreturn { refreshDiagnostics: refreshDiagnostics, scheduleDiagnostics: scheduleDiagnostics };')(
-        env.editor, monaco, requestFromHost, () => [[1, 10]], fakeSetTimeout, fakeClearTimeout, withBuffer);
+    const bufferKey = (m) => 'm:' + m.getVersionId();
+    // R11/R12 (1c685f2e): at rest (never typing-unsynced) and no span map, so the slot checks send `ranges`.
+    // A test may flip env.typing / env.slotSlice.
+    env.typing = false;
+    env.slotSlice = null;
+    env.idleWaiters = [];
+    const typingUnsynced = () => env.typing;
+    const slotSlicePayload = () => env.slotSlice;
+    const api = new Function('editor', 'monaco', 'requestFromHost', 'liveEditableRanges', 'setTimeout', 'clearTimeout', 'withBuffer', 'bufferKey',
+        'typingUnsynced', 'idleWaiters', 'slotSlicePayload',
+        'var diagTimer = null;\n' + diagSrc + '\nreturn { refreshDiagnostics: refreshDiagnostics, scheduleDiagnostics: scheduleDiagnostics,' +
+        ' resetDiagnosticsForNewSource: resetDiagnosticsForNewSource, setSlotChecks: function (on) { slotChecksEnabled = on; } };')(
+        env.editor, monaco, requestFromHost, () => [[1, 10]], fakeSetTimeout, fakeClearTimeout, withBuffer, bufferKey,
+        typingUnsynced, env.idleWaiters, slotSlicePayload);
     env.api = api;
     return env;
 }
@@ -167,6 +190,108 @@ async function testDiagnostics() {
         env.pending[2].resolve(null);
         await flush();
         check('a timed-out (null) reply leaves the rendered markers alone (#170)', env.applied.length === 2, JSON.stringify(env.applied));
+    }
+}
+
+// =====================================================================================================
+// 1c685f2e item 7 — slot checks painted apart ('clarion-slot'), deduped against the LSP set both ways
+// =====================================================================================================
+const mk = (line, message) => ({ severity: 8, message, line, column: 1, endLine: line, endColumn: 5 });
+const onScreen = (env, owner) => (env.owners[owner] || []).map(m => m.startLineNumber + ':' + m.message).sort();
+
+async function testSlotDiagnostics() {
+    section('1c685f2e item 7 — slotDiagnostics: every pass, own owner, deduped against the LSP set');
+    {
+        // 7.7: no in-flight limit — the LSP request is out, yet each pass still asks the slot checks.
+        const env = loadDiag();
+        env.api.refreshDiagnostics();
+        check('7.7 a pass posts slotDiagnostics beside diagnostics', env.slot.length === 1 && env.pending.length === 1,
+            'slot ' + env.slot.length + ' lsp ' + env.pending.length);
+        check('...with the live editable ranges and the synced v', env.slot[0] && env.slot[0].payload.v === 1 &&
+            JSON.stringify(env.slot[0].payload.ranges) === '[[1,10]]');
+        env.model.version = 2;
+        env.api.refreshDiagnostics();
+        check('7.7 with the LSP request still in flight, a second pass still posts slotDiagnostics (2), not diagnostics (1)',
+            env.slot.length === 2 && env.pending.length === 1, 'slot ' + env.slot.length + ' lsp ' + env.pending.length);
+    }
+    {
+        // 7.8 / 7.9: slot first, then an LSP reply carrying one duplicate and two near-misses.
+        const env = loadDiag();
+        env.api.refreshDiagnostics();
+        env.slot[0].resolve({ markers: [mk(5, 'LOOP is not terminated')] });
+        await flush();
+        check('7.8 slot markers are painted under clarion-slot', JSON.stringify(onScreen(env, 'clarion-slot')) === '["5:LOOP is not terminated"]' &&
+            !env.owners.clarion, JSON.stringify(env.owners));
+        env.pending[0].resolve({ markers: [mk(5, 'LOOP is not terminated'), mk(5, 'other'), mk(9, 'LOOP is not terminated')] });
+        await flush();
+        check('7.9 the LSP set drops only the exact (line, message) duplicate', JSON.stringify(onScreen(env, 'clarion')) ===
+            '["5:other","9:LOOP is not terminated"]', JSON.stringify(onScreen(env, 'clarion')));
+        check('7.8 ...and the later LSP reply leaves clarion-slot intact', JSON.stringify(onScreen(env, 'clarion-slot')) === '["5:LOOP is not terminated"]');
+    }
+    {
+        // 7.10: the LSP set lands first; a slot reply with the same (line, message) removes the LSP copy.
+        const env = loadDiag();
+        env.api.refreshDiagnostics();
+        env.pending[0].resolve({ markers: [mk(5, 'LOOP is not terminated'), mk(7, 'lsp only')] });
+        await flush();
+        env.slot[0].resolve({ markers: [mk(5, 'LOOP is not terminated')] });
+        await flush();
+        check('7.10 slot after LSP: the duplicate LSP marker is removed', JSON.stringify(onScreen(env, 'clarion')) === '["7:lsp only"]',
+            JSON.stringify(onScreen(env, 'clarion')));
+        check('7.10 ...and the slot marker shows once', JSON.stringify(onScreen(env, 'clarion-slot')) === '["5:LOOP is not terminated"]');
+    }
+    {
+        // 7.11 / 7.12: an older version's slot reply is dropped; a null keeps what is on screen.
+        const env = loadDiag();
+        env.api.refreshDiagnostics();
+        env.slot[0].resolve({ markers: [mk(3, 'first')] });
+        await flush();
+        env.model.version = 2;
+        env.api.refreshDiagnostics();                  // the LSP pass is held, the slot one goes out
+        env.model.version = 3;
+        env.slot[1].resolve({ markers: [mk(4, 'stale')] });
+        await flush();
+        check('7.11 a slot reply for an older version is dropped', JSON.stringify(onScreen(env, 'clarion-slot')) === '["3:first"]',
+            JSON.stringify(onScreen(env, 'clarion-slot')));
+        env.api.refreshDiagnostics();
+        env.slot[2].resolve(null);
+        await flush();
+        check('7.12 a null slot reply keeps the slot markers on screen', JSON.stringify(onScreen(env, 'clarion-slot')) === '["3:first"]');
+        env.api.refreshDiagnostics();
+        check('...and the next pass for that version asks again', env.slot.length === 4, 'slot ' + env.slot.length);
+        env.api.refreshDiagnostics();
+        check('...but a pass for an already-asked version does not re-ask (a held LSP pass re-running)', env.slot.length === 4,
+            'slot ' + env.slot.length);
+        env.slot[3].resolve({ markers: [] });
+        await flush();
+        check('...while a real empty reply clears them', onScreen(env, 'clarion-slot').length === 0);
+    }
+    {
+        // 7.13: setSource clears the slot owner, and the old source's late slot reply is dropped.
+        const env = loadDiag();
+        env.api.refreshDiagnostics();
+        env.slot[0].resolve({ markers: [mk(2, 'old procedure')] });
+        await flush();
+        env.model.version = 2;
+        env.api.refreshDiagnostics();                  // an old-source slot request still out
+        env.api.resetDiagnosticsForNewSource();
+        check('7.13 setSource clears clarion-slot', env.owners['clarion-slot'] && env.owners['clarion-slot'].length === 0,
+            JSON.stringify(env.owners['clarion-slot']));
+        env.slot[1].resolve({ markers: [mk(2, 'old procedure')] });
+        await flush();
+        check('7.13 ...and the old source\'s late slot reply is dropped', onScreen(env, 'clarion-slot').length === 0,
+            JSON.stringify(onScreen(env, 'clarion-slot')));
+        check('setSource calls resetDiagnosticsForNewSource (which clears the slot owner)',
+            /resetBufferSync\(\);[^\n]*\n\s*resetDiagnosticsForNewSource\(\);/.test(html));
+    }
+    {
+        // The Embeditor's file-mode tab (setSource slotChecks:false) asks nothing; the overlay (flag absent) asks.
+        const env = loadDiag();
+        env.api.setSlotChecks(false);
+        env.api.refreshDiagnostics();
+        check('slot checks off: no slotDiagnostics, the LSP pass still runs', env.slot.length === 0 && env.pending.length === 1);
+        check('setSource reads slotChecks: absent = on, only an explicit false turns it off',
+            /slotChecksEnabled = msg\.slotChecks !== false;/.test(html));
     }
 }
 
@@ -303,6 +428,7 @@ function testBackdrop() {
 // ---------- run ----------
 (async function main() {
     await testDiagnostics();
+    await testSlotDiagnostics();
     testFontPicker();
     testBackdrop();
 

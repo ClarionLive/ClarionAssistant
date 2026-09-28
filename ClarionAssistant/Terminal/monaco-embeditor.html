@@ -981,11 +981,7 @@
         // once and LSP requests for the same version reuse it instead of shipping the buffer again.
         // `text` stays last so the host can read the small fields without scanning the buffer.
         var model = editor.getModel();
-        var v = ++bufSyncSeq;
-        var t0 = rtNow();
-        var text = model.getValue();
-        postToHost({ action: 'fileState', dirty: isDirty, seq: editSeq, v: v, text: text });
-        noteBufferSync(v, text.length, rtNow() - t0);
+        postBufferCopy({ action: 'fileState', dirty: isDirty, seq: editSeq, v: ++bufSyncSeq }, 'text', model);
         bufSyncedKey = bufferKey(model);
     }
     // Unsaved edits stashed by the host from an externally torn-down overlay, waiting for the async
@@ -1326,8 +1322,13 @@
                     // Returning null on any failure keeps the local pass as the fallback.
                     if (typeof setClarionLspFolding === 'function') {
                         setClarionLspFolding(function (model) {
-                            return requestFromHost('foldingRanges', withBuffer(model, {}), FOLD_TIMEOUT_MS)
-                                .then(function (resp) { return (resp && resp.ranges) ? resp.ranges : null; });
+                            // While typing, the current folds stay until the idle sync (R12); a request the
+                            // next edit superseded answers null and the provider falls back to local folds.
+                            return whenIdleSynced(model, {}).then(function (payload) {
+                                if (!payload) return null;
+                                return requestFromHost('foldingRanges', payload, FOLD_TIMEOUT_MS)
+                                    .then(function (resp) { return (resp && resp.ranges) ? resp.ranges : null; });
+                            });
                         });
                     }
                     registerClarionFolding();
@@ -1416,6 +1417,7 @@
                 var _redoBtn = document.getElementById('redoBtn');
                 if (_redoBtn) _redoBtn.addEventListener('click', function () { var e = activeEd(); e.focus(); e.trigger('toolbar', 'redo', null); updateUndoRedo(); });
                 editor.onDidChangeModelContent(updateUndoRedo);   // keep Undo/Redo enabled-state in sync with the edit stack
+                editor.onDidChangeModelContent(noteBufferEdit);   // R12: the full buffer syncs once typing pauses (1c685f2e)
                 // Refresh the structure outline (debounced) while it's open — Phase-1 pull-on-change.
                 editor.onDidChangeModelContent(function () {
                     var op = document.getElementById('outlinePanel');
@@ -1481,6 +1483,9 @@
         embedRanges = msg.editableRanges || [];
         saveEnabled = !!msg.saveEnabled;
         fileMode = !!msg.fileMode;
+        // The slot checks run unless the host turns them off (the Embeditor's file-mode tab: LSP only). The CA
+        // Editor overlay keeps them over the whole file, so this is NOT the same switch as fileMode. (1c685f2e)
+        slotChecksEnabled = msg.slotChecks !== false;
         if (msg.findUiMode) findUiMode = (msg.findUiMode === 'overlay') ? 'overlay' : 'pad';   // which UI answers Ctrl+F/Ctrl+H
         // The "include read-only (generated) blocks" find toggle only means something in PWEE/slot mode.
         // In file mode the whole buffer is editable — there are no read-only regions — so hide it.
@@ -1590,6 +1595,7 @@
                 model.setValue(text);
                 resetBufferSync();          // a new document: the host's cached buffer is the old one (16d140e9)
                 resetDiagnosticsForNewSource();   // ...and its first squiggle pass must not queue behind the old one's
+                resetLocalFirstState();     // ...and the old procedure's cached completion must not leak in (1c685f2e)
                 // Honor the host's language choice (file mode can open non-Clarion files as plaintext).
                 try { if (msg.language) monaco.editor.setModelLanguage(model, msg.language); } catch (e) { }
                 applyEmbedDecorations();
@@ -1676,7 +1682,7 @@
             if (payload) for (var k in payload) if (payload.hasOwnProperty(k)) msg[k] = payload[k];
             // [local-rt] (1c685f2e item 0): timed actions log request-sent -> reply-received on the page's
             // clock, which includes any bufferSync transit queued ahead of the request.
-            var rt = RT_LOG_ACTIONS.hasOwnProperty(action) ? { sync: claimBufferSync(msg.v), t0: 0 } : null;
+            var rt = RT_LOG_ACTIONS.hasOwnProperty(action) ? { sync: claimBufferSync(msg.v), t0: 0, sliceChars: sliceCharsOf(msg) } : null;
             var settle = function (data, timedOut) {
                 if (rt) logRoundTrip(action, msg.v, rt, data, timedOut);
                 resolve(data);
@@ -1697,7 +1703,8 @@
 
     // ----- [local-rt] round-trip timing (1c685f2e item 0) -----
     // One line per timed request, written by the host to monaco-spike.log verbatim (it adds the timestamp):
-    //   [local-rt] action=<a> v=<v> rtMs=<n> syncBytes=<n> syncMs=<n>[ syncAgeMs=<n>][ timeout=1| null=1]
+    //   [local-rt] action=<a> v=<v> rtMs=<n> syncBytes=<n> syncMs=<n>[ syncAgeMs=<n>][ sliceChars=<n>][ timeout=1| null=1]
+    // sliceChars: what a slice request (R11) carried instead of the buffer.
     // syncBytes = the buffer's JS .length (chars; the host's [buffer-sync] recv line logs the same count), and
     // syncMs = the page-side cost of that sync (getValue + postMessage). A sync is attributed to exactly ONE
     // request: the first timed one that names its `v` (often folding, which fires first on an edit), with
@@ -1709,7 +1716,23 @@
     function rtNow() {
         return (typeof performance !== 'undefined' && performance && performance.now) ? performance.now() : Date.now();
     }
-    function noteBufferSync(v, chars, ms) { unclaimedSync = { v: v, chars: chars, ms: ms, at: rtNow() }; }
+    // Post a whole-buffer message (bufferSync, or file mode's fileState): the text goes in `key`, set LAST so
+    // the host reads action + v without scanning 3 MB, and the post is timed for [local-rt].
+    function postBufferCopy(msg, key, model) {
+        var t0 = rtNow();
+        var text = model.getValue();
+        msg[key] = text;
+        postToHost(msg);
+        unclaimedSync = { v: msg.v, chars: text.length, ms: rtNow() - t0, at: rtNow() };
+    }
+    // The chars a slice request carries instead of the synced buffer (R11b): the pieces sent WITH text (a
+    // clean DATA piece goes by hash), or the slots'
+    // text for slotDiagnostics. null for a request that names the synced buffer (`v`).
+    function sliceCharsOf(msg) {
+        var parts = msg.slice ? msg.slice.pieces : msg.slots;
+        if (!parts) return null;
+        return parts.reduce(function (n, p) { return n + (p.text ? p.text.length : 0); }, 0);
+    }
     function claimBufferSync(v) {
         if (!unclaimedSync || unclaimedSync.v !== v) return null;
         var s = unclaimedSync;
@@ -1723,6 +1746,7 @@
                 ' rtMs=' + Math.round(rtNow() - rt.t0) +
                 ' syncBytes=' + (s ? s.chars : 0) + ' syncMs=' + (s ? Math.round(s.ms) : 0) +
                 (s ? ' syncAgeMs=' + Math.round(rt.t0 - s.at) : '') +
+                (rt.sliceChars != null ? ' sliceChars=' + rt.sliceChars : '') +
                 (timedOut ? ' timeout=1' : (data == null ? ' null=1' : ''));
             postToHost({ action: 'log', line: line });
         } catch (e) { /* timing must never break a request */ }
@@ -1741,17 +1765,13 @@
     // resends. File mode's fileState mirror carries the same stamp, so its text doubles as the sync.
     var bufSyncSeq = 0;          // `v` of the last bufferSync / fileState posted (monotonic per page load)
     var bufSyncedKey = null;     // model id + version the host holds as bufSyncSeq; null = must resend
-    function bufferKey(model) { return String(model.id || '') + ':' + model.getVersionId(); }
+    function modelKey(model) { return String(model.id || ''); }
+    function bufferKey(model) { return modelKey(model) + ':' + model.getVersionId(); }
     // Post the buffer if the host's copy is not this model's current version; returns the `v` to stamp.
     function syncBufferToHost(model) {
         var key = bufferKey(model);
         if (key !== bufSyncedKey) {
-            var v = ++bufSyncSeq;
-            var t0 = rtNow();
-            var text = model.getValue();
-            // Key order matters: `buffer` LAST lets the host read action + v without scanning 3 MB.
-            postToHost({ action: 'bufferSync', v: v, buffer: text });
-            noteBufferSync(v, text.length, rtNow() - t0);
+            postBufferCopy({ action: 'bufferSync', v: ++bufSyncSeq }, 'buffer', model);
             bufSyncedKey = key;
         }
         return bufSyncSeq;
@@ -1765,6 +1785,42 @@
     }
     // Model content replaced wholesale (setSource / reload) or the host lost its copy: resend next time.
     function resetBufferSync() { bufSyncedKey = null; }
+
+    // ----- R12: the whole buffer crosses only when typing pauses (1c685f2e) -----
+    // Measured on InventoryTable (3.2 MB): one full sync costs ~30-44 ms on the page plus ~70-110 ms in the
+    // host (spikes to ~400 ms), and folding forced one on EVERY keystroke. So an edit only arms a timer; the
+    // sync is posted IDLE_SYNC_MS after the last edit. Until then the local layer answers from slices (no
+    // buffer needed) and every LSP-bound request for the unsynced version waits (whenIdleSynced). A request
+    // made while nothing is pending (load, a host bufferResync at rest) still syncs at once, as before.
+    var IDLE_SYNC_MS = 400;
+    var idleSyncTimer = null;
+    var idleWaiters = [];        // run once the idle sync has been posted
+    function noteBufferEdit(e) {
+        if (idleSyncTimer) clearTimeout(idleSyncTimer);
+        idleSyncTimer = setTimeout(idleSync, IDLE_SYNC_MS);
+        if (e && e.changes) markDirtyPieces(e.changes);   // R11b: an edited DATA piece travels as text
+    }
+    function idleSync() {
+        idleSyncTimer = null;
+        var model = editor && editor.getModel();
+        if (model) { try { syncBufferToHost(model); } catch (e) { /* the next request resyncs */ } }
+        var waiters = idleWaiters;
+        idleWaiters = [];
+        waiters.forEach(function (w) { w(); });
+    }
+    // True while the user is typing and the host does not hold the model's current version.
+    function typingUnsynced(model) { return idleSyncTimer !== null && bufferKey(model) !== bufSyncedKey; }
+    // withBuffer for LSP-bound requests: at once when synced or at rest; otherwise after the idle sync.
+    // Resolves null when the model has moved on meanwhile (a newer request of the same kind replaces it).
+    function whenIdleSynced(model, payload) {
+        if (!typingUnsynced(model)) return Promise.resolve(withBuffer(model, payload));
+        var version = model.getVersionId();
+        return new Promise(function (resolve) {
+            idleWaiters.push(function () {
+                resolve(model.getVersionId() === version && editor && editor.getModel() === model ? withBuffer(model, payload) : null);
+            });
+        });
+    }
 
     function lspKindToMonaco(k) {
         var M = monaco.languages.CompletionItemKind;
@@ -2002,7 +2058,7 @@
         // it must NOT pop a toast on every keystroke. Suppress raw=* — still surface real down/starting/
         // timeout/error states below.
         if (status.indexOf('raw=') === 0) return;
-        var now = (window.performance && performance.now) ? performance.now() : 0;
+        var now = rtNow();
         if (now && _lastLspReport && (now - _lastLspReport) < 6000) return;
         _lastLspReport = now;
         var msg = (status === 'not started' || status === 'starting')
@@ -4364,6 +4420,78 @@
         diagGen++;
         diagInFlight = false;
         diagRerun = false;
+        // The old source's slot squiggles go now; its late slot replies are dropped by the diagGen check.
+        slotAskedKey = null;
+        if (editor && editor.getModel()) monaco.editor.setModelMarkers(editor.getModel(), SLOT_MARKER_OWNER, []);
+    }
+
+    // ----- Slot checks, painted apart from the LSP pass (1c685f2e item 7) -----
+    // The host's structure-balance and undefined-DO checks are pure functions of the buffer and the slots,
+    // answered in milliseconds by 'slotDiagnostics' in a lane of their own, while the LSP pass can take
+    // seconds on a generated module. So they are asked on EVERY debounce with no in-flight limit (the host
+    // lane is newest-wins: a superseded request is answered null) and painted under their own owner.
+    // The two sets never show the same squiggle twice: whichever lands second is deduped by (line, message)
+    // against the other one on screen - an LSP reply before it is painted, the LSP set when a slot reply lands.
+    var SLOT_MARKER_OWNER = 'clarion-slot';
+    var slotChecksEnabled = true;   // setSource's slotChecks:false (the Embeditor's file-mode tab) turns it off
+
+    function toMarkerData(m) {
+        return {
+            severity: m.severity,
+            message: m.message,
+            startLineNumber: m.line, startColumn: m.column,
+            endLineNumber: m.endLine, endColumn: m.endColumn
+        };
+    }
+    // The markers of `owner` on screen now, at their Monaco-tracked positions (an IMarker is also valid
+    // IMarkerData, so they can be set again as they are).
+    function markersOnScreen(model, owner) {
+        if (!monaco.editor.getModelMarkers) return [];
+        return monaco.editor.getModelMarkers({ owner: owner, resource: model.uri }) || [];
+    }
+    function markerKey(m) { return m.startLineNumber + '|' + m.message; }
+    // `list` without the entries whose (line, message) one of `others` already shows.
+    function withoutDuplicatesOf(list, others) {
+        var seen = {};
+        others.forEach(function (m) { seen[markerKey(m)] = true; });
+        return list.filter(function (m) { return !seen[markerKey(m)]; });
+    }
+    function diagTimeoutForModel(model) {
+        return diagTimeoutFor(model.getValueLength ? model.getValueLength() : model.getValue().length);
+    }
+
+    // bufferKey of the version whose slot checks were last asked (and not answered null): a held LSP pass
+    // re-running for the same text need not make the host re-check it.
+    var slotAskedKey = null;
+    function refreshSlotDiagnostics() {
+        if (!editor || !slotChecksEnabled) return;
+        var model = editor.getModel();
+        if (!model) return;
+        var key = bufferKey(model);
+        if (key === slotAskedKey) return;
+        var myVersion = model.getVersionId();
+        var myGen = diagGen;
+        // R11: the slots' own text plus the routine names (no full sync); no span map yet -> the synced buffer.
+        var payload;
+        try { payload = slotSlicePayload(model) || withBuffer(model, { ranges: liveEditableRanges() }); }
+        catch (e) { return; }
+        slotAskedKey = key;
+        requestFromHost('slotDiagnostics', payload, diagTimeoutForModel(model))
+            .then(function (resp) {
+                if (myGen !== diagGen) return;
+                // null = no answer (timeout, or superseded in the host's lane): keep what is on screen, and let
+                // the next pass ask again.
+                if (!resp) { if (slotAskedKey === key) slotAskedKey = null; return; }
+                // Computed for text no longer on screen: a newer request (every debounce sends one) paints.
+                if (!editor || editor.getModel() !== model || model.getVersionId() !== myVersion) return;
+                var slot = (resp.markers || []).map(toMarkerData);
+                monaco.editor.setModelMarkers(model, SLOT_MARKER_OWNER, slot);
+                // The LSP set may already show some of these (it landed first): drop those copies.
+                var lsp = markersOnScreen(model, 'clarion');
+                var kept = withoutDuplicatesOf(lsp, slot);
+                if (kept.length !== lsp.length) monaco.editor.setModelMarkers(model, 'clarion', kept);
+            })
+            .catch(function () { /* never let a failed round-trip disrupt editing */ });
     }
 
     // GH #176: ordering guard. requestFromHost correlates each reply to its own request, but nothing said
@@ -4373,14 +4501,24 @@
     // number and the model's version id at dispatch; a reply renders only if no newer request has been
     // sent AND the buffer it was computed for is still the buffer on screen.
     var diagReqSeq = 0;
+    var diagAfterIdle = false;   // a pass is queued behind the idle sync (R12)
 
     function refreshDiagnostics() {
         if (!editor) return;
+        refreshSlotDiagnostics();   // every pass, ahead of (and never gated by) the LSP request below
         if (diagInFlight) { diagRerun = true; return; }   // dispatched when the outstanding pass settles
         var model = editor.getModel();
+        // R12: the LSP pass for a version still being typed rides the idle sync instead of forcing one.
+        if (typingUnsynced(model)) {
+            if (!diagAfterIdle) {
+                diagAfterIdle = true;
+                idleWaiters.push(function () { diagAfterIdle = false; refreshDiagnostics(); });
+            }
+            return;
+        }
         var mySeq = ++diagReqSeq;
         var myVersion = model.getVersionId();
-        var chars = model.getValueLength ? model.getValueLength() : model.getValue().length;
+        var timeoutMs = diagTimeoutForModel(model);
         // Build the payload (which may post the buffer sync) BEFORE claiming the in-flight slot: a throw
         // here must not leave diagInFlight stuck true, which would silence diagnostics until a reload.
         var payload;
@@ -4388,7 +4526,7 @@
         catch (e) { return; }
         var myGen = diagGen;
         diagInFlight = true;
-        requestFromHost('diagnostics', payload, diagTimeoutFor(chars))
+        requestFromHost('diagnostics', payload, timeoutMs)
             .then(function (resp) {
                 // An older source's request (setSource since): the slot and any rerun belong to the new one.
                 if (myGen !== diagGen) return;
@@ -4421,15 +4559,9 @@
                     if (rerun && !diagTimer) scheduleDiagnostics();   // the held pass still needs an answer
                     return;
                 }
-                var markers = resp.markers || [];
-                monaco.editor.setModelMarkers(model, 'clarion', markers.map(function (m) {
-                    return {
-                        severity: m.severity,
-                        message: m.message,
-                        startLineNumber: m.line, startColumn: m.column,
-                        endLineNumber: m.endLine, endColumn: m.endColumn
-                    };
-                }));
+                // Minus what the slot checks already squiggle on screen (1c685f2e item 7).
+                var markers = (resp.markers || []).map(toMarkerData);
+                monaco.editor.setModelMarkers(model, 'clarion', withoutDuplicatesOf(markers, markersOnScreen(model, SLOT_MARKER_OWNER)));
             })
             .catch(function () { if (myGen === diagGen) diagInFlight = false; /* never let a failed diagnostics round-trip disrupt editing */ });
     }
@@ -4472,6 +4604,299 @@
             else if (ch === '!' && !inStr) return false;   // unquoted '!' — comment from here, not a string
         }
         return inStr;
+    }
+
+    // ----- Local-first completion + hover (1c685f2e items 5-6) -----
+    // On a generated module (InventoryTable: 86k lines) the LSP takes seconds per request, and Monaco showed
+    // "Loading..." then "No suggestions". The host now also answers localCompletion / localHover from a local
+    // pass over the buffer in milliseconds, in lanes of their own. The providers ask both at once, show the
+    // local answer at once, and merge the LSP's when it has arrived.
+    //
+    // Completion (R1/R2):
+    //   * The LSP gets a LSP_RACE_BUDGET_MS head start. It misses -> the local items are returned with
+    //     incomplete:true, and the LSP answer is merged on the NEXT re-query (the next keystroke) from the
+    //     cache below. Nothing re-triggers the suggest widget.
+    //   * The cache is keyed on (model.id, line, wordStart) - NOT versionId, which every keystroke bumps - and
+    //     serves any query whose typed prefix EXTENDS the cached one, filtered client-side. One entry per model.
+    //   * LSP_MISSES_TO_SKIP consecutive race misses on a model = the LSP is slow on it: stop waiting for it and
+    //     return local at once. It is still asked (unawaited) so the cache fills. Any LSP reply that lands
+    //     within the budget of its OWN request is a hit and resets the count, raced or not - so skip mode
+    //     ends as soon as the LSP is fast again.
+    var LOCAL_TIMEOUT_MS = 400;        // the local layer answers in ms; past this treat it as down and fall back
+    var LSP_RACE_BUDGET_MS = 200;
+    var LSP_MISSES_TO_SKIP = 3;
+    var lspComplCache = {};            // model.id -> {line, wordStart, prefix, promise, done, resp, sentAt}
+    var lspComplMisses = {};           // model.id -> consecutive race misses
+    var localHoverShared = null;       // {key, promise}: ONE localHover per (model, version, position)
+    // A new document (setSource): cached answers and the miss count belong to the previous procedure. The
+    // model id survives a setValue, so the (model.id, line, wordStart) key alone would serve them. (5.9)
+    function resetLocalFirstState() {
+        lspComplCache = {}; lspComplMisses = {}; localHoverShared = null;
+        clearSpanMap();
+    }
+
+    // ----- R11/R11b: local requests carry PIECES of the buffer, never the synced whole (1c685f2e) -----
+    // After each full sync the host pushes a span map {type:'spanMap', v, headerHash, procs:[{name, start,
+    // dataEnd, end, owner, dataHash, routines, routineSpans:[{name, start, dataEnd, dataHash}]}]} (1-based
+    // lines of that sync's text); it caches each DATA piece's text under its dataHash. Every proc span, proc
+    // DATA and routine DATA becomes a tracked decoration, so they follow the edits made until the next map.
+    // A local request sends slice {headerHash, routines, pieces}, pieces in this order:
+    //   1. the caret proc's start..dataEnd       2. the enclosing routine's start..dataEnd
+    //   3. a Class.Method's owner start..dataEnd  4. WINDOW_LINES above/below the caret, clipped to the proc
+    // Pieces 1-3 go as {start, hash} while no edit has touched them since the map (the host has the text),
+    // else {start, text}; piece 4 always carries text. InventoryTable's own DATA alone is 236 KB, so a
+    // keystroke now sends ~16 KB. No map yet (first open) -> the synced buffer (`v`), as before.
+    var WINDOW_LINES = 200;
+    var spanMap = null;          // {model, headerHash, ids, procs:[{name, owner, routines, spanId, data, routineSpans}]}
+                                 // data / routineSpans[i] = {id, hash, dirty}
+    function clearSpanMap() {
+        if (spanMap) { try { spanMap.model.deltaDecorations(spanMap.ids, []); } catch (e) { } }
+        spanMap = null;
+    }
+    function wholeLines(model, start, end) {
+        return new monaco.Range(start, 1, end, model.getLineMaxColumn(end));
+    }
+    function textOfLines(model, start, end) { return model.getValueInRange(wholeLines(model, start, end)); }
+    function applySpanMap(msg) {
+        var model = editor && editor.getModel();
+        if (!model || !msg || !msg.procs) return;
+        // The map describes the text of sync `v`. If the model moved on since that sync, its lines no
+        // longer fit: keep the tracked decorations of the previous map until the next idle sync's map.
+        if (msg.v !== bufSyncSeq || bufferKey(model) !== bufSyncedKey) return;
+        var n = model.getLineCount();
+        var clamp = function (l) { return Math.max(1, Math.min(n, l | 0)); };
+        var sticky = { stickiness: monaco.editor.TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges };
+        var decs = [];
+        var track = function (s, e) { decs.push({ range: wholeLines(model, s, e), options: sticky }); return decs.length - 1; };
+        var dataPiece = function (start, dataEnd, end, hash) {
+            var s = clamp(start);
+            return { at: track(s, Math.max(s, Math.min(end, clamp(dataEnd)))), hash: hash || null, dirty: false };
+        };
+        var procs = msg.procs.map(function (p) {
+            var s = clamp(p.start), e = Math.max(s, clamp(p.end));
+            return {
+                name: p.name, owner: p.owner, routines: p.routines || [],
+                spanAt: track(s, e),
+                data: dataPiece(p.start, p.dataEnd, e, p.dataHash),
+                routineSpans: (p.routineSpans || []).map(function (r) {
+                    var d = dataPiece(r.start, r.dataEnd, e, r.dataHash);
+                    d.name = r.name;
+                    return d;
+                })
+            };
+        });
+        if (spanMap && spanMap.model !== model) clearSpanMap();
+        var ids = model.deltaDecorations(spanMap ? spanMap.ids : [], decs);
+        procs.forEach(function (p) {
+            p.spanId = ids[p.spanAt];
+            p.data.id = ids[p.data.at];
+            p.routineSpans.forEach(function (r) { r.id = ids[r.at]; });
+        });
+        spanMap = { model: model, headerHash: msg.headerHash, ids: ids, procs: procs };
+    }
+    // Content changes (pre-edit ranges) that touch a DATA piece make it dirty: its text no longer matches the
+    // hash the host holds, so it must travel as text until the next map. Edits above only shift it.
+    function markDirtyPieces(changes) {
+        if (!spanMap || !changes || !editor || editor.getModel() !== spanMap.model) return;
+        var model = spanMap.model;
+        var touch = function (piece) {
+            if (piece.dirty) return;
+            var r = model.getDecorationRange(piece.id);
+            if (!r) return;
+            for (var i = 0; i < changes.length; i++) {
+                var c = changes[i].range;
+                if (c.startLineNumber <= r.endLineNumber && c.endLineNumber >= r.startLineNumber) { piece.dirty = true; return; }
+            }
+        };
+        spanMap.procs.forEach(function (p) { touch(p.data); p.routineSpans.forEach(touch); });
+    }
+    // The map's proc whose tracked span holds `line`, with its current range. None -> {proc:null, range: the gap
+    // between the neighbouring procs (the module header, before the first one)}.
+    function spanAt(model, line) {
+        var lo = 1, hi = model.getLineCount();
+        for (var i = 0; i < spanMap.procs.length; i++) {
+            var r = model.getDecorationRange(spanMap.procs[i].spanId);
+            if (!r) continue;
+            if (r.startLineNumber <= line && line <= r.endLineNumber) return { proc: spanMap.procs[i], range: r };
+            if (r.endLineNumber < line) lo = Math.max(lo, r.endLineNumber + 1);
+            else hi = Math.min(hi, r.startLineNumber - 1);
+        }
+        return { proc: null, range: { startLineNumber: lo, endLineNumber: hi } };
+    }
+    var ROUTINE_LABEL_RE = /^([A-Za-z_][A-Za-z0-9_:]*)[ \t]+ROUTINE\b/gim;
+    // `names` plus the ROUTINE labels typed in `texts` (not in the map until the next sync), deduped.
+    function withTypedRoutines(names, texts) {
+        var out = [], seen = {};
+        var add = function (n) { var k = String(n).toUpperCase(); if (!seen[k]) { seen[k] = true; out.push(n); } };
+        (names || []).forEach(add);
+        texts.forEach(function (t) { var m; ROUTINE_LABEL_RE.lastIndex = 0; while ((m = ROUTINE_LABEL_RE.exec(t))) add(m[1]); });
+        return out;
+    }
+    // A DATA piece as it travels: by hash while clean (and hashed), else with its current text.
+    function dataPieceOut(model, piece, withText) {
+        var r = model.getDecorationRange(piece.id);
+        if (!r) return null;
+        if (!withText && !piece.dirty && piece.hash) return { start: r.startLineNumber, hash: piece.hash };
+        return { start: r.startLineNumber, text: textOfLines(model, r.startLineNumber, r.endLineNumber) };
+    }
+    // The slice for a local request at `line`, or null when there is no span map for this model. `sources`
+    // (same order as pieces) keeps each DATA piece's tracking record so a needPieces reply can resend it.
+    function buildSlice(model, line) {
+        if (!spanMap || spanMap.model !== model) return null;
+        var hit = spanAt(model, line), proc = hit.proc;
+        var pieces = [], sources = [];
+        var add = function (piece) {
+            var out = piece && dataPieceOut(model, piece, false);
+            if (out) { pieces.push(out); sources.push(piece); }
+        };
+        if (proc) {
+            add(proc.data);
+            var rtn = null;                          // the enclosing routine: the last one starting at/above the caret
+            proc.routineSpans.forEach(function (r) {
+                var rr = model.getDecorationRange(r.id);
+                if (rr && rr.startLineNumber <= line) rtn = r;
+            });
+            add(rtn);
+            if (proc.owner != null && spanMap.procs[proc.owner]) add(spanMap.procs[proc.owner].data);
+        }
+        var s = Math.max(hit.range.startLineNumber, line - WINDOW_LINES);
+        var e = Math.min(hit.range.endLineNumber, line + WINDOW_LINES);
+        var windowText = textOfLines(model, s, e);
+        pieces.push({ start: s, text: windowText });
+        sources.push(null);
+        return {
+            slice: { headerHash: spanMap.headerHash, routines: withTypedRoutines(proc ? proc.routines : [], [windowText]), pieces: pieces },
+            sources: sources
+        };
+    }
+    // The module header as it stands now (line 1 up to the first proc), for a host that lost it (needHeader).
+    function headerText(model) {
+        var first = model.getLineCount() + 1;
+        spanMap.procs.forEach(function (p) {
+            var r = model.getDecorationRange(p.spanId);
+            if (r && r.startLineNumber < first) first = r.startLineNumber;
+        });
+        return first > 1 ? textOfLines(model, 1, first - 1) : '';
+    }
+    // A local request (localCompletion / localHover) at `position`: a slice when there is a span map, else
+    // the synced buffer. The host lacking the header ({needHeader:true}) and/or some pieces ({needPieces:
+    // [hashes]}) -> send the header, put those pieces' text in, and retry ONCE; a second miss = null.
+    function requestLocal(action, model, position, extra) {
+        var payload = { line: position.lineNumber, column: position.column };
+        if (extra) for (var k in extra) if (extra.hasOwnProperty(k)) payload[k] = extra[k];
+        var built = buildSlice(model, position.lineNumber);
+        if (built) payload.slice = built.slice;
+        else payload = withBuffer(model, payload);
+        var ask = function () { return requestFromHost(action, payload, LOCAL_TIMEOUT_MS); };
+        var missed = function (resp) { return resp && (resp.needHeader || (resp.needPieces && resp.needPieces.length)); };
+        return ask().then(function (resp) {
+            if (!missed(resp)) return resp;
+            if (!built || !spanMap) return null;
+            if (resp.needHeader) postToHost({ action: 'headerSync', hash: built.slice.headerHash, text: headerText(model) });
+            var need = {};
+            (resp.needPieces || []).forEach(function (h) { need[h] = true; });
+            built.slice.pieces = built.slice.pieces.map(function (p, i) {
+                return (p.hash && need[p.hash] && built.sources[i]) ? (dataPieceOut(model, built.sources[i], true) || p) : p;
+            });
+            return ask().then(function (again) { return missed(again) ? null : again; });
+        });
+    }
+    // slotDiagnostics' slice: each live slot's text, plus the routine names of the procs holding them.
+    function slotSlicePayload(model) {
+        if (!spanMap || spanMap.model !== model) return null;
+        var names = [], seen = {};
+        var slots = liveEditableRanges().map(function (r) {
+            var hit = spanAt(model, r[0]);
+            if (hit.proc && !seen[hit.proc.spanId]) { seen[hit.proc.spanId] = true; names = names.concat(hit.proc.routines); }
+            return { start: r[0], text: model.getValueInRange(wholeLines(model, r[0], r[1])) };
+        });
+        // procedureName: null - the page does not know it; the host uses its own.
+        return { procedureName: null, routines: withTypedRoutines(names, []), slots: slots };
+    }
+
+    // Can cached LSP completion `c` answer a query at (line, wordStart) with typed `prefix`? Only when the
+    // prefix EXTENDS the cached one. Below 2 chars the host skips its bare-prefix merges (globals, CodeGraph),
+    // so a 0-1 char answer is not a superset of a longer prefix's - except in a member/qualifier context
+    // (after '.', ':' or '?'), where the server returns the whole member list regardless of what is typed.
+    function lspCacheServes(c, line, wordStart, prefix, qualified) {
+        if (!c || c.line !== line || c.wordStart !== wordStart) return false;
+        var cp = c.prefix.toUpperCase(), p = prefix.toUpperCase();
+        if (p.indexOf(cp) !== 0) return false;
+        return p.length === cp.length || cp.length >= 2 || qualified;
+    }
+    // The cached LSP completion that serves this query, or a new request that becomes the cache entry.
+    // While the version is being typed and unsynced (R12) no request is made: an already-answered stand-in
+    // with no items, so the list is local-only (incomplete:true) until the re-query after the idle sync.
+    function lspCompletionFor(model, position, wordStart, prefix, qualified) {
+        var id = modelKey(model);
+        var c = lspComplCache[id];
+        if (lspCacheServes(c, position.lineNumber, wordStart, prefix, qualified)) return c;
+        if (typingUnsynced(model)) return { prefix: prefix, done: true, resp: null, promise: Promise.resolve(null) };
+        c = { line: position.lineNumber, wordStart: wordStart, prefix: prefix, done: false, resp: null, sentAt: rtNow() };
+        // Captured, not re-read at reply time: a late reply from before a setSource must reset the OLD
+        // document's miss count, not the new one's (resetLocalFirstState replaces the object).
+        var misses = lspComplMisses;
+        c.promise = requestFromHost('completion', withBuffer(model, { line: position.lineNumber, column: position.column }))
+            .then(function (resp) {
+                c.done = true;
+                c.resp = resp;
+                // null = timed out / dropped: no answer to reuse, so the next keystroke must ask again.
+                if (!resp) { if (lspComplCache[id] === c) delete lspComplCache[id]; return null; }
+                if (rtNow() - c.sentAt <= LSP_RACE_BUDGET_MS) misses[id] = 0;   // a hit: race again (5.13/5.14)
+                return resp;
+            });
+        lspComplCache[id] = c;
+        return c;
+    }
+    // Resolves once `c` has answered or its race budget ran out, whichever is first; a budget that runs out
+    // is a miss for model `id`. No race (resolved at once) when `c` already answered or `id` is in skip mode.
+    function lspWithinBudget(c, id) {
+        if (c.done || (lspComplMisses[id] || 0) >= LSP_MISSES_TO_SKIP) return Promise.resolve();
+        return new Promise(function (resolve) {
+            var timer = setTimeout(function () {
+                if (!c.done) lspComplMisses[id] = (lspComplMisses[id] || 0) + 1;
+                resolve();
+            }, LSP_RACE_BUDGET_MS);
+            c.promise.then(function () { clearTimeout(timer); resolve(); });
+        });
+    }
+    // Case-insensitive dedupe key of a completion item, or null when it has no label.
+    function completionLabelKey(it) { return (it && it.label != null) ? String(it.label).toLowerCase() : null; }
+    // Client-side filter for a cached answer reused under a longer prefix: keep an item if its label,
+    // filterText or insertText - or the part after its last ':'/'.' (PROP:Bevel, LOC:Count) - starts with P.
+    function completionMatchesPrefix(it, P) {
+        var cands = [it.filterText, it.label, it.insertText];
+        for (var i = 0; i < cands.length; i++) {
+            if (cands[i] == null) continue;
+            var s = String(cands[i]).toUpperCase();
+            if (s.indexOf(P) === 0) return true;
+            var tail = s.slice(Math.max(s.lastIndexOf(':'), s.lastIndexOf('.')) + 1);
+            if (tail.indexOf(P) === 0) return true;
+        }
+        return false;
+    }
+
+    // Hover (R7): the local card and the LSP card come from two providers, which Monaco renders as they
+    // settle. Both share ONE localHover request per (model, version, position). The LSP provider waits for
+    // that answer before it asks: an authoritative local answer (a local, a parameter, a routine, a module
+    // procedure) means no LSP request at all; otherwise the LSP card is dropped when it names the same
+    // symbol as the local card, so the two never show the same thing twice.
+    function sharedLocalHover(model, position) {
+        var key = bufferKey(model) + ':' + position.lineNumber + ':' + position.column;
+        if (localHoverShared && localHoverShared.key === key) return localHoverShared.promise;
+        var p = requestLocal('localHover', model, position, null);
+        localHoverShared = { key: key, promise: p };
+        return p;
+    }
+    // The symbol a hover card names: the leading label of its first code-block line (or of its first line),
+    // e.g. "MyVar  LONG" -> MyVar, "ThisWindow.Init PROCEDURE" -> ThisWindow.Init. Upper-cased; '' if none.
+    function hoverCardSymbol(md) {
+        var s = String(md || '');
+        var fence = /```[^\n]*\n([^\n]*)/.exec(s);
+        var first = fence ? fence[1] : s.split('\n')[0];
+        first = first.replace(/^[\s*_#>`]+/, '').replace(/^\([^)]*\)\s*/, '');
+        var m = /^[A-Za-z_][A-Za-z0-9_:.]*/.exec(first);
+        return m ? m[0].replace(/[.:]+$/, '').toUpperCase() : '';
     }
 
     function registerClarionProviders() {
@@ -4549,7 +4974,7 @@
         }
         monaco.languages.registerCompletionItemProvider('clarion', {
             triggerCharacters: ['.', ':', '?'],
-            provideCompletionItems: function (model, position) {
+            provideCompletionItems: function (model, position, context) {
                 // Completion replace-range = the trailing identifier chars only, breaking on ':' and '.'.
                 // We intentionally do NOT use getWordUntilPosition here: the Clarion wordPattern keeps ':'
                 // inside a word (so double-click selects prefixed names like Add:AddressID), but the server's
@@ -4573,15 +4998,45 @@
                 // unaffected — the run is then identical to `pfx` and the widening never triggers.
                 var colonPfx = /[A-Za-z0-9_:]*$/.exec(before);
                 var colonRun = colonPfx ? colonPfx[0] : '';
-                return requestFromHost('completion', withBuffer(model, { line: position.lineNumber, column: position.column }))
-                    .then(function (resp) {
-                        var items = (resp && resp.items) || [];
-                        if (!items.length) maybeReportLsp(resp && resp.lsp);
+                // Two-phase (1c685f2e item 5): the local layer and the LSP are asked at once; see the
+                // "Local-first completion" block above for the race, the cache and skip mode.
+                var prefix = pfx ? pfx[0] : '';
+                var qualified = /[.:?]/.test(before.charAt(startCol - 2));
+                // Local first: a slice (R11), or - no span map yet - the request that carries a needed
+                // bufferSync ahead of the LSP's.
+                var localP = requestLocal('localCompletion', model, position,
+                    context && context.triggerCharacter ? { triggerCharacter: context.triggerCharacter } : null);
+                var lsp = lspCompletionFor(model, position, startCol, prefix, qualified);
+                return Promise.all([localP, lspWithinBudget(lsp, modelKey(model))])
+                    .then(function (r) {
+                        // No local answer (timed out / host without the local layer): wait for the LSP as
+                        // before rather than show an empty list. (5.16)
+                        if (!r[0] && !lsp.done) return lsp.promise.then(function () { return r[0]; });
+                        return r[0];
+                    })
+                    .then(function (local) {
+                        var localItems = (local && local.items) || [];
+                        var lspItems = (lsp.done && lsp.resp && lsp.resp.items) || [];
+                        // A cached answer reused under a longer prefix: drop what the longer prefix excludes.
+                        if (lspItems.length && prefix.length > lsp.prefix.length) {
+                            var P = prefix.toUpperCase();
+                            lspItems = lspItems.filter(function (it) { return completionMatchesPrefix(it, P); });
+                        }
+                        if (lsp.done && !localItems.length && !lspItems.length) maybeReportLsp(lsp.resp && lsp.resp.lsp);
+                        // Case-insensitive label dedupe; the local item wins (it knows the caret's scope). Only
+                        // LSP items are dropped, so its overloads (Open(LONG) / Open(STRING)) all survive.
+                        var localLabels = {};
+                        localItems.forEach(function (it) { var k = completionLabelKey(it); if (k != null) localLabels[k] = true; });
+                        var items = localItems.concat(lspItems.filter(function (it) {
+                            var k = completionLabelKey(it);
+                            return k == null || !localLabels[k];
+                        }));
                         // incomplete:true → Monaco re-queries the provider on every keystroke instead of
                         // caching the first response and fuzzy-filtering client-side. Required so the
                         // host-side CodeGraph prefix merge (task a47a6cac) runs live as-you-type — without
                         // it, globals only appear on a forced Ctrl+Space (min-prefix guard suppresses the
-                        // 1-char query, then the stale list is filtered and never re-fetched).
+                        // 1-char query, then the stale list is filtered and never re-fetched). It is also
+                        // how a late LSP answer is merged: on the next re-query, from the cache.
                         var sugg = items.map(function (it) { return toMonacoCompletion(it, range, colonRun); });
                         // Keywords rank first + exact-typed keyword gets selected. The server ALSO returns
                         // some keywords (e.g. PROCEDURE) — those dedupe our injected copy away, so the
@@ -4674,6 +5129,19 @@
                 return { suggestions: sugg };
             }
         });
+        // Two hover providers (1c685f2e item 6): the local card first, in milliseconds; then the LSP card,
+        // decided only once the local answer is in (see sharedLocalHover).
+        monaco.languages.registerHoverProvider('clarion', {
+            provideHover: function (model, position) {
+                if (isInClarionComment(model.getLineContent(position.lineNumber), position.column - 1)) return null;
+                return sharedLocalHover(model, position)
+                    .then(function (local) {
+                        if (!local || !local.contents) return null;
+                        return { contents: [{ value: local.contents }] };
+                    })
+                    .catch(function () { return null; });
+            }
+        });
         monaco.languages.registerHoverProvider('clarion', {
             provideHover: function (model, position) {
                 // Suppress the tooltip when the hover position is inside a Clarion comment — hovering a
@@ -4681,10 +5149,20 @@
                 // is 1-based, so pass column-1 as the 0-based index. Guarding here (not host-side) avoids
                 // a wasted round-trip and needs no C# change. (task 37e2079f)
                 if (isInClarionComment(model.getLineContent(position.lineNumber), position.column - 1)) return null;
-                return requestFromHost('hover', withBuffer(model, { line: position.lineNumber, column: position.column }))
-                    .then(function (resp) {
-                        if (!resp || !resp.contents) return null;
-                        return { contents: [{ value: resp.contents }] };
+                return sharedLocalHover(model, position)
+                    .then(function (local) {
+                        var localCard = local && local.contents;
+                        if (localCard && local.authoritative) return null;   // the local card owns it: no LSP call
+                        var localSymbol = localCard ? hoverCardSymbol(localCard) : '';
+                        // R12: over a version still being typed, the LSP is asked after the idle sync.
+                        return whenIdleSynced(model, { line: position.lineNumber, column: position.column })
+                            .then(function (payload) { return payload ? requestFromHost('hover', payload) : null; })
+                            .then(function (resp) {
+                                if (!resp || !resp.contents) return null;
+                                // Same symbol as the local card already on screen: one card, not two.
+                                if (localSymbol && localSymbol === hoverCardSymbol(resp.contents)) return null;
+                                return { contents: [{ value: resp.contents }] };
+                            });
                     })
                     .catch(function () { return null; });
             }
@@ -4720,7 +5198,9 @@
                 var sigLine = model.getLineContent(position.lineNumber);
                 // A '(' or ',' typed inside a string/comment is text, not a call site (683ded6c).
                 if (isInClarionComment(sigLine, position.column - 1) || isInClarionString(sigLine, position.column - 1)) return null;
-                return requestFromHost('signatureHelp', withBuffer(model, { line: position.lineNumber, column: position.column }))
+                // R12: after the idle sync when the version is still being typed (null = superseded).
+                return whenIdleSynced(model, { line: position.lineNumber, column: position.column })
+                    .then(function (payload) { return payload ? requestFromHost('signatureHelp', payload) : null; })
                     .then(function (resp) {
                         var h = resp && resp.signatureHelp;
                         if (!h || !h.signatures || !h.signatures.length) return null;
@@ -6877,11 +7357,15 @@
         var op = document.getElementById('outlinePanel');
         if (!op || op.classList.contains('hidden') || !editor) return;
         var mySeq = ++outlineSeq;
-        requestFromHost('documentStructure', withBuffer(editor.getModel(), {}))
-            .then(function (data) {
-                if (mySeq !== outlineSeq) return;   // a newer refresh superseded this one
-                outlineSymbols = regroupSymbols((data && data.symbols) ? data.symbols : []);
-                renderOutlineCurrent();
+        // R12: an outline for a version being typed waits for the idle sync (null = superseded meanwhile).
+        whenIdleSynced(editor.getModel(), {})
+            .then(function (payload) {
+                if (!payload || mySeq !== outlineSeq) return;
+                return requestFromHost('documentStructure', payload).then(function (data) {
+                    if (mySeq !== outlineSeq) return;   // a newer refresh superseded this one
+                    outlineSymbols = regroupSymbols((data && data.symbols) ? data.symbols : []);
+                    renderOutlineCurrent();
+                });
             })
             .catch(function () {});
     }
@@ -7763,6 +8247,8 @@
                 if (resolver) { delete pendingRequests[msg.reqId]; resolver(msg.data); }
             } else if (msg.type === 'bufferResync') {
                 resetBufferSync();   // the host has no copy of the version we stamped — resend with the next request (16d140e9)
+            } else if (msg.type === 'spanMap') {
+                applySpanMap(msg);   // procedure spans of the last full sync, tracked as decorations (1c685f2e R11)
             } else if (msg.type === 'insertText') {
                 insertTextAtCursor(msg.text);
             } else if (msg.type === 'moveCaretToPoint') {
