@@ -5,6 +5,7 @@
 // Exit: 0 pass, 1 fail.
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using ClarionAssistant.Services;
@@ -57,7 +58,7 @@ static class LiveDictionaryIndexTest
         return new HashSet<string>(items.Select(i => i.Label), StringComparer.OrdinalIgnoreCase);
     }
 
-    static int Main()
+    static int Main(string[] args)
     {
         var s1 = Snapshot(false);
         var s2 = Snapshot(true);
@@ -134,6 +135,41 @@ static class LiveDictionaryIndexTest
         Check(ClarionKeywordIndex.HoverWord("Clip") != null && ClarionKeywordIndex.HoverWord("NotAKeyword") == null, "3.10",
               "CLIP is a built-in (so a local 'Clip' must be asked first - LocalScopeIndex answers it, test 3.10a); an unknown word is null");
         Check(ClarionBuiltins_Membership(), "3.11", "the grouped ClarionBuiltins keep the indexer's membership (IsBuiltIn/IsKeyword spot checks)");
+
+        Console.WriteLine("H3: keyword help text from the LSP's language data");
+        string dataDir = args.Length > 0 ? args[0] : null;
+        if (dataDir == null) Check(false, "H3", "no keyword-data fixture folder given");
+        else
+        {
+            // A missing data folder: name + category, nothing thrown.
+            ClarionKeywordIndex.DataDirOverride = Path.Combine(dataDir, "does-not-exist");
+            ClarionKeywordIndex.ResetForTest();
+            Exception ex = null;
+            LocalHoverResult none = null;
+            try { ClarionKeywordIndex.WaitForLoad(5000); none = ClarionKeywordIndex.HoverWord("DERIVED"); } catch (Exception e) { ex = e; }
+            Check(ex == null && none != null && none.Markdown.Contains("DERIVED") && none.Markdown.Contains("Attribute") && !none.Markdown.Contains("derived method"),
+                  "H3.missing", "no data folder: DERIVED is still name + category, nothing thrown");
+
+            ClarionKeywordIndex.DataDirOverride = dataDir;
+            ClarionKeywordIndex.ResetForTest();
+            bool loaded = ClarionKeywordIndex.WaitForLoad(5000);
+            var der = ClarionKeywordIndex.HoverWord("derived");
+            Check(loaded && der != null && der.Markdown.Contains("derived method of a CLASS structure") && der.Markdown.Contains("keyword · Attribute") && !der.Authoritative
+                  && der.Markdown.StartsWith("```clarion\nDERIVED\n```"),
+                  "H3.derived", "DERIVED -> its description, category, non-authoritative: " + (der == null ? "(null)" : der.Markdown.Replace("\n", "\\n")));
+            var ret = ClarionKeywordIndex.HoverWord("RETURN");
+            var pop = ClarionKeywordIndex.HoverWord("POPBIND");
+            var clip = ClarionKeywordIndex.HoverWord("CLIP");
+            Check(ret != null && ret.Markdown.Contains("Terminates PROGRAM or PROCEDURE") && pop != null && pop.Markdown.Contains("Restores the BIND name space")
+                  && pop.Markdown.Contains("returns VOID") && clip != null && clip.Markdown.Contains("CLIP(STRING string)") && clip.Markdown.Contains("returns STRING"),
+                  "H3.builtins", "RETURN/POPBIND descriptions, CLIP's signature + return type: " + (clip == null ? "(null)" : clip.Markdown.Replace("\n", "\\n")));
+            var ev = ClarionKeywordIndex.HoverWord("EVENT:Accepted");
+            Check(ev != null && ev.Markdown.Contains("Field-Specific") && ev.Markdown.Contains("validation"), "H3.events",
+                  "a name only the data knows (EVENT:Accepted) gets a card with its category and description");
+            var ci = ClarionKeywordIndex.Complete("POPB").FirstOrDefault(i => i.Label == "POPBIND");
+            Check(ci != null && (ci.Documentation ?? "").Contains("Restores the BIND name space") && (ci.Detail ?? "").Contains("Runtime expressions"),
+                  "H3.completion", "the POPBIND completion item carries the description as its documentation");
+        }
 
         Console.WriteLine();
         if (Failures.Count == 0) { Console.WriteLine("PASS - " + _assertions + " assertions"); return 0; }

@@ -1,0 +1,9 @@
+{
+  "events": [
+    {
+      "name": "EVENT:Accepted",
+      "description": "The user has entered data or made a selection then pressed TAB or clicked the mouse to move to another control. This is the event on which you should perform any data input validation code.",
+      "category": "Field-Specific"
+    }
+  ]
+}

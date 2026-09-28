@@ -1,0 +1,41 @@
+{
+  "attributes": [
+    {
+      "name": "PRE",
+      "applicableTo": [
+        "GROUP",
+        "QUEUE",
+        "FILE",
+        "RECORD"
+      ],
+      "signatures": [
+        {
+          "params": [
+            {
+              "name": "STRING prefix",
+              "optional": false
+            }
+          ],
+          "description": "Specifies the prefix for field labels",
+          "syntax": "PRE(prefix)"
+        }
+      ],
+      "description": "Declares a field label prefix for the structure. All field labels within the structure are automatically prefixed with this value. Used for namespacing and avoiding label conflicts. Example: PRE(CUS) makes field 'Name' accessible as 'CUS:Name'.",
+      "propertyEquate": ""
+    },
+    {
+      "name": "DERIVED",
+      "applicableTo": [
+        "METHOD"
+      ],
+      "signatures": [
+        {
+          "params": [],
+          "description": "No parameters"
+        }
+      ],
+      "description": "CLASS method attribute. Specifies the PROCEDURE is a derived method of a CLASS structure. There must be a matching prototype in the parent class that this method overrides.",
+      "propertyEquate": ""
+    }
+  ]
+}

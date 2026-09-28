@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using ClarionCodeGraph.Parsing;
 
 namespace ClarionAssistant.Services
@@ -41,6 +42,7 @@ namespace ClarionAssistant.Services
         public static void Publish(IDictionary<string, ClarionAppDataReader.TableDef> snapshot)
         {
             lock (_lock) { _published = snapshot; }
+            ClarionKeywordIndex.Preload();   // the keyword help loads in the background, before the first hover
         }
 
         /// <summary>True when a non-empty live snapshot is available (the fallback is then never used).</summary>
@@ -245,6 +247,7 @@ namespace ClarionAssistant.Services
     public static class ClarionKeywordIndex
     {
         private static List<KeyValuePair<string, string>> _all;   // (NAME, "built-in · Category" | "keyword · Category")
+        private static Dictionary<string, KeyValuePair<string, string>> _byName;
 
         private static List<KeyValuePair<string, string>> All()
         {
@@ -259,40 +262,242 @@ namespace ClarionAssistant.Services
             return _all = list;
         }
 
+        private static Dictionary<string, KeyValuePair<string, string>> ByName()
+        {
+            var byName = _byName;
+            if (byName != null) return byName;
+            byName = new Dictionary<string, KeyValuePair<string, string>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in All()) byName[kv.Key] = kv;
+            return _byName = byName;
+        }
+
         /// <summary>Keywords/built-ins starting with <paramref name="prefix"/> (case-insensitive): label is
-        /// the upper-case name, detail its category. Kind 14 (Keyword). Empty for an empty prefix.</summary>
+        /// the upper-case name, detail its category, documentation its help text once the LSP's language
+        /// data has loaded (H3). Kind 14 (Keyword). Empty for an empty prefix.</summary>
         public static List<LspClient.CompletionItemInfo> Complete(string prefix)
         {
             var items = new List<LspClient.CompletionItemInfo>();
             if (string.IsNullOrEmpty(prefix)) return items;
+            var docs = Docs();
             foreach (var kv in All())
                 if (kv.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                    items.Add(new LspClient.CompletionItemInfo { Label = kv.Key, Kind = 14, Detail = kv.Value, InsertText = kv.Key });
+                {
+                    KeywordDoc d = null;
+                    if (docs != null) docs.TryGetValue(kv.Key, out d);
+                    items.Add(new LspClient.CompletionItemInfo
+                    {
+                        Label = kv.Key, Kind = 14, Detail = kv.Value, InsertText = kv.Key,
+                        Documentation = d == null ? null : d.Description
+                    });
+                }
             return items;
         }
 
-        /// <summary>A name + category card for a keyword/built-in, or null. Never authoritative: a local
-        /// declaration of the same name (e.g. a variable "Clip") must be asked first and wins.</summary>
+        /// <summary>A card for a keyword, built-in, attribute, data type, directive, control or event: the
+        /// name (or its signatures, when it takes parameters), the category, and - once the language data
+        /// has loaded - its description. Until then (or with no data folder) name + category only; never
+        /// blocks. Null for an unknown word. Never authoritative: a local declaration of the same name (e.g.
+        /// a variable "Clip") must be asked first and wins.</summary>
         public static LocalHoverResult HoverWord(string word)
         {
             if (string.IsNullOrEmpty(word)) return null;
-            var byName = _byName;
-            if (byName == null)
-            {
-                byName = new Dictionary<string, KeyValuePair<string, string>>(StringComparer.OrdinalIgnoreCase);
-                foreach (var kv in All()) byName[kv.Key] = kv;
-                _byName = byName;
-            }
             KeyValuePair<string, string> hit;
-            if (!byName.TryGetValue(word, out hit)) return null;
-            return new LocalHoverResult
-            {
-                Markdown = "```clarion\n" + hit.Key + "\n```\n\n" + hit.Value,
-                Authoritative = false,
-                Kind = "keyword"
-            };
+            bool known = ByName().TryGetValue(word, out hit);
+            KeywordDoc d = null;
+            var docs = Docs();
+            if (docs != null) docs.TryGetValue(word, out d);
+            if (!known && d == null) return null;
+
+            string name = known ? hit.Key : d.Name;
+            string category = known ? hit.Value : "keyword" + (string.IsNullOrEmpty(d.Category) ? "" : " · " + d.Category);
+            var sb = new System.Text.StringBuilder("```clarion\n");
+            if (d != null && d.Signatures.Count > 0) sb.Append(string.Join("\n", d.Signatures));
+            else sb.Append(name);
+            sb.Append("\n```\n\n").Append(category);
+            if (d != null && !string.IsNullOrEmpty(d.ReturnType)) sb.Append(" · returns ").Append(d.ReturnType);
+            if (d != null && !string.IsNullOrEmpty(d.Description)) sb.Append("\n\n").Append(d.Description);
+            return new LocalHoverResult { Markdown = sb.ToString(), Authoritative = false, Kind = "keyword" };
         }
 
-        private static Dictionary<string, KeyValuePair<string, string>> _byName;
+        // ============================================================== the LSP's language data (H3)
+        // The bundled Clarion language server ships clean, structured language help as JSON beside
+        // server.js: <addin>\lsp-server\out\server\src\data\clarion-*.json. The files' shapes differ (a
+        // top-level "attributes" / "functions" / "keywords" / "dataTypes" / "directives" / "events" /
+        // "windowControls"... array; signatures as {params|parameters, returnType, description|documentation,
+        // syntax|label}), so every top-level array of named objects is read the same tolerant way.
+
+        internal sealed class KeywordDoc
+        {
+            public string Name, Category, Description, ReturnType;
+            public readonly List<string> Signatures = new List<string>();
+        }
+
+        /// <summary>Test hook / host override: the data folder. Null: resolved from the assembly's folder.</summary>
+        internal static string DataDirOverride;
+
+        private static readonly string[] DataFiles =
+        {
+            "clarion-keywords.json", "clarion-builtins.json", "clarion-attributes.json", "clarion-datatypes.json",
+            "clarion-directives.json", "clarion-controls.json", "clarion-events.json"
+        };
+
+        private static volatile Dictionary<string, KeywordDoc> _docs;
+        private static int _loadStarted;
+        private static readonly System.Threading.ManualResetEvent _loaded = new System.Threading.ManualResetEvent(false);
+
+        /// <summary>Start loading the language data on a pool thread (idempotent; the host may call it early).</summary>
+        public static void Preload()
+        {
+            if (System.Threading.Interlocked.CompareExchange(ref _loadStarted, 1, 0) != 0) return;
+            if (!System.Threading.ThreadPool.QueueUserWorkItem(_ => Load())) Load();
+        }
+
+        /// <summary>The loaded docs, or null while loading (the first call starts the load).</summary>
+        private static Dictionary<string, KeywordDoc> Docs()
+        {
+            var d = _docs;
+            if (d == null) Preload();
+            return d;
+        }
+
+        /// <summary>Test hook: wait up to <paramref name="ms"/> for the load; true when it has finished.</summary>
+        internal static bool WaitForLoad(int ms) { Preload(); return _loaded.WaitOne(ms); }
+
+        /// <summary>Test hook: forget the loaded data so the next use loads again.</summary>
+        internal static void ResetForTest()
+        {
+            _docs = null;
+            _loaded.Reset();
+            System.Threading.Interlocked.Exchange(ref _loadStarted, 0);
+        }
+
+        /// <summary>The data folder: the override, else lsp-server\out\server\src\data beside this assembly
+        /// (the addin and the standalone MCP server deploy to the same folder), else a dev tree's
+        /// .lsp-build\&lt;tag&gt;\... up to four folders above it. Null when there is none.</summary>
+        internal static string ResolveDataDir()
+        {
+            if (DataDirOverride != null) return Directory.Exists(DataDirOverride) ? DataDirOverride : null;
+            try
+            {
+                string asmDir = Path.GetDirectoryName(typeof(ClarionKeywordIndex).Assembly.Location);
+                string beside = Path.Combine(asmDir, "lsp-server", "out", "server", "src", "data");
+                if (Directory.Exists(beside)) return beside;
+                var dir = new DirectoryInfo(asmDir);
+                for (int up = 0; up < 5 && dir != null; up++, dir = dir.Parent)
+                {
+                    string build = Path.Combine(dir.FullName, ".lsp-build");
+                    if (!Directory.Exists(build)) continue;
+                    string best = null;
+                    DateTime bestTime = DateTime.MinValue;
+                    foreach (var tag in Directory.GetDirectories(build))
+                    {
+                        string data = Path.Combine(tag, "out", "server", "src", "data");
+                        if (!Directory.Exists(data)) continue;
+                        var t = Directory.GetLastWriteTimeUtc(data);
+                        if (best == null || t > bestTime) { best = data; bestTime = t; }
+                    }
+                    if (best != null) return best;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static void Load()
+        {
+            var docs = new Dictionary<string, KeywordDoc>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                string dir = ResolveDataDir();
+                if (dir == null) LspTrace.Write("[keyword-index] no lsp-server data folder; keyword hover stays name + category");
+                else
+                {
+                    var ser = new System.Web.Script.Serialization.JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                    foreach (var file in DataFiles)
+                    {
+                        try
+                        {
+                            string path = Path.Combine(dir, file);
+                            if (!File.Exists(path)) continue;
+                            var root = ser.DeserializeObject(File.ReadAllText(path)) as IDictionary<string, object>;
+                            if (root == null) continue;
+                            foreach (var kv in root)
+                            {
+                                var arr = kv.Value as object[];
+                                if (arr == null) continue;
+                                foreach (var o in arr) Merge(docs, o as IDictionary<string, object>);
+                            }
+                        }
+                        catch (Exception ex) { LspTrace.Write("[keyword-index] " + file + ": " + ex.Message); }
+                    }
+                }
+            }
+            catch (Exception ex) { LspTrace.Write("[keyword-index] load failed: " + ex.Message); }
+            finally
+            {
+                _docs = docs;
+                _loaded.Set();
+            }
+        }
+
+        private static string Str(IDictionary<string, object> d, string key)
+        {
+            object o;
+            return d != null && d.TryGetValue(key, out o) && o is string && ((string)o).Length > 0 ? (string)o : null;
+        }
+
+        private static void Merge(Dictionary<string, KeywordDoc> docs, IDictionary<string, object> e)
+        {
+            string name = Str(e, "name");
+            if (name == null) return;
+            KeywordDoc d;
+            if (!docs.TryGetValue(name, out d)) docs[name] = d = new KeywordDoc { Name = name };
+            if (d.Category == null) d.Category = Str(e, "category");
+            if (d.ReturnType == null) d.ReturnType = Str(e, "returnType");
+            string desc = Str(e, "description") ?? Str(e, "documentation");
+
+            object so;
+            var sigs = e.TryGetValue("signatures", out so) ? so as object[] : null;
+            bool addSigs = d.Signatures.Count == 0;
+            if (sigs != null)
+                foreach (var s in sigs)
+                {
+                    var sd = s as IDictionary<string, object>;
+                    if (sd == null) continue;
+                    if (desc == null) desc = Str(sd, "description") ?? Str(sd, "documentation");
+                    if (d.ReturnType == null) d.ReturnType = Str(sd, "returnType");
+                    if (!addSigs) continue;
+                    string label = Str(sd, "syntax") ?? Str(sd, "label");
+                    var ps = ParamList(sd);
+                    if (label == null && ps.Count == 0) continue;   // "no parameters": the bare name says it all
+                    if (label == null || (label == name && ps.Count > 0)) label = name + "(" + string.Join(", ", ps) + ")";
+                    if (ps.Count > 0 || label != name) d.Signatures.Add(label);
+                }
+            string syntax = Str(e, "syntax");
+            if (addSigs && d.Signatures.Count == 0 && syntax != null && syntax != name) d.Signatures.Add(syntax);
+            if (d.Description == null && desc != null && desc != "No parameters") d.Description = desc;
+        }
+
+        private static List<string> ParamList(IDictionary<string, object> sig)
+        {
+            var list = new List<string>();
+            object po;
+            var ps = (sig.TryGetValue("params", out po) || sig.TryGetValue("parameters", out po)) ? po as object[] : null;
+            if (ps == null) return list;
+            foreach (var p in ps)
+            {
+                string n = p as string;
+                bool optional = false;
+                var pd = p as IDictionary<string, object>;
+                if (pd != null)
+                {
+                    n = Str(pd, "name") ?? Str(pd, "label");
+                    object opt;
+                    optional = pd.TryGetValue("optional", out opt) && opt is bool && (bool)opt;
+                }
+                if (n != null) list.Add(optional ? "[" + n + "]" : n);
+            }
+            return list;
+        }
     }
 }

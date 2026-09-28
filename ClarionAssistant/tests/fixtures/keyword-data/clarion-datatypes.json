@@ -1,0 +1,32 @@
+{
+  "dataTypes": [
+    {
+      "name": "LONG",
+      "category": "numeric",
+      "description": "Four-byte signed integer",
+      "syntax": "label LONG[(initial_value)] [,attributes...]",
+      "parameters": [
+        {
+          "name": "initial_value",
+          "type": "numeric",
+          "optional": true,
+          "description": "The initial value of the LONG variable"
+        }
+      ],
+      "attributes": [
+        "DIM",
+        "OVER",
+        "NAME",
+        "EXTERNAL",
+        "DLL",
+        "STATIC",
+        "THREAD",
+        "AUTO",
+        "PRIVATE",
+        "PROTECTED"
+      ],
+      "size": "4 bytes",
+      "range": "-2,147,483,648 to 2,147,483,647"
+    }
+  ]
+}

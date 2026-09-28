@@ -1,0 +1,29 @@
+{
+  "functions": [
+    {
+      "name": "CLIP",
+      "signatures": [
+        {
+          "params": [
+            "STRING string"
+          ],
+          "returnType": "STRING",
+          "description": "Removes trailing spaces from a string and returns the trimmed result. Frequently used with concatenation. Not needed for CSTRING or PSTRING types."
+        }
+      ]
+    },
+    {
+      "name": "POPBIND",
+      "description": "Restores the BIND name space to the state before the last PUSHBIND.",
+      "signatures": [
+        {
+          "label": "POPBIND",
+          "documentation": "Restores the previous BIND statement name space, undoing the scope created by PUSHBIND. Variable and procedure names that were bound before PUSHBIND are accessible again. PUSHBIND and POPBIND work as a LIFO stack.",
+          "parameters": []
+        }
+      ],
+      "returnType": "VOID",
+      "category": "Runtime Expression"
+    }
+  ]
+}
