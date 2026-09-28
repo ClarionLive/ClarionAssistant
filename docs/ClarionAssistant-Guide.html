@@ -427,7 +427,7 @@
 <header class="site-header">
   <h1>Clarion.Assistant</h1>
   <div class="subtitle">AI-Powered Development for the Clarion IDE</div>
-  <div class="version-badge">User Guide &middot; v1.7 &middot; for Clarion.Assistant 5.8</div>
+  <div class="version-badge">User Guide &middot; v1.8 &middot; for Clarion.Assistant 5.9</div>
 </header>
 
 <!-- ════════════════════════════════════════════════════ -->
@@ -439,6 +439,7 @@
   <nav class="sidebar">
     <h3>What's New</h3>
     <a href="#whats-new">Release Notes</a>
+    <a href="#whats-new-59" class="sub">v5.9</a>
     <a href="#whats-new-58" class="sub">v5.8</a>
     <a href="#whats-new-55" class="sub">v5.5</a>
     <a href="#whats-new-54" class="sub">v5.4</a>
@@ -529,6 +530,59 @@
 <!-- ════════════════════════════════════════════════════ -->
 <section id="whats-new" class="doc-section">
   <h2>What's New</h2>
+
+  <h3 id="whats-new-59">v5.9 &mdash; Instant Completion, Header Tabs, an Embeditor That Behaves Like Clarion</h3>
+
+  <p>
+    In the <a href="#ca-embeditor"><strong>CA Embeditor</strong></a> and CA Editor,
+    <strong>completion, hover and squiggles are now instant</strong>, even on generated modules of
+    tens of thousands of lines. On an 86,000-line module completion used to show
+    &quot;Loading&hellip;&quot; for four seconds and a missing-routine squiggle took minutes; it now
+    takes tens of milliseconds. Clarion Assistant answers first from locals, parameters, class members
+    (including <code>SELF.</code> with inherited members), CodeGraph and the live dictionary, and the
+    language server adds its results when they arrive. Keywords and built-ins now hover with what they
+    do. The bundled language server starts as soon as a solution opens, with no chat tab needed, and
+    works for the first time without Mark Sarson's ClarionLsp addin.
+  </p>
+
+  <p>
+    The pane's <a href="#claude-chat-solution">header</a> has tabs: <strong>Solution</strong>,
+    <strong>Schema Sources</strong> and <strong>Source Control</strong>, which used to hide in a
+    &quot;Solution Settings&quot; bar inside each chat tab. <strong>&#10697;</strong> copies the
+    solution path, <strong>RED</strong> opens the <code>.red</code> file, and the LSP diagnostics bar
+    and its toggle are gone. <strong>VERSION</strong> now simply shows the Clarion version the IDE has
+    selected (<strong>Build &gt; Set Clarion Version</strong>), and every part of Clarion Assistant uses
+    it. Clarion also <strong>closes faster</strong>.
+  </p>
+
+  <p>
+    The CA Embeditor behaves like Clarion's own: <kbd>Ctrl</kbd>+<kbd>F4</kbd>,
+    <kbd>Ctrl</kbd>+<kbd>O</kbd> and <kbd>Alt</kbd>+letter reach the IDE, closing unsaved work raises
+    Clarion's own &quot;Save Changes in Embed Editor?&quot; prompt, and one procedure is open at a time.
+    <kbd>Ctrl</kbd>+<kbd>W</kbd> marks a word, and <code>LOOP &hellip; UNTIL</code> folds and formats
+    correctly.
+  </p>
+
+  <p>
+    For the assistant: a standalone <strong><code>clarion-mcp-server</code></strong> brings 61 of the
+    tools (documentation, knowledge, LSP, schema, CodeGraph) to any MCP client outside the IDE, and
+    new dictionary tools read the open app's <strong>own dictionary</strong> live instead of guessing
+    one from disk. Clarion Assistant also joins the <strong>Clarion Addin Registry</strong>, so
+    <strong>AddinFinder</strong> can find and update it; that is why this release is 5.9.0 and not
+    5.8.2. Plus many more fixes: source files keep their own encoding, New Chat no longer overwrites
+    your <code>CLAUDE.md</code>, and the installer no longer mangles non-ASCII characters in your
+    Claude Code settings.
+  </p>
+
+  <div class="info-box info-box--warning">
+    <strong>If New Chat overwrote your global <code>CLAUDE.md</code>,</strong> 5.9 stops it happening
+    again but cannot bring the original back. Restore it from File History, OneDrive or another backup.
+  </div>
+
+  <p>
+    Full notes:
+    <a href="https://github.com/ClarionLive/ClarionAssistant/blob/master/docs/releases/v5.9.0.md">v5.9.0 release notes</a>.
+  </p>
 
   <h3 id="whats-new-58">v5.8 &mdash; CodeGraph Speed &amp; Accuracy, Settings-Safe Installer</h3>
 
@@ -2707,7 +2761,7 @@
 <!--  FOOTER                                             -->
 <!-- ════════════════════════════════════════════════════ -->
 <footer class="site-footer">
-  <p>Clarion.Assistant User Guide &middot; v1.7 &middot; &copy; 2025&ndash;2026</p>
+  <p>Clarion.Assistant User Guide &middot; v1.8 &middot; &copy; 2025&ndash;2026</p>
 </footer>
 
 <!-- Smooth scrolling -->
