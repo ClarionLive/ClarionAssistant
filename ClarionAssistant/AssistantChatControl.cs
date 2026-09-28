@@ -20,7 +20,7 @@ namespace ClarionAssistant
     {
         // Live-instance registry so ShutdownService can dispose this control's WebView2s ON THE UI THREAD
         // BEFORE native IDE teardown. Disposing the control chains to _header (HeaderWebView = HUD) and
-        // _homeView (HomeWebView), and _tabManager disposes its tab content (SchemaSourcesView etc.).
+        // _homeView (HomeWebView) and _schemaView (SchemaSourcesView), and _tabManager disposes its tab content.
         // Mirrors the ModernEmbeditorViewContent pattern. (Practically a singleton chat pad.)
         private static readonly List<AssistantChatControl> _instances = new List<AssistantChatControl>();
 
@@ -32,6 +32,8 @@ namespace ClarionAssistant
 
         // Header (WebView2)
         private HeaderWebView _header;
+        // Schema Sources / Source Control: ONE panel for the pane, under the header (82938fc7).
+        private SchemaSourcesView _schemaView;
         private Form _logForm;
 
         private McpServer _mcpServer;
@@ -118,6 +120,15 @@ namespace ClarionAssistant
             _header.HeaderReady += OnHeaderReady;
             // Fixed height (82938fc7): no splitter, and a saved "Header.Height" from older builds is ignored.
 
+            // === Schema Sources / Source Control panel (82938fc7): shown under the header by its tabs ===
+            _schemaView = new SchemaSourcesView { Visible = false, PaneHeight = _header.PanePixelHeight };
+            _schemaView.ActionReceived += OnSchemaSourceAction;
+            _schemaView.Ready += OnSchemaSourcesReady;
+            _header.LayoutChanged += (s, e) =>
+            {
+                if (_schemaView != null && !_schemaView.IsDisposed) _schemaView.PaneHeight = _header.PanePixelHeight;
+            };
+
             // === Tab strip (custom-painted, hidden when only 1 tab — MultiTerminal pattern) ===
             _tabStrip = new Panel
             {
@@ -156,6 +167,7 @@ namespace ClarionAssistant
             // Add in correct order (Fill first, then Top items from bottom to top)
             Controls.Add(_contentArea);
             Controls.Add(_tabStrip);
+            Controls.Add(_schemaView);
             Controls.Add(_header);
 
             // Create Home tab — HomeWebView added to _contentArea, visible immediately
@@ -311,6 +323,7 @@ namespace ClarionAssistant
                 case "versionChanged": OnVersionChanged(e.Data); break;
                 case "solutionChanged": OnSolutionChanged(e.Data); break;
                 case "themeChanged": OnThemeChanged(e.Data); break;
+                case "headerTab": OnHeaderTab(e.Data); break;
                 case "toggleDiagBar": OnToggleDiagnosticsBar(); break;
                 case "cheatSheet": OnCheatSheet(); break;
                 case "docs": OnDocs(); break;
@@ -614,9 +627,6 @@ namespace ClarionAssistant
             renderer.Initialized += (s, ev) => OnTabRendererInitialized(tab);
             System.Diagnostics.Debug.WriteLine("[AssistantChatControl] Events wired for project tab " + tab.Id + ", StartupCommand=" + (tab.StartupCommand ?? "(none)"));
 
-            // Schema sources panel (above terminal)
-            AttachSchemaSourcesView(tab);
-
             _tabManager.ActivateTab(tab.Id);
             System.Diagnostics.Debug.WriteLine("[AssistantChatControl] ActivateTab completed for project tab " + tab.Id);
         }
@@ -838,6 +848,9 @@ namespace ClarionAssistant
 
             _header.SetSolutions(paths.ToArray(), selectedIdx);
             UpdateIndexStatus();
+            // Schema Sources / Source Control follow the solution (82938fc7). DetectFromIde, OnBrowseSolution,
+            // OpenSolutionInNewTab and RemoveSolutionFromHistory all change _currentSlnPath and then call this.
+            RefreshSolutionSettings();
 
             // NO auto-index here (ticket 7f1c67b2). THIS METHOD HAS SEVEN CALLERS and its job
             // is to reload the solution dropdown — it is not a "solution was opened" signal.
@@ -967,16 +980,12 @@ namespace ClarionAssistant
                 // block several seconds, hence off the UI thread.
                 _toolRegistry?.EnsureLspRunningInBackground();
 
-                // Ensure active tab has schema sources panel
                 var activeTab = _tabManager.ActiveTab;
                 if (activeTab != null && !activeTab.IsHome)
-                {
                     activeTab.SolutionPath = path;
-                    if (activeTab.SchemaSourcesView == null)
-                        AttachSchemaSourcesView(activeTab);
-                    else
-                        SendSchemaSourcesForTab(activeTab);
-                }
+
+                // Schema Sources / Source Control are keyed on the solution (82938fc7).
+                RefreshSolutionSettings();
 
                 // Auto-index in the background when a solution is opened (ticket 7f1c67b2).
                 // RunIndexAutomatic, not RunIndex: this run is a consequence of opening a
@@ -1469,9 +1478,6 @@ namespace ClarionAssistant
             renderer.Initialized += (s, ev) => OnTabRendererInitialized(tab);
             System.Diagnostics.Debug.WriteLine("[AssistantChatControl] Events wired for tab " + tab.Id + ", calling ActivateTab");
 
-            // Schema sources panel (above terminal)
-            AttachSchemaSourcesView(tab);
-
             _tabManager.ActivateTab(tab.Id);
             System.Diagnostics.Debug.WriteLine("[AssistantChatControl] ActivateTab completed for tab " + tab.Id);
         }
@@ -1502,104 +1508,113 @@ namespace ClarionAssistant
 
         #region Schema Sources
 
-        private void AttachSchemaSourcesView(TerminalTab tab)
+        // Schema Sources and Source Control are SOLUTION settings (82938fc7): one SchemaSourcesView for the
+        // whole pane, keyed on _currentSlnPath, shown under the header while its header tab is active. It
+        // used to be one per chat tab, in a collapsed "Solution Settings" bar few people ever opened.
+
+        /// <summary>Header tab switch: show the panel for Schema Sources / Source Control, hide it for Solution.</summary>
+        private void OnHeaderTab(string tab)
         {
-            var schemaView = new SchemaSourcesView();
-            schemaView.ActionReceived += (s, ev) => OnSchemaSourceAction(tab, ev);
-            schemaView.Ready += (s, ev) => OnSchemaSourcesReady(tab);
-            tab.SchemaSourcesView = schemaView;
-
-            // TabManager adds renderer directly to _contentArea (no TabPage).
-            // Wrap renderer + SchemaSourcesView in a container Panel so
-            // ActivateTab's Visible toggle controls both together.
-            var renderer = tab.Renderer;
-            if (renderer == null) return;
-            var parent = renderer.Parent;
-            if (parent == null) return;
-
-            bool wasVisible = renderer.Visible;
-
-            var container = new Panel { Dock = DockStyle.Fill };
-            container.SuspendLayout();
-            parent.SuspendLayout();
-
-            parent.Controls.Remove(renderer);
-            renderer.Visible = true;
-            renderer.Dock = DockStyle.Fill;
-
-            // Add Fill control first, then Top — WinForms docks later-added controls first
-            container.Controls.Add(renderer);
-            container.Controls.Add(schemaView);
-
-            container.Visible = wasVisible;
-            parent.Controls.Add(container);
-            tab.ContentControl = container;
-
-            parent.ResumeLayout(true);
-            container.ResumeLayout(true);
+            if (_schemaView == null || _schemaView.IsDisposed) return;
+            bool show = tab == "schema" || tab == "repo";
+            if (show) _schemaView.SetMode(tab);
+            _schemaView.Visible = show;
         }
 
-        private void OnSchemaSourcesReady(TerminalTab tab)
+        /// <summary>
+        /// The panel's page loaded (NavigationCompleted). The ONLY initial push — the page's own
+        /// "schemaSourcesReady" post is ignored, so this no longer runs twice.
+        /// </summary>
+        private void OnSchemaSourcesReady(object sender, EventArgs e)
         {
-            if (tab.SchemaSourcesView == null) return;
-            tab.SchemaSourcesView.SetTheme(_isDarkTheme);
-
-            // Check if collapse state was saved
-            string collapsed = _settings.Get("SchemaSourcesCollapsed");
-            if (collapsed == "true")
-                tab.SchemaSourcesView.SetCollapsed(true);
-
-            // Send linked sources for this tab's solution
-            SendSchemaSourcesForTab(tab);
-
-            // Send source control accounts and current repo link
-            SendRepoDataForTab(tab);
+            if (_schemaView == null || _schemaView.IsDisposed) return;
+            _schemaView.SetTheme(_isDarkTheme);
+            if (_header.ActiveTab == "schema" || _header.ActiveTab == "repo")
+                _schemaView.SetMode(_header.ActiveTab);
+            RefreshSolutionSettings();
         }
 
-        private void SendSchemaSourcesForTab(TerminalTab tab)
+        /// <summary>
+        /// Re-send everything keyed on the solution: the linked sources (and the header's badge count) and the
+        /// Source Control data. Call it wherever _currentSlnPath changes. Safe before the panel is ready: the
+        /// badge still updates, and the panel gets its data from OnSchemaSourcesReady.
+        /// </summary>
+        private void RefreshSolutionSettings()
         {
-            if (tab.SchemaSourcesView == null || !tab.SchemaSourcesView.IsReady) return;
+            SendSchemaSources();
+            SendRepoData();
+        }
 
-            string slnPath = tab.SolutionPath ?? tab.WorkingDirectory ?? "";
-            if (string.IsNullOrEmpty(slnPath)) { tab.SchemaSourcesView.SetSources("[]"); return; }
+        private bool SchemaViewReady
+        {
+            get { return _schemaView != null && !_schemaView.IsDisposed && _schemaView.IsReady; }
+        }
 
+        /// <summary>Marshal a panel update from a worker thread; dropped if the pane or the panel is gone.</summary>
+        private void PostToSchemaView(Action<SchemaSourcesView> update)
+        {
+            if (IsDisposed || !IsHandleCreated) return;
             try
             {
-                var sources = Services.SchemaGraphService.GetSourcesForSolution(slnPath);
-                var sb = new System.Text.StringBuilder("[");
-                for (int i = 0; i < sources.Count; i++)
+                BeginInvoke(new Action(() =>
                 {
-                    if (i > 0) sb.Append(",");
-                    var src = sources[i];
-                    string id = (string)src["id"];
-                    string name = (string)src["name"];
-                    string type = (string)src["type"];
-                    string connInfo = (string)src["connectionInfo"];
-
-                    // Get index status
-                    var status = Services.SchemaGraphService.GetSourceStatus(id, type, connInfo);
-                    bool indexed = (bool)status["indexed"];
-                    int tableCount = status.ContainsKey("tableCount") ? (int)status["tableCount"] : 0;
-                    string lastIndexed = status.ContainsKey("lastIndexed") ? (string)status["lastIndexed"] : null;
-
-                    sb.AppendFormat("{{\"id\":\"{0}\",\"name\":\"{1}\",\"type\":\"{2}\",\"indexed\":{3},\"tableCount\":{4},\"lastIndexed\":{5}}}",
-                        EscJson(id), EscJson(name), EscJson(type),
-                        indexed ? "true" : "false", tableCount,
-                        lastIndexed != null ? "\"" + EscJson(lastIndexed) + "\"" : "null");
-                }
-                sb.Append("]");
-                tab.SchemaSourcesView.SetSources(sb.ToString());
+                    var view = _schemaView;
+                    if (view != null && !view.IsDisposed) update(view);
+                }));
             }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] SendSchemaSourcesForTab error: " + ex.Message);
-                tab.SchemaSourcesView.SetSources("[]");
-            }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
         }
 
-        private void SendRepoDataForTab(TerminalTab tab)
+        private void SendSchemaSources()
         {
-            if (tab.SchemaSourcesView == null || !tab.SchemaSourcesView.IsReady) return;
+            string slnPath = _currentSlnPath ?? "";
+            string json = "[]";
+            int count = 0;
+            if (!string.IsNullOrEmpty(slnPath))
+            {
+                try
+                {
+                    var sources = Services.SchemaGraphService.GetSourcesForSolution(slnPath);
+                    var sb = new System.Text.StringBuilder("[");
+                    for (int i = 0; i < sources.Count; i++)
+                    {
+                        if (i > 0) sb.Append(",");
+                        var src = sources[i];
+                        string id = (string)src["id"];
+                        string name = (string)src["name"];
+                        string type = (string)src["type"];
+                        string connInfo = (string)src["connectionInfo"];
+
+                        // Get index status
+                        var status = Services.SchemaGraphService.GetSourceStatus(id, type, connInfo);
+                        bool indexed = (bool)status["indexed"];
+                        int tableCount = status.ContainsKey("tableCount") ? (int)status["tableCount"] : 0;
+                        string lastIndexed = status.ContainsKey("lastIndexed") ? (string)status["lastIndexed"] : null;
+
+                        sb.AppendFormat("{{\"id\":\"{0}\",\"name\":\"{1}\",\"type\":\"{2}\",\"indexed\":{3},\"tableCount\":{4},\"lastIndexed\":{5}}}",
+                            EscJson(id), EscJson(name), EscJson(type),
+                            indexed ? "true" : "false", tableCount,
+                            lastIndexed != null ? "\"" + EscJson(lastIndexed) + "\"" : "null");
+                    }
+                    sb.Append("]");
+                    json = sb.ToString();
+                    count = sources.Count;
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine("[AssistantChatControl] SendSchemaSources error: " + ex.Message);
+                }
+            }
+
+            // The badge and the list come from the same query, so they cannot disagree.
+            if (_header != null && _header.IsReady) _header.SetSchemaCount(count);
+            if (SchemaViewReady) _schemaView.SetSources(json);
+        }
+
+        private void SendRepoData()
+        {
+            if (!SchemaViewReady) return;
 
             // Send accounts list
             try
@@ -1616,12 +1631,14 @@ namespace ClarionAssistant
                         EscJson((string)a["username"]), EscJson(prov));
                 }
                 sb.Append("]");
-                tab.SchemaSourcesView.SendMessage("{\"type\":\"setRepoAccounts\",\"accounts\":" + sb + "}");
+                _schemaView.SendMessage("{\"type\":\"setRepoAccounts\",\"accounts\":" + sb + "}");
             }
             catch { }
 
-            // Send current repo link
-            string slnPath = tab.SolutionPath ?? tab.WorkingDirectory ?? "";
+            // Send the solution's repo link, or clear the fields: a solution with no link must not keep
+            // showing the previous solution's.
+            string accountId = "", repoName = "";
+            string slnPath = _currentSlnPath ?? "";
             if (!string.IsNullOrEmpty(slnPath))
             {
                 try
@@ -1629,73 +1646,65 @@ namespace ClarionAssistant
                     var repo = Services.SchemaGraphService.GetSolutionRepo(slnPath);
                     if (repo != null)
                     {
-                        tab.SchemaSourcesView.SendMessage(
-                            "{\"type\":\"setSolutionRepo\",\"accountId\":\"" + EscJson(repo["accountId"]) +
-                            "\",\"repoName\":\"" + EscJson(repo["repoName"]) + "\"}");
+                        accountId = repo["accountId"];
+                        repoName = repo["repoName"];
                     }
                 }
                 catch { }
             }
+            _schemaView.SendMessage(
+                "{\"type\":\"setSolutionRepo\",\"accountId\":\"" + EscJson(accountId) +
+                "\",\"repoName\":\"" + EscJson(repoName) + "\"}");
         }
 
-        private void OnSchemaSourceAction(TerminalTab tab, SchemaSourceActionEventArgs e)
+        private void OnSchemaSourceAction(object sender, SchemaSourceActionEventArgs e)
         {
             switch (e.Action)
             {
-                case "schemaSourcesReady":
-                    OnSchemaSourcesReady(tab);
-                    break;
-
-                case "toggleCollapse":
-                    // Save collapse state
-                    bool isCollapsed = tab.SchemaSourcesView != null && tab.SchemaSourcesView.Height <= 32;
-                    _settings.Set("SchemaSourcesCollapsed", isCollapsed ? "true" : "false");
-                    break;
-
                 case "getGlobalSources":
-                    SendGlobalSourcesToModal(tab);
+                    SendGlobalSourcesToModal();
                     break;
 
                 case "addSource":
-                    HandleAddSource(tab, e.Data);
+                    HandleAddSource(e.Data);
                     break;
 
                 case "editSource":
-                    HandleEditSource(tab, e.Data);
+                    HandleEditSource(e.Data);
                     break;
 
                 case "deleteSource":
-                    HandleDeleteSource(tab, e.Data);
+                    HandleDeleteSource(e.Data);
                     break;
 
                 case "applySourceSelection":
-                    HandleApplySelection(tab, e.Data);
+                    HandleApplySelection(e.Data);
                     break;
 
                 case "indexSource":
-                    HandleIndexSource(tab, e.Data);
+                    HandleIndexSource(e.Data);
                     break;
 
                 case "testConnection":
-                    HandleTestConnection(tab, e.Data);
+                    HandleTestConnection(e.Data);
                     break;
 
                 case "setSolutionRepo":
-                    HandleSetSolutionRepo(tab, e.Data);
+                    HandleSetSolutionRepo(e.Data);
                     break;
 
                 case "browseFile":
-                    HandleBrowseFile(tab, e.Data);
+                    HandleBrowseFile(e.Data);
                     break;
             }
         }
 
-        private void SendGlobalSourcesToModal(TerminalTab tab)
+        private void SendGlobalSourcesToModal()
         {
-            if (tab.SchemaSourcesView == null) return;
+            if (!SchemaViewReady) return;
             try
             {
-                string slnPath = tab.SolutionPath ?? tab.WorkingDirectory ?? "";
+                string slnPath = _currentSlnPath ?? "";
                 var allSources = Services.SchemaGraphService.GetAllSources();
                 var linkedSources = Services.SchemaGraphService.GetSourcesForSolution(slnPath);
                 var linkedIdSet = new System.Collections.Generic.HashSet<string>();
@@ -1726,7 +1735,7 @@ namespace ClarionAssistant
                 }
                 idSb.Append("]");
 
-                tab.SchemaSourcesView.SetGlobalSources(sb.ToString(), idSb.ToString());
+                _schemaView.SetGlobalSources(sb.ToString(), idSb.ToString());
             }
             catch (Exception ex)
             {
@@ -1734,7 +1743,7 @@ namespace ClarionAssistant
             }
         }
 
-        private void HandleAddSource(TerminalTab tab, string data)
+        private void HandleAddSource(string data)
         {
             try
             {
@@ -1742,7 +1751,7 @@ namespace ClarionAssistant
                 string type = ExtractJsonField(data, "type");
                 string connInfo = ExtractJsonField(data, "connectionInfo");
                 Services.SchemaGraphService.AddSource(name, type, connInfo);
-                SendGlobalSourcesToModal(tab);
+                SendGlobalSourcesToModal();
             }
             catch (Exception ex)
             {
@@ -1750,7 +1759,7 @@ namespace ClarionAssistant
             }
         }
 
-        private void HandleEditSource(TerminalTab tab, string data)
+        private void HandleEditSource(string data)
         {
             try
             {
@@ -1760,7 +1769,7 @@ namespace ClarionAssistant
                 string connInfo = ExtractJsonField(data, "connectionInfo");
                 connInfo = RestorePasswordIfPlaceholder(connInfo, id);
                 Services.SchemaGraphService.UpdateSource(id, name, type, connInfo);
-                SendGlobalSourcesToModal(tab);
+                SendGlobalSourcesToModal();
             }
             catch (Exception ex)
             {
@@ -1768,13 +1777,13 @@ namespace ClarionAssistant
             }
         }
 
-        private void HandleDeleteSource(TerminalTab tab, string data)
+        private void HandleDeleteSource(string data)
         {
             try
             {
                 Services.SchemaGraphService.DeleteSource(data);
-                SendGlobalSourcesToModal(tab);
-                SendSchemaSourcesForTab(tab);
+                SendGlobalSourcesToModal();
+                SendSchemaSources();
             }
             catch (Exception ex)
             {
@@ -1782,11 +1791,11 @@ namespace ClarionAssistant
             }
         }
 
-        private void HandleApplySelection(TerminalTab tab, string selectedIdsJson)
+        private void HandleApplySelection(string selectedIdsJson)
         {
             try
             {
-                string slnPath = tab.SolutionPath ?? tab.WorkingDirectory ?? "";
+                string slnPath = _currentSlnPath ?? "";
                 if (string.IsNullOrEmpty(slnPath)) return;
 
                 // Parse selected IDs from JSON array
@@ -1821,7 +1830,7 @@ namespace ClarionAssistant
                         Services.SchemaGraphService.UnlinkSourceFromSolution(slnPath, id);
                 }
 
-                SendSchemaSourcesForTab(tab);
+                SendSchemaSources();
             }
             catch (Exception ex)
             {
@@ -1829,11 +1838,12 @@ namespace ClarionAssistant
             }
         }
 
-        private void HandleIndexSource(TerminalTab tab, string sourceId)
+        private void HandleIndexSource(string sourceId)
         {
             // Run indexing on a background thread to avoid blocking UI
             System.Threading.ThreadPool.QueueUserWorkItem(_ =>
             {
+                string statusJson;
                 try
                 {
                     string result = Services.SchemaGraphService.IndexSource(sourceId);
@@ -1846,7 +1856,6 @@ namespace ClarionAssistant
                     var status = Services.SchemaGraphService.GetSourceStatus(sourceId, type, connInfo);
 
                     // Build status JSON
-                    string statusJson;
                     if (isError)
                     {
                         statusJson = "{\"error\":\"" + EscJson(result) + "\"}";
@@ -1858,51 +1867,23 @@ namespace ClarionAssistant
                         statusJson = string.Format("{{\"tableCount\":{0},\"lastIndexed\":{1}}}",
                             tCount, lastIdx != null ? "\"" + EscJson(lastIdx) + "\"" : "null");
                     }
-
-                    // Send back to UI on UI thread
-                    if (!IsDisposed && tab.SchemaSourcesView != null)
-                    {
-                        string sid = sourceId;
-                        string sj = statusJson;
-                        try
-                        {
-                            BeginInvoke(new Action(() =>
-                            {
-                                if (tab.SchemaSourcesView != null)
-                                    tab.SchemaSourcesView.SetIndexStatus(sid, sj);
-                            }));
-                        }
-                        catch (ObjectDisposedException) { }
-                        catch (InvalidOperationException) { }
-                    }
                 }
                 catch (Exception ex)
                 {
                     System.Diagnostics.Debug.WriteLine("[AssistantChatControl] IndexSource error: " + ex.Message);
-                    if (!IsDisposed && tab.SchemaSourcesView != null)
-                    {
-                        string sid = sourceId;
-                        string msg = ex.Message;
-                        try
-                        {
-                            BeginInvoke(new Action(() =>
-                            {
-                                if (tab.SchemaSourcesView != null)
-                                    tab.SchemaSourcesView.SetIndexStatus(sid, "{\"error\":\"" + EscJson(msg) + "\"}");
-                            }));
-                        }
-                        catch (ObjectDisposedException) { }
-                        catch (InvalidOperationException) { }
-                    }
+                    statusJson = "{\"error\":\"" + EscJson(ex.Message) + "\"}";
                 }
+
+                // Send back to the panel on the UI thread
+                PostToSchemaView(view => view.SetIndexStatus(sourceId, statusJson));
             });
         }
 
-        private void HandleSetSolutionRepo(TerminalTab tab, string data)
+        private void HandleSetSolutionRepo(string data)
         {
             try
             {
-                string slnPath = tab.SolutionPath ?? tab.WorkingDirectory ?? "";
+                string slnPath = _currentSlnPath ?? "";
                 if (string.IsNullOrEmpty(slnPath)) return;
                 string accountId = ExtractJsonField(data, "accountId");
                 string repoName = ExtractJsonField(data, "repoName");
@@ -1914,7 +1895,7 @@ namespace ClarionAssistant
             }
         }
 
-        private void HandleBrowseFile(TerminalTab tab, string data)
+        private void HandleBrowseFile(string data)
         {
             try
             {
@@ -1927,8 +1908,8 @@ namespace ClarionAssistant
                     {
                         dlg.Filter = "Clarion Dictionary (*.dctx)|*.dctx|All files (*.*)|*.*";
                         dlg.Title = "Select Clarion Dictionary";
-                        if (dlg.ShowDialog() == DialogResult.OK && tab.SchemaSourcesView != null)
-                            tab.SchemaSourcesView.SendBrowseResult(dlg.FileName, editId);
+                        if (dlg.ShowDialog() == DialogResult.OK && SchemaViewReady)
+                            _schemaView.SendBrowseResult(dlg.FileName, editId);
                     }
                 }
                 else if (type == "sqlite")
@@ -1937,8 +1918,8 @@ namespace ClarionAssistant
                     {
                         dlg.Filter = "SQLite Database (*.db;*.sqlite;*.sqlite3)|*.db;*.sqlite;*.sqlite3|All files (*.*)|*.*";
                         dlg.Title = "Select SQLite Database";
-                        if (dlg.ShowDialog() == DialogResult.OK && tab.SchemaSourcesView != null)
-                            tab.SchemaSourcesView.SendBrowseResult(dlg.FileName, editId);
+                        if (dlg.ShowDialog() == DialogResult.OK && SchemaViewReady)
+                            _schemaView.SendBrowseResult(dlg.FileName, editId);
                     }
                 }
             }
@@ -1948,7 +1929,7 @@ namespace ClarionAssistant
             }
         }
 
-        private void HandleTestConnection(TerminalTab tab, string data)
+        private void HandleTestConnection(string data)
         {
             string type = ExtractJsonField(data, "type") ?? "";
             string connInfo = ExtractJsonField(data, "connectionInfo") ?? "{}";
@@ -1999,23 +1980,9 @@ namespace ClarionAssistant
                     message = ex.Message;
                 }
 
-                if (!IsDisposed && tab.SchemaSourcesView != null)
-                {
-                    bool s = success;
-                    string m = message;
-                    try
-                    {
-                        BeginInvoke(new Action(() =>
-                        {
-                            if (tab.SchemaSourcesView != null)
-                                tab.SchemaSourcesView.SendMessage(
-                                    "{\"type\":\"testConnectionResult\",\"success\":" + (s ? "true" : "false") +
-                                    ",\"message\":\"" + EscJson(m) + "\"}");
-                        }));
-                    }
-                    catch (ObjectDisposedException) { }
-                    catch (InvalidOperationException) { }
-                }
+                string resultJson = "{\"type\":\"testConnectionResult\",\"success\":" + (success ? "true" : "false") +
+                    ",\"message\":\"" + EscJson(message) + "\"}";
+                PostToSchemaView(view => view.SendMessage(resultJson));
             });
         }
 
@@ -2636,10 +2603,10 @@ namespace ClarionAssistant
             ApplyThemeColors();
             _header.SetTheme(_isDarkTheme);
             _homeView.SetTheme(_isDarkTheme);
+            if (_schemaView != null && !_schemaView.IsDisposed) _schemaView.SetTheme(_isDarkTheme);
             foreach (var tab in _tabManager.Tabs)
             {
                 if (tab.Renderer != null) tab.Renderer.SetTheme(_isDarkTheme);
-                if (tab.SchemaSourcesView != null) tab.SchemaSourcesView.SetTheme(_isDarkTheme);
                 if (tab.ContentControl is CreateClassWebView ccv) ccv.SetTheme(_isDarkTheme);
             }
             Terminal.DiffViewContent.ApplyThemeToAll(_isDarkTheme);
@@ -2805,7 +2772,6 @@ namespace ClarionAssistant
             renderer.DataReceived += data => OnTabRendererDataReceived(tab, data);
             renderer.TerminalResized += (s, ev) => OnTabRendererResized(tab, ev);
             renderer.Initialized += (s, ev) => OnTabRendererInitialized(tab);
-            AttachSchemaSourcesView(tab);
             _tabManager.ActivateTab(tab.Id);
         }
 
@@ -2988,7 +2954,6 @@ namespace ClarionAssistant
                 renderer.DataReceived += data => OnTabRendererDataReceived(termTab, data);
                 renderer.TerminalResized += (s, ev) => OnTabRendererResized(termTab, ev);
                 renderer.Initialized += (s, ev) => OnTabRendererInitialized(termTab);
-                AttachSchemaSourcesView(termTab);
                 _tabManager.ActivateTab(termTab.Id);
             }
             catch (Exception ex)
@@ -4273,9 +4238,6 @@ namespace ClarionAssistant
             renderer.TerminalResized += (s, ev) => OnTabRendererResized(tab, ev);
             renderer.Initialized += (s, ev) => OnTabRendererInitialized(tab);
 
-            // Schema sources panel
-            AttachSchemaSourcesView(tab);
-
             _tabManager.ActivateTab(tab.Id);
         }
 
@@ -4690,6 +4652,7 @@ namespace ClarionAssistant
                 if (_statusLineTimer != null) { _statusLineTimer.Stop(); _statusLineTimer.Dispose(); }
                 if (_instanceCoord != null) _instanceCoord.Dispose();
                 if (_homeView != null) _homeView.Dispose();
+                if (_schemaView != null) { _schemaView.Dispose(); _schemaView = null; }
                 if (_header != null) _header.Dispose();
             }
             base.Dispose(disposing);

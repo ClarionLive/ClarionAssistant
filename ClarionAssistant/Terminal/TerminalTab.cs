@@ -71,9 +71,6 @@ namespace ClarionAssistant.Terminal
         /// <summary>Skill command to auto-run after Claude starts (e.g. "/ClarionCOM").</summary>
         public string StartupCommand { get; set; }
 
-        /// <summary>Schema sources panel for this tab (null for Home tab).</summary>
-        public SchemaSourcesView SchemaSourcesView { get; set; }
-
         /// <summary>
         /// Accumulated, raw terminal output used to detect Claude Code's
         /// <c>--dangerously-load-development-channels</c> warning prompt. CC 2.1.168 renders that
@@ -112,12 +109,6 @@ namespace ClarionAssistant.Terminal
             {
                 try { Renderer.Dispose(); } catch { }
                 Renderer = null;
-            }
-
-            if (SchemaSourcesView != null)
-            {
-                try { SchemaSourcesView.Dispose(); } catch { }
-                SchemaSourcesView = null;
             }
 
             ContentControl = null;

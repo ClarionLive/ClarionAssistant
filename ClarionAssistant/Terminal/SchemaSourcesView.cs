@@ -17,7 +17,9 @@ namespace ClarionAssistant.Terminal
     }
 
     /// <summary>
-    /// Collapsible WebView2 panel showing schema sources for the current solution.
+    /// The CA header's Schema Sources / Source Control panes (82938fc7): ONE WebView2 panel for the whole
+    /// chat pane, docked under the header and shown while one of those header tabs is active. It is sized
+    /// to the header's fixed pane (PaneHeight) and grows to MODAL_HEIGHT while Manage Sources is open.
     /// Follows the same pattern as HomeWebView.
     /// </summary>
     public class SchemaSourcesView : UserControl
@@ -25,24 +27,35 @@ namespace ClarionAssistant.Terminal
         private WebView2 _webView;
         private bool _isInitialized;
         private bool _isInitializing;
-        private bool _collapsed;
+        private bool _modalOpen;
+        private int _paneHeight = HeaderWebView.CssFullHeight - HeaderWebView.CssStripHeight;
 
         public event EventHandler<SchemaSourceActionEventArgs> ActionReceived;
         public event EventHandler Ready;
 
         public bool IsReady { get { return _isInitialized; } }
 
-        private const int EXPANDED_HEIGHT = 220;
-        private const int COLLAPSED_HEIGHT = 36;
+        // The Manage Sources modal is a fixed 580 px design (schema-sources.html .modal); the panel grows
+        // to fit it while it is open and returns to the pane height when it closes.
         private const int MODAL_HEIGHT = 580;
+
+        /// <summary>The pixel height of the header pane this view fills (set by the host from the header).</summary>
+        public int PaneHeight
+        {
+            get { return _paneHeight; }
+            set
+            {
+                _paneHeight = Math.Max(1, value);
+                if (!_modalOpen) Height = _paneHeight;
+            }
+        }
 
         public SchemaSourcesView()
         {
             SuspendLayout();
             BackColor = Color.FromArgb(30, 30, 46);
             Dock = DockStyle.Top;
-            _collapsed = true;
-            Height = COLLAPSED_HEIGHT;
+            Height = _paneHeight;
 
             _webView = new WebView2 { Dock = DockStyle.Fill, Name = "schemaSourcesWebView" };
             Controls.Add(_webView);
@@ -98,23 +111,17 @@ namespace ClarionAssistant.Terminal
                 string action = ExtractJsonValue(json, "action");
                 string data = ExtractJsonValue(json, "data");
 
-                // Handle collapse toggle internally
-                if (action == "toggleCollapse")
-                {
-                    _collapsed = !_collapsed;
-                    Height = _collapsed ? COLLAPSED_HEIGHT : EXPANDED_HEIGHT;
-                    // falls through to ActionReceived so AssistantChatControl can persist state
-                }
-
                 // Handle modal open/close — expand height to fit form
                 if (action == "modalOpened")
                 {
+                    _modalOpen = true;
                     Height = MODAL_HEIGHT;
                     return;
                 }
                 if (action == "modalClosed")
                 {
-                    Height = _collapsed ? COLLAPSED_HEIGHT : EXPANDED_HEIGHT;
+                    _modalOpen = false;
+                    Height = _paneHeight;
                     return;
                 }
 
@@ -165,12 +172,11 @@ namespace ClarionAssistant.Terminal
             SendMessage("{\"type\":\"setTheme\",\"theme\":\"" + (isDark ? "dark" : "light") + "\"}");
         }
 
-        /// <summary>Collapse the panel programmatically.</summary>
-        public void SetCollapsed(bool collapsed)
+        /// <summary>Show the Schema Sources ("schema") or the Source Control ("repo") pane.</summary>
+        public void SetMode(string mode)
         {
-            _collapsed = collapsed;
-            Height = _collapsed ? COLLAPSED_HEIGHT : EXPANDED_HEIGHT;
-            SendMessage("{\"type\":\"setCollapsed\",\"collapsed\":" + (collapsed ? "true" : "false") + "}");
+            if (mode != "schema" && mode != "repo") return;
+            SendMessage("{\"type\":\"setMode\",\"mode\":\"" + mode + "\"}");
         }
 
         private string GetHtmlPath()
