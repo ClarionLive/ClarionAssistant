@@ -16,7 +16,8 @@ using ClarionAssistant.Services;
 // IDE. On the Owner's C12 IDE, settings.txt held a legacy "Clarion.Version.Override=Clarion 10 Active And
 // Updated" (written by another IDE — settings.txt is shared), and with the IDE on "(Current Version)" — or on
 // "Clarion 12.0.14313", which Clarion STORES as Current (Versions.ActiveWinVersion setter) — CA showed
-// "Clarion 10 Active And Updated (saved)". The overrides are no longer read, and are deleted at addin start.
+// "Clarion 10 Active And Updated (saved)". The overrides are no longer read (and deliberately
+// not deleted: rewriting settings.txt risked dropping other settings; unread, they are inert).
 //
 // Run:  tests\Run-Tests.ps1   (passes the ClarionAssistant project dir as the only argument)
 //
@@ -135,14 +136,6 @@ static class ClarionVersionSelectorTest
         Ok("no ClarionProperties.xml -> no config, tier None", ClarionVersionSelector.Select(null).Config == null
            && ClarionVersionSelector.Select(null).Tier == ClarionVersionTier.None);
 
-        // --- The retired overrides: which settings keys addin start deletes.
-        var stale = ClarionVersionSelector.StaleOverrideKeys(new[] {
-            "Clarion.Version.Override", @"Clarion.Version.Override@H:\DEV\APOSITIVE\V61POSITIVE.SLN",
-            "Clarion.Version", "Clarion.Version.OverrideX", "Theme", null });
-        Ok("retired keys: the legacy global and every per-solution record, nothing else",
-           stale.Count == 2 && stale.Contains("Clarion.Version.Override")
-           && stale.Contains(@"Clarion.Version.Override@H:\DEV\APOSITIVE\V61POSITIVE.SLN"), string.Join(" | ", stale));
-
         // ===== Source scans: CA has no second place to set the version =====
         string repo = args.Length > 0 ? args[0] : null;
         if (repo == null || !Directory.Exists(repo))
@@ -169,6 +162,13 @@ static class ClarionVersionSelectorTest
                Regex.IsMatch(eff, @"Resolve\(ClarionVersionInfo info\)\s*\{\s*return ClarionVersionSelector\.Select\(info\);\s*\}")
                && !eff.Contains(".Get(") && !eff.Contains("OverrideKeyFor") && !eff.Contains("LegacyOverrideKey"));
             Ok("resolver: no SaveOverride / ClearOverride setter", !eff.Contains("SaveOverride") && !eff.Contains("ClearOverride"));
+            // The retired override keys are left in settings.txt, inert (nothing reads them). Deleting them meant
+            // rewriting settings.txt from a reloaded snapshot, which could drop every setting another IDE was
+            // mid-write on (final review, Codex high) - so the resolver never writes settings at all.
+            string settingsSvc = Read(repo, @"Services\SettingsService.cs") ?? "";
+            Ok("resolver: never writes settings.txt (no SettingsService, Set, Remove or RemoveWhere)",
+               !eff.Contains("SettingsService") && !eff.Contains(".Set(") && !eff.Contains(".Remove")
+               && settingsSvc.Length > 0 && !settingsSvc.Contains("RemoveWhere"));
             Ok("service: no SavedOverride tier, no override-aware Select",
                !svc.Contains("SavedOverride") && !svc.Contains("SelectForSolution") && !svc.Contains("BasisMatches"));
             Ok("panel: the refresh action no longer clears an override",

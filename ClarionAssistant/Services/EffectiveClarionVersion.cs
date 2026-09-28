@@ -11,7 +11,9 @@ namespace ClarionAssistant.Services
     /// It is the IDE's Build &gt; Set Clarion Version and nothing else (286f2e57): CA DISPLAYS the version and
     /// has no picker of its own. Before, CA's VERSION dropdown saved an override (GH #32, per solution since
     /// 16d140e9) that could outrank the IDE, and a legacy one written by another IDE made a Clarion 12 IDE on
-    /// "(Current Version)" show "Clarion 10 Active And Updated (saved)". The rules live in
+    /// "(Current Version)" show "Clarion 10 Active And Updated (saved)". Those saved keys may still sit in
+    /// settings.txt; nothing reads them, so they are left alone (rewriting settings.txt to delete them risked
+    /// dropping other settings mid-write by another IDE). The rules live in
     /// <see cref="ClarionVersionSelector"/> (pure, harnessed).
     /// </summary>
     public static class EffectiveClarionVersion
@@ -44,30 +46,6 @@ namespace ClarionAssistant.Services
         public static ClarionVersionConfig CurrentConfig()
         {
             return Resolve().Config;
-        }
-
-        private static int _retiredOverridesDeleted;
-
-        /// <summary>
-        /// Delete CA's retired VERSION overrides from settings.txt — the legacy global key and every per-solution
-        /// record — once per process, and log what went. Nothing reads them any more; deleting them means an
-        /// older CA build sharing settings.txt cannot resurrect a stale choice later either.
-        /// </summary>
-        public static void DeleteRetiredOverridesOnce()
-        {
-            if (Interlocked.Exchange(ref _retiredOverridesDeleted, 1) != 0) return;
-            try
-            {
-                var removed = new SettingsService().RemoveWhere(ClarionVersionSelector.StaleOverrideKeys);
-                if (removed.Count > 0)
-                    LspTrace.Write("[EffectiveClarionVersion] deleted " + removed.Count
-                        + " retired CA VERSION override(s) - CA now shows the IDE's Build > Set Clarion Version only: "
-                        + string.Join(", ", removed));
-            }
-            catch (Exception ex)
-            {
-                LspTrace.Write("[EffectiveClarionVersion] could not delete the retired VERSION overrides: " + ex.Message);
-            }
         }
     }
 }

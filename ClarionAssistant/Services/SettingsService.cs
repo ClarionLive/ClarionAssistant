@@ -104,27 +104,6 @@ namespace ClarionAssistant.Services
             }
         }
 
-        /// <summary>
-        /// Remove every key <paramref name="select"/> picks from the current key set, in ONE read-modify-write.
-        /// Returns the keys removed (empty when none matched; the file is then not rewritten).
-        /// </summary>
-        public List<string> RemoveWhere(Func<IEnumerable<string>, List<string>> select)
-        {
-            var removed = new List<string>();
-            if (select == null) return removed;
-            lock (_lock)
-            {
-                WithCrossProcessMutex(() =>
-                {
-                    ReloadFromDisk();
-                    foreach (var k in select(new List<string>(_settings.Keys)))
-                        if (_settings.Remove(k)) removed.Add(k);
-                    if (removed.Count > 0) Save();
-                });
-            }
-            return removed;
-        }
-
         // Acquire the cross-process mutex around the supplied action. Caller
         // already holds the in-process static lock, so contention here is
         // strictly cross-process.

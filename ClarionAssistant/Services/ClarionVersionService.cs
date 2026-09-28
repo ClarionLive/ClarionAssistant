@@ -535,8 +535,8 @@ namespace ClarionAssistant.Services
     /// picker of its own. Before, CA's VERSION dropdown saved an override (GH #32; per solution since 16d140e9)
     /// that could outrank the IDE: the Owner's C12 IDE on "(Current Version)" showed "Clarion 10 Active And
     /// Updated (saved)", from a legacy override another IDE had written to the shared settings.txt. Two places
-    /// to set one version was the defect. The overrides are no longer read, and are deleted once at startup
-    /// (<see cref="StaleOverrideKeys"/>).
+    /// to set one version was the defect. The overrides are no longer read; any left in settings.txt
+    /// ("Clarion.Version.Override", "Clarion.Version.Override@&lt;sln&gt;") are inert and deliberately not deleted.
     /// </summary>
     public static class ClarionVersionSelector
     {
@@ -567,29 +567,6 @@ namespace ClarionAssistant.Services
             sel.IdeChoice = NormalizeIdeChoice(info.CurrentVersionName);
             sel.IdeChoiceLive = info.CurrentVersionFromLiveIde;
             return sel;
-        }
-
-        // ---- Retired CA overrides (286f2e57) ---------------------------------------------------------------
-
-        /// <summary>The pre-16d140e9 global override key (GH #32). No longer read; deleted at startup.</summary>
-        public const string LegacyOverrideKey = "Clarion.Version.Override";
-
-        /// <summary>The 16d140e9 per-solution override keys ("Clarion.Version.Override@&lt;SLN&gt;"). No longer read; deleted at startup.</summary>
-        public const string SolutionOverrideKeyPrefix = "Clarion.Version.Override@";
-
-        /// <summary>The retired override keys among <paramref name="keys"/>: the legacy key and every per-solution one.</summary>
-        public static List<string> StaleOverrideKeys(IEnumerable<string> keys)
-        {
-            var stale = new List<string>();
-            if (keys == null) return stale;
-            foreach (var k in keys)
-            {
-                if (k == null) continue;
-                if (string.Equals(k, LegacyOverrideKey, StringComparison.Ordinal)
-                    || k.StartsWith(SolutionOverrideKeyPrefix, StringComparison.Ordinal))
-                    stale.Add(k);
-            }
-            return stale;
         }
     }
 }

@@ -61,8 +61,6 @@ namespace ClarionAssistant
             // solution is the same answer the chat control gives; set it here, at addin start, unless a host already did.
             if (LspService.SolutionPathProvider == null)
                 LspService.SolutionPathProvider = () => EditorService.GetOpenSolutionPath();
-            // 286f2e57: CA's version is the IDE's Build > Set Clarion Version only; drop the retired overrides once.
-            EffectiveClarionVersion.DeleteRetiredOverridesOnce();
             LspService.StartLog = MonacoSpikeLog.Write;   // [lsp-autostart] start|skip reason=
 
             try

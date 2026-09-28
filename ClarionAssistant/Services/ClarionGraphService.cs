@@ -95,7 +95,7 @@ namespace ClarionAssistant.Services
         /// </summary>
         ///
         /// 16d140e9: the key and the LibSrc root now come from ONE effective version config
-        /// (EffectiveClarionVersion — the IDE's Build > Set Clarion Version, or CA's saved choice), memoized
+        /// (EffectiveClarionVersion — the IDE's Build > Set Clarion Version), memoized
         /// TOGETHER. It used to name the DB after the RUNNING IDE's exe while the LibSrc came from the
         /// selected version, so a DB named for C12 could be filled with C10's library, or a DB holding one
         /// version's symbols served another. The key is the selected version's own Clarion.exe build plus a
