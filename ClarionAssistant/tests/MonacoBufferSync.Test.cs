@@ -130,6 +130,22 @@ static class MonacoBufferSyncTest
                     view.Contains("PostResponse(reqId, MonacoEditorControl.DiagnosticsReply(markers))") &&
                     overlay.Contains("editor.PostResponse(reqId, MonacoEditorControl.DiagnosticsReply(markers))") &&
                     System.Text.RegularExpressions.Regex.IsMatch(ctl, @"markers == null\s*\?\s*new Dictionary<string, object> \{ \{ ""markers"", null \}, \{ ""pending"", true \} \}"));
+                // L2 (pre-existing): the LSP must start with a solution open and NO CA chat tab. The solution
+                // hooks were set only by AssistantChatControl; the addin's autostart command sets them now.
+                string auto = System.IO.File.ReadAllText(System.IO.Path.Combine(repo, "LspAutostartCommand.cs"));
+                string svc = System.IO.File.ReadAllText(System.IO.Path.Combine(repo, @"Services\LspService.cs"));
+                string run = MethodBody(auto, "public void Run(");
+                Check("L2 the autostart command installs LspService.SolutionPathProvider (no chat needed)",
+                    System.Text.RegularExpressions.Regex.IsMatch(run, @"LspService\.SolutionPathProvider\s*=\s*\(\)\s*=>\s*EditorService\.GetOpenSolutionPath\(\)"));
+                Check("L2 ...and EffectiveClarionVersion.SolutionPathProvider (the per-solution VERSION)",
+                    System.Text.RegularExpressions.Regex.IsMatch(run, @"EffectiveClarionVersion\.SolutionPathProvider\s*=\s*\(\)\s*=>\s*EditorService\.GetOpenSolutionPath\(\)"));
+                Check("L2 ...before the first start is attempted",
+                    run.IndexOf("LspService.SolutionPathProvider =", StringComparison.Ordinal) >= 0 &&
+                    run.IndexOf("LspService.SolutionPathProvider =", StringComparison.Ordinal) < run.IndexOf("LspService.EnsureRunningInBackground()", StringComparison.Ordinal));
+                Check("L2 every background start logs `[lsp-autostart] start|skip reason=` (to monaco-spike.log)",
+                    run.Contains("LspService.StartLog = MonacoSpikeLog.Write;") &&
+                    MethodBody(svc, "private static void StartOnPoolHoldingGate(").Contains("LogStartResult(EnsureRunning())") &&
+                    svc.Contains("\"[lsp-autostart] \" + (started ? \"start\" : \"skip\") + \" reason=\""));
                 Check("RevertShadow releases the cached wrapped buffer",
                     System.Text.RegularExpressions.Regex.IsMatch(ctx, "public void RevertShadow\\(\\)\\s*\\{\\s*_lastWrap = null;"));
 
