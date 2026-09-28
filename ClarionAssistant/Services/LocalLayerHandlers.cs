@@ -337,7 +337,7 @@ namespace ClarionAssistant.Services
             {
                 if (!string.IsNullOrEmpty(ma.BaseType))
                 {
-                    string proj = ProjectDb(), lib = LibraryDb();
+                    string proj = ProjectDb(options), lib = LibraryDb();
                     if (proj != null || lib != null)
                     {
                         string partial = ma.Partial ?? "";
@@ -366,7 +366,7 @@ namespace ClarionAssistant.Services
             if (!m.Success || m.Length < 2) return result;
             if (m.Index > 0 && (upTo[m.Index - 1] == '.' || upTo[m.Index - 1] == ':')) return result;
             string prefix = m.Value;
-            foreach (string db in new[] { ProjectDb(), LibraryDb() })
+            foreach (string db in new[] { ProjectDb(options), LibraryDb() })
             {
                 var idx = SymbolIndex.For(db);
                 if (idx == null) continue;
@@ -401,7 +401,7 @@ namespace ClarionAssistant.Services
 
             if (word.IndexOf('.') < 0)
             {
-                foreach (string db in new[] { ProjectDb(), LibraryDb() })
+                foreach (string db in new[] { ProjectDb(options), LibraryDb() })
                 {
                     var idx = SymbolIndex.For(db);
                     var s = idx != null ? idx.FindByName(word, fastOnly: true) : null;
@@ -457,8 +457,42 @@ namespace ClarionAssistant.Services
         /// <summary>The ClarionGraph library DB path (ABC classes); null = none.</summary>
         public static Func<string> LibraryDbPath;
 
-        private static string ProjectDb() { return Cached(ProjectDbPath, ref _projPath, ref _projAt); }
+        /// <summary>
+        /// The project DB for a request: the host provider's answer when it has one, else (L1) the nearest
+        /// *.codegraph.db walking up from the module being edited. The provider (SharedLspBridge.
+        /// CodeGraphDbPathProvider) is set only once a CA chat's MCP registry exists, so with no chat tab open
+        /// the local layer found no project DB at all: no hover for GlobalRequest or InventoryFastAddForm on
+        /// build 1247. The walk-up is SharedLspBridge.ResolveCodeGraphDb's fallback, cached per directory.
+        /// </summary>
+        private static string ProjectDb(LocalLayerOptions o)
+        {
+            string p = Cached(ProjectDbPath, ref _projPath, ref _projAt);
+            if (p != null) return p;
+            string dir = null;
+            try { if (o != null && !string.IsNullOrEmpty(o.FileName)) dir = System.IO.Path.GetDirectoryName(o.FileName); } catch { }
+            return string.IsNullOrEmpty(dir) ? null : NearestDb(dir);
+        }
+
         private static string LibraryDb() { return Cached(LibraryDbPath, ref _libPath, ref _libAt); }
+
+        private const int WalkTtlMs = 30000;
+        private static readonly Dictionary<string, KeyValuePair<string, long>> WalkCache =
+            new Dictionary<string, KeyValuePair<string, long>>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>The nearest *.codegraph.db at or above <paramref name="dir"/> (CodeGraphProvider.FindDatabase),
+        /// re-walked at most every 30 s per directory so a DB built meanwhile is picked up.</summary>
+        internal static string NearestDb(string dir)
+        {
+            KeyValuePair<string, long> hit;
+            lock (PathGate)
+            {
+                if (WalkCache.TryGetValue(dir, out hit) && Clock.ElapsedMilliseconds - hit.Value < WalkTtlMs) return hit.Key;
+            }
+            string found = null;
+            try { found = ClarionCodeGraph.Graph.CodeGraphProvider.FindDatabase(dir); } catch { }
+            lock (PathGate) { WalkCache[dir] = new KeyValuePair<string, long>(found, Clock.ElapsedMilliseconds); }
+            return found;
+        }
 
         private static string Cached(Func<string> provider, ref string path, ref long at)
         {
@@ -476,7 +510,7 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>Test hook: forget the cached DB paths.</summary>
-        internal static void ResetPathCache() { lock (PathGate) { _projAt = _libAt = -PathTtlMs; _projPath = _libPath = null; } }
+        internal static void ResetPathCache() { lock (PathGate) { _projAt = _libAt = -PathTtlMs; _projPath = _libPath = null; WalkCache.Clear(); } }
 
         public static bool IsLocalAction(string action)
         {

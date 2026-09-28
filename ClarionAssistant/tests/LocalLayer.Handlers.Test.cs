@@ -223,6 +223,27 @@ static class LocalLayerHandlersTest
             Check("4.6 Monaco line 8 is loTotal: no LSP header offset is applied to a local lookup",
                 hOff["contents"] != null && ((string)hOff["contents"]).Contains("loTotal"), Json(hOff));
 
+            Console.WriteLine("\nL1: no provider (no CA chat open) -> the nearest *.codegraph.db above the module");
+            {
+                string walkRoot = System.IO.Path.Combine(work, "walk");
+                string source = System.IO.Path.Combine(walkRoot, "v61PRM002", "source");
+                System.IO.Directory.CreateDirectory(source);
+                System.IO.File.Copy(proj, System.IO.Path.Combine(walkRoot, "v61POSitive.codegraph.db"));
+                LocalLayerHandlers.ProjectDbPath = null;
+                LocalLayerHandlers.ResetPathCache();
+                var oWalk = new LocalLayerOptions { Log = log.Add, FileName = System.IO.Path.Combine(source, "PRM002023.clw") };
+                string walkBuf = ModBuffer.Replace("glovar     LONG", "other      LONG");
+                var walked = Labels(LocalLayerHandlers.Handle("localCompletion", walkBuf, Req("{\"line\":14,\"column\":6}"), oWalk));
+                Check("L1 'Glo' finds GloVar through the walk-up (module ...\\v61PRM002\\source\\, DB two levels up)", walked.Contains("GloVar"), string.Join(",", walked));
+                var hWalk = LocalLayerHandlers.Handle("localHover", walkBuf, Req("{\"line\":16,\"column\":22}"), oWalk);
+                Check("L1 ...and hover on GloVar answers from it", hWalk["contents"] != null && ((string)hWalk["contents"]).Contains("GloVar"), Json(hWalk));
+                var oNoFile = new LocalLayerOptions { Log = log.Add };
+                Check("L1 no provider and no module path -> no project DB (no crash)",
+                    !Labels(LocalLayerHandlers.Handle("localCompletion", walkBuf, Req("{\"line\":14,\"column\":6}"), oNoFile)).Contains("GloVar"));
+                LocalLayerHandlers.ProjectDbPath = () => proj;
+                LocalLayerHandlers.ResetPathCache();
+            }
+
             SliceForm(o, log);
 
             Console.WriteLine("\na DB without the NOCASE indexes is skipped in this lane (its fallback costs ~150 ms)");
