@@ -275,6 +275,24 @@ namespace ClarionAssistant
                 || action == "openProject";
         }
 
+        /// <summary>
+        /// Header ⧉ beside SOLUTION (82938fc7). The page sends only the intent; the path copied is this
+        /// control's own _currentSlnPath, never one from the page. The host copies because
+        /// navigator.clipboard.writeText fails on file:// under WebView2; WebMessageReceived runs on the UI
+        /// (STA) thread, as Clipboard needs (CaFindPad pattern). The page shows ✓ or ✗ from the reply.
+        /// </summary>
+        private void OnCopySolutionPath()
+        {
+            bool ok = false;
+            string path = _currentSlnPath;
+            if (!string.IsNullOrEmpty(path))
+            {
+                try { Clipboard.SetText(path); ok = true; }
+                catch (Exception ex) { Debug.WriteLine("[AssistantChatControl] copy solution path: " + ex.Message); }
+            }
+            _header.SendCopyResult(ok);
+        }
+
         private void OnOpenGitHub()
         {
             try
@@ -324,6 +342,7 @@ namespace ClarionAssistant
                 case "solutionChanged": OnSolutionChanged(e.Data); break;
                 case "themeChanged": OnThemeChanged(e.Data); break;
                 case "headerTab": OnHeaderTab(e.Data); break;
+                case "copySolutionPath": OnCopySolutionPath(); break;
                 case "toggleDiagBar": OnToggleDiagnosticsBar(); break;
                 case "cheatSheet": OnCheatSheet(); break;
                 case "docs": OnDocs(); break;
