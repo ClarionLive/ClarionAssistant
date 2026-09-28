@@ -27,7 +27,7 @@ static class LocalLayerHandlersTest
 
     static Dictionary<string, object> Req(string json)
     {
-        return new JavaScriptSerializer().DeserializeObject(json) as Dictionary<string, object>;
+        return new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(json) as Dictionary<string, object>;
     }
 
     static string Json(object o) { return new JavaScriptSerializer().Serialize(o); }
@@ -445,8 +445,13 @@ static class LocalLayerHandlersTest
             Check("a 256-char routine name accepted", !rejected(run("slotDiagnostics", "{\"routines\":" + routines(1, 256) + ",\"slots\":[]}")), string.Join(" | ", log));
             Check("a 257-char routine name rejected", Because("routine name over 256", rejected(run("slotDiagnostics", "{\"routines\":" + routines(1, 257) + ",\"slots\":[]}"))), string.Join(" | ", log));
             Func<int, string> slots = n => "[" + string.Join(",", Enumerable.Range(0, n).Select(i => "{\"start\":" + (1 + i) + ",\"text\":\"x\"}")) + "]";
-            Check("2,000 slots accepted", !rejected(run("slotDiagnostics", "{\"routines\":[],\"slots\":" + slots(2000) + "}")), string.Join(" | ", log));
-            Check("2,001 slots rejected", Because("more than 2000 slots", rejected(run("slotDiagnostics", "{\"routines\":[],\"slots\":" + slots(2001) + "}"))), string.Join(" | ", log));
+            // H1: InventoryTable has more than 2,000 editable embed ranges in one procedure.
+            Func<int, string> ranges = n => "[" + string.Join(",", Enumerable.Range(0, n).Select(i => "[" + (1 + i) + "," + (1 + i) + "]")) + "]";
+            Check("H1 5,000 slots accepted (slice form)", !rejected(run("slotDiagnostics", "{\"routines\":[],\"slots\":" + slots(5000) + "}")), string.Join(" | ", log));
+            Check("H1 5,000 ranges accepted (v form)", !rejected(run("slotDiagnostics", "{\"ranges\":" + ranges(5000) + "}")), string.Join(" | ", log));
+            Check("H1 100,000 slots accepted", !rejected(run("slotDiagnostics", "{\"routines\":[],\"slots\":" + slots(100000) + "}")), string.Join(" | ", log));
+            Check("H1 100,001 slots rejected", Because("more than 100000 slots", rejected(run("slotDiagnostics", "{\"routines\":[],\"slots\":" + slots(100001) + "}"))), string.Join(" | ", log));
+            Check("H1 100,001 ranges rejected (v form)", Because("more than 100000 ranges", rejected(run("slotDiagnostics", "{\"ranges\":" + ranges(100001) + "}"))), string.Join(" | ", log));
             Check("line 0 rejected", Because("below 1", rejected(run("localHover", "{\"line\":0,\"column\":1}"))), string.Join(" | ", log));
             Check("column 0 rejected", Because("below 1", rejected(run("localHover", "{\"line\":5,\"column\":0}"))), string.Join(" | ", log));
             Check("a line past the buffer end rejected", Because("past the buffer end", rejected(run("localHover", "{\"line\":99999,\"column\":1}"))), string.Join(" | ", log));
