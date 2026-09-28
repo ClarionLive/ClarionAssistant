@@ -4595,6 +4595,13 @@
                     if (rerun && !diagTimer) scheduleDiagnostics();   // the held pass still needs an answer
                     return;
                 }
+                // {markers:null, pending:true} (K2): the server has not published for this version yet - the
+                // host no longer serves an older version's set. No information: keep what is on screen and
+                // ask again for this same version after DIAG_PENDING_RETRY_MS, up to DIAG_PENDING_MAX_TRIES.
+                if (resp.pending) {
+                    scheduleDiagnosticsPendingRetry(model, myVersion);
+                    return;
+                }
                 // Minus what the slot checks already squiggle on screen (1c685f2e item 7).
                 var markers = (resp.markers || []).map(toMarkerData);
                 monaco.editor.setModelMarkers(model, 'clarion', withoutDuplicatesOf(markers, markersOnScreen(model, SLOT_MARKER_OWNER)));
@@ -4605,6 +4612,26 @@
     function scheduleDiagnostics() {
         if (diagTimer) clearTimeout(diagTimer);
         diagTimer = setTimeout(function () { diagTimer = null; refreshDiagnostics(); }, 600);   // null = no pass pending
+    }
+
+    // K2: re-asks of a version whose LSP diagnostics are still pending. One timer at a time; the count is per
+    // version (a new version starts over, and its own debounce asks). The re-ask only runs if the model is
+    // still at that version - otherwise the normal debounce for the new text has taken over.
+    var DIAG_PENDING_RETRY_MS = 1500;
+    var DIAG_PENDING_MAX_TRIES = 5;
+    var diagPending = { model: null, version: 0, tries: 0, timer: null };
+    function scheduleDiagnosticsPendingRetry(model, version) {
+        if (diagPending.model !== model || diagPending.version !== version)
+            diagPending = { model: model, version: version, tries: 0, timer: diagPending.timer };
+        if (diagPending.tries >= DIAG_PENDING_MAX_TRIES) return;      // give up; the next edit asks afresh
+        diagPending.tries++;
+        if (diagPending.timer) clearTimeout(diagPending.timer);
+        var gen = diagGen;
+        diagPending.timer = setTimeout(function () {
+            diagPending.timer = null;
+            if (gen !== diagGen || !editor || editor.getModel() !== model || model.getVersionId() !== version) return;
+            refreshDiagnostics();
+        }, DIAG_PENDING_RETRY_MS);
     }
 
     // registerClarionFolding() now lives in the shared clarion-language.js (loaded above) so the

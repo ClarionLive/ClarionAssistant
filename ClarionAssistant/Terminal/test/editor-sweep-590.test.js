@@ -77,8 +77,10 @@ function loadDiag() {
     function requestFromHost(action, payload, timeoutMs) {
         return new Promise(resolve => (action === 'slotDiagnostics' ? env.slot : env.pending).push({ action, payload, timeoutMs, resolve }));
     }
-    const fakeSetTimeout = (fn) => { env.scheduled++; env.timers.push(fn); return env.timers.length; };
-    const fakeClearTimeout = () => { env.cleared++; };
+    env.timerMs = [];      // K2: each timer's duration, same index as `timers`
+    env.clearedIds = new Set();
+    const fakeSetTimeout = (fn, ms) => { env.scheduled++; env.timers.push(fn); env.timerMs.push(ms); return env.timers.length; };
+    const fakeClearTimeout = (id) => { env.cleared++; env.clearedIds.add(id); };
     // 16d140e9: requests name the synced buffer version (withBuffer) instead of carrying the buffer.
     const withBuffer = (m, payload) => Object.assign({ v: m.getVersionId() }, payload);
     const bufferKey = (m) => 'm:' + m.getVersionId();
@@ -298,6 +300,70 @@ async function testSlotDiagnostics() {
 }
 
 // =====================================================================================================
+// 1c685f2e K2 — {pending:true}: the server has not published for this version yet
+// =====================================================================================================
+async function testDiagnosticsPending() {
+    section('1c685f2e K2 — a pending diagnostics reply keeps the markers and re-asks the same version');
+    // The newest armed (not cleared) 1500 ms timer's index, or -1.
+    const retryAt = (env) => { for (let i = env.timers.length - 1; i >= 0; i--) if (env.timerMs[i] === 1500 && !env.clearedIds.has(i + 1)) return i; return -1; };
+    const PENDING = { markers: null, pending: true };
+    {
+        const env = loadDiag();
+        env.api.refreshDiagnostics();
+        env.pending[0].resolve(reply(4));
+        await flush();
+        env.api.refreshDiagnostics();
+        env.pending[1].resolve(PENDING);
+        await flush();
+        check('K2 a pending reply leaves the LSP markers on screen (no repaint, no clear)', env.applied.length === 1 && env.applied[0][0] === 4,
+            JSON.stringify(env.applied));
+        const i = retryAt(env);
+        check('K2 ...and schedules ONE re-ask about 1500 ms later', i >= 0 && env.timerMs.filter(ms => ms === 1500).length === 1);
+        env.timers[i]();                                   // 1.5 s later, same version
+        check('K2 the re-ask requests diagnostics for the same version', env.pending.length === 3 && env.pending[2].payload.v === 1,
+            'requests ' + env.pending.length);
+        env.pending[2].resolve(reply(6));
+        await flush();
+        check('K2 ...and its real answer paints', env.applied.length === 2 && env.applied[1][0] === 6, JSON.stringify(env.applied));
+    }
+    {
+        const env = loadDiag();
+        env.api.refreshDiagnostics();
+        env.pending[0].resolve(PENDING);
+        await flush();
+        const i = retryAt(env);
+        env.model.version = 2;                             // an edit before the re-ask fires
+        env.timers[i]();
+        check('K2 a version change cancels the re-ask (the normal debounce takes over)', env.pending.length === 1, 'requests ' + env.pending.length);
+    }
+    {
+        const env = loadDiag();
+        env.api.refreshDiagnostics();
+        let n = 0;
+        for (let k = 0; k < 8; k++) {
+            env.pending[env.pending.length - 1].resolve(PENDING);
+            await flush();
+            const i = retryAt(env);
+            if (i < 0 || env.timers[i].fired) break;
+            env.timers[i].fired = true;
+            env.timers[i]();
+            n++;
+        }
+        check('K2 it gives up after 5 re-asks', n === 5 && env.pending.length === 6, 're-asks ' + n + ', requests ' + env.pending.length);
+    }
+    {
+        const env = loadDiag();
+        env.api.refreshDiagnostics();
+        env.pending[0].resolve(PENDING);
+        await flush();
+        const i = retryAt(env);
+        env.api.resetDiagnosticsForNewSource();            // setSource meanwhile
+        env.timers[i]();
+        check('K2 a re-ask armed before setSource does nothing for the new source', env.pending.length === 1, 'requests ' + env.pending.length);
+    }
+}
+
+// =====================================================================================================
 // GH #184 — the font family is a non-editable <select> with every preset always listed
 // =====================================================================================================
 function testFontPicker() {
@@ -431,6 +497,7 @@ function testBackdrop() {
 (async function main() {
     await testDiagnostics();
     await testSlotDiagnostics();
+    await testDiagnosticsPending();
     testFontPicker();
     testBackdrop();
 
