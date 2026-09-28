@@ -498,7 +498,7 @@ namespace ClarionAssistant.Terminal
                 if (json == null) return;
                 // 1c685f2e F6: the page is input. Bound the message BEFORE any JSON parsing: nothing over the
                 // largest per-action limit is even scanned for its action, then each action has its own cap.
-                string tooBig = json.Length > Services.WebMessageGuard.MaxSyncChars ? "over " + Services.WebMessageGuard.MaxSyncChars + " chars" : null;
+                string tooBig = Services.WebMessageGuard.CheckOverall(json.Length);
                 action = tooBig == null ? ExtractJsonValue(json, "action") : null;
                 if (tooBig == null) tooBig = Services.WebMessageGuard.CheckSize(action, json.Length);
                 if (tooBig != null) { RejectMessage(action, json, tooBig); return; }
