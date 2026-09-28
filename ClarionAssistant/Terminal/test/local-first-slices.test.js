@@ -241,6 +241,53 @@ async function main() {
             JSON.stringify(labels));
     }
 
+    section('K1: slot checks that answer slowly (first open) are still painted');
+    {
+        const slotMarker = { severity: 8, message: 'DO NoSuchRoutine: routine not found', line: 8, column: 3, endLine: 8, endColumn: 20 };
+        const painted = (e) => ((e.markers || {})['clarion-slot'] || []).map(m => m.startLineNumber + ':' + m.message);
+
+        const e = setup();
+        e.embedRanges = [[7, 8]];
+        e.api.refreshDiagnostics();
+        const req = e.requests('slotDiagnostics')[0];
+        e.elapse(450);                                    // 450 ms pass before the host's reply lands
+        e.deliver(req, { markers: [slotMarker], ms: 151 });
+        await flush();
+        check('K1 a reply at 450 ms for the still-current version is painted', painted(e).join() === '8:' + slotMarker.message,
+            JSON.stringify(painted(e)));
+
+        const l = setup();
+        l.embedRanges = [[7, 8]];
+        l.api.refreshDiagnostics();
+        const lr = l.requests('slotDiagnostics')[0];
+        l.elapse(lr.timeoutMs);                           // past even the slot budget: the page gave up
+        await flush();
+        l.deliver(lr, { markers: [slotMarker], ms: 151 });
+        await flush();
+        check('K1 a reply after the page\'s timeout is still painted (the version is current)', painted(l).join() === '8:' + slotMarker.message,
+            JSON.stringify(painted(l)));
+        const log = l.posted.filter(m => m.action === 'log' && /action=slotDiagnostics/.test(m.line)).map(m => m.line);
+        check('K1 ...and [local-rt] logs the timeout, then the late arrival', log.length === 2 && / timeout=1/.test(log[0]) && / late=1/.test(log[1]),
+            JSON.stringify(log));
+        l.markers['clarion-slot'] = [];
+        l.deliver(lr, { markers: [slotMarker] });          // a duplicate delivery for the same reqId
+        await flush();
+        check('K1 ...and a late reqId is delivered at most once', painted(l).length === 0, JSON.stringify(painted(l)));
+        check('K1 the page\'s message handler delivers replies through deliverHostReply (so late ones reach it)',
+            /msg\.type === 'response' && msg\.reqId != null\) \{\s*\n\s*deliverHostReply\(msg\.reqId, msg\.data\);/.test(html));
+
+        const s = setup();
+        s.embedRanges = [[7, 8]];
+        s.api.refreshDiagnostics();
+        const sr = s.requests('slotDiagnostics')[0];
+        s.elapse(sr.timeoutMs);
+        await flush();
+        s.model.setLine(8, '  DO MyRtn');                  // the text moved on before the late reply
+        s.deliver(sr, { markers: [slotMarker], ms: 151 });
+        await flush();
+        check('K1 a late reply for a stale version is dropped', painted(s).length === 0, JSON.stringify(painted(s)));
+    }
+
     section('F2: an edited module header travels as text');
     {
         const e = setup();

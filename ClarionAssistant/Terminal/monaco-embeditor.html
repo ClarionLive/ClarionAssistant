@@ -1680,7 +1680,9 @@
     // timeoutMs is per-call and defaults to 4000: completion/hover are interactive and should give up
     // fast, but the diagnostics round-trip has a legitimately longer worst case (see DIAG_TIMEOUT_MS)
     // and must not be judged by the interactive budget.
-    function requestFromHost(action, payload, timeoutMs) {
+    // `onLate` (optional): a reply that arrives AFTER the page gave up (the promise already resolved null) is
+    // handed to it instead of being dropped - for answers still worth painting late (the slot checks, K1).
+    function requestFromHost(action, payload, timeoutMs, onLate) {
         return new Promise(function (resolve) {
             var reqId = ++reqSeq;
             var wait = timeoutMs || 4000;
@@ -1702,9 +1704,28 @@
             postToHost(msg);
             // Don't hang a Monaco provider forever if the host never replies.
             setTimeout(function () {
-                if (pendingRequests[reqId]) { delete pendingRequests[reqId]; settle(null, true); }
+                if (!pendingRequests[reqId]) return;
+                delete pendingRequests[reqId];
+                settle(null, true);
+                if (onLate) {
+                    lateRequests[reqId] = function (data) {
+                        if (rt) logRoundTrip(action, msg.v, rt, data, 'late');
+                        onLate(data);
+                    };
+                    // A host that never answers must not leak the handler.
+                    setTimeout(function () { delete lateRequests[reqId]; }, LATE_REPLY_KEEP_MS);
+                }
             }, wait);
         });
+    }
+    var lateRequests = {};             // reqId -> handler for a reply after the page's timeout (onLate)
+    var LATE_REPLY_KEEP_MS = 60000;
+    // Every {type:'response'} from the host lands here: its request's resolver, or its late handler.
+    function deliverHostReply(reqId, data) {
+        var resolver = pendingRequests[reqId];
+        if (resolver) { delete pendingRequests[reqId]; resolver(data); return; }
+        var late = lateRequests[reqId];
+        if (late) { delete lateRequests[reqId]; late(data); }
     }
 
     // ----- [local-rt] round-trip timing (1c685f2e item 0) -----
@@ -1754,7 +1775,7 @@
                 ' syncBytes=' + (s ? s.chars : 0) + ' syncMs=' + (s ? Math.round(s.ms) : 0) +
                 (s ? ' syncAgeMs=' + Math.round(rt.t0 - s.at) : '') +
                 (rt.sliceChars != null ? ' sliceChars=' + rt.sliceChars : '') +
-                (timedOut ? ' timeout=1' : (data == null ? ' null=1' : ''));
+                (timedOut === 'late' ? ' late=1' : timedOut ? ' timeout=1' : (data == null ? ' null=1' : ''));
             postToHost({ action: 'log', line: line });
         } catch (e) { /* timing must never break a request */ }
     }
@@ -4483,24 +4504,31 @@
         try { payload = slotSlicePayload(model) || withBuffer(model, { ranges: liveEditableRanges() }); }
         catch (e) { return; }
         slotAskedKey = key;
-        // The slot checks are a local-layer answer (their own lane, no LSP): the local budget, not the LSP's. (F5)
-        requestFromHost('slotDiagnostics', payload, LOCAL_TIMEOUT_MS)
+        var paint = function (resp) {
+            if (!resp || myGen !== diagGen) return;
+            // Computed for text no longer on screen: a newer request (every debounce sends one) paints.
+            if (!editor || editor.getModel() !== model || model.getVersionId() !== myVersion) return;
+            var slot = (resp.markers || []).map(toMarkerData);
+            monaco.editor.setModelMarkers(model, SLOT_MARKER_OWNER, slot);
+            // The LSP set may already show some of these (it landed first): drop those copies.
+            var lsp = markersOnScreen(model, 'clarion');
+            var kept = withoutDuplicatesOf(lsp, slot);
+            if (kept.length !== lsp.length) monaco.editor.setModelMarkers(model, 'clarion', kept);
+        };
+        // Its own budget (K1, partly reverting F5's 400 ms): on first open InventoryTable's 558 KB slot payload
+        // plus a busy UI thread took ~410 ms, the page gave up, and the squiggles never came until an edit.
+        // The lane is newest-wins and off the LSP path, so waiting costs nothing. A reply later still than
+        // that is painted too (onLate), if its version is still the one on screen.
+        requestFromHost('slotDiagnostics', payload, SLOT_TIMEOUT_MS, paint)
             .then(function (resp) {
-                if (myGen !== diagGen) return;
-                // null = no answer (timeout, or superseded in the host's lane): keep what is on screen, and let
-                // the next pass ask again.
-                if (!resp) { if (slotAskedKey === key) slotAskedKey = null; return; }
-                // Computed for text no longer on screen: a newer request (every debounce sends one) paints.
-                if (!editor || editor.getModel() !== model || model.getVersionId() !== myVersion) return;
-                var slot = (resp.markers || []).map(toMarkerData);
-                monaco.editor.setModelMarkers(model, SLOT_MARKER_OWNER, slot);
-                // The LSP set may already show some of these (it landed first): drop those copies.
-                var lsp = markersOnScreen(model, 'clarion');
-                var kept = withoutDuplicatesOf(lsp, slot);
-                if (kept.length !== lsp.length) monaco.editor.setModelMarkers(model, 'clarion', kept);
+                // null = no answer yet (timeout, or superseded in the host's lane): keep what is on screen,
+                // and let the next pass ask again.
+                if (!resp) { if (myGen === diagGen && slotAskedKey === key) slotAskedKey = null; return; }
+                paint(resp);
             })
             .catch(function () { /* never let a failed round-trip disrupt editing */ });
     }
+    var SLOT_TIMEOUT_MS = 3000;
 
     // GH #176: ordering guard. requestFromHost correlates each reply to its own request, but nothing said
     // whether that reply is still the NEWEST one — setModelMarkers replaces the whole set, so whichever
@@ -4567,6 +4595,13 @@
                     if (rerun && !diagTimer) scheduleDiagnostics();   // the held pass still needs an answer
                     return;
                 }
+                // {markers:null, pending:true} (K2): the server has not published for this version yet - the
+                // host no longer serves an older version's set. No information: keep what is on screen and
+                // ask again for this same version after DIAG_PENDING_RETRY_MS, up to DIAG_PENDING_MAX_TRIES.
+                if (resp.pending) {
+                    scheduleDiagnosticsPendingRetry(model, myVersion);
+                    return;
+                }
                 // Minus what the slot checks already squiggle on screen (1c685f2e item 7).
                 var markers = (resp.markers || []).map(toMarkerData);
                 monaco.editor.setModelMarkers(model, 'clarion', withoutDuplicatesOf(markers, markersOnScreen(model, SLOT_MARKER_OWNER)));
@@ -4577,6 +4612,26 @@
     function scheduleDiagnostics() {
         if (diagTimer) clearTimeout(diagTimer);
         diagTimer = setTimeout(function () { diagTimer = null; refreshDiagnostics(); }, 600);   // null = no pass pending
+    }
+
+    // K2: re-asks of a version whose LSP diagnostics are still pending. One timer at a time; the count is per
+    // version (a new version starts over, and its own debounce asks). The re-ask only runs if the model is
+    // still at that version - otherwise the normal debounce for the new text has taken over.
+    var DIAG_PENDING_RETRY_MS = 1500;
+    var DIAG_PENDING_MAX_TRIES = 5;
+    var diagPending = { model: null, version: 0, tries: 0, timer: null };
+    function scheduleDiagnosticsPendingRetry(model, version) {
+        if (diagPending.model !== model || diagPending.version !== version)
+            diagPending = { model: model, version: version, tries: 0, timer: diagPending.timer };
+        if (diagPending.tries >= DIAG_PENDING_MAX_TRIES) return;      // give up; the next edit asks afresh
+        diagPending.tries++;
+        if (diagPending.timer) clearTimeout(diagPending.timer);
+        var gen = diagGen;
+        diagPending.timer = setTimeout(function () {
+            diagPending.timer = null;
+            if (gen !== diagGen || !editor || editor.getModel() !== model || model.getVersionId() !== version) return;
+            refreshDiagnostics();
+        }, DIAG_PENDING_RETRY_MS);
     }
 
     // registerClarionFolding() now lives in the shared clarion-language.js (loaded above) so the
@@ -8297,8 +8352,7 @@
                     else showToast('Saved, but you edited during the save — staying open so those edits aren\'t lost.', false);
                 }
             } else if (msg.type === 'response' && msg.reqId != null) {
-                var resolver = pendingRequests[msg.reqId];
-                if (resolver) { delete pendingRequests[msg.reqId]; resolver(msg.data); }
+                deliverHostReply(msg.reqId, msg.data);
             } else if (msg.type === 'bufferResync') {
                 resetBufferSync();   // the host has no copy of the version we stamped — resend with the next request (16d140e9)
             } else if (msg.type === 'spanMap') {

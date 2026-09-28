@@ -112,7 +112,7 @@ function load(opts) {
         set(t, k, v) { t[k] = v; return true; },
     });
     const exportsList = ['registerClarionProviders', 'resetLocalFirstState', 'resetBufferSync', 'applySpanMap', 'noteBufferEdit',
-        'withBuffer', 'buildSlice', 'refreshDiagnostics', 'resetDiagnosticsForNewSource'];
+        'withBuffer', 'buildSlice', 'refreshDiagnostics', 'resetDiagnosticsForNewSource', 'deliverHostReply'];
     const ret = '{' + exportsList.map(n => n + ': ' + (DECLARED.has(n) ? n : 'undefined')).join(', ') + '}';
     // eslint-disable-next-line no-new-func
     env.api = new Function('__scope', 'with (__scope) {\n' + SRC + '\nreturn ' + ret + ';\n}')(scope);
@@ -137,6 +137,15 @@ function load(opts) {
         return n;
     };
     env.armed = (ms) => timers.filter(t => t.ms === ms).length;
+    // `ms` of wall time passes: every armed timer of at most that duration fires (armed-at is not tracked, so
+    // use it right after the requests of interest were made).
+    env.elapse = (ms) => {
+        let n = 0;
+        for (const t of timers.slice()) if (t.ms <= ms && !t.cleared && !t.fired) { t.fired = true; t.fn(); n++; }
+        return n;
+    };
+    // A host reply the way the page's message handler delivers it (resolver, or the late handler) - K1.
+    env.deliver = (msg, data) => env.api.deliverHostReply(msg.reqId, data);
     return env;
 }
 
