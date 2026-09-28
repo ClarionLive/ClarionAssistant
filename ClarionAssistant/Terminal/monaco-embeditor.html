@@ -1479,6 +1479,7 @@
         document.head.appendChild(loader);
     }
 
+    var srcGen = 0;   // bumped by every applySource call; its fetch loads only while it is still the newest (F1)
     function applySource(msg) {
         embedRanges = msg.editableRanges || [];
         saveEnabled = !!msg.saveEnabled;
@@ -1621,7 +1622,6 @@
                 editor.setValue('// Failed to load embeditor source: ' + err);
             });
     }
-    var srcGen = 0;   // bumped by every applySource; a fetch that is no longer the newest is discarded (F1)
 
     // Paint the classic Clarion scheme: editable slots stay white (default), generated lines grey.
     // Editable decorations are kept (invisible) so the read-only guard can query their live ranges.
@@ -4880,6 +4880,8 @@
         };
         var sent;
         if (typingUnsynced(model)) {
+            // Not whenIdleSynced: that resolves null once the version moves on, and this entry must survive
+            // later keystrokes (the cache serves them by prefix extension).
             c.deferred = true;
             sent = new Promise(function (resolve) {
                 idleWaiters.push(function () { resolve(lspComplCache[id] === c ? send() : null); });
