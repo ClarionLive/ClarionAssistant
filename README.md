@@ -251,6 +251,8 @@ Schema Sources and Source Control are settings of the **solution**, but they liv
 
 The IDE keeps a Clarion version per solution (**Build > Set Clarion Version**). Clarion Assistant read it only at startup or on a solution change, and a version picked in its **VERSION** box was one global setting that beat the IDE forever &mdash; honoured by some parts of Clarion Assistant and not others. Now the IDE's choice decides and is followed when it changes (the `.red` reloads and the bundled language server restarts), and **every part of Clarion Assistant uses the same version**. The VERSION box shows which source chose it. A version picked there is kept **per solution**, and only while the IDE's choice is still the one it was made against.
 
+**Fixed:** with Build > Set Clarion Version on **(Current Version)**, or on the running Clarion's own version, Clarion Assistant could show a version saved in an older release instead, even one from another Clarion install (a Clarion 12 IDE showing `Clarion 10 ... (saved)`). It now shows the running Clarion's version, marked **(IDE)**. A version saved in an older release still applies only when it belongs to the Clarion that is running.
+
 <!-- release-docs: covered=explorer -->
 ### CA Explorer's header says what it means
 

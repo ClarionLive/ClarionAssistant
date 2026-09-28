@@ -31,6 +31,8 @@ static class ClarionVersionSelectorTest
     const string C11 = "Clarion 11.0.13372";
     const string C12 = "Clarion 12.0.14313";
     const string C12Net = "Clarion.NET 4.0.14313";
+    const string Aion = "AionPOS";
+    const string C12Custom = "POSitive C12";   // a hand-named Win32 entry sharing the running C12 bin
     const string C12Exe = @"C:\Clarion12\bin\Clarion.exe";
     const string C10Exe = @"C:\Clarion10v8\bin\Clarion.exe";
 
@@ -47,6 +49,8 @@ static class ClarionVersionSelectorTest
         info.Versions.Add(Cfg(C11, @"C:\Clarion11-13372\bin", true));
         info.Versions.Add(Cfg(C10, @"C:\Clarion10v8\bin", true));
         info.Versions.Add(Cfg(C12Net, @"C:\Clarion12\bin", false));
+        info.Versions.Add(Cfg(Aion, @"C:\Clarion10v8\bin", true));
+        info.Versions.Add(Cfg(C12Custom, @"C:\Clarion12\bin", true));
         info.Versions.Add(Cfg(C12, @"C:\Clarion12\bin", true));
         return info;
     }
@@ -98,8 +102,8 @@ static class ClarionVersionSelectorTest
         // --- The override still does its job while the IDE has not moved.
         Expect("override C10 saved against IDE=C11, IDE still C11 -> the override applies",
                ClarionVersionSelector.Select(Info(C11), C10, C11), C10, ClarionVersionTier.SavedOverride, SavedOverrideState.Applied);
-        Expect("legacy override, IDE on Current -> applies (GH #32's case)",
-               ClarionVersionSelector.Select(Info(""), C10, null), C10, ClarionVersionTier.SavedOverride, SavedOverrideState.Applied);
+        Expect("legacy override on the running bin, IDE on Current -> applies (GH #32's case)",
+               ClarionVersionSelector.Select(Info(""), C12Custom, null), C12Custom, ClarionVersionTier.SavedOverride, SavedOverrideState.Applied);
 
         // "Current" bases are qualified by the running exe: a C10 IDE and a C12 IDE both on Current differ.
         string keyC12Current = Key(Info(""));
@@ -127,6 +131,40 @@ static class ClarionVersionSelectorTest
         // GetCurrentConfig (used by the pre-existing ExeMatch harness and IDE-free callers) is unchanged.
         Ok("GetCurrentConfig still returns the IDE's named choice", Info(C10).GetCurrentConfig().Name == C10);
 
+        // ===== 286f2e57: the Owner's live repro on 5.9.0.1264, C12 IDE (C:\Clarion12\bin\Clarion.exe, 12.0.14313) =====
+        // settings.txt holds ONLY the legacy global "Clarion.Version.Override=Clarion 10 Active And Updated" (no
+        // per-solution record); ClarionProperties.xml still says "Clarion 10 Active And Updated". Clarion stores
+        // both "(Current Version)" and the running version's own name as a NULL Clarion.Version
+        // (Versions.ActiveWinVersion setter: IsCurrent(value) is true for value == the running version's name),
+        // so steps 1 and 3 reach CA as the same live empty string.
+        var step1 = ClarionVersionSelector.SelectForSolution(Info(""), null, C10);
+        Expect("owner step 1: IDE '(Current Version)' (live empty), legacy C10 override -> running C12, override suspended",
+               step1, C12, ClarionVersionTier.RunningExe, SavedOverrideState.Suspended);
+        Ok("  ... labelled (IDE), not (saved)", step1.ShortSource == "IDE", step1.ShortSource);
+        Ok("  ... and the Note names the override and its bin", step1.Note != null && step1.Note.Contains(C10) && step1.Note.Contains(@"C:\Clarion10v8\bin"), step1.Note);
+        var step2 = ClarionVersionSelector.SelectForSolution(Info(Aion), null, C10);
+        Expect("owner step 2: IDE names AionPOS -> AionPOS by the IDE",
+               step2, Aion, ClarionVersionTier.IdeSelection, SavedOverrideState.Suspended);
+        Ok("  ... labelled (IDE)", step2.ShortSource == "IDE", step2.ShortSource);
+        var step3 = ClarionVersionSelector.SelectForSolution(Info(""), null, C10);
+        Expect("owner step 3: IDE picks 'Clarion 12.0.14313' (stored as Current) -> running C12 again, not the saved C10",
+               step3, C12, ClarionVersionTier.RunningExe, SavedOverrideState.Suspended);
+        Ok("  ... labelled (IDE)", step3.ShortSource == "IDE", step3.ShortSource);
+        Expect("owner step 3, had the IDE kept the explicit name -> C12 by IDE selection, override suspended",
+               ClarionVersionSelector.SelectForSolution(Info(C12), null, C10), C12, ClarionVersionTier.IdeSelection, SavedOverrideState.Suspended);
+        Expect("the literal '(Current Version)' string behaves as step 1",
+               ClarionVersionSelector.SelectForSolution(Info("(Current Version)"), null, C10), C12, ClarionVersionTier.RunningExe, SavedOverrideState.Suspended);
+        Expect("a per-solution record with an unqualified 'Current' basis naming another install's entry is suspended too",
+               ClarionVersionSelector.SelectForSolution(Info(""), ClarionVersionSelector.EncodeOverride(C10, "Current"), null),
+               C12, ClarionVersionTier.RunningExe, SavedOverrideState.Suspended);
+        Expect("a deliberate per-solution pick made in THIS IDE on Current still applies (38de012's intent)",
+               ClarionVersionSelector.SelectForSolution(Info(""), ClarionVersionSelector.EncodeOverride(C10, keyC12Current), C10),
+               C10, ClarionVersionTier.SavedOverride, SavedOverrideState.Applied);
+        // Shared bin: C:\Clarion12\bin carries the .NET compiler entry, a hand-named Win32 entry and the IDE's own
+        // entry; the running exe resolves to the one whose name carries its build, listed LAST here.
+        Ok("shared bin: running C12 resolves to 'Clarion 12.0.14313', not the .NET or hand-named entry",
+           Info("").GetCurrentConfig().Name == C12, Info("").GetCurrentConfig().Name);
+
         // ===== Per-solution storage (pipeline run 1, finding 3) =====
         const string SlnA = @"H:\Dev\aPOSitive\v61POSitive.sln";
         const string SlnB = @"H:\Dev\Other\Other.sln";
@@ -151,8 +189,8 @@ static class ClarionVersionSelectorTest
                ClarionVersionSelector.SelectForSolution(Info(C11), rec, null), C10, ClarionVersionTier.SavedOverride, SavedOverrideState.Applied);
         Expect("a solution's own record wins over the legacy global value",
                ClarionVersionSelector.SelectForSolution(Info(C11), rec, C12), C10, ClarionVersionTier.SavedOverride, SavedOverrideState.Applied);
-        Expect("no record: the legacy global value applies while the IDE is on Current",
-               ClarionVersionSelector.SelectForSolution(Info(""), null, C10), C10, ClarionVersionTier.SavedOverride, SavedOverrideState.Applied);
+        Expect("no record: the legacy global value applies while the IDE is on Current (entry on the running bin)",
+               ClarionVersionSelector.SelectForSolution(Info(""), null, C12Custom), C12Custom, ClarionVersionTier.SavedOverride, SavedOverrideState.Applied);
         Expect("no record: the legacy global value is suspended when the solution names a version",
                ClarionVersionSelector.SelectForSolution(Info(C10), null, C11), C10, ClarionVersionTier.IdeSelection, SavedOverrideState.Suspended);
 
