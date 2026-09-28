@@ -118,12 +118,19 @@ namespace ClarionAssistant.Services
         /// deleted or rewritten. Waits for a running query to finish. The next query reopens.</summary>
         public static void Release(string dbPath)
         {
-            if (string.IsNullOrEmpty(dbPath)) return;
-            SymbolIndex idx;
-            string key;
-            try { key = Path.GetFullPath(dbPath); } catch { return; }
-            lock (_registryLock) { _registry.TryGetValue(key, out idx); }
+            var idx = Existing(dbPath);
             if (idx != null) idx.Close();
+        }
+
+        /// <summary>The index already registered for <paramref name="dbPath"/>, or null - never creates one.</summary>
+        private static SymbolIndex Existing(string dbPath)
+        {
+            if (string.IsNullOrEmpty(dbPath)) return null;
+            string key;
+            try { key = Path.GetFullPath(dbPath); } catch { return null; }
+            SymbolIndex idx;
+            lock (_registryLock) { _registry.TryGetValue(key, out idx); }
+            return idx;
         }
 
         /// <summary>Close every held connection (solution switch/close).</summary>
@@ -134,11 +141,15 @@ namespace ClarionAssistant.Services
             foreach (var idx in all) idx.Close();
         }
 
-        /// <summary>Test hook: how many times a connection to this DB has been opened.</summary>
-        public static int OpenCountFor(string dbPath) { var i = For(dbPath); return i == null ? 0 : i._openCount; }
+        /// <summary>Test hook: how many times a connection to this DB has been opened (0 when never used;
+        /// asking does not create an index or open anything).</summary>
+        public static int OpenCountFor(string dbPath) { var i = Existing(dbPath); return i == null ? 0 : i._openCount; }
 
-        /// <summary>Test hook: how many SQL queries this DB has actually run.</summary>
-        public static int QueryCountFor(string dbPath) { var i = For(dbPath); return i == null ? 0 : i._queryCount; }
+        /// <summary>Test hook: how many SQL queries this DB has actually run (0 when never used).</summary>
+        public static int QueryCountFor(string dbPath) { var i = Existing(dbPath); return i == null ? 0 : i._queryCount; }
+
+        /// <summary>Test hook: whether an index is registered for this path.</summary>
+        public static bool IsRegistered(string dbPath) { return Existing(dbPath) != null; }
 
         // ================================================================== instance
 
