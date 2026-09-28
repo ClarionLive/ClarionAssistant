@@ -19,7 +19,7 @@ namespace ClarionAssistant.Services
         public const int MaxSyncChars = 16000000;
         public const int MaxLogChars = 4096;            // log: one page-built line
         public const int MaxHeaderSyncChars = 1000000;  // headerSync: the module header
-        public const int MaxLocalChars = 2000000;       // localCompletion / localHover / slotDiagnostics: slices
+        public const int MaxLocalChars = 2000000;       // localCompletion / localHover: a capped slice (~16 KB typical)
         /// <summary>Actions whose payload is only flags, numbers, a key combo or a file path (audited against
         /// monaco-embeditor.html; see ScalarActions).</summary>
         public const int MaxScalarChars = 65536;
@@ -35,7 +35,9 @@ namespace ClarionAssistant.Services
         public const int MaxPieces = 8;
         public const int MaxRoutines = 10000;
         public const int MaxRoutineNameChars = 256;
-        public const int MaxSlots = 2000;
+        /// <summary>slotDiagnostics slots / ranges. InventoryTable (PRM002) has more than 2,000 editable embed ranges
+        /// in one procedure (Owner's run on build 1243, H1); 100,000 leaves ample room for real generated code.</summary>
+        public const int MaxSlots = 100000;
 
         /// <summary>The largest message (in chars) accepted for <paramref name="action"/>.</summary>
         public static int MaxChars(string action)
@@ -45,8 +47,10 @@ namespace ClarionAssistant.Services
                 case "log": return MaxLogChars;
                 case "headerSync": return MaxHeaderSyncChars;
                 case "localCompletion":
-                case "localHover":
-                case "slotDiagnostics": return MaxLocalChars;
+                case "localHover": return MaxLocalChars;
+                // slotDiagnostics carries the text of EVERY editable slot (558 KB on InventoryTable). It is not
+                // capped by a caret window, and a procedure with large hand-written embeds can exceed 2M, so it
+                // gets the sync cap like the buffer it is a subset of (H1).
                 default: return action != null && ScalarActions.Contains(action) ? MaxScalarChars : MaxSyncChars;
             }
         }

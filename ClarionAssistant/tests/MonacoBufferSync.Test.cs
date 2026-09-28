@@ -218,7 +218,7 @@ static class MonacoBufferSyncTest
                 new KeyValuePair<string, int>("bufferSync", 16000000), new KeyValuePair<string, int>("fileState", 16000000),
                 new KeyValuePair<string, int>("log", 4096), new KeyValuePair<string, int>("headerSync", 1000000),
                 new KeyValuePair<string, int>("localCompletion", 2000000), new KeyValuePair<string, int>("localHover", 2000000),
-                new KeyValuePair<string, int>("slotDiagnostics", 2000000), new KeyValuePair<string, int>("saveCursor", 65536),
+                new KeyValuePair<string, int>("slotDiagnostics", 16000000), new KeyValuePair<string, int>("saveCursor", 65536),
                 new KeyValuePair<string, int>("somethingElse", 16000000) };
             foreach (var l in limits)
                 Check("F6 " + l.Key + ": " + l.Value + " chars accepted, " + (l.Value + 1) + " rejected",
