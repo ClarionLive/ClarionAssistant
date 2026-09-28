@@ -52,8 +52,73 @@ static class LocalScopeIndexSliceParity
         string text;
         Check(LocalScopeIndex.TryGetHeaderText(map.HeaderHash, out text) && text == map.HeaderText && two.StartsWith(text), "R11.4",
               "the header text is cached under the map's hash, and is the buffer's prefix up to ProcA");
-        Check(!LocalScopeIndex.RegisterHeader("stale-hash", text + "ModX LONG\r\n") && LocalScopeIndex.TryGetHeaderText("stale-hash", out text),
-              "R11.5", "headerSync: a text that does not hash to the page's hash is still cached under it (and reports the mismatch)");
+        string planted;
+        Check(!LocalScopeIndex.RegisterHeader("stale-hash", text + "ModX LONG\r\n") && !LocalScopeIndex.TryGetHeaderText("stale-hash", out planted),
+              "R11.5", "headerSync FAILS CLOSED: a text that does not hash to the caller's key is refused and stored under no key (F9)");
+        string good = text + "ModY LONG\r\n";
+        string goodKey = LocalScopeIndex.ContentKey(good, 0, good.Length);
+        Check(LocalScopeIndex.RegisterHeader(goodKey, good) && LocalScopeIndex.TryGetHeaderText(goodKey, out planted) && planted == good,
+              "R11.5b", "headerSync with a matching key is cached");
+
+        // F2: an edited header travels as text in the slice; the answer reflects it with no headerSync.
+        string editedHeader = text + "ModZ                 LONG\r\n";
+        var ma = map.Procs.First(p => p.Name == "ProcA");
+        var editedLines = (editedHeader + two.Substring(text.Length)).Split('\n');
+        int shift = 1;   // one line added to the header
+        var slice = new List<SlicePiece> { new SlicePiece(ma.Start + shift, Lines(editedLines, ma.Start + shift, ma.End + shift)) };
+        int caret = Array.FindIndex(editedLines, x => x.TrimEnd('\r') == "  Mo");
+        var withText = LocalScopeIndex.Complete(map.HeaderHash, editedHeader, slice, ma.Routines, caret, 4, null).Select(i => i.Label).ToList();
+        var byHash = LocalScopeIndex.Complete(map.HeaderHash, null, slice, ma.Routines, caret, 4, null).Select(i => i.Label).ToList();
+        int caretPr = Array.FindIndex(editedLines, x => x.TrimEnd('\r') == "  Pr");
+        var procsWithText = LocalScopeIndex.Complete(map.HeaderHash, editedHeader, slice, ma.Routines, caretPr, 4, null).Select(i => i.Label).ToList();
+        Check(withText.Contains("ModZ") && !byHash.Contains("ModZ") && procsWithText.Contains("ProcB"), "F2.headerText",
+              "a slice's headerText wins over the cached header (ModZ offered: [" + string.Join(",", withText) + "]) and keeps the map's procedure list");
+
+        // F9: the header and piece caches are bounded by aggregate chars (8 MB each), oldest evicted first.
+        var bigHeader = new string((char)120, 3 * 1024 * 1024);
+        for (int i = 0; i < 5; i++) LocalScopeIndex.RegisterHeader(null, "  MEMBER()\r\n! " + i + bigHeader);
+        var sizes = LocalScopeIndex.CacheSizes();
+        Check(sizes[1] <= LocalScopeIndex.CacheCharBudget && sizes[1] > 0, "F9.header", "five 3 MB headers leave the header cache at " + sizes[1] / 1024 + " K chars (<= 8 M)");
+        var sb = new StringBuilder("  MEMBER()\r\n");
+        for (int p = 0; p < 40; p++)
+        {
+            sb.Append("P").Append(p).Append("                   PROCEDURE\r\n");
+            sb.Append("D").Append(p).Append("                   STRING('").Append(new string('y', 400 * 1024)).Append("')\r\n  CODE\r\n");
+        }
+        var bigMap = LocalScopeIndex.BuildSpanMap(sb.ToString());
+        sizes = LocalScopeIndex.CacheSizes();
+        string newest, oldest;
+        Check(sizes[3] <= LocalScopeIndex.CacheCharBudget && LocalScopeIndex.TryGetPieceText(bigMap.Procs.Last().DataHash, out newest)
+              && !LocalScopeIndex.TryGetPieceText(bigMap.Procs.First().DataHash, out oldest), "F9.pieces",
+              "40 pieces of 400 K chars: the piece cache holds " + sizes[3] / 1024 + " K chars (<= 8 M), newest kept, oldest evicted");
+
+        // F10: a slice's allocation does not grow with the caret's line number (no padding per skipped line).
+        {
+            AppDomain.MonitoringIsEnabled = true;
+            var lb = new StringBuilder("  MEMBER()\r\nBigProc              PROCEDURE\r\nLoc:A                LONG\r\n  CODE\r\n");
+            for (int i = 0; i < 80000; i++) lb.Append("  Loc:A += ").Append(i).Append("\r\n");
+            string longBuf = lb.ToString();
+            var lm = LocalScopeIndex.BuildSpanMap(longBuf);
+            var lp = lm.Procs[0];
+            var lraw = longBuf.Split('\n');
+            Func<int, long> allocAt = line1 =>
+            {
+                var pcs = new List<SlicePiece> { new SlicePiece { Start = lp.Start, Hash = lp.DataHash },
+                                                 new SlicePiece(line1 - 200, Lines(lraw, line1 - 200, line1 + 200)) };
+                LocalScopeIndex.Complete(lm.HeaderHash, null, pcs, lp.Routines, line1 - 1, 4, null);
+                GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+                long a0 = AppDomain.CurrentDomain.MonitoringTotalAllocatedMemorySize;
+                for (int i = 0; i < 5; i++) LocalScopeIndex.Complete(lm.HeaderHash, null, pcs, lp.Routines, line1 - 1, 4, null);
+                return (AppDomain.CurrentDomain.MonitoringTotalAllocatedMemorySize - a0) / 5;
+            };
+            long near = allocAt(1000), far = allocAt(79000);
+            Check(far - near < 32 * 1024, "F10.alloc",
+                  "slice Complete allocates " + near / 1024 + " KB at line 1000 and " + far / 1024 + " KB at line 79000 (must not grow with the line)");
+        }
+
+        Check(LocalScopeIndex.LineOf("a\r\nbb\ncc", 1) == "bb" && LocalScopeIndex.LineOf("a\r\nbb\ncc", 2) == "cc" &&
+              LocalScopeIndex.LineOf("a\r\nbb\ncc", 3) == null && LocalScopeIndex.LineOf("a\r\n", 0) == "a", "F10.lineOf",
+              "the shared LineOf helper: CR dropped, null past the end");
 
         Console.WriteLine("parity: full buffer == slice, every caret");
         Parity("two-procs", two, 1, capped: false);
@@ -213,20 +278,18 @@ static class LocalScopeIndexSliceParity
             {
                 carets++;
                 string fc = Items(LocalScopeIndex.Complete(buf, l, col, null));
-                string sc = Items(LocalScopeIndex.Complete(header, pieces, routines, l, col, null));
+                // The header by the map's hash (the wire form); the header-text overloads must agree.
+                string sc = Items(LocalScopeIndex.Complete(map.HeaderHash, null, pieces, routines, l, col, null));
                 string fh = Hov(LocalScopeIndex.Hover(buf, l, col, "m.clw"));
-                string sh = Hov(LocalScopeIndex.Hover(header, pieces, routines, l, col, "m.clw"));
+                string sh = Hov(LocalScopeIndex.Hover(map.HeaderHash, null, pieces, routines, l, col, "m.clw"));
                 string fm = Mem(LocalScopeIndex.GetMemberAccess(buf, l, col));
-                string sm = Mem(LocalScopeIndex.GetMemberAccess(header, pieces, routines, l, col));
-                if (!capped && pieces.Count > 0)
+                string sm = Mem(LocalScopeIndex.GetMemberAccess(map.HeaderHash, null, pieces, routines, l, col));
+                if (!capped)
                 {
-                    // The two-piece overloads must agree with the list overloads.
-                    SlicePiece owner = pieces.Count > 1 ? pieces[0] : null;
-                    SlicePiece span = pieces[pieces.Count - 1];
-                    string sc2 = Items(LocalScopeIndex.Complete(header, owner, span, routines, l, col, null));
-                    string sm2 = Mem(LocalScopeIndex.GetMemberAccess(header, owner, span, routines, l, col));
-                    if (sc2 != sc) sc = "(two-piece overload differs) " + sc2;
-                    if (sm2 != sm) sm = "(two-piece overload differs) " + sm2;
+                    string sc2 = Items(LocalScopeIndex.Complete(header, pieces, routines, l, col, null));
+                    string sm2 = Mem(LocalScopeIndex.GetMemberAccess(header, pieces, routines, l, col));
+                    if (sc2 != sc) sc = "(header-text overload differs) " + sc2;
+                    if (sm2 != sm) sm = "(header-text overload differs) " + sm2;
                 }
                 if (fc != sc || fh != sh || fm != sm)
                 {

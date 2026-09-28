@@ -259,6 +259,12 @@ static class SymbolIndexTest
         Check(wi.IsOpen && !wi.NoIndex && SymbolIndex.QueryCountFor(warmDb) == 0 && SymbolIndex.OpenCountFor(warmDb) == 1, "2.22",
               "For() alone opened the connection and probed the indexes on a pool thread (no query run)");
         SymbolIndex.Release(warmDb);
+
+        // F10: the test hooks never create an index (nor queue its background open).
+        string never = Path.Combine(_work, "never-used.codegraph.db");
+        BuildIndexed(never, ProjectRows());
+        int o = SymbolIndex.OpenCountFor(never), q = SymbolIndex.QueryCountFor(never);
+        Check(o == 0 && q == 0 && !SymbolIndex.IsRegistered(never), "2.23", "asking a never-used path's counters registers nothing");
         SymbolIndex.Release(old);
         Check(!IndexNames(old).Contains(SymbolIndex.NameIndex) && !IndexNames(old).Contains(SymbolIndex.ParentIndex), "2.9",
               "the read-only side created no index: [" + string.Join(", ", IndexNames(old)) + "]");
