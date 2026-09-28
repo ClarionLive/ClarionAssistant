@@ -344,6 +344,33 @@ Applies to: **PdfPig**.
    END OF TERMS AND CONDITIONS
 ```
 
+#### NOTICE — required attribution for PdfPig
+
+Apache-2.0 section 4(d) is not satisfied by reproducing the licence alone. PdfPig distributes a
+`NOTICES.txt`, and the clause requires any redistribution to carry its contents. Reproduced verbatim
+from [UglyToad/PdfPig](https://github.com/UglyToad/PdfPig/blob/master/NOTICES.txt):
+
+```
+This product is derived from software developed at
+The Apache Software Foundation (http://www.apache.org/).
+
+Based on source code originally developed in the PDFBox and 
+FontBox projects.
+
+Copyright (c) 2002-2007, www.pdfbox.org
+
+Includes the Adobe Glyph List
+Copyright 1997, 1998, 2002, 2007, 2010 Adobe Systems Incorporated.
+
+Includes the Zapf Dingbats Glyph List
+Copyright 2002, 2010 Adobe Systems Incorporated.
+```
+
+If the PdfPig version pinned in `ClarionAssistant.csproj` changes, re-check the upstream
+`NOTICES.txt` against this copy — the requirement is to carry whatever that file says at the version
+actually shipped, not whatever it said when this section was written.
+
+
 ### MIT License
 
 Applies to: **Node.js**, **System.Buffers**, **System.Memory**, **System.Numerics.Vectors**,
