@@ -228,7 +228,7 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             # leak, inherited members across both DBs, the old-schema fallback, and the connection
             # lifecycle (a held handle must never block the reindex delete). Synthetic x86 SQLite DBs.
             @{ Name = "SymbolIndex.Test"
-               Sources = @("tests\SymbolIndex.Test.cs", "Services\SymbolIndex.cs",
+               Sources = @("tests\SymbolIndex.Test.cs", "Services\SymbolIndex.cs", "Services\IndexRunGate.cs",
                            "CodeGraph\Graph\CodeGraphProvider.cs", "CodeGraph\Graph\CodeGraphDatabase.cs",
                            "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
                            "CodeGraph\Parsing\Models\SolutionProject.cs", "CodeGraph\Parsing\Models\ParseResult.cs",

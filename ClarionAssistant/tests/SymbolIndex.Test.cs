@@ -38,6 +38,7 @@ static class SymbolIndexTest
         _work = Path.Combine(Path.GetTempPath(), "ca-symidx-" + Guid.NewGuid().ToString("N").Substring(0, 8));
         Directory.CreateDirectory(_work);
         SymbolIndex.LogSink = line => { lock (Log) Log.Add(line); };
+        SymbolIndex.AutoIndex = false;   // the old-schema fallback tests need a DB that stays old; H2 turns it on
         try
         {
             string proj = Path.Combine(_work, "proj.codegraph.db");
@@ -50,6 +51,7 @@ static class SymbolIndexTest
             Queries(proj, lib);
             Fallback(old);
             IndexerCreatesIndexes();
+            AutoIndexBuild();
             Lifecycle(proj);
             Sources(repo);
             if (Environment.GetEnvironmentVariable("SYMIDX_SKIP_LARGE") != "1") Large();
@@ -299,6 +301,76 @@ static class SymbolIndexTest
         SymbolIndex.Release(old2);
     }
 
+    // ------------------------------------------------------------------------------ H2: background index build
+
+    static bool WaitFor(Func<bool> cond, int ms)
+    {
+        var until = DateTime.UtcNow.AddMilliseconds(ms);
+        while (DateTime.UtcNow < until) { if (cond()) return true; Thread.Sleep(20); }
+        return cond();
+    }
+
+    static int LogCount(string contains) { lock (Log) return Log.Count(l => l.Contains(contains)); }
+
+    static void AutoIndexBuild()
+    {
+        Console.WriteLine("H2: background NOCASE index build on an old-schema DB");
+        SymbolIndex.AutoIndex = true;
+        try
+        {
+            // H2.1: For() alone -> the build runs in the background, NoIndex clears, fastOnly answers.
+            string a = Path.Combine(_work, "h2-old.codegraph.db");
+            BuildOldSchema(a, ProjectRows());
+            int built = SymbolIndex.IndexBuildCount;
+            var ia = SymbolIndex.For(a);
+            bool done = WaitFor(() => SymbolIndex.IndexBuildCount > built, 10000);
+            var rows = done ? ia.ByPrefix("glo", 100, fastOnly: true) : new List<CodeGraphSymbol>();
+            Check(done && !ia.NoIndex && rows.Count == 4 && IndexNames(a).Contains(SymbolIndex.NameIndex) && LogCount("indexCreate db=h2-old.codegraph.db") == 1
+                  && LogCount("result=ok") >= 1,
+                  "H2.1", "old DB: indexes built in the background, NoIndex cleared, fastOnly ByPrefix -> " + rows.Count + " rows");
+            SymbolIndex.Release(a);
+
+            // H2.2: a reindex holds the gate -> no write; after the backoff, the next For() builds.
+            string b = Path.Combine(_work, "h2-gated.codegraph.db");
+            BuildOldSchema(b, ProjectRows());
+            SymbolIndex.BuildBackoffMs = 300;
+            IndexRunGate.TryEnter(b);
+            var ib = SymbolIndex.For(b);
+            WaitFor(() => LogCount("indexCreate db=h2-gated.codegraph.db") > 0, 5000);
+            bool noWrite = !IndexNames(b).Contains(SymbolIndex.NameIndex) && LogCount("h2-gated.codegraph.db ms=") == 1 && LogCount("result=busy") >= 1;
+            IndexRunGate.Exit(b);
+            SymbolIndex.For(b);                                           // inside the backoff: no second attempt
+            Thread.Sleep(150);
+            bool heldOff = LogCount("indexCreate db=h2-gated.codegraph.db") == 1;
+            Thread.Sleep(300);
+            SymbolIndex.For(b);                                           // past the backoff: retried
+            bool retried = WaitFor(() => IndexNames(b).Contains(SymbolIndex.NameIndex), 5000);
+            Check(noWrite && heldOff && retried, "H2.2",
+                  "gate held elsewhere: no index written (" + noWrite + "), no retry inside the backoff (" + heldOff + "), built after it (" + retried + ")");
+            SymbolIndex.Release(b);
+
+            // H2.3: a read-only file -> logged and given up, nothing thrown, the fallback still answers.
+            string c = Path.Combine(_work, "h2-readonly.codegraph.db");
+            BuildOldSchema(c, ProjectRows());
+            File.SetAttributes(c, FileAttributes.ReadOnly);
+            Exception ex = null;
+            List<CodeGraphSymbol> slow = null;
+            try
+            {
+                var ic = SymbolIndex.For(c);
+                WaitFor(() => LogCount("indexCreate db=h2-readonly.codegraph.db") > 0, 5000);
+                slow = ic.ByPrefix("glo", 100);
+            }
+            catch (Exception e) { ex = e; }
+            Check(ex == null && LogCount("h2-readonly.codegraph.db ms=") == 1 && LogCount("result=readonly") == 1 && slow != null && slow.Count == 4
+                  && !IndexNames(c).Contains(SymbolIndex.NameIndex),
+                  "H2.3", "read-only DB: logged result=readonly, nothing thrown, fallback answers " + (slow == null ? 0 : slow.Count) + " rows");
+            SymbolIndex.Release(c);
+            File.SetAttributes(c, FileAttributes.Normal);
+        }
+        finally { SymbolIndex.AutoIndex = false; SymbolIndex.BuildBackoffMs = 60000; }
+    }
+
     // ------------------------------------------------------------------------------ 2.16, 2.17, 2.20
 
     static void Lifecycle(string proj)
@@ -481,10 +553,19 @@ static class SymbolIndexTest
         Console.WriteLine(string.Format("    as found (noIndex={0}): p50 {1:F2} ms, p95 {2:F2} ms, private bytes +{3} KB",
                                         SymbolIndex.For(copy).NoIndex, before[0], before[1], (mem1 - mem0) / 1024));
         SymbolIndex.Release(copy);
+        // H2: the background build, as the Owner's first open of an old DB triggers it.
+        SymbolIndex.AutoIndex = true;
+        int built = SymbolIndex.IndexBuildCount;
         var sw = Stopwatch.StartNew();
-        using (var db = new CodeGraphDatabase()) { db.Open(copy); }   // the indexer's next write open
-        Console.WriteLine(string.Format("    CodeGraphDatabase.Open (creates the NOCASE indexes): {0} ms, file now {1:F1} MB",
+        var ri = SymbolIndex.For(copy);
+        ri.Warm();
+        bool ok = WaitFor(() => SymbolIndex.IndexBuildCount > built, 60000);
+        string line;
+        lock (Log) line = Log.LastOrDefault(l => l.Contains("indexCreate db=" + Path.GetFileName(copy)));
+        Console.WriteLine(string.Format("    background build: {0} (waited {1} ms), file now {2:F1} MB", line ?? "(no log line)",
                                         sw.ElapsedMilliseconds, new FileInfo(copy).Length / 1048576.0));
+        SymbolIndex.AutoIndex = false;
+        Check(ok, "H2.real", "the background build indexed the real DB copy");
         mem0 = PrivateBytes();
         var after = Time(copy, prefixes);
         mem1 = PrivateBytes();

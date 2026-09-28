@@ -96,7 +96,11 @@ namespace ClarionAssistant.Services
             SymbolIndex idx;
             lock (_registryLock)
             {
-                if (_registry.TryGetValue(key, out idx)) return idx;
+                if (_registry.TryGetValue(key, out idx))
+                {
+                    if (idx._noIndex) idx.ScheduleIndexBuild();   // a retry once the backoff has passed
+                    return idx;
+                }
                 idx = new SymbolIndex(key);
                 _registry[key] = idx;
             }
@@ -407,8 +411,72 @@ namespace ClarionAssistant.Services
                     else if (string.Equals(n, ParentIndex, StringComparison.OrdinalIgnoreCase)) hasParent = true;
                 }
             _noIndex = !(hasName && hasParent);
-            if (_noIndex) Log("[local-timing] noIndex db=" + Path.GetFileName(_path));
+            if (_noIndex)
+            {
+                Log("[local-timing] noIndex db=" + Path.GetFileName(_path));
+                ScheduleIndexBuild();
+            }
             return true;
+        }
+
+        // ================================================================== background index build (H2)
+        // A DB an older build wrote has no NOCASE indexes, and they would only arrive with the indexer's next
+        // write - which may be weeks away. Until then the local lanes (fastOnly) cannot use the DB at all. So
+        // the first open that finds them missing builds them, ONCE, on a pool thread: under the cross-process
+        // IndexRunGate (never beside a reindex), on its own read-write connection, then the read connection is
+        // released so the next query re-probes. Failures (gate busy, read-only file, locked DB) are logged,
+        // never thrown, and retried no sooner than BuildBackoffMs later, at the next For() or open.
+
+        /// <summary>False: never build indexes in the background (tests of the old-schema fallback).</summary>
+        internal static bool AutoIndex = true;
+        /// <summary>The least time between two build attempts on one path.</summary>
+        internal static int BuildBackoffMs = 60000;
+        /// <summary>Test hook: successful background index builds, all paths.</summary>
+        internal static int IndexBuildCount;
+
+        private int _building;          // 1 while a build is queued or running
+        private long _nextBuildTicks;   // no attempt before this (UTC ticks)
+
+        private void ScheduleIndexBuild()
+        {
+            if (!AutoIndex) return;
+            if (Interlocked.CompareExchange(ref _building, 1, 0) != 0) return;
+            long now = DateTime.UtcNow.Ticks;
+            if (now < Interlocked.Read(ref _nextBuildTicks)) { Interlocked.Exchange(ref _building, 0); return; }
+            Interlocked.Exchange(ref _nextBuildTicks, now + TimeSpan.FromMilliseconds(BuildBackoffMs).Ticks);
+            if (!ThreadPool.QueueUserWorkItem(_ => BuildIndexes())) Interlocked.Exchange(ref _building, 0);
+        }
+
+        private void BuildIndexes()
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            string result = "failed";
+            bool gate = false;
+            try
+            {
+                string holder;
+                if (!IndexRunGate.TryEnter(_path, out holder)) { result = "busy (" + holder + ")"; return; }
+                gate = true;
+                var fi = new FileInfo(_path);
+                if (!fi.Exists) { result = "missing"; return; }
+                if (fi.IsReadOnly) { result = "readonly"; return; }
+                using (var rw = new SQLiteConnection("Data Source=" + _path + ";Version=3;Pooling=False;"))
+                {
+                    rw.Open();
+                    rw.BusyTimeout = 5000;
+                    using (var cmd = new SQLiteCommand(CodeGraphDatabase.NoCaseIndexSql, rw)) { cmd.CommandTimeout = 120; cmd.ExecuteNonQuery(); }
+                }
+                result = "ok";
+                Interlocked.Increment(ref IndexBuildCount);
+            }
+            catch (Exception ex) { result = "failed (" + ex.Message.Replace('\r', ' ').Replace('\n', ' ') + ")"; }
+            finally
+            {
+                if (gate) try { IndexRunGate.Exit(_path); } catch { }
+                if (result == "ok") Close();   // the next query reopens, re-probes and clears NoIndex
+                Log("[local-timing] indexCreate db=" + Path.GetFileName(_path) + " ms=" + sw.ElapsedMilliseconds + " result=" + result);
+                Interlocked.Exchange(ref _building, 0);
+            }
         }
 
         private void Close()

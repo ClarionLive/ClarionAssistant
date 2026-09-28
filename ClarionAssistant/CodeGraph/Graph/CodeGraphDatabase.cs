@@ -16,6 +16,13 @@ namespace ClarionCodeGraph.Graph
         private SQLiteConnection _connection;
         private string _dbPath;
 
+        /// <summary>The keystroke-speed NOCASE indexes (1c685f2e). Part of the schema below, and run on its
+        /// own by SymbolIndex's background build for a DB an older build wrote. The names must match
+        /// SymbolIndex.NameIndex / ParentIndex, which is how a reader tells an indexed DB from an old one.</summary>
+        public const string NoCaseIndexSql =
+            "CREATE INDEX IF NOT EXISTS idx_sym_name_nocase ON symbols(name COLLATE NOCASE);\n" +
+            "CREATE INDEX IF NOT EXISTS idx_sym_parent_nocase ON symbols(parent_name COLLATE NOCASE);\n";
+
         public string DatabasePath { get { return _dbPath; } }
 
         public void Open(string dbPath)
@@ -108,18 +115,13 @@ namespace ClarionCodeGraph.Graph
                 CREATE INDEX IF NOT EXISTS idx_ixf_project ON indexed_files(project_id);
 
                 CREATE INDEX IF NOT EXISTS idx_sym_name ON symbols(name);
-                -- Keystroke-speed completion (1c685f2e): case-insensitive prefix RANGE scans and
-                -- parent lookups (SymbolIndex). Names must match SymbolIndex.NameIndex/ParentIndex,
-                -- which is how a reader tells an indexed DB from one an older build wrote.
-                CREATE INDEX IF NOT EXISTS idx_sym_name_nocase ON symbols(name COLLATE NOCASE);
-                CREATE INDEX IF NOT EXISTS idx_sym_parent_nocase ON symbols(parent_name COLLATE NOCASE);
                 CREATE INDEX IF NOT EXISTS idx_sym_type ON symbols(type);
                 CREATE INDEX IF NOT EXISTS idx_sym_file ON symbols(file_path);
                 CREATE INDEX IF NOT EXISTS idx_sym_project ON symbols(project_id);
                 CREATE INDEX IF NOT EXISTS idx_rel_from ON relationships(from_id);
                 CREATE INDEX IF NOT EXISTS idx_rel_to ON relationships(to_id);
                 CREATE INDEX IF NOT EXISTS idx_rel_type ON relationships(type);
-            ";
+            " + NoCaseIndexSql;
 
             using (var cmd = new SQLiteCommand(sql, _connection))
             {
