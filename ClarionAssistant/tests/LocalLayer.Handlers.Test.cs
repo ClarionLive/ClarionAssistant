@@ -194,14 +194,28 @@ static class LocalLayerHandlersTest
             var hLocal = At("localHover", 15, 12, o);
             Check("a local -> its card, authoritative", hLocal["contents"] != null && ((string)hLocal["contents"]).Contains("loTotal") && (bool)hLocal["authoritative"],
                 Json(hLocal));
+            // H4: keyword data NOT loaded (a directory that does not exist) -> name + category only, not final.
+            ClarionKeywordIndex.DataDirOverride = System.IO.Path.Combine(work, "no-keyword-data");
+            ClarionKeywordIndex.ResetForTest();
+            ClarionKeywordIndex.WaitForLoad(5000);
             var hKw = At("localHover", 15, 4, o);
-            Check("4.5 RETURN -> the keyword card, NOT authoritative", hKw["contents"] != null && !(bool)hKw["authoritative"], Json(hKw));
+            Check("4.5/H4 RETURN with no keyword data -> the name+category card, NOT authoritative", hKw["contents"] != null && !(bool)hKw["authoritative"], Json(hKw));
+            // H4: with the keyword data loaded, the card carries its description and is FINAL.
+            ClarionKeywordIndex.DataDirOverride = KeywordDataDir;
+            ClarionKeywordIndex.ResetForTest();
+            Check("(keyword fixture loads)", ClarionKeywordIndex.WaitForLoad(5000) && ClarionKeywordIndex.HasDescription("RETURN"));
+            var hKwFull = At("localHover", 15, 4, o);
+            Check("H4 RETURN with its loaded description -> the full card, AUTHORITATIVE",
+                hKwFull["contents"] != null && ((string)hKwFull["contents"]).Contains("Terminates") && (bool)hKwFull["authoritative"], Json(hKwFull));
             var hDict = At("localHover", 16, 12, o);
-            Check("a dictionary field (INV:Qty) -> the dictionary card", hDict["contents"] != null && ((string)hDict["contents"]).Contains("Qty") && !(bool)hDict["authoritative"], Json(hDict));
+            Check("H4 a dictionary field (INV:Qty) -> the dictionary card, AUTHORITATIVE", hDict["contents"] != null && ((string)hDict["contents"]).Contains("Qty") && (bool)hDict["authoritative"], Json(hDict));
             var hDb = LocalLayerHandlers.Handle("localHover", ModBuffer.Replace("glovar     LONG", "other      LONG"),
                 Req("{\"line\":16,\"column\":22}"), o);
-            Check("a solution global (GloVar) -> the index card, not authoritative",
-                hDb["contents"] != null && ((string)hDb["contents"]).Contains("GloVar") && !(bool)hDb["authoritative"], Json(hDb));
+            Check("H4 a solution global (GloVar) -> the index card, AUTHORITATIVE",
+                hDb["contents"] != null && ((string)hDb["contents"]).Contains("GloVar") && (bool)hDb["authoritative"], Json(hDb));
+            ClarionKeywordIndex.DataDirOverride = System.IO.Path.Combine(work, "no-keyword-data");
+            ClarionKeywordIndex.ResetForTest();
+            ClarionKeywordIndex.WaitForLoad(5000);
             var hClip = At("localHover", 16, 28, o);
             Check("a module variable named like a built-in (Clip) -> the buffer's card wins over the keyword",
                 hClip["contents"] != null && ((string)hClip["contents"]).Contains("LONG"), Json(hClip));
@@ -325,8 +339,20 @@ static class LocalLayerHandlersTest
         }
     }
 
+    /// <summary>tests\fixtures\keyword-data, found from the harness's repo argument or the working directory.</summary>
+    static string KeywordDataDir;
+
     static int Main()
     {
+        foreach (var root in new[] { Environment.GetCommandLineArgs().Skip(1).FirstOrDefault(), System.IO.Directory.GetCurrentDirectory() })
+        {
+            if (string.IsNullOrEmpty(root)) continue;
+            foreach (var rel in new[] { @"tests\fixtures\keyword-data", @"ClarionAssistant\tests\fixtures\keyword-data" })
+            {
+                string d = System.IO.Path.Combine(root, rel);
+                if (KeywordDataDir == null && System.IO.Directory.Exists(d)) KeywordDataDir = d;
+            }
+        }
         var log = new List<string>();
         var embed = new LocalLayerOptions { ProcedureName = "TestProc", SlotChecks = true, Surface = "CA Embeditor", Log = log.Add,
                                             DefaultRanges = new List<int[]> { new[] { 4, 6 } } };

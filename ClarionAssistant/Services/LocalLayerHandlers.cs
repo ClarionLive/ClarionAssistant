@@ -391,8 +391,13 @@ namespace ClarionAssistant.Services
             string word = LocalScopeIndex.WordAt(lineText, col);
             if (string.IsNullOrEmpty(word)) return null;
 
+            // H4 (Owner decision): a card from the live dictionary, the symbol index, or a keyword with its loaded
+            // description is FINAL (authoritative), so the page skips the LSP hover and Monaco shows no
+            // "Loading..." tail under it. Still non-authoritative: a keyword card that is name + category only
+            // (its data not loaded yet), and an in-buffer local-class member (LocalScopeIndex decides that; the
+            // LSP may know inherited members).
             var dict = LiveDictionaryIndex.HoverWord(word);
-            if (dict != null) return dict;
+            if (dict != null) { dict.Authoritative = true; return dict; }
 
             if (word.IndexOf('.') < 0)
             {
@@ -400,10 +405,12 @@ namespace ClarionAssistant.Services
                 {
                     var idx = SymbolIndex.For(db);
                     var s = idx != null ? idx.FindByName(word, fastOnly: true) : null;
-                    if (s != null) return new LocalHoverResult { Markdown = SymbolCard(s), Authoritative = false, Kind = "index" };
+                    if (s != null) return new LocalHoverResult { Markdown = SymbolCard(s), Authoritative = true, Kind = "index" };
                 }
             }
-            return ClarionKeywordIndex.HoverWord(word);
+            var kw = ClarionKeywordIndex.HoverWord(word);
+            if (kw != null) kw.Authoritative = ClarionKeywordIndex.HasDescription(word);
+            return kw;
         }
 
         private static string SymbolCard(ClarionCodeGraph.Graph.CodeGraphSymbol s)

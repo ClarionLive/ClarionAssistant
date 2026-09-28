@@ -319,6 +319,16 @@ namespace ClarionAssistant.Services
             return new LocalHoverResult { Markdown = sb.ToString(), Authoritative = false, Kind = "keyword" };
         }
 
+        /// <summary>True when the keyword data is loaded and holds a description for <paramref name="word"/>, i.e.
+        /// <see cref="HoverWord"/> returns the full card rather than name + category only (1c685f2e H4).</summary>
+        public static bool HasDescription(string word)
+        {
+            if (string.IsNullOrEmpty(word)) return false;
+            var docs = Docs();
+            KeywordDoc d;
+            return docs != null && docs.TryGetValue(word, out d) && d != null && !string.IsNullOrEmpty(d.Description);
+        }
+
         // ============================================================== the LSP's language data (H3)
         // The bundled Clarion language server ships clean, structured language help as JSON beside
         // server.js: <addin>\lsp-server\out\server\src\data\clarion-*.json. The files' shapes differ (a
