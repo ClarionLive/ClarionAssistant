@@ -1,6 +1,6 @@
 // schema-sources-postgres.test.js — zero-dependency guard for the two PostgreSQL ingest defects in GH #201.
 //
-// Run:  node Terminal/test/schema-sources-postgres.test.js
+// Run:  node Terminal/test/schema-sources-postgres.test.js [path\to\schema-sources.html]
 //
 //   1. THE INDEX STATUS CELL. schema-sources.html's indexStatus handler used to write the literal
 //      string 'error' and throw st.error away, so every ingest failure was undiagnosable from the UI.
@@ -22,7 +22,7 @@ function ok(name, cond, detail) {
 
 // ---- 1. indexStatus handler ----
 console.log('\nschema-sources.html indexStatus handler:');
-var page = fs.readFileSync(path.join(__dirname, '..', 'schema-sources.html'), 'utf8');
+var page = fs.readFileSync(process.argv[2] || path.join(__dirname, '..', 'schema-sources.html'), 'utf8');
 var startMark = "if (msg.type === 'indexStatus')";
 var endMark   = "if (msg.type === 'testConnectionResult')";
 var a = page.indexOf(startMark), b = page.indexOf(endMark);
@@ -74,6 +74,38 @@ if (q >= 0) {
     ok('query does not exclude window functions', !/prokind\s+(NOT\s+)?IN\s*\(/i.test(where) && !/'w'/.test(where),
        'window functions are valid pg_get_functiondef() input and must stay indexed');
 }
+
+// ---- 3. the page is the CA header's panes (82938fc7) ----
+// Schema Sources / Source Control moved out of a collapsed "Solution Settings" bar in each chat tab into
+// the CA header's tabs. The page keeps no collapse bar or tab strip of its own; the host's setMode picks
+// the pane. setMode is EXTRACTED from the page and run against a stub document.
+console.log('\nschema-sources.html as the header\'s panes:');
+ok('no collapse bar / "Solution Settings" title', !/collapse-bar|Solution Settings|toggleCollapse/.test(page));
+ok('no inner tab strip (switchTab / tab-btn)', !/switchTab|tab-btn/.test(page));
+ok('no setCollapsed handler left', !/setCollapsed/.test(page));
+ok('host setMode message is handled', /msg\.type === 'setMode'\)\s*\{\s*setMode\(msg\.mode\)/.test(page));
+var fnMatch = /function setMode\(mode\) \{[\s\S]*?\r?\n\}/.exec(page);   // up to the first column-0 brace
+ok('setMode found in page', !!fnMatch);
+if (fnMatch) {
+    var fnSrc = fnMatch[0];
+    function runMode(calls) {
+        var els = { tabSchemaContent: { style: { display: '' } }, tabRepoContent: { style: { display: 'none' } } };
+        var document = { getElementById: function (id) { return els[id]; } };
+        var currentMode = 'schema';
+        eval(fnSrc);
+        calls.forEach(function (m) { setMode(m); });
+        return { schema: els.tabSchemaContent.style.display, repo: els.tabRepoContent.style.display };
+    }
+    var r2 = runMode(['repo']);
+    ok('setMode("repo") shows only Source Control', r2.repo === '' && r2.schema === 'none', JSON.stringify(r2));
+    r2 = runMode(['repo', 'schema']);
+    ok('setMode("schema") shows only Schema Sources', r2.schema === '' && r2.repo === 'none', JSON.stringify(r2));
+    r2 = runMode(['repo', 'bogus']);
+    ok('an unknown mode changes nothing', r2.repo === '' && r2.schema === 'none', JSON.stringify(r2));
+}
+ok('the pane scrolls rather than growing (.content is 100vh, overflow-y auto)',
+   /\.content\s*\{[^}]*height:\s*100vh[^}]*overflow-y:\s*auto/.test(page));
+ok('Manage Sources modal still tells the host to grow / restore', /send\('modalOpened'\)/.test(page) && /send\('modalClosed'\)/.test(page));
 
 console.log('\n' + (fail === 0 ? 'ALL PASS (' + pass + ')' : fail + ' FAILED, ' + pass + ' passed'));
 process.exit(fail === 0 ? 0 : 1);
