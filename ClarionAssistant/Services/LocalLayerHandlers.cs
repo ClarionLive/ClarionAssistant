@@ -76,14 +76,15 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// The header text, and whether everything the slice names is in the host's caches. False when something
-        /// is missing: <paramref name="needHeader"/> when the header hash is unknown, <paramref name="needPieces"/>
-        /// with the hashes of hash-only pieces the host cannot resolve. The page then resends and retries once.
+        /// Whether everything the slice names is available. False when something is missing:
+        /// <paramref name="needHeader"/> when the slice carries no headerText and its hash is not cached,
+        /// <paramref name="needPieces"/> with the hashes of hash-only pieces the host cannot resolve. The page then
+        /// resends and retries once.
         /// </summary>
-        public bool TryResolve(out string headerText, out bool needHeader, out List<string> needPieces)
+        public bool TryResolve(out bool needHeader, out List<string> needPieces)
         {
-            headerText = HeaderText;
-            needHeader = headerText == null && !LocalScopeIndex.TryGetHeaderText(HeaderHash, out headerText);
+            string cached;
+            needHeader = HeaderText == null && !LocalScopeIndex.TryGetHeaderText(HeaderHash, out cached);
             needPieces = LocalScopeIndex.MissingPieces(Pieces) ?? new List<string>();
             return !needHeader && needPieces.Count == 0;
         }
@@ -93,34 +94,31 @@ namespace ClarionAssistant.Services
     internal sealed class LocalSource
     {
         private readonly string _buffer;
-        private readonly string _header;
-        private readonly List<SlicePiece> _pieces;
-        private readonly List<string> _routines;
+        private readonly LocalSlice _slice;
 
-        public static LocalSource OfBuffer(string buffer) { return new LocalSource(buffer, null, null, null); }
-        public static LocalSource OfSlice(string header, List<SlicePiece> pieces, List<string> routines) { return new LocalSource(null, header, pieces, routines); }
+        public static LocalSource OfBuffer(string buffer) { return new LocalSource(buffer, null); }
+        /// <summary>A resolved slice: its header is the slice's own headerText when it carries one (the page's
+        /// header is edited, pipeline F2), else the text cached under its headerHash.</summary>
+        public static LocalSource OfSlice(LocalSlice slice) { return new LocalSource(null, slice); }
 
-        private LocalSource(string buffer, string header, List<SlicePiece> pieces, List<string> routines)
-        {
-            _buffer = buffer; _header = header; _pieces = pieces; _routines = routines;
-        }
+        private LocalSource(string buffer, LocalSlice slice) { _buffer = buffer; _slice = slice; }
 
         public List<LspClient.CompletionItemInfo> Complete(int line0, int col0, char? trigger)
         {
             return _buffer != null ? LocalScopeIndex.Complete(_buffer, line0, col0, trigger)
-                                   : LocalScopeIndex.Complete(_header, _pieces, _routines, line0, col0, trigger);
+                                   : LocalScopeIndex.Complete(_slice.HeaderHash, _slice.HeaderText, _slice.Pieces, _slice.Routines, line0, col0, trigger);
         }
 
         public LocalHoverResult Hover(int line0, int col0, string fileName)
         {
             return _buffer != null ? LocalScopeIndex.Hover(_buffer, line0, col0, fileName)
-                                   : LocalScopeIndex.Hover(_header, _pieces, _routines, line0, col0, fileName);
+                                   : LocalScopeIndex.Hover(_slice.HeaderHash, _slice.HeaderText, _slice.Pieces, _slice.Routines, line0, col0, fileName);
         }
 
         public LocalMemberAccess MemberAccess(int line0, int col0)
         {
             return _buffer != null ? LocalScopeIndex.GetMemberAccess(_buffer, line0, col0)
-                                   : LocalScopeIndex.GetMemberAccess(_header, _pieces, _routines, line0, col0);
+                                   : LocalScopeIndex.GetMemberAccess(_slice.HeaderHash, _slice.HeaderText, _slice.Pieces, _slice.Routines, line0, col0);
         }
 
         /// <summary>The caret's line text, or null when neither the buffer nor any piece holds that line.</summary>
@@ -131,31 +129,14 @@ namespace ClarionAssistant.Services
                 var scope = LocalScopeIndex.GetScope(_buffer, line0);
                 return scope != null ? scope.CaretLine : null;
             }
-            if (_pieces != null)
-                foreach (var p in _pieces)
-                {
-                    string text = p.Text;
-                    if (text == null) LocalScopeIndex.TryGetPieceText(p.Hash, out text);   // a hash-only piece
-                    string line = LineOf(text, line0 - (p.Start - 1));
-                    if (line != null) return line;
-                }
-            return null;
-        }
-
-        /// <summary>Line <paramref name="index"/> (0-based) of <paramref name="text"/> without its EOL, or null.</summary>
-        internal static string LineOf(string text, int index)
-        {
-            if (text == null || index < 0) return null;
-            int at = 0;
-            for (int i = 0; i < index; i++)
+            foreach (var p in _slice.Pieces)
             {
-                at = text.IndexOf('\n', at);
-                if (at < 0) return null;
-                at++;
+                string text = p.Text;
+                if (text == null) LocalScopeIndex.TryGetPieceText(p.Hash, out text);   // a hash-only piece
+                string line = LocalScopeIndex.LineOf(text, line0 - (p.Start - 1));
+                if (line != null) return line;
             }
-            int end = text.IndexOf('\n', at);
-            string line = end < 0 ? text.Substring(at) : text.Substring(at, end - at);
-            return line.TrimEnd('\r');
+            return null;
         }
     }
 
@@ -224,8 +205,8 @@ namespace ClarionAssistant.Services
                             if (slice != null)
                             {
                                 sliceChars = slice.Chars;
-                                string header; bool needHeader; List<string> needPieces;
-                                if (!slice.TryResolve(out header, out needHeader, out needPieces))
+                                bool needHeader; List<string> needPieces;
+                                if (!slice.TryResolve(out needHeader, out needPieces))
                                 {
                                     // The page resends what is missing (headerSync / the pieces with text) and retries once.
                                     reply = EmptyReply(action);
@@ -234,7 +215,7 @@ namespace ClarionAssistant.Services
                                     error = (needHeader ? "needHeader " : "") + (needPieces.Count > 0 ? "needPieces=" + needPieces.Count : "");
                                     break;
                                 }
-                                source = LocalSource.OfSlice(header, slice.Pieces, slice.Routines);
+                                source = LocalSource.OfSlice(slice);
                             }
                             else if (!string.IsNullOrEmpty(buffer)) source = LocalSource.OfBuffer(buffer);
                             else { reply = EmptyReply(action); break; }
@@ -312,11 +293,11 @@ namespace ClarionAssistant.Services
                 {
                     string text = p.Text;
                     if (text == null && !LocalScopeIndex.TryGetPieceText(p.Hash, out text)) { unresolved = true; continue; }
-                    if (line >= p.Start && (lineText = LocalSource.LineOf(text, line - p.Start)) != null) break;
+                    if (line >= p.Start && (lineText = LocalScopeIndex.LineOf(text, line - p.Start)) != null) break;
                 }
                 if (lineText == null && !unresolved) return "caret line " + line + " outside the slice's text";
             }
-            else if (buffer != null && (lineText = LocalSource.LineOf(buffer, line - 1)) == null) return "line " + line + " past the buffer end";
+            else if (buffer != null && (lineText = LocalScopeIndex.LineOf(buffer, line - 1)) == null) return "line " + line + " past the buffer end";
             if (lineText != null && column - 1 > lineText.Length) return "column " + column + " past the line end";
             return null;
         }
@@ -596,24 +577,22 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// The page's <c>{action:'headerSync', hash, text}</c> (parsed by the control): the module header for a
         /// hash the host answered {needHeader:true} for. Cached under that hash (LocalScopeIndex.RegisterHeader)
-        /// so the page's retry resolves. Never throws.
+        /// so the page's retry resolves. RegisterHeader FAILS CLOSED (pipeline F9): text that does not hash to
+        /// the page's key is not stored, this returns false, and the page's single retry answers needHeader
+        /// again, after which it gives up. (An edited header travels as the slice's headerText instead.) Never throws.
         /// </summary>
         public static bool AcceptHeader(string hash, string text, Action<string> log)
         {
-            bool matched = false;
-            bool ok = !string.IsNullOrEmpty(hash) && text != null;
-            if (ok) { try { matched = LocalScopeIndex.RegisterHeader(hash, text); } catch { ok = false; } }
-            if (log != null)
+            string outcome;
+            bool stored = false;
+            if (string.IsNullOrEmpty(hash) || text == null) outcome = "refused (no hash or text)";
+            else
             {
-                try
-                {
-                    log("[local-timing] action=headerSync " + (ok
-                        ? "hash=" + hash + " chars=" + text.Length + (matched ? "" : " (edited since the map: cached under both hashes)")
-                        : "refused (no hash or text)"));
-                }
-                catch { }
+                try { stored = LocalScopeIndex.RegisterHeader(hash, text); } catch { stored = false; }
+                outcome = "hash=" + hash + " chars=" + text.Length + (stored ? " stored" : " NOT stored (text does not match the hash)");
             }
-            return ok;
+            if (log != null) { try { log("[local-timing] action=headerSync " + outcome); } catch { } }
+            return stored;
         }
 
         /// <summary>True when the request carries its own text (R11 slice form) and needs no synced buffer.</summary>

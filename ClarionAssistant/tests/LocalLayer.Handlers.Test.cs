@@ -297,11 +297,21 @@ static class LocalLayerHandlersTest
             np.ContainsKey("needPieces") && string.Join(",", (List<string>)np["needPieces"]) == "unknown-piece" && !np.ContainsKey("needHeader"), Json(np));
         var resent = LocalLayerHandlers.Handle("localHover", null, Req(SliceReq(15, 12, header, TextPiece(6, Lines(6, 10)), window)), o);
         Check("the retry with the piece's text answers", resent["contents"] != null && !resent.ContainsKey("needPieces"), Json(resent));
-        string headerText = Lines(1, 5) + "\r\n";
-        Check("headerSync caches the header under the page's hash",
-            LocalLayerHandlers.AcceptHeader("page-hash", headerText, null));
-        var afterSync = LocalLayerHandlers.Handle("localCompletion", null, Req(SliceReq(11, 5, "page-hash", HashPiece(6, data), window)), o);
-        Check("...and the retry with that hash answers", !afterSync.ContainsKey("needHeader") && Labels(afterSync).Contains("loTotal", StringComparer.OrdinalIgnoreCase), Json(afterSync));
+        // headerSync after the host lost its header (evicted, IDE restarted mid-session): the page's text under
+        // the map's hash is stored and the retry answers. RegisterHeader fails closed on a mismatch (F9).
+        string headerText = LocalScopeIndex.BuildSpanMap(ModBuffer).HeaderText;
+        LocalScopeIndex.ResetCaches();
+        var lost = LocalLayerHandlers.Handle("localCompletion", null, Req(SliceReq(11, 5, header, TextPiece(6, Lines(6, 10)), window)), o);
+        Check("with the header gone from the cache -> needHeader", lost.ContainsKey("needHeader"), Json(lost));
+        var hsLog = new List<string>();
+        Check("a headerSync whose text does not match the hash is NOT stored (fails closed) and says so",
+            !LocalLayerHandlers.AcceptHeader(header, headerText + "edited", hsLog.Add) && hsLog.Count == 1 && hsLog[0].Contains("NOT stored"), string.Join(" | ", hsLog));
+        var stillLost = LocalLayerHandlers.Handle("localCompletion", null, Req(SliceReq(11, 5, header, TextPiece(6, Lines(6, 10)), window)), o);
+        Check("...so the retry still answers needHeader (the page then gives up)", stillLost.ContainsKey("needHeader"), Json(stillLost));
+        Check("a headerSync with the matching text is stored", LocalLayerHandlers.AcceptHeader(header, headerText, null));
+        var afterSync = LocalLayerHandlers.Handle("localCompletion", null, Req(SliceReq(11, 5, header, TextPiece(6, Lines(6, 10)), window)), o);
+        Check("...and the retry answers", !afterSync.ContainsKey("needHeader") && Labels(afterSync).Contains("loTotal", StringComparer.OrdinalIgnoreCase), Json(afterSync));
+        LocalLayerHandlers.SpanMapMessage(7, ModBuffer, null);   // re-prime the caches for the F2 case below
 
         Console.WriteLine("\nF2: a slice carrying headerText (the page's header is edited) uses it, not the cache");
         {
