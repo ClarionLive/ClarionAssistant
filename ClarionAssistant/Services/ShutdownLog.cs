@@ -68,6 +68,31 @@ namespace ClarionAssistant.Services
             catch { /* logging must never break shutdown */ }
         }
 
+        // Close timing (4d63b995): Stopwatch ticks of the user's close (the workbench's FormClosing); 0 until then.
+        private static long _closeStartTicks;
+
+        /// <summary>True once the workbench's main form began closing (the IDE is exiting, not switching solutions).</summary>
+        public static bool IdeClosing { get { return Interlocked.Read(ref _closeStartTicks) != 0; } }
+
+        /// <summary>
+        /// One close-timing line, "[close +N ms] step": N is the time since the user's close (the workbench's
+        /// FormClosing, which passes <paramref name="startsClose"/>). Before that - a solution switch, say -
+        /// the line has no elapsed time. Never throws.
+        /// </summary>
+        public static void Close(string step, bool startsClose = false)
+        {
+            try
+            {
+                long now = Stopwatch.GetTimestamp();
+                if (startsClose) Interlocked.CompareExchange(ref _closeStartTicks, now, 0);
+                long start = Interlocked.Read(ref _closeStartTicks);
+                Log(start == 0
+                    ? "[close] " + step
+                    : "[close +" + ((now - start) * 1000 / Stopwatch.Frequency) + " ms] " + step);
+            }
+            catch { }
+        }
+
         /// <summary>Session delimiter, written when the backstop arms (addin load). Bounds each IDE run as a
         /// clear block so a post-mortem can locate the last session's trace quickly.</summary>
         public static void LogSessionStart(string detail)

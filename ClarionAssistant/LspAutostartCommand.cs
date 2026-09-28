@@ -165,21 +165,27 @@ namespace ClarionAssistant
         // ProjectService.SolutionClosed is a plain EventHandler(object, EventArgs). Stop the bundled
         // server (only if it's ours and running) so it re-roots on the next solution. Never touch the
         // shared ClarionLsp addin — it owns its own lifecycle.
+        // The stop runs on the pool (4d63b995): SolutionClosed fires on the UI thread, also while the IDE
+        // closes, and Stop() sleeps ~400 ms. ShutdownService's KillForShutdown still reaps the process at exit.
         private static void OnSolutionClosed(object sender, EventArgs e)
         {
+            ShutdownLog.Close("OnSolutionClosed begin");
             // Completion's held-open symbol DB connections belong to the closed solution (1c685f2e).
             try { SymbolIndex.ReleaseAll(); } catch { }
             try
             {
-                if (SharedLspBridge.IsSharedActive) return;
-                var c = LspClient.Active;
-                if (c != null && c.IsRunning)
+                if (!SharedLspBridge.IsSharedActive)
                 {
-                    Debug.WriteLine("[LspAutostart] Solution closed — stopping the bundled LSP so the next solution re-roots it.");
-                    c.Stop();
+                    var c = LspClient.Active;
+                    if (c != null && c.IsRunning)
+                    {
+                        Debug.WriteLine("[LspAutostart] Solution closed — stopping the bundled LSP so the next solution re-roots it.");
+                        c.StopInBackground(m => ShutdownLog.Close(m));
+                    }
                 }
             }
             catch (Exception ex) { Debug.WriteLine("[LspAutostart] OnSolutionClosed failed: " + ex.Message); }
+            ShutdownLog.Close("OnSolutionClosed end");
         }
 
         /// <summary>
