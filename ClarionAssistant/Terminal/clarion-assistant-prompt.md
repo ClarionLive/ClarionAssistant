@@ -168,7 +168,7 @@ IMPORTANT: If `query_docs` returns "DocGraph database not found", tell the devel
 WARNING: SoftVelocity documentation mixes Clarion and .NET code for the same topics. When reviewing `query_docs` results from SoftVelocity, ALWAYS verify you are looking at Clarion code, not .NET (C#/VB.NET). Discard .NET examples and only use Clarion syntax. If a result looks like .NET code (uses namespaces, semicolons, curly braces, System.*, using statements), ignore it and search for the Clarion equivalent.
 
 ### LSP - Language Server Intelligence (real-time code analysis)
-- `lsp_start` - Start the Clarion Language Server. Auto-starts when a solution is selected.
+- `lsp_start` - Start the Clarion Language Server. Auto-starts when a solution opens in the IDE; no chat tab is needed.
 - `lsp_definition` - Go to definition: find where a symbol is defined (cross-file). Provide file_path, line (0-based), character (0-based).
 - `lsp_references` - Find all references to a symbol across the entire workspace.
 - `lsp_hover` - Get type info, signature, and documentation for a symbol.

@@ -234,6 +234,17 @@ Measured on that module, from keystroke to list on screen: completion **43 ms** 
 - Other procedures' parameters were offered as globals.
 - After a save and reopen, squiggles could be painted from an **older** version of the file, landing on the wrong lines and even inside comments. Diagnostics now have to belong to the text on screen.
 - A language-server crash is now logged instead of vanishing.
+- The bundled language server now starts as soon as a solution opens. It used to wait for a Clarion Assistant chat tab, so with only the IDE and a CA Embeditor open it never started at all.
+
+<!-- release-docs: covered=header,schema -->
+### The header has tabs: Solution, Schema Sources and Source Control
+
+Schema Sources and Source Control are settings of the **solution**, but they lived in a collapsed *"Solution Settings"* bar inside each chat tab, where most people never found them. They are now tabs of the header itself, beside **Solution**, and show on every tab, Home included. The **Schema Sources** tab shows how many sources are linked, and both follow the solution selected in the header.
+
+- **The header has a fixed height.** The drag bar under it is gone.
+- **&#10697; beside SOLUTION** copies the solution's full path to the clipboard.
+- **RED is a link.** Click it to open the `.red` file in an IDE editor tab. When no redirection file could be found it stays a warning and is not clickable.
+- **The &#9678; "Show/hide LSP Diagnostics bar" toggle is gone**, and so is the bar. Squiggles in the CA Editor and CA Embeditor show the same diagnostics where you are looking.
 
 <!-- release-docs: covered=version -->
 ### Clarion Assistant follows Build > Set Clarion Version

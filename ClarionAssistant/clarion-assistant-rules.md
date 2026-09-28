@@ -92,7 +92,7 @@ Use `query_docs` when the developer asks:
 IMPORTANT: If `query_docs` returns "DocGraph database not found", tell the developer to run `ingest_docs` first with their Clarion installation path (e.g. `ingest_docs(clarion_root="C:\\Clarion12")`). Use `query_docs` for template/library documentation questions. Use `query_codegraph` for code symbol lookups. They complement each other -- CodeGraph tells you *what exists* in the code, DocGraph tells you *how to use it*.
 
 ### LSP - Language Server Intelligence (real-time code analysis)
-- `lsp_start` - Start the Clarion Language Server. Auto-starts when a solution is selected.
+- `lsp_start` - Start the Clarion Language Server. Auto-starts when a solution opens in the IDE; no chat tab is needed.
 - `lsp_definition` - Go to definition: find where a symbol is defined (cross-file). Provide file_path, line (0-based), character (0-based).
 - `lsp_references` - Find all references to a symbol across the entire workspace.
 - `lsp_hover` - Get type info, signature, and documentation for a symbol.
