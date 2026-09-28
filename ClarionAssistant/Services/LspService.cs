@@ -465,11 +465,31 @@ namespace ClarionAssistant.Services
 
         /// <summary>Run one start on the thread pool; the caller holds <see cref="_startGate"/>. A restart
         /// requested while it ran (the gate said so on release) is served by going round again.</summary>
+        /// <summary>
+        /// Where a background start reports its outcome (1c685f2e L2): the addin points it at monaco-spike.log.
+        /// One `[lsp-autostart] start|skip reason=` line per CHANGE of outcome, so the 5 s fallback timer's
+        /// retries do not flood the log, but a live test shows WHY the server is or is not running.
+        /// </summary>
+        public static Action<string> StartLog;
+        private static string _lastStartLogged;
+
+        private static void LogStartResult(LspStartResult r)
+        {
+            var log = StartLog;
+            if (log == null || r == null) return;
+            bool started = r.Outcome == LspStartOutcome.Started || r.Outcome == LspStartOutcome.AlreadyRunning;
+            string line = "[lsp-autostart] " + (started ? "start" : "skip") + " reason=" + r.Outcome +
+                (string.IsNullOrEmpty(r.SolutionPath) ? "" : " solution=" + r.SolutionPath + " (" + (r.SolutionSource ?? "?") + ")") +
+                (string.IsNullOrEmpty(r.Detail) ? "" : " detail=" + r.Detail);
+            if (line == Interlocked.Exchange(ref _lastStartLogged, line)) return;
+            try { log(line); } catch { }
+        }
+
         private static void StartOnPoolHoldingGate()
         {
             System.Threading.Tasks.Task.Run(() =>
             {
-                try { EnsureRunning(); }
+                try { LogStartResult(EnsureRunning()); }
                 catch (Exception ex)
                 {
                     LspTrace.Write("[LspService] background EnsureRunning failed: " + ex.Message);

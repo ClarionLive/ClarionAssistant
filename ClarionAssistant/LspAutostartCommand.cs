@@ -54,6 +54,18 @@ namespace ClarionAssistant
             LocalLayerHandlers.ProjectDbPath = () => { var p = SharedLspBridge.CodeGraphDbPathProvider; return p != null ? p() : null; };
             LocalLayerHandlers.LibraryDbPath = ClarionGraphService.ResolveDbPath;
 
+            // 1c685f2e L2 (pre-existing on master 2fcb940): the LSP never started unless a CA chat tab had opened.
+            // Every start funnels through LspService.EnsureRunning, which takes the solution from
+            // LspService.SolutionPathProvider, and that hook (like EffectiveClarionVersion's, which picks the
+            // per-solution VERSION) was set only by AssistantChatControl. With no chat, every SolutionLoaded,
+            // immediate and 5 s fallback start returned NoSolution, silently. The IDE's open solution is the
+            // same answer the chat control gives; set it here, at addin start, unless a host already did.
+            if (LspService.SolutionPathProvider == null)
+                LspService.SolutionPathProvider = () => EditorService.GetOpenSolutionPath();
+            if (EffectiveClarionVersion.SolutionPathProvider == null)
+                EffectiveClarionVersion.SolutionPathProvider = () => EditorService.GetOpenSolutionPath();
+            LspService.StartLog = MonacoSpikeLog.Write;   // [lsp-autostart] start|skip reason=
+
             try
             {
                 // (a) Wire the open-path / completion-time self-heal hook pane-independently.
