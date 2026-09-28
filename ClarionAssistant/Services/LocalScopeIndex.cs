@@ -302,7 +302,7 @@ namespace ClarionAssistant.Services
         public const long CacheCharBudget = 8L * 1024 * 1024;
 
         /// <summary>A small content-keyed cache bounded by entry count AND by the total chars its values
-        /// hold, evicting the oldest insert first. Thread-safe.</summary>
+        /// hold, evicting the least recently used first (a hit or a re-add makes an entry newest). Thread-safe.</summary>
         internal sealed class BoundedCache<T> where T : class
         {
             private sealed class Entry { public T Value; public long Size; public LinkedListNode<string> Node; }
@@ -327,9 +327,17 @@ namespace ClarionAssistant.Services
                 {
                     Entry e;
                     if (!_map.TryGetValue(key, out e)) return false;
+                    Touch(e);                                    // LRU: a hit is the newest again
                     value = e.Value;
                     return true;
                 }
+            }
+
+            private void Touch(Entry e)   // under _lock
+            {
+                if (e.Node == _order.Last) return;
+                _order.Remove(e.Node);
+                _order.AddLast(e.Node);
             }
 
             /// <summary>Stores <paramref name="value"/> unless the key is present (then that entry becomes the
@@ -339,12 +347,7 @@ namespace ClarionAssistant.Services
                 lock (_lock)
                 {
                     Entry e;
-                    if (_map.TryGetValue(key, out e))
-                    {
-                        _order.Remove(e.Node);
-                        _order.AddLast(e.Node);
-                        return e.Value;
-                    }
+                    if (_map.TryGetValue(key, out e)) { Touch(e); return e.Value; }
                     long size = _size(value);
                     if (size > CacheCharBudget) return value;
                     _map[key] = new Entry { Value = value, Size = size, Node = _order.AddLast(key) };
@@ -1520,8 +1523,28 @@ namespace ClarionAssistant.Services
         /// parsed once per distinct header text.</summary>
         private static Header GetHeader(string s, int origin)
         {
-            int end = HeaderEnd(s, origin);
+            int end = CanonicalEnd(s, origin, HeaderEnd(s, origin));
             return HeaderFor(ContentKey(s, origin, end), () => s.Substring(origin, end - origin));
+        }
+
+        /// <summary>The header in CANONICAL form ends before the EOL that closes its last line: lines
+        /// 1..first-1 with their inner EOLs as-is and no trailing EOL - exactly what the page's
+        /// getValueInRange/join of those lines produces, so the page can hash-match it (G2). Returns the end
+        /// offset of that form for a raw header ending at <paramref name="end"/>.</summary>
+        private static int CanonicalEnd(string s, int origin, int end)
+        {
+            if (end > origin && s[end - 1] == '\n')
+            {
+                end--;
+                if (end > origin && s[end - 1] == '\r') end--;
+            }
+            return end;
+        }
+
+        /// <summary>How many lines a canonical header text spans (0 for an empty header).</summary>
+        private static int CanonicalLines(string text)
+        {
+            return text.Length == 0 ? 0 : CountNewlines(text) + 1;
         }
 
         private static Header HeaderFor(string key, Func<string> text)
@@ -1552,8 +1575,9 @@ namespace ClarionAssistant.Services
             if (string.IsNullOrEmpty(buffer)) return map;
             int origin = Origin(buffer);
             int end = HeaderEnd(buffer, origin);
-            map.HeaderHash = ContentKey(buffer, origin, end);
-            map.HeaderText = buffer.Substring(origin, end - origin);
+            int canon = CanonicalEnd(buffer, origin, end);
+            map.HeaderHash = ContentKey(buffer, origin, canon);
+            map.HeaderText = buffer.Substring(origin, canon - origin);
             string text = map.HeaderText;
             var hdr = HeaderFor(map.HeaderHash, () => text);
             hdr.Procs = ProcList(buffer, origin);
@@ -1630,8 +1654,7 @@ namespace ClarionAssistant.Services
                 int e = LineEnd(buffer, b);                                  // what getValueInRange returns
                 string hash = ContentKey(buffer, a, e);
                 string cached;
-                if (!_pieces.TryGet(hash, out cached)) _pieces.GetOrAdd(hash, buffer.Substring(a, e - a));
-                else _pieces.GetOrAdd(hash, cached);                         // refresh its age
+                if (!_pieces.TryGet(hash, out cached)) _pieces.GetOrAdd(hash, buffer.Substring(a, e - a));   // a hit refreshes it
                 return hash;
             };
             foreach (var p in map.Procs)
@@ -1745,12 +1768,28 @@ namespace ClarionAssistant.Services
             return off < 0 ? null : LineText(text, off);
         }
 
+        /// <summary>Test hook: the caret line a slice resolves to, or null when the slice holds no such line.</summary>
+        internal static string SliceCaretLine(string headerHash, string headerText, IList<SlicePiece> pieces, int line0)
+        {
+            var s = SafeScope(() => SliceScope(headerHash, headerText, pieces, null, line0));
+            return s == null ? null : s.CaretLine;
+        }
+
         private static Scope SliceScope(string headerHash, string headerText, IList<SlicePiece> pieces, IList<string> routines, int line0)
         {
             if (line0 < 0) return null;
             Header hdr, mapped = null;
             if (!string.IsNullOrEmpty(headerHash)) _headers.TryGet(headerHash, out mapped);
-            if (headerText != null) hdr = HeaderFor(ContentKey(headerText, 0, headerText.Length), () => headerText);
+            if (headerText != null)
+            {
+                // An edited header from the page: used for this request only, never cached (G4) - it would
+                // evict the mapped header, and the page resends it while it stays edited.
+                if (!_headers.TryGet(ContentKey(headerText, 0, headerText.Length), out hdr))
+                {
+                    hdr = ParseHeader(headerText);
+                    hdr.Text = headerText;
+                }
+            }
             else if (mapped != null) hdr = mapped;
             else return null;
             headerText = hdr.Text ?? "";
@@ -1769,11 +1808,13 @@ namespace ClarionAssistant.Services
                 }
             ordered.Sort((a, b) => a.Start.CompareTo(b.Start));
 
-            // Join: header, then each piece at its own lines; a gap of any size is one blank line.
-            var parts = new List<string>(ordered.Count * 2 + 2) { headerText };
+            // Join: header, then each piece at its own lines; a gap of any size is one blank line. Every text
+            // is canonical - its last line carries no EOL - so each gets one "\n" after it, and a text that
+            // does end in an EOL has an empty last line, which counts as a line (G3).
+            var parts = new List<string>(ordered.Count * 3 + 2) { headerText };
             int len = headerText.Length;
-            int next0 = CountNewlines(headerText);                        // Monaco line the next text lands on
-            if (headerText.Length > 0 && headerText[headerText.Length - 1] != '\n') { parts.Add("\n"); len++; next0++; }
+            int next0 = CanonicalLines(headerText);                       // Monaco line the next text lands on
+            if (next0 > 0) { parts.Add("\n"); len++; }
             int caretOff = line0 < next0 ? OffsetOfLine(headerText, 0, line0) : -1;
             var placed = new List<KeyValuePair<int, int>>();              // [start, end) offsets of each piece
             foreach (var pc in ordered)
@@ -1788,9 +1829,7 @@ namespace ClarionAssistant.Services
                 }
                 else if (at0 > next0) { parts.Add("\n"); len++; }
                 int pieceStart = len;
-                int lines = CountNewlines(t, skip);
-                bool openEnd = t.Length > skip && t[t.Length - 1] != '\n';
-                int pieceLines = Math.Max(openEnd ? lines + 1 : lines, 1);
+                int pieceLines = CountNewlines(t, skip) + 1;
                 if (caretOff < 0 && line0 >= at0 && line0 < at0 + pieceLines)
                 {
                     int rel = OffsetOfLine(t, skip, line0 - at0);
@@ -1798,7 +1837,8 @@ namespace ClarionAssistant.Services
                 }
                 parts.Add(skip == 0 ? t : t.Substring(skip));
                 len += t.Length - skip;
-                if (t.Length == skip || openEnd) { parts.Add("\n"); len++; }
+                parts.Add("\n");
+                len++;
                 next0 = at0 + pieceLines;
                 placed.Add(new KeyValuePair<int, int>(pieceStart, len));
             }
