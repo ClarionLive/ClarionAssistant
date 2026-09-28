@@ -148,7 +148,7 @@ static class MonacoBufferSyncTest
                 string runLocal = MethodBody(ctl, "public void RunLocalAction(");
                 Check("R11: a request carrying a slice skips the `v` lookup; one without still goes through it",
                     runLocal.Contains("!Services.LocalLayerHandlers.CarriesSlice(data) && !TryResolveRequestBuffer(data, out buffer)"));
-                int capAt = dispatch.IndexOf("WebMessageGuard.MaxSyncChars", StringComparison.Ordinal);
+                int capAt = dispatch.IndexOf("WebMessageGuard.CheckOverall(json.Length)", StringComparison.Ordinal);
                 int actionAt = dispatch.IndexOf("ExtractJsonValue(json, \"action\")", StringComparison.Ordinal);
                 int sizeAt = dispatch.IndexOf("WebMessageGuard.CheckSize(action, json.Length)", StringComparison.Ordinal);
                 int firstParse = dispatch.IndexOf("_bufferCache.AcceptSync(", StringComparison.Ordinal);
@@ -218,12 +218,50 @@ static class MonacoBufferSyncTest
                 new KeyValuePair<string, int>("bufferSync", 16000000), new KeyValuePair<string, int>("fileState", 16000000),
                 new KeyValuePair<string, int>("log", 4096), new KeyValuePair<string, int>("headerSync", 1000000),
                 new KeyValuePair<string, int>("localCompletion", 2000000), new KeyValuePair<string, int>("localHover", 2000000),
-                new KeyValuePair<string, int>("slotDiagnostics", 2000000), new KeyValuePair<string, int>("completion", 1000000),
-                new KeyValuePair<string, int>("somethingElse", 1000000) };
+                new KeyValuePair<string, int>("slotDiagnostics", 2000000), new KeyValuePair<string, int>("saveCursor", 65536),
+                new KeyValuePair<string, int>("somethingElse", 16000000) };
             foreach (var l in limits)
                 Check("F6 " + l.Key + ": " + l.Value + " chars accepted, " + (l.Value + 1) + " rejected",
                     ClarionAssistant.Services.WebMessageGuard.CheckSize(l.Key, l.Value) == null &&
                     ClarionAssistant.Services.WebMessageGuard.CheckSize(l.Key, l.Value + 1) != null);
+
+            // G1 (pipeline run 2): actions that carry the whole buffer or a selection must pass at module size.
+            const int Module = 3200000;
+            foreach (var a in new[] { "save", "diffWithDisk", "clipboard", "embedState", "selectionChanged", "caFindUpdate",
+                                      "caFindOpenDoc", "snippetCommand", "saveSettings", "saveHistory", "saveFolds", "saveBookmarks",
+                                      "completion", "hover", "diagnostics", "openDesigner" })
+                Check("G1 " + a + " with a 3.2 MB payload is ACCEPTED", ClarionAssistant.Services.WebMessageGuard.CheckSize(a, Module) == null);
+            Check("G1 an unknown action at 1.5M is accepted (the default is the sync cap)",
+                ClarionAssistant.Services.WebMessageGuard.CheckSize("someNewAction", 1500000) == null);
+            Check("G1 log over 4096 is still rejected", ClarionAssistant.Services.WebMessageGuard.CheckSize("log", 4097) != null);
+            Check("G1 the pre-scan cap is the helper's", ClarionAssistant.Services.WebMessageGuard.CheckOverall(16000000) == null &&
+                ClarionAssistant.Services.WebMessageGuard.CheckOverall(16000001) != null);
+
+            // The audit, re-checked against the real page: every action posted by monaco-embeditor.html that gets
+            // the small scalar cap must carry no buffer or selection text in its message literal.
+            string repoDir = Environment.GetCommandLineArgs().Length > 1 ? Environment.GetCommandLineArgs()[1] : null;
+            string page = repoDir != null ? System.IO.File.ReadAllText(System.IO.Path.Combine(repoDir, @"Terminal\monaco-embeditor.html")) : "";
+            var posted = new SortedSet<string>(StringComparer.Ordinal);
+            var bad = new List<string>();
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(page, @"action:\s*'([A-Za-z]+)'"))
+            {
+                string name = m.Groups[1].Value;
+                posted.Add(name);
+                if (ClarionAssistant.Services.WebMessageGuard.MaxChars(name) != ClarionAssistant.Services.WebMessageGuard.MaxScalarChars) continue;
+                int close = page.IndexOf('}', m.Index);
+                string literal = close < 0 ? "" : page.Substring(m.Index, close - m.Index);
+                if (System.Text.RegularExpressions.Regex.IsMatch(literal, @"getValue|text\s*:|gatherSlots|slots\s*:|settings\s*:|data\s*:"))
+                    bad.Add(name + ": " + literal.Replace("\r", " ").Replace("\n", " "));
+            }
+            Check("G1 the page posts actions (the scan found them)", posted.Count >= 30 && posted.Contains("save") && posted.Contains("clipboard"), string.Join(",", posted));
+            Check("G1 no scalar-capped action carries buffer/selection text in the page", bad.Count == 0, string.Join(" || ", bad));
+            string ctlSrc = repoDir != null ? System.IO.File.ReadAllText(System.IO.Path.Combine(repoDir, @"Terminal\MonacoEditorControl.cs")) : "";
+            string viewSrc = repoDir != null ? System.IO.File.ReadAllText(System.IO.Path.Combine(repoDir, @"Terminal\ModernEmbeditorViewContent.cs")) : "";
+            string ovSrc = repoDir != null ? System.IO.File.ReadAllText(System.IO.Path.Combine(repoDir, @"MonacoClarionSourceEditor.cs")) : "";
+            Check("G1 both hosts receive through MonacoEditorControl (the one size gate), neither adds its own",
+                viewSrc.Contains("new MonacoEditorControl(this") && ovSrc.Contains("new MonacoEditorControl(this") &&
+                !viewSrc.Contains("WebMessageGuard") && !ovSrc.Contains("WebMessageGuard") &&
+                ctlSrc.Contains("Services.WebMessageGuard.CheckOverall(json.Length)"));
 
             long now = 0;
             ClarionAssistant.Services.WebMessageGuard.NowMs = () => now;
