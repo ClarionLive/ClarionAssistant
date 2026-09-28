@@ -32,7 +32,6 @@ namespace ClarionAssistant
 
         // Header (WebView2)
         private HeaderWebView _header;
-        private Splitter _splitter;
         private Form _logForm;
 
         private McpServer _mcpServer;
@@ -117,23 +116,7 @@ namespace ClarionAssistant
             _header = new HeaderWebView();
             _header.ActionReceived += OnHeaderAction;
             _header.HeaderReady += OnHeaderReady;
-
-            // Restore saved header height
-            int savedHeight;
-            string heightStr = _settings.Get("Header.Height");
-            if (!string.IsNullOrEmpty(heightStr) && int.TryParse(heightStr, out savedHeight))
-                _header.Height = Math.Max(60, Math.Min(400, savedHeight));
-
-            // === Splitter between header and content ===
-            _splitter = new Splitter
-            {
-                Dock = DockStyle.Top,
-                Height = 4,
-                BackColor = Color.FromArgb(49, 50, 68),
-                MinSize = 60,
-                Cursor = Cursors.SizeNS
-            };
-            _splitter.SplitterMoved += OnSplitterMoved;
+            // Fixed height (82938fc7): no splitter, and a saved "Header.Height" from older builds is ignored.
 
             // === Tab strip (custom-painted, hidden when only 1 tab — MultiTerminal pattern) ===
             _tabStrip = new Panel
@@ -173,7 +156,6 @@ namespace ClarionAssistant
             // Add in correct order (Fill first, then Top items from bottom to top)
             Controls.Add(_contentArea);
             Controls.Add(_tabStrip);
-            Controls.Add(_splitter);
             Controls.Add(_header);
 
             // Create Home tab — HomeWebView added to _contentArea, visible immediately
@@ -192,8 +174,7 @@ namespace ClarionAssistant
             DetectFromIde();
             StartMcpServer();
             _header.SetTheme(_isDarkTheme);
-            _header.SetRedFile(_redFileDisplay, _redFileCss); // re-push in case LoadRedFile ran before header was ready
-            SyncTabBarToHeader();
+            _header.SetRedFile(_redFileDisplay, _redFileCss, false); // re-push in case LoadRedFile ran before header was ready
             // Solutions now auto-detected from IDE, no longer shown on home page
         }
 
@@ -301,14 +282,8 @@ namespace ClarionAssistant
 
         private void OnActiveTabChanged(object sender, TerminalTab tab)
         {
-            SyncTabBarToHeader();
             if (tab != null && !tab.IsHome && tab.Renderer != null)
                 tab.Renderer.Focus();
-        }
-
-        private void SyncTabBarToHeader()
-        {
-            // Tab bar is now managed by the WinForms TabControl directly
         }
 
         private void OnHeaderAction(object sender, HeaderActionEventArgs e)
@@ -834,7 +809,7 @@ namespace ClarionAssistant
         {
             _redFileDisplay = display;
             _redFileCss = css;
-            try { if (_header != null) _header.SetRedFile(display, css); }
+            try { if (_header != null) _header.SetRedFile(display, css, false); }
             catch { }
         }
 
@@ -2654,11 +2629,6 @@ namespace ClarionAssistant
 
         #region Settings
 
-        private void OnSplitterMoved(object sender, SplitterEventArgs e)
-        {
-            _settings.Set("Header.Height", _header.Height.ToString());
-        }
-
         private void OnThemeChanged(string theme)
         {
             _isDarkTheme = theme != "light";
@@ -2681,7 +2651,6 @@ namespace ClarionAssistant
         private void ApplyThemeColors()
         {
             BackColor = _isDarkTheme ? Color.FromArgb(12, 12, 12) : Color.White;
-            _splitter.BackColor = _isDarkTheme ? Color.FromArgb(49, 50, 68) : Color.FromArgb(204, 208, 218);
             if (_tabStrip != null) _tabManager?.ApplyTheme(_isDarkTheme);
             if (_contentArea != null) _contentArea.BackColor = _isDarkTheme ? Color.FromArgb(12, 12, 12) : Color.White;
 

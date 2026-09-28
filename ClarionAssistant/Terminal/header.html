@@ -209,58 +209,72 @@
   body.light .spinner { border-color: rgba(30, 102, 245, 0.3); border-top-color: #1e66f5; }
 
 
-  /* Tab bar */
-  .tab-bar {
+  /* Header tabs (82938fc7): Solution | Schema Sources | Source Control. The strip is the bottom
+     edge of the page while Schema Sources or Source Control is active; the host then shows its
+     SchemaSourcesView directly below it and shrinks this page to the title row + strip. */
+  .hdr-tabs {
     display: flex;
     align-items: flex-end;
     gap: 2px;
-    padding: 2px 0 0 0;
-    overflow-x: auto;
-    overflow-y: hidden;
-    min-height: 26px;
+    border-bottom: 1px solid #313244;
+    margin-bottom: 6px;
     flex-shrink: 0;
   }
-  .tab-bar::-webkit-scrollbar { height: 3px; }
-  .tab-bar::-webkit-scrollbar-thumb { background: #45475a; border-radius: 2px; }
-  .tab {
-    display: flex;
+  .hdr-tab {
+    display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 4px 10px;
-    background: #252536;
-    border: 1px solid #313244;
-    border-bottom: none;
-    border-radius: 6px 6px 0 0;
+    gap: 5px;
+    height: 24px;
+    padding: 0 12px;
+    margin-bottom: -1px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: none;
     color: #7f849c;
     font-size: 11px;
+    font-weight: 500;
+    font-family: 'Segoe UI', sans-serif;
     cursor: pointer;
     white-space: nowrap;
-    max-width: 180px;
-    transition: all 0.12s;
-    flex-shrink: 0;
+    transition: color 0.12s;
   }
-  .tab:hover { background: #313244; color: #bac2de; }
-  .tab.active {
-    background: #1e1e2e;
-    color: #cdd6f4;
-    border-color: #45475a;
+  .hdr-tab:hover { color: #cdd6f4; }
+  .hdr-tab.active { color: #89b4fa; border-bottom-color: #89b4fa; font-weight: 600; }
+  .tab-badge {
+    display: inline-block;
+    min-width: 16px;
+    padding: 0 5px;
+    border-radius: 8px;
+    background: #313244;
+    color: #a6adc8;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 15px;
+    text-align: center;
   }
-  .tab-name {
+  .tab-badge[hidden] { display: none; }
+  .hdr-tab.active .tab-badge { background: rgba(137, 180, 250, 0.18); color: #89b4fa; }
+  .hdr-pane[hidden] { display: none; }
+
+  /* Row icons sized to the 22 px controls beside them, so the fixed Solution pane stays compact. */
+  .config-row .btn-icon, .codegraph-row .btn-icon { width: 26px; height: 22px; font-size: 14px; }
+
+  /* Copy-solution-path button: the ✓/✗ is the host's answer (the host does the copy). */
+  .btn-icon.copied { color: #a6e3a1; }
+  .btn-icon.copy-failed { color: #f38ba8; }
+
+  /* RED: a link while it resolved to a file; plain warning text otherwise. */
+  .red-value {
+    flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: Consolas, 'Courier New', monospace;
+    font-size: 10px;
   }
-  .tab .close-btn {
-    margin-left: 4px;
-    opacity: 0;
-    cursor: pointer;
-    font-size: 13px;
-    line-height: 1;
-    padding: 0 2px;
-    border-radius: 3px;
-    transition: all 0.12s;
-  }
-  .tab:hover .close-btn { opacity: 0.5; }
-  .tab .close-btn:hover { opacity: 1; color: #f38ba8; background: rgba(243,139,168,0.1); }
+  .red-value.red-link { color: #a6e3a1; text-decoration: underline; cursor: pointer; }
+  .red-value.red-link:hover { color: #94e2d5; }
 
   /* Light theme overrides */
   body.light { background: #eff1f5; color: #4c4f69; }
@@ -277,11 +291,16 @@
   body.light .btn-primary { background-color: #1e66f5; border-color: #1e66f5; color: #fff; }
   body.light .btn-primary:hover { background-color: #3b8cf8; }
   body.light .btn-primary:active { background-color: #1e66f5; }
-  body.light .tab { background: #dce0e8; border-color: #ccd0da; color: #8c8fa1; }
-  body.light .tab:hover { background: #ccd0da; color: #5c5f77; }
-  body.light .tab.active { background: #eff1f5; color: #4c4f69; border-color: #acb0be; }
-  body.light .tab .close-btn:hover { color: #d20f39; background: rgba(210,15,57,0.1); }
-  body.light .tab-bar::-webkit-scrollbar-thumb { background: #bcc0cc; }
+  body.light .hdr-tabs { border-bottom-color: #bcc0cc; }
+  body.light .hdr-tab { color: #7c7f93; }
+  body.light .hdr-tab:hover { color: #4c4f69; }
+  body.light .hdr-tab.active { color: #1e66f5; border-bottom-color: #1e66f5; }
+  body.light .tab-badge { background: #ccd0da; color: #5c5f77; }
+  body.light .hdr-tab.active .tab-badge { background: rgba(30, 102, 245, 0.14); color: #1e66f5; }
+  body.light .btn-icon.copied { color: #40a02b; }
+  body.light .btn-icon.copy-failed { color: #d20f39; }
+  body.light .red-value.red-link { color: #40a02b; }
+  body.light .red-value.red-link:hover { color: #179299; }
 </style>
 </head>
 <body>
@@ -294,45 +313,49 @@
         <button class="btn-icon btn-icon-accent" onclick="send('docs')" title="Documentation">&#128195;</button>
         <button class="btn-icon" onclick="send('openGitHub')" title="GitHub Repository"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" style="vertical-align:middle"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></button>
         <button class="btn-icon" onclick="send('settings')" title="Settings">&#9881;</button>
-        <!-- The diagnostics bar can be dismissed with its own X, and nothing else brings it back;
-             this is that way back. Glyph echoes the pill's own filled/hollow dot language. -->
-        <button class="btn-icon" onclick="send('toggleDiagBar')" title="Show/hide the LSP diagnostics bar">&#9678;</button>
         <button class="btn-icon" id="btnTheme" onclick="toggleTheme()" title="Toggle light/dark theme">&#9790;</button>
       </div>
     </div>
 
-    <!-- Solution + Version grouped -->
-    <div class="config-group">
-      <div class="config-row">
-        <span class="config-label">Solution</span>
-        <select id="solutionSelect" class="form-select"></select>
-        <button class="btn-icon" onclick="send('browse')" title="Browse for solution">&#8230;</button>
+    <!-- Header tabs (82938fc7). Schema Sources and Source Control are rendered by the host's
+         SchemaSourcesView, shown under this strip; only the Solution pane lives in this page. -->
+    <div class="hdr-tabs" id="hdrTabs">
+      <button class="hdr-tab active" data-tab="solution" onclick="selectHeaderTab('solution')">Solution</button>
+      <button class="hdr-tab" data-tab="schema" onclick="selectHeaderTab('schema')">Schema Sources<span class="tab-badge" id="schemaCount" hidden></span></button>
+      <button class="hdr-tab" data-tab="repo" onclick="selectHeaderTab('repo')">Source Control</button>
+    </div>
+
+    <div class="hdr-pane" id="paneSolution">
+      <!-- Solution + Version grouped -->
+      <div class="config-group">
+        <div class="config-row">
+          <span class="config-label">Solution</span>
+          <select id="solutionSelect" class="form-select"></select>
+          <button class="btn-icon" id="btnCopySln" onclick="copySolutionPath()" title="Copy the solution path">&#10697;</button>
+          <button class="btn-icon" onclick="send('browse')" title="Browse for solution">&#8230;</button>
+        </div>
+        <div class="config-row">
+          <span class="config-label">Version</span>
+          <select id="versionSelect" class="form-select"></select>
+          <button class="btn-icon" onclick="send('refresh')" title="Re-detect from Clarion IDE (clears your saved version selection)">&#8635;</button>
+        </div>
       </div>
-      <div class="config-row">
-        <span class="config-label">Version</span>
-        <select id="versionSelect" class="form-select"></select>
-        <button class="btn-icon" onclick="send('refresh')" title="Re-detect from Clarion IDE (clears your saved version selection)">&#8635;</button>
+
+      <!-- Redirection (.red) file in effect. A link to open it while it resolved; warning text when not. -->
+      <div class="config-row" style="margin-top:4px;">
+        <span class="config-label">RED</span>
+        <span id="redFile" class="red-value codegraph-status warning" title="" onclick="openRedFile()">(not loaded)</span>
+      </div>
+
+      <!-- CodeGraph status row -->
+      <div class="codegraph-row">
+        <span class="codegraph-label">CodeGraph</span>
+        <span id="indexStatus" class="codegraph-status"></span>
+        <button class="btn btn-primary" onclick="send('fullIndex')" id="btnFullIndex" title="Rebuild entire index from scratch">Reindex</button>
+        <button class="btn" onclick="send('updateIndex')" id="btnUpdate" title="Index changed files only">Update</button>
+        <button class="btn-icon" onclick="send('showLog')" id="btnLog" title="Show activity log" style="font-size:12px;">&#128220;</button>
       </div>
     </div>
-
-    <!-- Redirection (.red) file in effect — diagnostic: shows what the selected Clarion version resolved to -->
-    <div class="config-row" style="margin-top:4px;">
-      <span class="config-label">RED</span>
-      <span id="redFile" class="codegraph-status" title=""
-            style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:Consolas,'Courier New',monospace; font-size:10px;">(not loaded)</span>
-    </div>
-
-    <!-- CodeGraph status row -->
-    <div class="codegraph-row">
-      <span class="codegraph-label">CodeGraph</span>
-      <span id="indexStatus" class="codegraph-status"></span>
-      <button class="btn btn-primary" onclick="send('fullIndex')" id="btnFullIndex" title="Rebuild entire index from scratch">Reindex</button>
-      <button class="btn" onclick="send('updateIndex')" id="btnUpdate" title="Index changed files only">Update</button>
-      <button class="btn-icon" onclick="send('showLog')" id="btnLog" title="Show activity log" style="font-size:12px;">&#128220;</button>
-    </div>
-
-    <!-- Tab bar -->
-    <div id="tabBar" class="tab-bar"></div>
   </div>
 
 <script>
@@ -368,29 +391,39 @@
     send('solutionChanged', this.value);
   });
 
-  // Tab bar functions
-  function renderTabBar(tabs) {
-    var bar = document.getElementById('tabBar');
-    var html = '';
-    for (var i = 0; i < tabs.length; i++) {
-      var t = tabs[i];
-      var cls = 'tab' + (t.isActive ? ' active' : '');
-      var icon = t.isHome ? '&#8962; ' : '';
-      var close = t.isHome ? '' : '<span class="close-btn" onclick="event.stopPropagation(); send(\'tabClose\',\'' + t.id + '\')" title="Close">&times;</span>';
-      html += '<div class="' + cls + '" onclick="send(\'tabActivate\',\'' + t.id + '\')">' +
-        icon + '<span class="tab-name">' + escapeHtml(t.name) + '</span>' + close + '</div>';
-    }
-    bar.innerHTML = html;
+  // Header tabs (82938fc7). The host resizes the pane and shows its SchemaSourcesView for
+  // 'schema' / 'repo'; this page only marks the active tab and hides the Solution pane.
+  var HEADER_TABS = ['solution', 'schema', 'repo'];
+  var headerTab = 'solution';
+  function selectHeaderTab(tab) {
+    if (HEADER_TABS.indexOf(tab) < 0) return;
+    headerTab = tab;
+    var btns = document.querySelectorAll('#hdrTabs .hdr-tab');
+    for (var i = 0; i < btns.length; i++)
+      btns[i].classList.toggle('active', btns[i].getAttribute('data-tab') === tab);
+    document.getElementById('paneSolution').hidden = tab !== 'solution';
+    send('headerTab', tab);
   }
 
-  function highlightActiveTab(tabId) {
-    var tabs = document.querySelectorAll('#tabBar .tab');
-    for (var i = 0; i < tabs.length; i++) {
-      tabs[i].classList.remove('active');
-    }
-    var active = document.querySelector('#tabBar .tab[onclick*="' + tabId + '"]');
-    if (active) active.classList.add('active');
+  // Intent only: the host copies ITS solution path (navigator.clipboard fails on file:// in WebView2).
+  var copyFeedbackTimer = null;
+  function copySolutionPath() { send('copySolutionPath'); }
+  function showCopyResult(ok) {
+    var btn = document.getElementById('btnCopySln');
+    btn.classList.remove('copied', 'copy-failed');
+    btn.classList.add(ok ? 'copied' : 'copy-failed');
+    btn.innerHTML = ok ? '&#10003;' : '&#10007;';
+    if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
+    copyFeedbackTimer = setTimeout(function() {
+      btn.classList.remove('copied', 'copy-failed');
+      btn.innerHTML = '&#10697;';
+      copyFeedbackTimer = null;
+    }, 1200);
   }
+
+  // Intent only: the host opens ITS resolved .red. Not a link while RED is a warning.
+  var redOpenable = false;
+  function openRedFile() { if (redOpenable) send('openRedFile'); }
 
   function escapeHtml(s) {
     if (!s) return '';
@@ -440,9 +473,21 @@
     if (msg.type === 'setRedFile') {
       var rf = document.getElementById('redFile');
       var t = msg.text || '(not loaded)';
+      redOpenable = msg.openable === true && !msg.css;
       rf.textContent = t;
-      rf.title = t;
-      rf.className = 'codegraph-status ' + (msg.css || '');
+      rf.title = redOpenable ? t + '\nClick to open it in the editor' : t;
+      rf.className = 'red-value codegraph-status ' + (msg.css || '') + (redOpenable ? ' red-link' : '');
+    }
+
+    if (msg.type === 'setSchemaCount') {
+      var badge = document.getElementById('schemaCount');
+      var n = typeof msg.count === 'number' && msg.count >= 0 ? Math.floor(msg.count) : null;
+      badge.textContent = n === null ? '' : String(n);
+      badge.hidden = n === null;
+    }
+
+    if (msg.type === 'copyResult') {
+      showCopyResult(msg.ok === true);
     }
 
     if (msg.type === 'setIndexButtons') {
@@ -452,14 +497,6 @@
 
     if (msg.type === 'setTheme') {
       setTheme(msg.theme);
-    }
-
-    if (msg.type === 'setTabs') {
-      renderTabBar(msg.tabs);
-    }
-
-    if (msg.type === 'setActiveTab') {
-      highlightActiveTab(msg.tabId);
     }
   });
 </script>
