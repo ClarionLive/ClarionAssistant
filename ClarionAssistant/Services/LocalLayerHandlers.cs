@@ -401,16 +401,43 @@ namespace ClarionAssistant.Services
 
             if (word.IndexOf('.') < 0)
             {
+                // The index is asked BEFORE any keyword card: an attribute/control name can also be a procedure
+                // or variable (PASSWORD in PRM002). L3: a word followed by '(' is a call, so a procedure of that
+                // name wins over any other symbol (and, below, over the attribute card).
+                bool call = FollowedByParen(lineText, col, word);
                 foreach (string db in new[] { ProjectDb(options), LibraryDb() })
                 {
                     var idx = SymbolIndex.For(db);
-                    var s = idx != null ? idx.FindByName(word, fastOnly: true) : null;
+                    if (idx == null) continue;
+                    ClarionCodeGraph.Graph.CodeGraphSymbol s = null;
+                    if (call)
+                        foreach (var c in idx.ByPrefix(word, DbLimit, fastOnly: true))
+                            if (c != null && string.Equals(c.Name, word, StringComparison.OrdinalIgnoreCase) &&
+                                (string.Equals(c.Type, "procedure", StringComparison.OrdinalIgnoreCase) ||
+                                 string.Equals(c.Type, "function", StringComparison.OrdinalIgnoreCase))) { s = c; break; }
+                    if (s == null) s = idx.FindByName(word, fastOnly: true);
                     if (s != null) return new LocalHoverResult { Markdown = SymbolCard(s), Authoritative = true, Kind = "index" };
                 }
             }
             var kw = ClarionKeywordIndex.HoverWord(word);
-            if (kw != null) kw.Authoritative = ClarionKeywordIndex.HasDescription(word);
+            if (kw != null) kw.Authoritative = ClarionKeywordIndex.IsFinalCard(word);   // L3: reserved words only
             return kw;
+        }
+
+        /// <summary>True when the occurrence of <paramref name="word"/> under column <paramref name="col"/> is
+        /// followed (after optional spaces) by '(' - i.e. it is being called.</summary>
+        internal static bool FollowedByParen(string lineText, int col, string word)
+        {
+            if (string.IsNullOrEmpty(lineText) || string.IsNullOrEmpty(word)) return false;
+            for (int i = lineText.IndexOf(word, StringComparison.OrdinalIgnoreCase); i >= 0;
+                 i = lineText.IndexOf(word, i + 1, StringComparison.OrdinalIgnoreCase))
+            {
+                int end = i + word.Length;
+                if (col < i || col > end) continue;
+                while (end < lineText.Length && lineText[end] == ' ') end++;
+                return end < lineText.Length && lineText[end] == '(';
+            }
+            return false;
         }
 
         private static string SymbolCard(ClarionCodeGraph.Graph.CodeGraphSymbol s)

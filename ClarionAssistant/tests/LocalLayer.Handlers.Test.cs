@@ -136,7 +136,11 @@ static class LocalLayerHandlersTest
             new[] { "GloParam", "variable", "parameter", "SomeProc", "LONG" },
             new[] { "MyBrowse", "class", "global", "BrowseClass", null },
             new[] { "MyBrowse.Custom", "procedure", "global", "MyBrowse", "()" },
-            new[] { "MyBrowse.ResetSort", "procedure", "global", "MyBrowse", "(BYTE Force)" } };
+            new[] { "MyBrowse.ResetSort", "procedure", "global", "MyBrowse", "(BYTE Force)" },
+            // L3: PRM002 has a PROCEDURE named like the PASSWORD attribute; a same-named variable is listed FIRST so
+            // only the call-context preference picks the procedure.
+            new[] { "PASSWORD", "variable", "global", null, "STRING(20)" },
+            new[] { "PASSWORD", "procedure", "global", null, "(STRING pType, LONG pLevel)" } };
         BuildDb(proj, true, projRows);
         BuildDb(lib, true,
             new[] { "BrowseClass", "class", "global", "ViewManager", null },
@@ -203,7 +207,7 @@ static class LocalLayerHandlersTest
             // H4: with the keyword data loaded, the card carries its description and is FINAL.
             ClarionKeywordIndex.DataDirOverride = KeywordDataDir;
             ClarionKeywordIndex.ResetForTest();
-            Check("(keyword fixture loads)", ClarionKeywordIndex.WaitForLoad(5000) && ClarionKeywordIndex.HasDescription("RETURN"));
+            Check("(keyword fixture loads)", ClarionKeywordIndex.WaitForLoad(5000) && ClarionKeywordIndex.IsFinalCard("RETURN"));
             var hKwFull = At("localHover", 15, 4, o);
             Check("H4 RETURN with its loaded description -> the full card, AUTHORITATIVE",
                 hKwFull["contents"] != null && ((string)hKwFull["contents"]).Contains("Terminates") && (bool)hKwFull["authoritative"], Json(hKwFull));
@@ -216,6 +220,40 @@ static class LocalLayerHandlersTest
             ClarionKeywordIndex.DataDirOverride = System.IO.Path.Combine(work, "no-keyword-data");
             ClarionKeywordIndex.ResetForTest();
             ClarionKeywordIndex.WaitForLoad(5000);
+            Console.WriteLine("\nL3: a keyword card is final only for reserved words; a call prefers a procedure");
+            {
+                string kwDir = System.IO.Path.Combine(work, "kw-l3");
+                System.IO.Directory.CreateDirectory(kwDir);
+                System.IO.File.WriteAllText(System.IO.Path.Combine(kwDir, "clarion-keywords.json"),
+                    "{\"keywords\":[{\"name\":\"RETURN\",\"description\":\"Terminates the procedure.\",\"category\":\"Control Flow\"}]}");
+                System.IO.File.WriteAllText(System.IO.Path.Combine(kwDir, "clarion-attributes.json"),
+                    "{\"attributes\":[{\"name\":\"PASSWORD\",\"description\":\"Specifies a password entry field.\",\"category\":\"Control\"}]}");
+                ClarionKeywordIndex.DataDirOverride = kwDir;
+                ClarionKeywordIndex.ResetForTest();
+                ClarionKeywordIndex.WaitForLoad(5000);
+                string call = ModBuffer.Replace("  x# = INV:Qty + GloVar + Clip", "  x# = ~PASSWORD('IN',103) + 1");
+
+                var withDb = LocalLayerHandlers.Handle("localHover", call, Req("{\"line\":16,\"column\":10}"), o);
+                Check("L3 PASSWORD( with a DB procedure -> the PROCEDURE card (not the attribute, not the same-named variable)",
+                    withDb["contents"] != null && ((string)withDb["contents"]).Contains("pLevel") && (bool)withDb["authoritative"], Json(withDb));
+
+                LocalLayerHandlers.ProjectDbPath = null;
+                LocalLayerHandlers.ResetPathCache();
+                var noDb = LocalLayerHandlers.Handle("localHover", call, Req("{\"line\":16,\"column\":10}"), new LocalLayerOptions { Log = log.Add });
+                Check("L3 PASSWORD with no DB -> the attribute card, NOT authoritative (the LSP may know a procedure)",
+                    noDb["contents"] != null && ((string)noDb["contents"]).Contains("password entry") && !(bool)noDb["authoritative"], Json(noDb));
+                var ret = At("localHover", 15, 4, o);
+                Check("L3 RETURN (a reserved keyword with its description) -> authoritative", ret["contents"] != null && (bool)ret["authoritative"], Json(ret));
+                Check("L3 FollowedByParen: '~PASSWORD(' yes, 'PASSWORD +' no",
+                    LocalLayerHandlers.FollowedByParen("  x# = ~PASSWORD('IN')", 10, "PASSWORD") &&
+                    !LocalLayerHandlers.FollowedByParen("  x# = PASSWORD + 1", 9, "PASSWORD"));
+                LocalLayerHandlers.ProjectDbPath = () => proj;
+                LocalLayerHandlers.ResetPathCache();
+                ClarionKeywordIndex.DataDirOverride = System.IO.Path.Combine(work, "no-keyword-data");
+                ClarionKeywordIndex.ResetForTest();
+                ClarionKeywordIndex.WaitForLoad(5000);
+            }
+
             var hClip = At("localHover", 16, 28, o);
             Check("a module variable named like a built-in (Clip) -> the buffer's card wins over the keyword",
                 hClip["contents"] != null && ((string)hClip["contents"]).Contains("LONG"), Json(hClip));
