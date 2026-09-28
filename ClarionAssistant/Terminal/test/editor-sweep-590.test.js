@@ -209,8 +209,8 @@ async function testSlotDiagnostics() {
             'slot ' + env.slot.length + ' lsp ' + env.pending.length);
         check('...with the live editable ranges and the synced v', env.slot[0] && env.slot[0].payload.v === 1 &&
             JSON.stringify(env.slot[0].payload.ranges) === '[[1,10]]');
-        check('F5 slotDiagnostics uses the local budget (400 ms), not the size-scaled LSP timeout', env.slot[0] && env.slot[0].timeoutMs === 400,
-            env.slot[0] && String(env.slot[0].timeoutMs));
+        check('K1 slotDiagnostics has its own 3000 ms budget (not the local 400 ms, not the size-scaled LSP one)',
+            env.slot[0] && env.slot[0].timeoutMs === 3000, env.slot[0] && String(env.slot[0].timeoutMs));
         env.model.version = 2;
         env.api.refreshDiagnostics();
         check('7.7 with the LSP request still in flight, a second pass still posts slotDiagnostics (2), not diagnostics (1)',
