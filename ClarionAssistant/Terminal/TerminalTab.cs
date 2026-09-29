@@ -36,9 +36,9 @@ namespace ClarionAssistant.Terminal
         /// MULTITERMINAL_NAME and -n), captured at launch. Null until an assistant is launched.
         ///
         /// Read by AssistantChatControl.ResolveUniqueAgentName: other tabs' launches treat it as
-        /// taken, and a relaunch of this tab keeps it. It has to be STORED rather than recomputed:
-        /// NormalizeAgentName is fed an incrementing tab counter, and a uniqueness suffix (-2)
-        /// depends on what else was open at launch, so asking again later could give a different one.
+        /// taken. It has to be STORED rather than recomputed: NormalizeAgentName is fed an
+        /// incrementing tab counter, and a uniqueness suffix (-2) depends on what else was open
+        /// at launch, so asking again later could give a different one.
         /// </summary>
         public string AgentName { get; set; }
 

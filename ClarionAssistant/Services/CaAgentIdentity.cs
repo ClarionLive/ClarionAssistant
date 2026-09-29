@@ -73,22 +73,6 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// True when <paramref name="name"/> is <paramref name="baseName"/> itself or a
-        /// <see cref="MakeUnique"/> result for it (baseName-N). Exact, not a prefix test:
-        /// CA-Foobar is not a form of CA-Foo.
-        /// </summary>
-        public static bool IsSameOrSuffixed(string name, string baseName)
-        {
-            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(baseName)) return false;
-            if (string.Equals(name, baseName, StringComparison.OrdinalIgnoreCase)) return true;
-            if (name.Length <= baseName.Length + 1
-                || !name.StartsWith(baseName + "-", StringComparison.OrdinalIgnoreCase)) return false;
-            string rest = name.Substring(baseName.Length + 1);
-            foreach (char c in rest) if (c < '0' || c > '9') return false;
-            return true;
-        }
-
-        /// <summary>
         /// Escape a string for single-quoted PowerShell literal (' → '').
         /// </summary>
         public static string EscapeForPowerShellSingleQuote(string s)

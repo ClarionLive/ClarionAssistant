@@ -3634,9 +3634,7 @@ namespace ClarionAssistant
             _caTabCounter++;
             string agentName = ResolveUniqueAgentName(tab,
                 Services.CaAgentIdentity.NormalizeAgentName(tab.Name, _caTabCounter));
-            // Remembered on the tab: it is what other tabs' uniqueness checks read, and what a
-            // relaunch of THIS tab keeps. Recomputing later would give a different name, because
-            // the counter above has moved on.
+            // Remembered on the tab: it is what other tabs' uniqueness checks read.
             tab.AgentName = agentName;
             string safeAgentName = Services.CaAgentIdentity.EscapeForPowerShellSingleQuote(agentName);
             // NO MULTITERMINAL_DOC_ID (ticket b24bcaf4). A docId (and a launch nonce) identify a pane
@@ -3976,9 +3974,11 @@ namespace ClarionAssistant
         /// pad of this IDE, or by a row on MultiTerminal's live roster (another IDE, or an
         /// MT-hosted terminal).
         ///
-        /// A RELAUNCH OF THE SAME TAB keeps its name: the roster row still carrying it is this
-        /// tab's own dead predecessor, which the broker's ownerPid reaper retires, so treating it
-        /// as a rival would rename the tab on every restart.
+        /// A RELAUNCH IS CHECKED LIKE ANY LAUNCH - no "keep my old name" exemption. Once the
+        /// broker's reaper retires this tab's dead row, another IDE may take the name; reusing it
+        /// then would put two live sessions on one address (Codex security, pipeline run 2). The
+        /// roster exposes no owner pid, so CA cannot prove a row is its own predecessor. Cost: a
+        /// tab restarted inside the reaper's ~30s sweep comes back as -2. Cosmetic, and safe.
         ///
         /// MultiTerminal being unreachable is ordinary (it may not be installed) and leaves only
         /// the local check. Short timeout because this runs on the launch path; 127.0.0.1 refuses
@@ -3988,9 +3988,6 @@ namespace ClarionAssistant
         /// </summary>
         private string ResolveUniqueAgentName(TerminalTab tab, string baseName)
         {
-            if (Services.CaAgentIdentity.IsSameOrSuffixed(tab.AgentName, baseName))
-                return tab.AgentName;
-
             var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             List<AssistantChatControl> pads;
             lock (_instances) { pads = new List<AssistantChatControl>(_instances); }
