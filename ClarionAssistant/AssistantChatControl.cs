@@ -66,7 +66,7 @@ namespace ClarionAssistant
         private DiffService _diffService;
 
         // Counter used when a tab's display name is empty, to give the
-        // multiterminal-channel plugin a unique agent name.
+        // tab a unique MultiTerminal agent name.
         private int _caTabCounter;
 
         // LSP UI state: bottom status bar + stay-on-top diagnostics form
@@ -3551,10 +3551,6 @@ namespace ClarionAssistant
                 tempFiles.Add(initialPromptFile);
             }
 
-            // Resolved once, up here, because THREE things downstream must agree on it: the second
-            // --plugin-dir, the channels flag's plugin name, and the channel tools' allowlist prefix.
-            // Deriving all three from one value is what stops them drifting apart - a mismatch
-            // between any two of them fails silently rather than loudly (ticket 7913ead6).
             string mtPluginDir = Services.McpServer.GetMultiTerminalPluginPath();
 
             string allowedTools = "mcp__clarion-assistant__*,Read,Edit,Write,Bash,Glob,Grep";
@@ -3567,21 +3563,6 @@ namespace ClarionAssistant
                 allowedTools += ",mcp__clarion-tools__*";
             if (_mcpServer != null && _mcpServer.IncludeMultiTerminal)
                 allowedTools += ",mcp__multiterminal__*";
-            // The channel's own tools (send / reply). THE PREFIX CHANGED WITH THE MOVE TO THE PLUGIN
-            // FORM (ticket 7913ead6): a plugin-provided MCP server is namespaced
-            // mcp__plugin_<pluginName>_<serverName>__<tool>, not mcp__<serverName>__<tool>. The old
-            // "mcp__multiterminal-channel__*" spelling now matches nothing, so leaving it would mean
-            // every send/reply prompted for permission - the tab would receive channel pushes and
-            // then be unable to answer them.
-            //
-            // NOT A GUESS AT THE SPELLING: taken from a live session on this machine with the same
-            // plugin loaded, where the tools appear as
-            //     mcp__plugin_multiterminal_multiterminal-channel__send
-            //     mcp__plugin_multiterminal_multiterminal-channel__reply
-            // Still worth re-reading off a real tab after deploy - if the prefix differs, the symptom
-            // is a permission prompt on reply, not a dead channel.
-            if (mtPluginDir != null)
-                allowedTools += ",mcp__plugin_multiterminal_multiterminal-channel__*";
             // Auto-approve user-supplied MCP servers merged in from mcp-extra.json
             if (_mcpServer != null && _mcpServer.ExtraMcpServerNames != null)
             {
@@ -3600,10 +3581,8 @@ namespace ClarionAssistant
                 pluginArg = $" --plugin-dir '{safePluginDir}'";
             }
 
-            // A SECOND --plugin-dir, for MultiTerminal, because the channel server ships INSIDE that
-            // plugin (server\multiterminal-channel.mjs). Without it the channels flag below names a
-            // plugin this session never loaded, and the channel fails for a different reason than
-            // the one ticket 7913ead6 fixed.
+            // A SECOND --plugin-dir, for MultiTerminal: its hooks are what register this tab with the
+            // broker and hand over the session's native messaging credentials (ticket b24bcaf4).
             //
             // --plugin-dir IS REPEATABLE BUT NOT VARIADIC. From `claude --help` on 2.1.265:
             //     --plugin-dir <path>  ... (repeatable: --plugin-dir A --plugin-dir B.zip)
@@ -3655,54 +3634,23 @@ namespace ClarionAssistant
             // Set CA tab ID so the statusline script can write per-tab status
             string tabEnv = $"$env:CLARIONASSISTANT_TAB='{tab.Id}'";
 
-            // Compute the CA-prefixed agent name + stable docId for this tab and export
-            // them so the multiterminal-channel MCP server (loaded via mcp-config) registers
-            // with the MultiTerminal broker under the right identity.
+            // The CA-prefixed agent name for this tab: its MultiTerminal identity. Exported as
+            // MULTITERMINAL_NAME for the MultiTerminal plugin's hooks, and passed as -n so the same
+            // string is the session's native messaging address - one name, not two that can drift.
             _caTabCounter++;
             string agentName = Services.CaAgentIdentity.NormalizeAgentName(tab.Name, _caTabCounter);
             // Remember it: this is the name the broker will know this tab by, and the only way
             // to disconnect it when the process exits (ticket 9a0ce0de). Recomputing later would
             // give a different name, because the counter above has moved on.
             tab.AgentName = agentName;
-            string docId = Services.CaAgentIdentity.ComputeStableDocId(agentName);
             string safeAgentName = Services.CaAgentIdentity.EscapeForPowerShellSingleQuote(agentName);
-            string safeDocId = Services.CaAgentIdentity.EscapeForPowerShellSingleQuote(docId);
-            string channelEnv = $"$env:MULTITERMINAL_NAME='{safeAgentName}'; $env:MULTITERMINAL_DOC_ID='{safeDocId}'";
-            System.Diagnostics.Debug.WriteLine(
-                "[LaunchClaude] Channel identity: name=" + agentName + ", docId=" + docId);
+            // NO MULTITERMINAL_DOC_ID (ticket b24bcaf4). A docId (and a launch nonce) identify a pane
+            // MultiTerminal itself launched; a CA-hosted session registers by name alone, with the
+            // claude.exe pid as its owner so the broker's reaper can retire the row when it dies.
+            string mtEnv = $"$env:MULTITERMINAL_NAME='{safeAgentName}'";
+            string nameFlag = $" -n '{safeAgentName}'";
+            System.Diagnostics.Debug.WriteLine("[LaunchClaude] MultiTerminal identity: name=" + agentName);
 
-            // Authorize the MultiTerminal channel for inbound notifications. Without this flag,
-            // mcp.notification('notifications/claude/channel') is silently ignored.
-            //
-            // PLUGIN FORM, NOT server: FORM (ticket 7913ead6). Claude Code 2.1.265 resolves a
-            // "server:<name>" entry against five PERSISTED config scopes only - enterprise, managed,
-            // user, project, local - and a server supplied via --mcp-config is in none of them, so
-            // the old spelling could never resolve and printed
-            //     server:multiterminal-channel - no MCP server configured with that name
-            // The plugin branch of that same validator reads the loaded-plugin list instead and
-            // never consults the MCP scopes, which is why --strict-mcp-config stays safe here and we
-            // keep the isolation it was added for.
-            //
-            // "@inline" IS A SENTINEL - DO NOT "CORRECT" IT TO THE MARKETPLACE NAME. Claude Code
-            // assigns @inline to any plugin loaded via --plugin-dir; it names no marketplace and
-            // resolves to nothing on disk. Changing it to @multiterminal-marketplace to match the
-            // installed registry is the obvious-looking tidy-up and it SILENTLY KILLS CHANNELS:
-            // registration matches on the marketplace BEFORE the dev-channels check runs, so the
-            // flag cannot rescue a mismatch, and no test pins the string. Established by Alice on
-            // the MultiTerminal side (ticket c9285d2a).
-            //
-            // The name before the '@' is the plugin DIRECTORY BASENAME, derived from the path above
-            // so the two cannot drift apart.
-            //
-            // EXPECT A FALSE-POSITIVE WARNING AND DO NOT READ IT AS FAILURE: the launch prints
-            //     plugin:multiterminal@inline - plugin not installed
-            // because that validator branch checks the INSTALLED plugin registry, where a
-            // --plugin-dir plugin legitimately never appears - it is session-loaded, not installed.
-            // Every MultiTerminal terminal prints this today and their channels work.
-            string channelFlag = (mtPluginDir != null)
-                ? " --dangerously-load-development-channels plugin:"
-                    + Path.GetFileName(mtPluginDir.TrimEnd(Path.DirectorySeparatorChar)) + "@inline"
-                : "";
             // Auto-update Claude Code before launching if enabled in settings
             string updatePrefix = "";
             if ((_settings.Get("Claude.AutoUpdate") ?? "").Equals("true", StringComparison.OrdinalIgnoreCase))
@@ -3715,7 +3663,7 @@ namespace ClarionAssistant
                 updatePrefix = $"Write-Host 'Checking for Claude Code updates...' -ForegroundColor Cyan; {updateCmd} update; ";
             }
 
-            string claudeCmd = $"cd '{ctx.SafeWorkDir}'; $env:CLARION_ASSISTANT_EMBEDDED='1'; {tabEnv}; {channelEnv}; {colorfgbg}; {updatePrefix}{claudeBase}{mcpArg}{pluginArg}{claudeModelFlag} --strict-mcp-config{channelFlag} --allowedTools '{allowedTools}'{extraFlags}";
+            string claudeCmd = $"cd '{ctx.SafeWorkDir}'; $env:CLARION_ASSISTANT_EMBEDDED='1'; {tabEnv}; {mtEnv}; {colorfgbg}; {updatePrefix}{claudeBase}{nameFlag}{mcpArg}{pluginArg}{claudeModelFlag} --strict-mcp-config --allowedTools '{allowedTools}'{extraFlags}";
 
             if (initialPromptFile != null)
             {
@@ -4026,36 +3974,6 @@ namespace ClarionAssistant
                 tab.Terminal.Write(data);
         }
 
-        // Matches ANSI/VT escape sequences (CSI, OSC, charset selects, etc.) so they can be stripped
-        // before substring-matching a TUI prompt whose text is interleaved with color/box-drawing codes.
-        private static readonly System.Text.RegularExpressions.Regex AnsiEscapeRegex =
-            new System.Text.RegularExpressions.Regex(
-                @"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))",
-                System.Text.RegularExpressions.RegexOptions.Compiled);
-
-        /// <summary>
-        /// Normalize terminal output for robust substring matching: strip ANSI escapes, fold every
-        /// non-alphanumeric char to a single space, lowercase, and collapse runs of spaces. This makes
-        /// a plain Contains() survive box-drawing characters, embedded color codes, and odd spacing in
-        /// CC's TUI warning prompt.
-        /// </summary>
-        private static string NormalizeForMatch(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return string.Empty;
-            string noAnsi = AnsiEscapeRegex.Replace(s, string.Empty);
-            var sb = new StringBuilder(noAnsi.Length);
-            foreach (char c in noAnsi)
-                sb.Append(char.IsLetterOrDigit(c) ? char.ToLowerInvariant(c) : ' ');
-            return System.Text.RegularExpressions.Regex.Replace(sb.ToString(), " +", " ");
-        }
-
-        /// <summary>Escape control chars so a raw terminal buffer is readable in a single Debug trace line.</summary>
-        private static string EscapeForLog(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return string.Empty;
-            return s.Replace("\x1b", "\\x1b").Replace("\r", "\\r").Replace("\n", "\\n").Replace("\t", "\\t");
-        }
-
         private static int _dataRecvCount;
         private void OnTabTerminalDataReceived(TerminalTab tab, byte[] data)
         {
@@ -4065,58 +3983,6 @@ namespace ClarionAssistant
             var renderer = tab.Renderer;
             if (renderer != null && !renderer.IsDisposed)
                 renderer.WriteToTerminal(data);
-
-            // ── Auto-dismiss Claude Code's --dangerously-load-development-channels warning ──
-            // CC 2.1.168 renders this warning as a colored, box-wrapped TUI. The text is interleaved
-            // with ANSI escapes and arrives split across ~16ms ConPTY flush batches, so a literal
-            // Contains() on a single chunk never matches. We therefore: accumulate every chunk into a
-            // capped per-tab buffer, strip ANSI + normalize, substring-match the prompt anchors, then
-            // inject the digit '1' (option "I am using this for local development") with NO newline —
-            // a bare Enter gets dropped before CC's raw-mode prompt is ready. Fires at most once per tab.
-            // Only relevant to Claude (Copilot/Codex never emit this), so skip those backends.
-            if (!tab.DevChannelWarningHandled
-                && tab.AssistantBackend != "Copilot" && tab.AssistantBackend != "Codex"
-                && tab.Terminal != null && tab.Terminal.IsRunning)
-            {
-                try
-                {
-                    tab.DevChannelBuffer.Append(Encoding.UTF8.GetString(data));
-                    if (tab.DevChannelBuffer.Length > 2000)
-                        tab.DevChannelBuffer.Remove(0, tab.DevChannelBuffer.Length - 1000);
-
-                    string normalized = NormalizeForMatch(tab.DevChannelBuffer.ToString());
-
-                    // One-time ground-truth dump: if CC changes the wording on a future version, this
-                    // trace gives the exact bytes to re-anchor against instead of guessing.
-                    if (!tab.DevChannelRawDumped && normalized.Contains("development"))
-                    {
-                        tab.DevChannelRawDumped = true;
-                        System.Diagnostics.Debug.WriteLine("[DevChannel] RAW: " + EscapeForLog(tab.DevChannelBuffer.ToString()));
-                        System.Diagnostics.Debug.WriteLine("[DevChannel] NORM: " + normalized);
-                    }
-
-                    if (normalized.Contains("for local development")
-                        || normalized.Contains("loading development channels")
-                        || normalized.Contains("development channels")
-                        || normalized.Contains("enter to confirm"))
-                    {
-                        tab.DevChannelWarningHandled = true;
-                        var devTab = tab;
-                        // ~400ms settle so the box is fully rendered + raw mode is ready, then send '1'
-                        // with no CR/LF — Write() does not append a line ending.
-                        System.Threading.Tasks.Task.Delay(400).ContinueWith(_ =>
-                        {
-                            try
-                            {
-                                if (devTab.Terminal != null && devTab.Terminal.IsRunning)
-                                    devTab.Terminal.Write("1");
-                            }
-                            catch { }
-                        });
-                    }
-                }
-                catch { }
-            }
 
             // Auto-send startup command once Claude is ready for human input.
             // Detection: look for the prompt character (> or ❯) at a line boundary,

@@ -71,21 +71,6 @@ namespace ClarionAssistant.Terminal
         /// <summary>Skill command to auto-run after Claude starts (e.g. "/ClarionCOM").</summary>
         public string StartupCommand { get; set; }
 
-        /// <summary>
-        /// Accumulated, raw terminal output used to detect Claude Code's
-        /// <c>--dangerously-load-development-channels</c> warning prompt. CC 2.1.168 renders that
-        /// warning as a colored, box-wrapped TUI whose text is interleaved with ANSI escapes and
-        /// straddles ConPTY flush batches, so we must accumulate across chunks and normalize before
-        /// matching. Capped/trimmed in the handler to avoid unbounded growth.
-        /// </summary>
-        public readonly System.Text.StringBuilder DevChannelBuffer = new System.Text.StringBuilder();
-
-        /// <summary>True once the dev-channel warning has been auto-dismissed for this tab (fires once).</summary>
-        public bool DevChannelWarningHandled;
-
-        /// <summary>Guards the one-time raw/normalized ground-truth dump used to re-anchor on future CC wording drift.</summary>
-        public bool DevChannelRawDumped;
-
         private bool _disposed;
 
         public TerminalTab()

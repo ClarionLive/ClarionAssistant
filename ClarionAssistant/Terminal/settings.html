@@ -656,7 +656,7 @@
 
       <h3 style="margin-top:24px">Custom MCP Servers in the IDE Pane</h3>
       <div class="field-desc" style="margin-bottom:8px">
-        Add your own MCP servers (e.g. Axialis IconVectors, Cline-style stdio servers, Claude Desktop entries) so they load alongside Clarion Assistant's built-in tools when you spawn a Claude tab in the IDE. Edit <code>mcp-extra.json</code> and use the standard <code>mcpServers</code> schema. Addin-supplied keys (<code>clarion-assistant</code>, <code>multiterminal</code>, <code>multiterminal-channel</code>) are reserved and cannot be overridden. Open a new IDE tab after editing — existing tabs keep their original config.
+        Add your own MCP servers (e.g. Axialis IconVectors, Cline-style stdio servers, Claude Desktop entries) so they load alongside Clarion Assistant's built-in tools when you spawn a Claude tab in the IDE. Edit <code>mcp-extra.json</code> and use the standard <code>mcpServers</code> schema. Addin-supplied keys (<code>clarion-assistant</code>, <code>clarion-tools</code>, <code>multiterminal</code>) are reserved and cannot be overridden. Open a new IDE tab after editing — existing tabs keep their original config.
       </div>
       <div class="input-row">
         <button class="btn btn-sm" onclick="openMcpExtraConfig()">Open mcp-extra.json</button>

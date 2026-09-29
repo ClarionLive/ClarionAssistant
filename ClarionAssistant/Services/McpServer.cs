@@ -284,14 +284,6 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// True if the multiterminal-channel plugin .mjs file is present on disk.
-        /// Set by GenerateMcpConfig when it successfully resolves the path.
-        /// AssistantChatControl reads this to decide whether to grant the matching
-        /// tool permissions in --allowedTools.
-        /// </summary>
-        public bool IncludeMultiTerminalChannel { get; private set; }
-
-        /// <summary>
         /// Names of user-supplied MCP servers merged in from
         /// <c>%APPDATA%\ClarionAssistant\mcp-extra.json</c> by the last
         /// GenerateMcpConfig call (Claude format). AssistantChatControl reads
@@ -304,7 +296,7 @@ namespace ClarionAssistant.Services
         /// Path to the optional user-owned sidecar that lets developers add MCP servers to
         /// the IDE-pane Claude session without losing them on every regen of mcp-config.json.
         /// Format: { "mcpServers": { "&lt;name&gt;": { ...standard MCP server entry... } } }
-        /// Addin-supplied servers (clarion-assistant, multiterminal, multiterminal-channel) win
+        /// Addin-supplied servers (clarion-assistant, clarion-tools, multiterminal) win
         /// on key collision.
         /// </summary>
         public static string GetMcpExtraConfigPath()
@@ -446,39 +438,12 @@ namespace ClarionAssistant.Services
                 }
             }
 
-            // Add the multiterminal-channel MCP server so the embedded Claude receives
-            // real <channel> notifications. Parent-process env vars MULTITERMINAL_NAME
-            // and MULTITERMINAL_DOC_ID are exported from LaunchClaudeForTab per tab and
-            // inherited by this stdio subprocess. --strict-mcp-config blocks user-level
-            // mcpServers entries, so we must include the channel server here explicitly.
-            // THE CHANNEL IS NO LONGER DECLARED HERE. It arrives via --plugin-dir instead, and this
-            // block used to be the reason it did not arrive at all (ticket 7913ead6).
-            //
-            // Claude Code 2.1.265 resolves "--dangerously-load-development-channels server:<name>"
-            // against five PERSISTED config scopes only - enterprise, managed, user, project, local.
-            // A server supplied through --mcp-config is in none of them, so a channel declared here
-            // could never be authorised, and the launch printed
-            //     server:multiterminal-channel - no MCP server configured with that name
-            // The old code was not wrong when written: it put the server here PRECISELY because
-            // --strict-mcp-config blocks user-scope entries. 2.1.265 made those two requirements
-            // mutually exclusive, and the plugin form is the way out of the bind.
-            //
-            // MultiTerminal already does it this way and is unaffected - its terminals carry
-            // "plugin:multiterminal@inline" and declare no channel server in their own --mcp-config.
-            // We now mirror that, so there is exactly ONE channel provider rather than a plugin copy
-            // and a redundant second stdio copy of the same .mjs.
-            //
-            // NOTHING IS LOST BY DROPPING THE ENTRY: both paths resolve the same file in the same
-            // MultiTerminal plugin, so if the plugin is absent there was never a channel to declare.
-            //
-            // IDENTITY NOW RIDES ON INHERITANCE ALONE. The env block above used to declare
-            // MULTITERMINAL_NAME / MULTITERMINAL_DOC_ID explicitly as belt-and-braces alongside
-            // inheritance. The plugin-loaded server inherits them from the pwsh process, which
-            // LaunchClaudeForTab exports per tab (see channelEnv). That is also how MultiTerminal
-            // does it. If a tab ever registers under the wrong identity, this is the first place to
-            // look.
-            IncludeMultiTerminalChannel =
-                (format == McpConfigFormat.Claude) && GetMultiTerminalPluginPath() != null;
+            // NO MULTITERMINAL CHANNEL SERVER, here or anywhere. MultiTerminal retired channels for
+            // native session messaging (ticket b24bcaf4): Claude Code exports
+            // CLAUDE_CODE_MESSAGING_SOCKET/TOKEN into the session, something inside the session hands
+            // them to the broker, and MultiTerminal writes into the live session directly. The
+            // "multiterminal" server above inherits those variables like any stdio child, which is
+            // what lets its register_terminal tool post them.
 
             // Merge user-supplied MCP servers from
             // %APPDATA%\ClarionAssistant\mcp-extra.json. Claude format only —
@@ -520,11 +485,13 @@ namespace ClarionAssistant.Services
         /// The MultiTerminal PLUGIN DIRECTORY, or null when it is not installed:
         /// %USERPROFILE%\.claude\plugins\marketplaces\multiterminal-marketplace\plugins\multiterminal
         ///
-        /// This is what gets passed to --plugin-dir, and the channel server lives INSIDE it at
-        /// server\multiterminal-channel.mjs. Presence of that file is the gate, which is the same
-        /// test MultiTerminal itself applies before emitting the channels flag; a plugin folder
-        /// without a server\ subtree cannot serve a channel, and claiming otherwise would produce a
-        /// flag naming a channel that never registers.
+        /// This is what gets passed to --plugin-dir. The gate is the plugin MANIFEST
+        /// (.claude-plugin\plugin.json), i.e. "is this a loadable plugin", and nothing inside it.
+        /// It used to be server\multiterminal-channel.mjs, the channel server; MultiTerminal deleted
+        /// that when it retired channels for native session messaging (plugin f560d72), and the old
+        /// gate then returned null on every machine with a current plugin, silently launching every
+        /// CA tab with no MultiTerminal plugin at all (ticket b24bcaf4). Gating on a feature file
+        /// ties CA to that feature's lifetime; gate on the plugin.
         ///
         /// THE LAST PATH SEGMENT IS LOAD-BEARING - DO NOT "SIMPLIFY" IT TO THE PARENT. Claude Code
         /// treats a --plugin-dir pointing at a FOLDER OF PLUGINS as "load every child", so trimming
@@ -532,9 +499,6 @@ namespace ClarionAssistant.Services
         /// holds exactly one entry today, so both spellings behave identically right now - which is
         /// what would make the change look correct, test clean, and only misbehave the day a second
         /// plugin is added. Flagged by Alice, who owns the MultiTerminal side (ticket c9285d2a).
-        ///
-        /// The DIRECTORY BASENAME is also the token before the '@' in the channels flag, so callers
-        /// derive that from this path rather than hard-coding "multiterminal" twice.
         /// </summary>
         public static string GetMultiTerminalPluginPath()
         {
@@ -545,7 +509,7 @@ namespace ClarionAssistant.Services
 
                 string pluginRoot = Path.Combine(userProfile, ".claude", "plugins", "marketplaces",
                     "multiterminal-marketplace", "plugins", "multiterminal");
-                if (File.Exists(Path.Combine(pluginRoot, "server", "multiterminal-channel.mjs")))
+                if (File.Exists(Path.Combine(pluginRoot, ".claude-plugin", "plugin.json")))
                     return pluginRoot;
             }
             catch { }

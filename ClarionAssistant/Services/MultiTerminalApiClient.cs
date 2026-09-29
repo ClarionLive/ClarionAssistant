@@ -235,18 +235,21 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// Register this process as a terminal with the MultiTerminal broker.
-        /// Pass channelPort so the broker can push incoming messages via HTTP POST.
+        /// Register a terminal with the MultiTerminal broker, by name.
         /// Returns the broker-assigned terminalId (8-char hex) needed for GetMessages.
+        ///
+        /// ownerPid is the claude.exe process id: once it dies the broker's liveness reaper removes
+        /// the row and clears its messaging credentials, which is how a session MultiTerminal did
+        /// not launch leaves the roster. No docId and no nonce - those identify panes MultiTerminal
+        /// launched itself. No channelPort - channels are retired (ticket b24bcaf4).
         /// </summary>
-        public ApiResult<RegisterTerminalResponse> RegisterTerminal(string name, string docId, int? channelPort)
+        public ApiResult<RegisterTerminalResponse> RegisterTerminal(string name, int? ownerPid)
         {
             var body = new Dictionary<string, object>
             {
                 { "name", name }
             };
-            if (!string.IsNullOrEmpty(docId)) body["docId"] = docId;
-            if (channelPort.HasValue) body["channelPort"] = channelPort.Value;
+            if (ownerPid.HasValue) body["ownerPid"] = ownerPid.Value;
             return Post<RegisterTerminalResponse>("/api/messaging/register", body);
         }
 
@@ -277,7 +280,7 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// Drain the broker-side queue for this terminal.
         /// NOTE: destructive read — calling this removes messages from the queue.
-        /// Use as a safety-net poll in case deliveries fell through channel push.
+        /// Use as a safety-net poll in case native delivery did not reach the session.
         /// </summary>
         public ApiResult<List<QueuedMessage>> GetMessages(string terminalId)
         {

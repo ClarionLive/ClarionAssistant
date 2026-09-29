@@ -1,17 +1,13 @@
 using System;
-using System.Security.Cryptography;
 using System.Text;
 
 namespace ClarionAssistant.Services
 {
     /// <summary>
     /// Identity helpers for CA-spawned Claude Code terminals that register
-    /// with the MultiTerminal broker via the multiterminal-channel plugin.
-    ///
-    /// Each terminal tab gets:
-    ///  - A CA-prefixed agent name derived from its display name
-    ///  - A stable docId hashed from install path + agent name so reconnects
-    ///    hit the by-docId match path in MessageBroker instead of orphaning
+    /// with the MultiTerminal broker. Each tab is known by a CA-prefixed agent name
+    /// derived from its display name - by name alone, with no docId: a docId identifies
+    /// a pane MultiTerminal itself launched (ticket b24bcaf4).
     /// </summary>
     public static class CaAgentIdentity
     {
@@ -52,31 +48,6 @@ namespace ClarionAssistant.Services
             if (cleaned.Length == 0) cleaned = "Tab" + fallbackIndex;
             if (cleaned.Length > 40) cleaned = cleaned.Substring(0, 40);
             return "CA-" + cleaned;
-        }
-
-        /// <summary>
-        /// Compute a stable docId from the addin install path + agent name.
-        /// Same install + same name = same docId across addin reloads, so
-        /// MessageBroker.RegisterTerminal hits the by-docId match path.
-        /// </summary>
-        public static string ComputeStableDocId(string agentName)
-        {
-            try
-            {
-                string seed = (AppDomain.CurrentDomain.BaseDirectory ?? "ClarionAssistant") + "|" + (agentName ?? "");
-                using (var sha = SHA256.Create())
-                {
-                    byte[] hash = sha.ComputeHash(Encoding.UTF8.GetBytes(seed));
-                    var sb = new StringBuilder();
-                    for (int i = 0; i < 4 && i < hash.Length; i++)
-                        sb.Append(hash[i].ToString("x2"));
-                    return "ca-" + sb.ToString();
-                }
-            }
-            catch
-            {
-                return "ca-fallback-" + Math.Abs((agentName ?? "").GetHashCode()).ToString("x");
-            }
         }
 
         /// <summary>
