@@ -55,6 +55,12 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
+## What's New (Unreleased)
+
+### Unsupported Windows is reported, not a blank terminal, and the installer refuses it ([#236](https://github.com/ClarionLive/ClarionAssistant/issues/236))
+
+Clarion Assistant's terminals need Windows 10 version 1809 or Windows Server 2019, or later: they run on the Windows ConPTY API, which first shipped in that release, and Claude Code has the same minimum. On older Windows, such as Server 2016, a tab used to open empty with no explanation. It now says which Windows build it found and what it needs. Any other failure to start the assistant is shown in the tab too, instead of leaving it blank. The installer now checks the Windows version before installing.
+
 ## What's New in v5.9
 
 **Why 5.9.0 and not 5.8.2.** Clarion Assistant is joining the **Clarion Addin Registry**, so it can be found and updated from **AddinFinder** inside the IDE. That required our version number to become a single value that the addin manifest, the installer and the git tag all agree on &mdash; and it could not be 5.8.2. See the versioning entry below.

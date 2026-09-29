@@ -251,6 +251,7 @@
     <Compile Include="Models\MultiTerminalModels.cs" />
     <Compile Include="Services\MultiTerminalApiClient.cs" />
     <Compile Include="Services\CaAgentIdentity.cs" />
+    <Compile Include="Services\WindowsVersion.cs" />
     <Compile Include="Terminal\LspStatusBar.cs" />
     <Compile Include="Dialogs\DiagnosticsForm.cs" />
     <Compile Include="Services\ClaudeProcessManager.cs" />
