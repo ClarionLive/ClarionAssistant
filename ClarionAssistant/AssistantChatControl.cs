@@ -3340,11 +3340,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[LaunchClaude] EXCEPTION: " + ex);
-                // Shown, not swallowed (GitHub #236): this catch used to be the whole reason a
-                // failed launch looked like an empty tab.
-                ShowLaunchProblem(tab, "Claude", ex.GetType().Name + ": " + ex.Message, null);
-                AbortLaunch(tab);
+                FailLaunch(tab, "Claude", ex);
             }
         }
 
@@ -3367,11 +3363,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[LaunchCopilot] EXCEPTION: " + ex);
-                // Shown, not swallowed (GitHub #236): this catch used to be the whole reason a
-                // failed launch looked like an empty tab.
-                ShowLaunchProblem(tab, "Copilot", ex.GetType().Name + ": " + ex.Message, null);
-                AbortLaunch(tab);
+                FailLaunch(tab, "Copilot", ex);
             }
         }
 
@@ -3394,11 +3386,7 @@ namespace ClarionAssistant
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[LaunchCodex] EXCEPTION: " + ex);
-                // Shown, not swallowed (GitHub #236): this catch used to be the whole reason a
-                // failed launch looked like an empty tab.
-                ShowLaunchProblem(tab, "Codex", ex.GetType().Name + ": " + ex.Message, null);
-                AbortLaunch(tab);
+                FailLaunch(tab, "Codex", ex);
             }
         }
 
@@ -3437,13 +3425,15 @@ namespace ClarionAssistant
             int minBuild = Services.WindowsVersion.MinimumSupportedBuild;
             if (build > 0 && build < minBuild)
             {
+                AbortLaunch(tab);
                 ShowLaunchProblem(tab, backendName,
+                    "Windows build " + build + " is too old",
                     "Clarion Assistant needs Windows 10 version 1809 or Windows Server 2019, or later (build "
                     + minBuild + "+). This machine is build " + build + ".",
-                    "These tabs run on the Windows terminal API (ConPTY), which first shipped in that release, "
-                    + "and Claude Code has the same minimum - so there is nothing to install that would fix it on "
-                    + "this version of Windows.");
-                AbortLaunch(tab);
+                    "These tabs run on the Windows terminal API (ConPTY), which first shipped in that release"
+                    + (string.Equals(backendName, "Claude", StringComparison.OrdinalIgnoreCase)
+                        ? ", and Claude Code has the same minimum" : "")
+                    + " - so there is nothing to install that would fix it on this version of Windows.");
                 return null;
             }
 
@@ -3480,12 +3470,30 @@ namespace ClarionAssistant
         }
 
         /// <summary>
+        /// A launch threw. Reset the tab FIRST, then say why: AbortLaunch disposes the terminal,
+        /// and ConPtyTerminal's teardown raises ProcessExited synchronously, whose handler writes
+        /// "... exited" to the status line - so the order is what keeps the real reason on screen
+        /// (Codex adversary, pipeline run 1). Shown, not swallowed (GitHub #236): the old
+        /// Debug-only catch was the whole reason a failed launch looked like an empty tab.
+        /// </summary>
+        private void FailLaunch(TerminalTab tab, string backendName, Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine("[Launch" + backendName + "] EXCEPTION: " + ex);
+            AbortLaunch(tab);
+            ShowLaunchProblem(tab, backendName, ex.GetType().Name, ex.GetType().Name + ": " + ex.Message, null);
+        }
+
+        /// <summary>
         /// Tell the developer, in the tab itself and on the status line, why the assistant did not
         /// start. The tab is where they are looking: a launch failure that only reaches
         /// Debug.WriteLine leaves an empty black tab and no clue (GitHub #236). The renderer queues
         /// writes made before its WebView2 is ready, so this is safe at any point in the launch.
+        ///
+        /// <paramref name="status"/> is the short form for the one-line status bar; the tab gets
+        /// the full <paramref name="headline"/> and <paramref name="detail"/>. Callers that tear
+        /// the tab down must do it BEFORE calling this (see FailLaunch).
         /// </summary>
-        private void ShowLaunchProblem(TerminalTab tab, string backendName, string headline, string detail)
+        private void ShowLaunchProblem(TerminalTab tab, string backendName, string status, string headline, string detail)
         {
             System.Diagnostics.Debug.WriteLine("[Launch" + backendName + "] NOT STARTED: " + headline + " " + detail);
             try
@@ -3494,13 +3502,37 @@ namespace ClarionAssistant
                 if (renderer != null && !renderer.IsDisposed)
                 {
                     string text = "\r\n\x1b[1;31m" + backendName + " did not start.\x1b[0m\r\n\r\n"
-                        + headline.Replace("\r", "").Replace("\n", "\r\n") + "\r\n"
-                        + (string.IsNullOrEmpty(detail) ? "" : "\r\n\x1b[90m" + detail.Replace("\r", "").Replace("\n", "\r\n") + "\x1b[0m\r\n");
+                        + TerminalSafe(headline) + "\r\n"
+                        + (string.IsNullOrEmpty(detail) ? "" : "\r\n\x1b[90m" + TerminalSafe(detail) + "\x1b[0m\r\n");
                     renderer.WriteToTerminal(Encoding.UTF8.GetBytes(text));
                 }
             }
             catch { }
-            try { UpdateStatus(backendName + " failed to start: " + headline); } catch { }
+            try { UpdateStatus(backendName + " failed to start: " + (status ?? "")); } catch { }
+        }
+
+        /// <summary>
+        /// Text safe to write into the xterm.js tab as PLAIN text: newlines normalised to CRLF, and
+        /// every other control character removed - ESC and BEL (which begin CSI/OSC sequences:
+        /// OSC 52 writes the clipboard, OSC 8 plants links, others retitle the window), all C0/C1
+        /// controls, DEL, and the Unicode bidi controls that can disguise what is shown. Exception
+        /// messages can carry paths and child-process output, so they are untrusted here (Codex
+        /// security, pipeline run 1); CA's own styling is added around this, never through it.
+        /// </summary>
+        internal static string TerminalSafe(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return string.Empty;
+            var sb = new StringBuilder(s.Length + 8);
+            foreach (char c in s.Replace("\r\n", "\n").Replace('\r', '\n'))
+            {
+                if (c == '\n') { sb.Append("\r\n"); continue; }
+                if (c == '\t') { sb.Append(c); continue; }
+                if (char.IsControl(c)) continue;                                   // C0, DEL, C1 (ESC, BEL, 0x9B CSI...)
+                if (c == '‎' || c == '‏' || c == '؜') continue;     // directional marks
+                if ((c >= '‪' && c <= '‮') || (c >= '⁦' && c <= '⁩')) continue; // bidi embeds/isolates
+                sb.Append(c);
+            }
+            return sb.ToString();
         }
 
         /// <summary>Reset tab state and dispose the half-initialized terminal
