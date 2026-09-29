@@ -21,6 +21,9 @@
     "Aliases are ORed. Give each scope every spelling the notes plausibly use for it."
   ],
   "scopeAliases": {
+    "mt": [
+      "MultiTerminal"
+    ],
     "compare": [
       "CA Compare",
       "compare"
@@ -181,7 +184,6 @@
     "Scoped to one release cycle — clear this map when a version is cut."
   ],
   "acknowledgedCommits": {
-    "cb16c62": "Documented by the 'CA Embeditor: Ctrl+F4 on unsaved work now asks' entry, which IS this commit's change. Acknowledged rather than aliased because the subject carries no conventional-commit prefix (it is written as a bug report title), so it has no scope for the tool to match and cannot carry a coverage marker either. This is case (b) above. A SHA names one immutable commit and cannot mask anything future, which is why it is the safer fix here than inventing a scope.",
-    "27c4080": "Documented by the 'Completion, hover and squiggles are instant on large procedures' entry, which IS this commit's change (the squash of ticket 1c685f2e). Acknowledged for the same reason as cb16c62: the subject ('PHASE 1 (blocks 5.9.0): ...') has no conventional-commit prefix, so there is no scope to match."
+    "8e93239": "Release plumbing for 5.9.0 itself (the marketplace clarion-assistant plugin bumped to 2.1.0 to ship with it), committed just after the v5.9.0 tag. Nothing user-facing for the next release to document. The 5.9 entries (cb16c62, 27c4080) were cleared here per the note above: a version was cut."
   }
 }

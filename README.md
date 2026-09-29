@@ -55,6 +55,14 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
+## What's New (Unreleased)
+
+### MultiTerminal messages reach IDE terminals again
+
+MultiTerminal has retired its "channels" for delivering messages into a Claude Code session and now writes into the session directly. Clarion Assistant only loaded the MultiTerminal plugin when the channel server was present, so once MultiTerminal removed it, every IDE terminal launched without the plugin: nothing could message it, and it could only find its messages by polling. IDE terminals now load the plugin again, launch under their MultiTerminal name (`-n CA-<tab>`), and no longer pass the development-channels flag or answer its warning prompt. Messages arrive in the session without polling once your MultiTerminal includes native delivery for IDE terminals.
+
+Closing a tab no longer removes it from MultiTerminal by name. With two IDEs open, a tab name used in both meant closing one could drop the other off MultiTerminal's list; MultiTerminal now retires a closed tab itself.
+
 ## What's New in v5.9
 
 **Why 5.9.0 and not 5.8.2.** Clarion Assistant is joining the **Clarion Addin Registry**, so it can be found and updated from **AddinFinder** inside the IDE. That required our version number to become a single value that the addin manifest, the installer and the git tag all agree on &mdash; and it could not be 5.8.2. See the versioning entry below.
