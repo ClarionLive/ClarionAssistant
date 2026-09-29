@@ -3632,10 +3632,11 @@ namespace ClarionAssistant
             // MULTITERMINAL_NAME for the MultiTerminal plugin's hooks, and passed as -n so the same
             // string is the session's native messaging address - one name, not two that can drift.
             _caTabCounter++;
-            string agentName = Services.CaAgentIdentity.NormalizeAgentName(tab.Name, _caTabCounter);
-            // Remember it: this is the name the broker will know this tab by, and the only way
-            // to disconnect it when the process exits (ticket 9a0ce0de). Recomputing later would
-            // give a different name, because the counter above has moved on.
+            string agentName = ResolveUniqueAgentName(tab,
+                Services.CaAgentIdentity.NormalizeAgentName(tab.Name, _caTabCounter));
+            // Remembered on the tab: it is what other tabs' uniqueness checks read, and what a
+            // relaunch of THIS tab keeps. Recomputing later would give a different name, because
+            // the counter above has moved on.
             tab.AgentName = agentName;
             string safeAgentName = Services.CaAgentIdentity.EscapeForPowerShellSingleQuote(agentName);
             // NO MULTITERMINAL_DOC_ID (ticket b24bcaf4). A docId (and a launch nonce) identify a pane
@@ -3966,6 +3967,54 @@ namespace ClarionAssistant
         {
             if (tab.Terminal != null && tab.Terminal.IsRunning)
                 tab.Terminal.Write(data);
+        }
+
+        /// <summary>
+        /// <paramref name="baseName"/>, or baseName-N if another session already holds it (ticket
+        /// b24bcaf4): the name is the session's native messaging address, so two sessions sharing
+        /// one could receive each other's messages. "Taken" means held by another tab in ANY chat
+        /// pad of this IDE, or by a row on MultiTerminal's live roster (another IDE, or an
+        /// MT-hosted terminal).
+        ///
+        /// A RELAUNCH OF THE SAME TAB keeps its name: the roster row still carrying it is this
+        /// tab's own dead predecessor, which the broker's ownerPid reaper retires, so treating it
+        /// as a rival would rename the tab on every restart.
+        ///
+        /// MultiTerminal being unreachable is ordinary (it may not be installed) and leaves only
+        /// the local check. Short timeout because this runs on the launch path; 127.0.0.1 refuses
+        /// instantly when nothing is listening. Two IDEs launching the same name in the same
+        /// instant can still both pass - the broker rejecting a duplicate name is the backstop
+        /// (MT ticket 9a731cda).
+        /// </summary>
+        private string ResolveUniqueAgentName(TerminalTab tab, string baseName)
+        {
+            if (Services.CaAgentIdentity.IsSameOrSuffixed(tab.AgentName, baseName))
+                return tab.AgentName;
+
+            var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            List<AssistantChatControl> pads;
+            lock (_instances) { pads = new List<AssistantChatControl>(_instances); }
+            foreach (var pad in pads)
+            {
+                if (pad._tabManager == null) continue;
+                foreach (var t in pad._tabManager.Tabs)
+                    if (!ReferenceEquals(t, tab) && !string.IsNullOrEmpty(t.AgentName))
+                        taken.Add(t.AgentName);
+            }
+
+            try
+            {
+                var roster = new Services.MultiTerminalApiClient(timeoutMs: 1500).ListTerminals();
+                if (roster != null && roster.Success && roster.Data != null)
+                    foreach (var row in roster.Data)
+                        if (!string.IsNullOrEmpty(row.Name)) taken.Add(row.Name);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[LaunchClaude] MT roster check skipped: " + ex.Message);
+            }
+
+            return Services.CaAgentIdentity.MakeUnique(baseName, taken.Contains);
         }
 
         private static int _dataRecvCount;

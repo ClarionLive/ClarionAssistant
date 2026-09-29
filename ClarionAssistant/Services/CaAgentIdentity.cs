@@ -51,6 +51,44 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// The first of <paramref name="baseName"/>, baseName-2, baseName-3, ... that
+        /// <paramref name="isTaken"/> rejects (case-insensitively, as the caller decides).
+        ///
+        /// WHY (ticket b24bcaf4): the agent name is the session's native messaging ADDRESS
+        /// (-n) and its only MultiTerminal identity, and NormalizeAgentName is deterministic,
+        /// so two tabs with the same name - in one IDE, or in two - would otherwise share one
+        /// address and could receive each other's messages. Uniqueness is decided at launch
+        /// against the names this IDE already holds and MultiTerminal's live roster; the broker
+        /// rejecting a duplicate registration is the backstop for two IDEs racing the same name.
+        /// </summary>
+        public static string MakeUnique(string baseName, Func<string, bool> isTaken)
+        {
+            if (isTaken == null || !isTaken(baseName)) return baseName;
+            for (int n = 2; n < 1000; n++)
+            {
+                string candidate = baseName + "-" + n;
+                if (!isTaken(candidate)) return candidate;
+            }
+            return baseName + "-" + Guid.NewGuid().ToString("N").Substring(0, 6);
+        }
+
+        /// <summary>
+        /// True when <paramref name="name"/> is <paramref name="baseName"/> itself or a
+        /// <see cref="MakeUnique"/> result for it (baseName-N). Exact, not a prefix test:
+        /// CA-Foobar is not a form of CA-Foo.
+        /// </summary>
+        public static bool IsSameOrSuffixed(string name, string baseName)
+        {
+            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(baseName)) return false;
+            if (string.Equals(name, baseName, StringComparison.OrdinalIgnoreCase)) return true;
+            if (name.Length <= baseName.Length + 1
+                || !name.StartsWith(baseName + "-", StringComparison.OrdinalIgnoreCase)) return false;
+            string rest = name.Substring(baseName.Length + 1);
+            foreach (char c in rest) if (c < '0' || c > '9') return false;
+            return true;
+        }
+
+        /// <summary>
         /// Escape a string for single-quoted PowerShell literal (' → '').
         /// </summary>
         public static string EscapeForPowerShellSingleQuote(string s)

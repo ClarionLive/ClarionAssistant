@@ -59,9 +59,9 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ### MultiTerminal messages reach IDE terminals again
 
-MultiTerminal has retired its "channels" for delivering messages into a Claude Code session and now writes into the session directly. Clarion Assistant only loaded the MultiTerminal plugin when the channel server was present, so once MultiTerminal removed it, every IDE terminal launched without the plugin: nothing could message it, and it could only find its messages by polling. IDE terminals now load the plugin again, launch under their MultiTerminal name (`-n CA-<tab>`), and no longer pass the development-channels flag or answer its warning prompt. Messages arrive in the session without polling once your MultiTerminal includes native delivery for IDE terminals.
+MultiTerminal has retired its "channels" for delivering messages into a Claude Code session and now writes into the session directly. Clarion Assistant only loaded the MultiTerminal plugin when the channel server was present, so once MultiTerminal removed it, every IDE terminal launched without the plugin: nothing could message it, and it could only find its messages by polling. IDE terminals now load the plugin again, and no longer pass the development-channels flag or answer its warning prompt. Messages arrive in the session without polling once your MultiTerminal includes native delivery for IDE terminals.
 
-Closing a tab no longer removes it from MultiTerminal by name. With two IDEs open, a tab name used in both meant closing one could drop the other off MultiTerminal's list; MultiTerminal now retires a closed tab itself.
+Each terminal's MultiTerminal name is now unique. Two tabs with the same name, in one IDE or in two, used to share one name; the second now gets `-2`, so a message meant for one can't reach the other. And closing a tab no longer removes it from MultiTerminal by name, which could drop a same-named tab in another IDE off MultiTerminal's list. With the MultiTerminal update above, MultiTerminal retires a closed tab itself.
 
 ## What's New in v5.9
 

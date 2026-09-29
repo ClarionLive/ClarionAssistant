@@ -437,7 +437,7 @@ namespace ClarionAssistant.Terminal
         /// </summary>
         /// <remarks>
         /// DELIBERATELY does NOT RaiseProcessExitedOnce (ticket 9a0ce0de). Handlers do real work —
-        /// a SQLite write among it — and this runs on the IDE's shutdown path, which is the one path
+        /// including a SQLite write — and this runs on the IDE's shutdown path, which is the one path
         /// that must never grow slower or more fragile. MultiTerminal roster cleanup is not CA's job
         /// any more (ticket b24bcaf4): the broker's ownerPid reaper retires the row once claude.exe dies.
         /// Note this also sets _cleanupStarted, so a later Cleanup() short-circuits and will not
