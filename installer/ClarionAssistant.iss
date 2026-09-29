@@ -169,6 +169,10 @@ WizardStyle=modern
 PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x86compatible
+; Windows 10 1809 / Server 2019 (GitHub #236). Every assistant tab runs on ConPTY
+; (CreatePseudoConsole), which first shipped in build 17763, and Claude Code documents the
+; same floor. Below it the install used to succeed and then show blank tabs.
+MinVersion=10.0.17763
 UsedUserAreasWarning=no
 SetupIconFile={#SrcInstaller}\clarion-assistant.ico
 UninstallDisplayIcon={app}\ClarionAssistant.dll
@@ -177,6 +181,10 @@ InfoBeforeFile={#SrcInstaller}\PREINSTALL.txt
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Messages]
+; Replaces Inno's "requires Windows version 10.0.17763 or later", which names no release a person would recognise.
+WinVersionTooLowError=Clarion Assistant requires Windows 10 version 1809 or Windows Server 2019, or later (build 17763).%n%nIts terminals use the Windows ConPTY API, which older versions of Windows do not have, and Claude Code has the same requirement.
 
 [Types]
 Name: "full"; Description: "Full installation"
