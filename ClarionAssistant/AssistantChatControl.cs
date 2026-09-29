@@ -3341,6 +3341,10 @@ namespace ClarionAssistant
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine("[LaunchClaude] EXCEPTION: " + ex);
+                // Shown, not swallowed (GitHub #236): this catch used to be the whole reason a
+                // failed launch looked like an empty tab.
+                ShowLaunchProblem(tab, "Claude", ex.GetType().Name + ": " + ex.Message, null);
+                AbortLaunch(tab);
             }
         }
 
@@ -3364,6 +3368,10 @@ namespace ClarionAssistant
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine("[LaunchCopilot] EXCEPTION: " + ex);
+                // Shown, not swallowed (GitHub #236): this catch used to be the whole reason a
+                // failed launch looked like an empty tab.
+                ShowLaunchProblem(tab, "Copilot", ex.GetType().Name + ": " + ex.Message, null);
+                AbortLaunch(tab);
             }
         }
 
@@ -3387,6 +3395,10 @@ namespace ClarionAssistant
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine("[LaunchCodex] EXCEPTION: " + ex);
+                // Shown, not swallowed (GitHub #236): this catch used to be the whole reason a
+                // failed launch looked like an empty tab.
+                ShowLaunchProblem(tab, "Codex", ex.GetType().Name + ": " + ex.Message, null);
+                AbortLaunch(tab);
             }
         }
 
@@ -3418,6 +3430,23 @@ namespace ClarionAssistant
         /// </summary>
         private LaunchContext PrepareBackendLaunch(TerminalTab tab, string backendName, bool requirePwsh7)
         {
+            // Windows too old to host a terminal at all (GitHub #236). Checked BEFORE ConPTY is
+            // touched, because on such a system the failure is an EntryPointNotFoundException from
+            // kernel32 that used to be swallowed into a blank tab.
+            int build = Services.WindowsVersion.GetBuildNumber();
+            int minBuild = Services.WindowsVersion.MinimumSupportedBuild;
+            if (build > 0 && build < minBuild)
+            {
+                ShowLaunchProblem(tab, backendName,
+                    "Clarion Assistant needs Windows 10 version 1809 or Windows Server 2019, or later (build "
+                    + minBuild + "+). This machine is build " + build + ".",
+                    "These tabs run on the Windows terminal API (ConPTY), which first shipped in that release, "
+                    + "and Claude Code has the same minimum - so there is nothing to install that would fix it on "
+                    + "this version of Windows.");
+                AbortLaunch(tab);
+                return null;
+            }
+
             tab.Terminal = new ConPtyTerminal();
             tab.Terminal.DataReceived += data => OnTabTerminalDataReceived(tab, data);
             tab.Terminal.ProcessExited += (s, ev) => OnTabTerminalProcessExited(tab);
@@ -3448,6 +3477,30 @@ namespace ClarionAssistant
                 SafeWorkDir = workDir.Replace("'", "''"),
                 EnvSetup = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8; ",
             };
+        }
+
+        /// <summary>
+        /// Tell the developer, in the tab itself and on the status line, why the assistant did not
+        /// start. The tab is where they are looking: a launch failure that only reaches
+        /// Debug.WriteLine leaves an empty black tab and no clue (GitHub #236). The renderer queues
+        /// writes made before its WebView2 is ready, so this is safe at any point in the launch.
+        /// </summary>
+        private void ShowLaunchProblem(TerminalTab tab, string backendName, string headline, string detail)
+        {
+            System.Diagnostics.Debug.WriteLine("[Launch" + backendName + "] NOT STARTED: " + headline + " " + detail);
+            try
+            {
+                var renderer = tab?.Renderer;
+                if (renderer != null && !renderer.IsDisposed)
+                {
+                    string text = "\r\n\x1b[1;31m" + backendName + " did not start.\x1b[0m\r\n\r\n"
+                        + headline.Replace("\r", "").Replace("\n", "\r\n") + "\r\n"
+                        + (string.IsNullOrEmpty(detail) ? "" : "\r\n\x1b[90m" + detail.Replace("\r", "").Replace("\n", "\r\n") + "\x1b[0m\r\n");
+                    renderer.WriteToTerminal(Encoding.UTF8.GetBytes(text));
+                }
+            }
+            catch { }
+            try { UpdateStatus(backendName + " failed to start: " + headline); } catch { }
         }
 
         /// <summary>Reset tab state and dispose the half-initialized terminal
