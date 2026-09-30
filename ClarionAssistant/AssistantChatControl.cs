@@ -746,8 +746,9 @@ namespace ClarionAssistant
 
         /// <summary>
         /// Re-resolve when the IDE's Build &gt; Set Clarion Version moved since the last resolution: reload the
-        /// VERSION list and the .red, and restart the language server on the new version's paths. Cheap when
-        /// nothing changed (one PropertyService read). UI thread.
+        /// VERSION list and the .red for this panel's header. Cheap when nothing changed (one PropertyService
+        /// read). UI thread. The language server restart is LspAutostartCommand's (905928c7), which follows
+        /// the version with or without this panel.
         /// </summary>
         private void SyncVersionWithIde()
         {
@@ -763,7 +764,6 @@ namespace ClarionAssistant
                     + (_lastIdeVersionChoice ?? "(unknown)") + " -> " + now);
                 LoadVersions();
                 LoadRedFile();
-                LspService.RestartIfVersionChanged(_currentVersionConfig != null ? _currentVersionConfig.Name : null);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[AssistantChatControl] SyncVersionWithIde: " + ex.Message); }
         }

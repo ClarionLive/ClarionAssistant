@@ -138,6 +138,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "LspStartGate.Test"
                Sources = @("tests\LspStartGate.Test.cs", "Services\LspStartGate.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # 905928c7: Build > Set Clarion Version is followed with no CA chat tab — seeded quietly at
+            # addin start, one change per switch however many sources observe it.
+            @{ Name = "IdeVersionFollower.Test"
+               Sources = @("tests\IdeVersionFollower.Test.cs", "Services\IdeVersionFollower.cs",
+                           "Services\ClarionVersionService.cs", "Services\ClarionConfigDirectory.cs")
+               Refs = @("System.dll", "System.Xml.dll", "System.Core.dll") }
             # GH #187 follow-up: the CA Embeditor's Monaco <-> LSP line mapping agrees with what
             # WrapBuffer actually prepended (0 lines for a buffer opening with MEMBER/PROGRAM).
             @{ Name = "EmbedLspContext.LineMapping"

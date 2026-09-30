@@ -35,11 +35,12 @@ namespace ClarionAssistant.Services
         /// Keyed on WHICH .red should be in force (effective version, its .red path, solution folder), not on
         /// "is one loaded": the chat panel was also the only thing that reloaded the .red after Build > Set
         /// Clarion Version, so without a chat tab a version or solution switch would keep the old file.
-        /// Re-resolving the version is an XML parse, once per embed open.
+        /// Re-resolving the version is an XML parse, once per embed open. LspAutostartCommand also calls it
+        /// when the IDE's version moves (905928c7), so the .red follows a switch before the next embed open.
         /// </summary>
         private static string _redKey;
 
-        private static void EnsureRedirectionLoaded()
+        internal static void EnsureRedirectionLoaded()
         {
             try
             {
