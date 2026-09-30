@@ -125,6 +125,54 @@ namespace ClarionAssistant.Services
             try { if (_timer != null) { _timer.Stop(); _timer.Dispose(); _timer = null; } } catch { }
         }
 
+        // ── Compact after a big editor closes ───────────────────────────────────────────────────────────
+        // The 2026-09-30 A/B: the CA Embeditor on a 3.2 MB procedure cost ~136 MB more than Clarion's own and
+        // gave NONE of it back on close (largest free block stuck at 39 MB). A multi-MB buffer lives as 6+ MB
+        // strings in the large-object heap, which .NET never compacts unless asked, so the freed space stays
+        // in pieces too small for the next big open. One compacting collection after a big close returns it.
+        // Gated so closing small embeds never pays for a full collection, and debounced so a close that tears
+        // down several things collects once.
+        internal const int CompactMinChars = 500000;
+        private const int CompactDelayMs = 1500;   // let the WebView2 disposal and the native close settle first
+        private static Timer _compactTimer;
+        private static string _compactWho;
+
+        /// <summary>Schedule one compacting GC after an editor holding <paramref name="bufferChars"/> closes.
+        /// Runs on the UI thread from a timer, never on the close stack. Never throws.</summary>
+        internal static void CompactAfterClose(string who, long bufferChars)
+        {
+            try
+            {
+                if (IntPtr.Size != 4 || bufferChars < CompactMinChars) return;
+                _compactWho = who + " chars=" + bufferChars;
+                if (_compactTimer == null)
+                {
+                    _compactTimer = new Timer { Interval = CompactDelayMs };
+                    _compactTimer.Tick += (s, e) => { _compactTimer.Stop(); RunCompaction(); };
+                }
+                _compactTimer.Stop();
+                _compactTimer.Start();
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[mem-compact] schedule failed: " + ex.Message); }
+        }
+
+        private static void RunCompaction()
+        {
+            try
+            {
+                string before = MonacoSpikeLog.MemSummary();
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                long ms = sw.ElapsedMilliseconds;
+                MonacoSpikeLog.Write("[mem-compact] after " + _compactWho + " ms=" + ms + " before: " + before + " after: " + MonacoSpikeLog.MemSummary());
+                if (_warned) Check();   // headroom may be back: re-arm/dismiss the warning now, not in 15 s
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[mem-compact] failed: " + ex.Message); }
+        }
+
         private static void Check()
         {
             try

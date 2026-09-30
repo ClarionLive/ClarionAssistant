@@ -3211,6 +3211,8 @@ namespace ClarionAssistant.Terminal
             _embedOverlay = false;
             _overlayHost = null;
             _overlayGenEditor = null;
+            // 7116020b: hand the big buffer's large-object-heap space back in one piece (gated + deferred).
+            Services.MemoryHeadroom.CompactAfterClose("embeditor " + _procedureName, _sourceText != null ? _sourceText.Length : 0);
         }
 
         /// <summary>

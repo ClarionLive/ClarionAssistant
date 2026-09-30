@@ -2546,6 +2546,10 @@ namespace ClarionAssistant
                 try { if (_navBar != null && !_navBar.IsDisposed) _navBar.Visible = true; } catch { }
                 _navBar = null;
                 RemoveCover();
+                // 7116020b: a big file's buffer copies sit in the large-object heap; compact once after close.
+                long fileChars = 0;
+                try { if (!string.IsNullOrEmpty(_filePath) && System.IO.File.Exists(_filePath)) fileChars = new System.IO.FileInfo(_filePath).Length; } catch { }
+                Services.MemoryHeadroom.CompactAfterClose("source editor " + System.IO.Path.GetFileName(_filePath ?? "?"), fileChars);
             }
             catch { }
         }
