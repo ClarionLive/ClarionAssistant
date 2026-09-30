@@ -72,7 +72,9 @@ Clarion is a 32-bit program with 2 GB of address space, and a big solution fills
 
 - **A warning before it happens.** When the largest free block of Clarion's memory drops below 48 MB, a small notice at the bottom right of the IDE says so and suggests saving and restarting. It never takes focus and closes itself when memory recovers. The threshold can be changed by putting a number of MB in `%LOCALAPPDATA%\ClarionAssistant\mem-watch-warn-mb.txt`.
 - **No more silent fallback.** If the CA Embeditor or CA Editor cannot start, it now steps aside so Clarion's own editor is usable, and a notice says why. Before, you were left in the native editor with no explanation.
-- **Memory is given back.** Closing a CA editor on a big procedure or file now returns its memory to Clarion (about 230 MB on the 3.2 MB test procedure), where before it stayed in use until Clarion restarted.
+- **Memory is given back.** Closing a CA editor on a big procedure or file now returns its memory to Clarion (about 230 MB on the 3.2 MB test procedure), where before it stayed in use until Clarion restarted. When there is plenty of room this step is skipped, so it costs nothing.
+
+These checks also understand a `Clarion.exe` that has been marked **LargeAddressAware** (4 GB of address space instead of 2 GB), so they see the full 4 GB and do not warn falsely. On the 3.2 MB test procedure, that flag took the largest free block with the procedure open from 39 MB to over 1.5 GB.
 
 ### Thanks
 
