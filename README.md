@@ -76,6 +76,15 @@ Clarion is a 32-bit program with 2 GB of address space, and a big solution fills
 
 These checks also understand a `Clarion.exe` that has been marked **LargeAddressAware** (4 GB of address space instead of 2 GB), so they see the full 4 GB and do not warn falsely. On the 3.2 MB test procedure, that flag took the largest free block with the procedure open from 39 MB to over 1.5 GB.
 
+<!-- release-docs: covered=embeditor,lsp,memory -->
+### Opening a large procedure in the CA Embeditor uses far less memory
+
+Measured on a 3.2 MB generated procedure, where every large block of memory counts in 32-bit Clarion:
+
+- **The Data pad no longer keeps a copy of the whole application.** Each open exported the entire app (20 MB on the test app) and kept it as one 38 MB block of text, then re-read the whole thing on every refresh. It now reads the export once, line by line, and keeps only the data sections the pad shows, about 7% of it. The pad shows exactly the same Local Data, Global Data, Other Files and browse file as before; this was checked against all 367 procedures of the test app.
+- **No more whole-procedure copies on every open.** Two steps split the entire procedure into lines on every open, about 65 MB in total. One now happens only when you click an Errors-pane row, and the other copies just the embed sections.
+- **Sending the procedure to the language server costs almost nothing.** Every open, and every pause while typing, turned the whole procedure into one 34 MB message in memory before sending it. It is now written to the language server piece by piece, at about 0.05 MB.
+
 ### Thanks
 
 - **[@Aarhusdk](https://github.com/Aarhusdk)** &mdash; [#235](https://github.com/ClarionLive/ClarionAssistant/issues/235): a production crash traced to its root cause with DebugView timings, a complete patch, and a retest on the affected install before we had even looked at it.

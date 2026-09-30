@@ -413,9 +413,7 @@ namespace ClarionAssistant.Terminal
             {
                 string text = _bufferCache.Resolve(v);
                 if (text == null) return;   // superseded by a newer sync; that one pushes its own map
-                string msg;
-                using (text.Length > 1000000 ? Services.MemoryHeadroom.Phase("M5 spanMap") : null)   // 1d8d1c49
-                    msg = Services.LocalLayerHandlers.SpanMapMessage(v, text, MonacoSpikeLog.Write);
+                string msg = Services.LocalLayerHandlers.SpanMapMessage(v, text, MonacoSpikeLog.Write);
                 if (msg != null) PostJson(msg);
             }, null);
         }
