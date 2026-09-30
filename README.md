@@ -85,6 +85,11 @@ Measured on a 3.2 MB generated procedure, where every large block of memory coun
 - **No more whole-procedure copies on every open.** Two steps split the entire procedure into lines on every open, about 65 MB in total. One now happens only when you click an Errors-pane row, and the other copies just the embed sections.
 - **Sending the procedure to the language server costs almost nothing.** Every open, and every pause while typing, turned the whole procedure into one 34 MB message in memory before sending it. It is now written to the language server piece by piece, at about 0.05 MB.
 
+<!-- release-docs: covered=embeditor -->
+### CA Embeditor hovers are as fast and as accurate as the CA Editor's
+
+In a large procedure, hovering a global such as `GlobalRequest` in the CA Embeditor could sit on "Loading" for seconds, and a procedure call such as `PASSWORD(...)` was described as the ENTRY attribute of the same name. The CA Editor, on the same code, answered both instantly. The embeditor's quick lookups need the project's CodeGraph database, which is found from the procedure's generated module, and the embeditor often could not locate that module: it lives in the folder the redirection file names (for example `.\Source`), and the redirection file was only loaded once the Clarion Assistant chat panel had opened. The embeditor now loads the redirection file for the IDE's Clarion version itself, and falls back to the open solution's folder when the module still can't be found, so hovers answer immediately either way.
+
 ### Thanks
 
 - **[@Aarhusdk](https://github.com/Aarhusdk)** &mdash; [#235](https://github.com/ClarionLive/ClarionAssistant/issues/235): a production crash traced to its root cause with DebugView timings, a complete patch, and a retest on the affected install before we had even looked at it.
