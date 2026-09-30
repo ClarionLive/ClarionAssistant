@@ -22,6 +22,7 @@ namespace ClarionAssistant.Services
             public bool Ok;
             public long FreeMB;
             public long LargestFreeMB;
+            public long UserSpaceMB;   // ~2048 normally, ~4096 when Clarion.exe is LargeAddressAware
             public long ElapsedMs;
         }
 
@@ -49,22 +50,32 @@ namespace ClarionAssistant.Services
             var sw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
-                long free = 0, largest = 0, addr = 0;
+                // 83374953: with Clarion.exe patched LargeAddressAware, a 32-bit process has up to 4 GB, and its
+                // addresses above 2 GB are NEGATIVE as a 32-bit IntPtr. So in a 32-bit process, carry addresses
+                // as unsigned 32-bit values: build the IntPtr from the low 32 bits, and read BaseAddress back
+                // with ToInt32 cast through uint (ToInt64 would sign-extend). The walk ends when VirtualQuery
+                // says the address is past user space, which is 2 GB or 4 GB depending on the flag.
+                bool is32 = IntPtr.Size == 4;
+                long limit = is32 ? 0x100000000L : long.MaxValue;
+                long free = 0, largest = 0, addr = 0, top = 0;
                 var size = new UIntPtr((uint)Marshal.SizeOf(typeof(MemoryBasicInformation)));
-                for (int guard = 0; guard < 200000; guard++)
+                for (int guard = 0; guard < 200000 && addr < limit; guard++)
                 {
                     MemoryBasicInformation mbi;
-                    if (VirtualQuery(new IntPtr(addr), out mbi, size) == UIntPtr.Zero) break;
+                    var p = is32 ? new IntPtr(unchecked((int)(uint)addr)) : new IntPtr(addr);
+                    if (VirtualQuery(p, out mbi, size) == UIntPtr.Zero) break;
                     long region = (long)mbi.RegionSize.ToUInt64();
                     if (region <= 0) break;
+                    long bas = is32 ? (long)(uint)mbi.BaseAddress.ToInt32() : mbi.BaseAddress.ToInt64();
                     if (mbi.State == MemFree) { free += region; if (region > largest) largest = region; }
-                    long next = mbi.BaseAddress.ToInt64() + region;
+                    long next = bas + region;
                     if (next <= addr) break;
                     addr = next;
-                    if (IntPtr.Size == 4 && addr > int.MaxValue) break;   // new IntPtr(long) would throw past 2 GB
+                    top = next;
                 }
                 result.FreeMB = free >> 20;
                 result.LargestFreeMB = largest >> 20;
+                result.UserSpaceMB = top >> 20;
                 result.Ok = largest > 0;
             }
             catch { result.Ok = false; }

@@ -2931,7 +2931,7 @@ namespace ClarionAssistant
             catch (Exception ex) { sb.Append(" proc=err(").Append(ex.GetType().Name).Append(')'); }
             try { sb.Append(" gc=").Append(GC.GetTotalMemory(false) >> 20); } catch { }
             var a = Services.MemoryHeadroom.Measure();
-            if (a.Ok) sb.Append(" free=").Append(a.FreeMB).Append(" largestFree=").Append(a.LargestFreeMB);
+            if (a.Ok) sb.Append(" free=").Append(a.FreeMB).Append(" largestFree=").Append(a.LargestFreeMB).Append(" space=").Append(a.UserSpaceMB);
             else sb.Append(" vq=err");
             return sb.Append(" (MB)").ToString();
         }
