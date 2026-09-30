@@ -226,6 +226,8 @@ COMPILE('_EndCompile_',_MySymbol_)   ! Compile block if symbol defined
 _EndCompile_
 ```
 
+**OMIT terminator rule (verified):** an `OMIT('some text')` block is closed by the first occurrence of that exact text anywhere in the source, including inside a comment (`!` and `!!` are both ordinary comments). An `OMIT` whose text never reappears fails with `OMIT not terminated`.
+
 ## Best Practices
 
 ### Naming Conventions
