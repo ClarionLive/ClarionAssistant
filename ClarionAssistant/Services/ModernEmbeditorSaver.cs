@@ -24,23 +24,9 @@ namespace ClarionAssistant.Services
         /// <summary>Extract each editable slot's text from a source buffer. Ranges are 1-based inclusive.</summary>
         public static List<string> ExtractSlotTexts(string source, List<int[]> ranges)
         {
-            var result = new List<string>();
-            if (ranges == null) return result;
-            var lines = SplitLines(source ?? "");
-            foreach (var r in ranges)
-            {
-                if (r == null || r.Length < 2) { result.Add(""); continue; }
-                int s = Math.Max(1, r[0]), e = Math.Min(lines.Length, r[1]);
-                if (e < s) { result.Add(""); continue; }
-                var sb = new StringBuilder();
-                for (int i = s; i <= e; i++)
-                {
-                    if (i > s) sb.Append('\n');
-                    sb.Append(lines[i - 1]);
-                }
-                result.Add(sb.ToString());
-            }
-            return result;
+            // 1d8d1c49: a line walk instead of SplitLines(source) — the split cost 32 MB per open of a 3.2 MB
+            // procedure. Same text (TextLines.Test compares it against the split version).
+            return TextLines.ExtractRanges(source, ranges);
         }
 
         public static string Save(string procName, List<int[]> originalRanges,

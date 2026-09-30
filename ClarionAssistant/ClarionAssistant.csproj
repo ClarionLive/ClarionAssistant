@@ -159,6 +159,7 @@
     <Compile Include="Services\ClarionDeclarationParser.cs" />
     <Compile Include="Services\EmbedEditorMonitorService.cs" />
     <Compile Include="Services\MemoryHeadroom.cs" />
+    <Compile Include="Services\TextLines.cs" />
     <Compile Include="Services\ShutdownLog.cs" />
     <Compile Include="Services\ShutdownService.cs" />
     <Compile Include="Services\WebView2ProcessReaper.cs" />

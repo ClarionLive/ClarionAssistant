@@ -573,10 +573,7 @@ namespace ClarionAssistant.Terminal
                         // 16d140e9: the page's buffer, sent once per content version. Cached here (one copy per
                         // surface, replacing the last) so no host has to implement anything to receive it.
                         // AcceptSync logs `[buffer-sync] recv ...` or `... parse failed ...` (items 0 and 8).
-                        bool accepted;
-                        using (json.Length > 1000000 ? Services.MemoryHeadroom.Phase("M4 bufferSync accept json=" + json.Length) : null)   // 1d8d1c49
-                            accepted = _bufferCache.AcceptSync(json, "buffer", getMs, MonacoSpikeLog.Write);
-                        if (accepted)
+                        if (_bufferCache.AcceptSync(json, "buffer", getMs, MonacoSpikeLog.Write))
                         {
                             _fileStateSpanMap.Cancel();   // this map covers any fileState still waiting
                             PushSpanMap();

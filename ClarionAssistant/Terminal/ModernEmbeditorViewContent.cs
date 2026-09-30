@@ -127,7 +127,7 @@ namespace ClarionAssistant.Terminal
                 }
                 if (string.IsNullOrEmpty(fileName) || !System.IO.File.Exists(fileName))
                 { ClarionAssistant.MonacoSpikeLog.Write("error reveal: row file missing (" + (fileName ?? "null") + ")"); return false; }
-                var pwee = live._pweeBaselineLines;
+                var pwee = live.PweeBaselineLines;
                 if (pwee == null || pwee.Length < 4)
                 { ClarionAssistant.MonacoSpikeLog.Write("error reveal: no pwee baseline captured"); return false; }
 
@@ -495,16 +495,39 @@ namespace ClarionAssistant.Terminal
             return dict;
         }
 
-        // Whole-app .txa text, exported on the UI thread (open + save) and parsed per-proc on the pad's
+        // Whole-app .txa, exported on the UI thread (open + save) and indexed (1d8d1c49) for the pad's
         // background refresh. Static so it's shared across all Modern Embeditor tabs for the same app.
         private static readonly object _txaLock = new object();
-        private static string _wholeAppTxa;
+        // 1d8d1c49: the [DATA] regions only, not the whole 20 MB export as one 38 MB string (see TxaDataIndex).
+        private static ClarionAppDataReader.TxaDataIndex _txaIndex;
 
         // Live dictionary snapshot (master, proc-independent): table name -> TableDef (cols w/ pictures +
         // GROUP nesting, keys). Read from the IDE object model on the UI thread; the Other Files schema
         // source (replaces the .dcv). See reference_clarion_dict_object_model.
         private static readonly object _liveLock = new object();
         private static Dictionary<string, ClarionAppDataReader.TableDef> _liveTables;
+
+        /// <summary>
+        /// 1d8d1c49: build the [DATA]-region index from the exported .txa by STREAMING it, never holding the whole
+        /// file as one string. Encoding follows EncodingHelper.ReadAllText's ladder: a BOM wins; otherwise strict
+        /// UTF-8, and on the first invalid byte start again as ANSI (Clarion writes the .txa as ANSI). Null on failure.
+        /// </summary>
+        private static ClarionAppDataReader.TxaDataIndex LoadTxaIndex(string path)
+        {
+            try
+            {
+                using (var sr = new StreamReader(path, new System.Text.UTF8Encoding(false, true), true))
+                    return ClarionAppDataReader.TxaDataIndex.Build(sr);
+            }
+            catch (System.Text.DecoderFallbackException) { }
+            catch { return null; }
+            try
+            {
+                using (var sr = new StreamReader(path, EncodingHelper.Ansi, true))
+                    return ClarionAppDataReader.TxaDataIndex.Build(sr);
+            }
+            catch { return null; }
+        }
 
         /// <summary>
         /// Refresh the Modern Data pad's IDE-sourced caches: (1) the whole-app .txa text (Local/Global Data),
@@ -525,8 +548,8 @@ namespace ClarionAssistant.Terminal
                 {
                     // Clarion writes the .txa as ANSI, so the no-encoding overload turned every
                     // high-bit character in exported Local/Global Data into mojibake in the pad.
-                    string text = EncodingHelper.ReadAllText(tmp, out _);
-                    if (!string.IsNullOrEmpty(text)) lock (_txaLock) { _wholeAppTxa = text; }
+                    var idx = LoadTxaIndex(tmp);
+                    if (idx != null && idx.LinesRead > 0) lock (_txaLock) { _txaIndex = idx; }
                 }
             }
             catch { /* keep prior .txa cache */ }
@@ -547,7 +570,7 @@ namespace ClarionAssistant.Terminal
         }
 
         // Identity (.app file path) of the app the pad-source caches were last loaded FOR, via the SELECTION
-        // path. The caches (_wholeAppTxa/_liveTables) are process-wide static and BuildPadData consumes them by
+        // path. The caches (_txaIndex/_liveTables) are process-wide static and BuildPadData consumes them by
         // procedure name only — so switching .app must force a re-export, otherwise a same-named proc in the new
         // app would render the previous app's Local/Global/Tables data. Guarded by _txaLock.
         private static string _padSourcesAppKey;
@@ -571,7 +594,7 @@ namespace ClarionAssistant.Terminal
             lock (_txaLock)
             {
                 appChanged = !string.Equals(_padSourcesAppKey, appKey, StringComparison.OrdinalIgnoreCase);
-                needLoad = string.IsNullOrEmpty(_wholeAppTxa) || appChanged;
+                needLoad = _txaIndex == null || appChanged;
             }
             if (!needLoad) return;
 
@@ -583,7 +606,7 @@ namespace ClarionAssistant.Terminal
             // (no clear) so a transient export hiccup falls back gracefully.
             if (appChanged)
             {
-                lock (_txaLock) { _wholeAppTxa = null; }
+                lock (_txaLock) { _txaIndex = null; }
                 lock (_liveLock) { _liveTables = null; LiveDictionaryIndex.Publish(null); }
             }
 
@@ -599,7 +622,7 @@ namespace ClarionAssistant.Terminal
             // made through OTHER IDE surfaces (e.g. Clarion's native dictionary editor) while ONLY browsing tree
             // selections are not reflected until one of those events fires — an accepted trade-off for a read-only
             // quick-view that avoids a multi-second whole-app export on every click.
-            lock (_txaLock) { _padSourcesAppKey = string.IsNullOrEmpty(_wholeAppTxa) ? null : appKey; }
+            lock (_txaLock) { _padSourcesAppKey = _txaIndex == null ? null : appKey; }
         }
 
         // Current open .app identity (file path, else name) via pure managed reflection; null when no app open.
@@ -777,12 +800,12 @@ namespace ClarionAssistant.Terminal
         /// with their schema (columns w/ pictures + GROUP nesting, keys) from the dictionary .dcv export.
         /// If the .dcv isn't available, the files are still listed by name so the section appears.
         /// </summary>
-        private static List<Dictionary<string, object>> GetOtherFiles(string txa, string procedureName)
+        private static List<Dictionary<string, object>> GetOtherFiles(ClarionAppDataReader.TxaDataIndex txa, string procedureName)
         {
             var outp = new List<Dictionary<string, object>>();
             try
             {
-                if (string.IsNullOrEmpty(txa) || string.IsNullOrEmpty(procedureName)) return outp;
+                if (txa == null || string.IsNullOrEmpty(procedureName)) return outp;
                 var names = ClarionAppDataReader.ParseTxaOtherFiles(txa, procedureName);
                 if (names.Count == 0) return outp;
 
@@ -834,12 +857,12 @@ namespace ClarionAssistant.Terminal
         /// dictionary, carrying the browse KEY. Returns 0 or 1 entries (a list keeps the frontend renderer
         /// uniform with Other Files / Declared Tables).
         /// </summary>
-        private static List<Dictionary<string, object>> GetBrowseFiles(string txa, string procedureName)
+        private static List<Dictionary<string, object>> GetBrowseFiles(ClarionAppDataReader.TxaDataIndex txa, string procedureName)
         {
             var outp = new List<Dictionary<string, object>>();
             try
             {
-                if (string.IsNullOrEmpty(txa) || string.IsNullOrEmpty(procedureName)) return outp;
+                if (txa == null || string.IsNullOrEmpty(procedureName)) return outp;
                 var pf = ClarionAppDataReader.ParseTxaPrimaryFile(txa, procedureName);
                 if (pf == null || string.IsNullOrEmpty(pf.File)) return outp;
 
@@ -962,8 +985,8 @@ namespace ClarionAssistant.Terminal
                 // Prefer the AUTHORITATIVE .txa source (declaration order + pictures + exact Clarion item
                 // set). Falls back to the embeditor-source parse when the whole-app .txa isn't cached yet.
                 List<ClarionAppDataReader.FieldDef> localDefs = null;
-                string txa; lock (_txaLock) { txa = _wholeAppTxa; }
-                if (!string.IsNullOrEmpty(txa) && !string.IsNullOrEmpty(procedureName))
+                ClarionAppDataReader.TxaDataIndex txa; lock (_txaLock) { txa = _txaIndex; }
+                if (txa != null && !string.IsNullOrEmpty(procedureName))
                 {
                     var fromTxa = ClarionAppDataReader.ParseTxaProcedureData(txa, procedureName);
                     if (fromTxa.Count > 0) localDefs = fromTxa;
@@ -985,7 +1008,7 @@ namespace ClarionAssistant.Terminal
                 // even if empty (an app with no dev globals shows none). Fall back to the generated
                 // <app>.clw globals only when no .txa is available yet.
                 List<ClarionAppDataReader.FieldDef> globalDefs;
-                if (!string.IsNullOrEmpty(txa))
+                if (txa != null)
                 {
                     globalDefs = ClarionAppDataReader.ParseTxaGlobalData(txa);
                 }
@@ -1337,7 +1360,21 @@ namespace ClarionAssistant.Terminal
 
         // Open-time pwee document lines (from the ctor's sourceText) — the error-reveal self-anchor
         // (d3ab083a) locates these inside the generated module to map module lines → pwee lines.
-        private string[] _pweeBaselineLines;
+        // 1d8d1c49: split LAZILY, on the first Errors-pane click. Splitting in the ctor cost 34 MB on every
+        // open of a 3.2 MB procedure (Split's int[Length] scratch arrays plus ~87K line strings) for a
+        // mapping most opens never use. The ctor keeps a reference to the open-time string (no copy;
+        // _sourceText is reassigned later, which is why this is its own field).
+        private string _pweeBaselineText;
+        private string[] _pweeBaselineLinesCache;
+        private string[] PweeBaselineLines
+        {
+            get
+            {
+                if (_pweeBaselineLinesCache == null && _pweeBaselineText != null)
+                    _pweeBaselineLinesCache = _pweeBaselineText.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+                return _pweeBaselineLinesCache;
+            }
+        }
 
         // Native embeditor caret mirror (task d19c036d, sibling of PR #144's source-editor mirror): while the
         // overlay covers the live native embed, Clarion's own error→embed navigation keeps moving the HIDDEN
@@ -1377,10 +1414,9 @@ namespace ClarionAssistant.Terminal
         {
             _title = title ?? "Embeditor";
             _sourceText = sourceText ?? "";
-            // Open-time pwee baseline, line-split once — the self-anchored error-reveal mapping
-            // (TryRevealErrorInLiveOverlay, d3ab083a) matches these lines against the generated module.
-            using (Services.MemoryHeadroom.Phase("M2a baselineSplit"))   // 1d8d1c49
-                _pweeBaselineLines = _sourceText.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            // Open-time pwee baseline for the self-anchored error-reveal mapping (TryRevealErrorInLiveOverlay,
+            // d3ab083a); split lazily by PweeBaselineLines (1d8d1c49).
+            _pweeBaselineText = _sourceText;
             _editableRanges = editableRanges ?? new List<int[]>();
             _language = language ?? "clarion";
             _isDark = isDark;

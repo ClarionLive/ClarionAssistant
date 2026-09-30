@@ -92,6 +92,16 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\ClarionAppDataReader.StructureScan.cs", "tests\ClarionAppDataReader.StructureScan.Stubs.cs",
                            "Services\ClarionAppDataReader.cs", "Services\ClarionAppDataReader.Model.cs")
                Refs = @("System.dll", "System.Xml.dll") }
+            # 1d8d1c49: the streaming TXA [DATA]-region index must match the whole-string parsers exactly.
+            # Fixture only here; pass a real whole-app .txa (or set CA_TXA_REAL) to compare a real export.
+            # 1d8d1c49: the Split-free slot extractor must match the Split version, and allocate far less.
+            @{ Name = "TextLines.Test"
+               Sources = @("tests\TextLines.Test.cs", "Services\TextLines.cs")
+               Refs = @("System.dll", "System.Core.dll") }
+            @{ Name = "TxaDataIndex.Test"
+               Sources = @("tests\TxaDataIndex.Test.cs", "tests\ClarionAppDataReader.StructureScan.Stubs.cs",
+                           "Services\ClarionAppDataReader.cs", "Services\ClarionAppDataReader.Model.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Xml.dll") }
             # GH #227: New Chat overwrote the user's global ~\.claude\CLAUDE.md. Gets the project dir
             # so it can check the real shipped prompt still opens with the ownership signature.
             @{ Name = "ClaudeMdDeployer.Test"

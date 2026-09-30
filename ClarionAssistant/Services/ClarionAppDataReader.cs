@@ -601,6 +601,205 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// 1d8d1c49: the [DATA] regions of a whole-app TXA, extracted in ONE streaming pass. The pad only ever
+        /// needs the [PROGRAM] globals and one procedure's locals, but the whole-app export on v61PRM004 is
+        /// 19.9 MB (38 MB as a string), and parsing it as a string cost a Replace, a Replace and a Split (an
+        /// int[Length] scratch array of 80 MB) per parse, twice per pad refresh. The regions are a small
+        /// fraction of the file and are kept as ordinary line arrays, off the large-object heap.
+        ///
+        /// Region selection mirrors <see cref="ParseTxaProcedureData(string, string)"/> and
+        /// <see cref="ParseTxaGlobalData(string)"/> exactly, and each region stops where
+        /// <see cref="ParseTxaDataRegion"/> would stop, so parsing a region gives the same result as the
+        /// string overloads (TxaDataIndex.Test proves it on a real export).
+        /// </summary>
+        public sealed class TxaDataIndex
+        {
+            /// <summary>The [PROGRAM] block's [DATA] region lines, or null when it has none.</summary>
+            public string[] ProgramData { get; private set; }
+
+            /// <summary>The first "DICTIONARY '...'" path in the file, or null.</summary>
+            public string DictionaryPath { get; private set; }
+
+            /// <summary>Procedure NAME -> its [DATA] region lines (first block that HAS a [DATA] wins).</summary>
+            public Dictionary<string, string[]> ProcedureData { get; } = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+
+            /// <summary>Procedure NAME -> its [FILES] [OTHERS] names (first block with that NAME wins).</summary>
+            public Dictionary<string, List<string>> OtherFiles { get; } = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+            /// <summary>Procedure NAME -> its [FILES] [PRIMARY] file and [KEY], null when none (first block wins).</summary>
+            public Dictionary<string, ProcPrimaryFile> PrimaryFiles { get; } = new Dictionary<string, ProcPrimaryFile>(StringComparer.OrdinalIgnoreCase);
+
+            public int LinesRead { get; private set; }
+
+            private static readonly Regex NameLine = new Regex(@"^\s*NAME\s+(.+?)\s*$", RegexOptions.Compiled);
+            private static readonly Regex DictLine = new Regex(@"^\s*DICTIONARY\s+'([^']+)'", RegexOptions.Compiled);
+
+            private static bool EndsDataRegion(string trimmed)
+            {
+                // ParseTxaDataRegion skips "!" lines first, and a "[" line can't start with "!", so a header
+                // that isn't a control sub-section ends the region.
+                return trimmed.StartsWith("[") && trimmed != "[SCREENCONTROLS]" && trimmed != "[REPORTCONTROLS]";
+            }
+
+            /// <summary>One [PROCEDURE] block, from the line after its NAME to the next [PROCEDURE]: the three
+            /// per-procedure parsers run side by side, each a line-for-line copy of its string version's loop.</summary>
+            private sealed class ProcScan
+            {
+                internal readonly string Name;
+                internal ProcScan(string name) { Name = name; }
+
+                // ParseTxaProcedureData: the first [DATA], then the region up to a non-control header.
+                internal int DataState;                 // 0 seeking [DATA], 1 collecting, 2 done
+                internal List<string> Data;
+
+                // ParseTxaOtherFiles: names after [OTHERS] until a "[" line.
+                internal readonly List<string> Others = new List<string>();
+                private bool _inOthers, _othersDone;
+
+                // ParseTxaPrimaryFile: inside [FILES], [PRIMARY] and [KEY] values.
+                private string _primary, _key, _sub;
+                private bool _inFiles, _filesDone;
+
+                internal void Feed(string line, string t)
+                {
+                    if (DataState == 0) { if (t == "[DATA]") { DataState = 1; Data = new List<string>(); } }
+                    else if (DataState == 1) { if (EndsDataRegion(t)) DataState = 2; else Data.Add(line); }
+
+                    if (!_othersDone)
+                    {
+                        if (t == "[OTHERS]") _inOthers = true;
+                        else if (_inOthers)
+                        {
+                            if (t.StartsWith("[")) _othersDone = true;
+                            else if (t.Length > 0) Others.Add(t);
+                        }
+                    }
+
+                    if (!_filesDone)
+                    {
+                        if (t.StartsWith("["))
+                        {
+                            if (t == "[FILES]") { _inFiles = true; _sub = null; }
+                            else if (_inFiles)
+                            {
+                                if (t == "[PRIMARY]" || t == "[INSTANCE]" || t == "[KEY]" || t == "[OTHERS]") _sub = t;
+                                else _filesDone = true;
+                            }
+                            else _sub = null;
+                        }
+                        else if (_inFiles && t.Length > 0)
+                        {
+                            if (_sub == "[PRIMARY]" && _primary == null) _primary = t;
+                            else if (_sub == "[KEY]" && _key == null) _key = t;
+                        }
+                    }
+                }
+
+                internal void StoreInto(TxaDataIndex idx)
+                {
+                    if (DataState >= 1 && !idx.ProcedureData.ContainsKey(Name)) idx.ProcedureData[Name] = Data.ToArray();
+                    if (!idx.OtherFiles.ContainsKey(Name)) idx.OtherFiles[Name] = Others;
+                    if (!idx.PrimaryFiles.ContainsKey(Name))
+                        idx.PrimaryFiles[Name] = string.IsNullOrEmpty(_primary) ? null : new ProcPrimaryFile { File = _primary, Key = _key ?? "" };
+                }
+            }
+
+            public static TxaDataIndex Build(TextReader reader)
+            {
+                var idx = new TxaDataIndex();
+                // [PROGRAM] globals, an independent pass as in ParseTxaGlobalData: 0 idle, 1 seeking [DATA], 2 collecting.
+                int prog = 0;
+                List<string> progRegion = null;
+                // [PROCEDURE] blocks: nameWindow counts down the 5 lines ParseTxa* search for NAME.
+                ProcScan cur = null;
+                int nameWindow = 0;
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    idx.LinesRead++;
+                    string t = line.Trim();
+
+                    if (idx.DictionaryPath == null)
+                    {
+                        var dm = DictLine.Match(line);
+                        if (dm.Success) idx.DictionaryPath = dm.Groups[1].Value.Trim();
+                    }
+
+                    if (idx.ProgramData == null)
+                    {
+                        if (prog == 2)
+                        {
+                            if (EndsDataRegion(t)) { idx.ProgramData = progRegion.ToArray(); prog = 0; progRegion = null; }
+                            else progRegion.Add(line);
+                        }
+                        else if (prog == 1)
+                        {
+                            if (t == "[DATA]") { prog = 2; progRegion = new List<string>(); }
+                            else if (t == "[MODULE]" || t == "[PROCEDURE]" || t == "[EMBED]") prog = 0;
+                        }
+                        else if (t == "[PROGRAM]") prog = 1;
+                    }
+
+                    if (t == "[PROCEDURE]")
+                    {
+                        if (cur != null) { cur.StoreInto(idx); cur = null; }
+                        nameWindow = 5;
+                        continue;
+                    }
+                    if (cur == null)
+                    {
+                        if (nameWindow > 0)
+                        {
+                            nameWindow--;
+                            var m = NameLine.Match(line);
+                            if (m.Success) { cur = new ProcScan(m.Groups[1].Value.Trim()); nameWindow = 0; }
+                        }
+                        continue;
+                    }
+                    cur.Feed(line, t);
+                }
+                if (cur != null) cur.StoreInto(idx);
+                if (idx.ProgramData == null && prog == 2 && progRegion != null) idx.ProgramData = progRegion.ToArray();
+                return idx;
+            }
+        }
+
+        /// <summary>Procedure-local data from a <see cref="TxaDataIndex"/> (1d8d1c49).</summary>
+        public static List<FieldDef> ParseTxaProcedureData(TxaDataIndex idx, string procName)
+        {
+            string[] region;
+            if (idx == null || string.IsNullOrEmpty(procName) || !idx.ProcedureData.TryGetValue(procName, out region))
+                return new List<FieldDef>();
+            return ParseTxaDataRegion(region, 0);
+        }
+
+        /// <summary>Global data from a <see cref="TxaDataIndex"/> (1d8d1c49).</summary>
+        public static List<FieldDef> ParseTxaGlobalData(TxaDataIndex idx)
+        {
+            if (idx == null || idx.ProgramData == null) return new List<FieldDef>();
+            return ParseTxaDataRegion(idx.ProgramData, 0);
+        }
+
+        /// <summary>Other Files from a <see cref="TxaDataIndex"/> (1d8d1c49). A fresh list each call.</summary>
+        public static List<string> ParseTxaOtherFiles(TxaDataIndex idx, string procName)
+        {
+            List<string> names;
+            if (idx == null || string.IsNullOrEmpty(procName) || !idx.OtherFiles.TryGetValue(procName, out names)) return new List<string>();
+            return new List<string>(names);
+        }
+
+        /// <summary>Primary browse file from a <see cref="TxaDataIndex"/> (1d8d1c49).</summary>
+        public static ProcPrimaryFile ParseTxaPrimaryFile(TxaDataIndex idx, string procName)
+        {
+            ProcPrimaryFile pf;
+            if (idx == null || string.IsNullOrEmpty(procName) || !idx.PrimaryFiles.TryGetValue(procName, out pf) || pf == null) return null;
+            return new ProcPrimaryFile { File = pf.File, Key = pf.Key };
+        }
+
+        /// <summary>Dictionary path from a <see cref="TxaDataIndex"/> (1d8d1c49).</summary>
+        public static string ParseTxaDictionaryPath(TxaDataIndex idx) { return idx != null ? idx.DictionaryPath : null; }
+
+        /// <summary>
         /// Walk a TXA [DATA] region (procedure-local OR program-global) starting at dataStart. Skips the
         /// [SCREENCONTROLS]/[REPORTCONTROLS] sub-sections and "! …" rep lines, reads "label  TYPE" decls,
         /// attaches the immediately-following "!!> …" PICTURE/PROMPT/HEADER, and nests QUEUE/GROUP (members
