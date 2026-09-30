@@ -450,7 +450,7 @@ namespace ClarionAssistant.Terminal
             // overlay silently left the native embeditor showing. Log start/fail/navigated with a memory snapshot.
             _initSw = System.Diagnostics.Stopwatch.StartNew();
             string phase = "environment";
-            MonacoSpikeLog.Write("[webview-init] start host=" + HostName + " " + MonacoSpikeLog.MemSummary());
+            MonacoSpikeLog.WriteWithMemAsync("[webview-init] start host=" + HostName);
 
             try
             {

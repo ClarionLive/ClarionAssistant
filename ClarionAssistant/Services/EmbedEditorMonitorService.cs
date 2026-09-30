@@ -180,7 +180,8 @@ namespace ClarionAssistant.Services
                 if (ReferenceEquals(editor, _lastEditor) && ReferenceEquals(pwee, _lastPwee)) return;
 
                 FileLog("attach trigger (" + source + "): editor " + IdOf(_lastEditor) + "→" + IdOf(editor)
-                        + " pwee " + IdOf(_lastPwee) + "→" + IdOf(pwee) + " " + MonacoSpikeLog.MemSummary());
+                        + " pwee " + IdOf(_lastPwee) + "→" + IdOf(pwee));
+                MonacoSpikeLog.WriteWithMemAsync("[embed-monitor] attach mem");   // off the UI thread (7116020b)
 
                 // New embed / proc-change → (re)attach. Record BEFORE attaching so a re-entrant call can't double-fire.
                 _lastEditor = editor; _lastPwee = pwee;

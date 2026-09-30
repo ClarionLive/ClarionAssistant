@@ -2883,14 +2883,19 @@ namespace ClarionAssistant
             try { if (!Directory.Exists(DataDir)) Directory.CreateDirectory(DataDir); } catch { }
         }
 
+        private static readonly object _writeLock = new object();   // pool-thread writers exist (WriteWithMemAsync)
+
         public static void Write(string message)
         {
             try
             {
-                EnsureDir();
-                File.AppendAllText(
-                    Path.Combine(DataDir, "monaco-spike.log"),
-                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + "  " + message + Environment.NewLine);
+                lock (_writeLock)
+                {
+                    EnsureDir();
+                    File.AppendAllText(
+                        Path.Combine(DataDir, "monaco-spike.log"),
+                        DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + "  " + message + Environment.NewLine);
+                }
             }
             catch { }
         }
@@ -2902,6 +2907,15 @@ namespace ClarionAssistant
         /// the region list with VirtualQuery is a few thousand calls — cheap enough per attach/init event, not
         /// per keystroke. Never throws.
         /// </summary>
+        /// <summary>Write <paramref name="prefix"/> + " " + MemSummary() from a pool thread. For the embed-open hot
+        /// path: a snapshot is ~15-70 ms in Clarion, and the UI thread is what keeps the cover up (7116020b).
+        /// The line's timestamp is the moment it is written, a few ms after the event.</summary>
+        public static void WriteWithMemAsync(string prefix)
+        {
+            try { System.Threading.ThreadPool.QueueUserWorkItem(_ => Write(prefix + " " + MemSummary())); }
+            catch { Write(prefix + " mem=unavailable"); }
+        }
+
         public static string MemSummary()
         {
             var sb = new StringBuilder("mem");
