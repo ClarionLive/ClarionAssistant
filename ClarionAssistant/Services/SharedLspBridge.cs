@@ -542,6 +542,19 @@ namespace ClarionAssistant.Services
             // reached Monaco as identical rows. Collapse them first; the merges are unchanged.
             RemoveDuplicateServerItems(primary);
 
+            // Colon-qualified context ("Glob:S", "Cus:Na", "PROP:Be"): the server labels its qualifier
+            // items with the bare name ("Svc", detail "Glob:Svc"), while every host merge below labels the
+            // same kind of item "Glob:Svc" and dedupes by label. Give the server's items that full-label
+            // shape FIRST, so each merge skips a name the server already supplied, and the qualifier
+            // scoping at the end keeps them instead of dropping every one once CodeGraph has a match.
+            string qualifier = null;
+            try
+            {
+                qualifier = ColonQualifierAt(filePath, line, character, bufferText);
+                if (qualifier != null) ColonQualifierScope.NormalizeServerItems(primary, qualifier);
+            }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] colon-qualifier normalize failed: " + ex.Message); }
+
             // CodeGraph prefix-completion augmentation (task a47a6cac Phase 1). Mark's pure upstream
             // server does MEMBER-ACCESS-ONLY completion; for a BARE PREFIX (line not ending in '.') it
             // returns nothing. We merge in global symbols (procedures/functions/classes/vars) from the
@@ -603,32 +616,19 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex) { LspTrace.Write("[SharedLspBridge] member-access scoping failed: " + ex.Message); }
 
-            // Colon-qualifier scoping. When the cursor sits right after an "IDENT:" qualifier (PROP:/EVENT:/
-            // PROPLIST:/group-PRE like Cus:...), the Monaco replace-range breaks on the ':' and is EMPTY, so
-            // the client does NO prefix filtering — Mark's LSP also returns its global built-in/keyword set
-            // (ACOS, ABS, ...) which then shows alongside the relevant IDENT:* items. Scope the list to labels
-            // starting with the qualifier (those carry the prefix: "PROP:Bevel", "Cus:Field"). Defensive:
-            // only apply when matches remain, so it can never blank out an otherwise-working list. Member
-            // access ('.') has no colon → unaffected.
-            // Colon-qualified completion (PROP:/EVENT:/PROPLIST:/group-PRE Cus:...). In this context the LSP
-            // returns a broad in-scope symbol dump (locals, globals, builtins like ACOS) — NOT IDENT:* members
-            // — and because the Monaco replace-range breaks on ':' (empty range) the client shows them
-            // unfiltered. Fix in two moves: (1) supply the IDENT:* members from ClarionGraph/CodeGraph (e.g.
-            // every PROP:* property equate from property.clw), then (2) scope the list to labels starting with
-            // the qualifier, which drops the LSP noise. Guard: only scope when matches remain.
+            // Colon-qualified completion (PROP:/EVENT:/PROPLIST:/group-PRE Cus:...). The Monaco replace-range
+            // breaks on ':', so the client does no prefix filtering of its own here. Two moves: (1) supply the
+            // IDENT:* members from ClarionGraph/CodeGraph (e.g. every PROP:* property equate from
+            // property.clw), then (2) scope the list to labels starting with the qualifier, which drops
+            // anything else that reached it. The server's own qualifier items already carry the qualified
+            // label (normalized at the top), so the scoping keeps them. Guard: only scope when matches remain.
+            // Member access ('.') has no colon, so it is unaffected.
             try
             {
-                string qualifier = ColonQualifierAt(filePath, line, character, bufferText);
                 if (qualifier != null)
                 {
                     MergeColonQualifierCompletions(primary, qualifier, filePath);
-                    if (primary.Count > 0)
-                    {
-                        var scoped = primary.FindAll(it =>
-                            it != null && !string.IsNullOrEmpty(it.Label) &&
-                            it.Label.StartsWith(qualifier, StringComparison.OrdinalIgnoreCase));
-                        if (scoped.Count > 0) primary = scoped;
-                    }
+                    primary = ColonQualifierScope.Scope(primary, qualifier);
                 }
             }
             catch (Exception ex) { LspTrace.Write("[SharedLspBridge] colon-qualifier completion failed: " + ex.Message); }
