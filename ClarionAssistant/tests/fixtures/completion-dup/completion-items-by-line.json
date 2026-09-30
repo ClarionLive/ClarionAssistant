@@ -1,0 +1,6 @@
+{
+  "13": [
+    { "label": "Address STRING(40)", "kind": 5, "detail": "STRING(40)", "insertText": "Address" },
+    { "label": "Port LONG", "kind": 5, "detail": "LONG", "insertText": "Port" }
+  ]
+}

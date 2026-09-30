@@ -272,6 +272,35 @@ async function main() {
         allTriggers.push(...e.triggers, ...c.triggers);
     }
 
+    section('5.20: after a dot, a typed LSP field label and the bare local field are one row');
+    {
+        // The server labels a GROUP field "Address STRING(40)" and inserts "Address"; the local layer
+        // lists the same field bare. A label-only dedupe showed both.
+        const e = load();
+        const q = typeAndAsk(e, 2, '    Settings.', { triggerCharacter: '.' });
+        e.reply('localCompletion', { items: [item('Address', 'STRING(40)  (field)', { kind: 5 }), item('Port', 'LONG  (field)', { kind: 5 }),
+            item('Send', 'PROCEDURE', { kind: 2 })] });
+        e.reply('completion', { items: [item('Address STRING(40)', 'STRING(40)', { kind: 5, insertText: 'Address' }),
+            item('Port LONG', 'LONG', { kind: 5, insertText: 'Port' }), item('Timeout LONG', 'LONG', { kind: 5, insertText: 'Timeout' }),
+            item('Send(STRING pText)', '', { kind: 2, insertText: 'Send' }), item('Send(LONG pCode)', '', { kind: 2, insertText: 'Send' })] });
+        await flush();
+        const L = labels(q.value);
+        check('5.20 each field the local layer knows is listed once, as the local item',
+            L.filter(l => /^address\b/i.test(l)).join() === 'Address' && L.filter(l => /^port\b/i.test(l)).join() === 'Port', JSON.stringify(L));
+        check('5.20 a field only the LSP knows still appears', L.includes('Timeout LONG'), JSON.stringify(L));
+        check('5.20 method overloads sharing an insertText with a local method all survive',
+            L.includes('Send(STRING pText)') && L.includes('Send(LONG pCode)'), JSON.stringify(L));
+
+        // Not after a dot: the insertText match stays off (a PRE-qualified item may insert only the remainder).
+        const p = load();
+        const qp = typeAndAsk(p, 2, '    Cus:');
+        p.reply('localCompletion', { items: [item('Cus:Name', 'STRING(20)  (field)', { kind: 5, insertText: 'Name' })] });
+        p.reply('completion', { items: [item('Name STRING(20)', 'STRING(20)', { kind: 5, insertText: 'Name' })] });
+        await flush();
+        check('5.20 without a dot, only a matching label dedupes', labels(qp.value).includes('Name STRING(20)'), JSON.stringify(labels(qp.value)));
+        allTriggers.push(...e.triggers, ...p.triggers);
+    }
+
     section('5.10: nothing re-triggers the suggest widget');
     {
         check('5.10 editor.trigger was never called in any scenario', allTriggers.length === 0, JSON.stringify(allTriggers));

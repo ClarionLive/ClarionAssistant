@@ -2276,9 +2276,18 @@ namespace ClarionAssistant.Services
             var scope = text == null ? null : LocalScopeIndex.GetScope(text, line);
             if (scope == null || scope.Structures.Count == 0) return;
 
+            // The server labels a dotted field with its type ("Address STRING(40)") and inserts the bare
+            // name, so a Label-only guard never matches the bare label AddQualifiedFields adds and every
+            // field is listed twice - the same Label-vs-bare-identifier mismatch as the member-access
+            // dedupe. Only the '.' form keys on InsertText too: for "Pre:partial" the server may insert
+            // just the untyped remainder.
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var it in primary)
-                if (it != null && !string.IsNullOrEmpty(it.Label)) seen.Add(it.Label);
+            {
+                if (it == null) continue;
+                if (!string.IsNullOrEmpty(it.Label)) seen.Add(it.Label);
+                if (sep == '.' && !string.IsNullOrEmpty(it.InsertText)) seen.Add(it.InsertText);
+            }
             scope.AddQualifiedFields(qualifier, sep, partial, seen, primary);
         }
 

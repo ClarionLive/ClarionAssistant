@@ -5139,11 +5139,21 @@
                         if (lsp.done && !localItems.length && !lspItems.length) maybeReportLsp(lsp.resp && lsp.resp.lsp);
                         // Case-insensitive label dedupe; the local item wins (it knows the caret's scope). Only
                         // LSP items are dropped, so its overloads (Open(LONG) / Open(STRING)) all survive.
-                        var localLabels = {};
-                        localItems.forEach(function (it) { var k = completionLabelKey(it); if (k != null) localLabels[k] = true; });
+                        // After a '.', the server labels a field with its type ("Address STRING(40)") while
+                        // the local item is bare ("Address"), so the labels never match: a non-method LSP item
+                        // whose insertText names a local item is that same field. Methods keep label-only
+                        // matching - their overloads share an insertText.
+                        var localLabels = {}, localNames = {};
+                        var dotted = before.charAt(startCol - 2) === '.';
+                        localItems.forEach(function (it) {
+                            var k = completionLabelKey(it); if (k != null) localLabels[k] = true;
+                            if (dotted && it && it.insertText) localNames[String(it.insertText).toLowerCase()] = true;
+                        });
                         var items = localItems.concat(lspItems.filter(function (it) {
                             var k = completionLabelKey(it);
-                            return k == null || !localLabels[k];
+                            if (k != null && localLabels[k]) return false;
+                            var overloadable = it.kind === 2 || it.kind === 3 || it.kind === 4;   // Method/Function/Constructor
+                            return overloadable || !it.insertText || !localNames[String(it.insertText).toLowerCase()];
                         }));
                         // incomplete:true → Monaco re-queries the provider on every keystroke instead of
                         // caching the first response and fuzzy-filtering client-side. Required so the
