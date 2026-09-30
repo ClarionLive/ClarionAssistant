@@ -489,6 +489,7 @@ namespace ClarionAssistant.Terminal
                 {
                     System.Diagnostics.Debug.WriteLine("[MonacoEditorControl] HTML missing: " + htmlPath);
                     MonacoSpikeLog.Write("[webview-init] FAILED host=" + HostName + " phase=navigate reason=html-missing path=" + htmlPath);
+                    RaiseInitFailed("its page file is missing (" + Path.GetFileName(htmlPath) + ")");
                 }
             }
             catch (Exception ex)
@@ -501,6 +502,9 @@ namespace ClarionAssistant.Terminal
                     + " msg=" + (ex.Message ?? "").Replace("\r", " ").Replace("\n", " ")
                     + (ex.InnerException != null ? " inner=" + ex.InnerException.GetType().Name + ":" + ex.InnerException.Message : "")
                     + " " + MonacoSpikeLog.MemSummary());
+                RaiseInitFailed(ex is OutOfMemoryException || ex.HResult == unchecked((int)0x8007000E)
+                    ? "Clarion is out of memory"
+                    : "the browser component failed to start (" + ex.GetType().Name + ")");
             }
         }
 
@@ -510,6 +514,17 @@ namespace ClarionAssistant.Terminal
             try { detail = " reason=" + e.Reason + " exit=" + e.ExitCode + " desc=" + e.ProcessDescription; } catch { }
             MonacoSpikeLog.Write("[webview-init] PROCESS FAILED host=" + HostName + " kind=" + e.ProcessFailedKind
                 + detail + " " + MonacoSpikeLog.MemSummary());
+        }
+
+        /// <summary>7116020b: WebView2 could not start (or the page is missing), so this surface will never
+        /// load. Raised on the UI thread with a short human-readable reason. Hosts use it to put the native
+        /// editor back and say so, instead of leaving a blank or silently native surface.</summary>
+        public event Action<MonacoEditorControl, string> InitFailed;
+
+        private void RaiseInitFailed(string reason)
+        {
+            try { var h = InitFailed; if (h != null) h(this, reason); }
+            catch (Exception ex) { MonacoSpikeLog.Write("[webview-init] InitFailed handler error: " + ex.Message); }
         }
 
         private System.Diagnostics.Stopwatch _initSw;

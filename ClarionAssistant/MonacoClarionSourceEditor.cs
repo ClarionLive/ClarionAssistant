@@ -382,6 +382,7 @@ namespace ClarionAssistant
                 // persisted localStorage pref; this only sets the pre-paint backdrop so there's no flash of the
                 // WRONG color on load, in either theme).
                 _editor = new MonacoEditorControl(this, Services.CaEditorSettings.MonacoThemeDark, "monaco-embeditor.html", "clarion-embeditor-data");
+                _editor.InitFailed += OnEditorInitFailed;
                 host.Controls.Add(_editor);
                 _editor.BringToFront();
                 HideNativeNavBar(host);   // hide the native class/members drop-down bar so it doesn't peek through the overlay top
@@ -2497,6 +2498,25 @@ namespace ClarionAssistant
             return null;
         }
 
+        /// <summary>7116020b: the WebView2 never started. The native text editor is underneath and fully working,
+        /// so take the overlay off (deferred: never dispose the control on its own failing call stack) and say
+        /// why, instead of leaving a blank surface once the cover's safety timer fires. The page never loaded,
+        /// so there are no Monaco-side edits to lose.</summary>
+        private void OnEditorInitFailed(MonacoEditorControl editor, string reason)
+        {
+            MonacoSpikeLog.Write("[webview-init] source editor gave up, showing native: file=" + System.IO.Path.GetFileName(_filePath ?? "?") + " reason=" + reason);
+            try
+            {
+                var host = editor.Parent;
+                if (host != null && host.IsHandleCreated) host.BeginInvoke((Action)(() => { if (ReferenceEquals(_editor, editor)) DisposeOverlay(); }));
+                else if (ReferenceEquals(_editor, editor)) DisposeOverlay();
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[webview-init] source editor fallback failed: " + ex.Message); }
+            Terminal.CaNotice.Post("editor-init-failed", "CA Editor could not start",
+                "It could not open " + System.IO.Path.GetFileName(_filePath ?? "this file") + " because " + reason
+                + ". You are in Clarion's own editor for this file instead. If this keeps happening, save your work and restart Clarion.");
+        }
+
         private void DisposeOverlay()
         {
             try
@@ -2871,23 +2891,6 @@ namespace ClarionAssistant
             catch { }
         }
 
-        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-        private struct MemoryBasicInformation
-        {
-            public IntPtr BaseAddress;
-            public IntPtr AllocationBase;
-            public uint AllocationProtect;
-            public UIntPtr RegionSize;   // sequential layout pads before this on x64, matching the Win32 struct
-            public uint State;
-            public uint Protect;
-            public uint Type;
-        }
-
-        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
-        private static extern UIntPtr VirtualQuery(IntPtr lpAddress, out MemoryBasicInformation lpBuffer, UIntPtr dwLength);
-
-        private const uint MemFree = 0x10000;
-
         /// <summary>
         /// 7116020b: one-line memory snapshot for the log — `mem virt= priv= ws= gc= free= largestFree=` (MB).
         /// Clarion.exe is 32-bit and not LargeAddressAware, so what kills it is the LARGEST FREE BLOCK of its
@@ -2909,25 +2912,9 @@ namespace ClarionAssistant
             }
             catch (Exception ex) { sb.Append(" proc=err(").Append(ex.GetType().Name).Append(')'); }
             try { sb.Append(" gc=").Append(GC.GetTotalMemory(false) >> 20); } catch { }
-            try
-            {
-                long free = 0, largest = 0, addr = 0;
-                var size = new UIntPtr((uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(MemoryBasicInformation)));
-                for (int guard = 0; guard < 200000; guard++)
-                {
-                    MemoryBasicInformation mbi;
-                    if (VirtualQuery(new IntPtr(addr), out mbi, size) == UIntPtr.Zero) break;
-                    long region = (long)mbi.RegionSize.ToUInt64();
-                    if (region <= 0) break;
-                    if (mbi.State == MemFree) { free += region; if (region > largest) largest = region; }
-                    long next = mbi.BaseAddress.ToInt64() + region;
-                    if (next <= addr) break;
-                    addr = next;
-                    if (IntPtr.Size == 4 && addr > int.MaxValue) break;   // new IntPtr(long) would throw past 2 GB
-                }
-                sb.Append(" free=").Append(free >> 20).Append(" largestFree=").Append(largest >> 20);
-            }
-            catch (Exception ex) { sb.Append(" vq=err(").Append(ex.GetType().Name).Append(')'); }
+            var a = Services.MemoryHeadroom.Measure();
+            if (a.Ok) sb.Append(" free=").Append(a.FreeMB).Append(" largestFree=").Append(a.LargestFreeMB);
+            else sb.Append(" vq=err");
             return sb.Append(" (MB)").ToString();
         }
     }

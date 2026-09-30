@@ -1396,6 +1396,7 @@ namespace ClarionAssistant.Terminal
 
             // Reusable Monaco surface; we are its host (IMonacoEditorHost). It self-inits on HandleCreated.
             _panel = new MonacoEditorControl(this, isDark, "monaco-embeditor.html", VIRTUAL_HOST);
+            _panel.InitFailed += OnPanelInitFailed;
 
             lock (_instances) { _instances.Add(this); }
             // Cross-surface gear-settings sync: receive applySettings from any other Monaco surface (another
@@ -1438,6 +1439,7 @@ namespace ClarionAssistant.Terminal
 
             // Reusable Monaco surface; we are its host (IMonacoEditorHost). It self-inits on HandleCreated.
             _panel = new MonacoEditorControl(this, isDark, "monaco-embeditor.html", VIRTUAL_HOST);
+            _panel.InitFailed += OnPanelInitFailed;
 
             lock (_instances) { _instances.Add(this); }
             // Cross-surface gear-settings sync: receive applySettings from any other Monaco surface (another
@@ -1652,6 +1654,33 @@ namespace ClarionAssistant.Terminal
                 }
             }
             catch { }
+        }
+
+        /// <summary>
+        /// 7116020b: the WebView2 never started, so this session will never load. In OVERLAY mode the native
+        /// embeditor is right underneath: take the overlay down so it is usable, and say why. Before this, the
+        /// cover's 6s safety timer just dropped the cover and left no trace (the silent native fallback John saw
+        /// on 2026-09-30). Nothing can be lost: the page never loaded, so there are no Monaco edits, and the
+        /// teardown is marked intentional so the edit stash does not record an empty session.
+        /// </summary>
+        private void OnPanelInitFailed(MonacoEditorControl editor, string reason)
+        {
+            MonacoSpikeLog.Write("[webview-init] host gave up: overlay=" + _embedOverlay + " proc=" + _procedureName + " reason=" + reason);
+            if (_embedOverlay && !_overlayDetached)
+            {
+                _teardownIntentional = true;
+                PostDetachOverlay();
+                CaNotice.Post("embed-init-failed", "CA Embeditor could not start",
+                    "It could not start for " + (string.IsNullOrEmpty(_procedureName) ? "this procedure" : _procedureName)
+                    + " because " + reason + ". You are in Clarion's own embeditor instead, and nothing was lost. "
+                    + "If this keeps happening, save your work and restart Clarion.");
+            }
+            else
+            {
+                CaNotice.Post("embed-init-failed", "CA Embeditor could not start",
+                    "This tab could not load because " + reason + ". Close it and try again. If this keeps happening, "
+                    + "save your work and restart Clarion.");
+            }
         }
 
         void IMonacoEditorHost.OnEditorNavigationCompleted(MonacoEditorControl editor, bool success)
