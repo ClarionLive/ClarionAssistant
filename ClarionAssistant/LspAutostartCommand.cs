@@ -80,6 +80,14 @@ namespace ClarionAssistant
 
             try
             {
+                // (e) Seed and subscribe BEFORE any start below (pipeline run 1): a seed taken after a start
+                // could absorb a version change that start had missed, and nothing would restart the server.
+                StartVersionFollower();
+            }
+            catch (Exception ex) { Debug.WriteLine("[LspAutostart] version follower failed: " + ex.Message); }
+
+            try
+            {
                 // (a) Wire the open-path / completion-time self-heal hook pane-independently.
                 EmbeditorCompletionService.LspStarter = () => LspService.EnsureRunningInBackground();
             }
@@ -104,12 +112,6 @@ namespace ClarionAssistant
                 SubscribeSolutionClosed();
             }
             catch (Exception ex) { Debug.WriteLine("[LspAutostart] SolutionClosed subscribe failed: " + ex.Message); }
-
-            try
-            {
-                StartVersionFollower();
-            }
-            catch (Exception ex) { Debug.WriteLine("[LspAutostart] version follower failed: " + ex.Message); }
 
             try
             {
