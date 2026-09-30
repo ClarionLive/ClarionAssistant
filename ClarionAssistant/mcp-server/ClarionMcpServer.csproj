@@ -157,6 +157,7 @@
          itself IDE-free: it spawns the node language server in stdio mode and speaks JSON-RPC over
          pipes, which is why that server already works outside the IDE. -->
     <Compile Include="..\Services\LspClient.cs"><Link>Services\LspClient.cs</Link></Compile>
+    <Compile Include="..\Services\JsonTextStream.cs"><Link>Services\JsonTextStream.cs</Link></Compile>
     <!-- The seam (ticket d051fbd1). These let the ONE shared McpToolRegistry.cs compile here
          without importing the IDE. Nothing in this project implements IEditorService,
          IAppTreeService or IDiffService - the tools needing them are not registered. -->
