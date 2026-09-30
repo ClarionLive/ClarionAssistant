@@ -413,7 +413,9 @@ namespace ClarionAssistant.Terminal
             {
                 string text = _bufferCache.Resolve(v);
                 if (text == null) return;   // superseded by a newer sync; that one pushes its own map
-                string msg = Services.LocalLayerHandlers.SpanMapMessage(v, text, MonacoSpikeLog.Write);
+                string msg;
+                using (text.Length > 1000000 ? Services.MemoryHeadroom.Phase("M5 spanMap") : null)   // 1d8d1c49
+                    msg = Services.LocalLayerHandlers.SpanMapMessage(v, text, MonacoSpikeLog.Write);
                 if (msg != null) PostJson(msg);
             }, null);
         }
@@ -571,7 +573,10 @@ namespace ClarionAssistant.Terminal
                         // 16d140e9: the page's buffer, sent once per content version. Cached here (one copy per
                         // surface, replacing the last) so no host has to implement anything to receive it.
                         // AcceptSync logs `[buffer-sync] recv ...` or `... parse failed ...` (items 0 and 8).
-                        if (_bufferCache.AcceptSync(json, "buffer", getMs, MonacoSpikeLog.Write))
+                        bool accepted;
+                        using (json.Length > 1000000 ? Services.MemoryHeadroom.Phase("M4 bufferSync accept json=" + json.Length) : null)   // 1d8d1c49
+                            accepted = _bufferCache.AcceptSync(json, "buffer", getMs, MonacoSpikeLog.Write);
+                        if (accepted)
                         {
                             _fileStateSpanMap.Cancel();   // this map covers any fileState still waiting
                             PushSpanMap();

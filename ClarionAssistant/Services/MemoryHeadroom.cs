@@ -136,6 +136,77 @@ namespace ClarionAssistant.Services
             try { if (_timer != null) { _timer.Stop(); _timer.Dispose(); _timer = null; } } catch { }
         }
 
+        // ── Per-phase allocation markers (1d8d1c49) ─────────────────────────────────────────────────────
+        // AppDomain resource monitoring counts every byte allocated, whether or not a GC ran in between,
+        // which GC.GetTotalMemory can't. Enabled once (it can't be turned off); overhead is small.
+        // Deltas are domain-wide, so a phase is only clean if nothing else allocates concurrently: the
+        // UI-thread phases of an open are; the lane phases are logged with their thread id.
+
+        private static bool _monitoringOn;
+
+        private static long AllocatedBytes()
+        {
+            try
+            {
+                if (!_monitoringOn) { AppDomain.MonitoringIsEnabled = true; _monitoringOn = true; }
+                return AppDomain.CurrentDomain.MonitoringTotalAllocatedMemorySize;
+            }
+            catch { return -1; }
+        }
+
+        private sealed class PhaseScope : IDisposable
+        {
+            private readonly string _tag;
+            private readonly long _alloc0;
+            private readonly int _gen2;
+            private readonly System.Diagnostics.Stopwatch _sw = System.Diagnostics.Stopwatch.StartNew();
+            internal PhaseScope(string tag) { _tag = tag; _gen2 = GC.CollectionCount(2); _alloc0 = AllocatedBytes(); }
+            public void Dispose()
+            {
+                try
+                {
+                    long a1 = AllocatedBytes();
+                    MonacoSpikeLog.Write("[mem-phase] " + _tag
+                        + " alloc=" + (_alloc0 < 0 || a1 < 0 ? "?" : ((a1 - _alloc0) / 1048576.0).ToString("0.0")) + "MB"
+                        + " gc=" + (GC.GetTotalMemory(false) >> 20) + "MB gen2+=" + (GC.CollectionCount(2) - _gen2)
+                        + " ms=" + _sw.ElapsedMilliseconds + " thread=" + System.Threading.Thread.CurrentThread.ManagedThreadId);
+                }
+                catch { }
+            }
+        }
+
+        /// <summary>Log how much the enclosed block allocated: <c>using (MemoryHeadroom.Phase("tag")) { ... }</c>.</summary>
+        internal static IDisposable Phase(string tag) { return new PhaseScope(tag); }
+
+        private static Timer _settleTimer;
+        private static string _settleTag;
+
+        /// <summary>A few seconds after an open, force a full collection and log what is actually RETAINED plus the
+        /// largest free block: the peak-vs-kept split for the phases above. Debounced; UI thread.</summary>
+        internal static void MarkSettledSoon(string tag)
+        {
+            try
+            {
+                _settleTag = tag;
+                if (_settleTimer == null)
+                {
+                    _settleTimer = new Timer { Interval = 4000 };
+                    _settleTimer.Tick += (s, e) =>
+                    {
+                        _settleTimer.Stop();
+                        long total = AllocatedBytes();
+                        long retained = GC.GetTotalMemory(true);
+                        var a = Measure();
+                        MonacoSpikeLog.Write("[mem-phase] SETTLED " + _settleTag + " retainedGc=" + (retained >> 20) + "MB"
+                            + " allocTotal=" + (total >> 20) + "MB largestFree=" + a.LargestFreeMB + "MB space=" + a.UserSpaceMB + "MB");
+                    };
+                }
+                _settleTimer.Stop();
+                _settleTimer.Start();
+            }
+            catch { }
+        }
+
         // ── Compact after a big editor closes ───────────────────────────────────────────────────────────
         // The 2026-09-30 A/B: the CA Embeditor on a 3.2 MB procedure cost ~136 MB more than Clarion's own and
         // gave NONE of it back on close (largest free block stuck at 39 MB). A multi-MB buffer lives as 6+ MB

@@ -177,8 +177,9 @@ namespace ClarionAssistant.Services
                     int off = (lspContext != null) ? lspContext.LineOffsetFor(buffer) : 0;
                     if (timing != null) timing.LspRan = true;
                     phase.Restart();
-                    SharedLspBridge.EnsureBufferSynced(lspFileName,
-                        (lspContext != null) ? lspContext.WrapBuffer(buffer) : buffer);
+                    using (buffer.Length > 1000000 ? MemoryHeadroom.Phase("M6 lspWrapAndSync") : null)   // 1d8d1c49
+                        SharedLspBridge.EnsureBufferSynced(lspFileName,
+                            (lspContext != null) ? lspContext.WrapBuffer(buffer) : buffer);
                     if (timing != null) timing.SyncMs = phase.ElapsedMilliseconds;
                     phase.Restart();
                     List<LspClient.DiagnosticEntry> entries =

@@ -1379,13 +1379,15 @@ namespace ClarionAssistant.Terminal
             _sourceText = sourceText ?? "";
             // Open-time pwee baseline, line-split once — the self-anchored error-reveal mapping
             // (TryRevealErrorInLiveOverlay, d3ab083a) matches these lines against the generated module.
-            _pweeBaselineLines = _sourceText.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            using (Services.MemoryHeadroom.Phase("M2a baselineSplit"))   // 1d8d1c49
+                _pweeBaselineLines = _sourceText.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
             _editableRanges = editableRanges ?? new List<int[]>();
             _language = language ?? "clarion";
             _isDark = isDark;
             _procedureName = procedureName;
             _saveEnabled = !string.IsNullOrWhiteSpace(procedureName);
-            _originalSlotTexts = ModernEmbeditorSaver.ExtractSlotTexts(_sourceText, _editableRanges);
+            using (Services.MemoryHeadroom.Phase("M2b extractSlotTexts"))   // 1d8d1c49
+                _originalSlotTexts = ModernEmbeditorSaver.ExtractSlotTexts(_sourceText, _editableRanges);
             // #56: prefer the real generated-module path (captured by the launcher while the native embed
             // was open) so the LSP resolves the buffer inside the real project dir with PROGRAM scope via
             // the prepended MEMBER header. Falls back to the classic synthetic name when not captured.
@@ -1565,8 +1567,10 @@ namespace ClarionAssistant.Terminal
             // On open: refresh the pad's IDE-sourced caches (whole-app .txa for Local/Global Data; live
             // dictionary snapshot for Other Files). Silent. File mode has no app context, so skip it.
             // (Was in the old OnHandleCreated; the "ready" message is the equivalent open moment.)
-            if (!_fileMode) RefreshPadSources();
-            SendSource();
+            using (Services.MemoryHeadroom.Phase("M3a refreshPadSources"))   // 1d8d1c49
+                if (!_fileMode) RefreshPadSources();
+            using (Services.MemoryHeadroom.Phase("M3b sendSource"))
+                SendSource();
             // CA Find pad (GitHub #66): this editor becomes findable. Key = stable session identity
             // (file path in file mode; procedure name otherwise — matches the cursor-persist scoping).
             Services.CaFindBroker.RegisterHost(this, _panel,

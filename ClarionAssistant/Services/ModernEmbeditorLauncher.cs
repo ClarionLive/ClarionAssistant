@@ -131,8 +131,12 @@ namespace ClarionAssistant.Services
                 // the ACTIVE embed's assembled source + editable-range map (Document.CustomLineManager.CustomLines).
                 string title, source, ferr;
                 List<int[]> ranges;
-                if (!EmbeditorCompletionService.TryGetActiveEmbeditorSource(out title, out source, out ranges, out ferr))
+                bool gotSource;
+                using (MemoryHeadroom.Phase("M1 readSource"))   // 1d8d1c49
+                    gotSource = EmbeditorCompletionService.TryGetActiveEmbeditorSource(out title, out source, out ranges, out ferr);
+                if (!gotSource)
                 { RemoveCover(preCover); return "Could not read the open embed source: " + ferr; }
+                MemoryHeadroom.MarkSettledSoon("embed chars=" + (source != null ? source.Length : 0));
 
                 // Authoritative proc name from source (cardinal rule #7 — never the temp pwee FileName/caption).
                 List<string> knownProcs = null;

@@ -571,7 +571,8 @@ namespace ClarionAssistant.Services
             if (slots != null) return ModernEmbeditorDiagnostics.ComputeSlotChecks(slots, ReadStrings(args, "routines"));
             var ranges = ReadRanges(args);
             if (ranges == null || ranges.Count == 0) ranges = options.DefaultRanges;
-            return ModernEmbeditorDiagnostics.ComputeSlotChecks(buffer, ranges, options.ProcedureName);
+            using (buffer != null && buffer.Length > 1000000 ? MemoryHeadroom.Phase("M7 slotChecks(fullBuffer)") : null)   // 1d8d1c49
+                return ModernEmbeditorDiagnostics.ComputeSlotChecks(buffer, ranges, options.ProcedureName);
         }
 
         /// <summary>The request's "ranges": an array of [start,end] 1-based line pairs; null when absent.</summary>

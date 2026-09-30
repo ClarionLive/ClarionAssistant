@@ -699,7 +699,7 @@ namespace ClarionAssistant
             Task.Run(() =>
             {
                 Dictionary<string, object> data;
-                try { data = ctx.GetPadData(); }
+                try { using (Services.MemoryHeadroom.Phase("M8 padData")) data = ctx.GetPadData(); }   // 1d8d1c49
                 catch { data = null; }
                 if (data == null)
                     data = new Dictionary<string, object> { { "locals", new List<object>() }, { "tables", new List<object>() } };
