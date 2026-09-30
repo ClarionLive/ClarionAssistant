@@ -240,3 +240,14 @@ MyObj &= NEW MyClass
 MyObj.DoWork()
 DISPOSE(MyObj)                    ! CORRECT
 ```
+
+## MEMBER Without the Parent
+❌ Bare `MEMBER` in a module implementing procedures prototyped in the parent program's MAP:
+```clarion
+                     MEMBER                  ! WRONG here — "No matching prototype available"
+```
+✅ Name the parent:
+```clarion
+                     MEMBER('MyApp.clw')
+```
+(Bare `MEMBER` remains correct in a class-implementation .clw.)

@@ -22,12 +22,12 @@ For each test case:
 ### Test Cases
 
 #### Test 1: Simple Procedure with Local Variables
-**Prompt:** "Write a Clarion procedure called CalculateTotal that takes a QUEUE of items with Price and Quantity fields, loops through them, and returns the total as a DECIMAL."
+**Prompt:** "Write a Clarion procedure called CalculateTotal that takes a QUEUE of items with Price and Quantity fields, loops through them, and returns the total as a REAL."
 
 **Score checklist:**
 - [ ] PROCEDURE label starts in column 1
 - [ ] Parameters use correct syntax (*QueueType for reference)
-- [ ] Return type after parameters: `,DECIMAL`
+- [ ] Return type after parameters: `,REAL` (`DECIMAL` is not a legal return type — `Illegal return type or attribute`)
 - [ ] Local variables declared before CODE
 - [ ] CODE on its own indented line
 - [ ] LOOP uses correct syntax (LOOP i = 1 TO RECORDS())

@@ -123,19 +123,26 @@ After the developer approves changes (or you've addressed their review notes):
 
 ## TXA Embed Structure Reference
 
-In a TXA file, embeds appear as:
+In a TXA file, embeds are **not indented**, and the code sits in a `[SOURCE]` block with a priority. Shape for a window-method embed:
 ```
 [EMBED]
-  EMBED %EmbedPointName
-    [INSTANCES]
-      WHEN ''
-        [DEFINITION]
-          ! Actual embed code here
-        [END]
-    [END]
-  [END]
+EMBED %WindowManagerMethodCodeSection
+[INSTANCES]
+WHEN 'Init'
+[INSTANCES]
+WHEN '(),BYTE'
+[DEFINITION]
+[SOURCE]
+PROPERTY:BEGIN
+PRIORITY 8500
+PROPERTY:END
+  ! Actual embed code here
+[END]
+[END]
+[END]
 [END]
 ```
+The number of `[END]`s depends on the embed point: one per `[INSTANCES]`/`WHEN` level (the embed's context parameters), plus one for `[DEFINITION]`/`[SOURCE]` and one for `[EMBED]` — 2 for a global embed, 4 for a window method or control event, 5 for a browse method. When unsure, hand-build the embed in the IDE, export the TXA, and copy that shape.
 
 Local procedures appear nested under their parent procedure. To find which embed contains specific code, search the TXA for the code text and look at the surrounding EMBED structure.
 
