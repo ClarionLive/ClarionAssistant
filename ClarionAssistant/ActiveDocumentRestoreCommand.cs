@@ -29,9 +29,15 @@ namespace ClarionAssistant
     ///             SolutionPreferencesSaving — the same moment the IDE saves its own file list.
     ///             SolutionClosing/SolutionClosed freeze too, as a backstop. A cancelled close (Cancel on a
     ///             save prompt) leaves the solution open, and recording resumes.
-    ///   restore — after SolutionLoaded, wait until views have stopped opening (a restore of ~17 files
-    ///             takes ~7 s), then SelectWindow on the saved file, verify, and re-select once if something
-    ///             selected another tab afterwards. Recording resumes when the restore ends.
+    ///   restore — the IDE reopens the saved file list in ONE synchronous UI-thread call
+    ///             (ProjectService.ParserServiceCreatedProjectContents, a plain FileService.OpenFile loop posted
+    ///             by the parser's loadSolutionProjects thread after SolutionLoaded). It raises nothing when it
+    ///             finishes, but a message posted to the UI thread from inside that loop only runs after the loop
+    ///             returns. So the first ViewOpened of the restore posts the selection, which lands right after
+    ///             the last file has opened. A verify pass 2 s later re-selects once if something selected
+    ///             another tab; if the post is somehow delivered early, any later ViewOpened pushes that verify
+    ///             back, and a quiet-window check (no view opened for 2.5 s) is the fallback if it never runs.
+    ///             Recording resumes when the restore ends.
     ///
     /// Only the file is stored: each editor tab already restores its own caret and scroll position.
     /// Everything is best-effort and logged to monaco-spike.log under "[active-doc]"; nothing here may
@@ -53,7 +59,7 @@ namespace ClarionAssistant
 
         public event EventHandler OwnerChanged;
 
-        // Timings. Quiet = no view opened for this long => the restore burst is over.
+        // Timings. Quiet = no view opened for this long => the restore burst is over (fallback only).
         private const int TickMs = 500;
         private const int QuietMs = 2500;
         private const int NoViewsGiveUpMs = 20000;     // solution loaded but no tab ever appeared
@@ -189,6 +195,25 @@ namespace ClarionAssistant
             if (!_restoring) return;
             _lastViewTick = Environment.TickCount;
             _viewsSeen++;
+            if (_selected) { _selectedTick = _lastViewTick; return; }   // still opening after we selected: verify later
+            if (_viewsSeen == 1) PostAfterReopenLoop();
+        }
+
+        /// <summary>Queue the selection behind the IDE's synchronous reopen loop: it runs as soon as the loop
+        /// has returned and the UI thread processes messages again.</summary>
+        private static void PostAfterReopenLoop()
+        {
+            try
+            {
+                var form = WorkbenchSingleton.Workbench as Form;
+                if (form == null || !form.IsHandleCreated) return;   // the quiet-window fallback covers it
+                form.BeginInvoke((MethodInvoker)(() =>
+                {
+                    try { if (_restoring && !_selected) TrySelect("reopen loop finished"); }
+                    catch (Exception ex) { MonacoSpikeLog.Write("[active-doc] post-reopen select failed: " + ex.Message); }
+                }));
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[active-doc] post after reopen failed: " + ex.Message); }
         }
 
         // ── freeze / cancelled close ───────────────────────────────────────────────────────────────
@@ -308,15 +333,19 @@ namespace ClarionAssistant
                     return;
                 }
                 if (now - _lastViewTick < QuietMs) return;
-
-                if (!IsOpen(_target)) { Finish("saved file is not open any more: " + Short(_target)); return; }
-                _selected = true;          // set BEFORE selecting: SelectWindow can pump messages and re-enter this tick
-                _selectedTick = now;
-                if (SamePath(ActivePath(), _target)) { MonacoSpikeLog.Write("[active-doc] saved file already active"); return; }
-                MonacoSpikeLog.Write("[active-doc] burst over (" + _viewsSeen + " views) -> selecting " + Short(_target) + " (was " + Short(ActivePath()) + ")");
-                SelectTarget();
+                TrySelect("no view opened for " + QuietMs + " ms");
             }
             catch (Exception ex) { MonacoSpikeLog.Write("[active-doc] OnTick failed: " + ex.Message); Finish("error"); }
+        }
+
+        private static void TrySelect(string why)
+        {
+            if (!IsOpen(_target)) { Finish("saved file is not open any more: " + Short(_target)); return; }
+            _selected = true;          // set BEFORE selecting: SelectWindow can pump messages and re-enter
+            _selectedTick = Environment.TickCount;
+            if (SamePath(ActivePath(), _target)) { MonacoSpikeLog.Write("[active-doc] saved file already active"); return; }
+            MonacoSpikeLog.Write("[active-doc] " + why + " (" + _viewsSeen + " views) -> selecting " + Short(_target) + " (was " + Short(ActivePath()) + ")");
+            SelectTarget();
         }
 
         private static void SelectTarget()
