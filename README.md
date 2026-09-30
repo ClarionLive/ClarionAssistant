@@ -90,6 +90,11 @@ Measured on a 3.2 MB generated procedure, where every large block of memory coun
 
 In a large procedure, hovering a global such as `GlobalRequest` in the CA Embeditor could sit on "Loading" for seconds, and a procedure call such as `PASSWORD(...)` was described as the ENTRY attribute of the same name. The CA Editor, on the same code, answered both instantly. The embeditor's quick lookups need the project's CodeGraph database, which is found from the procedure's generated module, and the embeditor often could not locate that module: it lives in the folder the redirection file names (for example `.\Source`), and the redirection file was only loaded once the Clarion Assistant chat panel had opened. The embeditor now loads the redirection file for the IDE's Clarion version itself, and falls back to the open solution's folder when the module still can't be found, so hovers answer immediately either way.
 
+<!-- release-docs: covered=lsp,embeditor -->
+### Build > Set Clarion Version takes effect with no chat panel open
+
+Switching versions with Build > Set Clarion Version only reached the language server and the redirection file when the Clarion Assistant chat panel was open. Without it, the language server went on resolving through the old version's redirection file and libraries until the IDE was restarted. The addin now follows the IDE's version from startup: on a switch it reloads the redirection file and restarts the language server on the new version, whether or not a chat tab exists.
+
 ### Thanks
 
 - **[@Aarhusdk](https://github.com/Aarhusdk)** &mdash; [#235](https://github.com/ClarionLive/ClarionAssistant/issues/235): a production crash traced to its root cause with DebugView timings, a complete patch, and a retest on the affected install before we had even looked at it.
