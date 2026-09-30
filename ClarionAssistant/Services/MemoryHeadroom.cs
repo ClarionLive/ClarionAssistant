@@ -167,10 +167,21 @@ namespace ClarionAssistant.Services
             catch (Exception ex) { MonacoSpikeLog.Write("[mem-compact] schedule failed: " + ex.Message); }
         }
 
+        // 83374953: on a LargeAddressAware Clarion the largest free block stayed at 1,527 MB through a 3.2 MB
+        // open and close, so the compaction pause (259-568 ms) bought nothing. Skip it when there is room.
+        internal const long CompactOnlyBelowLargestFreeMB = 512;
+
         private static void RunCompaction()
         {
             try
             {
+                var pre = Measure();
+                if (pre.Ok && pre.LargestFreeMB >= CompactOnlyBelowLargestFreeMB)
+                {
+                    MonacoSpikeLog.Write("[mem-compact] skipped after " + _compactWho + " largestFree=" + pre.LargestFreeMB
+                        + "MB >= " + CompactOnlyBelowLargestFreeMB + "MB space=" + pre.UserSpaceMB + "MB");
+                    return;
+                }
                 string before = MonacoSpikeLog.MemSummary();
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
