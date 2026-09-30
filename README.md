@@ -65,6 +65,15 @@ Clarion Assistant's terminals need Windows 10 version 1809 or Windows Server 201
 
 The UltimateCOM class that Clarion Assistant installs into `accessory\libsrc\win` kept one event queue for the whole program but locked it per control, so two COM controls on different threads (for example one on the main frame and one in an MDI child) could raise events at the same moment and free each other's event data, which crashed with an access violation in `WindowManager.Ask`. The queue now has a single shared lock, and each control's thread only ever sees and removes its own events. `UltimateCOM.inc` is unchanged, so existing apps and templates need nothing but a recompile.
 
+<!-- release-docs: covered=editor,embeditor -->
+### Large procedures: the CA editors warn before Clarion runs out of memory, and say why when they can't start
+
+Clarion is a 32-bit program with 2 GB of address space, and a big solution fills most of it. Opening a very large procedure (a 3.2 MB generated module, for example) needs a few hundred MB in one piece, and when that is not there Clarion itself fails with an out-of-memory error inside its own embeditor. Three changes:
+
+- **A warning before it happens.** When the largest free block of Clarion's memory drops below 48 MB, a small notice at the bottom right of the IDE says so and suggests saving and restarting. It never takes focus and closes itself when memory recovers. The threshold can be changed by putting a number of MB in `%LOCALAPPDATA%\ClarionAssistant\mem-watch-warn-mb.txt`.
+- **No more silent fallback.** If the CA Embeditor or CA Editor cannot start, it now steps aside so Clarion's own editor is usable, and a notice says why. Before, you were left in the native editor with no explanation.
+- **Memory is given back.** Closing a CA editor on a big procedure or file now returns its memory to Clarion (about 230 MB on the 3.2 MB test procedure), where before it stayed in use until Clarion restarted.
+
 ### Thanks
 
 - **[@Aarhusdk](https://github.com/Aarhusdk)** &mdash; [#235](https://github.com/ClarionLive/ClarionAssistant/issues/235): a production crash traced to its root cause with DebugView timings, a complete patch, and a retest on the affected install before we had even looked at it.
