@@ -23,6 +23,42 @@ namespace ClarionAssistant.Services
     /// </summary>
     public static class ModernEmbeditorLauncher
     {
+        /// <summary>
+        /// f64ba833: make sure a redirection file is loaded before EmbedLspContext.TryCapture looks for the
+        /// generated module. RedFileService.Active was loaded only by the CA chat panel, so with no chat tab
+        /// (or before it loaded) the lookup had no .red: on v61PRM004 the module lives in .\Source (from
+        /// CLARION120.red's "*.clw = .\Source"), and capture failed with "module 'PRM002023.clw' not found
+        /// beside ...PRM002.app or via the .red". The embeditor then had no real module path: no CodeGraph
+        /// DB for its local layer and a synthetic document for the LSP. Loads the IDE's effective version's
+        /// .red for the open solution, exactly as the chat panel does.
+        ///
+        /// Keyed on WHICH .red should be in force (effective version, its .red path, solution folder), not on
+        /// "is one loaded": the chat panel was also the only thing that reloaded the .red after Build > Set
+        /// Clarion Version, so without a chat tab a version or solution switch would keep the old file.
+        /// Re-resolving the version is an XML parse, once per embed open.
+        /// </summary>
+        private static string _redKey;
+
+        private static void EnsureRedirectionLoaded()
+        {
+            try
+            {
+                var cfg = EffectiveClarionVersion.CurrentConfig();
+                string sln = EditorService.GetOpenSolutionPath();
+                string slnDir = string.IsNullOrEmpty(sln) ? null : System.IO.Path.GetDirectoryName(sln);
+                string key = (cfg != null ? cfg.Name + "|" + cfg.RedFilePath : "none") + "|" + slnDir;
+                if (RedFileService.Active != null && string.Equals(key, _redKey, StringComparison.OrdinalIgnoreCase)) return;
+
+                string was = RedFileService.Active != null ? RedFileService.Active.RedFilePath : "none";
+                var red = new RedFileService();
+                bool ok = red.LoadForProject(slnDir, cfg);   // Load makes it RedFileService.Active
+                _redKey = ok ? key : null;
+                MonacoSpikeLog.Write("[embed-ctx] .red for version '" + (cfg != null ? cfg.Name : "not resolved") + "': "
+                    + (ok ? red.RedFilePath : "nothing loaded") + " (was " + was + ")");
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[embed-ctx] .red load failed: " + ex.Message); }
+        }
+
         /// <summary>Opens one procedure as a Monaco snapshot tab. Returns null on success, else an error message.</summary>
         public static string OpenProcedure(string procName, bool isDark)
         {
@@ -46,6 +82,7 @@ namespace ClarionAssistant.Services
                 // #56: capture the real-module LSP context NOW — PweeEditorDetails only exists while the
                 // native embeditor is open, and CancelEmbeditor below tears it down.
                 EmbedLspContext lspCtx = null;
+                EnsureRedirectionLoaded();   // f64ba833
                 try { lspCtx = EmbedLspContext.TryCapture(appTree); } catch { }
                 MonacoSpikeLog.Write("[embed-ctx] " + (EmbedLspContext.LastCaptureResult ?? "?"));   // f64ba833: a failed capture used to be silent
 
@@ -156,6 +193,7 @@ namespace ClarionAssistant.Services
                 // #56: capture the real-module LSP context from the live embed (it stays open in overlay
                 // mode, but capture eagerly for symmetry with the snapshot path).
                 EmbedLspContext lspCtx = null;
+                EnsureRedirectionLoaded();   // f64ba833
                 try { lspCtx = EmbedLspContext.TryCapture(appTree); } catch { }
                 MonacoSpikeLog.Write("[embed-ctx] " + (EmbedLspContext.LastCaptureResult ?? "?"));   // f64ba833: a failed capture used to be silent
 
