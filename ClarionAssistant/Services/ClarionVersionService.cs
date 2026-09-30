@@ -240,35 +240,58 @@ namespace ClarionAssistant.Services
             name = null;
             try
             {
-                System.Reflection.Assembly sharpDevelopAsm = null;
-                foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
-                {
-                    if (string.Equals(a.GetName().Name, "ICSharpCode.Core", StringComparison.OrdinalIgnoreCase))
-                    { sharpDevelopAsm = a; break; }
-                }
-                if (sharpDevelopAsm == null) return false;
+                var members = _livePropertyService ?? (_livePropertyService = ResolveLivePropertyService());
+                if (members == null) return false;
 
-                var propertyServiceType = sharpDevelopAsm.GetType("ICSharpCode.Core.PropertyService");
-                if (propertyServiceType == null) return false;
-
-                var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static;
-                var initialized = propertyServiceType.GetProperty("Initialized", flags);
-                if (initialized != null && !Equals(initialized.GetValue(null, null), true))
+                if (members.Initialized != null && !Equals(members.Initialized.GetValue(null, null), true))
                     return false;
 
-                // PropertyService.Get<string>("Clarion.Version", "") — the two-parameter generic overload
-                // (there is also a four-parameter one; invoking that with two arguments throws, which the
-                // old first-generic-match loop could hit depending on reflection order).
-                foreach (var m in propertyServiceType.GetMethods(flags))
-                {
-                    if (m.Name != "Get" || !m.IsGenericMethodDefinition || m.GetParameters().Length != 2) continue;
-                    var result = m.MakeGenericMethod(typeof(string)).Invoke(null, new object[] { "Clarion.Version", "" });
-                    name = result as string ?? "";
-                    return true;
-                }
-                return false;
+                var result = members.GetString.Invoke(null, new object[] { "Clarion.Version", "" });
+                name = result as string ?? "";
+                return true;
             }
             catch { name = null; return false; }
+        }
+
+        /// <summary>PropertyService's Initialized property and its Get&lt;string&gt;(key, default) method.</summary>
+        private sealed class LivePropertyServiceMembers
+        {
+            public System.Reflection.PropertyInfo Initialized;
+            public System.Reflection.MethodInfo GetString;
+        }
+
+        // f3b47441: resolved once, on the first call that finds ICSharpCode.Core loaded. LspAutostartCommand's
+        // 5 s tick reads the version, and scanning every loaded assembly (GetName() allocates) each time was
+        // a steady cost on the UI thread. A miss is NOT cached: the assembly may simply not be loaded yet.
+        private static LivePropertyServiceMembers _livePropertyService;
+
+        private static LivePropertyServiceMembers ResolveLivePropertyService()
+        {
+            System.Reflection.Assembly sharpDevelopAsm = null;
+            foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (string.Equals(a.GetName().Name, "ICSharpCode.Core", StringComparison.OrdinalIgnoreCase))
+                { sharpDevelopAsm = a; break; }
+            }
+            if (sharpDevelopAsm == null) return null;
+
+            var propertyServiceType = sharpDevelopAsm.GetType("ICSharpCode.Core.PropertyService");
+            if (propertyServiceType == null) return null;
+
+            var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static;
+            // PropertyService.Get<string>("Clarion.Version", "") — the two-parameter generic overload
+            // (there is also a four-parameter one; invoking that with two arguments throws, which the
+            // old first-generic-match loop could hit depending on reflection order).
+            foreach (var m in propertyServiceType.GetMethods(flags))
+            {
+                if (m.Name != "Get" || !m.IsGenericMethodDefinition || m.GetParameters().Length != 2) continue;
+                return new LivePropertyServiceMembers
+                {
+                    Initialized = propertyServiceType.GetProperty("Initialized", flags),
+                    GetString = m.MakeGenericMethod(typeof(string))
+                };
+            }
+            return null;
         }
 
         private static string FindPropertiesXml(string exePath)

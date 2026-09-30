@@ -37,8 +37,17 @@ namespace ClarionAssistant.Services
         /// Clarion Version, so without a chat tab a version or solution switch would keep the old file.
         /// Re-resolving the version is an XML parse, once per embed open. LspAutostartCommand also calls it
         /// when the IDE's version moves (905928c7), so the .red follows a switch before the next embed open.
+        ///
+        /// A failed load leaves NO .red in force (LoadForProject fails closed, f3b47441), and
+        /// <see cref="RetryRedirectionIfDue"/> tries again from the 5 s tick until one loads.
         /// </summary>
         private static string _redKey;
+
+        /// <summary>True while the last attempt loaded nothing; cleared by a successful load.</summary>
+        private static bool _redLoadFailed;
+        private static int _redLastAttemptTick;
+        private static string _redLastOutcome;
+        private const int RedRetryIntervalMs = 30000;
 
         internal static void EnsureRedirectionLoaded()
         {
@@ -52,12 +61,33 @@ namespace ClarionAssistant.Services
 
                 string was = RedFileService.Active != null ? RedFileService.Active.RedFilePath : "none";
                 var red = new RedFileService();
-                bool ok = red.LoadForProject(slnDir, cfg);   // Load makes it RedFileService.Active
+                bool ok = red.LoadForProject(slnDir, cfg);   // makes it Active; a failure clears Active
                 _redKey = ok ? key : null;
+                _redLoadFailed = !ok;
+                _redLastAttemptTick = Environment.TickCount;
+
+                // One line per outcome, not per attempt: a retry that fails the same way stays quiet.
+                string outcome = (cfg != null ? cfg.Name : "not resolved") + "|" + (ok ? red.RedFilePath : "nothing loaded");
+                if (string.Equals(outcome, _redLastOutcome, StringComparison.OrdinalIgnoreCase)) return;
+                _redLastOutcome = outcome;
                 MonacoSpikeLog.Write("[embed-ctx] .red for version '" + (cfg != null ? cfg.Name : "not resolved") + "': "
-                    + (ok ? red.RedFilePath : "nothing loaded") + " (was " + was + ")");
+                    + (ok ? red.RedFilePath + " (was " + was + ")"
+                          : "nothing loaded" + (cfg != null && !string.IsNullOrEmpty(cfg.RedFilePath) ? " from " + cfg.RedFilePath : "")
+                            + "; no .red in force (was " + was + "), retrying every " + (RedRetryIntervalMs / 1000) + " s"));
             }
             catch (Exception ex) { MonacoSpikeLog.Write("[embed-ctx] .red load failed: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// Called from LspAutostartCommand's 5 s tick: after a failed load (a .red missing, or held open by
+        /// an editor), try again at most every 30 s so it recovers without waiting for the next embed open or
+        /// version switch. A no-op until a load has failed. UI thread.
+        /// </summary>
+        internal static void RetryRedirectionIfDue()
+        {
+            if (!_redLoadFailed) return;
+            if (unchecked(Environment.TickCount - _redLastAttemptTick) < RedRetryIntervalMs) return;
+            EnsureRedirectionLoaded();
         }
 
         /// <summary>Opens one procedure as a Monaco snapshot tab. Returns null on success, else an error message.</summary>

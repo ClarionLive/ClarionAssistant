@@ -684,9 +684,16 @@ namespace ClarionAssistant
                 // Data pad's environment watcher keys on (its Explorer header shows VERSION too).
                 LspTrace.Write("[AssistantChatControl] " + describe);
                 System.Diagnostics.Debug.WriteLine("[AssistantChatControl] " + describe);
-                ClarionGraphService.InvalidateVersionCache();
-                EffectiveClarionVersion.NotifyChanged();
+                // f3b47441: LspAutostartCommand's version follower announces every Build > Set Clarion Version
+                // switch, and its handler runs before this panel's. Announce only a change nobody has since this
+                // panel last resolved (e.g. the source tier moving at startup), so the Data pad reacts once.
+                if (EffectiveClarionVersion.Generation == _versionGenerationSeen)
+                {
+                    ClarionGraphService.InvalidateVersionCache();
+                    EffectiveClarionVersion.NotifyChanged();
+                }
             }
+            _versionGenerationSeen = EffectiveClarionVersion.Generation;
 
             // Say which source chose it — never resolve a version silently.
             string label = _currentVersionConfig == null ? "(not detected)"
@@ -699,6 +706,9 @@ namespace ClarionAssistant
 
         /// <summary>The last version selection, with the tier that decided it (for the index log).</summary>
         private ClarionVersionSelection _versionSelection;
+
+        /// <summary>EffectiveClarionVersion.Generation as of this panel's last LoadVersions (f3b47441).</summary>
+        private int _versionGenerationSeen;
 
         private bool _ideVersionHooked;
 

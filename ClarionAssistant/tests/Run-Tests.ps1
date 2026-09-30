@@ -167,6 +167,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\EmbedLspContext.RedResolve.Test.cs", "tests\EmbedLspContext.RedResolve.Stubs.cs",
                            "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll") }
+            # f3b47441: a .red that can't be loaded clears RedFileService.Active instead of leaving the
+            # previous version's file in force. Reuses the RedResolve stubs.
+            @{ Name = "RedFileService.FailClosed.Test"
+               Sources = @("tests\RedFileService.FailClosed.Test.cs", "tests\EmbedLspContext.RedResolve.Stubs.cs",
+                           "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll") }
             # PR #208: a hung instance stays swept, a busy one re-registers, beats never overlap.
             # The vendored SQLite is x86-only (SQLite.Interop.dll), hence Platform and the copies.
             @{ Name = "InstanceCoordination.ReRegister.Test"

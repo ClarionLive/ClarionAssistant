@@ -161,8 +161,21 @@ namespace ClarionAssistant.Services
         /// Load the effective .red file for a project directory.
         /// If a .red file exists in the project directory, it completely
         /// supersedes the version-level .red file.
+        ///
+        /// FAILS CLOSED (f3b47441): every caller asks for the .red now in force for a version and solution,
+        /// so when none can be loaded — no config, no RedFilePath, a missing or unreadable file —
+        /// <see cref="Active"/> is cleared rather than left on the PREVIOUS version's or solution's file.
+        /// Consumers treat a null Active as "no redirection"; a stale one resolved generated modules and
+        /// Files-tab lookups through the wrong version's paths while looking healthy.
         /// </summary>
         public bool LoadForProject(string projectDirectory, ClarionVersionConfig config)
+        {
+            bool ok = LoadForProjectCore(projectDirectory, config);
+            if (!ok) Active = null;
+            return ok;
+        }
+
+        private bool LoadForProjectCore(string projectDirectory, ClarionVersionConfig config)
         {
             if (config == null) return false;
 

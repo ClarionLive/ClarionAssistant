@@ -131,6 +131,9 @@ namespace ClarionAssistant
         private static void StartVersionFollower()
         {
             if (_versionFollower != null) return;
+            // Run() is a /Workspace/Autostart command, so this is the UI thread with the workbench's
+            // WindowsFormsSynchronizationContext installed. Without one the handler below runs inline
+            // (after the IDE has stored the new value), which is still correct.
             _uiContext = System.Threading.SynchronizationContext.Current;
             _versionFollower = new IdeVersionFollower();
             _versionFollower.Changed += OnIdeVersionChanged;
@@ -285,9 +288,15 @@ namespace ClarionAssistant
             _fallbackTimer = new System.Windows.Forms.Timer { Interval = 5000 };
             _fallbackTimer.Tick += (s, e) =>
             {
-                // Backstop for the Clarion.Version event, ahead of the shared-LSP return: the .red and the
-                // version watchers follow the IDE even while the shared ClarionLsp addin owns the server.
-                CheckIdeVersion();
+                try
+                {
+                    // Backstop for the Clarion.Version event, ahead of the shared-LSP return: the .red and the
+                    // version watchers follow the IDE even while the shared ClarionLsp addin owns the server.
+                    CheckIdeVersion();
+                    // f3b47441: a .red that failed to load is retried (throttled to 30 s inside).
+                    ModernEmbeditorLauncher.RetryRedirectionIfDue();
+                }
+                catch (Exception ex) { Debug.WriteLine("[LspAutostart] version/.red tick failed: " + ex.Message); }
 
                 try
                 {
