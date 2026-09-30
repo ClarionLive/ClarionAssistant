@@ -47,6 +47,7 @@ namespace ClarionAssistant.Services
                 // native embeditor is open, and CancelEmbeditor below tears it down.
                 EmbedLspContext lspCtx = null;
                 try { lspCtx = EmbedLspContext.TryCapture(appTree); } catch { }
+                MonacoSpikeLog.Write("[embed-ctx] " + (EmbedLspContext.LastCaptureResult ?? "?"));   // f64ba833: a failed capture used to be silent
 
                 // OpenAndMirror leaves the embeditor open; we made no edits, so discard/close to free the lock.
                 try { appTree.CancelEmbeditor(); } catch { }
@@ -156,6 +157,7 @@ namespace ClarionAssistant.Services
                 // mode, but capture eagerly for symmetry with the snapshot path).
                 EmbedLspContext lspCtx = null;
                 try { lspCtx = EmbedLspContext.TryCapture(appTree); } catch { }
+                MonacoSpikeLog.Write("[embed-ctx] " + (EmbedLspContext.LastCaptureResult ?? "?"));   // f64ba833: a failed capture used to be silent
 
                 // Read the native caret position NOW (before the embed closes under us) so Monaco lands at the
                 // embed point the developer had the cursor on — not the last-saved cursor for this procedure.

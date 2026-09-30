@@ -276,8 +276,23 @@ static class LocalLayerHandlersTest
                 var hWalk = LocalLayerHandlers.Handle("localHover", walkBuf, Req("{\"line\":16,\"column\":22}"), oWalk);
                 Check("L1 ...and hover on GloVar answers from it", hWalk["contents"] != null && ((string)hWalk["contents"]).Contains("GloVar"), Json(hWalk));
                 var oNoFile = new LocalLayerOptions { Log = log.Add };
+                LocalLayerHandlers.SolutionDirPath = null;
                 Check("L1 no provider and no module path -> no project DB (no crash)",
                     !Labels(LocalLayerHandlers.Handle("localCompletion", walkBuf, Req("{\"line\":14,\"column\":6}"), oNoFile)).Contains("GloVar"));
+
+                // f64ba833: the CA Embeditor without a captured module context passes a BARE name. With the IDE's
+                // solution folder known, the walk-up starts there and the project DB is found anyway.
+                var oEmbed = new LocalLayerOptions { Log = log.Add, FileName = "InventoryTable.clw" };
+                Check("f64ba833 bare module name and no solution -> no project DB (the old embeditor behaviour)",
+                    !Labels(LocalLayerHandlers.Handle("localCompletion", walkBuf, Req("{\"line\":14,\"column\":6}"), oEmbed)).Contains("GloVar"));
+                LocalLayerHandlers.SolutionDirPath = () => walkRoot;
+                LocalLayerHandlers.ResetPathCache();
+                var embedWalked = Labels(LocalLayerHandlers.Handle("localCompletion", walkBuf, Req("{\"line\":14,\"column\":6}"), oEmbed));
+                Check("f64ba833 bare module name + solution folder -> 'Glo' finds GloVar", embedWalked.Contains("GloVar"), string.Join(",", embedWalked));
+                var hEmbed = LocalLayerHandlers.Handle("localHover", walkBuf, Req("{\"line\":16,\"column\":22}"), oEmbed);
+                Check("f64ba833 ...and hover on GloVar answers from it, authoritatively",
+                    hEmbed["contents"] != null && ((string)hEmbed["contents"]).Contains("GloVar") && Equals(hEmbed["authoritative"], true), Json(hEmbed));
+                LocalLayerHandlers.SolutionDirPath = null;
                 LocalLayerHandlers.ProjectDbPath = () => proj;
                 LocalLayerHandlers.ResetPathCache();
             }

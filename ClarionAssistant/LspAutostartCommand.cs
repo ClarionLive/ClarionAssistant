@@ -53,6 +53,13 @@ namespace ClarionAssistant
             // The local layer's databases (both Monaco surfaces): the solution's CodeGraph and the ClarionGraph library.
             LocalLayerHandlers.ProjectDbPath = () => { var p = SharedLspBridge.CodeGraphDbPathProvider; return p != null ? p() : null; };
             LocalLayerHandlers.LibraryDbPath = ClarionGraphService.ResolveDbPath;
+            // f64ba833: where the walk-up starts when a surface has no real module path (a CA Embeditor whose
+            // module context wasn't captured): the IDE's open solution folder.
+            LocalLayerHandlers.SolutionDirPath = () =>
+            {
+                string sln = EditorService.GetOpenSolutionPath();
+                return string.IsNullOrEmpty(sln) ? null : System.IO.Path.GetDirectoryName(sln);
+            };
 
             // 1c685f2e L2 (pre-existing on master 2fcb940): the LSP never started unless a CA chat tab had opened.
             // Every start funnels through LspService.EnsureRunning, which takes the solution from
