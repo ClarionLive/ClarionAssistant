@@ -1259,11 +1259,16 @@ namespace ClarionAssistant
         /// uses (detect the current Clarion version, then LoadForProject against the open solution's dir). Used as a
         /// fallback when RedFileService.Active is null (chat pad hasn't loaded it yet / isn't up), so the Files-tab
         /// type-ahead doesn't depend on the chat pad's timing. Cached in _ownRed; LoadForProject also sets the
-        /// global Active, so once this succeeds later requests read Active directly. UI thread.
+        /// global Active (and, since f3b47441, clears a stale one on failure), so once this succeeds later
+        /// requests read Active directly. UI thread.
         /// </summary>
         private Services.RedFileService EnsureOwnRedFile()
         {
-            if (_ownRed != null) return _ownRed;
+            // The cache is good only while it is still the .red in force: once Active was cleared or replaced
+            // (a failed load for a new version), returning it would resolve through the old version's paths
+            // until the environment watcher dropped it (f3b47441 pipeline run 1).
+            if (_ownRed != null && ReferenceEquals(Services.RedFileService.Active, _ownRed)) return _ownRed;
+            _ownRed = null;
             try
             {
                 var cfg = Services.EffectiveClarionVersion.CurrentConfig();
@@ -1276,7 +1281,7 @@ namespace ClarionAssistant
                 var r = new Services.RedFileService();
                 if (r.LoadForProject(projDir, cfg) && !string.IsNullOrEmpty(r.RedFilePath))
                 {
-                    _ownRed = r;   // LoadForProject set RedFileService.Active too
+                    _ownRed = r;   // LoadForProject set RedFileService.Active too (a failure clears a stale one)
                     return r;
                 }
             }

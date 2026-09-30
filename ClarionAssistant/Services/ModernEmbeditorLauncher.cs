@@ -38,12 +38,14 @@ namespace ClarionAssistant.Services
         /// Re-resolving the version is an XML parse, once per embed open. LspAutostartCommand also calls it
         /// when the IDE's version moves (905928c7), so the .red follows a switch before the next embed open.
         ///
-        /// A failed load leaves NO .red in force (LoadForProject fails closed, f3b47441), and
-        /// <see cref="RetryRedirectionIfDue"/> tries again from the 5 s tick until one loads.
+        /// A failed load here leaves no stale .red in force (LoadForProject fails closed, f3b47441), and
+        /// <see cref="RetryRedirectionIfDue"/> tries again from the 5 s tick until one loads here, or another
+        /// caller (the chat panel, the Data pad) has put this version's .red in force.
         /// </summary>
         private static string _redKey;
 
-        /// <summary>True while the last attempt loaded nothing; cleared by a successful load.</summary>
+        /// <summary>True while this launcher's last attempt loaded nothing and no .red for the effective
+        /// version is in force; cleared by a successful load, here or by another caller.</summary>
         private static bool _redLoadFailed;
         private static int _redLastAttemptTick;
         private static string _redLastOutcome;
@@ -51,9 +53,10 @@ namespace ClarionAssistant.Services
 
         internal static void EnsureRedirectionLoaded()
         {
+            ClarionVersionConfig cfg = null;
             try
             {
-                var cfg = EffectiveClarionVersion.CurrentConfig();
+                cfg = EffectiveClarionVersion.CurrentConfig();
                 string sln = EditorService.GetOpenSolutionPath();
                 string slnDir = string.IsNullOrEmpty(sln) ? null : System.IO.Path.GetDirectoryName(sln);
                 string key = (cfg != null ? cfg.Name + "|" + cfg.RedFilePath : "none") + "|" + slnDir;
@@ -61,21 +64,38 @@ namespace ClarionAssistant.Services
 
                 string was = RedFileService.Active != null ? RedFileService.Active.RedFilePath : "none";
                 var red = new RedFileService();
-                bool ok = red.LoadForProject(slnDir, cfg);   // makes it Active; a failure clears Active
+                bool ok = red.LoadForProject(slnDir, cfg);   // makes it Active; a failure clears a stale Active
                 _redKey = ok ? key : null;
-                _redLoadFailed = !ok;
+                // Another caller may already hold THIS version's .red (LoadForProject kept it): then there is
+                // nothing to recover, and retrying would only repeat this caller's failure.
+                var active = RedFileService.Active;
+                bool covered = !ok && active != null && cfg != null
+                    && string.Equals(active.LoadedForVersion, cfg.Name, StringComparison.OrdinalIgnoreCase);
+                _redLoadFailed = !ok && !covered;
                 _redLastAttemptTick = Environment.TickCount;
 
-                // One line per outcome, not per attempt: a retry that fails the same way stays quiet.
-                string outcome = (cfg != null ? cfg.Name : "not resolved") + "|" + (ok ? red.RedFilePath : "nothing loaded");
+                // One line per outcome, not per attempt: a retry that fails the same way stays quiet. A
+                // solution switch that lands on the same version and the same .red is deliberately not logged.
+                string outcome = (cfg != null ? cfg.Name : "not resolved") + "|"
+                    + (ok ? red.RedFilePath : covered ? "kept " + active.RedFilePath : "nothing loaded");
                 if (string.Equals(outcome, _redLastOutcome, StringComparison.OrdinalIgnoreCase)) return;
                 _redLastOutcome = outcome;
+                string from = cfg != null && !string.IsNullOrEmpty(cfg.RedFilePath) ? " from " + cfg.RedFilePath : "";
                 MonacoSpikeLog.Write("[embed-ctx] .red for version '" + (cfg != null ? cfg.Name : "not resolved") + "': "
                     + (ok ? red.RedFilePath + " (was " + was + ")"
-                          : "nothing loaded" + (cfg != null && !string.IsNullOrEmpty(cfg.RedFilePath) ? " from " + cfg.RedFilePath : "")
-                            + "; no .red in force (was " + was + "), retrying every " + (RedRetryIntervalMs / 1000) + " s"));
+                       : covered ? "nothing loaded" + from + "; keeping " + active.RedFilePath + " (same version, loaded by another caller)"
+                       : "nothing loaded" + from + "; no .red in force (was " + was + "), retrying every " + (RedRetryIntervalMs / 1000) + " s"));
             }
-            catch (Exception ex) { MonacoSpikeLog.Write("[embed-ctx] .red load failed: " + ex.Message); }
+            catch (Exception ex)
+            {
+                // Fail closed here too (f3b47441 pipeline run 1): an exception is a failed load, and it must
+                // leave recovery scheduled rather than the previous version's .red in force.
+                _redKey = null;
+                _redLoadFailed = true;
+                _redLastAttemptTick = Environment.TickCount;
+                try { RedFileService.ClearActiveUnlessFor(cfg != null ? cfg.Name : null); } catch { }
+                MonacoSpikeLog.Write("[embed-ctx] .red load failed: " + ex.Message + "; retrying every " + (RedRetryIntervalMs / 1000) + " s");
+            }
         }
 
         /// <summary>

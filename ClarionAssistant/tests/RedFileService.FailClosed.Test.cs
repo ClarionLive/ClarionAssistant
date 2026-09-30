@@ -25,10 +25,14 @@ static class RedFileServiceFailClosedTest
         else { fail++; Console.WriteLine("  [FAIL] " + name + (detail != null ? "  (" + detail + ")" : "")); }
     }
 
-    static ClarionVersionConfig Config(string redPath)
+    const string VerA = "Clarion 10 Active And Updated";
+    const string VerB = "Clarion 12.0.14313";
+
+    static ClarionVersionConfig Config(string redPath, string version = VerB)
     {
         return new ClarionVersionConfig
         {
+            Name = version,
             RedFileName = redPath != null ? Path.GetFileName(redPath) : "Clarion120.red",
             RedFilePath = redPath,
             Macros = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -52,12 +56,14 @@ static class RedFileServiceFailClosedTest
             Func<RedFileService> loadA = () =>
             {
                 var a = new RedFileService();
-                return a.LoadForProject(slnDir, Config(redA)) ? a : null;
+                return a.LoadForProject(slnDir, Config(redA, VerA)) ? a : null;
             };
 
-            // (a) Baseline: a good load becomes Active.
+            // (a) Baseline: a good load becomes Active, stamped with its version.
             var svcA = loadA();
             Ok("version A's .red loads and becomes Active", svcA != null && ReferenceEquals(RedFileService.Active, svcA));
+            Ok("...stamped with the version it was loaded for", svcA != null && svcA.LoadedForVersion == VerA,
+               svcA != null ? svcA.LoadedForVersion : null);
 
             // (b) Switch to a version whose .red does not exist.
             bool okMissing = new RedFileService().LoadForProject(slnDir, Config(redB));
@@ -101,6 +107,47 @@ static class RedFileServiceFailClosedTest
                 got = RedFileService.ForProjectDirectory(projDir, svcA);
             Ok("ForProjectDirectory with an unreadable local .red falls back", ReferenceEquals(got, svcA));
             Ok("...and leaves Active alone", ReferenceEquals(RedFileService.Active, svcA));
+
+            // (g) Pipeline run 1 (debugger): three callers load with their own inputs. One caller's failure for
+            //     the SAME version (here: a solution folder whose local .red is unreadable) must not undo
+            //     another caller's good load of that version.
+            svcA = loadA();
+            string otherSln = Path.Combine(root, "otherSln");
+            Directory.CreateDirectory(otherSln);
+            string otherLocal = Path.Combine(otherSln, "Clarion100.red");
+            File.WriteAllText(otherLocal, "[Common]\r\n*.clw = .\\Other\r\n");
+            bool okSame;
+            using (new FileStream(otherLocal, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                okSame = new RedFileService().LoadForProject(otherSln, Config(redA, VerA));
+            Ok("same-version failure elsewhere: returns false", !okSame);
+            Ok("same-version failure elsewhere: another caller's Active for that version is kept",
+               ReferenceEquals(RedFileService.Active, svcA));
+
+            // (h) Pipeline run 1 (both Codex gates): an EXCEPTION is a failure too. LoadForProject must not
+            //     throw, and must apply the same rule.
+            svcA = loadA();
+            RedFileService.BeforeLoadForTest = () => { throw new InvalidOperationException("injected"); };
+            bool threw = false, okThrow = true;
+            try { okThrow = new RedFileService().LoadForProject(slnDir, Config(redB, VerB)); }
+            catch { threw = true; }
+            Ok("exception during load: LoadForProject does not throw", !threw);
+            Ok("exception during load: returns false", !okThrow);
+            Ok("exception loading another version: stale Active is cleared", RedFileService.Active == null);
+            svcA = null;
+            RedFileService.BeforeLoadForTest = null;
+            svcA = loadA();
+            RedFileService.BeforeLoadForTest = () => { throw new InvalidOperationException("injected"); };
+            new RedFileService().LoadForProject(slnDir, Config(redA, VerA));
+            RedFileService.BeforeLoadForTest = null;
+            Ok("exception loading the SAME version: Active is kept", ReferenceEquals(RedFileService.Active, svcA));
+
+            // (i) No version at all (the chat panel's branch that never reaches LoadForProject).
+            loadA();
+            RedFileService.ClearActiveUnlessFor(null);
+            Ok("ClearActiveUnlessFor(null) clears", RedFileService.Active == null);
+            svcA = loadA();
+            RedFileService.ClearActiveUnlessFor(VerA.ToUpperInvariant());
+            Ok("ClearActiveUnlessFor(same version, any case) keeps", ReferenceEquals(RedFileService.Active, svcA));
         }
         finally
         {

@@ -666,6 +666,7 @@ namespace ClarionAssistant
                 string live;
                 if (ClarionVersionService.TryGetLiveIdeVersionName(out live))
                     _lastIdeVersionChoice = ClarionVersionSelector.NormalizeIdeChoice(live);
+                _versionGenerationSeen = EffectiveClarionVersion.Generation;
                 _header.SetVersion("(not detected)", "No Clarion version found in ClarionProperties.xml");
                 return;
             }
@@ -687,6 +688,8 @@ namespace ClarionAssistant
                 // f3b47441: LspAutostartCommand's version follower announces every Build > Set Clarion Version
                 // switch, and its handler runs before this panel's. Announce only a change nobody has since this
                 // panel last resolved (e.g. the source tier moving at startup), so the Data pad reacts once.
+                // ASSUMES the follower is the only other NotifyChanged caller: a new one that bumps for some
+                // other reason would also suppress this panel's announcement.
                 if (EffectiveClarionVersion.Generation == _versionGenerationSeen)
                 {
                     ClarionGraphService.InvalidateVersionCache();
@@ -783,6 +786,8 @@ namespace ClarionAssistant
             _redFileService = new RedFileService();
             if (_currentVersionConfig == null)
             {
+                // No version: nothing may stay in force from the previous one (f3b47441, fails closed).
+                RedFileService.ClearActiveUnlessFor(null);
                 ShowRedFileInHeader("(no Clarion version resolved)", "warning");
                 return;
             }
