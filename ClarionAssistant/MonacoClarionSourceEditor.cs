@@ -384,6 +384,9 @@ namespace ClarionAssistant
                 _editor = new MonacoEditorControl(this, Services.CaEditorSettings.MonacoThemeDark, "monaco-embeditor.html", "clarion-embeditor-data");
                 host.Controls.Add(_editor);
                 _editor.BringToFront();
+                // Remember the displayed tab per solution (ActiveDocumentRestoreCommand). The IDE's own
+                // active-window event only fires once a document takes focus, so a plain tab click can go unreported.
+                _editor.VisibleChanged += (s, e) => { try { if (_editor != null && _editor.Visible) ActiveDocumentRestoreCommand.NotifyTabShown(_filePath); } catch { } };
                 HideNativeNavBar(host);   // hide the native class/members drop-down bar so it doesn't peek through the overlay top
                 // Participate in cross-surface gear-settings sync: receive applySettings broadcasts from any
                 // other Monaco surface (embeditor or another source editor). Our OnSaveSettings publishes. (deac3d16)
