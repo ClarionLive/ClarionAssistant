@@ -180,7 +180,7 @@ namespace ClarionAssistant.Services
                 if (ReferenceEquals(editor, _lastEditor) && ReferenceEquals(pwee, _lastPwee)) return;
 
                 FileLog("attach trigger (" + source + "): editor " + IdOf(_lastEditor) + "→" + IdOf(editor)
-                        + " pwee " + IdOf(_lastPwee) + "→" + IdOf(pwee));
+                        + " pwee " + IdOf(_lastPwee) + "→" + IdOf(pwee) + " " + MonacoSpikeLog.MemSummary());
 
                 // New embed / proc-change → (re)attach. Record BEFORE attaching so a re-entrant call can't double-fire.
                 _lastEditor = editor; _lastPwee = pwee;
@@ -194,6 +194,8 @@ namespace ClarionAssistant.Services
             catch (Exception ex)
             {
                 Log("TryAttachIfNewEmbed(" + source + ") error: " + ex.Message);
+                // 7116020b: Log() goes nowhere in a deployed build — a failed attach must reach the file.
+                FileLog("attach ERROR (" + source + "): " + ex.GetType().Name + ": " + ex.Message + " " + MonacoSpikeLog.MemSummary());
             }
         }
 

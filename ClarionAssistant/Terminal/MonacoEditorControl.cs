@@ -446,11 +446,18 @@ namespace ClarionAssistant.Terminal
         {
             if (_isInitializing || _isInitialized) return;
             _isInitializing = true;
+            // 7116020b: a failed init used to go to Debug.WriteLine only (nowhere in a deployed build), so the
+            // overlay silently left the native embeditor showing. Log start/fail/navigated with a memory snapshot.
+            _initSw = System.Diagnostics.Stopwatch.StartNew();
+            string phase = "environment";
+            MonacoSpikeLog.Write("[webview-init] start host=" + HostName + " " + MonacoSpikeLog.MemSummary());
 
             try
             {
                 var environment = await WebView2EnvironmentCache.GetEnvironmentAsync();
+                phase = "ensureCore";
                 await _webView.EnsureCoreWebView2Async(environment);
+                phase = "configure";
 
                 _tempDir = Path.Combine(Path.GetTempPath(), "ClarionEmbeditor_" + Guid.NewGuid().ToString("N").Substring(0, 8));
                 Directory.CreateDirectory(_tempDir);
@@ -472,22 +479,47 @@ namespace ClarionAssistant.Terminal
 
                 _webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
                 _webView.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
+                _webView.CoreWebView2.ProcessFailed += OnProcessFailed;   // 7116020b: a renderer OOM/crash was invisible
+                phase = "navigate";
 
                 string htmlPath = GetHtmlPath();
                 if (File.Exists(htmlPath))
                     _webView.CoreWebView2.Navigate(new Uri(htmlPath).AbsoluteUri + "?v=" + File.GetLastWriteTimeUtc(htmlPath).Ticks);
                 else
+                {
                     System.Diagnostics.Debug.WriteLine("[MonacoEditorControl] HTML missing: " + htmlPath);
+                    MonacoSpikeLog.Write("[webview-init] FAILED host=" + HostName + " phase=navigate reason=html-missing path=" + htmlPath);
+                }
             }
             catch (Exception ex)
             {
                 _isInitializing = false; // allow retry
                 System.Diagnostics.Debug.WriteLine("[MonacoEditorControl] Init error: " + ex.Message);
+                MonacoSpikeLog.Write("[webview-init] FAILED host=" + HostName + " phase=" + phase
+                    + " ms=" + (_initSw != null ? _initSw.ElapsedMilliseconds : -1)
+                    + " ex=" + ex.GetType().Name + " hr=0x" + ex.HResult.ToString("x8")
+                    + " msg=" + (ex.Message ?? "").Replace("\r", " ").Replace("\n", " ")
+                    + (ex.InnerException != null ? " inner=" + ex.InnerException.GetType().Name + ":" + ex.InnerException.Message : "")
+                    + " " + MonacoSpikeLog.MemSummary());
             }
         }
 
+        private void OnProcessFailed(object sender, CoreWebView2ProcessFailedEventArgs e)
+        {
+            string detail = "";
+            try { detail = " reason=" + e.Reason + " exit=" + e.ExitCode + " desc=" + e.ProcessDescription; } catch { }
+            MonacoSpikeLog.Write("[webview-init] PROCESS FAILED host=" + HostName + " kind=" + e.ProcessFailedKind
+                + detail + " " + MonacoSpikeLog.MemSummary());
+        }
+
+        private System.Diagnostics.Stopwatch _initSw;
+        private string HostName { get { return _host != null ? _host.GetType().Name : "none"; } }
+
         private void OnNavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs e)
         {
+            MonacoSpikeLog.Write("[webview-init] navigated host=" + HostName + " ok=" + e.IsSuccess
+                + (e.IsSuccess ? "" : " status=" + e.WebErrorStatus)
+                + " ms=" + (_initSw != null ? _initSw.ElapsedMilliseconds : -1));
             _isInitialized = e.IsSuccess;
             _isInitializing = false;
             // Source push is triggered by the JS "ready" message (OnReady), not here — avoids a double-send.
@@ -604,6 +636,8 @@ namespace ClarionAssistant.Terminal
                         // A (re)loaded page restarts its sync versions at 1: drop the previous load's copy so a
                         // stale v can never match it. The page always syncs before its first request anyway.
                         _bufferCache.Clear();
+                        MonacoSpikeLog.Write("[webview-init] ready host=" + HostName
+                            + " ms=" + (_initSw != null ? _initSw.ElapsedMilliseconds : -1));
                         h.OnReady(this);
                         break;
                     case "save":              h.OnSave(this, json); break;

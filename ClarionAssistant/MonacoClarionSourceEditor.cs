@@ -2870,6 +2870,66 @@ namespace ClarionAssistant
             }
             catch { }
         }
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        private struct MemoryBasicInformation
+        {
+            public IntPtr BaseAddress;
+            public IntPtr AllocationBase;
+            public uint AllocationProtect;
+            public UIntPtr RegionSize;   // sequential layout pads before this on x64, matching the Win32 struct
+            public uint State;
+            public uint Protect;
+            public uint Type;
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+        private static extern UIntPtr VirtualQuery(IntPtr lpAddress, out MemoryBasicInformation lpBuffer, UIntPtr dwLength);
+
+        private const uint MemFree = 0x10000;
+
+        /// <summary>
+        /// 7116020b: one-line memory snapshot for the log — `mem virt= priv= ws= gc= free= largestFree=` (MB).
+        /// Clarion.exe is 32-bit and not LargeAddressAware, so what kills it is the LARGEST FREE BLOCK of its
+        /// 2 GB address space, not the working set (the OOM on 2026-09-30 hit at 975 MB working set). Walking
+        /// the region list with VirtualQuery is a few thousand calls — cheap enough per attach/init event, not
+        /// per keystroke. Never throws.
+        /// </summary>
+        public static string MemSummary()
+        {
+            var sb = new StringBuilder("mem");
+            try
+            {
+                using (var p = System.Diagnostics.Process.GetCurrentProcess())
+                {
+                    sb.Append(" virt=").Append(p.VirtualMemorySize64 >> 20)
+                      .Append(" priv=").Append(p.PrivateMemorySize64 >> 20)
+                      .Append(" ws=").Append(p.WorkingSet64 >> 20);
+                }
+            }
+            catch (Exception ex) { sb.Append(" proc=err(").Append(ex.GetType().Name).Append(')'); }
+            try { sb.Append(" gc=").Append(GC.GetTotalMemory(false) >> 20); } catch { }
+            try
+            {
+                long free = 0, largest = 0, addr = 0;
+                var size = new UIntPtr((uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(MemoryBasicInformation)));
+                for (int guard = 0; guard < 200000; guard++)
+                {
+                    MemoryBasicInformation mbi;
+                    if (VirtualQuery(new IntPtr(addr), out mbi, size) == UIntPtr.Zero) break;
+                    long region = (long)mbi.RegionSize.ToUInt64();
+                    if (region <= 0) break;
+                    if (mbi.State == MemFree) { free += region; if (region > largest) largest = region; }
+                    long next = mbi.BaseAddress.ToInt64() + region;
+                    if (next <= addr) break;
+                    addr = next;
+                    if (IntPtr.Size == 4 && addr > int.MaxValue) break;   // new IntPtr(long) would throw past 2 GB
+                }
+                sb.Append(" free=").Append(free >> 20).Append(" largestFree=").Append(largest >> 20);
+            }
+            catch (Exception ex) { sb.Append(" vq=err(").Append(ex.GetType().Name).Append(')'); }
+            return sb.Append(" (MB)").ToString();
+        }
     }
 
     /// <summary>
