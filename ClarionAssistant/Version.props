@@ -55,8 +55,8 @@
     <VersionMajor>5</VersionMajor>
     <VersionMinor>9</VersionMinor>
     <VersionPatch>0</VersionPatch>
-    <VersionBuild>1271</VersionBuild>
+    <VersionBuild>1272</VersionBuild>
     <FullVersion>5.9.0</FullVersion>
-    <AssemblyFullVersion>5.9.0.1271</AssemblyFullVersion>
+    <AssemblyFullVersion>5.9.0.1272</AssemblyFullVersion>
   </PropertyGroup>
 </Project>
