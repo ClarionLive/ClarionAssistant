@@ -47,7 +47,8 @@ namespace ClarionAssistant.Services
         // DBs built by an older parser are treated as stale and auto-rebuilt (LibSrc mtimes alone can't detect
         // a parser change). v2: capture CLASS data members (dotted "Class.Member"); member queries dotted-only.
         // v3: index keycodes.clw + errors.clw equates (MouseRight, NoFileErr, …) so F12/hover resolve them.
-        private const int ParserVersion = 3;
+        // v4: index file-level EQUATEs in library .inc files (declared outside any CLASS body).
+        private const int ParserVersion = 4;
 
         // Flat equate files (no class structure) — ingested via the dedicated EQUATE scan. keycodes.clw
         // (MouseRight, Key* …) and errors.clw (NoFileErr, …) added so their equates resolve for F12/hover. (task 37e2079f)

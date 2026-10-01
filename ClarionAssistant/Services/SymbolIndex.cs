@@ -48,10 +48,15 @@ namespace ClarionAssistant.Services
         /// followed by U+FFFF, so the range holds exactly the names starting with the prefix.</summary>
         internal const string PrefixSql = CodeGraphProvider.SymbolSelect +
             "WHERE s.name >= @lo COLLATE NOCASE AND s.name < @hi COLLATE NOCASE AND " + ReachableScope +
-            "AND instr(s.name, '.') = 0 ORDER BY s.name COLLATE NOCASE LIMIT @limit";
+            "AND instr(s.name, '.') = 0 ORDER BY s.name COLLATE NOCASE LIMIT @limit OFFSET @offset";
 
         internal const string PrefixSqlNoIndex = CodeGraphProvider.SymbolSelect +
             "WHERE s.name LIKE @like ESCAPE '\\' AND " + ReachableScope + "AND instr(s.name, '.') = 0 LIMIT @limit";
+
+        /// <summary>The fallback for a FILTERED <see cref="ByPrefix"/>: paging needs a stable order, which the
+        /// plain fallback (a LIMIT scan that stops early) does not have.</summary>
+        internal const string PrefixSqlNoIndexPaged = CodeGraphProvider.SymbolSelect +
+            "WHERE s.name LIKE @like ESCAPE '\\' AND " + ReachableScope + "AND instr(s.name, '.') = 0 ORDER BY s.name COLLATE NOCASE LIMIT @limit OFFSET @offset";
 
         /// <summary>Direct members of a class: rows whose parent_name is the class AND whose name is
         /// "Class.Member" (the parent_name column alone also holds a derived class's base).</summary>
@@ -177,18 +182,208 @@ namespace ClarionAssistant.Services
         /// Class.Member rows, ordered by name. Empty (never null, never throws) when the DB is missing,
         /// busy, or the prefix is empty - and, with <paramref name="fastOnly"/>, when the DB has no NOCASE
         /// index (the local lanes pass it: an old DB's fallback scan is ~150 ms on v61POSitive).</summary>
-        public List<CodeGraphSymbol> ByPrefix(string prefix, int limit, bool fastOnly = false)
+        public List<CodeGraphSymbol> ByPrefix(string prefix, int limit, bool fastOnly = false, ISet<string> equateFiles = null)
         {
             var results = new List<CodeGraphSymbol>();
             if (string.IsNullOrEmpty(prefix) || limit <= 0) return results;
-            Query(noIndex => noIndex ? PrefixSqlNoIndex : PrefixSql, cmd =>
+            // Without a filter one page of <limit> rows is the answer. With one, rows are dropped AFTER the
+            // query, so page on until <limit> survive - otherwise a prefix that is mostly equates from files
+            // the current file never includes would fill the page and leave nothing to show.
+            // OFFSET re-walks every skipped row, so the page doubles each time: the total work stays linear
+            // in the rows read instead of quadratic.
+            int pageSize = equateFiles == null ? limit : Math.Max(limit * 4, 200);
+            int offset = 0;
+            for (int page = 0; page < MaxPrefixPages && results.Count < limit; page++)
             {
-                cmd.Parameters.AddWithValue("@lo", prefix);
-                cmd.Parameters.AddWithValue("@hi", prefix + "\uFFFF");
-                cmd.Parameters.AddWithValue("@like", EscapeLike(prefix) + "%");
-                cmd.Parameters.AddWithValue("@limit", limit);
-            }, results, fastOnly);
+                var rows = new List<CodeGraphSymbol>();
+                int off = offset, size = pageSize;
+                Query(noIndex => noIndex ? (equateFiles == null ? PrefixSqlNoIndex : PrefixSqlNoIndexPaged) : PrefixSql, cmd =>
+                {
+                    cmd.Parameters.AddWithValue("@lo", prefix);
+                    cmd.Parameters.AddWithValue("@hi", prefix + "\uFFFF");
+                    cmd.Parameters.AddWithValue("@like", EscapeLike(prefix) + "%");
+                    cmd.Parameters.AddWithValue("@limit", size);
+                    cmd.Parameters.AddWithValue("@offset", off);
+                }, rows, fastOnly);
+                foreach (var s in rows)
+                {
+                    if (results.Count >= limit) break;
+                    if (equateFiles == null || !IsEquateOutside(s, equateFiles)) results.Add(s);
+                }
+                if (equateFiles == null || rows.Count < size) break;
+                offset += rows.Count;
+                pageSize = Math.Min(pageSize * 2, 8000);
+            }
             return results;
+        }
+
+        /// <summary>The most pages one filtered <see cref="ByPrefix"/> reads (bounds a one-letter prefix).</summary>
+        private const int MaxPrefixPages = 40;
+
+        /// <summary>True for a file-level EQUATE declared in a .inc whose file name is not in
+        /// <paramref name="includedFiles"/> - an equate the current file cannot see. Everything else
+        /// (procedures, variables, equates in .clw files, class members) is never excluded.</summary>
+        internal static bool IsEquateOutside(CodeGraphSymbol s, ISet<string> includedFiles)
+        {
+            if (s == null || !string.Equals(s.Params, "EQUATE", StringComparison.OrdinalIgnoreCase)) return false;
+            if (!string.Equals(s.Scope, "global", StringComparison.OrdinalIgnoreCase)) return false;
+            string file = s.FilePath;
+            if (string.IsNullOrEmpty(file) || !file.EndsWith(".inc", StringComparison.OrdinalIgnoreCase)) return false;
+            string name = BaseName(file);
+            return name != null && !includedFiles.Contains(name);
+        }
+
+        /// <summary>The file name of <paramref name="path"/>, or null when it has characters .NET Framework's
+        /// Path.GetFileName rejects (one malformed include row must not abort the whole load).</summary>
+        private static string BaseName(string path)
+        {
+            try { return string.IsNullOrEmpty(path) ? null : Path.GetFileName(path); }
+            catch (ArgumentException) { return null; }
+        }
+
+        // ================================================================== include closure
+        // File-level equates live in .inc files and are only visible to a file that INCLUDEs that .inc,
+        // directly or through another include - or through the PROGRAM, for a MEMBER file. The closure of
+        // include names (not paths: an 'include' row holds just the name written in the INCLUDE) is what
+        // ByPrefix filters equates against.
+
+        private sealed class IncludeData
+        {
+            public readonly Dictionary<string, List<string>> Edges = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            public readonly List<KeyValuePair<long, string>> Programs = new List<KeyValuePair<long, string>>();
+            public int Generation;   // _openCount of the connection the rows were read from
+        }
+
+        private IncludeData _includeData;   // dropped whenever the connection closes (DB replaced/rewritten)
+
+        private IncludeData GetIncludeData(bool fastOnly)
+        {
+            IncludeData data = null;
+            WithConnection(conn =>
+            {
+                if (_includeData != null) { data = _includeData; return; }
+                var d = new IncludeData { Generation = _openCount };
+                using (var cmd = new SQLiteCommand("SELECT file_path, name FROM symbols WHERE type = 'include'", conn))
+                {
+                    cmd.CommandTimeout = 0;
+                    using (var r = cmd.ExecuteReader())
+                        while (r.Read())
+                        {
+                            if (r.IsDBNull(0) || r.IsDBNull(1)) continue;
+                            string from = BaseName(r.GetString(0)), to = BaseName(r.GetString(1));
+                            if (from == null || to == null) continue;
+                            List<string> list;
+                            if (!d.Edges.TryGetValue(from, out list)) d.Edges[from] = list = new List<string>();
+                            list.Add(to);
+                        }
+                }
+                using (var cmd = new SQLiteCommand("SELECT project_id, file_path FROM symbols WHERE type = 'program'", conn))
+                {
+                    cmd.CommandTimeout = 0;
+                    using (var r = cmd.ExecuteReader())
+                        while (r.Read())
+                            if (!r.IsDBNull(1)) d.Programs.Add(new KeyValuePair<long, string>(r.IsDBNull(0) ? -1 : r.GetInt64(0), r.GetString(1)));
+                }
+                _includeData = data = d;
+            }, fastOnly);
+            return data;
+        }
+
+        /// <summary>The project that owns <paramref name="file"/>, or -1 when no symbol is indexed from it
+        /// (<paramref name="ran"/> tells a miss from a query that never ran). An exact-path lookup on
+        /// idx_sym_file only: a case-insensitive fallback cannot use that index and would scan the whole
+        /// table on every miss. A miss just means "every PROGRAM's chain", which is over-inclusive, never
+        /// hiding.</summary>
+        private long ProjectOf(string file, bool fastOnly, out bool ran)
+        {
+            long found = -1;
+            bool done = false;
+            WithConnection(conn =>
+            {
+                using (var cmd = new SQLiteCommand("SELECT project_id FROM symbols WHERE file_path = @f LIMIT 1", conn))
+                {
+                    cmd.CommandTimeout = 0;
+                    cmd.Parameters.AddWithValue("@f", file);
+                    object v = cmd.ExecuteScalar();
+                    if (v != null && !(v is DBNull)) found = Convert.ToInt64(v);
+                }
+                done = true;
+            }, fastOnly);
+            ran = done;
+            return found;
+        }
+
+        private static readonly object _closureLock = new object();
+        private static readonly Dictionary<string, HashSet<string>> _closureCache = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// The file names (case-insensitive) whose file-level equates <paramref name="contextFile"/> can
+        /// see: itself, every file it INCLUDEs transitively, and - so a MEMBER file sees the globals it
+        /// inherits - the same for its project's PROGRAM file. Edges come from every DB in
+        /// <paramref name="dbPaths"/> (project first, then library). Null - meaning "do not filter" - when
+        /// <paramref name="contextFile"/> is empty, there is no project DB (a missing first path must not
+        /// promote the library DB to project DB: it has no PROGRAM and no include edges from user files, so
+        /// every visible equate would be hidden), the project DB cannot be read, or - with
+        /// <paramref name="fastOnly"/> - it lacks the NOCASE indexes (the local lane skips such a DB).
+        /// Cached per file until a DB is rewritten; a closure built from an incomplete read (a busy DB) is
+        /// returned but not cached. Never throws.
+        /// </summary>
+        public static HashSet<string> IncludeClosure(string contextFile, string[] dbPaths, bool fastOnly = false)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(contextFile) || dbPaths == null || dbPaths.Length == 0) return null;
+                var idxs = new List<SymbolIndex>();
+                foreach (var p in dbPaths) { var i = For(p); if (i != null) idxs.Add(i); }
+                if (idxs.Count == 0 || string.IsNullOrEmpty(dbPaths[0]) || !ReferenceEquals(idxs[0], For(dbPaths[0]))) return null;
+
+                var datas = new List<IncludeData>();
+                foreach (var i in idxs) datas.Add(i.GetIncludeData(fastOnly));
+                if (datas[0] == null) return null;   // project DB busy/missing/old: show everything rather than nothing
+
+                bool ran;
+                long project = idxs[0].ProjectOf(contextFile, fastOnly, out ran);
+                bool complete = ran && !datas.Contains(null);
+
+                var key = new System.Text.StringBuilder(contextFile);
+                for (int k = 0; k < idxs.Count; k++)
+                    key.Append('|').Append(idxs[k]._path).Append('#').Append(datas[k] == null ? -1 : datas[k].Generation);
+                string cacheKey = key.ToString();
+                HashSet<string> cached;
+                lock (_closureLock) { if (_closureCache.TryGetValue(cacheKey, out cached)) return cached; }
+
+                var roots = new List<string>();
+                string self = BaseName(contextFile);
+                if (self != null) roots.Add(self);
+                foreach (var prog in datas[0].Programs)
+                    if (project < 0 || prog.Key == project) { string pn = BaseName(prog.Value); if (pn != null) roots.Add(pn); }
+
+                var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var work = new Stack<string>(roots);
+                while (work.Count > 0)
+                {
+                    string f = work.Pop();
+                    if (string.IsNullOrEmpty(f) || !set.Add(f)) continue;
+                    foreach (var d in datas)
+                    {
+                        List<string> inc;
+                        if (d != null && d.Edges.TryGetValue(f, out inc))
+                            foreach (var n in inc) work.Push(n);
+                    }
+                }
+                if (complete)
+                    lock (_closureLock)
+                    {
+                        if (_closureCache.Count > 200) _closureCache.Clear();
+                        _closureCache[cacheKey] = set;
+                    }
+                return set;
+            }
+            catch (Exception ex)
+            {
+                LspTrace.Write("[SymbolIndex] include closure failed: " + ex.Message);
+                return null;
+            }
         }
 
         /// <summary>The DIRECT members ("Class.Member" rows) of <paramref name="className"/> in this DB.</summary>
@@ -489,6 +684,7 @@ namespace ClarionAssistant.Services
             if (_conn == null) return;
             try { _conn.Close(); _conn.Dispose(); } catch { }
             _conn = null;
+            _includeData = null;
         }
 
         private static void Log(string line)

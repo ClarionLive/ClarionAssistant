@@ -53,6 +53,7 @@ static class SymbolIndexTest
             IndexerCreatesIndexes();
             AutoIndexBuild();
             Lifecycle(proj);
+            EquateIncludes();
             Sources(repo);
             if (Environment.GetEnvironmentVariable("SYMIDX_SKIP_LARGE") != "1") Large();
             if (realCopy != null) Real(realCopy);
@@ -159,6 +160,101 @@ static class SymbolIndexTest
         }
     }
 
+    // ------------------------------------------------------------------------------ file-level equates
+
+    static void Sym(SQLiteConnection cn, string name, string type, string file, string scope, string prms, int project)
+    {
+        using (var cmd = new SQLiteCommand("INSERT INTO symbols (name, type, file_path, line_number, project_id, params, scope) VALUES (@n, @t, @f, 1, @pr, @p, @s)", cn))
+        {
+            cmd.Parameters.AddWithValue("@n", name);
+            cmd.Parameters.AddWithValue("@t", type);
+            cmd.Parameters.AddWithValue("@f", file);
+            cmd.Parameters.AddWithValue("@pr", project);
+            cmd.Parameters.AddWithValue("@p", (object)prms ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@s", scope);
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>A file-level EQUATE in a .inc is offered only to a file that includes that .inc - directly,
+    /// through another include, or (for a MEMBER file) through its PROGRAM. Fixture, two projects:
+    ///   Prog.clw (PROGRAM)  includes Common.inc            Mem.clw (MEMBER)  includes A.inc;  A.inc includes B.inc
+    ///   Prog2.clw (PROGRAM) includes Other.inc             C.inc is included by nobody
+    /// plus 600 equates in C.inc that sort BETWEEN the visible ones, to force the filtered query to page.</summary>
+    static void EquateIncludes()
+    {
+        Console.WriteLine("file-level equates and the include closure");
+        string db = Path.Combine(_work, "equ.codegraph.db");
+        string dir = Path.Combine(_work, "src") + Path.DirectorySeparatorChar;
+        BuildIndexed(db, new string[0][]);
+        using (var cn = new SQLiteConnection("Data Source=" + db + ";Version=3;"))
+        {
+            cn.Open();
+            Exec(cn, "INSERT INTO projects (id, name) VALUES (2, 'proj2')");
+            Sym(cn, "ProgMain", "program", dir + "Prog.clw", "global", null, 1);
+            Sym(cn, "Common.inc", "include", dir + "Prog.clw", "global", null, 1);
+            Sym(cn, "A.inc", "include", dir + "Mem.clw", "global", null, 1);
+            Sym(cn, "bad<name.inc", "include", dir + "Mem.clw", "global", null, 1);     // malformed: skipped, never aborts the load
+            Sym(cn, "B.inc", "include", dir + "A.inc", "global", null, 1);
+            Sym(cn, "ProgMain2", "program", dir + "Prog2.clw", "global", null, 2);
+            Sym(cn, "Other.inc", "include", dir + "Prog2.clw", "global", null, 2);
+            Sym(cn, "EQ_COMMON", "variable", dir + "Common.inc", "global", "EQUATE", 1);
+            Sym(cn, "EQ_A", "variable", dir + "A.inc", "global", "EQUATE", 1);
+            Sym(cn, "EQ_B", "variable", dir + "B.inc", "global", "EQUATE", 1);
+            Sym(cn, "EQ_C", "variable", dir + "C.inc", "global", "EQUATE", 1);
+            Sym(cn, "EQ_OTHER", "variable", dir + "Other.inc", "global", "EQUATE", 2);
+            Sym(cn, "EQ_INCLW", "variable", dir + "Mem.clw", "global", "EQUATE", 1);     // not a .inc: never filtered
+            Sym(cn, "EQ_PROC", "procedure", dir + "C.inc", "global", null, 1);           // not an equate: never filtered
+            Sym(cn, "EQ_CLASSEQ", "variable", dir + "C.inc", "class", "EQUATE", 1);      // not file-level: never filtered
+            using (var tx = cn.BeginTransaction())
+            {
+                for (int i = 0; i < 600; i++) Sym(cn, "EQ_BULK_" + i.ToString("000"), "variable", dir + "C.inc", "global", "EQUATE", 1);
+                tx.Commit();
+            }
+        }
+
+        var mem = SymbolIndex.IncludeClosure(dir + "Mem.clw", new[] { db });
+        Check(mem != null && mem.SetEquals(new[] { "Mem.clw", "A.inc", "B.inc", "Prog.clw", "Common.inc" }),
+              "E.1", "MEMBER file: itself + its includes (transitive) + its project's PROGRAM and the PROGRAM's includes, not another project's - got " + (mem == null ? "null" : "{" + string.Join(", ", mem) + "}"));
+        var other = SymbolIndex.IncludeClosure(dir + "Prog2.clw", new[] { db });
+        Check(other != null && other.SetEquals(new[] { "Prog2.clw", "Other.inc" }), "E.2", "a file of the other project sees only that project's PROGRAM chain");
+
+        var idx = SymbolIndex.For(db);
+        var all = Names(idx.ByPrefix("EQ_", 1000));
+        Check(all.Contains("EQ_C") && all.Contains("EQ_BULK_000"), "E.3", "no filter: every equate is offered (unchanged behaviour)");
+
+        var seen = Names(idx.ByPrefix("EQ_", 100, equateFiles: mem));
+        Check(seen.SetEquals(new[] { "EQ_A", "EQ_B", "EQ_COMMON", "EQ_INCLW", "EQ_PROC", "EQ_CLASSEQ" }),
+              "E.4", "filtered: equates from included .inc files + non-.inc/non-equate rows survive; EQ_C, EQ_OTHER and the 600 bulk rows are dropped - got " + Show(idx.ByPrefix("EQ_", 100, equateFiles: mem)));
+        Check(Names(idx.ByPrefix("EQ_", 3, equateFiles: mem)).Count == 3, "E.5", "the limit still applies after filtering");
+
+        var upper = SymbolIndex.IncludeClosure((dir + "Mem.clw").ToUpperInvariant(), new[] { db });
+        Check(ReferenceEquals(upper, mem) && !upper.Contains("Other.inc"),
+              "E.6", "paths are compared case-insensitively (Windows): an upper-case spelling of the same file is the SAME closure, still project-specific");
+
+        var unknown = SymbolIndex.IncludeClosure(dir + "Nowhere.clw", new[] { db });
+        Check(unknown != null && unknown.Contains("Common.inc") && unknown.Contains("Other.inc") && !unknown.Contains("A.inc"),
+              "E.7", "a file with no indexed symbols falls back to every PROGRAM's chain rather than hiding everything");
+
+        Check(SymbolIndex.IncludeClosure(null, new[] { db }) == null && SymbolIndex.IncludeClosure("", new[] { db }) == null, "E.8", "no context file: null = do not filter");
+        Check(SymbolIndex.IncludeClosure(dir + "Mem.clw", new[] { Path.Combine(_work, "missing.codegraph.db") }) == null, "E.9", "unreadable project DB: null = do not filter (never an empty set)");
+        Check(ReferenceEquals(mem, SymbolIndex.IncludeClosure(dir + "Mem.clw", new[] { db })), "E.10", "the closure is cached per file");
+
+        // No project DB path: the library DB must NOT be promoted to project DB (it holds no PROGRAM and no
+        // include edges from user files, so every equate the file does include would be hidden).
+        Check(SymbolIndex.IncludeClosure(dir + "Mem.clw", new string[] { null, db }) == null &&
+              SymbolIndex.IncludeClosure(dir + "Mem.clw", new string[] { "", db }) == null,
+              "E.11", "no project DB path -> null (do not filter), even with a library DB present");
+
+        // The keystroke lane (fastOnly) must not touch a DB it cannot query quickly.
+        string oldDb = Path.Combine(_work, "equ-old.codegraph.db");
+        BuildOldSchema(oldDb, ProjectRows());
+        Check(SymbolIndex.IncludeClosure(dir + "Mem.clw", new[] { oldDb }, fastOnly: true) == null, "E.12", "fastOnly on a DB without the NOCASE indexes -> null");
+        Check(SymbolIndex.IncludeClosure(dir + "Mem.clw", new[] { oldDb }) != null, "E.13", "the same DB is still usable off the keystroke lane");
+
+        Check(mem.Contains("A.inc") && !mem.Contains("bad<name.inc"), "E.14", "a malformed include row is skipped, the rest of the closure is intact");
+    }
+
     static HashSet<string> Names(IEnumerable<CodeGraphSymbol> syms) { return new HashSet<string>(syms.Select(s => s.Name), StringComparer.Ordinal); }
 
     static string Show(IEnumerable<CodeGraphSymbol> syms) { return "[" + string.Join(", ", syms.Select(s => s.Name)) + "]"; }
@@ -178,7 +274,7 @@ static class SymbolIndexTest
         Check(!Names(glo).Contains("GloClass.Method"), "2.4", "the dotted row is not offered");
         Check(idx.ByPrefix("Glo", 2).Count == 2, "2.5", "LIMIT 2 -> 2 rows");
 
-        Check(Plan(proj, SymbolIndex.PrefixSql, cmd => { cmd.Parameters.AddWithValue("@lo", "Glo"); cmd.Parameters.AddWithValue("@hi", "Glo\uFFFF"); cmd.Parameters.AddWithValue("@limit", 10); })
+        Check(Plan(proj, SymbolIndex.PrefixSql, cmd => { cmd.Parameters.AddWithValue("@lo", "Glo"); cmd.Parameters.AddWithValue("@hi", "Glo\uFFFF"); cmd.Parameters.AddWithValue("@limit", 10); cmd.Parameters.AddWithValue("@offset", 0); })
                   .Contains("USING INDEX " + SymbolIndex.NameIndex), "2.6", "the prefix query plan searches " + SymbolIndex.NameIndex + ": " + _lastPlan);
         Check(Plan(proj, SymbolIndex.MembersSql, cmd => { cmd.Parameters.AddWithValue("@parent", "MyBrowse"); cmd.Parameters.AddWithValue("@parentDot", "MyBrowse.%"); cmd.Parameters.AddWithValue("@limit", 10); })
                   .Contains("USING INDEX " + SymbolIndex.ParentIndex), "2.7", "the members query plan searches " + SymbolIndex.ParentIndex + ": " + _lastPlan);

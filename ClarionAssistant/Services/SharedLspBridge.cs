@@ -699,6 +699,8 @@ namespace ClarionAssistant.Services
                 if (it != null && !string.IsNullOrEmpty(it.Label)) seen.Add(it.Label);
 
             string[] dbs = { ResolveCodeGraphDb(filePath), ClarionGraphService.ResolveDbPath() };
+            // A colon-named .inc equate (EVENT:Foo) follows the same include-closure rule as a bare prefix.
+            var includedFiles = SymbolIndex.IncludeClosure(filePath, dbs);
             foreach (string db in dbs)
             {
                 try
@@ -708,7 +710,7 @@ namespace ClarionAssistant.Services
                     // "LOC:x") no longer leak in: in-scope colon labels come from LocalScopeIndex.
                     var idx = SymbolIndex.For(db);
                     if (idx == null) continue;
-                    foreach (var s in idx.ByPrefix(qualifier, 2000))
+                    foreach (var s in idx.ByPrefix(qualifier, 2000, equateFiles: includedFiles))
                     {
                         if (s == null || string.IsNullOrEmpty(s.Name)) continue;
                         // A name the server supplied keeps the server's row, which takes CodeGraph's detail.
@@ -2174,13 +2176,17 @@ namespace ClarionAssistant.Services
             }
 
             // (4) CodeGraph global symbols (procedures/functions/classes/vars) — project .codegraph.db.
-            MergeDbBarePrefix(primary, seen, prefix, ResolveCodeGraphDb(filePath));
+            // File-level equates are offered only from .inc files the current file includes (see
+            // SymbolIndex.IncludeClosure); null (no filtering) when the closure can't be built.
+            string projectDb = ResolveCodeGraphDb(filePath), libraryDb = ClarionGraphService.ResolveDbPath();
+            var includedFiles = SymbolIndex.IncludeClosure(filePath, new[] { projectDb, libraryDb });
+            MergeDbBarePrefix(primary, seen, prefix, projectDb, includedFiles);
 
             // (5) ClarionGraph static LIBRARY symbols (ABC + library classes, equates) — version-keyed
             // cache (ticket 6e8f2439). Bare-prefix offers class/interface NAMES + equates; ClassName.Method
             // entries are skipped here (they belong to member-access completion). No-op until the version
             // DB is built. Additive + defensive: only ADDS, never overrides an LSP item.
-            MergeDbBarePrefix(primary, seen, prefix, ClarionGraphService.ResolveDbPath());
+            MergeDbBarePrefix(primary, seen, prefix, libraryDb, includedFiles);
 
             // (6) Dictionary TABLE names (e.g. "Cus" → "Customers") from the ingested .schemagraph.db.
             // Deliberately does NOT gate on `seen` — a table name colliding with a code symbol is a rare,
@@ -2208,13 +2214,14 @@ namespace ClarionAssistant.Services
         /// missing or busy. Never throws.
         /// </summary>
         private static void MergeDbBarePrefix(
-            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen, string prefix, string db)
+            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen, string prefix, string db,
+            ISet<string> includedFiles)
         {
             try
             {
                 var idx = SymbolIndex.For(db);
                 if (idx == null) return;
-                foreach (var s in idx.ByPrefix(prefix, 100))
+                foreach (var s in idx.ByPrefix(prefix, 100, equateFiles: includedFiles))
                 {
                     if (s == null || string.IsNullOrEmpty(s.Name) || !seen.Add(s.Name)) continue;
                     primary.Add(SymbolIndex.ToCompletionItem(s));
