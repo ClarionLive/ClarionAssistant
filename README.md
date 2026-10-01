@@ -71,6 +71,38 @@ Clarion Assistant's terminals need Windows 10 version 1809 or Windows Server 201
 
 The UltimateCOM class that Clarion Assistant installs into `accessory\libsrc\win` kept one event queue for the whole program but locked it per control, so two COM controls on different threads (for example one on the main frame and one in an MDI child) could raise events at the same moment and free each other's event data, which crashed with an access violation in `WindowManager.Ask`. The queue now has a single shared lock, and each control's thread only ever sees and removes its own events. `UltimateCOM.inc` is unchanged, so existing apps and templates need nothing but a recompile.
 
+<!-- release-docs: covered=editor,embeditor -->
+### Large procedures: the CA editors warn before Clarion runs out of memory, and say why when they can't start
+
+Clarion is a 32-bit program with 2 GB of address space, and a big solution fills most of it. Opening a very large procedure (a 3.2 MB generated module, for example) needs a few hundred MB in one piece, and when that is not there Clarion itself fails with an out-of-memory error inside its own embeditor. Three changes:
+
+- **A warning before it happens.** When the largest free block of Clarion's memory drops below 48 MB, a small notice at the bottom right of the IDE says so and suggests saving and restarting. It never takes focus and closes itself when memory recovers. The threshold can be changed by putting a number of MB in `%LOCALAPPDATA%\ClarionAssistant\mem-watch-warn-mb.txt`.
+- **No more silent fallback.** If the CA Embeditor or CA Editor cannot start, it now steps aside so Clarion's own editor is usable, and a notice says why. Before, you were left in the native editor with no explanation.
+- **Memory is given back.** Closing a CA editor on a big procedure or file now returns its memory to Clarion (about 230 MB on the 3.2 MB test procedure), where before it stayed in use until Clarion restarted. When there is plenty of room this step is skipped, so it costs nothing.
+
+These checks also understand a `Clarion.exe` that has been marked **LargeAddressAware** (4 GB of address space instead of 2 GB), so they see the full 4 GB and do not warn falsely. On the 3.2 MB test procedure, that flag took the largest free block with the procedure open from 39 MB to over 1.5 GB.
+
+<!-- release-docs: covered=embeditor,lsp,memory -->
+### Opening a large procedure in the CA Embeditor uses far less memory
+
+Measured on a 3.2 MB generated procedure, where every large block of memory counts in 32-bit Clarion:
+
+- **The Data pad no longer keeps a copy of the whole application.** Each open exported the entire app (20 MB on the test app) and kept it as one 38 MB block of text, then re-read the whole thing on every refresh. It now reads the export once, line by line, and keeps only the data sections the pad shows, about 7% of it. The pad shows exactly the same Local Data, Global Data, Other Files and browse file as before; this was checked against all 367 procedures of the test app.
+- **No more whole-procedure copies on every open.** Two steps split the entire procedure into lines on every open, about 65 MB in total. One now happens only when you click an Errors-pane row, and the other copies just the embed sections.
+- **Sending the procedure to the language server costs almost nothing.** Every open, and every pause while typing, turned the whole procedure into one 34 MB message in memory before sending it. It is now written to the language server piece by piece, at about 0.05 MB.
+
+<!-- release-docs: covered=embeditor -->
+### CA Embeditor hovers are as fast and as accurate as the CA Editor's
+
+In a large procedure, hovering a global such as `GlobalRequest` in the CA Embeditor could sit on "Loading" for seconds, and a procedure call such as `PASSWORD(...)` was described as the ENTRY attribute of the same name. The CA Editor, on the same code, answered both instantly. The embeditor's quick lookups need the project's CodeGraph database, which is found from the procedure's generated module, and the embeditor often could not locate that module: it lives in the folder the redirection file names (for example `.\Source`), and the redirection file was only loaded once the Clarion Assistant chat panel had opened. The embeditor now loads the redirection file for the IDE's Clarion version itself, and falls back to the open solution's folder when the module still can't be found, so hovers answer immediately either way.
+
+<!-- release-docs: covered=lsp,embeditor -->
+### Build > Set Clarion Version takes effect with no chat panel open
+
+Switching versions with Build > Set Clarion Version only reached the language server and the redirection file when the Clarion Assistant chat panel was open. Without it, the language server went on resolving through the old version's redirection file and libraries until the IDE was restarted. The addin now follows the IDE's version from startup: on a switch it reloads the redirection file and restarts the language server on the new version, whether or not a chat tab exists.
+
+If the new version's redirection file can't be read (missing, or held open by another program), Clarion Assistant no longer goes on quietly using the previous version's. It stops using a redirection file until the right one loads, and it retries every 30 seconds, so it recovers by itself once the file is readable.
+
 ### Thanks
 
 - **[@Aarhusdk](https://github.com/Aarhusdk)** &mdash; [#235](https://github.com/ClarionLive/ClarionAssistant/issues/235): a production crash traced to its root cause with DebugView timings, a complete patch, and a retest on the affected install before we had even looked at it.

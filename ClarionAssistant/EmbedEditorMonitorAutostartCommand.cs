@@ -28,6 +28,7 @@ namespace ClarionAssistant
         {
             try { EmbedEditorMonitorService.Start(); }
             catch (Exception ex) { Debug.WriteLine("[EmbedEditorMonitorAutostart] start failed: " + ex.Message); }
+            MemoryHeadroom.Start();   // 7116020b: warn before the 32-bit address space runs out (self-guarded)
         }
     }
 
@@ -48,6 +49,7 @@ namespace ClarionAssistant
 
         public void Run()
         {
+            MemoryHeadroom.Stop();
             try { EmbedEditorMonitorService.Terminate(); }
             catch (Exception ex) { Debug.WriteLine("[EmbedEditorMonitorTerminate] terminate failed: " + ex.Message); }
         }
