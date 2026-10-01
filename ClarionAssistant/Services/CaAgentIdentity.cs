@@ -73,6 +73,45 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// The system-prompt section that tells the MODEL its own MultiTerminal name, or null when
+        /// there is no name to state.
+        ///
+        /// WHY (ticket c175492a): MULTITERMINAL_NAME and -n identify the session to MultiTerminal,
+        /// but the model sees neither. The plugin's SessionStart identity block is suppressed for
+        /// embedded tabs, a delivered message names only its sender, and send_message wants the
+        /// caller's own name as fromTerminalId. With two IDEs open, both models saw CA-Terminal-1-CC
+        /// and CA-Terminal-1-CC-2 on the roster and could not tell which was theirs. Stating it in
+        /// the --append-system-prompt-file content survives /clear, unlike anything said in chat.
+        /// </summary>
+        public static string BuildIdentityPrompt(string agentName)
+        {
+            if (string.IsNullOrWhiteSpace(agentName)) return null;
+            string n = agentName.Trim();
+            var sb = new StringBuilder();
+            sb.AppendLine("## Your MultiTerminal identity");
+            sb.AppendLine();
+            sb.AppendLine("Your MultiTerminal name is `" + n + "`. It is the address other agents use to message this terminal, and it is fixed for this session (it does not change on /clear).");
+            sb.AppendLine();
+            sb.AppendLine("- Whenever a MultiTerminal tool asks for YOUR name or terminal id (`fromTerminalId` in `send_message`, `agentName`, `updatedBy`, `createdBy`, and the like), pass exactly `" + n + "`.");
+            sb.AppendLine("- Other Clarion Assistant terminals, including ones in other Clarion IDEs, have similar names (for example `" + n + "-2`, or the same name without a suffix). Never work out your own name from `list_terminals`; it is the one stated here.");
+            sb.AppendLine("- Messages delivered to you are addressed to `" + n + "`; reply as `" + n + "`.");
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// <paramref name="extra"/> (the knowledge/recap text bound for --append-system-prompt-file)
+        /// with the identity section for <paramref name="agentName"/> appended. Either may be empty;
+        /// with no name the extra comes back unchanged, so a launch without a name loses nothing.
+        /// </summary>
+        public static string AppendIdentityPrompt(string extra, string agentName)
+        {
+            string identity = BuildIdentityPrompt(agentName);
+            if (identity == null) return extra;
+            if (string.IsNullOrEmpty(extra)) return identity;
+            return extra.TrimEnd() + Environment.NewLine + Environment.NewLine + identity;
+        }
+
+        /// <summary>
         /// Escape a string for single-quoted PowerShell literal (' → '').
         /// </summary>
         public static string EscapeForPowerShellSingleQuote(string s)

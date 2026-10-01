@@ -112,6 +112,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\ClaudeMdDeployer.Test.cs", "Services\ClaudeMdDeployer.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll")
                Args = @($RepoDir) }
+            # c175492a: two IDEs' CA tabs could not tell which MultiTerminal name was theirs. Gets the
+            # project dir so it can check the launch resolves the name before composing the prompt.
+            @{ Name = "CaAgentIdentity.Test"
+               Sources = @("tests\CaAgentIdentity.Test.cs", "Services\CaAgentIdentity.cs")
+               Refs = @("System.dll")
+               Args = @($RepoDir) }
             @{ Name = "NpgsqlLoader.SmokeTest"
                Sources = @("tests\NpgsqlLoader.SmokeTest.cs", "Services\NpgsqlLoader.cs")
                Refs = @("System.dll") }

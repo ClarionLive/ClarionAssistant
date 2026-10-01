@@ -61,6 +61,8 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 MultiTerminal has retired its "channels" for delivering messages into a Claude Code session and now writes into the session directly. Clarion Assistant only loaded the MultiTerminal plugin when the channel server was present, so once MultiTerminal removed it, every IDE terminal launched without the plugin: nothing could message it, and it could only find its messages by polling. IDE terminals now load the plugin again, and no longer pass the development-channels flag or answer its warning prompt. Messages arrive in the session without polling once your MultiTerminal includes native delivery for IDE terminals.
 
+Each IDE terminal is now also told its own MultiTerminal name (for example `CA-Terminal-1-CC-2`), and it keeps that name through `/clear`. Before this, with a Clarion Assistant chat open in two IDEs, a terminal that received a message could not tell which of the similar names on the roster was its own, so it could not reliably reply.
+
 Each terminal's MultiTerminal name is now unique. Two tabs with the same name, in one IDE or in two, used to share one name; the second now gets `-2`, so a message meant for one can't reach the other. And closing a tab no longer removes it from MultiTerminal by name, which could drop a same-named tab in another IDE off MultiTerminal's list. With the MultiTerminal update above, MultiTerminal retires a closed tab itself.
 
 ### Unsupported Windows is reported, not a blank terminal, and the installer refuses it ([#236](https://github.com/ClarionLive/ClarionAssistant/issues/236))

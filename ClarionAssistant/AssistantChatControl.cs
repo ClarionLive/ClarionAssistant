@@ -3612,9 +3612,23 @@ namespace ClarionAssistant
                 catch { }
             }
 
+            // The CA-prefixed agent name for this tab: its MultiTerminal identity. Exported as
+            // MULTITERMINAL_NAME for the MultiTerminal plugin's hooks, and passed as -n so the same
+            // string is the session's native messaging address - one name, not two that can drift.
+            // Resolved HERE, before the system-prompt file is written, because that file also
+            // tells the model the name (ticket c175492a).
+            _caTabCounter++;
+            string agentName = ResolveUniqueAgentName(tab,
+                Services.CaAgentIdentity.NormalizeAgentName(tab.Name, _caTabCounter));
+            // Remembered on the tab: it is what other tabs' uniqueness checks read.
+            tab.AgentName = agentName;
+
             string systemPromptExtra = BuildSystemPromptInjection(ctx.WorkDir);
             systemPromptExtra = Services.ClaudeMdDeployer.ComposeSystemPromptExtra(
                 claudeMdDelivered, claudeMdDelivered ? null : ReadClarionAssistantPrompt(), systemPromptExtra);
+            // Only when the multiterminal MCP is configured: the section is about its tools.
+            if (_mcpServer != null && _mcpServer.IncludeMultiTerminal)
+                systemPromptExtra = Services.CaAgentIdentity.AppendIdentityPrompt(systemPromptExtra, agentName);
             string initialPrompt = BuildInitialPrompt(ctx.WorkDir);
             System.Diagnostics.Debug.WriteLine("[LaunchClaude] prompts built");
 
@@ -3728,14 +3742,6 @@ namespace ClarionAssistant
             // Set CA tab ID so the statusline script can write per-tab status
             string tabEnv = $"$env:CLARIONASSISTANT_TAB='{tab.Id}'";
 
-            // The CA-prefixed agent name for this tab: its MultiTerminal identity. Exported as
-            // MULTITERMINAL_NAME for the MultiTerminal plugin's hooks, and passed as -n so the same
-            // string is the session's native messaging address - one name, not two that can drift.
-            _caTabCounter++;
-            string agentName = ResolveUniqueAgentName(tab,
-                Services.CaAgentIdentity.NormalizeAgentName(tab.Name, _caTabCounter));
-            // Remembered on the tab: it is what other tabs' uniqueness checks read.
-            tab.AgentName = agentName;
             string safeAgentName = Services.CaAgentIdentity.EscapeForPowerShellSingleQuote(agentName);
             // NO MULTITERMINAL_DOC_ID (ticket b24bcaf4). A docId (and a launch nonce) identify a pane
             // MultiTerminal itself launched; a CA-hosted session registers by name alone, with the
