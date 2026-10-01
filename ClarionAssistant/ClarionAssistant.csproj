@@ -177,6 +177,7 @@
     <Compile Include="Services\LspStartResult.cs" />
     <Compile Include="Services\IdeSolutionRecord.cs" />
     <Compile Include="Services\SharedLspBridge.cs" />
+    <Compile Include="Services\ColonQualifierScope.cs" />
     <Compile Include="Services\LocalScopeIndex.cs" />
     <Compile Include="Services\SymbolIndex.cs" />
     <Compile Include="Services\LiveDictionaryIndex.cs" />

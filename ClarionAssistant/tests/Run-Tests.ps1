@@ -267,6 +267,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                            "CodeGraph\Parsing\ClarionBuiltins.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
                Args = @((Join-Path $TestDir "fixtures\keyword-data")) }
+            # Colon-qualified completion ("Glob:S"): the server's bare-labelled qualifier items survive the
+            # host's qualifier scoping once CodeGraph has supplied a match of its own.
+            @{ Name = "ColonQualifierScope.Test"
+               Sources = @("tests\ColonQualifierScope.Test.cs", "Services\ColonQualifierScope.cs", "Services\LspClient.cs",
+                           "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }
             # 1c685f2e: held-open NOCASE symbol lookups - range queries and their plans, the parameter
             # leak, inherited members across both DBs, the old-schema fallback, and the connection
             # lifecycle (a held handle must never block the reindex delete). Synthetic x86 SQLite DBs.
