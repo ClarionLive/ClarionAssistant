@@ -26,7 +26,7 @@ static class CaAgentIdentityTest
 
     static int Main(string[] args)
     {
-        Console.WriteLine("CaAgentIdentity identity prompt (c175492a)");
+        Console.WriteLine("CaAgentIdentity identity prompt (c175492a) and numbered names (7792e3e0)");
 
         // ---- BuildIdentityPrompt ----
         string p = CaAgentIdentity.BuildIdentityPrompt("CA-Terminal-1-CC-2");
@@ -54,6 +54,36 @@ static class CaAgentIdentityTest
         Ok("tab B's prompt says its name is B", b.Contains("Your MultiTerminal name is `CA-Terminal-1-CC-2`."));
         Ok("tab A's prompt does not claim B's name", !a.Contains("Your MultiTerminal name is `CA-Terminal-1-CC-2`"));
 
+        // ---- NextFreeName (7792e3e0): CA1, CA2, ... lowest free, case-insensitive per caller ----
+        var held = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        Ok("nothing taken -> CA1", CaAgentIdentity.NextFreeName(held.Contains) == "CA1");
+        Ok("null isTaken -> CA1", CaAgentIdentity.NextFreeName(null) == "CA1");
+        held.Add("CA1");
+        Ok("CA1 taken -> CA2 (second IDE gets its own number, no -2)", CaAgentIdentity.NextFreeName(held.Contains) == "CA2");
+        held.Add("CA2"); held.Add("CA3"); held.Remove("CA2");
+        Ok("gap is reused: CA1+CA3 held -> CA2", CaAgentIdentity.NextFreeName(held.Contains) == "CA2");
+        held.Clear(); held.Add("ca1");
+        Ok("taken check is the caller's (case-insensitive set) -> CA2", CaAgentIdentity.NextFreeName(held.Contains) == "CA2");
+        held.Clear(); held.Add("Alice"); held.Add("CA-Terminal-1-CC");
+        Ok("non-CA names and old-style names don't block CA1", CaAgentIdentity.NextFreeName(held.Contains) == "CA1");
+        string exhausted = CaAgentIdentity.NextFreeName(n => true);
+        Ok("all numbers taken -> random fallback, still CA-prefixed", exhausted.StartsWith("CA-") && exhausted.Length == 9, exhausted);
+        Ok("name is short (fits tab and prompt label)", CaAgentIdentity.NextFreeName(null).Length <= 5);
+
+        // ---- TabLabel / IsDefaultTabName ----
+        Ok("plain Terminal tab -> name alone", CaAgentIdentity.TabLabel("CA2", "Terminal 2") == "CA2");
+        Ok("Terminal 12 -> name alone", CaAgentIdentity.TabLabel("CA2", "Terminal 12") == "CA2");
+        Ok("solution tab keeps its context, name first", CaAgentIdentity.TabLabel("CA2", "MySolution") == "CA2 · MySolution");
+        Ok("Evaluate Code keeps its context", CaAgentIdentity.TabLabel("CA3", "Evaluate Code") == "CA3 · Evaluate Code");
+        Ok("null base -> name alone", CaAgentIdentity.TabLabel("CA1", null) == "CA1");
+        Ok("blank base -> name alone", CaAgentIdentity.TabLabel("CA1", "  ") == "CA1");
+        Ok("no agent name -> base unchanged", CaAgentIdentity.TabLabel(null, "MySolution") == "MySolution");
+        Ok("'Terminal' alone is not default", !CaAgentIdentity.IsDefaultTabName("Terminal "));
+        Ok("'Terminal 2x' is not default", !CaAgentIdentity.IsDefaultTabName("Terminal 2x"));
+        Ok("'terminal 2' (case) is not default", !CaAgentIdentity.IsDefaultTabName("terminal 2"));
+        Ok("'Terminals 2' is not default", !CaAgentIdentity.IsDefaultTabName("Terminals 2"));
+        Ok("null is not default", !CaAgentIdentity.IsDefaultTabName(null));
+
         // ---- AppendIdentityPrompt ----
         string extra = "## Last Session Recap\nwe did things\n";
         string both = CaAgentIdentity.AppendIdentityPrompt(extra, "CA-Tab1");
@@ -73,7 +103,10 @@ static class CaAgentIdentityTest
             else
             {
                 string src = File.ReadAllText(path);
-                int resolve = src.IndexOf("string agentName = ResolveUniqueAgentName(tab,", StringComparison.Ordinal);
+                int resolve = src.IndexOf("string agentName = ResolveUniqueAgentName(tab);", StringComparison.Ordinal);
+                int relabel = resolve < 0 ? -1 : src.IndexOf("CaAgentIdentity.TabLabel(agentName, tab.BaseName)", resolve, StringComparison.Ordinal);
+                int baseCapture = src.IndexOf("if (tab.BaseName == null) tab.BaseName = StripBackendSuffix(tab.Name);", StringComparison.Ordinal);
+                int launchClaude = src.IndexOf("LaunchClaudeForTab(tab);", baseCapture < 0 ? 0 : baseCapture, StringComparison.Ordinal);
                 int compose = src.IndexOf("string systemPromptExtra = BuildSystemPromptInjection(", StringComparison.Ordinal);
                 int append = src.IndexOf("CaAgentIdentity.AppendIdentityPrompt(systemPromptExtra, agentName)", StringComparison.Ordinal);
                 int gate = src.IndexOf("_mcpServer.MultiTerminalConfigured)", compose < 0 ? 0 : compose, StringComparison.Ordinal);
@@ -83,6 +116,11 @@ static class CaAgentIdentityTest
                 int write = src.IndexOf("\"system-prompt-extra-\"", StringComparison.Ordinal);
                 Ok("launch resolves the agent name", resolve >= 0);
                 Ok("launch composes the system prompt", compose >= 0);
+                // 7792e3e0: the tab shows the resolved name, built from the undecorated base name
+                // captured before the first launch (so a relaunch can't stack labels).
+                Ok("tab relabelled with the resolved name", relabel >= 0, "relabel@" + relabel);
+                Ok("base name captured before Claude launches", baseCapture >= 0 && launchClaude > baseCapture,
+                    "capture@" + baseCapture + " launch@" + launchClaude);
                 Ok("name resolved BEFORE the prompt is composed", resolve >= 0 && compose >= 0 && resolve < compose,
                     "resolve@" + resolve + " compose@" + compose);
                 Ok("identity appended to the prompt", append >= 0);

@@ -67,7 +67,6 @@ namespace ClarionAssistant
 
         // Counter used when a tab's display name is empty, to give the
         // tab a unique MultiTerminal agent name.
-        private int _caTabCounter;
 
         // LSP UI state: bottom status bar + stay-on-top diagnostics form
         private System.Windows.Forms.Timer _lspUiTimer;
@@ -3278,8 +3277,10 @@ namespace ClarionAssistant
 
             // Annotate the tab with the backend abbreviation so the tab strip
             // makes it obvious at a glance which assistant is driving each tab.
-            // Idempotent: strips any prior suffix before appending.
-            _tabManager.RenameTab(tab, ApplyBackendSuffix(tab.Name, backend));
+            // Built from the undecorated name, so a relaunch never stacks labels. A Claude
+            // tab is relabelled again with its MultiTerminal name once that is resolved.
+            if (tab.BaseName == null) tab.BaseName = StripBackendSuffix(tab.Name);
+            _tabManager.RenameTab(tab, ApplyBackendSuffix(tab.BaseName, backend));
 
             if (string.Equals(backend, "Copilot", StringComparison.OrdinalIgnoreCase))
                 LaunchCopilotForTab(tab);
@@ -3305,17 +3306,17 @@ namespace ClarionAssistant
             string suffix = BackendSuffix(backend);
             if (string.IsNullOrEmpty(suffix) || string.IsNullOrEmpty(currentName))
                 return currentName;
+            return StripBackendSuffix(currentName) + " " + suffix;
+        }
 
-            string stripped = currentName;
+        /// <summary>The tab name without a trailing backend suffix (" CC", " CP", " CO").</summary>
+        private static string StripBackendSuffix(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return name;
             foreach (string prior in new[] { " CC", " CP", " CO" })
-            {
-                if (stripped.EndsWith(prior, StringComparison.Ordinal))
-                {
-                    stripped = stripped.Substring(0, stripped.Length - prior.Length);
-                    break;
-                }
-            }
-            return stripped + " " + suffix;
+                if (name.EndsWith(prior, StringComparison.Ordinal))
+                    return name.Substring(0, name.Length - prior.Length);
+            return name;
         }
 
         private void LaunchClaudeForTab(TerminalTab tab)
@@ -3614,16 +3615,17 @@ namespace ClarionAssistant
                 catch { }
             }
 
-            // The CA-prefixed agent name for this tab: its MultiTerminal identity. Exported as
-            // MULTITERMINAL_NAME for the MultiTerminal plugin's hooks, and passed as -n so the same
-            // string is the session's native messaging address - one name, not two that can drift.
-            // Resolved HERE, before the system-prompt file is written, because that file also
-            // tells the model the name (ticket c175492a).
-            _caTabCounter++;
-            string agentName = ResolveUniqueAgentName(tab,
-                Services.CaAgentIdentity.NormalizeAgentName(tab.Name, _caTabCounter));
+            // The numbered agent name for this tab (CA1, CA2, ...): its MultiTerminal identity.
+            // Exported as MULTITERMINAL_NAME for the MultiTerminal plugin's hooks, and passed as -n
+            // so the same string is the session's native messaging address - one name, not two
+            // that can drift. Resolved HERE, before the system-prompt file is written, because that
+            // file also tells the model the name (ticket c175492a).
+            string agentName = ResolveUniqueAgentName(tab);
             // Remembered on the tab: it is what other tabs' uniqueness checks read.
             tab.AgentName = agentName;
+            // The tab shows the same name the prompt box (-n) and MultiTerminal do, so what the
+            // developer sees is what they type to message it (ticket 7792e3e0).
+            _tabManager.RenameTab(tab, Services.CaAgentIdentity.TabLabel(agentName, tab.BaseName));
 
             string systemPromptExtra = BuildSystemPromptInjection(ctx.WorkDir);
             systemPromptExtra = Services.ClaudeMdDeployer.ComposeSystemPromptExtra(
@@ -4077,17 +4079,17 @@ namespace ClarionAssistant
         }
 
         /// <summary>
-        /// <paramref name="baseName"/>, or baseName-N if another session already holds it (ticket
-        /// b24bcaf4): the name is the session's native messaging address, so two sessions sharing
-        /// one could receive each other's messages. "Taken" means held by another tab in ANY chat
-        /// pad of this IDE, or by a row on MultiTerminal's live roster (another IDE, or an
-        /// MT-hosted terminal).
+        /// The lowest free CA1, CA2, ... (ticket 7792e3e0; uniqueness from b24bcaf4): the name is
+        /// the session's native messaging address, so two sessions sharing one could receive each
+        /// other's messages. "Taken" means held by another tab in ANY chat pad of this IDE, or by
+        /// a row on MultiTerminal's live roster (another IDE, or an MT-hosted terminal).
         ///
         /// A RELAUNCH IS CHECKED LIKE ANY LAUNCH - no "keep my old name" exemption. Once the
         /// broker's reaper retires this tab's dead row, another IDE may take the name; reusing it
         /// then would put two live sessions on one address (Codex security, pipeline run 2). The
         /// roster exposes no owner pid, so CA cannot prove a row is its own predecessor. Cost: a
-        /// tab restarted inside the reaper's ~30s sweep comes back as -2. Cosmetic, and safe.
+        /// tab restarted inside the reaper's ~30s sweep comes back with a new number. Cosmetic,
+        /// and safe.
         ///
         /// MultiTerminal being unreachable is ordinary (it may not be installed) and leaves only
         /// the local check. Short timeout because this runs on the launch path; 127.0.0.1 refuses
@@ -4095,7 +4097,7 @@ namespace ClarionAssistant
         /// instant can still both pass - the broker rejecting a duplicate name is the backstop
         /// (MT ticket 9a731cda).
         /// </summary>
-        private string ResolveUniqueAgentName(TerminalTab tab, string baseName)
+        private string ResolveUniqueAgentName(TerminalTab tab)
         {
             var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             List<AssistantChatControl> pads;
@@ -4120,7 +4122,7 @@ namespace ClarionAssistant
                 System.Diagnostics.Debug.WriteLine("[LaunchClaude] MT roster check skipped: " + ex.Message);
             }
 
-            return Services.CaAgentIdentity.MakeUnique(baseName, taken.Contains);
+            return Services.CaAgentIdentity.NextFreeName(taken.Contains);
         }
 
         private static int _dataRecvCount;

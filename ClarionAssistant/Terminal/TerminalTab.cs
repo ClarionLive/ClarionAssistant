@@ -32,15 +32,21 @@ namespace ClarionAssistant.Terminal
         public string SolutionPath { get; set; }
 
         /// <summary>
-        /// The CA-&lt;slug&gt; identity this tab's assistant is known by in MultiTerminal (its
+        /// The CA1/CA2/... identity this tab's assistant is known by in MultiTerminal (its
         /// MULTITERMINAL_NAME and -n), captured at launch. Null until an assistant is launched.
         ///
         /// Read by AssistantChatControl.ResolveUniqueAgentName: other tabs' launches treat it as
-        /// taken. It has to be STORED rather than recomputed: NormalizeAgentName is fed an
-        /// incrementing tab counter, and a uniqueness suffix (-2) depends on what else was open
-        /// at launch, so asking again later could give a different one.
+        /// taken. It has to be STORED rather than recomputed: the number depends on what else
+        /// was open at launch, so asking again later could give a different one.
         /// </summary>
         public string AgentName { get; set; }
+
+        /// <summary>
+        /// The tab's name before any launch decorated it ("Terminal 2", or the solution/project/
+        /// class it was opened on), captured on the first launch. Every relabel is built from
+        /// this, so a relaunch never stacks "CA2 · CA2 · ..." or a second backend suffix.
+        /// </summary>
+        public string BaseName { get; set; }
 
         /// <summary>Override working directory for this tab (e.g. solution folder).</summary>
         public string WorkingDirectory { get; set; }

@@ -5,71 +5,64 @@ namespace ClarionAssistant.Services
 {
     /// <summary>
     /// Identity helpers for CA-spawned Claude Code terminals that register
-    /// with the MultiTerminal broker. Each tab is known by a CA-prefixed agent name
-    /// derived from its display name - by name alone, with no docId: a docId identifies
-    /// a pane MultiTerminal itself launched (ticket b24bcaf4).
+    /// with the MultiTerminal broker. Each tab is known by a short numbered agent name
+    /// (CA1, CA2, ...) - by name alone, with no docId: a docId identifies a pane
+    /// MultiTerminal itself launched (ticket b24bcaf4).
     /// </summary>
     public static class CaAgentIdentity
     {
+        private const string NamePrefix = "CA";
+
         /// <summary>
-        /// Normalize a tab name into a CA-prefixed agent name safe for the messaging system.
-        /// - Already starts with "CA-"? Use as-is after sanitize.
-        /// - Otherwise prefix with "CA-".
-        /// - Sanitize: runs of non-[A-Za-z0-9] collapse to single dash, trim, cap length.
+        /// The lowest-numbered CA1, CA2, CA3, ... that <paramref name="isTaken"/> does not
+        /// reject (case-insensitively, as the caller decides).
+        ///
+        /// WHY NUMBERED (ticket 7792e3e0): the name used to be derived from the tab's display
+        /// name, which gave CA-Terminal-2-CC - too long for the tab and the prompt-box label, and
+        /// too much to type when asking for a message to be sent to it. "Terminal" was filler,
+        /// "CC" named a backend that every registered tab shares, and a per-IDE tab counter made
+        /// a second IDE collide into CA-Terminal-1-CC-2. Numbering from the names actually in use
+        /// - every tab in this IDE plus MultiTerminal's live roster - gives each IDE its own
+        /// number without a suffix.
+        ///
+        /// WHY UNIQUE (ticket b24bcaf4): the agent name is the session's native messaging
+        /// ADDRESS (-n) and its only MultiTerminal identity, so two sessions sharing one could
+        /// receive each other's messages. Two IDEs launching in the same instant can still pick
+        /// the same number; the broker rejecting a duplicate registration is the backstop.
         /// </summary>
-        public static string NormalizeAgentName(string tabName, int fallbackIndex)
+        public static string NextFreeName(Func<string, bool> isTaken)
         {
-            string baseName = (tabName ?? "").Trim();
-            if (string.IsNullOrEmpty(baseName))
-                baseName = "Tab" + fallbackIndex;
-
-            bool hasPrefix = baseName.StartsWith("CA-", StringComparison.OrdinalIgnoreCase);
-            string rest = hasPrefix ? baseName.Substring(3) : baseName;
-
-            var sb = new StringBuilder();
-            bool lastWasDash = false;
-            foreach (char c in rest)
+            for (int n = 1; n < 1000; n++)
             {
-                if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
-                {
-                    sb.Append(c);
-                    lastWasDash = false;
-                }
-                else
-                {
-                    if (!lastWasDash && sb.Length > 0)
-                    {
-                        sb.Append('-');
-                        lastWasDash = true;
-                    }
-                }
+                string candidate = NamePrefix + n;
+                if (isTaken == null || !isTaken(candidate)) return candidate;
             }
-            string cleaned = sb.ToString().TrimEnd('-');
-            if (cleaned.Length == 0) cleaned = "Tab" + fallbackIndex;
-            if (cleaned.Length > 40) cleaned = cleaned.Substring(0, 40);
-            return "CA-" + cleaned;
+            return NamePrefix + "-" + Guid.NewGuid().ToString("N").Substring(0, 6);
         }
 
         /// <summary>
-        /// The first of <paramref name="baseName"/>, baseName-2, baseName-3, ... that
-        /// <paramref name="isTaken"/> rejects (case-insensitively, as the caller decides).
-        ///
-        /// WHY (ticket b24bcaf4): the agent name is the session's native messaging ADDRESS
-        /// (-n) and its only MultiTerminal identity, and NormalizeAgentName is deterministic,
-        /// so two tabs with the same name - in one IDE, or in two - would otherwise share one
-        /// address and could receive each other's messages. Uniqueness is decided at launch
-        /// against the names this IDE already holds and MultiTerminal's live roster; the broker
-        /// rejecting a duplicate registration is the backstop for two IDEs racing the same name.
+        /// The tab-strip label for a tab whose assistant is known as <paramref name="agentName"/>:
+        /// the name alone for a plain "Terminal N" tab, or "CA2 · MySolution" when the tab was
+        /// opened on something (a solution, project or class) worth keeping in view. The name
+        /// leads so the label shows exactly what to type to message the tab.
         /// </summary>
-        public static string MakeUnique(string baseName, Func<string, bool> isTaken)
+        public static string TabLabel(string agentName, string baseName)
         {
-            if (isTaken == null || !isTaken(baseName)) return baseName;
-            for (int n = 2; n < 1000; n++)
-            {
-                string candidate = baseName + "-" + n;
-                if (!isTaken(candidate)) return candidate;
-            }
-            return baseName + "-" + Guid.NewGuid().ToString("N").Substring(0, 6);
+            if (string.IsNullOrWhiteSpace(agentName)) return baseName;
+            string context = (baseName ?? "").Trim();
+            if (context.Length == 0 || IsDefaultTabName(context)) return agentName;
+            return agentName + " · " + context;
+        }
+
+        /// <summary>True for the "Terminal N" name TabManager gives a tab nobody named.</summary>
+        public static bool IsDefaultTabName(string name)
+        {
+            const string word = "Terminal ";
+            if (name == null || !name.StartsWith(word, StringComparison.Ordinal) || name.Length == word.Length)
+                return false;
+            for (int i = word.Length; i < name.Length; i++)
+                if (name[i] < '0' || name[i] > '9') return false;
+            return true;
         }
 
         /// <summary>
@@ -93,8 +86,7 @@ namespace ClarionAssistant.Services
             sb.AppendLine("Your MultiTerminal name is `" + n + "`. It is the address other agents use to message this terminal, and it is fixed for this session (it does not change on /clear).");
             sb.AppendLine();
             sb.AppendLine("- Whenever a MultiTerminal tool asks for YOUR name or terminal id (`fromTerminalId` in `send_message`, `agentName`, `updatedBy`, `createdBy`, and the like), pass exactly `" + n + "`.");
-            sb.AppendLine("- Other Clarion Assistant terminals, including ones in other Clarion IDEs, can have names that differ from yours only by a `-2`/`-3` suffix. Never work out your own name from `list_terminals`; it is the one stated here.");
-            sb.AppendLine("- Messages delivered to you are addressed to `" + n + "`; reply as `" + n + "`.");
+            sb.AppendLine("- Other Clarion Assistant terminals, including ones in other Clarion IDEs, have names that differ from yours only by their number (`CA1`, `CA2`, ...). Never work out your own name from `list_terminals`; it is the one stated here.");            sb.AppendLine("- Messages delivered to you are addressed to `" + n + "`; reply as `" + n + "`.");
             sb.AppendLine("- If a MultiTerminal tool reports that `" + n + "` is held by another terminal, or that this session is not registered, do not send messages as `" + n + "`: tell the developer instead. Never use another terminal's name.");
             return sb.ToString();
         }
