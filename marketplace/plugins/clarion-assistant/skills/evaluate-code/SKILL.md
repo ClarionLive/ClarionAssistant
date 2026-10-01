@@ -123,19 +123,34 @@ After the developer approves changes (or you've addressed their review notes):
 
 ## TXA Embed Structure Reference
 
-In a TXA file, embeds appear as:
+In a TXA file, embeds are **not indented**, and the code sits in a `[SOURCE]` block with a priority. A procedure's embeds are all listed under one `[EMBED]` header, which closes with a single `[END]` after the last entry. Shape for a procedure with a window-method embed followed by a global one:
 ```
 [EMBED]
-  EMBED %EmbedPointName
-    [INSTANCES]
-      WHEN ''
-        [DEFINITION]
-          ! Actual embed code here
-        [END]
-    [END]
-  [END]
+EMBED %WindowManagerMethodCodeSection
+[INSTANCES]
+WHEN 'Init'
+[INSTANCES]
+WHEN '(),BYTE'
+[DEFINITION]
+[SOURCE]
+PROPERTY:BEGIN
+PRIORITY 8500
+PROPERTY:END
+  ! Actual embed code here
+[END]
+[END]
+[END]
+EMBED %ProcedureRoutines
+[DEFINITION]
+[SOURCE]
+PROPERTY:BEGIN
+PRIORITY 4000
+PROPERTY:END
+  ! Global embed code here
+[END]
 [END]
 ```
+Every `[DEFINITION]` and every `[INSTANCES]` closes with its own `[END]`, so an entry ends with one `[END]` plus one per context level: 1 for a global embed, 3 for a window method or control event, 4 for a browse method. Sibling `WHEN`s (other instances of the same embed point) share their level's `[INSTANCES]` and follow the previous `[DEFINITION]`'s `[END]` directly. The final `[END]` above closes `[EMBED]` — when adding an embed to a procedure that already has some, insert the new `EMBED` entry inside the existing `[EMBED]` block rather than adding another `[END]`. When unsure, hand-build the embed in the IDE, export the TXA, and copy that shape.
 
 Local procedures appear nested under their parent procedure. To find which embed contains specific code, search the TXA for the code text and look at the surrounding EMBED structure.
 

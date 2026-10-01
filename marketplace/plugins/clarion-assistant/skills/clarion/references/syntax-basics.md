@@ -114,6 +114,8 @@ MyClass.Kill    PROCEDURE
 
 **Rules:** `MEMBER` must be first. Then optional `MAP/END` block. Then `INCLUDE` statements. Then procedure implementations.
 
+The bare `MEMBER` shown above is correct for a class-implementation file (`CLASS,MODULE(...),LINK(...)`). In a module that implements procedures prototyped in the parent program's global MAP, write `MEMBER('Parent.clw')` — bare `MEMBER` there fails with `No matching prototype available`.
+
 ### .inc File Structure (Declarations)
 ```clarion
 MyClass    CLASS,TYPE,MODULE('MyClass.clw'),LINK('MyClass.clw')

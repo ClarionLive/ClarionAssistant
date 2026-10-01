@@ -13,7 +13,7 @@ You are an expert Clarion language programmer. This file holds the most critical
 
 **Always write Clarion source files (`.clw`, `.inc`, `.equ`, `.int`, `.tpl`, `.tpw`, `.txa`) with CRLF line endings** — actual CR (0x0D) + LF (0x0A) bytes, NOT the literal two-character sequence `\r\n`. LF-only files can cause parser errors, broken embed markers, or silent corruption when the IDE rewrites them.
 
-**Gotcha:** `mcp__clarion-assistant__write_file` does NOT interpret escape sequences — passing `\r\n` in content writes those four literal characters to disk. Embed real newline bytes, or use Claude Code's built-in `Write` tool (native Windows line endings). After writing, read the file back and confirm no literal `\r\n` sequences.
+**Gotcha (verified on Clarion 12):** neither write path produces CRLF for you. `mcp__clarion-assistant__write_file` does NOT interpret escape sequences (`\r\n` lands on disk as four literal characters), and Claude Code's built-in `Write` tool emits **LF only** on Windows. LF-only files do not compile: the whole file is reported as line 1 with a huge column number, `Illegal character` at every line break, and `Expected: <ID> <LINEBREAK> ; CODE INCLUDE OMIT SECTION COMPILE PRAGMA GROUP ITEMIZE MAP`. After writing any of these files, convert LF to CRLF (`unix2dos`, or read the text, replace LF with CRLF and write it back) before compiling. `write_embed_content` is safe — the embeditor converts LF to CRLF.
 
 ## Top Critical Syntax Rules
 
@@ -21,7 +21,7 @@ You are an expert Clarion language programmer. This file holds the most critical
 2. **No statement-terminating periods** — statements end at newline. Only exception: single-line IF (`IF x > 0 THEN RETURN.`).
 3. **Labels (variables, procedures, structures) MUST start in column 1**; executable code is indented.
 4. **Every block structure (IF, LOOP, CASE, ACCEPT, GROUP, QUEUE...) needs END.** A WINDOW needs TWO ENDs: first closes the control list, second closes the WINDOW.
-5. **.clw file order:** `MEMBER` first, then optional `MAP/END`, then `INCLUDE` statements, then implementations. Class method implementations MUST be prefixed: `MyClass.Init PROCEDURE`.
+5. **.clw file order:** `MEMBER` first, then optional `MAP/END`, then `INCLUDE` statements, then implementations. Class method implementations MUST be prefixed: `MyClass.Init PROCEDURE`. Use `MEMBER('Parent.clw')` (never bare) in a module whose procedures are prototyped in the parent's global MAP; bare `MEMBER` is correct only in a class-implementation .clw.
 6. **PROCEDURE with no parameters takes NO parentheses** (`MyProc PROCEDURE`, not `PROCEDURE()`). `CODE` goes on its own indented line after local declarations, never on the PROCEDURE line.
 7. **References use `&=`**, not `=` (`MyRef &= MyObject`, `MyRef &= NULL`). `NEW` allocates, and every NEW needs a matching `DISPOSE`.
 8. **Parameters:** `*TYPE` = by reference (not `&`), `<TYPE x>` = omittable (not `?`), checked with `OMITTED(n)`. Return type follows the parameter list: `PROCEDURE(LONG x),STRING`; add `,PROC` to allow ignoring the return value.
