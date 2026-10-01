@@ -548,10 +548,17 @@ namespace ClarionAssistant.Services
             // shape FIRST, so each merge skips a name the server already supplied, and the qualifier
             // scoping at the end keeps them instead of dropping every one once CodeGraph has a match.
             string qualifier = null;
+            Dictionary<string, LspClient.CompletionItemInfo> serverQualified = null;
             try
             {
                 qualifier = ColonQualifierAt(filePath, line, character, bufferText);
-                if (qualifier != null) ColonQualifierScope.NormalizeServerItems(primary, qualifier);
+                if (qualifier != null)
+                {
+                    ColonQualifierScope.NormalizeServerItems(primary, qualifier);
+                    // What the server supplied, so the dictionary and IDENT:* merges below skip those names
+                    // (and lend the server row their type) instead of adding a second row (PR #241 review).
+                    serverQualified = ColonQualifierScope.ServerQualifiedItems(primary);
+                }
             }
             catch (Exception ex) { LspTrace.Write("[SharedLspBridge] colon-qualifier normalize failed: " + ex.Message); }
 
@@ -577,7 +584,7 @@ namespace ClarionAssistant.Services
             // prefix, so this deliberately does NOT dedupe against what MergeQualifiedFieldCompletions already
             // added; both are shown, distinguished by Detail ("... field, dictionary" vs "... (field)").
             // Never throws, never overrides.
-            try { MergeDictionaryFieldCompletions(primary, filePath, line, character, bufferText); }
+            try { MergeDictionaryFieldCompletions(primary, filePath, line, character, bufferText, serverQualified); }
             catch (Exception ex) { LspTrace.Write("[SharedLspBridge] dictionary field completion merge failed: " + ex.Message); }
 
             // Class member-access (ticket 6e8f2439, item 5b): "oInstance." → that instance's ABC/library
@@ -627,7 +634,7 @@ namespace ClarionAssistant.Services
             {
                 if (qualifier != null)
                 {
-                    MergeColonQualifierCompletions(primary, qualifier, filePath);
+                    MergeColonQualifierCompletions(primary, qualifier, filePath, serverQualified);
                     primary = ColonQualifierScope.Scope(primary, qualifier);
                 }
             }
@@ -684,7 +691,8 @@ namespace ClarionAssistant.Services
         /// itself returns only a broad scope dump here, so this is what actually populates PROP:/EVENT:
         /// completion. Never throws.</summary>
         private static void MergeColonQualifierCompletions(
-            List<LspClient.CompletionItemInfo> primary, string qualifier, string filePath)
+            List<LspClient.CompletionItemInfo> primary, string qualifier, string filePath,
+            Dictionary<string, LspClient.CompletionItemInfo> serverQualified = null)
         {
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var it in primary)
@@ -702,7 +710,10 @@ namespace ClarionAssistant.Services
                     if (idx == null) continue;
                     foreach (var s in idx.ByPrefix(qualifier, 2000))
                     {
-                        if (s == null || string.IsNullOrEmpty(s.Name) || !seen.Add(s.Name)) continue;
+                        if (s == null || string.IsNullOrEmpty(s.Name)) continue;
+                        // A name the server supplied keeps the server's row, which takes CodeGraph's detail.
+                        if (ColonQualifierScope.ServerHas(serverQualified, s.Name, SymbolIndex.CompletionDetail(s))) continue;
+                        if (!seen.Add(s.Name)) continue;
                         int ci = s.Name.IndexOf(':');
                         string insert = (ci >= 0 && ci < s.Name.Length - 1) ? s.Name.Substring(ci + 1) : s.Name;
                         primary.Add(new LspClient.CompletionItemInfo
@@ -2297,10 +2308,13 @@ namespace ClarionAssistant.Services
         /// class/instance member-access, owned by MergeMemberAccessCompletions). Deliberately does NOT
         /// dedupe against items MergeQualifiedFieldCompletions already added for a same-named in-buffer
         /// GROUP/QUEUE — a hand-coded structure and a dictionary table can legitimately share a PRE, and
-        /// per design both should surface (Detail distinguishes "(field)" vs "(field, dictionary)"). Never
+        /// per design both should surface (Detail distinguishes "(field)" vs "(field, dictionary)"). It DOES
+        /// skip a name the language server itself supplied (<paramref name="serverQualified"/>), lending that
+        /// row the dictionary's detail - otherwise every field both know shows twice (PR #241). Never
         /// throws.</summary>
         private static void MergeDictionaryFieldCompletions(
-            List<LspClient.CompletionItemInfo> primary, string filePath, int line, int character, string bufferText)
+            List<LspClient.CompletionItemInfo> primary, string filePath, int line, int character, string bufferText,
+            Dictionary<string, LspClient.CompletionItemInfo> serverQualified = null)
         {
             string lineText = CgLineAt(bufferText, filePath, line);
             if (lineText == null) return;
@@ -2322,7 +2336,9 @@ namespace ClarionAssistant.Services
                 string db = ResolveSchemaGraphDb(filePath);
                 return string.IsNullOrEmpty(db) ? null : new SchemaGraphService(db).GetQualifierCompletions(qualifier, partial);
             });
-            if (items != null) primary.AddRange(items);
+            if (items == null) return;
+            foreach (var it in items)
+                if (it != null && !ColonQualifierScope.ServerHas(serverQualified, it.Label, it.Detail)) primary.Add(it);
         }
 
         // === Class member-access completion (ticket 6e8f2439, item 5b) ===

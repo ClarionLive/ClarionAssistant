@@ -92,6 +92,36 @@ static class ColonQualifierScopeTest
         Ok("a nested field becomes TGLO:GLO:SessionId, inserting GLO:SessionId",
             nested[0].Label == "TGLO:GLO:SessionId" && nested[0].InsertText == "GLO:SessionId", Dump(nested));
 
+        // --- what the server supplied: the dictionary / IDENT:* merges skip those names (PR #241 review) ---
+        // Once server items survive scoping, a dictionary field the server also resolves showed twice
+        // (MergeDictionaryFieldCompletions deliberately adds without a label check), and the server row's
+        // detail only repeats the name. ServerQualifiedItems is taken right after normalizing; ServerHas
+        // makes the merge skip its copy and lends the server row the host's detail.
+        var srv = new List<LspClient.CompletionItemInfo>
+        {
+            Item("Name", 6, "Cus:Name", "ame"),
+            Item("Phone", 6, "Cus:Phone", "hone"),
+            Item("ABS", 3, "ABS(real)", "ABS"),            // not a qualifier item
+        };
+        ColonQualifierScope.NormalizeServerItems(srv, "Cus:");
+        var server = ColonQualifierScope.ServerQualifiedItems(srv);
+        Ok("ServerQualifiedItems names exactly the normalized server items",
+            server.Count == 2 && server.ContainsKey("CUS:NAME") && server.ContainsKey("Cus:Phone") && !server.ContainsKey("ABS"),
+            string.Join(",", server.Keys));
+        var dict = new[] { Item("Cus:Name", 5, "STRING(40) field, dictionary", "Name"), Item("Cus:City", 5, "STRING(20) field, dictionary", "City") };
+        foreach (var d in dict) if (!ColonQualifierScope.ServerHas(server, d.Label, d.Detail)) srv.Add(d);
+        Ok("a dictionary field the server also supplied is not added a second time",
+            srv.Count(i => string.Equals(i.Label, "Cus:Name", StringComparison.OrdinalIgnoreCase)) == 1, Dump(srv));
+        Ok("  ... a dictionary-only field is still added", srv.Any(i => i.Label == "Cus:City"), Dump(srv));
+        var name = srv.First(i => i.Label == "Cus:Name");
+        Ok("  ... and the surviving server row carries the dictionary's type, still inserting the server's text",
+            name.Detail == "STRING(40) field, dictionary" && name.InsertText == "Name", name.Detail + " / " + name.InsertText);
+        Ok("the first host detail wins (a later source does not overwrite it)",
+            ColonQualifierScope.ServerHas(server, "Cus:Name", "LONG") && name.Detail == "STRING(40) field, dictionary", name.Detail);
+        Ok("ServerHas tolerates a null map and empty label",
+            !ColonQualifierScope.ServerHas(null, "Cus:Name", "x") && !ColonQualifierScope.ServerHas(server, "", "x"), null);
+        Ok("ServerQualifiedItems tolerates null", ColonQualifierScope.ServerQualifiedItems(null).Count == 0, null);
+
         // --- Scope never blanks a list -----------------------------------------------------------------
         var none = new List<LspClient.CompletionItemInfo> { Item("ABS", 3, "ABS(real)", "ABS") };
         Ok("no qualifier match -> the list comes back unchanged", ColonQualifierScope.Scope(none, "Glob:").Count == 1, null);

@@ -39,6 +39,37 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// The server's qualifier items as NormalizeServerItems left them (label = detail = the qualified
+        /// name), by label. Taken right after normalizing, before any host merge adds its own rows, so it
+        /// names exactly what the server supplied.
+        /// </summary>
+        public static Dictionary<string, LspClient.CompletionItemInfo> ServerQualifiedItems(List<LspClient.CompletionItemInfo> items)
+        {
+            var map = new Dictionary<string, LspClient.CompletionItemInfo>(StringComparer.OrdinalIgnoreCase);
+            if (items == null) return map;
+            foreach (var it in items)
+            {
+                if (it == null || string.IsNullOrEmpty(it.Label) || map.ContainsKey(it.Label)) continue;
+                if (string.Equals(it.Label, it.Detail, StringComparison.OrdinalIgnoreCase)) map[it.Label] = it;
+            }
+            return map;
+        }
+
+        /// <summary>
+        /// Whether the server already supplied <paramref name="label"/>. When it did, its row - whose detail
+        /// only repeats the name - takes <paramref name="hostDetail"/> (which carries the declared type), and
+        /// the caller skips its own copy instead of adding a second row. The first host detail wins.
+        /// </summary>
+        public static bool ServerHas(Dictionary<string, LspClient.CompletionItemInfo> server, string label, string hostDetail)
+        {
+            LspClient.CompletionItemInfo s;
+            if (server == null || string.IsNullOrEmpty(label) || !server.TryGetValue(label, out s)) return false;
+            if (!string.IsNullOrEmpty(hostDetail) && string.Equals(s.Label, s.Detail, StringComparison.OrdinalIgnoreCase))
+                s.Detail = hostDetail;
+            return true;
+        }
+
+        /// <summary>
         /// The items whose label starts with the qualifier, or the list unchanged when none do (never blanks
         /// an otherwise-working list). Drops anything that reached the list without the qualifier.
         /// </summary>
