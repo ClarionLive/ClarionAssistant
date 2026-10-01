@@ -54,6 +54,42 @@ namespace ClarionAssistant.Services
             return agentName + " · " + context;
         }
 
+        private const string ExitTitlePrefix = "ca-assistant-exited:";
+
+        /// <summary>
+        /// Wrap the backend invocation so the tab learns when the assistant has ended.
+        ///
+        /// WHY (ticket 7792e3e0, live test): the tab runs pwsh -NoExit, so when Claude exits the
+        /// shell stays and the ConPTY process never ends - ProcessExited does not fire and the tab
+        /// would keep showing CA4 long after the broker reaped the row. The finally block runs
+        /// however Claude ends (/exit, crash, Ctrl+C). It drops MULTITERMINAL_NAME, so a claude
+        /// typed by hand in the leftover shell cannot come back as a released name, and sets the
+        /// console title to a per-tab marker. ConPTY forwards title changes to the terminal as an
+        /// OSC sequence, which <see cref="SeesExitSignal"/> spots in the output stream.
+        /// Single quotes only: the whole command sits inside pwsh -Command "...".
+        /// </summary>
+        public static string WrapWithExitSignal(string invocation, string tabId)
+        {
+            return "try { " + invocation + " } finally { "
+                + "Remove-Item Env:MULTITERMINAL_NAME -ErrorAction SilentlyContinue; "
+                + "$Host.UI.RawUI.WindowTitle = '" + ExitTitlePrefix + EscapeForPowerShellSingleQuote(tabId) + "' }";
+        }
+
+        /// <summary>
+        /// True once the exit marker for <paramref name="tabId"/> appears in the terminal output.
+        /// <paramref name="carry"/> holds the tail of the previous chunk, so a marker split across
+        /// two reads is still seen; pass the same variable for every chunk of one tab.
+        /// </summary>
+        public static bool SeesExitSignal(string tabId, string chunk, ref string carry)
+        {
+            string marker = ExitTitlePrefix + tabId;
+            string text = (carry ?? "") + (chunk ?? "");
+            bool seen = text.IndexOf(marker, StringComparison.Ordinal) >= 0;
+            int keep = Math.Min(text.Length, marker.Length - 1);
+            carry = text.Substring(text.Length - keep);
+            return seen;
+        }
+
         /// <summary>True for the "Terminal N" name TabManager.CreateTerminalTab gives a tab nobody
         /// named - keep the two in step, or plain tabs start showing "CA2 · Terminal 2".</summary>
         public static bool IsDefaultTabName(string name)

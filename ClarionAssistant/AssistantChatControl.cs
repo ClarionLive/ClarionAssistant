@@ -3769,13 +3769,18 @@ namespace ClarionAssistant
                 updatePrefix = $"Write-Host 'Checking for Claude Code updates...' -ForegroundColor Cyan; {updateCmd} update; ";
             }
 
-            string claudeCmd = $"cd '{ctx.SafeWorkDir}'; $env:CLARION_ASSISTANT_EMBEDDED='1'; {tabEnv}; {mtEnv}; {colorfgbg}; {updatePrefix}{claudeBase}{nameFlag}{mcpArg}{pluginArg}{claudeModelFlag} --strict-mcp-config --allowedTools '{allowedTools}'{extraFlags}";
+            string claudeInvocation = $"{claudeBase}{nameFlag}{mcpArg}{pluginArg}{claudeModelFlag} --strict-mcp-config --allowedTools '{allowedTools}'{extraFlags}";
 
             if (initialPromptFile != null)
             {
                 string safeFile = initialPromptFile.Replace("'", "''");
-                claudeCmd += $" (Get-Content -Raw '{safeFile}')";
+                claudeInvocation += $" (Get-Content -Raw '{safeFile}')";
             }
+
+            // The shell outlives Claude (-NoExit), so Claude's end is signalled from the command
+            // itself rather than by the process exiting (ticket 7792e3e0).
+            string claudeCmd = $"cd '{ctx.SafeWorkDir}'; $env:CLARION_ASSISTANT_EMBEDDED='1'; {tabEnv}; {mtEnv}; {colorfgbg}; {updatePrefix}"
+                + Services.CaAgentIdentity.WrapWithExitSignal(claudeInvocation, tab.Id);
 
             return new BuiltBackendCommand { Cmd = claudeCmd, TempFiles = tempFiles };
         }
@@ -4136,6 +4141,23 @@ namespace ClarionAssistant
             var renderer = tab.Renderer;
             if (renderer != null && !renderer.IsDisposed)
                 renderer.WriteToTerminal(data);
+
+            // Claude ended but the -NoExit shell lives on: the command's finally block retitles
+            // the console with this tab's exit marker (CaAgentIdentity.WrapWithExitSignal).
+            // ASCII decode: the marker is ASCII, and a multibyte character split across reads
+            // must not throw or shift it.
+            if (tab.AgentName != null)
+            {
+                string carry = tab.ExitSignalCarry;
+                bool exited = Services.CaAgentIdentity.SeesExitSignal(tab.Id, Encoding.ASCII.GetString(data), ref carry);
+                tab.ExitSignalCarry = carry;
+                if (exited)
+                {
+                    tab.ExitSignalCarry = null;
+                    Action release = () => { ReleaseAgentName(tab); UpdateStatus("Claude Code exited"); };
+                    if (InvokeRequired) BeginInvoke(release); else release();
+                }
+            }
 
             // Auto-send startup command once Claude is ready for human input.
             // Detection: look for the prompt character (> or ❯) at a line boundary,

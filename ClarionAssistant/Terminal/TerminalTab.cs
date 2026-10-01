@@ -48,6 +48,13 @@ namespace ClarionAssistant.Terminal
         /// </summary>
         public string BaseName { get; set; }
 
+        /// <summary>
+        /// Tail of the previous terminal output chunk, kept so the assistant-exited marker is
+        /// still recognised when a read splits it (CaAgentIdentity.SeesExitSignal). Touched only
+        /// by the terminal's output handler.
+        /// </summary>
+        public string ExitSignalCarry { get; set; }
+
         /// <summary>Override working directory for this tab (e.g. solution folder).</summary>
         public string WorkingDirectory { get; set; }
 

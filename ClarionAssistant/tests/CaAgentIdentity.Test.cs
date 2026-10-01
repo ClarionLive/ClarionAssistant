@@ -84,6 +84,28 @@ static class CaAgentIdentityTest
         Ok("'Terminals 2' is not default", !CaAgentIdentity.IsDefaultTabName("Terminals 2"));
         Ok("null is not default", !CaAgentIdentity.IsDefaultTabName(null));
 
+        // ---- Exit signal (7792e3e0 live test: pwsh -NoExit outlives Claude) ----
+        string wrapped = CaAgentIdentity.WrapWithExitSignal("& 'claude' -n 'CA4'", "ab12cd34");
+        Ok("invocation sits inside try", wrapped.StartsWith("try { & 'claude' -n 'CA4' } finally { "));
+        Ok("finally drops MULTITERMINAL_NAME", wrapped.Contains("Remove-Item Env:MULTITERMINAL_NAME"));
+        Ok("finally retitles with the tab's marker", wrapped.Contains("WindowTitle = 'ca-assistant-exited:ab12cd34'"));
+        Ok("no double quotes (command lives inside -Command \"...\")", !wrapped.Contains("\""));
+        string c = null;
+        Ok("plain output is not the signal", !CaAgentIdentity.SeesExitSignal("ab12cd34", "hello world", ref c));
+        c = null;
+        Ok("OSC title with the marker is the signal",
+            CaAgentIdentity.SeesExitSignal("ab12cd34", "\x1b]0;ca-assistant-exited:ab12cd34\x07PS H:\\> ", ref c));
+        c = null;
+        Ok("another tab's marker is not this tab's signal",
+            !CaAgentIdentity.SeesExitSignal("ab12cd34", "\x1b]0;ca-assistant-exited:ffffffff\x07", ref c));
+        c = null;
+        bool first = CaAgentIdentity.SeesExitSignal("ab12cd34", "...\x1b]0;ca-assistant-ex", ref c);
+        bool second = CaAgentIdentity.SeesExitSignal("ab12cd34", "ited:ab12cd34\x07", ref c);
+        Ok("marker split across two reads is still seen", !first && second);
+        c = null;
+        CaAgentIdentity.SeesExitSignal("ab12cd34", new string('x', 5000), ref c);
+        Ok("carry stays bounded", c != null && c.Length < "ca-assistant-exited:ab12cd34".Length);
+
         // ---- AppendIdentityPrompt ----
         string extra = "## Last Session Recap\nwe did things\n";
         string both = CaAgentIdentity.AppendIdentityPrompt(extra, "CA1");
@@ -120,6 +142,11 @@ static class CaAgentIdentityTest
                 int exited = src.IndexOf("private void OnTabTerminalProcessExited(TerminalTab tab)", StringComparison.Ordinal);
                 int exitedEnd = exited < 0 ? -1 : src.IndexOf("\n        }", exited, StringComparison.Ordinal);
                 int exitedRelease = exited < 0 ? -1 : src.IndexOf("ReleaseAgentName(tab)", exited, StringComparison.Ordinal);
+                int wrap = src.IndexOf("CaAgentIdentity.WrapWithExitSignal(claudeInvocation, tab.Id)", StringComparison.Ordinal);
+                int dataRecv = src.IndexOf("private void OnTabTerminalDataReceived(TerminalTab tab, byte[] data)", StringComparison.Ordinal);
+                int dataEnd = dataRecv < 0 ? -1 : src.IndexOf("\n        }", dataRecv, StringComparison.Ordinal);
+                int sees = dataRecv < 0 ? -1 : src.IndexOf("CaAgentIdentity.SeesExitSignal(tab.Id,", dataRecv, StringComparison.Ordinal);
+                int seesRelease = sees < 0 ? -1 : src.IndexOf("ReleaseAgentName(tab)", sees, StringComparison.Ordinal);
                 int abortEnd = abort < 0 ? -1 : src.IndexOf("\n        }", abort, StringComparison.Ordinal);
                 int write = src.IndexOf("\"system-prompt-extra-\"", StringComparison.Ordinal);
                 Ok("launch resolves the agent name", resolve >= 0);
@@ -150,6 +177,10 @@ static class CaAgentIdentityTest
                 // Pipeline run 1 (debugger): an exited assistant must release its name too.
                 Ok("process exit releases the name", exitedRelease >= 0 && exitedEnd >= 0 && exitedRelease < exitedEnd,
                     "release@" + exitedRelease + " end@" + exitedEnd);
+                // Live test (John): /exit leaves the -NoExit shell running, so the process never exits.
+                Ok("Claude command wrapped with the exit signal", wrap >= 0, "wrap@" + wrap);
+                Ok("output handler watches for the exit signal and releases the name",
+                    sees >= 0 && seesRelease > sees && seesRelease < dataEnd, "sees@" + sees + " release@" + seesRelease + " end@" + dataEnd);
             }
         }
         else Console.WriteLine("  (launch-order checks skipped: no project dir argument)");
