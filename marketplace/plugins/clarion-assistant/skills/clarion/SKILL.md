@@ -33,6 +33,9 @@ You are an expert Clarion language programmer. This file holds the most critical
 14. **COM methods use direct brace syntax** `ctrl{'MethodName()'}` — never `ctrl{PROP:OLE} = '...'` (unreliable). COM property names are case-sensitive.
 15. **Template files (.tpl/.tpw): `#AT` cannot be nested inside `#IF`** — put the `#IF` INSIDE the `#AT` body. And `OMITTED()` only works in the scope where the parameter is declared (fails silently inside ABC class methods) — stash params into procedure-locals at top level. Details and working embeds in references/templates.md.
 
+16. **`DECIMAL` cannot be a value parameter or a return type** (compile errors). Use `*DECIMAL` by reference, or `REAL`/`LONG`. There is no `POWER()` — use `(2) ^ (n)`. Calling a returning procedure as a statement without `,PROC` (including `GETINI`) draws the warning `Calling function as procedure` — add `,PROC` to the prototype or assign the result.
+17. **`OMIT('token')` ends at the first occurrence of that exact text anywhere, even inside a `!`/`!!` comment.** `MODULE` blocks belong inside a `MAP`, and the `MODULE('name')` must match the .clw that defines the procedure.
+
 ## When Generating Clarion Examples
 
 Use realistic Clarion-convention names, show complete context (declare all variables), align property assignments, comment with `!`, and follow proper indentation. Full guidelines in references/syntax-basics.md.
@@ -47,4 +50,5 @@ All paths are relative to this skill's directory. Read the file whose topic matc
 - **references/windows-events.md** — Full ACCEPT loop pattern, EVENT: constants, PROP:xxx property syntax, WINDOW definitions (two-END rule, hidden OLE controls). Read when building windows or handling UI events.
 - **references/com-controls.md** — Using COM/OLE from Clarion (PROP:Create, property/method calls, OCXREGISTEREVENTPROC event handling) AND building .NET COM controls for Clarion (RegFree COM only, UserControl inheritance requirement, interfaces/GUIDs/csproj, checklist, complete working example). Read for anything COM-related.
 - **references/templates.md** — Template authoring gotchas in depth: #AT/#IF nesting, OMITTED() scope trap with the %BeforeWindowManagerRun fix, embeds that silently don't work (%LocalProcedureSetup, %ProcedureSetup). Read before writing/editing .tpl/.tpw files.
+- **references/ai-pitfalls.md** — Compile-verified (Clarion 12) rules: DECIMAL, `,PROC`/`GETINI`, MAP/MODULE/MEMBER scope, column-1 and LF errors, string comparison, OMIT terminator — plus a list of plausible-sounding rules that are false. Read before writing or reviewing non-trivial code.
 - **references/common-mistakes.md** — Full wrong-vs-right catalog (strings, periods, labels, MEMBER order, END counts, &=, queue CLEAR, parameter markers, ACCEPT vs LOOP, ROUTINE calls, class prefixes, RETURN paths, NEW/DISPOSE). Read when reviewing or debugging Clarion code.
